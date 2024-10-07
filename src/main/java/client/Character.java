@@ -391,7 +391,9 @@ public class Character extends AbstractCharacterObject {
             public void onAnnounceStatPoolUpdate() {
                 List<Pair<Stat, Integer>> statup = new ArrayList<>(8);
                 for (Map.Entry<Stat, Integer> s : statUpdates.entrySet()) {
-                    statup.add(new Pair<>(s.getKey(), s.getValue()));
+                    Stat stat = s.getKey();
+                    Integer value = s.getValue();
+                    statup.add(new Pair<>(stat, value));
                 }
 
                 sendPacket(PacketCreator.updatePlayerStats(statup, true, Character.this));
@@ -5313,7 +5315,7 @@ public class Character extends AbstractCharacterObject {
     }
 
     public int getMaxClassLevel() {
-        return isCygnus() ? 120 : 200;
+        return isCygnus() ? 250 : 255;
     }
 
     public int getMaxLevel() {
@@ -6355,8 +6357,8 @@ public class Character extends AbstractCharacterObject {
             addhp += Randomizer.rand(20, 24);
             addmp += Randomizer.rand(14, 16);
         } else if (job.isA(Job.GM)) {
-            addhp += 30000;
-            addmp += 30000;
+            addhp += 300000;
+            addmp += 300000;
         } else if (job.isA(Job.PIRATE) || job.isA(Job.THUNDERBREAKER1)) {
             improvingMaxHP = isCygnus() ? SkillFactory.getSkill(ThunderBreaker.IMPROVE_MAX_HP) : SkillFactory.getSkill(Brawler.IMPROVE_MAX_HP);
             improvingMaxHPLevel = getSkillLevel(improvingMaxHP);
@@ -7678,8 +7680,8 @@ public class Character extends AbstractCharacterObject {
                 localmaxmp += (hbmp.doubleValue() / 100) * localmaxmp;
             }
 
-            localmaxhp = Math.min(30000, localmaxhp);
-            localmaxmp = Math.min(30000, localmaxmp);
+            localmaxhp = Math.min(300000, localmaxhp);
+            localmaxmp = Math.min(300000, localmaxmp);
 
             StatEffect combo = getBuffEffect(BuffStat.ARAN_COMBO);
             if (combo != null) {
@@ -8952,7 +8954,7 @@ public class Character extends AbstractCharacterObject {
 
     private int calcHpRatioUpdate(int curpoint, int maxpoint, int diffpoint) {
         int curMax = maxpoint;
-        int nextMax = Math.min(30000, maxpoint + diffpoint);
+        int nextMax = Math.min(300000, maxpoint + diffpoint);
 
         float temp = curpoint * nextMax;
         int ret = (int) Math.ceil(temp / curMax);
@@ -8963,7 +8965,7 @@ public class Character extends AbstractCharacterObject {
 
     private int calcMpRatioUpdate(int curpoint, int maxpoint, int diffpoint) {
         int curMax = maxpoint;
-        int nextMax = Math.min(30000, maxpoint + diffpoint);
+        int nextMax = Math.min(300000, maxpoint + diffpoint);
 
         float temp = curpoint * nextMax;
         int ret = (int) Math.ceil(temp / curMax);

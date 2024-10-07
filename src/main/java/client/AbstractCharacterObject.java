@@ -270,7 +270,8 @@ public abstract class AbstractCharacterObject extends AbstractAnimatedMapObject 
             this.transienthp = Float.NEGATIVE_INFINITY;
         }
         this.maxhp = hp_;
-        this.clientmaxhp = Math.min(30000, hp_);
+//        int clientMaxHP = hp_ >= 30000 ? hp_ / 1000 : hp_;
+        this.clientmaxhp = Math.min(30000000, hp_);
     }
 
     protected void setMaxMp(int mp_) {
@@ -278,7 +279,8 @@ public abstract class AbstractCharacterObject extends AbstractAnimatedMapObject 
             this.transientmp = Float.NEGATIVE_INFINITY;
         }
         this.maxmp = mp_;
-        this.clientmaxmp = Math.min(30000, mp_);
+//        int clientMaxMP = mp_ >= 30000 ? mp_ / 1000 : mp_;
+        this.clientmaxmp = Math.min(30000000, mp_);
     }
 
     private static long clampStat(int v, int min, int max) {
@@ -308,6 +310,18 @@ public abstract class AbstractCharacterObject extends AbstractAnimatedMapObject 
     }
 
     private void changeStatPool(Long hpMpPool, Long strDexIntLuk, Long newSp, int newAp, boolean silent) {
+        if (hpMpPool != null) {
+            int newHp = (short) (hpMpPool >> 48);
+            int newMp = (short) (hpMpPool >> 32);
+            int newMaxHp = (short) (hpMpPool >> 16);
+            int newMaxMp = hpMpPool.shortValue();
+            changeStatPool(newHp, newMp, newMaxHp, newMaxMp, strDexIntLuk, newSp, newAp, silent);
+        } else {
+            changeStatPool(null, null, null, null, strDexIntLuk, newSp, newAp, silent);
+        }
+    }
+
+    private void changeStatPool(Integer newHp, Integer newMp, Integer newMaxHp, Integer newMaxMp, Long strDexIntLuk, Long newSp, int newAp, boolean silent) {
         effLock.lock();
         statWlock.lock();
         try {
@@ -315,13 +329,8 @@ public abstract class AbstractCharacterObject extends AbstractAnimatedMapObject 
             boolean poolUpdate = false;
             boolean statUpdate = false;
 
-            if (hpMpPool != null) {
-                short newHp = (short) (hpMpPool >> 48);
-                short newMp = (short) (hpMpPool >> 32);
-                short newMaxHp = (short) (hpMpPool >> 16);
-                short newMaxMp = hpMpPool.shortValue();
-
-                if (newMaxHp != Short.MIN_VALUE) {
+            if (newHp != null || newMp != null || newMaxHp != null || newMaxMp != null) {
+                if (newMaxHp != null && newMaxHp != Short.MIN_VALUE) {
                     if (newMaxHp < 50) {
                         newMaxHp = 50;
                     }
@@ -332,12 +341,12 @@ public abstract class AbstractCharacterObject extends AbstractAnimatedMapObject 
                     statUpdates.put(Stat.HP, hp);
                 }
 
-                if (newHp != Short.MIN_VALUE) {
+                if (newHp != null && newHp != Short.MIN_VALUE) {
                     setHp(newHp);
                     statUpdates.put(Stat.HP, hp);
                 }
 
-                if (newMaxMp != Short.MIN_VALUE) {
+                if (newMaxMp != null && newMaxMp != Short.MIN_VALUE) {
                     if (newMaxMp < 5) {
                         newMaxMp = 5;
                     }
@@ -348,7 +357,7 @@ public abstract class AbstractCharacterObject extends AbstractAnimatedMapObject 
                     statUpdates.put(Stat.MP, mp);
                 }
 
-                if (newMp != Short.MIN_VALUE) {
+                if (newMp != null && newMp != Short.MIN_VALUE) {
                     setMp(newMp);
                     statUpdates.put(Stat.MP, mp);
                 }
@@ -432,8 +441,9 @@ public abstract class AbstractCharacterObject extends AbstractAnimatedMapObject 
     }
 
     private void changeHpMpPool(Integer hp, Integer mp, Integer maxhp, Integer maxmp, boolean silent) {
-        long hpMpPool = calcStatPoolLong(hp, mp, maxhp, maxmp);
-        changeStatPool(hpMpPool, null, null, -1, silent);
+//        long hpMpPool = calcStatPoolLong(hp, mp, maxhp, maxmp);
+//        changeStatPool(hpMpPool, null, null, -1, silent);
+        changeStatPool(hp, mp, maxhp, maxmp, null, null, -1, silent);
     }
 
     public void updateHp(int hp) {

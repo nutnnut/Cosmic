@@ -204,7 +204,7 @@ public class PacketCreator {
         p.writeShort(chr.getDex()); // dex
         p.writeShort(chr.getInt()); // int
         p.writeShort(chr.getLuk()); // luk
-        p.writeShort(chr.getHp()); // hp (?)
+        p.writeShort(chr.getCurrentMaxMp() >= 30000 ? chr.getHp() / 10 : chr.getHp());
         p.writeShort(chr.getClientMaxHp()); // maxhp
         p.writeShort(chr.getMp()); // mp (?)
         p.writeShort(chr.getClientMaxMp()); // maxmp
@@ -1006,10 +1006,34 @@ public class PacketCreator {
         OutPacket p = OutPacket.create(SendOpcode.STAT_CHANGED);
         p.writeBool(enableActions);
         int updateMask = 0;
+        List<Pair<Stat, Integer>> mystats = new ArrayList<>();
         for (Pair<Stat, Integer> statupdate : stats) {
+            Stat stat = statupdate.getLeft();
+            Integer value = statupdate.getRight();
+            if ((stat == Stat.HP || stat == Stat.MAXHP) && chr != null) {
+                int extraHp = chr.getCurrentMaxHp() - chr.getClientMaxHp();
+                int extraMp = chr.getCurrentMaxMp() - chr.getClientMaxMp();
+                if (chr.getCurrentMaxHp() >= 30000) {
+                    if (stat == Stat.MAXHP) {
+                        value = (value + extraHp) / 10 - extraHp;
+                    } else {
+                        value /= 10;
+                    }
+                }
+            }
+            if ((stat == Stat.MP || stat == Stat.MAXMP) && chr != null) {
+                int extraMp = chr.getCurrentMaxMp() - chr.getClientMaxMp();
+                if (chr.getCurrentMaxMp() >= 30000) {
+                    if (stat == Stat.MAXMP) {
+                        value = (value + extraMp) / 10 - extraMp;
+                    } else {
+                        value /= 10;
+                    }
+                }
+            }
             updateMask |= statupdate.getLeft().getValue();
+            mystats.add(new Pair<>(stat, value));
         }
-        List<Pair<Stat, Integer>> mystats = stats;
         if (mystats.size() > 1) {
             mystats.sort((o1, o2) -> {
                 int val1 = o1.getLeft().getValue();
@@ -1059,7 +1083,7 @@ public class PacketCreator {
         p.writeByte(0);//updated
         p.writeInt(to.getId());
         p.writeByte(spawnPoint);
-        p.writeShort(chr.getHp());
+        p.writeShort(chr.getCurrentMaxMp() >= 30000 ? chr.getHp() / 10 : chr.getHp());
         p.writeBool(chr.isChasing());
         if (chr.isChasing()) {
             chr.setChasing(false);
@@ -1077,7 +1101,7 @@ public class PacketCreator {
         p.writeByte(0);//updated
         p.writeInt(to.getId());
         p.writeByte(spawnPoint);
-        p.writeShort(chr.getHp());
+        p.writeShort(chr.getCurrentMaxMp() >= 30000 ? chr.getHp() / 10 : chr.getHp());
         p.writeBool(true);
         p.writeInt(spawnPosition.x);    // spawn position placement thanks to Arnah (Vertisy)
         p.writeInt(spawnPosition.y);
