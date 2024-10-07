@@ -107,6 +107,7 @@ public class ItemInformationProvider {
     protected Map<Integer, Integer> projectileWatkCache = new HashMap<>();
     protected Map<Integer, String> nameCache = new HashMap<>();
     protected Map<Integer, String> descCache = new HashMap<>();
+    protected Map<Integer, Boolean> hasDataCache = new HashMap<>(); // For detecting corrupted/unused items
     protected Map<Integer, String> msgCache = new HashMap<>();
     protected Map<Integer, Boolean> accountItemRestrictionCache = new HashMap<>();
     protected Map<Integer, Boolean> dropRestrictionCache = new HashMap<>();
@@ -1315,6 +1316,18 @@ public class ItemInformationProvider {
         return bRestricted;
     }
 
+    public boolean hasData(int itemId) {
+        if (hasDataCache.containsKey(itemId)) {
+            return hasDataCache.get(itemId);
+        }
+
+        Data data = getItemData(itemId);
+        boolean hasData = data != null && !data.getChildren().isEmpty();
+
+        hasDataCache.put(itemId, hasData);
+        return hasData;
+    }
+
     public boolean isAccountRestricted(int itemId) {
         if (accountItemRestrictionCache.containsKey(itemId)) {
             return accountItemRestrictionCache.get(itemId);
@@ -1832,7 +1845,9 @@ public class ItemInformationProvider {
     public ArrayList<Pair<Integer, String>> getItemDataByName(String name) {
         ArrayList<Pair<Integer, String>> ret = new ArrayList<>();
         for (Pair<Integer, String> itemPair : ItemInformationProvider.getInstance().getAllItems()) {
-            if (itemPair.getRight().toLowerCase().contains(name.toLowerCase())) {
+            int itemId = itemPair.getLeft();
+            String itemName = itemPair.getRight();
+            if (itemName.toLowerCase().contains(name.toLowerCase()) && hasData(itemId) && !isCash(itemId)) {
                 ret.add(itemPair);
             }
         }

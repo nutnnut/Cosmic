@@ -35,7 +35,7 @@ import tools.Pair;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
-import java.util.Iterator;
+import java.util.ArrayList;
 
 public class WhoDropsCommand extends Command {
     {
@@ -50,54 +50,54 @@ public class WhoDropsCommand extends Command {
             return;
         }
 
-        if (c.tryacquireClient()) {
-            try {
-                String searchString = player.getLastCommandMessage();
-                String output = "";
-                Iterator<Pair<Integer, String>> listIterator = ItemInformationProvider.getInstance().getItemDataByName(searchString).iterator();
-                if (listIterator.hasNext()) {
-                    int count = 1;
-                    while (listIterator.hasNext() && count <= 10) {
-                        Pair<Integer, String> data = listIterator.next();
-                        Integer itemId = data.getLeft();
-                        if (itemId < 1000000) { // hairs, faces, not actually items, will cause a crash
-                            continue;
-                        }
-                        output += "#v" + itemId + "#"; // Item Icon
-                        output += "#z" + itemId + "#"; // Item Name + Stats
-                        output += " - #b" + itemId; // Item ID
-                        output += "#k:\r\n";
-                        try (Connection con = DatabaseConnection.getConnection();
-                             PreparedStatement ps = con.prepareStatement("SELECT dropperid FROM drop_data WHERE itemid = ? LIMIT 50")) {
-                            ps.setInt(1, itemId);
+        if (!c.tryacquireClient()) {
+            player.dropMessage(5, "Please wait a while for your request to be processed.");
+            return;
+        }
 
-                            try (ResultSet rs = ps.executeQuery()) {
-                                while (rs.next()) {
-                                    String resultName = MonsterInformationProvider.getInstance().getMobNameFromId(rs.getInt("dropperid"));
-                                    if (resultName != null) {
-                                        output += resultName + ", ";
-                                    }
-                                }
+        try {
+            String searchString = player.getLastCommandMessage();
+            StringBuilder output = new StringBuilder();
+            ArrayList<Pair<Integer, String>> idNameList = ItemInformationProvider.getInstance().getItemDataByName(searchString);
+            if (idNameList.isEmpty()) {
+                player.dropMessage(5, "The item you searched for doesn't exist.");
+                return;
+            }
+            int count = 0;
+            for (int i = 0; i < idNameList.size() && count < 10; i++) {
+                Pair<Integer, String> data = idNameList.get(i);
+                Integer itemId = data.getLeft();
+                if (itemId < 1000000) { // hairs, faces, not actual items, will cause a crash
+                    continue;
+                }
+                count++;
+                output.append("#v").append(itemId).append("#"); // Item Icon
+                output.append("#z").append(itemId).append("#"); // Item Name + Stats
+                output.append(" - #b").append(itemId); // Item ID
+                output.append("#k:\r\n");
+                try (Connection con = DatabaseConnection.getConnection();
+                     PreparedStatement ps = con.prepareStatement("SELECT dropperid FROM drop_data WHERE itemid = ? LIMIT 50")) {
+                    ps.setInt(1, itemId);
+
+                    try (ResultSet rs = ps.executeQuery()) {
+                        while (rs.next()) {
+                            String resultName = MonsterInformationProvider.getInstance().getMobNameFromId(rs.getInt("dropperid"));
+                            if (resultName != null) {
+                                output.append(resultName).append(", ");
                             }
-                        } catch (Exception e) {
-                            player.dropMessage(6, "There was a problem retrieving the required data. Please try again.");
-                            e.printStackTrace();
-                            return;
                         }
-                        output += "\r\n\r\n";
-                        count++;
                     }
-                } else {
-                    player.dropMessage(5, "The item you searched for doesn't exist.");
+                } catch (Exception e) {
+                    player.dropMessage(6, "There was a problem retrieving the required data. Please try again.");
+                    e.printStackTrace();
                     return;
                 }
-
-                c.getAbstractPlayerInteraction().npcTalk(NpcId.MAPLE_ADMINISTRATOR, output);
-            } finally {
-                c.releaseClient();
+                output.append("\r\n\r\n");
             }
-        } else {
-            player.dropMessage(5, "Please wait a while for your request to be processed.");
+            output.insert(0, "Showing " + count + " of " + idNameList.size() + " results:\r\n\r\n");
+            c.getAbstractPlayerInteraction().npcTalk(NpcId.MAPLE_ADMINISTRATOR, output.toString());
+        } finally {
+            c.releaseClient();
         }
     }
 }
