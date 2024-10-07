@@ -46,7 +46,7 @@ public class DressingRoomCommand extends Command {
     @Override
     public void execute(Client c, String[] params) {
         Character player = c.getPlayer();
-        if (params.length < 2) {
+        if (params.length < 1) {
             player.dropMessage(5, "Please do !dress <type> <job> <optional req.level>");
             return;
         }
@@ -65,14 +65,18 @@ public class DressingRoomCommand extends Command {
             }
             return;
         }
-        String param1 = params[1].toLowerCase();
-        int job = 0; // Default job / Beginner
+        String param1 = "";
+        try {
+            param1 = params[1].toLowerCase();
+        } catch (Exception ignored) {
+        }
 
+        int job = 0; // Default job / Beginner
         if (param1.equals("1") || param1.startsWith("w")) {
             job = 1;
         } else if (param1.equals("2") || param1.startsWith("m")) {
             job = 2;
-        } else if (param1.equals("3") || param1.startsWith("b")) {
+        } else if (param1.equals("3") || param1.startsWith("bo")) {
             job = 3;
         } else if (param1.equals("4") || param1.startsWith("t")) {
             job = 4;
