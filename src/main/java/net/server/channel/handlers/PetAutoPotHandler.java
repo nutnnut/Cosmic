@@ -42,13 +42,23 @@ public final class PetAutoPotHandler extends AbstractPacketHandler {
         Character chr = c.getPlayer();
         StatEffect stat = ItemInformationProvider.getInstance().getItemEffect(itemId);
         if (stat.getHp() > 0 || stat.getHpRate() > 0.0) {
-            float estimatedHp = ((float) chr.getHp()) / chr.getMaxHp();
-            chr.setAutopotHpAlert(estimatedHp + 0.05f);
+            float triggeredRatio = ((float) chr.getHp()) / chr.getCurrentMaxHp();
+            float savedRatio = chr.getAutopotHpAlert();
+
+            // Update the character's estimated auto-pot threshold
+            chr.setAutopotHpAlert(Math.max(triggeredRatio + 0.01f, savedRatio));
+
+//            c.getPlayer().message(String.format(
+//                    "Target HP Pot: %s (%s/%s)",
+//                    c.getPlayer().getAutopotHpAlert(),
+//                    triggeredRatio,
+//                    savedRatio
+//            ));
         }
 
         if (stat.getMp() > 0 || stat.getMpRate() > 0.0) {
-            float estimatedMp = ((float) chr.getMp()) / chr.getMaxMp();
-            chr.setAutopotMpAlert(estimatedMp + 0.05f);
+            float estimatedMp = ((float) chr.getMp()) / chr.getCurrentMaxMp();
+            chr.setAutopotMpAlert(Math.max(estimatedMp + 0.01f, chr.getAutopotMpAlert()));
         }
 
         PetAutopotProcessor.runAutopotAction(c, slot, itemId);

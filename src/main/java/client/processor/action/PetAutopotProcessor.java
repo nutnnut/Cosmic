@@ -131,14 +131,14 @@ public class PetAutopotProcessor {
 
                     if (YamlConfig.config.server.USE_COMPULSORY_AUTOPOT) {
                         if (hasHpGain) {
-                            double hpRatio = (YamlConfig.config.server.PET_AUTOHP_RATIO * maxHp) - curHp;
+                            double hpRatio = (c.getPlayer().getAutopotHpAlert() * maxHp) - curHp;
                             if (hpRatio > 0.0) {
                                 qtyCount = (int) Math.ceil(hpRatio / incHp);
                             }
                         }
 
                         if (hasMpGain) {
-                            double mpRatio = ((YamlConfig.config.server.PET_AUTOMP_RATIO * maxMp) - curMp);
+                            double mpRatio = (c.getPlayer().getAutopotMpAlert() * maxMp) - curMp;
                             if (mpRatio > 0.0) {
                                 qtyCount = Math.max(qtyCount, (int) Math.ceil(mpRatio / incMp));
                             }
