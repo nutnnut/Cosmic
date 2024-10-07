@@ -60,7 +60,7 @@ public class MakerItemFactory {
     public static MakerItemCreateEntry generateLeftoverCrystalEntry(int fromLeftoverid, int crystalId) {
         MakerItemCreateEntry ret = new MakerItemCreateEntry(0, 0, 1);
         ret.addReqItem(fromLeftoverid, 100);
-        ret.addGainItem(crystalId, 1);
+        ret.addGainItem(crystalId, 2);
         return ret;
     }
 
