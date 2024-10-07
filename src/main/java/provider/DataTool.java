@@ -58,7 +58,16 @@ public class DataTool {
         if (data == null || data.getData() == null) {
             return 0;// DEF?
         }
-        return (Integer) data.getData();
+
+        Object value = data.getData();
+
+        if (value instanceof Integer) {
+            return (Integer) value;
+        } else if (value instanceof Short) {
+            return ((Short) value).intValue(); // Convert Short to Integer
+        } else {
+            throw new IllegalArgumentException("Unsupported data type: " + value.getClass());
+        }
     }
 
     public static int getInt(String path, Data data) {

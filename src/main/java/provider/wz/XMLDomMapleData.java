@@ -117,6 +117,7 @@ public class XMLDomMapleData implements Data {
     public synchronized Object getData() {
         NamedNodeMap attributes = node.getAttributes();
         DataType type = getType();
+        if (type == null) return null;
         switch (type) {
             case DOUBLE:
             case FLOAT:
