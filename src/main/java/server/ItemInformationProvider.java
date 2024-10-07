@@ -643,110 +643,25 @@ public class ItemInformationProvider {
     }
 
     public void scrollOptionEquipWithChaos(Equip nEquip, int range, boolean option) {
-        // option: watk, matk, wdef, mdef, spd, jump, hp, mp
-        //   stat: dex, luk, str, int, avoid, acc
+        // option: watk, matk, wdef, mdef, spd, jump, hp, mp - black crystal - 1/2/3
+        //   stat: dex, luk, str, int, avoid, acc - dark crystal - 2/3/5
 
-        if (!option) {
-            if (nEquip.getStr() > 0) {
-                if (YamlConfig.config.server.USE_ENHANCED_CHSCROLL) {
-                    nEquip.setStr(getMaximumShortMaxIfOverflow(nEquip.getStr(), (nEquip.getStr() + chscrollRandomizedStat(range))));
-                } else {
-                    nEquip.setStr(getMaximumShortMaxIfOverflow(0, (nEquip.getStr() + chscrollRandomizedStat(range))));
-                }
-            }
-            if (nEquip.getDex() > 0) {
-                if (YamlConfig.config.server.USE_ENHANCED_CHSCROLL) {
-                    nEquip.setDex(getMaximumShortMaxIfOverflow(nEquip.getDex(), (nEquip.getDex() + chscrollRandomizedStat(range))));
-                } else {
-                    nEquip.setDex(getMaximumShortMaxIfOverflow(0, (nEquip.getDex() + chscrollRandomizedStat(range))));
-                }
-            }
-            if (nEquip.getInt() > 0) {
-                if (YamlConfig.config.server.USE_ENHANCED_CHSCROLL) {
-                    nEquip.setInt(getMaximumShortMaxIfOverflow(nEquip.getInt(), (nEquip.getInt() + chscrollRandomizedStat(range))));
-                } else {
-                    nEquip.setInt(getMaximumShortMaxIfOverflow(0, (nEquip.getInt() + chscrollRandomizedStat(range))));
-                }
-            }
-            if (nEquip.getLuk() > 0) {
-                if (YamlConfig.config.server.USE_ENHANCED_CHSCROLL) {
-                    nEquip.setLuk(getMaximumShortMaxIfOverflow(nEquip.getLuk(), (nEquip.getLuk() + chscrollRandomizedStat(range))));
-                } else {
-                    nEquip.setLuk(getMaximumShortMaxIfOverflow(0, (nEquip.getLuk() + chscrollRandomizedStat(range))));
-                }
-            }
-            if (nEquip.getAcc() > 0) {
-                if (YamlConfig.config.server.USE_ENHANCED_CHSCROLL) {
-                    nEquip.setAcc(getMaximumShortMaxIfOverflow(nEquip.getAcc(), (nEquip.getAcc() + chscrollRandomizedStat(range))));
-                } else {
-                    nEquip.setAcc(getMaximumShortMaxIfOverflow(0, (nEquip.getAcc() + chscrollRandomizedStat(range))));
-                }
-            }
-            if (nEquip.getAvoid() > 0) {
-                if (YamlConfig.config.server.USE_ENHANCED_CHSCROLL) {
-                    nEquip.setAvoid(getMaximumShortMaxIfOverflow(nEquip.getAvoid(), (nEquip.getAvoid() + chscrollRandomizedStat(range))));
-                } else {
-                    nEquip.setAvoid(getMaximumShortMaxIfOverflow(0, (nEquip.getAvoid() + chscrollRandomizedStat(range))));
-                }
-            }
+        if (option) {
+            nEquip.setWatk(getMaximumShortMaxIfOverflow(0, getRandUpgradedStat(nEquip.getWatk(), range)));
+            nEquip.setWdef(getMaximumShortMaxIfOverflow(0, getRandUpgradedStat(nEquip.getWdef(), range)));
+            nEquip.setMatk(getMaximumShortMaxIfOverflow(0, getRandUpgradedStat(nEquip.getMatk(), range)));
+            nEquip.setMdef(getMaximumShortMaxIfOverflow(0, getRandUpgradedStat(nEquip.getMdef(), range)));
+            nEquip.setSpeed(getMaximumShortMaxIfOverflow(0, getRandUpgradedStat(nEquip.getSpeed(), range)));
+            nEquip.setJump(getMaximumShortMaxIfOverflow(0, getRandUpgradedStat(nEquip.getJump(), range)));
+            nEquip.setHp(getMaximumShortMaxIfOverflow(0, getRandUpgradedStat(nEquip.getHp(), range)));
+            nEquip.setMp(getMaximumShortMaxIfOverflow(0, getRandUpgradedStat(nEquip.getMp(), range)));
         } else {
-            if (nEquip.getWatk() > 0) {
-                if (YamlConfig.config.server.USE_ENHANCED_CHSCROLL) {
-                    nEquip.setWatk(getMaximumShortMaxIfOverflow(nEquip.getWatk(), (nEquip.getWatk() + chscrollRandomizedStat(range))));
-                } else {
-                    nEquip.setWatk(getMaximumShortMaxIfOverflow(0, (nEquip.getWatk() + chscrollRandomizedStat(range))));
-                }
-            }
-            if (nEquip.getWdef() > 0) {
-                if (YamlConfig.config.server.USE_ENHANCED_CHSCROLL) {
-                    nEquip.setWdef(getMaximumShortMaxIfOverflow(nEquip.getWdef(), (nEquip.getWdef() + chscrollRandomizedStat(range))));
-                } else {
-                    nEquip.setWdef(getMaximumShortMaxIfOverflow(0, (nEquip.getWdef() + chscrollRandomizedStat(range))));
-                }
-            }
-            if (nEquip.getMatk() > 0) {
-                if (YamlConfig.config.server.USE_ENHANCED_CHSCROLL) {
-                    nEquip.setMatk(getMaximumShortMaxIfOverflow(nEquip.getMatk(), (nEquip.getMatk() + chscrollRandomizedStat(range))));
-                } else {
-                    nEquip.setMatk(getMaximumShortMaxIfOverflow(0, (nEquip.getMatk() + chscrollRandomizedStat(range))));
-                }
-            }
-            if (nEquip.getMdef() > 0) {
-                if (YamlConfig.config.server.USE_ENHANCED_CHSCROLL) {
-                    nEquip.setMdef(getMaximumShortMaxIfOverflow(nEquip.getMdef(), (nEquip.getMdef() + chscrollRandomizedStat(range))));
-                } else {
-                    nEquip.setMdef(getMaximumShortMaxIfOverflow(0, (nEquip.getMdef() + chscrollRandomizedStat(range))));
-                }
-            }
-
-            if (nEquip.getSpeed() > 0) {
-                if (YamlConfig.config.server.USE_ENHANCED_CHSCROLL) {
-                    nEquip.setSpeed(getMaximumShortMaxIfOverflow(nEquip.getSpeed(), (nEquip.getSpeed() + chscrollRandomizedStat(range))));
-                } else {
-                    nEquip.setSpeed(getMaximumShortMaxIfOverflow(0, (nEquip.getSpeed() + chscrollRandomizedStat(range))));
-                }
-            }
-            if (nEquip.getJump() > 0) {
-                if (YamlConfig.config.server.USE_ENHANCED_CHSCROLL) {
-                    nEquip.setJump(getMaximumShortMaxIfOverflow(nEquip.getJump(), (nEquip.getJump() + chscrollRandomizedStat(range))));
-                } else {
-                    nEquip.setJump(getMaximumShortMaxIfOverflow(0, (nEquip.getJump() + chscrollRandomizedStat(range))));
-                }
-            }
-            if (nEquip.getHp() > 0) {
-                if (YamlConfig.config.server.USE_ENHANCED_CHSCROLL) {
-                    nEquip.setHp(getMaximumShortMaxIfOverflow(nEquip.getHp(), (nEquip.getHp() + chscrollRandomizedStat(range))));
-                } else {
-                    nEquip.setHp(getMaximumShortMaxIfOverflow(0, (nEquip.getHp() + chscrollRandomizedStat(range))));
-                }
-            }
-            if (nEquip.getMp() > 0) {
-                if (YamlConfig.config.server.USE_ENHANCED_CHSCROLL) {
-                    nEquip.setMp(getMaximumShortMaxIfOverflow(nEquip.getMp(), (nEquip.getMp() + chscrollRandomizedStat(range))));
-                } else {
-                    nEquip.setMp(getMaximumShortMaxIfOverflow(0, (nEquip.getMp() + chscrollRandomizedStat(range))));
-                }
-            }
+            nEquip.setStr(getMaximumShortMaxIfOverflow(0, getRandUpgradedStat(nEquip.getStr(), range)));
+            nEquip.setDex(getMaximumShortMaxIfOverflow(0, getRandUpgradedStat(nEquip.getDex(), range)));
+            nEquip.setInt(getMaximumShortMaxIfOverflow(0, getRandUpgradedStat(nEquip.getInt(), range)));
+            nEquip.setLuk(getMaximumShortMaxIfOverflow(0, getRandUpgradedStat(nEquip.getLuk(), range)));
+            nEquip.setAcc(getMaximumShortMaxIfOverflow(0, getRandUpgradedStat(nEquip.getAcc(), range)));
+            nEquip.setAvoid(getMaximumShortMaxIfOverflow(0, getRandUpgradedStat(nEquip.getAvoid(), range)));
         }
     }
 
