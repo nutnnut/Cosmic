@@ -26,6 +26,7 @@ package client.command.commands.gm1;
 import client.Character;
 import client.Client;
 import client.command.Command;
+import client.command.CommandContext;
 import constants.id.NpcId;
 import constants.inventory.EquipStats;
 import constants.inventory.EquipType;
@@ -44,7 +45,7 @@ public class DressingRoomCommand extends Command {
     }
 
     @Override
-    public void execute(Client c, String[] params) {
+    public void execute(Client c, String[] params, CommandContext ctx) {
         Character player = c.getPlayer();
         if (params.length < 2) {
             player.dropMessage(5, "Please do !dress <type> <job> <optional req.level>");
