@@ -3531,7 +3531,7 @@ public class MapleMap {
         */
 
         float maxMob = monsterSpawn.size() * getWorldServer().getMobrate();
-        
+
         if (YamlConfig.config.server.USE_ENABLE_FULL_RESPAWN) {
             return (int) Math.ceil(maxMob) - spawnedMonstersOnMap.get();
         }
