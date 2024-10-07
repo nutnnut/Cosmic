@@ -71,7 +71,7 @@ public class WhoDropsCommand extends Command {
                     continue;
                 }
                 count++;
-                output.append("#v").append(itemId).append("#"); // Item Icon
+//              output.append("#v").append(itemId).append("#"); // Item Icon | CRASHES IF NO ICON (unused items / backported wz repacks)
                 output.append("#z").append(itemId).append("#"); // Item Name + Stats
                 output.append(" - #b").append(itemId); // Item ID
                 output.append("#k:\r\n");
