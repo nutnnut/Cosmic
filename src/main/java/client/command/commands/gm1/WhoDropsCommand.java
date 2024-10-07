@@ -60,6 +60,9 @@ public class WhoDropsCommand extends Command {
                     while (listIterator.hasNext() && count <= 10) {
                         Pair<Integer, String> data = listIterator.next();
                         Integer itemId = data.getLeft();
+                        if (itemId < 1000000) { // hairs, faces, not actually items, will cause a crash
+                            continue;
+                        }
                         output += "#v" + itemId + "#"; // Item Icon
                         output += "#z" + itemId + "#"; // Item Name + Stats
                         output += " - #b" + itemId; // Item ID
