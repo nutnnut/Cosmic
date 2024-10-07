@@ -3531,10 +3531,10 @@ public class MapleMap {
         */
 
         if (YamlConfig.config.server.USE_ENABLE_FULL_RESPAWN) {
-            return (monsterSpawn.size() - spawnedMonstersOnMap.get());
+            return (int) Math.ceil((monsterSpawn.size() - spawnedMonstersOnMap.get()) * getWorldServer().getMobrate());
         }
 
-        int maxNumShouldSpawn = (int) Math.ceil(getCurrentSpawnRate(numPlayers) * monsterSpawn.size());
+        int maxNumShouldSpawn = (int) Math.ceil(getCurrentSpawnRate(numPlayers) * monsterSpawn.size() * getWorldServer().getMobrate());
         return maxNumShouldSpawn - spawnedMonstersOnMap.get();
     }
 
@@ -3561,7 +3561,7 @@ public class MapleMap {
             Collections.shuffle(randomSpawn);
             short spawned = 0;
             for (SpawnPoint spawnPoint : randomSpawn) {
-                if (spawnPoint.shouldSpawn()) {
+                if (spawnPoint.shouldSpawn(getWorldServer().getMobperspawnpoint())) {
                     spawnMonster(spawnPoint.getMonster());
                     spawned++;
 
