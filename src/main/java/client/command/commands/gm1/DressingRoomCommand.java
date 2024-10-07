@@ -47,7 +47,7 @@ public class DressingRoomCommand extends Command {
     public void execute(Client c, String[] params) {
         Character player = c.getPlayer();
         if (params.length < 2) {
-            player.dropMessage(5, "Please do !dress <type> <job>");
+            player.dropMessage(5, "Please do !dress <type> <job> <optional req.level>");
             return;
         }
 
@@ -80,6 +80,12 @@ public class DressingRoomCommand extends Command {
             job = 5;
         }
 
+        int forLevel = 0;
+        try {
+            forLevel = Integer.parseInt(params[2]);
+        } catch (Exception ignored) {
+        }
+
         if (c.tryacquireClient()) {
             try {
                 String output = "";
@@ -94,14 +100,20 @@ public class DressingRoomCommand extends Command {
                     }
                     Map<String, Integer> stats = equip.getStats();
                     int reqJob = stats.get("reqJob");
+                    // Filter by job
                     if (reqJob == 0 || (reqJob & (1 << (job - 1))) != 0) { // Check if bit at job-th position is 1
-                        result.add(equip);
+
+                        // Filter by level
+                        int reqLevel = stats.getOrDefault("reqLevel", 0);
+                        if (forLevel == 0 || reqLevel <= forLevel) {
+                            result.add(equip);
+                        }
                     }
                 }
 
                 result.sort(Comparator.comparingInt((EquipStats equip) ->
-                                equip.getStats().getOrDefault("reqLevel", 0)) // Default to 0 if reqLevel is null
-                        .thenComparingInt(equip ->
+//                                equip.getStats().getOrDefault("reqLevel", 0)) // Default to 0 if reqLevel is null
+//                        .thenComparingInt(equip ->
                                 equip.getStats().getOrDefault("PAD", 0) * 3
                                         + equip.getStats().getOrDefault("MAD", 0)
                                         + equip.getStats().getOrDefault("STR", 0)
@@ -109,10 +121,10 @@ public class DressingRoomCommand extends Command {
                                         + equip.getStats().getOrDefault("INT", 0)
                                         + equip.getStats().getOrDefault("LUK", 0)
                                         + equip.getStats().getOrDefault("tuc", 0) * 5
-                        ));
+                        ).reversed());
 
                 for (EquipStats equip : result) {
-                    if (count >= 200) { // limit to reduce spam
+                    if (count >= 300) { // limit to reduce spam
                         break;
                     }
                     int itemId = equip.getItemId();
