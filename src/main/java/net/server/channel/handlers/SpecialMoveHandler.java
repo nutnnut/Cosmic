@@ -26,10 +26,14 @@ import client.Client;
 import client.Skill;
 import client.SkillFactory;
 import config.YamlConfig;
+import constants.skills.Beginner;
 import constants.skills.Brawler;
 import constants.skills.Corsair;
 import constants.skills.DarkKnight;
+import constants.skills.Evan;
 import constants.skills.Hero;
+import constants.skills.Legend;
+import constants.skills.Noblesse;
 import constants.skills.Paladin;
 import constants.skills.Priest;
 import constants.skills.SuperGM;
@@ -81,12 +85,16 @@ public final class SpecialMoveHandler extends AbstractPacketHandler {
 
         StatEffect effect = skill.getEffect(skillLevel);
         if (effect.getCooldown() > 0) {
+            int sourceid = effect.getSourceId();
             if (chr.skillIsCooling(skillid)) {
                 return;
             } else if (skillid != Corsair.BATTLE_SHIP) {
                 int cooldownTime = effect.getCooldown();
                 if (StatEffect.isHerosWill(skillid) && YamlConfig.config.server.USE_FAST_REUSE_HERO_WILL) {
                     cooldownTime /= 60;
+                }
+                if ((sourceid == Beginner.NIMBLE_FEET || sourceid == Noblesse.NIMBLE_FEET || sourceid == Evan.NIMBLE_FEET || sourceid == Legend.AGILE_BODY) && YamlConfig.config.server.USE_ULTRA_NIMBLE_FEET == true) {
+                    cooldownTime /= 5;
                 }
 
                 c.sendPacket(PacketCreator.skillCooldown(skillid, cooldownTime));

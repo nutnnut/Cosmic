@@ -32,8 +32,14 @@ public class GmShopCommand extends Command {
         setDescription("Open the GM shop.");
     }
 
+    private static final int GM_SHOP_ID = 1337;
+
     @Override
-    public void execute(Client c, String[] params) {
-        ShopFactory.getInstance().getShop(1337).sendShop(c);
+    public void execute(Client c, String[] params, CommandContext ctx) {
+        int shopId = GM_SHOP_ID;
+        if (params.length > 0) {
+            shopId = Integer.parseInt(params[0]);
+        }
+        ShopFactory.getInstance().getShop(shopId).sendShop(c);
     }
 }

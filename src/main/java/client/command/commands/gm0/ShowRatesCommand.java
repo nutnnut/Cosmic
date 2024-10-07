@@ -42,7 +42,7 @@ public class ShowRatesCommand extends Command {
         if (player.getCouponExpRate() != 1) {
             showMsg += "Coupon EXP Rate: #k" + player.getCouponExpRate() + "x#k" + "\r\n";
         }
-        showMsg += "EXP Rate: #e#b" + player.getExpRate() + "x#k#n" + (player.hasNoviceExpRate() ? " - novice rate" : "") + "\r\n";
+        showMsg += "EXP Rate: #e#b" + player.getExpRate() + "x#k#n" + (player.hasNoviceExpRate() || player.hasFirstJobExpRate() ? " - novice rate" : "") + "\r\n";
 
         showMsg += "\r\n" + "#eMESO RATE#n" + "\r\n";
         showMsg += "World MESO Rate: #k" + c.getWorldServer().getMesoRate() + "x#k" + "\r\n";

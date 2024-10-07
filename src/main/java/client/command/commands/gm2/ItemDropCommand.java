@@ -26,6 +26,7 @@ package client.command.commands.gm2;
 import client.Character;
 import client.Client;
 import client.command.Command;
+import client.inventory.Equip;
 import client.inventory.InventoryType;
 import client.inventory.Item;
 import client.inventory.Pet;
@@ -99,7 +100,11 @@ public class ItemDropCommand extends Command {
 
         Item toDrop;
         if (ItemConstants.getInventoryType(itemId) == InventoryType.EQUIP) {
-            toDrop = ii.getEquipById(itemId);
+            for (int i = 0; i < quantity; i++) {
+                toDrop = ii.randomizeStats((Equip) ii.getEquipById(itemId));
+                c.getPlayer().getMap().spawnItemDrop(c.getPlayer(), c.getPlayer(), toDrop, c.getPlayer().getPosition(), true, true);
+            }
+            return;
         } else {
             toDrop = new Item(itemId, (short) 0, quantity);
         }

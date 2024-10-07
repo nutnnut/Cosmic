@@ -57,12 +57,16 @@ public class WhoDropsCommand extends Command {
                 Iterator<Pair<Integer, String>> listIterator = ItemInformationProvider.getInstance().getItemDataByName(searchString).iterator();
                 if (listIterator.hasNext()) {
                     int count = 1;
-                    while (listIterator.hasNext() && count <= 3) {
+                    while (listIterator.hasNext() && count <= 10) {
                         Pair<Integer, String> data = listIterator.next();
-                        output += "#b" + data.getRight() + "#k is dropped by:\r\n";
+                        Integer itemId = data.getLeft();
+                        output += "#v" + itemId + "#"; // Item Icon
+                        output += "#z" + itemId + "#"; // Item Name + Stats
+                        output += " - #b" + itemId; // Item ID
+                        output += "#k:\r\n";
                         try (Connection con = DatabaseConnection.getConnection();
                              PreparedStatement ps = con.prepareStatement("SELECT dropperid FROM drop_data WHERE itemid = ? LIMIT 50")) {
-                            ps.setInt(1, data.getLeft());
+                            ps.setInt(1, itemId);
 
                             try (ResultSet rs = ps.executeQuery()) {
                                 while (rs.next()) {

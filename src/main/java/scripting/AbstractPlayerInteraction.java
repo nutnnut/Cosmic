@@ -562,7 +562,7 @@ public class AbstractPlayerInteraction {
     }
 
     public void gainItem(int id, short quantity) {
-        gainItem(id, quantity, false, true);
+        gainItem(id, quantity, true, true);
     }
 
     public void gainItem(int id, short quantity, boolean show) {//this will fk randomStats equip :P

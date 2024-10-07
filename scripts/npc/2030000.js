@@ -56,13 +56,13 @@ function action(mode, type, selection) {
             status--;
         }
         if (status == 1) {
-            if (cm.getLevel() > 49) {
+            if (cm.getLevel() > 29) {
                 cm.sendYesNo("If you are thinking of going in, I suggest you change your mind. But if you really want to go in... I'm only letting in the ones that are strong enough to stay alive in there. I do not wish to see anyone else die. Let's see... Hmmm...! You look pretty strong. All right, do you want to go in?");
             } else {
                 cm.sendPrev("If you are thinking of going in, I suggest you change your mind. But if you really want to go in... I'm only letting in the ones that are strong enough to stay alive in there. I do not wish to see anyone else die. Let's see... Hmmm... You haven't reached Level 50 yet. I can't let you in, then, so forget it.");
             }
         } else if (status == 2) {
-            if (cm.getLevel() >= 50) {
+            if (cm.getLevel() >= 30) {
                 cm.warp(211040300, 5);
             }
             cm.dispose();

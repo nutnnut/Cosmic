@@ -1264,7 +1264,31 @@ public class ItemInformationProvider {
         equip.setMdef(getRandStat(equip.getMdef(), 10));
         equip.setHp(getRandStat(equip.getHp(), 10));
         equip.setMp(getRandStat(equip.getMp(), 10));
+        if (ItemInformationProvider.rollSuccessChance(20f)) {
+            randomizeGodlyStats(equip);
+        }
         return equip;
+    }
+
+    private void randomizeGodlyStats(Equip equip) {
+        Map<String, Integer> stats = getEquipStats(equip.getItemId());
+        short reqLevel = (short) ((stats == null || stats.get("reqLevel") == null) ? 0 : stats.get("reqLevel"));
+        int maxBonus = Math.max(Math.round(reqLevel / 10f), 5);
+        int maxHPMPBonus = (short) Math.max(reqLevel, 30);
+        equip.setStr(getRandUpgradedStat(equip.getStr(), maxBonus));
+        equip.setDex(getRandUpgradedStat(equip.getDex(), maxBonus));
+        equip.setInt(getRandUpgradedStat(equip.getInt(), maxBonus));
+        equip.setLuk(getRandUpgradedStat(equip.getLuk(), maxBonus));
+        equip.setMatk(getRandUpgradedStat(equip.getMatk(), maxBonus));
+        equip.setWatk(getRandUpgradedStat(equip.getWatk(), maxBonus));
+        equip.setAcc(getRandUpgradedStat(equip.getAcc(), maxBonus));
+        equip.setAvoid(getRandUpgradedStat(equip.getAvoid(), maxBonus));
+        equip.setJump(getRandUpgradedStat(equip.getJump(), maxBonus));
+        equip.setSpeed(getRandUpgradedStat(equip.getSpeed(), maxBonus));
+        equip.setWdef(getRandUpgradedStat(equip.getWdef(), maxBonus));
+        equip.setMdef(getRandUpgradedStat(equip.getMdef(), maxBonus));
+        equip.setHp(getRandUpgradedStat((short) (equip.getHp() + maxHPMPBonus), maxHPMPBonus));
+        equip.setMp(getRandUpgradedStat((short) (equip.getMp() + maxHPMPBonus), maxHPMPBonus));
     }
 
     private static short getRandUpgradedStat(short defaultValue, int maxRange) {
@@ -1289,6 +1313,8 @@ public class ItemInformationProvider {
         equip.setMdef(getRandUpgradedStat(equip.getMdef(), 5));
         equip.setHp(getRandUpgradedStat(equip.getHp(), 5));
         equip.setMp(getRandUpgradedStat(equip.getMp(), 5));
+
+        randomizeGodlyStats(equip);
         return equip;
     }
 
@@ -1895,6 +1921,32 @@ public class ItemInformationProvider {
                 ret.add(itemPair);
             }
         }
+        return ret;
+    }
+
+    public Map<Integer, Map<String, Integer>> getItemDataByJob(int job) {
+        Data itemsData = stringData.getData("Eqp.img").getChildByPath("Eqp");
+        List<Pair<Integer, String>> idToNamePairs = new ArrayList<>();
+        for (Data eqpType : itemsData.getChildren()) {
+            for (Data itemFolder : eqpType.getChildren()) {
+                idToNamePairs.add(new Pair<>(Integer.parseInt(itemFolder.getName()), DataTool.getString("name", itemFolder, "NO-NAME")));
+            }
+        }
+
+        Map<Integer, Map<String, Integer>> ret = new HashMap<>();
+        for (Pair<Integer, String> itemPair : idToNamePairs) {
+            Integer itemId = itemPair.getLeft();
+            String itemName = itemPair.getRight();
+            Map<String, Integer> stats = getEquipStats(itemId);
+            if (stats == null) {
+                log.debug(itemName + " has no stats");
+                continue;
+            }
+            if (stats.get("reqJob") == job) {
+                ret.put(itemId, stats);
+            }
+        }
+
         return ret;
     }
 

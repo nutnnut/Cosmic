@@ -4935,9 +4935,17 @@ public class Character extends AbstractCharacterObject {
         return YamlConfig.config.server.USE_ENFORCE_NOVICE_EXPRATE && isBeginnerJob() && level < 11;
     }
 
+    public boolean hasFirstJobExpRate() {
+        return level < 30;
+    }
+
     public int getExpRate() {
-        if (hasNoviceExpRate()) {   // base exp rate 1x for early levels idea thanks to Vcoc
-            return 1;
+        World w = getWorldServer();
+        if (hasNoviceExpRate()) {
+            return Math.min(w.getExpRate(), 2);
+        }
+        if (hasFirstJobExpRate()) {
+            return Math.min(w.getExpRate(), 5);
         }
 
         return expRate;
@@ -4981,11 +4989,14 @@ public class Character extends AbstractCharacterObject {
     }
 
     public int getQuestExpRate() {
+        World w = getWorldServer();
         if (hasNoviceExpRate()) {
-            return 1;
+            return Math.min(w.getExpRate(), 2);
+        }
+        if (hasFirstJobExpRate()) {
+            return Math.min(w.getExpRate(), 5) * w.getQuestRate();
         }
 
-        World w = getWorldServer();
         return w.getExpRate() * w.getQuestRate();
     }
 
@@ -7611,6 +7622,7 @@ public class Character extends AbstractCharacterObject {
             //equipspeed = 0;
             //equipjump = 0;
 
+            ItemInformationProvider iip = ItemInformationProvider.getInstance();
             for (Item item : getInventory(InventoryType.EQUIPPED)) {
                 Equip equip = (Equip) item;
                 equipmaxhp += equip.getHp();
