@@ -2,6 +2,9 @@
 .idea/*
 !.idea/codeStyles/
 *.iml
+wz/*
+/wz/*
+/wz
 /target
 
 # build files
