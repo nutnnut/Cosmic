@@ -64,6 +64,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import scripting.event.EventInstanceManager;
 import server.Storage;
+import server.OreStorage;
 import server.TimerManager;
 import server.maps.AbstractMapObject;
 import server.maps.HiredMerchant;
@@ -150,6 +151,7 @@ public class World {
 
     private final Map<Integer, SortedMap<Integer, Character>> accountChars = new HashMap<>();
     private final Map<Integer, Storage> accountStorages = new HashMap<>();
+    private final Map<Integer, OreStorage> accountOreStorages = new HashMap<>();
     private final Lock accountCharsLock = new ReentrantLock(true);
 
     private final Set<Integer> queuedGuilds = new HashSet<>();
@@ -561,6 +563,35 @@ public class World {
 
     public Storage getAccountStorage(Integer accountId) {
         return accountStorages.get(accountId);
+    }
+
+    public void loadAccountOreStorage(Integer accountId) {
+        if (getAccountOreStorage(accountId) == null) {
+            registerAccountOreStorage(accountId);
+        }
+    }
+
+    private void registerAccountOreStorage(Integer accountId) {
+        OreStorage storage = OreStorage.loadOrCreateFromDB(accountId, this.id);
+        accountCharsLock.lock();
+        try {
+            accountOreStorages.put(accountId, storage);
+        } finally {
+            accountCharsLock.unlock();
+        }
+    }
+
+    public void unregisterAccountOreStorage(Integer accountId) {
+        accountCharsLock.lock();
+        try {
+            accountOreStorages.remove(accountId);
+        } finally {
+            accountCharsLock.unlock();
+        }
+    }
+
+    public OreStorage getAccountOreStorage(Integer accountId) {
+        return accountOreStorages.get(accountId);
     }
 
     private static List<Entry<Integer, SortedMap<Integer, Character>>> getSortedAccountCharacterView(Map<Integer, SortedMap<Integer, Character>> map) {

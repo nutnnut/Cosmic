@@ -180,6 +180,16 @@ public class InventoryManipulator {
 
     public static boolean addFromDrop(Client c, Item item, boolean show, int petId) {
         Character chr = c.getPlayer();
+
+        if (chr.isAutoOreStorage()
+                && ItemConstants.isOreBagAllowed(item.getItemId())
+                && chr.getOreStorage() != null && !chr.getOreStorage().isFull()) {
+            if (chr.getOreStorage().store(item)) {
+                chr.setUsedOreStorage();
+                return true;
+            }
+        }
+
         InventoryType type = item.getInventoryType();
 
         Inventory inv = chr.getInventory(type);

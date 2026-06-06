@@ -27,6 +27,7 @@ import client.Client;
 import client.command.commands.gm0.ChangeLanguageCommand;
 import client.command.commands.gm0.DisposeCommand;
 import client.command.commands.gm0.StyleCommand;
+import client.command.commands.gm0.OreBagCommand;
 import client.command.commands.gm0.RebirthCommand;
 import client.command.commands.gm0.VesselCommand;
 import client.command.commands.gm0.LumenCommand;
@@ -369,6 +370,7 @@ public class CommandsExecutor {
         addCommand("gacha", GachaCommand.class);
         addCommand("dispose", DisposeCommand.class);
         addCommand("style", StyleCommand.class);
+        addCommand(new String[]{"bag", "orebag"}, OreBagCommand.class);
         addCommand("rebirth", RebirthCommand.class);
         addCommand(new String[]{"vessel", "soulvessel"}, VesselCommand.class);
         addCommand("lumen", LumenCommand.class);
