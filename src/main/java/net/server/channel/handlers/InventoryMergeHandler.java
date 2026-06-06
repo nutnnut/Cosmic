@@ -21,8 +21,12 @@
  */
 package net.server.channel.handlers;
 
+import java.util.HashSet;
+import java.util.Set;
+
 import client.Character;
 import client.Client;
+import client.inventory.Equip;
 import client.inventory.Inventory;
 import client.inventory.InventoryType;
 import client.inventory.Item;
@@ -50,6 +54,13 @@ public final class InventoryMergeHandler extends AbstractPacketHandler {
         byte invType = p.readByte();
         if (invType < 1 || invType > 5) {
             c.disconnect(false, false);
+            return;
+        }
+
+        // LumenMS slot-lock: the client appends locked-slot data after invType.
+        boolean isSlotLockRequest = p.available() > 0;
+        if (isSlotLockRequest) {
+            handleSlotLockMerge(p, c, invType);
             return;
         }
 
@@ -97,6 +108,99 @@ public final class InventoryMergeHandler extends AbstractPacketHandler {
                     short itemSlot = -1;
                     for (short i = (short) (freeSlot + 1); i <= inventory.getSlotLimit(); i = (short) (i + 1)) {
                         if (inventory.getItem(i) != null) {
+                            itemSlot = i;
+                            break;
+                        }
+                    }
+                    if (itemSlot > 0) {
+                        InventoryManipulator.move(c, inventoryType, itemSlot, freeSlot);
+                    } else {
+                        sorted = true;
+                    }
+                } else {
+                    sorted = true;
+                }
+            }
+        } finally {
+            inventory.unlockInventory();
+        }
+
+        c.sendPacket(PacketCreator.finishedSort(inventoryType.getType()));
+        c.sendPacket(PacketCreator.enableActions());
+    }
+
+    // LumenMS slot-lock: merge/sort while leaving locked slots untouched.
+    private void handleSlotLockMerge(InPacket p, Client c, byte invType) {
+        Set<Integer> lockedSlots = new HashSet<>();
+        final int lockSize = Short.toUnsignedInt(p.readUnsignedByte());
+        for (int i = 0; i < lockSize; i++) {
+            lockedSlots.add(Short.toUnsignedInt(p.readUnsignedByte()));
+        }
+
+        InventoryType inventoryType = InventoryType.getByType(invType);
+        Inventory inventory = c.getPlayer().getInventory(inventoryType);
+        inventory.lockInventory();
+        try {
+            for (short i = 1; i <= inventory.getSlotLimit(); i++) {
+                Item item = inventory.getItem(i);
+                if (item instanceof Equip equip) {
+                    equip.setLocked(lockedSlots.contains((int) i));
+                }
+            }
+
+            if (inventoryType == InventoryType.EQUIP) {
+                InventorySortHandler.persistEquipLockedState(c.getPlayer().getId(), lockedSlots);
+            }
+
+            ItemInformationProvider ii = ItemInformationProvider.getInstance();
+            Item srcItem, dstItem;
+
+            // 1. Merge step (skip locked slots)
+            for (short dst = 1; dst <= inventory.getSlotLimit(); dst++) {
+                if (lockedSlots.contains((int) dst)) {
+                    continue;
+                }
+                dstItem = inventory.getItem(dst);
+                if (dstItem == null) {
+                    continue;
+                }
+
+                for (short src = (short) (dst + 1); src <= inventory.getSlotLimit(); src++) {
+                    if (lockedSlots.contains((int) src)) {
+                        continue;
+                    }
+                    srcItem = inventory.getItem(src);
+                    if (srcItem == null) {
+                        continue;
+                    }
+                    if (dstItem.getItemId() != srcItem.getItemId()) {
+                        continue;
+                    }
+                    if (dstItem.getQuantity() == ii.getSlotMax(c, inventory.getItem(dst).getItemId())) {
+                        break;
+                    }
+
+                    InventoryManipulator.move(c, inventoryType, src, dst);
+                }
+            }
+
+            // 2. Fill in blanks step (skip locked slots)
+            inventory = c.getPlayer().getInventory(inventoryType);
+            boolean sorted = false;
+
+            while (!sorted) {
+                short freeSlot = -1;
+                for (short i = 1; i <= inventory.getSlotLimit(); i++) {
+                    if (!lockedSlots.contains((int) i) && inventory.getItem(i) == null) {
+                        freeSlot = i;
+                        break;
+                    }
+                }
+
+                if (freeSlot != -1) {
+                    short itemSlot = -1;
+                    for (short i = (short) (freeSlot + 1); i <= inventory.getSlotLimit(); i++) {
+                        if (!lockedSlots.contains((int) i) && inventory.getItem(i) != null) {
                             itemSlot = i;
                             break;
                         }

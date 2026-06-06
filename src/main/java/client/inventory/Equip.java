@@ -74,6 +74,7 @@ public class Equip extends Item {
     private float itemExp;
     private int ringid = -1;
     private boolean wear = false;
+    private boolean locked = false;    // LumenMS slot-lock: protects this equip from sort/quick-sell
     private boolean isUpgradeable, isElemental = false;    // timeless or reverse, or any equip that could levelup on GMS for all effects
 
     public Equip(int id, short position) {
@@ -113,6 +114,7 @@ public class Equip extends Item {
         ret.itemLevel = itemLevel;
         ret.itemExp = itemExp;
         ret.level = level;
+        ret.locked = locked;
         ret.itemLog = new LinkedList<>(itemLog);
         ret.setOwner(getOwner());
         ret.setQuantity(getQuantity());
@@ -583,6 +585,20 @@ public class Equip extends Item {
         String lvupStr = "'" + ItemInformationProvider.getInstance().getName(this.getItemId()) + "' is now level " + itemLevel + "! ";
         String showStr = "#e'" + ItemInformationProvider.getInstance().getName(this.getItemId()) + "'#b is now #elevel #r" + itemLevel + "#k#b!";
 
+        // Reduce equip level-up stat gains by ~60% (stat magnitudes only; slot/vicious upgrades untouched).
+        for (int i = 0; i < stats.size(); i++) {
+            Pair<StatUpgrade, Integer> sp = stats.get(i);
+            if (sp.getLeft() == StatUpgrade.incSlot || sp.getLeft() == StatUpgrade.incVicious) {
+                continue;
+            }
+            int orig = sp.getRight();
+            int scaled = (int) Math.round(orig * 0.4);
+            if (orig != 0 && scaled == 0) {
+                scaled = Integer.signum(orig);   // keep a minimal gain rather than nullifying it
+            }
+            stats.set(i, new Pair<>(sp.getLeft(), scaled));
+        }
+
         Pair<String, Pair<Boolean, Boolean>> res = this.gainStats(stats);
         lvupStr += res.getLeft();
         boolean gotSlot = res.getRight().getLeft();
@@ -736,6 +752,14 @@ public class Equip extends Item {
 
     public void wear(boolean yes) {
         wear = yes;
+    }
+
+    public boolean isLocked() {
+        return locked;
+    }
+
+    public void setLocked(boolean locked) {
+        this.locked = locked;
     }
 
     public byte getItemLevel() {

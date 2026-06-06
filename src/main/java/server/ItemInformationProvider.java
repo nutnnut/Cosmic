@@ -368,18 +368,22 @@ public class ItemInformationProvider {
             return (short) (slotMax + getExtraSlotMaxFromPlayer(c, itemId));
         }
         short ret = 0;
-        Data item = getItemData(itemId);
-        if (item != null) {
-            Data smEntry = item.getChildByPath("info/slotMax");
-            if (smEntry == null) {
-                if (ItemConstants.getInventoryType(itemId).getType() == InventoryType.EQUIP.getType()) {
-                    ret = 1;
-                } else {
-                    ret = 100;
-                }
+
+        // Stack limit by item type (ported from LumenMS):
+        if (ItemConstants.getInventoryType(itemId).getType() == InventoryType.EQUIP.getType()) {
+            ret = 1;                                       // equips never stack
+        } else if (ItemConstants.isRechargeable(itemId)) {
+            // bullets / throwing stars keep their WZ value for balance
+            Data item = getItemData(itemId);
+            if (item != null) {
+                Data smEntry = item.getChildByPath("info/slotMax");
+                ret = (smEntry == null) ? (short) 100 : (short) DataTool.getInt(smEntry);
             } else {
-                ret = (short) DataTool.getInt(smEntry);
+                ret = 100;
             }
+        } else {
+            // all other consumables / etc / setup items stack to 9000
+            ret = 9000;
         }
 
         slotMaxCache.put(itemId, ret);

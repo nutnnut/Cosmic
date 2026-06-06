@@ -6832,6 +6832,12 @@ public class PacketCreator {
         return p;
     }
 
+    public static Packet requestLockedSlots(byte invType) {
+        OutPacket p = OutPacket.create(SendOpcode.REQUEST_LOCKED_SLOTS);
+        p.writeByte(invType);
+        return p;
+    }
+
     public static Packet bunnyPacket() {
         final OutPacket p = OutPacket.create(SendOpcode.SHOW_STATUS_INFO);
         p.writeByte(9);

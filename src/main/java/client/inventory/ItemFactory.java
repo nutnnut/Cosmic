@@ -119,6 +119,7 @@ public enum ItemFactory {
         equip.setExpiration(rs.getLong("expiration"));
         equip.setGiftFrom(rs.getString("giftFrom"));
         equip.setRingId(rs.getInt("ringid"));
+        equip.setLocked(rs.getInt("locked") != 0);
 
         return equip;
     }
@@ -256,7 +257,7 @@ public enum ItemFactory {
                                 psEquip.setInt(16, equip.getHands());
                                 psEquip.setInt(17, equip.getSpeed());
                                 psEquip.setInt(18, equip.getJump());
-                                psEquip.setInt(19, 0);
+                                psEquip.setInt(19, equip.isLocked() ? 1 : 0);
                                 psEquip.setInt(20, equip.getVicious());
                                 psEquip.setInt(21, equip.getItemLevel());
                                 psEquip.setInt(22, equip.getItemExp());
@@ -410,7 +411,7 @@ public enum ItemFactory {
                         ps.setInt(16, equip.getHands());
                         ps.setInt(17, equip.getSpeed());
                         ps.setInt(18, equip.getJump());
-                        ps.setInt(19, 0);
+                        ps.setInt(19, equip.isLocked() ? 1 : 0);
                         ps.setInt(20, equip.getVicious());
                         ps.setInt(21, equip.getItemLevel());
                         ps.setInt(22, equip.getItemExp());

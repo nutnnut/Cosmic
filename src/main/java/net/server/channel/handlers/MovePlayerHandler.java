@@ -37,6 +37,7 @@ public final class MovePlayerHandler extends AbstractMovementPacketHandler {
             p.seek(movementDataStart);
 
             c.getPlayer().getMap().movePlayer(c.getPlayer(), c.getPlayer().getPosition());
+            c.getPlayer().autoLootNearby();
             if (c.getPlayer().isHidden()) {
                 c.getPlayer().getMap().broadcastGMMessage(c.getPlayer(), PacketCreator.movePlayer(c.getPlayer().getId(), p, movementDataLength), false);
             } else {

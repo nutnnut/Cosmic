@@ -2069,6 +2069,49 @@ public class Character extends AbstractCharacterObject {
         pickupItem(ob, -1);
     }
 
+    public void autoLootNearby() {
+        if (!isLoggedinWorld()) {
+            return;
+        }
+        Point myPos = getPosition();
+        for (MapObject ob : getMap().getItems()) {
+            if (ob instanceof MapItem mapItem) {
+                if (mapItem.isPickedUp()) {
+                    continue;
+                }
+                if (mapItem.isPlayerDrop() && mapItem.getDropper() != null
+                        && mapItem.getDropper().getObjectId() == getObjectId()) {
+                    continue;   // don't auto-vacuum items this player dropped
+                }
+                if (mapItem.getQuest() > 0 && !needQuestItem(mapItem.getQuest(), mapItem.getItemId())) {
+                    continue;
+                }
+                if (myPos.distanceSq(ob.getPosition()) > 135 * 135) {
+                    continue;
+                }
+                pickupItem(ob);
+            }
+        }
+    }
+
+    private volatile PendingQuickSell pendingQuickSell;
+
+    public record PendingQuickSell(InventoryType type, int startSlot, int endSlot) {}
+
+    public boolean hasPendingQuickSell() {
+        return pendingQuickSell != null;
+    }
+
+    public void setPendingQuickSell(InventoryType type, int startSlot, int endSlot) {
+        pendingQuickSell = new PendingQuickSell(type, startSlot, endSlot);
+    }
+
+    public PendingQuickSell pollPendingQuickSell() {
+        PendingQuickSell pqs = pendingQuickSell;
+        pendingQuickSell = null;
+        return pqs;
+    }
+
     public final void pickupItem(MapObject ob, int petIndex) {     // yes, one picks the MapObject, not the MapItem
         if (ob == null) {                                               // pet index refers to the one picking up the item
             return;

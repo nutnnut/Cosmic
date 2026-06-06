@@ -34,8 +34,15 @@ import net.packet.InPacket;
 import net.server.Server;
 import server.ItemInformationProvider;
 import tools.PacketCreator;
+import tools.DatabaseConnection;
+import client.command.commands.gm0.QuickSellCommand;
+import constants.inventory.ItemConstants;
 
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.SQLException;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.List;
 
 /**
@@ -295,14 +302,20 @@ public final class InventorySortHandler extends AbstractPacketHandler {
         p.readInt();
         chr.getAutobanManager().setTimestamp(3, Server.getInstance().getCurrentTimestamp(), 4);
 
-        if (!YamlConfig.config.server.USE_ITEM_SORT) {
-            c.sendPacket(PacketCreator.enableActions());
-            return;
-        }
-
         byte invType = p.readByte();
         if (invType < 1 || invType > 5) {
             c.disconnect(false, false);
+            return;
+        }
+
+        // LumenMS slot-lock: the client appends locked-slot data after invType.
+        if (p.available() > 0) {
+            handleSlotLockSort(p, c, chr, invType);
+            return;
+        }
+
+        if (!YamlConfig.config.server.USE_ITEM_SORT) {
+            c.sendPacket(PacketCreator.enableActions());
             return;
         }
 
@@ -340,5 +353,151 @@ public final class InventorySortHandler extends AbstractPacketHandler {
         c.sendPacket(PacketCreator.modifyInventory(true, mods));
         c.sendPacket(PacketCreator.finishedSort2(invType));
         c.sendPacket(PacketCreator.enableActions());
+    }
+
+    // LumenMS slot-lock: client reports which slots are locked; we persist the lock state,
+    // then either run a pending quick-sell (skipping locked slots) or sort around the locks.
+    private void handleSlotLockSort(InPacket p, Client c, Character chr, byte invType) {
+        List<Integer> lockedSlots = new ArrayList<>();
+        final int lockSize = Short.toUnsignedInt(p.readUnsignedByte());
+        for (int i = 0; i < lockSize; i++) {
+            lockedSlots.add(Short.toUnsignedInt(p.readUnsignedByte()));
+        }
+
+        ArrayList<Item> itemarray = new ArrayList<>();
+        List<ModifyInventory> mods = new ArrayList<>();
+
+        InventoryType invTypeEnum = InventoryType.getByType(invType);
+        Inventory inventory = chr.getInventory(invTypeEnum);
+        Character.PendingQuickSell pqs;
+        inventory.lockInventory();
+        try {
+            if (invTypeEnum == InventoryType.EQUIP) {
+                for (short i = 1; i <= inventory.getSlotLimit(); i++) {
+                    Item item = inventory.getItem(i);
+                    if (item instanceof Equip equip) {
+                        equip.setLocked(lockedSlots.contains((int) i));
+                    }
+                }
+                persistEquipLockedState(chr.getId(), lockedSlots);
+            } else {
+                for (short i = 1; i <= inventory.getSlotLimit(); i++) {
+                    Item item = inventory.getItem(i);
+                    if (item != null) {
+                        short flag = item.getFlag();
+                        if (lockedSlots.contains((int) i)) {
+                            flag |= ItemConstants.LOCK;
+                        } else {
+                            flag &= ~ItemConstants.LOCK;
+                        }
+                        item.setFlag(flag);
+                    }
+                }
+                persistNonEquipLockedState(chr.getId(), invType, lockedSlots);
+            }
+
+            pqs = chr.pollPendingQuickSell();
+            if (pqs == null) {
+                for (short i = 1; i <= inventory.getSlotLimit(); i++) {
+                    if (lockedSlots.contains((int) i)) {
+                        continue;
+                    }
+                    Item item = inventory.getItem(i);
+                    if (item != null) {
+                        itemarray.add(item.copy());
+                    }
+                }
+
+                for (Item item : itemarray) {
+                    inventory.removeSlot(item.getPosition());
+                    mods.add(new ModifyInventory(3, item));
+                }
+
+                int invTypeCriteria = (invTypeEnum == InventoryType.EQUIP) ? 3 : 1;
+                int sortCriteria = (YamlConfig.config.server.USE_ITEM_SORT_BY_NAME == true) ? 2 : 0;
+                new PairedQuicksort(itemarray, sortCriteria, invTypeCriteria);
+
+                // Place items sequentially while skipping locked / occupied slots.
+                int slotCursor = 1;
+                for (Item item : itemarray) {
+                    while (slotCursor <= inventory.getSlotLimit()
+                            && (lockedSlots.contains(slotCursor)
+                                || inventory.getItem((short) slotCursor) != null)) {
+                        slotCursor++;
+                    }
+                    if (slotCursor > inventory.getSlotLimit()) {
+                        break;
+                    }
+                    item.setPosition((short) slotCursor);
+                    inventory.addItemFromDB(item);
+                    mods.add(new ModifyInventory(0, item.copy()));
+                    slotCursor++;
+                }
+                itemarray.clear();
+            }
+        } finally {
+            inventory.unlockInventory();
+        }
+
+        if (pqs != null) {
+            QuickSellCommand.doSell(c, pqs.type(), pqs.startSlot(), pqs.endSlot(), lockedSlots);
+            return;
+        }
+
+        c.sendPacket(PacketCreator.modifyInventory(true, mods));
+        c.sendPacket(PacketCreator.finishedSort2(invType));
+        c.sendPacket(PacketCreator.enableActions());
+    }
+
+    static void persistEquipLockedState(int characterId, Collection<Integer> lockedSlots) {
+        try (Connection con = DatabaseConnection.getConnection()) {
+            try (PreparedStatement ps = con.prepareStatement(
+                    "UPDATE inventoryequipment ie INNER JOIN inventoryitems ii ON ie.inventoryitemid = ii.inventoryitemid " +
+                    "SET ie.locked = 0 WHERE ii.characterid = ? AND ii.inventorytype = ?")) {
+                ps.setInt(1, characterId);
+                ps.setInt(2, InventoryType.EQUIP.getType());
+                ps.executeUpdate();
+            }
+            if (!lockedSlots.isEmpty()) {
+                try (PreparedStatement ps = con.prepareStatement(
+                        "UPDATE inventoryequipment ie INNER JOIN inventoryitems ii ON ie.inventoryitemid = ii.inventoryitemid " +
+                        "SET ie.locked = 1 WHERE ii.characterid = ? AND ii.inventorytype = ? AND ii.position = ?")) {
+                    for (int slot : lockedSlots) {
+                        ps.setInt(1, characterId);
+                        ps.setInt(2, InventoryType.EQUIP.getType());
+                        ps.setInt(3, slot);
+                        ps.addBatch();
+                    }
+                    ps.executeBatch();
+                }
+            }
+        } catch (SQLException ignored) {
+        }
+    }
+
+    static void persistNonEquipLockedState(int characterId, byte invType, Collection<Integer> lockedSlots) {
+        try (Connection con = DatabaseConnection.getConnection()) {
+            try (PreparedStatement ps = con.prepareStatement(
+                    "UPDATE inventoryitems SET flag = flag & ~1 " +
+                    "WHERE characterid = ? AND inventorytype = ? AND type = 1")) {
+                ps.setInt(1, characterId);
+                ps.setInt(2, invType);
+                ps.executeUpdate();
+            }
+            if (!lockedSlots.isEmpty()) {
+                try (PreparedStatement ps = con.prepareStatement(
+                        "UPDATE inventoryitems SET flag = flag | 1 " +
+                        "WHERE characterid = ? AND inventorytype = ? AND type = 1 AND position = ?")) {
+                    for (int slot : lockedSlots) {
+                        ps.setInt(1, characterId);
+                        ps.setInt(2, invType);
+                        ps.setInt(3, slot);
+                        ps.addBatch();
+                    }
+                    ps.executeBatch();
+                }
+            }
+        } catch (SQLException ignored) {
+        }
     }
 }
