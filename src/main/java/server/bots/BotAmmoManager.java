@@ -3,6 +3,8 @@ package server.bots;
 import client.Character;
 import client.inventory.Item;
 import client.inventory.WeaponType;
+import client.inventory.manipulator.InventoryManipulator;
+import server.ItemInformationProvider;
 
 import java.util.List;
 import java.util.Map;
@@ -40,9 +42,53 @@ final class BotAmmoManager {
             return;
         }
 
+        // Primary path: self-restock from a shop (pay mesos for arrows, like Miki's shop).
+        if (restockFromStore(entry, bot, weaponType, ammo)) {
+            entry.ammoShareRequested = false;
+            return;
+        }
+
+        // Fallback (broke): ask the owner / sibling bots to share ammo.
         if (!entry.ammoShareRequested && requestAmmoShare(entry, bot, weaponType, ammo)) {
             entry.ammoShareRequested = true;
         }
+    }
+
+    private static final int ARROW_FOR_BOW = 2060000;
+    private static final int ARROW_FOR_CROSSBOW = 2061000;
+    private static final int AMMO_PRICE_PER_UNIT = 1;   // mesos per arrow, matching Miki's shop
+    private static final int AMMO_RESTOCK_TARGET = 2000;
+
+    private static boolean restockFromStore(BotEntry entry, Character bot, WeaponType weaponType, int currentAmmo) {
+        int itemId = switch (weaponType) {
+            case BOW -> ARROW_FOR_BOW;
+            case CROSSBOW -> ARROW_FOR_CROSSBOW;
+            default -> -1;
+        };
+        if (itemId < 0) {
+            return false;
+        }
+
+        ItemInformationProvider ii = ItemInformationProvider.getInstance();
+        int slotMax = ii.getSlotMax(bot.getClient(), itemId);
+        int target = Math.min(slotMax, AMMO_RESTOCK_TARGET);
+        int need = target - currentAmmo;
+        if (need <= 0) {
+            return false;
+        }
+
+        int cost = need * AMMO_PRICE_PER_UNIT;
+        if (bot.getMeso() < cost || !bot.canHold(itemId, need)) {
+            return false;
+        }
+
+        if (!InventoryManipulator.addById(bot.getClient(), itemId, (short) need)) {
+            return false;
+        }
+        bot.gainMeso(-cost, false);
+        BotManager.getInstance().botReply(entry,
+                "restocked " + need + " " + (weaponType == WeaponType.BOW ? "arrows" : "bolts") + " at the shop");
+        return true;
     }
 
     static void checkAmmoShareOnModeStart(BotEntry entry, Character bot) {

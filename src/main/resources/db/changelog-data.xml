@@ -54,4 +54,12 @@
         <sqlFile path="db/data/161-admin-data.sql"/>
     </changeSet>
 
+    <changeSet id="162" author="Lumen">
+        <sqlFile path="db/data/162-miki-shop-data.sql"/>
+    </changeSet>
+
+    <changeSet id="163" author="Lumen">
+        <sqlFile path="db/data/163-miki-shop-positions.sql"/>
+    </changeSet>
+
 </databaseChangeLog>

@@ -3,14 +3,27 @@ package server.bots;
 import client.Character;
 import client.inventory.Inventory;
 import client.inventory.InventoryType;
+import constants.id.ItemId;
 import constants.inventory.ItemConstants;
 import server.bots.pq.BotPqHooks;
 import server.maps.MapItem;
 import server.maps.MapleMap;
 
+import java.util.Set;
+
 public final class BotLootEligibility {
     public static final int KPQ_COUPON = 4001007;
     public static final int KPQ_PASS = 4001008;
+
+    // Looted items a bot should route to its owner (hand over or offer via trade).
+    private static final Set<Integer> OWNER_VALUABLES = Set.of(
+            ItemId.PERFECT_PITCH,
+            ItemId.LOCAL_GACHAPON_TICKET,
+            ItemId.REMOTE_GACHAPON_TICKET);
+
+    public static boolean isOwnerValuable(int itemId) {
+        return OWNER_VALUABLES.contains(itemId);
+    }
 
     private BotLootEligibility() {
     }

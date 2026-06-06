@@ -166,7 +166,10 @@ class BotInventoryManager {
 
             Item pickedItem = drop.getItem();
             int pickedItemId = drop.getItemId();
-            if (ItemId.isNxCard(pickedItemId) && entry.owner != null && entry.owner.getMap() == bot.getMap()) {
+            boolean ownerOnMap = entry.owner != null && entry.owner.getMap() == bot.getMap();
+            boolean autoGiveValuable = BotManager.cfg.BOT_AUTO_GIVE_VALUABLES
+                    && BotLootEligibility.isOwnerValuable(pickedItemId);
+            if ((ItemId.isNxCard(pickedItemId) || autoGiveValuable) && ownerOnMap) {
                 entry.owner.pickupItem(drop);
             } else {
                 bot.pickupItem(drop);
@@ -180,6 +183,9 @@ class BotInventoryManager {
                         BotOfferManager.scheduleLootOfferPrompt(entry, bot, pickedItem, 5_000L);
                     }
                 } else if (ItemConstants.isThrowingStar(pickedItemId)) {
+                    BotOfferManager.scheduleLootOfferPrompt(entry, bot, pickedItem, 5_000L);
+                } else if (BotLootEligibility.isOwnerValuable(pickedItemId)) {
+                    // Not auto-given (toggle off or owner away): offer it to the owner via trade.
                     BotOfferManager.scheduleLootOfferPrompt(entry, bot, pickedItem, 5_000L);
                 }
             }

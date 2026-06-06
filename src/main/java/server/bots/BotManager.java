@@ -88,6 +88,10 @@ public class BotManager {
         // so pathing failures remain visible in logs and at runtime.
         public boolean ENABLE_UNSTUCK = false;
 
+        // When true, bots hand looted valuables (Perfect Pitch / gachapon tickets) straight to
+        // the owner. When false (default), the bot keeps them and offers a trade instead.
+        public boolean BOT_AUTO_GIVE_VALUABLES = false;
+
     }
 
     /** Singleton config — replace with `cfg = new Config()` after hotswapping to reset. */

@@ -2,13 +2,10 @@ package server.bots;
 
 import client.Character;
 import client.Job;
-import client.inventory.InventoryType;
 import client.inventory.manipulator.InventoryManipulator;
-import constants.inventory.ItemConstants;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
 
@@ -72,38 +69,14 @@ final class BotStarterKitManager {
         if (starterKit.isEmpty()) {
             return;
         }
-        if (!canHoldStarterKit(bot, starterKit)) {
-            log.warn("Bot '{}' could not receive {} starter kit due to inventory space", bot.getName(), newJob);
-            return;
-        }
-
+        // Grant each item independently so the weapon (first entry in every kit) still
+        // lands even if the bot lacks room for the bulk ammo / throwing items.
         for (ItemGrant grant : starterKit) {
             if (!InventoryManipulator.addById(bot.getClient(), grant.itemId(), grant.quantity())) {
-                log.warn("Bot '{}' failed to receive starter item {} x{} for job {}",
+                log.warn("Bot '{}' could not receive starter item {} x{} for job {} (no inventory space)",
                         bot.getName(), grant.itemId(), grant.quantity(), newJob);
             }
         }
-    }
-
-    private static boolean canHoldStarterKit(Character bot, List<ItemGrant> starterKit) {
-        Map<InventoryType, Integer> requiredSlots = new EnumMap<>(InventoryType.class);
-        for (ItemGrant grant : starterKit) {
-            InventoryType inventoryType = ItemConstants.getInventoryType(grant.itemId());
-            if (inventoryType == InventoryType.EQUIP) {
-                requiredSlots.merge(InventoryType.EQUIP, 1, Integer::sum);
-                continue;
-            }
-            if (!bot.canHold(grant.itemId(), grant.quantity())) {
-                return false;
-            }
-        }
-
-        for (Map.Entry<InventoryType, Integer> requirement : requiredSlots.entrySet()) {
-            if (bot.getInventory(requirement.getKey()).getNumFreeSlot() < requirement.getValue()) {
-                return false;
-            }
-        }
-        return true;
     }
 
     private static ItemGrant grant(int itemId, int quantity) {

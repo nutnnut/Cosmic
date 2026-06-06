@@ -9,6 +9,8 @@ import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.util.ArrayList;
+import java.util.List;
 
 public final class BotOwnershipService {
     private static final BotOwnershipService instance = new BotOwnershipService();
@@ -108,6 +110,23 @@ public final class BotOwnershipService {
             return null;
         }
         return null;
+    }
+
+    public List<Integer> getRegisteredBotIds(int ownerCharId) {
+        List<Integer> botIds = new ArrayList<>();
+        try (Connection con = DatabaseConnection.getConnection();
+             PreparedStatement ps = con.prepareStatement(
+                     "SELECT bot_char_id FROM bot_owners WHERE owner_char_id = ?")) {
+            ps.setInt(1, ownerCharId);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    botIds.add(rs.getInt("bot_char_id"));
+                }
+            }
+        } catch (SQLException e) {
+            return botIds;
+        }
+        return botIds;
     }
 
     public void registerOwner(int botCharId, int ownerCharId) {

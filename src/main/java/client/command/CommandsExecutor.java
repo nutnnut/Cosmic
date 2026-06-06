@@ -162,6 +162,8 @@ import client.command.commands.gm3.ReloadShopsCommand;
 import client.command.commands.gm3.RipCommand;
 import client.command.commands.gm3.SeedCommand;
 import client.command.commands.gm3.SpawnBotCommand;
+import client.command.commands.gm3.SpawnBotsCommand;
+import client.command.commands.gm3.ListBotsCommand;
 import client.command.commands.gm3.SpawnCommand;
 import client.command.commands.gm3.TakeBotOwnerCommand;
 import client.command.commands.gm3.StartEventCommand;
@@ -398,6 +400,8 @@ public class CommandsExecutor {
         addCommand("mylawn", MapOwnerClaimCommand.class);
         addCommand("registerbot", RegisterBotCommand.class);
         addCommand("spawnbot", SpawnBotCommand.class);
+        addCommand("spawnbots", SpawnBotsCommand.class);
+        addCommand("listbots", ListBotsCommand.class);
         addCommand("takebotowner", 3, TakeBotOwnerCommand.class);
         addCommand("bosshp", BossHpCommand.class);
         addCommand("mobhp", MobHpCommand.class);
