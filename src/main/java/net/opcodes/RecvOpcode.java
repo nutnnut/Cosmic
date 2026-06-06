@@ -202,7 +202,9 @@ public enum RecvOpcode {
     USE_ITEMUI(0xEE),
     MTS_OPERATION(0xFD),
     USE_MAPLELIFE(0x100),
-    USE_HAMMER(0x104);
+    USE_HAMMER(0x104),
+    HYPER_TELEPORT_ROCK(0x105),     // LumenMS custom client opcode
+    USE_GACHAPON_TICKET(0x106);     // LumenMS custom client opcode
 
     private int code = -2;
 

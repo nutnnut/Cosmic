@@ -157,6 +157,8 @@ import net.server.channel.handlers.UseDeathItemHandler;
 import net.server.channel.handlers.UseGachaExpHandler;
 import net.server.channel.handlers.UseHammerHandler;
 import net.server.channel.handlers.UseItemEffectHandler;
+import net.server.channel.handlers.GachaponTicketHandler;
+import net.server.channel.handlers.HyperTeleportRockHandler;
 import net.server.channel.handlers.UseItemHandler;
 import net.server.channel.handlers.UseMapleLifeHandler;
 import net.server.channel.handlers.UseMountFoodHandler;
@@ -355,6 +357,8 @@ public final class PacketProcessor {
         registerHandler(RecvOpcode.SUMMON_ATTACK, new SummonDamageHandler());
         registerHandler(RecvOpcode.BUDDYLIST_MODIFY, new BuddylistModifyHandler());
         registerHandler(RecvOpcode.USE_ITEMEFFECT, new UseItemEffectHandler());
+        registerHandler(RecvOpcode.HYPER_TELEPORT_ROCK, new HyperTeleportRockHandler());
+        registerHandler(RecvOpcode.USE_GACHAPON_TICKET, new GachaponTicketHandler());
         registerHandler(RecvOpcode.USE_CHAIR, new UseChairHandler());
         registerHandler(RecvOpcode.CANCEL_CHAIR, new CancelChairHandler());
         registerHandler(RecvOpcode.DAMAGE_REACTOR, new ReactorHitHandler());

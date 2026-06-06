@@ -298,6 +298,7 @@ public class ItemId {
     public static final int QUICK_DELIVERY_TICKET = 5330000;
     public static final int CHALKBOARD_1 = 5370000;
     public static final int CHALKBOARD_2 = 5370001;
+    public static final int LOCAL_GACHAPON_TICKET = 5220000;
     public static final int REMOTE_GACHAPON_TICKET = 5451000;
     public static final int AP_RESET = 5050000;
     public static final int NAME_CHANGE = 5400000;

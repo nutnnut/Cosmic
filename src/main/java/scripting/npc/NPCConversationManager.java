@@ -425,6 +425,55 @@ public class NPCConversationManager extends AbstractPlayerInteraction {
         }
     }
 
+    public void doGachaponAt(int npcId) {
+        GachaponItem item = Gachapon.getInstance().process(npcId);
+        Item itemGained = gainItem(item.getId(), (short) (item.getId() / 10000 == 200 ? 100 : 1), true, true);
+
+        sendNext("You have obtained a #b#t" + item.getId() + "##k.");
+
+        int[] maps = {MapId.HENESYS, MapId.ELLINIA, MapId.PERION, MapId.KERNING_CITY, MapId.SLEEPYWOOD, MapId.MUSHROOM_SHRINE,
+                MapId.SHOWA_SPA_M, MapId.SHOWA_SPA_F, MapId.NEW_LEAF_CITY, MapId.NAUTILUS_HARBOR};
+        int index = (npcId != NpcId.GACHAPON_NAUTILUS && npcId != NpcId.GACHAPON_NLC) ?
+                (npcId - NpcId.GACHAPON_HENESYS) : npcId == NpcId.GACHAPON_NLC ? 8 : 9;
+        if (index < 0 || index >= maps.length) {
+            index = 0; // fallback to Henesys
+        }
+        String map = c.getChannelServer().getMapFactory().getMap(maps[index]).getMapName();
+
+        Gachapon.log(getPlayer(), item.getId(), map);
+
+        if (item.getTier() > 0) {
+            Server.getInstance().broadcastMessage(c.getWorld(), PacketCreator.gachaponMessage(itemGained, map, getPlayer()));
+        }
+    }
+
+    /**
+     * Rolls the gachapon once at the given NPC location without opening any
+     * NPC dialog. Logging and rare-item world broadcasts still fire exactly as
+     * they do in {@link #doGachaponAt}. Returns the item ID that was awarded.
+     */
+    public int doGachaponAtSilently(int npcId) {
+        GachaponItem item = Gachapon.getInstance().process(npcId);
+        Item itemGained = gainItem(item.getId(), (short) (item.getId() / 10000 == 200 ? 100 : 1), true, true);
+
+        int[] maps = {MapId.HENESYS, MapId.ELLINIA, MapId.PERION, MapId.KERNING_CITY, MapId.SLEEPYWOOD, MapId.MUSHROOM_SHRINE,
+                MapId.SHOWA_SPA_M, MapId.SHOWA_SPA_F, MapId.NEW_LEAF_CITY, MapId.NAUTILUS_HARBOR};
+        int index = (npcId != NpcId.GACHAPON_NAUTILUS && npcId != NpcId.GACHAPON_NLC) ?
+                (npcId - NpcId.GACHAPON_HENESYS) : npcId == NpcId.GACHAPON_NLC ? 8 : 9;
+        if (index < 0 || index >= maps.length) {
+            index = 0;
+        }
+        String map = c.getChannelServer().getMapFactory().getMap(maps[index]).getMapName();
+
+        Gachapon.log(getPlayer(), item.getId(), map);
+
+        if (item.getTier() > 0) {
+            Server.getInstance().broadcastMessage(c.getWorld(), PacketCreator.gachaponMessage(itemGained, map, getPlayer()));
+        }
+
+        return item.getId();
+    }
+
     public void upgradeAlliance() {
         Alliance alliance = Server.getInstance().getAlliance(c.getPlayer().getGuild().getAllianceId());
         alliance.increaseCapacity(1);
