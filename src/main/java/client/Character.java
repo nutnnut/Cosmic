@@ -96,6 +96,9 @@ import net.server.world.PartyOperation;
 import net.server.world.World;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import provider.Data;
+import provider.DataProviderFactory;
+import provider.wz.WZFiles;
 import scripting.AbstractPlayerInteraction;
 import scripting.event.EventInstanceManager;
 import scripting.item.ItemScriptManager;
@@ -1238,6 +1241,8 @@ public class Character extends AbstractCharacterObject {
             return;//the fuck you doing idiot!
         }
 
+        Job previousJob = this.job;
+
         if (canRecvPartySearchInvite && getParty() == null) {
             this.updatePartySearchAvailability(false);
             this.job = newJob;
@@ -1352,6 +1357,7 @@ public class Character extends AbstractCharacterObject {
             family.broadcast(PacketCreator.jobMessage(1, job.getId(), name), this.getId());
         }
         setMasteries(this.job.getId());
+        maxPreviousJobSkills(previousJob);
         guildUpdate();
 
         broadcastChangeJob();
@@ -1366,6 +1372,33 @@ public class Character extends AbstractCharacterObject {
         if (YamlConfig.config.server.USE_ANNOUNCE_CHANGEJOB) {
             if (!this.isGM()) {
                 broadcastAcquaintances(6, "[" + GameConstants.ordinal(GameConstants.getJobBranch(newJob)) + " Job] " + name + " has just become a " + GameConstants.getJobName(this.job.getId()) + ".");    // thanks Vcoc for noticing job name appearing in uppercase here
+            }
+        }
+    }
+
+    // On job advancement, max out every skill that belonged to the previous job
+    // (e.g. a Bowman advancing to Hunter gets all 1st-job Bowman skills maxed).
+    private void maxPreviousJobSkills(Job previousJob) {
+        if (previousJob == null || previousJob == this.job) {
+            return;
+        }
+
+        int previousJobId = previousJob.getId();
+        for (Data skillData : DataProviderFactory.getDataProvider(WZFiles.STRING).getData("Skill.img").getChildren()) {
+            int skillId;
+            try {
+                skillId = Integer.parseInt(skillData.getName());
+            } catch (NumberFormatException nfe) {
+                continue;
+            }
+
+            if (skillId / 10000 != previousJobId) {
+                continue;
+            }
+
+            Skill skill = SkillFactory.getSkill(skillId);
+            if (skill != null) {
+                changeSkillLevel(skill, (byte) skill.getMaxLevel(), skill.getMaxLevel(), -1);
             }
         }
     }
@@ -5151,7 +5184,7 @@ public class Character extends AbstractCharacterObject {
     public int getExpRate() {
         World w = getWorldServer();
         if (hasNoviceExpRate()) {
-            return Math.min(w.getExpRate(), 5);
+            return 1;
         }
         if (hasFirstJobExpRate()) {
             return Math.min(w.getExpRate(), 5);
@@ -5224,7 +5257,7 @@ public class Character extends AbstractCharacterObject {
     public int getQuestExpRate() {
         World w = getWorldServer();
         if (hasNoviceExpRate()) {
-            return Math.min(w.getExpRate(), 2);
+            return 1;
         }
         if (hasFirstJobExpRate()) {
             return Math.min(w.getExpRate(), 5) * w.getQuestRate();

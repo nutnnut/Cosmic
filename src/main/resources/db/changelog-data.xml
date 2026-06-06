@@ -62,4 +62,12 @@
         <sqlFile path="db/data/163-miki-shop-positions.sql"/>
     </changeSet>
 
+    <changeSet id="164" author="Lumen">
+        <sqlFile path="db/data/164-beauty-coupon-drop.sql"/>
+    </changeSet>
+
+    <changeSet id="165" author="Lumen">
+        <sqlFile path="db/data/165-miki-beauty-coupon.sql"/>
+    </changeSet>
+
 </databaseChangeLog>

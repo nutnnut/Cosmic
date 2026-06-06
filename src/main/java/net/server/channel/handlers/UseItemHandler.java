@@ -32,6 +32,7 @@ import constants.inventory.ItemConstants;
 import net.AbstractPacketHandler;
 import net.packet.InPacket;
 import server.ItemInformationProvider;
+import server.RandomStyle;
 import server.StatEffect;
 import tools.PacketCreator;
 
@@ -76,6 +77,10 @@ public final class UseItemHandler extends AbstractPacketHandler {
             } else if (itemId == ItemId.HOLY_WATER) {
                 chr.dispelDebuff(Disease.SEAL);
                 chr.dispelDebuff(Disease.CURSE);
+                remove(c, slot);
+                return true;
+            } else if (itemId == ItemId.RANDOM_BEAUTY_COUPON) {
+                RandomStyle.apply(chr);
                 remove(c, slot);
                 return true;
             } else if (ItemConstants.isTownScroll(itemId)) {

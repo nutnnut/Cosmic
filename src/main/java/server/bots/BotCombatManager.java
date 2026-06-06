@@ -904,15 +904,24 @@ class BotCombatManager {
         return !graphContext.available() || graphTargetCost(graphContext, target) < UNREACHABLE_GRAPH_COST;
     }
 
+    /** Grind-seek range squared, scaled by the bot's aggressive/careful chase factor. */
+    static double seekRangeSq(BotEntry entry) {
+        double r = cfg.GRIND_SEEK_RANGE * (entry != null ? entry.chaseFactor : 1f);
+        return r * r;
+    }
+
     static AttackPlan planAttack(BotEntry entry, Character bot, Monster target) {
         long startedAt = System.nanoTime();
         try {
             List<AttackPlan> candidates = new ArrayList<>(3);
 
-            for (int skillId : cachedAttackSkillIds(entry)) {
-                AttackPlan skillAttack = planSkillAttack(entry, bot, target, skillId);
-                if (skillAttack != null) {
-                    candidates.add(skillAttack);
+            // "melee only" / "conserve mp": skip attack skills, fall back to the basic attack.
+            if (!entry.meleeOnly) {
+                for (int skillId : cachedAttackSkillIds(entry)) {
+                    AttackPlan skillAttack = planSkillAttack(entry, bot, target, skillId);
+                    if (skillAttack != null) {
+                        candidates.add(skillAttack);
+                    }
                 }
             }
 
@@ -1541,11 +1550,29 @@ class BotCombatManager {
         return aoeScore > singleScore;
     }
 
+    // "focus <mob>": restrict to candidates whose name contains the focus, but only when at least
+    // one is in range — otherwise fall back to all candidates so the bot never stands idle.
+    private static List<Monster> applyFocus(BotEntry entry, List<Monster> candidates) {
+        String focus = entry != null ? entry.focusMobName : null;
+        if (focus == null || candidates.isEmpty()) {
+            return candidates;
+        }
+        List<Monster> matched = new ArrayList<>();
+        for (Monster m : candidates) {
+            String name = m.getName();
+            if (name != null && name.toLowerCase().contains(focus)) {
+                matched.add(m);
+            }
+        }
+        return matched.isEmpty() ? candidates : matched;
+    }
+
     private static List<ScoredGrindTarget> scoreGrindTargets(BotEntry entry,
                                                              Character bot,
                                                              Point botPos,
                                                              Foothold botFoothold,
                                                              List<Monster> candidates) {
+        candidates = applyFocus(entry, candidates);
         GrindGraphContext graphContext = GrindGraphContext.resolve(entry, bot, botPos);
         if (!graphContext.available()) {
             return scoreLocalTargets(entry, bot, botPos, botFoothold, candidates);

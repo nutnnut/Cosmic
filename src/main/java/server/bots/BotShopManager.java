@@ -151,6 +151,49 @@ final class BotShopManager {
         startShopVisit(entry, bot, match);
     }
 
+    /**
+     * Immediately sells the bot's whole ETC inventory to a shop NPC near the bot (no walking). Used
+     * by the "sell etc" command — replies that it isn't near a shop when none is within reach.
+     */
+    static void sellEtcNearby(BotEntry entry, Character bot) {
+        if (entry == null || bot == null || bot.getMap() == null) {
+            return;
+        }
+        NPC npc = findNpcNear(bot, bot.getPosition());
+        if (npc == null) {
+            BotManager.getInstance().botReply(entry, "i'm not near a shop");
+            return;
+        }
+        Shop shop = ShopFactory.getInstance().getShopForNPC(npc.getId());
+        if (shop == null) {
+            BotManager.getInstance().botReply(entry, "this shop's closed");
+            return;
+        }
+
+        var etc = bot.getInventory(InventoryType.ETC);
+        if (etc == null) {
+            return;
+        }
+        int sold = 0;
+        int mesoBefore = bot.getMeso();
+        for (Item item : new ArrayList<>(etc.list())) {
+            if (!BotInventoryManager.hasItem(bot, item)) {
+                continue;
+            }
+            shop.sell(bot.getClient(), InventoryType.ETC, item.getPosition(), item.getQuantity());
+            if (!BotInventoryManager.hasItem(bot, item)) {
+                sold++;
+            }
+        }
+        int gained = bot.getMeso() - mesoBefore;
+        if (sold == 0) {
+            BotManager.getInstance().botReply(entry, "nothing in my etc worth selling");
+        } else {
+            BotManager.getInstance().botReply(entry, "sold " + sold + " etc item" + (sold != 1 ? "s" : "")
+                    + " for " + GameConstants.numberWithCommas(gained) + " mesos");
+        }
+    }
+
     private static void startShopVisit(BotEntry entry, Character bot, NpcShopMatch match) {
         entry.shopVisitPending = true;
         entry.shopNpcPos = match.npcPos;

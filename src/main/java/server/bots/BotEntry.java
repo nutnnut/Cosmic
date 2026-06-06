@@ -127,6 +127,13 @@ public class BotEntry {
     long nextSupportHealAt = 0L;
     boolean supportHealsEnabled = true;
     boolean skillBuffsEnabled = true;
+    boolean lootEnabled = true;   // "loot off" / "loot on" verbal toggle
+    boolean funnelOreBag = true;  // "@bag on" (default): funnel looted ores/scrolls into the owner's ore bag
+    BotLootEligibility.LootFilter lootFilter = BotLootEligibility.LootFilter.ALL;   // "only equips" / "mesos only" / "ignore junk"
+    boolean meleeOnly = false;    // "melee only" / "conserve mp" — skip attack skills, use basic attack
+    float chaseFactor = 1f;       // aggressive(>1) / careful(<1) chase-range multiplier
+    String focusMobName = null;   // "focus <mob>" — prefer mobs whose name contains this (fallback: any)
+    java.util.List<String> pendingTrainRecs;   // remaining "where to train" options awaiting a yes
 
     // Ammo
     boolean noAmmo = false;

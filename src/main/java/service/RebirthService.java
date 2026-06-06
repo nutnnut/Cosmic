@@ -317,9 +317,32 @@ public class RebirthService {
         }
     }
 
+    /**
+     * Rebirth skills the player can rebind to a hotkey: every banked skill (taster pick
+     * plus all skills kept across previous rebirths) that the character currently has
+     * learned. These persist independently of level, so rebinding stays available even
+     * below the rebirth level.
+     */
+    public static int[] rebindableSkillIds(Character chr) {
+        List<Integer> ids = new ArrayList<>();
+        for (int id : loadBankedSkillIds(chr.getId())) {
+            Skill skill = SkillFactory.getSkill(id);
+            if (skill != null && chr.getSkillLevel(skill) > 0) {
+                ids.add(id);
+            }
+        }
+        Collections.sort(ids);
+        int[] arr = new int[ids.size()];
+        for (int i = 0; i < arr.length; i++) {
+            arr[i] = ids.get(i);
+        }
+        return arr;
+    }
+
     /** Bind a kept skill to a keyboard key (client keymap type 1 == skill). */
     public static void bindHotkey(Character chr, int skillId, int keyCode) {
         chr.changeKeybinding(keyCode, new KeyBinding(KEYBIND_TYPE_SKILL, skillId));
         chr.sendKeymap();
+        chr.saveCharToDB();   // persist immediately so the binding survives relog
     }
 }

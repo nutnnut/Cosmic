@@ -2,10 +2,15 @@ package server.bots;
 
 import client.Character;
 import client.Job;
+import client.inventory.Inventory;
+import client.inventory.InventoryType;
+import client.inventory.Item;
 import client.inventory.manipulator.InventoryManipulator;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import server.ItemInformationProvider;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -13,6 +18,13 @@ final class BotStarterKitManager {
     private static final Logger log = LoggerFactory.getLogger(BotStarterKitManager.class);
 
     record ItemGrant(int itemId, short quantity) {}
+
+    // Adventurer job-advancement medals (Eqp medal slot -49), granted by level tier at each advance.
+    private static final int MEDAL_BEGINNER = 1142107;   // level 10  / 1st job
+    private static final int MEDAL_JUNIOR = 1142108;     // level 30  / 2nd job
+    private static final int MEDAL_VETERAN = 1142109;    // level 70  / 3rd job
+    private static final int MEDAL_MASTER = 1142110;     // level 120 / 4th job
+    private static final int MEDAL_SLOT = -49;
 
     private static final int BEGINNER_WARRIOR_SWORD = 1302077;
     private static final int BEGINNER_MAGICIAN_WAND = 1372043;
@@ -49,6 +61,8 @@ final class BotStarterKitManager {
         BotBuildManager.handleJobAdvance(entry, bot, oldJob, newJob);
         grantStarterKitIfEligible(bot, oldJob, newJob);
         BotEquipManager.autoEquip(bot, owner, null);
+        // Grant the adventurer medal after autoEquip so the optimizer doesn't reshuffle the medal slot.
+        grantAdventurerMedal(entry, bot);
         BotChatManager.checkBotStatus(entry, bot);
     }
 
@@ -76,6 +90,52 @@ final class BotStarterKitManager {
                 log.warn("Bot '{}' could not receive starter item {} x{} for job {} (no inventory space)",
                         bot.getName(), grant.itemId(), grant.quantity(), newJob);
             }
+        }
+    }
+
+    /**
+     * Grants (and equips) the adventurer medal matching the bot's current level tier — Beginner at
+     * 10, Junior at 30, Veteran at 70, Master at 120 — so a bot earns the relevant medal at each job
+     * advancement. No-op if the bot already owns that medal or is below level 10.
+     */
+    private static void grantAdventurerMedal(BotEntry entry, Character bot) {
+        if (bot == null) {
+            return;
+        }
+        int level = bot.getLevel();
+        int medalId;
+        if (level >= 120) {
+            medalId = MEDAL_MASTER;
+        } else if (level >= 70) {
+            medalId = MEDAL_VETERAN;
+        } else if (level >= 30) {
+            medalId = MEDAL_JUNIOR;
+        } else if (level >= 10) {
+            medalId = MEDAL_BEGINNER;
+        } else {
+            return;
+        }
+        if (bot.getItemQuantity(medalId, true) > 0) {
+            return; // already has this medal (equipped or in a bag)
+        }
+        if (!InventoryManipulator.addById(bot.getClient(), medalId, (short) 1)) {
+            log.warn("Bot '{}' could not receive medal {} (no inventory space)", bot.getName(), medalId);
+            return;
+        }
+        // Equip it into the medal slot, swapping out any lower-tier medal already worn.
+        Inventory eqp = bot.getInventory(InventoryType.EQUIP);
+        if (eqp != null) {
+            for (Item it : new ArrayList<>(eqp.list())) {
+                if (it.getItemId() == medalId) {
+                    InventoryManipulator.handleItemMove(bot.getClient(), InventoryType.EQUIP,
+                            it.getPosition(), (short) MEDAL_SLOT, (short) 1);
+                    break;
+                }
+            }
+        }
+        String name = ItemInformationProvider.getInstance().getName(medalId);
+        if (name != null && entry != null) {
+            BotManager.getInstance().botReply(entry, "earned the " + name.trim() + "!");
         }
     }
 

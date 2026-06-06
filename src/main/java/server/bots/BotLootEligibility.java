@@ -19,11 +19,15 @@ public final class BotLootEligibility {
     private static final Set<Integer> OWNER_VALUABLES = Set.of(
             ItemId.PERFECT_PITCH,
             ItemId.LOCAL_GACHAPON_TICKET,
-            ItemId.REMOTE_GACHAPON_TICKET);
+            ItemId.REMOTE_GACHAPON_TICKET,
+            ItemId.RANDOM_BEAUTY_COUPON);
 
     public static boolean isOwnerValuable(int itemId) {
         return OWNER_VALUABLES.contains(itemId);
     }
+
+    /** Per-bot loot filter set via chat ("only equips" / "mesos only" / "ignore junk" / "loot everything"). */
+    public enum LootFilter { ALL, EQUIPS, MESOS, NO_JUNK }
 
     private BotLootEligibility() {
     }
@@ -37,6 +41,9 @@ public final class BotLootEligibility {
 
     public static boolean canBotLoot(BotEntry entry, Character bot, MapItem drop) {
         if (entry == null || bot == null || drop == null || !drop.canBePickedBy(bot)) {
+            return false;
+        }
+        if (!entry.lootEnabled) {
             return false;
         }
 
@@ -53,6 +60,23 @@ public final class BotLootEligibility {
         }
         if (drop.getMeso() <= 0 && itemId > 0) {
             InventoryType type = ItemConstants.getInventoryType(itemId);
+            // Owner valuables (Perfect Pitch / gachapon tickets / random beauty coupon) always loot
+            // so the bot can hand them over — they bypass the per-bot loot filter entirely.
+            if (!isOwnerValuable(itemId)) {
+                // Loot filter (mesos are never filtered — only carried items).
+                switch (entry.lootFilter) {
+                    case MESOS -> { return false; }
+                    case EQUIPS -> { if (type != InventoryType.EQUIP) { return false; } }
+                    case NO_JUNK -> { if (type == InventoryType.ETC) { return false; } }
+                    default -> { }
+                }
+            }
+            // Ores/scrolls funneled into the owner's ore bag don't need bot inventory space.
+            if (entry.funnelOreBag && ItemConstants.isOreBagAllowed(itemId)
+                    && entry.owner != null && entry.owner.getMap() == bot.getMap()
+                    && entry.owner.getOreStorage() != null && !entry.owner.getOreStorage().isFull()) {
+                return true;
+            }
             Inventory inv = bot.getInventory(type);
             return inv == null || !inv.isFull();
         }

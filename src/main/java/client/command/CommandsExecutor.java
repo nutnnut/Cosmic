@@ -26,7 +26,6 @@ package client.command;
 import client.Client;
 import client.command.commands.gm0.ChangeLanguageCommand;
 import client.command.commands.gm0.DisposeCommand;
-import client.command.commands.gm0.StyleCommand;
 import client.command.commands.gm0.OreBagCommand;
 import client.command.commands.gm0.QuickSellCommand;
 import client.command.commands.gm0.RebirthCommand;
@@ -374,7 +373,6 @@ public class CommandsExecutor {
         addCommand("uptime", UptimeCommand.class);
         addCommand("gacha", GachaCommand.class);
         addCommand("dispose", DisposeCommand.class);
-        addCommand("style", StyleCommand.class);
         addCommand(new String[]{"bag", "orebag"}, OreBagCommand.class);
         addCommand(new String[]{"qs", "quicksell"}, QuickSellCommand.class);
         addCommand("rebirth", RebirthCommand.class);

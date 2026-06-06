@@ -48,6 +48,10 @@ var grantedAp = 0;
 var tasterIds = [];
 var tasterLabels = [];
 
+// Rebind flow state (re-binding already-owned rebirth skills to a hotkey).
+var rebindIds = [];
+var rebindLabels = [];
+
 // Shared key-picker state.
 var keyTargetSkillId = -1;
 var keyTargetLabel = "";
@@ -64,13 +68,32 @@ function start() {
         return;
     }
 
-    if (!RebirthService.isEligible(player)) {
-        cm.sendOk("You must reach Level " + RebirthService.REBIRTH_LEVEL
-                + " before you can be reborn. Come back when you are ready.");
-        cm.dispose();
+    var eligible = RebirthService.isEligible(player);
+    var canRebind = RebirthService.rebindableSkillIds(player).length > 0;
+
+    // Offer both paths when available; otherwise jump straight into the only one.
+    if (eligible && canRebind) {
+        status = "MAIN_MENU";
+        cm.sendSimple("What would you like to do?\r\n"
+                + "#L0#Be #breborn#k#l\r\n"
+                + "#L1#Rebind a rebirth skill to a hotkey#l");
+        return;
+    }
+    if (eligible) {
+        beginRebirth(player);
+        return;
+    }
+    if (canRebind) {
+        beginRebind(player);
         return;
     }
 
+    cm.sendOk("You must reach Level " + RebirthService.REBIRTH_LEVEL
+            + " before you can be reborn. Come back when you are ready.");
+    cm.dispose();
+}
+
+function beginRebirth(player) {
     var ids = RebirthService.keepableSkillIds(player);
     if (ids.length < 2) {
         cm.sendOk("You need at least two castable skills from your class to be reborn.");
@@ -86,6 +109,24 @@ function start() {
     status = "FIRST_SKILL";
     cm.sendSimple(buildListMenu("So you wish to be #breborn#k. Choose the #rfirst#k skill you want to keep:",
             skillLabels, -1));
+}
+
+// List the player's owned rebirth skills so they can rebind any of them to a key.
+function beginRebind(player) {
+    var ids = RebirthService.rebindableSkillIds(player);
+    if (ids.length == 0) {
+        cm.sendOk("You have no rebirth skills to rebind yet.");
+        cm.dispose();
+        return;
+    }
+    rebindIds = [];
+    rebindLabels = [];
+    for (var i = 0; i < ids.length; i++) {
+        rebindIds.push(ids[i]);
+        rebindLabels.push(RebirthService.skillLabel(player, ids[i]));
+    }
+    status = "REBIND_PICK";
+    cm.sendSimple(buildListMenu("Which rebirth skill do you want to bind to a hotkey?", rebindLabels, -1));
 }
 
 function jobOptions() {
@@ -159,6 +200,9 @@ function onKeyBound() {
     } else if (keyReturnContext == "REBIRTH_DONE") {
         cm.sendOk("Your hotkeys are set. Welcome to your new life, #b" + cm.getPlayer().getName() + "#k!");
         cm.dispose();
+    } else if (keyReturnContext == "REBIND_DONE") {
+        cm.sendOk("#b" + keyTargetLabel + "#k is now bound to your chosen key.");
+        cm.dispose();
     } else { // TASTER_DONE
         cm.sendOk("#b" + keyTargetLabel + "#k is yours and bound to your chosen key. Reach Level "
                 + RebirthService.REBIRTH_LEVEL + " to be reborn and keep even more skills!");
@@ -173,7 +217,14 @@ function action(mode, type, selection) {
         return;
     }
 
-    if (status == "TASTER_CLASS") {
+    if (status == "MAIN_MENU") {
+        if (selection == 0) {
+            beginRebirth(cm.getPlayer());
+        } else {
+            beginRebind(cm.getPlayer());
+        }
+
+    } else if (status == "TASTER_CLASS") {
         var baseJob = JOB_IDS[selection];
         var ids = RebirthService.tasterSkillIds(cm.getPlayer(), baseJob);
         if (ids.length == 0) {
@@ -194,6 +245,9 @@ function action(mode, type, selection) {
         var tid = tasterIds[selection];
         RebirthService.grantTasterSkill(cm.getPlayer(), tid);
         startKeyPick(tid, RebirthService.skillName(tid), "TASTER_DONE");
+
+    } else if (status == "REBIND_PICK") {
+        startKeyPick(rebindIds[selection], rebindLabels[selection], "REBIND_DONE");
 
     } else if (status == "FIRST_SKILL") {
         keepIdx1 = selection;

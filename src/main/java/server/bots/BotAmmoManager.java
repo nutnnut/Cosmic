@@ -29,6 +29,16 @@ final class BotAmmoManager {
 
     private BotAmmoManager() {}
 
+    /** On-demand restock for the "buy arrows" / "restock" verbal command. */
+    static boolean restockNow(BotEntry entry, Character bot) {
+        WeaponType weaponType = BotAttackExecutionProvider.getEquippedWeaponType(bot);
+        if (!canRequestShare(weaponType)) {
+            return false;
+        }
+        int ammo = BotCombatManager.countAmmo(bot, weaponType);
+        return restockFromStore(entry, bot, weaponType, ammo);
+    }
+
     static void tickAmmoShareCheck(BotEntry entry, Character bot) {
         WeaponType weaponType = BotAttackExecutionProvider.getEquippedWeaponType(bot);
         if (!canRequestShare(weaponType)) {

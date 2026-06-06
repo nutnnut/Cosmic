@@ -5,6 +5,7 @@ import java.util.stream.IntStream;
 public class ItemId {
     // Misc
     public static final int PENDANT_OF_THE_SPIRIT = 1122017;
+    public static final int RANDOM_BEAUTY_COUPON = 2002031;
     public static final int HEART_SHAPED_CHOCOLATE = 5110000;
     public static final int HAPPY_BIRTHDAY = 2022153;
     public static final int FISHING_CHAIR = 3011000;

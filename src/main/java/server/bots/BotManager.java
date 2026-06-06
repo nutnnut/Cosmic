@@ -88,9 +88,10 @@ public class BotManager {
         // so pathing failures remain visible in logs and at runtime.
         public boolean ENABLE_UNSTUCK = false;
 
-        // When true, bots hand looted valuables (Perfect Pitch / gachapon tickets) straight to
-        // the owner. When false (default), the bot keeps them and offers a trade instead.
-        public boolean BOT_AUTO_GIVE_VALUABLES = false;
+        // When true (default), bots hand looted valuables (Perfect Pitch / gachapon tickets /
+        // random beauty coupon) straight to the owner. When false, the bot keeps them and offers a
+        // trade instead.
+        public boolean BOT_AUTO_GIVE_VALUABLES = true;
 
     }
 
@@ -2153,7 +2154,7 @@ public class BotManager {
         // Grind mode: navigate toward nearest monster, attack when in range
         if (entry.grinding) {
             if (!perf) {
-            double seekRangeSq = (double) BotCombatManager.cfg.GRIND_SEEK_RANGE * BotCombatManager.cfg.GRIND_SEEK_RANGE;
+            double seekRangeSq = BotCombatManager.seekRangeSq(entry);
             Monster target = entry.grindTarget;
             if (target == null || !target.isAlive()
                     || target.getMap() != bot.getMap()
@@ -2316,7 +2317,7 @@ public class BotManager {
             } else {
                 long tGrindDispatch = System.nanoTime();
                 try {
-                double seekRangeSq = (double) BotCombatManager.cfg.GRIND_SEEK_RANGE * BotCombatManager.cfg.GRIND_SEEK_RANGE;
+                double seekRangeSq = BotCombatManager.seekRangeSq(entry);
                 Monster target = entry.grindTarget;
                 if (target == null || !target.isAlive()
                         || target.getMap() != bot.getMap()

@@ -15,6 +15,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.TreeSet;
 
+import static java.util.concurrent.TimeUnit.HOURS;
+
 /**
  * Level-milestone rewards claimed through the {@code @lumen} command.
  *
@@ -227,8 +229,8 @@ public class MilestoneRewardService {
             case 10 -> {
                 items.add(new int[]{ItemId.WHITE_POTION, 300});
                 items.add(new int[]{ItemId.MANA_ELIXIR, 300});
-                items.add(new int[]{ItemId.EXP_COUPON_2X_4H, 1});
-                summary = "300 White Potions, 300 Mana Elixirs and a 2x EXP coupon";
+                items.add(new int[]{ItemId.PENDANT_OF_THE_SPIRIT, 1, (int) HOURS.toMillis(24)});
+                summary = "300 White Potions, 300 Mana Elixirs and a 24-hour Pendant of the Spirit";
             }
             case 30 -> {
                 items.add(new int[]{POWER_ELIXIR, 300});
@@ -263,7 +265,8 @@ public class MilestoneRewardService {
         }
 
         for (int[] it : items) {
-            chr.getAbstractPlayerInteraction().gainItem(it[0], (short) it[1], false, true);
+            long expires = it.length > 2 ? it[2] : -1;
+            chr.getAbstractPlayerInteraction().gainItem(it[0], (short) it[1], false, true, expires);
         }
         if (mesos > 0) {
             chr.gainMeso((int) Math.min(mesos, Integer.MAX_VALUE), true, false, true);

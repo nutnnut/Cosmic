@@ -17,6 +17,7 @@ import net.packet.Packet;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import server.ItemInformationProvider;
+import server.OreStorage;
 import server.StatEffect;
 import server.Trade;
 import server.maps.MapItem;
@@ -152,8 +153,20 @@ class BotInventoryManager {
                 continue;
             }
 
-            if (drop.getMeso() <= 0 && drop.getItemId() > 0) {
-                InventoryType type = ItemConstants.getInventoryType(drop.getItemId());
+            int dropItemId = drop.getItemId();
+            boolean ownerOnMap = entry.owner != null && entry.owner.getMap() == bot.getMap();
+
+            // "@bag on" (default): funnel looted ores/scrolls straight into the owner's ore bag,
+            // bypassing the bot's own inventory entirely.
+            if (entry.funnelOreBag && ownerOnMap && dropItemId > 0
+                    && ItemConstants.isOreBagAllowed(dropItemId)
+                    && funnelToOwnerOreBag(entry.owner, bot, drop)) {
+                cleanupBotLootGhostDrop(bot, drop);
+                continue;
+            }
+
+            if (drop.getMeso() <= 0 && dropItemId > 0) {
+                InventoryType type = ItemConstants.getInventoryType(dropItemId);
                 Inventory inventory = bot.getInventory(type);
                 if (inventory != null && inventory.isFull()) {
                     if (entry.invFullWarnCooldownMs <= 0) {
@@ -166,7 +179,6 @@ class BotInventoryManager {
 
             Item pickedItem = drop.getItem();
             int pickedItemId = drop.getItemId();
-            boolean ownerOnMap = entry.owner != null && entry.owner.getMap() == bot.getMap();
             boolean autoGiveValuable = BotManager.cfg.BOT_AUTO_GIVE_VALUABLES
                     && BotLootEligibility.isOwnerValuable(pickedItemId);
             if ((ItemId.isNxCard(pickedItemId) || autoGiveValuable) && ownerOnMap) {
@@ -357,6 +369,38 @@ class BotInventoryManager {
     }
 
     // ─── Entry point from chat choice ─────────────────────────────────────────
+
+    /**
+     * Deposits a ground drop straight into the owner's ore bag ( "@bag on" funnel), removing it from
+     * the map. Returns false (drop untouched) if the bag is missing/full or the drop was already
+     * taken, so the caller can fall back to a normal pickup. Mirrors the lock + pickItemDrop sequence
+     * used by {@link Character#pickupItem}.
+     */
+    private static boolean funnelToOwnerOreBag(Character owner, Character bot, MapItem drop) {
+        if (owner == null || drop == null) {
+            return false;
+        }
+        OreStorage bag = owner.getOreStorage();
+        if (bag == null) {
+            return false;
+        }
+        drop.lockItem();
+        try {
+            if (drop.isPickedUp() || bag.isFull()) {
+                return false;
+            }
+            Item item = drop.getItem();
+            if (item == null || !bag.store(item)) {
+                return false;
+            }
+            owner.setUsedOreStorage();
+            Packet pickupPacket = PacketCreator.removeItemFromMap(drop.getObjectId(), 2, owner.getId());
+            bot.getMap().pickItemDrop(pickupPacket, drop);
+            return true;
+        } finally {
+            drop.unlockItem();
+        }
+    }
 
     private static void cleanupBotLootGhostDrop(Character bot, MapItem drop) {
         if (drop == null) {

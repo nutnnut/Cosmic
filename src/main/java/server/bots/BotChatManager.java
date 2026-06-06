@@ -112,6 +112,84 @@ public class BotChatManager {
             "ooh, new look!", "fresh makeover, how do i look?", "feeling fabulous now",
             "new hair who dis", "restyled! thanks", "time for a change, done!");
 
+    private static final Pattern GENDER_TOGGLE_PATTERN = Pattern.compile(
+            "\\b(sex\\s*-?\\s*change|change\\s+(your\\s+)?(sex|gender)|swap\\s+(sex|gender)|"
+            + "is\\s+trans|go(ing)?\\s+trans|transition|opposite\\s+(sex|gender))\\b",
+            Pattern.CASE_INSENSITIVE);
+    private static final Pattern GENDER_FEMALE_PATTERN = Pattern.compile(
+            "\\b(female|become\\s+(a\\s+)?(female|girl|woman)|be\\s+(a\\s+)?(female|girl|woman)|turn\\s+(female|girl))\\b",
+            Pattern.CASE_INSENSITIVE);
+    private static final Pattern GENDER_MALE_PATTERN = Pattern.compile(
+            "\\b(male|become\\s+(a\\s+)?(male|boy|man|guy)|be\\s+(a\\s+)?(male|boy|man|guy)|turn\\s+(male|boy))\\b",
+            Pattern.CASE_INSENSITIVE);
+    private static final List<String> GENDER_REPLIES_FEMALE = List.of(
+            "done, i'm a girl now!", "feeling femme~", "she/her now, thanks!", "new me, hi!");
+    private static final List<String> GENDER_REPLIES_MALE = List.of(
+            "done, i'm a guy now!", "he/him now!", "dude mode on", "new me, hi!");
+
+    private static final Pattern WHERE_TO_TRAIN_PATTERN = Pattern.compile(
+            "\\bwhere\\s+(should|do|can|to|would)\\s+(we|i|you)\\s+(train|grind|level|hunt)\\b"
+            + "|\\bwhere\\s+to\\s+(train|grind)\\b|\\btraining\\s+spot\\b"
+            + "|\\bbest\\s+(place|spot|map)\\s+to\\s+(train|grind|level)\\b",
+            Pattern.CASE_INSENSITIVE);
+    private static final Pattern FORMATION_SPREAD_PATTERN = Pattern.compile(
+            "\\b(spread\\s*out|spread|scatter|fan\\s*out)\\b", Pattern.CASE_INSENSITIVE);
+    private static final Pattern FORMATION_STACK_PATTERN = Pattern.compile(
+            "\\b(stack\\s*up|stack|group\\s*up|regroup|tighten\\s*up)\\b", Pattern.CASE_INSENSITIVE);
+    private static final Pattern FORMATION_LINE_PATTERN = Pattern.compile(
+            "\\b(line\\s*up|stagger|default\\s+formation|normal\\s+formation)\\b", Pattern.CASE_INSENSITIVE);
+    private static final Pattern LOOT_OFF_PATTERN = Pattern.compile(
+            "\\b(loot\\s*off|stop\\s+looting|don.?t\\s+loot|no\\s+loot(ing)?|leave\\s+the\\s+loot)\\b", Pattern.CASE_INSENSITIVE);
+    private static final Pattern LOOT_ON_PATTERN = Pattern.compile(
+            "\\b(loot\\s*on|start\\s+looting|loot\\s+again|resume\\s+loot(ing)?|you\\s+can\\s+loot)\\b", Pattern.CASE_INSENSITIVE);
+    private static final Pattern BAG_ON_PATTERN = Pattern.compile(
+            "\\b(?:ore\\s?bag|bag)\\s+on\\b|\\bfunnel\\s+(?:ores?|scrolls?)\\b", Pattern.CASE_INSENSITIVE);
+    private static final Pattern BAG_OFF_PATTERN = Pattern.compile(
+            "\\b(?:ore\\s?bag|bag)\\s+off\\b|\\b(?:stop\\s+funnel(?:ing)?|keep)\\s+(?:ores?|scrolls?)\\b", Pattern.CASE_INSENSITIVE);
+    private static final Pattern AUTOPOT_PATTERN = Pattern.compile(
+            "\\b(auto\\s*-?\\s*pot|autopot|pot\\s+(at|@))\\b", Pattern.CASE_INSENSITIVE);
+    private static final Pattern BUY_AMMO_PATTERN = Pattern.compile(
+            "\\b(buy\\s+(arrows|bolts|ammo)|restock(\\s+(arrows|ammo|bolts))?|stock\\s+up|go\\s+shopping)\\b", Pattern.CASE_INSENSITIVE);
+
+    private static final Pattern TRAIN_MORE_YES_PATTERN = Pattern.compile(
+            "\\b(yes|yea|yeah|yep|ya|sure|ok|okay|more|please|show|the\\s+(other|rest|more)|go\\s+on|do\\s+it)\\b",
+            Pattern.CASE_INSENSITIVE);
+    private static final Pattern LOOT_EQUIPS_PATTERN = Pattern.compile(
+            "\\b(only\\s+(loot\\s+)?equips?|loot\\s+equips?\\s+only|equips?\\s+only)\\b", Pattern.CASE_INSENSITIVE);
+    private static final Pattern LOOT_MESOS_PATTERN = Pattern.compile(
+            "\\b(mesos?\\s+only|only\\s+(loot\\s+)?mesos?|just\\s+mesos?)\\b", Pattern.CASE_INSENSITIVE);
+    private static final Pattern LOOT_JUNK_PATTERN = Pattern.compile(
+            "\\b(ignore\\s+junk|no\\s+junk|skip\\s+junk|leave\\s+(the\\s+)?junk|don.?t\\s+loot\\s+junk)\\b", Pattern.CASE_INSENSITIVE);
+    private static final Pattern LOOT_ALL_PATTERN = Pattern.compile(
+            "\\b(loot\\s+(everything|all|anything))\\b", Pattern.CASE_INSENSITIVE);
+    private static final Pattern STANCE_AGGRESSIVE_PATTERN = Pattern.compile(
+            "\\b((be\\s+)?aggressive|aggro|go\\s+ham|all\\s+out|reckless)\\b", Pattern.CASE_INSENSITIVE);
+    private static final Pattern STANCE_CAREFUL_PATTERN = Pattern.compile(
+            "\\b((be\\s+)?careful|cautious|play\\s+(it\\s+)?safe|defensive|passive)\\b", Pattern.CASE_INSENSITIVE);
+    private static final Pattern STANCE_NORMAL_PATTERN = Pattern.compile(
+            "\\b(balanced|(normal|standard)\\s+(stance|combat|attacks?))\\b", Pattern.CASE_INSENSITIVE);
+    private static final Pattern MELEE_ONLY_PATTERN = Pattern.compile(
+            "\\b(melee\\s+only|only\\s+melee|no\\s+skills|don.?t\\s+use\\s+skills|conserve\\s+mp|save\\s+(your\\s+)?mp|basic\\s+attacks?\\s+only)\\b", Pattern.CASE_INSENSITIVE);
+    private static final Pattern USE_SKILLS_PATTERN = Pattern.compile(
+            "\\b(use\\s+(your\\s+)?skills|skills\\s+on|use\\s+mp|stop\\s+conserving)\\b", Pattern.CASE_INSENSITIVE);
+    private static final Pattern WHERE_TO_FARM_PATTERN = Pattern.compile(
+            "\\b(?:where\\s+(?:can\\s+i\\s+|do\\s+i\\s+|to\\s+|should\\s+i\\s+)?(?:farm|get|find)|what\\s+(?:mob\\s+)?drops?)\\s+(?:a\\s+|an\\s+|the\\s+|some\\s+)?(.+)$",
+            Pattern.CASE_INSENSITIVE);
+    private static final Pattern FOCUS_OFF_PATTERN = Pattern.compile(
+            "\\b(focus\\s+off|stop\\s+focus(?:ing)?|no\\s+focus|clear\\s+focus|attack\\s+(?:anything|everything|any)|kill\\s+(?:anything|everything)|any\\s+mob)\\b",
+            Pattern.CASE_INSENSITIVE);
+    private static final Pattern FOCUS_PATTERN = Pattern.compile(
+            "\\b(?:focus(?:\\s+on)?|prioritize|target|only\\s+(?:hit|attack))\\s+(.+)$",
+            Pattern.CASE_INSENSITIVE);
+    // Equip/unequip a specific cash (cosmetic) item by name. Checked after the "unequip all gear"
+    // and "auto-equip" commands, so those keep priority over a by-name match.
+    private static final Pattern EQUIP_CASH_PATTERN = Pattern.compile(
+            "\\b(?:equip|wear|put\\s+on)\\s+(.+)$",
+            Pattern.CASE_INSENSITIVE);
+    private static final Pattern UNEQUIP_CASH_PATTERN = Pattern.compile(
+            "\\b(?:unequip|take\\s+off|remove)\\s+(.+)$",
+            Pattern.CASE_INSENSITIVE);
+
     private static final List<String> FOLLOW_REPLIES = List.of(
             "ok", "k", "sure", "omw", "got it", "coming",
             "roger", "yep", "alright", "aye", "lets go!", "as you wish", "ok boss",
@@ -459,6 +537,9 @@ public class BotChatManager {
     private static final Pattern SELL_TRASH_COMMAND_PATTERN = Pattern.compile(
             "^\\s*(?:sell|vendor)\\s+(?:(?:my|ur|your)\\s+)?(?:trash|junk)\\s*[?!.,]*\\s*$",
             Pattern.CASE_INSENSITIVE);
+    private static final Pattern SELL_ETC_COMMAND_PATTERN = Pattern.compile(
+            "^\\s*(?:sell|vendor|dump|unload)\\s+(?:(?:my|ur|your)\\s+)?etc(?:\\s+items?)?\\s*[?!.,]*\\s*$",
+            Pattern.CASE_INSENSITIVE);
     private static final Pattern TRADE_USE_COMMAND_PATTERN = Pattern.compile(
             "\\b" + TRADE_CMD_VERB + "\\s+" + TRANSFER_RECIPIENT + TRANSFER_OWNER + USE_WORDS + "\\b",
             Pattern.CASE_INSENSITIVE);
@@ -689,6 +770,18 @@ public class BotChatManager {
                 handleOwnerAwayChoice(entry, message);
                 return;
             }
+            if ("train_more".equals(entry.pendingAction)) {
+                entry.pendingAction = null;
+                List<String> rest = entry.pendingTrainRecs;
+                entry.pendingTrainRecs = null;
+                if (rest != null && !rest.isEmpty()
+                        && !NEGATIVE_CONFIRM_PATTERN.matcher(message).find()
+                        && TRAIN_MORE_YES_PATTERN.matcher(message).find()) {
+                    BotManager.after(BotManager.randMs(400, 700),
+                            () -> BotManager.getInstance().botReply(entry, "also: " + String.join("  |  ", rest)));
+                }
+                return;
+            }
             // Item-choice: three-way "drop / trade / cancel" — handled independently of yes/no
             if ("item_choice".equals(entry.pendingAction)) {
                 String category = entry.pendingDropCategory;
@@ -845,6 +938,141 @@ public class BotChatManager {
             BotManager.after(BotManager.randMs(600, 900), () -> applyRandomStyle(entry));
             return;
         }
+        if (GENDER_TOGGLE_PATTERN.matcher(message).find()) {
+            BotManager.after(BotManager.randMs(600, 900), () -> applyGenderChange(entry, null));
+            return;
+        }
+        if (GENDER_FEMALE_PATTERN.matcher(message).find()) {
+            BotManager.after(BotManager.randMs(600, 900), () -> applyGenderChange(entry, 1));
+            return;
+        }
+        if (GENDER_MALE_PATTERN.matcher(message).find()) {
+            BotManager.after(BotManager.randMs(600, 900), () -> applyGenderChange(entry, 0));
+            return;
+        }
+        if (WHERE_TO_TRAIN_PATTERN.matcher(message).find()) {
+            BotManager.after(BotManager.randMs(700, 1100), () -> recommendTraining(entry));
+            return;
+        }
+        Matcher farmMatcher = WHERE_TO_FARM_PATTERN.matcher(message);
+        if (farmMatcher.find()) {
+            final String item = farmMatcher.group(1).trim();
+            BotManager.after(BotManager.randMs(700, 1100), () -> {
+                String rec = BotFarmRecommender.recommend(item);
+                BotManager.getInstance().botReply(entry, rec != null ? rec : "hmm, not sure where to farm \"" + item + "\"");
+            });
+            return;
+        }
+        if (FORMATION_SPREAD_PATTERN.matcher(message).find()) {
+            applyFormation(entry, BotManager.FormationType.SPREAD, "spreading out");
+            return;
+        }
+        if (FORMATION_STACK_PATTERN.matcher(message).find()) {
+            applyFormation(entry, BotManager.FormationType.STACK, "stacking up");
+            return;
+        }
+        if (FORMATION_LINE_PATTERN.matcher(message).find()) {
+            applyFormation(entry, BotManager.FormationType.STAGGER, "lining up");
+            return;
+        }
+        if (LOOT_OFF_PATTERN.matcher(message).find()) {
+            BotManager.after(BotManager.randMs(400, 700), () -> {
+                entry.lootEnabled = false;
+                BotManager.getInstance().botReply(entry, "ok, i'll stop looting");
+            });
+            return;
+        }
+        if (LOOT_ON_PATTERN.matcher(message).find()) {
+            BotManager.after(BotManager.randMs(400, 700), () -> {
+                entry.lootEnabled = true;
+                BotManager.getInstance().botReply(entry, "ok, looting again");
+            });
+            return;
+        }
+        if (BAG_OFF_PATTERN.matcher(message).find()) {
+            BotManager.after(BotManager.randMs(400, 700), () -> {
+                entry.funnelOreBag = false;
+                BotManager.getInstance().botReply(entry, "ok, keeping ores/scrolls myself");
+            });
+            return;
+        }
+        if (BAG_ON_PATTERN.matcher(message).find()) {
+            BotManager.after(BotManager.randMs(400, 700), () -> {
+                entry.funnelOreBag = true;
+                BotManager.getInstance().botReply(entry, "ok, funneling ores/scrolls to your ore bag");
+            });
+            return;
+        }
+        if (AUTOPOT_PATTERN.matcher(message).find()) {
+            BotManager.after(BotManager.randMs(400, 700), () -> setAutoPot(entry, message));
+            return;
+        }
+        if (BUY_AMMO_PATTERN.matcher(message).find()) {
+            BotManager.after(BotManager.randMs(600, 1000), () -> {
+                if (!BotAmmoManager.restockNow(entry, entry.bot)) {
+                    BotManager.getInstance().botReply(entry, "i'm stocked up (or can't restock right now)");
+                }
+            });
+            return;
+        }
+        if (LOOT_MESOS_PATTERN.matcher(message).find()) {
+            setLootFilter(entry, BotLootEligibility.LootFilter.MESOS, "ok, only grabbing mesos");
+            return;
+        }
+        if (LOOT_EQUIPS_PATTERN.matcher(message).find()) {
+            setLootFilter(entry, BotLootEligibility.LootFilter.EQUIPS, "ok, only looting equips");
+            return;
+        }
+        if (LOOT_JUNK_PATTERN.matcher(message).find()) {
+            setLootFilter(entry, BotLootEligibility.LootFilter.NO_JUNK, "ok, skipping junk");
+            return;
+        }
+        if (LOOT_ALL_PATTERN.matcher(message).find()) {
+            setLootFilter(entry, BotLootEligibility.LootFilter.ALL, "ok, looting everything");
+            return;
+        }
+        if (STANCE_AGGRESSIVE_PATTERN.matcher(message).find()) {
+            applyStance(entry, 1.6f, 0.45f, "going aggressive — chasing hard!");
+            return;
+        }
+        if (STANCE_CAREFUL_PATTERN.matcher(message).find()) {
+            applyStance(entry, 0.6f, 0.85f, "ok, playing it safe");
+            return;
+        }
+        if (STANCE_NORMAL_PATTERN.matcher(message).find()) {
+            applyStance(entry, 1.0f, BotManager.cfg.AUTOPOT_HP_THRESH, "ok, balanced combat");
+            return;
+        }
+        if (USE_SKILLS_PATTERN.matcher(message).find()) {
+            BotManager.after(BotManager.randMs(400, 700), () -> {
+                entry.meleeOnly = false;
+                BotManager.getInstance().botReply(entry, "ok, using skills again");
+            });
+            return;
+        }
+        if (MELEE_ONLY_PATTERN.matcher(message).find()) {
+            BotManager.after(BotManager.randMs(400, 700), () -> {
+                entry.meleeOnly = true;
+                BotManager.getInstance().botReply(entry, "ok, basic attacks only (saving mp)");
+            });
+            return;
+        }
+        if (FOCUS_OFF_PATTERN.matcher(message).find()) {
+            BotManager.after(BotManager.randMs(400, 700), () -> {
+                entry.focusMobName = null;
+                BotManager.getInstance().botReply(entry, "ok, attacking anything");
+            });
+            return;
+        }
+        Matcher focusMatcher = FOCUS_PATTERN.matcher(message);
+        if (focusMatcher.find()) {
+            final String mob = focusMatcher.group(1).trim().toLowerCase();
+            BotManager.after(BotManager.randMs(400, 700), () -> {
+                entry.focusMobName = mob;
+                BotManager.getInstance().botReply(entry, "ok, focusing " + mob);
+            });
+            return;
+        }
         if (PROACTIVE_OFFERS_OFF_PATTERN.matcher(message).find()) {
             BotManager.after(BotManager.randMs(500, 700), () -> {
                 entry.proactiveUpgradeOffers = false;
@@ -916,6 +1144,30 @@ public class BotChatManager {
             BotManager.after(BotManager.randMs(400, 600), () -> {
                 BotEquipManager.autoEquip(entry.bot, entry.owner, entry.pendingLootOfferItem, true);
                 BotManager.getInstance().botReply(entry, "ok, gear optimized");
+            });
+            return;
+        }
+        // Equip/unequip a specific cash item by name. Placed after the "unequip all gear",
+        // "unequip slot N", and "auto-equip" handlers so those keep priority over a by-name match.
+        Matcher unequipCashMatcher = UNEQUIP_CASH_PATTERN.matcher(message);
+        if (unequipCashMatcher.find()) {
+            final String name = unequipCashMatcher.group(1).trim();
+            BotManager.after(BotManager.randMs(400, 700), () -> {
+                String removed = BotEquipManager.unequipCashByName(entry.bot, name);
+                BotManager.getInstance().botReply(entry, removed != null
+                        ? "took off " + removed
+                        : "i'm not wearing a cash item like \"" + name + "\"");
+            });
+            return;
+        }
+        Matcher equipCashMatcher = EQUIP_CASH_PATTERN.matcher(message);
+        if (equipCashMatcher.find()) {
+            final String name = equipCashMatcher.group(1).trim();
+            BotManager.after(BotManager.randMs(400, 700), () -> {
+                String equipped = BotEquipManager.equipCashByName(entry.bot, name);
+                BotManager.getInstance().botReply(entry, equipped != null
+                        ? "equipped " + equipped
+                        : "i don't have a cash item like \"" + name + "\"");
             });
             return;
         }
@@ -1030,6 +1282,11 @@ public class BotChatManager {
         if (SELL_TRASH_COMMAND_PATTERN.matcher(message).matches()) {
             BotManager.after(BotManager.randMs(500, 700), () ->
                     BotShopManager.requestSellTrashVisit(entry, entry.bot));
+            return;
+        }
+        if (SELL_ETC_COMMAND_PATTERN.matcher(message).matches()) {
+            BotManager.after(BotManager.randMs(500, 700), () ->
+                    BotShopManager.sellEtcNearby(entry, entry.bot));
             return;
         }
 
@@ -2474,6 +2731,156 @@ public class BotChatManager {
 
     private static int pickValid(int candidate, int fallback) {
         return ItemInformationProvider.getInstance().getName(candidate) != null ? candidate : fallback;
+    }
+
+    private static void applyGenderChange(BotEntry entry, Integer targetGender) {
+        Character bot = entry.bot;
+        if (bot == null || !bot.isLoggedinWorld()) {
+            return;
+        }
+        int newGender = targetGender != null ? targetGender : (bot.getGender() == 0 ? 1 : 0);
+        if (bot.getGender() == newGender) {
+            BotManager.getInstance().botReply(entry, "i'm already " + (newGender == 0 ? "male" : "female") + "!");
+            return;
+        }
+
+        ThreadLocalRandom rng = ThreadLocalRandom.current();
+        boolean male = newGender == 0;
+        // The new gender needs a gender-matching, WZ-valid hair AND face, or the client crashes.
+        int hair = firstValidHair(male ? MALE_HAIR : FEMALE_HAIR, rng);
+        int face = firstValid(male ? MALE_FACE : FEMALE_FACE, rng);
+        if (hair < 0 || face < 0) {
+            BotManager.getInstance().botReply(entry, "hmm, i can't restyle for that right now");
+            return;
+        }
+
+        bot.setGender(newGender);
+        bot.setHair(hair);
+        bot.updateSingleStat(Stat.HAIR, hair);
+        bot.setFace(face);
+        bot.updateSingleStat(Stat.FACE, face);
+        bot.equipChanged();   // broadcasts updateCharLook (gender + hair + face) to nearby clients
+
+        List<String> replies = male ? GENDER_REPLIES_MALE : GENDER_REPLIES_FEMALE;
+        BotManager.getInstance().botReply(entry, replies.get(rng.nextInt(replies.size())));
+    }
+
+    private static void recommendTraining(BotEntry entry) {
+        Character bot = entry.bot;
+        if (bot == null) {
+            return;
+        }
+        Character ref = entry.owner != null ? entry.owner : bot;
+        int lo, hi;
+        if (ref.getParty() != null) {
+            int min = Integer.MAX_VALUE, max = 0;
+            for (Character m : ref.getPartyMembersOnline()) {
+                if (m == null) {
+                    continue;
+                }
+                min = Math.min(min, m.getLevel());
+                max = Math.max(max, m.getLevel());
+            }
+            if (min > max) {
+                min = ref.getLevel();
+                max = ref.getLevel();
+            }
+            lo = min;
+            hi = max;
+        } else {
+            lo = ref.getLevel() - 5;
+            hi = ref.getLevel() + 5;
+        }
+        if (lo < 1) {
+            lo = 1;
+        }
+
+        List<String> recs = BotTrainingRecommender.recommend(lo, hi, 3);
+        BotManager bm = BotManager.getInstance();
+        if (recs.isEmpty()) {
+            bm.botReply(entry, "no great spots for Lv." + lo + "-" + hi + " in my notes");
+            return;
+        }
+        bm.botReply(entry, "Lv." + lo + "-" + hi + " → try " + recs.get(0));
+        if (recs.size() > 1) {
+            entry.pendingTrainRecs = new java.util.ArrayList<>(recs.subList(1, recs.size()));
+            entry.pendingAction = "train_more";
+            bm.botReply(entry, "want a couple more options? (yes/no)");
+        }
+    }
+
+    private static void setLootFilter(BotEntry entry, BotLootEligibility.LootFilter filter, String reply) {
+        BotManager.after(BotManager.randMs(400, 700), () -> {
+            entry.lootFilter = filter;
+            BotManager.getInstance().botReply(entry, reply);
+        });
+    }
+
+    private static void applyStance(BotEntry entry, float chaseFactor, float autopotThreshold, String reply) {
+        BotManager.after(BotManager.randMs(400, 700), () -> {
+            entry.chaseFactor = chaseFactor;
+            if (entry.bot != null) {
+                entry.bot.setAutopotHpAlert(autopotThreshold);
+            }
+            BotManager.getInstance().botReply(entry, reply);
+        });
+    }
+
+    private static void applyFormation(BotEntry entry, BotManager.FormationType type, String verb) {
+        Character owner = entry.owner;
+        if (owner == null) {
+            return;
+        }
+        BotManager bm = BotManager.getInstance();
+        BotManager.after(BotManager.randMs(400, 700), () -> {
+            bm.setFormationState(owner, type, BotManager.cfg.FOLLOW_STAGGER,
+                    BotMovementManager.cfg.FOLLOW_Y_CAP, bm.getBotEntries(owner.getId()));
+            bm.botReply(entry, "ok, " + verb);
+        });
+    }
+
+    private static void setAutoPot(BotEntry entry, String message) {
+        Character bot = entry.bot;
+        if (bot == null) {
+            return;
+        }
+        Matcher m = Pattern.compile("(\\d{1,3})").matcher(message);
+        if (!m.find()) {
+            BotManager.getInstance().botReply(entry, "tell me a %, like 'autopot at 50%'");
+            return;
+        }
+        int pct = Math.max(1, Math.min(99, Integer.parseInt(m.group(1))));
+        bot.setAutopotHpAlert(pct / 100f);
+        BotManager.getInstance().botReply(entry, "ok, i'll pot below " + pct + "% hp");
+    }
+
+    // Find a WZ-valid hair from the list (random start, color variant preferred); -1 if none exist.
+    private static int firstValidHair(int[] bases, ThreadLocalRandom rng) {
+        ItemInformationProvider ii = ItemInformationProvider.getInstance();
+        int start = rng.nextInt(bases.length);
+        for (int i = 0; i < bases.length; i++) {
+            int base = bases[(start + i) % bases.length];
+            int color = base + rng.nextInt(8);
+            if (ii.getName(color) != null) {
+                return color;
+            }
+            if (ii.getName(base) != null) {
+                return base;
+            }
+        }
+        return -1;
+    }
+
+    private static int firstValid(int[] candidates, ThreadLocalRandom rng) {
+        ItemInformationProvider ii = ItemInformationProvider.getInstance();
+        int start = rng.nextInt(candidates.length);
+        for (int i = 0; i < candidates.length; i++) {
+            int v = candidates[(start + i) % candidates.length];
+            if (ii.getName(v) != null) {
+                return v;
+            }
+        }
+        return -1;
     }
 
     private static String dropOrTradePrompt(String category, int count) {

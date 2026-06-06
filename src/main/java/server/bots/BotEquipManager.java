@@ -105,6 +105,9 @@ class BotEquipManager {
     }
 
     static void autoEquip(Character bot, Character owner, Item pendingOffer, boolean force) {
+        // Cash cosmetics are skipped by the stat DP below, so wear any unequipped ones here. Runs
+        // before the throttle so newly-received cash gear is equipped immediately on every trigger.
+        equipCashItems(bot);
         if (!shouldRunAutoEquip(bot, System.currentTimeMillis(), force)) {
             return;
         }
@@ -177,6 +180,124 @@ class BotEquipManager {
                 // Don't let a chat error block the equip pass.
             }
         }
+    }
+
+    /**
+     * Cash (cosmetic) equip slot for an item: the regular wear slot offset by -100, matching
+     * {@link constants.inventory.EquipSlot#isAllowed(int, boolean)}. Returns 0 if not equippable.
+     */
+    static int cashSlotFor(ItemInformationProvider ii, int itemId) {
+        EquipSlot eslot = EquipSlot.getFromTextSlot(ii.getEquipmentSlot(itemId));
+        if (eslot == null || eslot == EquipSlot.PET_EQUIP) {
+            return 0;
+        }
+        int base = eslot.getPrimarySlot();
+        return base == 0 ? 0 : base - 100;
+    }
+
+    /**
+     * Equips every cash cosmetic item sitting unequipped in the bot's EQUIP bag into its (free)
+     * cash slot. Idempotent — already-worn cash slots are left alone. Called whenever a bot is
+     * given items (trade/loot) so cash gear is worn immediately. autoEquip never touches cash
+     * items, so this is the only place they get equipped automatically.
+     */
+    static void equipCashItems(Character bot) {
+        if (bot == null) {
+            return;
+        }
+        ItemInformationProvider ii = ItemInformationProvider.getInstance();
+        Inventory eqpInv = bot.getInventory(InventoryType.EQUIP);
+        Inventory eqdInv = bot.getInventory(InventoryType.EQUIPPED);
+        if (eqpInv == null || eqdInv == null) {
+            return;
+        }
+        for (Item it : new java.util.ArrayList<>(eqpInv.list())) {
+            if (!(it instanceof Equip) || !ii.isCash(it.getItemId())) {
+                continue;
+            }
+            int slot = cashSlotFor(ii, it.getItemId());
+            if (slot == 0 || eqdInv.getItem((short) slot) != null) {
+                continue; // not equippable, or that cash slot is already occupied
+            }
+            InventoryManipulator.handleItemMove(bot.getClient(), InventoryType.EQUIP,
+                    it.getPosition(), (short) slot, (short) 1);
+        }
+    }
+
+    /**
+     * Equips a specific cash item from the bot's bag by (partial, case-insensitive) name, swapping
+     * out whatever currently occupies that cash slot. Returns the equipped item's display name, or
+     * null if no matching unequipped cash item was found (or there's no room to swap).
+     */
+    static String equipCashByName(Character bot, String query) {
+        if (bot == null || query == null) {
+            return null;
+        }
+        ItemInformationProvider ii = ItemInformationProvider.getInstance();
+        Inventory eqpInv = bot.getInventory(InventoryType.EQUIP);
+        Inventory eqdInv = bot.getInventory(InventoryType.EQUIPPED);
+        if (eqpInv == null || eqdInv == null) {
+            return null;
+        }
+        String q = query.toLowerCase().trim();
+        for (Item it : new java.util.ArrayList<>(eqpInv.list())) {
+            if (!(it instanceof Equip) || !ii.isCash(it.getItemId())) {
+                continue;
+            }
+            String name = ii.getName(it.getItemId());
+            if (name == null || !name.toLowerCase().contains(q)) {
+                continue;
+            }
+            int slot = cashSlotFor(ii, it.getItemId());
+            if (slot == 0) {
+                continue;
+            }
+            if (eqdInv.getItem((short) slot) != null) {
+                short free = eqpInv.getNextFreeSlot();
+                if (free < 0) {
+                    return null; // no room to stash the currently-worn cash item
+                }
+                InventoryManipulator.unequip(bot.getClient(), (short) slot, free);
+            }
+            InventoryManipulator.handleItemMove(bot.getClient(), InventoryType.EQUIP,
+                    it.getPosition(), (short) slot, (short) 1);
+            return name;
+        }
+        return null;
+    }
+
+    /**
+     * Unequips a specific worn cash item by (partial, case-insensitive) name, moving it back to the
+     * bag. Returns the item's display name, or null if no matching worn cash item was found (or the
+     * bag is full).
+     */
+    static String unequipCashByName(Character bot, String query) {
+        if (bot == null || query == null) {
+            return null;
+        }
+        ItemInformationProvider ii = ItemInformationProvider.getInstance();
+        Inventory eqpInv = bot.getInventory(InventoryType.EQUIP);
+        Inventory eqdInv = bot.getInventory(InventoryType.EQUIPPED);
+        if (eqpInv == null || eqdInv == null) {
+            return null;
+        }
+        String q = query.toLowerCase().trim();
+        for (Item it : new java.util.ArrayList<>(eqdInv.list())) {
+            if (it.getPosition() >= -100 || !ii.isCash(it.getItemId())) {
+                continue; // only cash slots (<= -101)
+            }
+            String name = ii.getName(it.getItemId());
+            if (name == null || !name.toLowerCase().contains(q)) {
+                continue;
+            }
+            short free = eqpInv.getNextFreeSlot();
+            if (free < 0) {
+                return null;
+            }
+            InventoryManipulator.unequip(bot.getClient(), it.getPosition(), free);
+            return name;
+        }
+        return null;
     }
 
     static boolean shouldRunAutoEquip(Character bot, long nowMs, boolean force) {
