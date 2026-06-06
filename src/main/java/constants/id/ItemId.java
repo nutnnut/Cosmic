@@ -15,6 +15,7 @@ public class ItemId {
     public static final int GOLDEN_MAPLE_LEAF = 4000313;
     public static final int PERFECT_PITCH = 4310000;
     public static final int MAGIC_ROCK = 4006000;
+    public static final int HYPER_TELEPORT_ROCK = 5041002;
     public static final int GOLDEN_CHICKEN_EFFECT = 4290000;
     public static final int BUMMER_EFFECT = 4290001;
     public static final int ARPQ_SHIELD = 2022269;
@@ -297,6 +298,7 @@ public class ItemId {
     public static final int QUICK_DELIVERY_TICKET = 5330000;
     public static final int CHALKBOARD_1 = 5370000;
     public static final int CHALKBOARD_2 = 5370001;
+    public static final int LOCAL_GACHAPON_TICKET = 5220000;
     public static final int REMOTE_GACHAPON_TICKET = 5451000;
     public static final int AP_RESET = 5050000;
     public static final int NAME_CHANGE = 5400000;

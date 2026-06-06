@@ -487,3 +487,6 @@ server:
     GODLY_STATS_MIN_HPMP_BONUS: 30       # Minimum max HP/MP bonus
     UNTRADEABLE_ITEMS_TRADEABLE: true    # Allow untradeable items to be traded, dropped, and included in bot recommendations
     DISABLE_ONE_OF_A_KIND_CHECK: true    # Disable the one-of-a-kind item restriction (info/only == 1 items)
+
+    # NX on kill (LumenMS): % chance for a mob kill to award NX. 0 disables. Adjust live with @setnxdroprate.
+    NX_KILL_DROP_RATE: 0

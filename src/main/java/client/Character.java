@@ -99,6 +99,7 @@ import org.slf4j.LoggerFactory;
 import scripting.AbstractPlayerInteraction;
 import scripting.event.EventInstanceManager;
 import scripting.item.ItemScriptManager;
+import service.MilestoneRewardService;
 import server.CashShop;
 import server.ExpLogger;
 import server.ExpLogger.ExpLogRecord;
@@ -108,6 +109,7 @@ import server.Marriage;
 import server.Shop;
 import server.StatEffect;
 import server.Storage;
+import server.OreStorage;
 import server.ThreadManager;
 import server.TimerManager;
 import server.Trade;
@@ -246,6 +248,12 @@ public class Character extends AbstractCharacterObject {
     private String linkedName = null;
     private boolean finishedDojoTutorial;
     private boolean usedStorage = false;
+    private boolean usingOreStorage = false;
+    private boolean usedOreStorage = false;
+    private boolean autoOreStorage = false;
+    private OreStorage orestorage = null;
+    private DamageSkinInventory damageSkinInv = new DamageSkinInventory();
+    private int activeDamageSkin = 0;
     private String name;
     private String chalktext;
     private String commandtext;
@@ -5248,6 +5256,26 @@ public class Character extends AbstractCharacterObject {
         usedStorage = true;
     }
 
+    public void setUsedOreStorage() {
+        usedOreStorage = true;
+    }
+
+    public boolean getUsingOreStorage() {
+        return usingOreStorage;
+    }
+
+    public void setUsingOreStorage(boolean isUsingOreStorage) {
+        usingOreStorage = isUsingOreStorage;
+    }
+
+    public boolean isAutoOreStorage() {
+        return autoOreStorage;
+    }
+
+    public void setAutoOreStorage(boolean enabled) {
+        autoOreStorage = enabled;
+    }
+
     public List<Ring> getFriendshipRings() {
         synchronized (friendshipRings) {
             List<Ring> copy = new ArrayList<>(friendshipRings);
@@ -6177,6 +6205,22 @@ public class Character extends AbstractCharacterObject {
         return storage;
     }
 
+    public OreStorage getOreStorage() {
+        return orestorage;
+    }
+
+    public DamageSkinInventory getDamageSkinInventory() {
+        return damageSkinInv;
+    }
+
+    public int getActiveDamageSkin() {
+        return activeDamageSkin;
+    }
+
+    public void setActiveDamageSkin(int skinId) {
+        this.activeDamageSkin = skinId;
+    }
+
     public Collection<Summon> getSummonsValues() {
         return new ArrayList<>(summons.values());
     }
@@ -6732,6 +6776,8 @@ public class Character extends AbstractCharacterObject {
                 }
             }
         }
+
+        MilestoneRewardService.onLevelReached(this, level);
     }
 
     public boolean leaveParty() {
@@ -7173,6 +7219,9 @@ public class Character extends AbstractCharacterObject {
                     ret.buddylist = new BuddyList(buddyCapacity);
                     ret.lastExpGainTime = rs.getTimestamp("lastExpGainTime").getTime();
                     ret.canRecvPartySearchInvite = rs.getBoolean("partySearch");
+                    ret.autoOreStorage = rs.getBoolean("autoOreStorage");
+                    ret.activeDamageSkin = rs.getInt("activeDamageSkin");
+                    ret.damageSkinInv.loadSkins(charid);
 
                     wserv = Server.getInstance().getWorld(ret.world);
 
@@ -7557,6 +7606,7 @@ public class Character extends AbstractCharacterObject {
                 
                 ret.buddylist.loadFromDb(charid);
                 ret.storage = wserv.getAccountStorage(ret.accountid);
+                ret.orestorage = wserv.getAccountOreStorage(ret.accountid);
 
                 /* Double-check storage incase player is first time on server
                  * The storage won't exist so nothing to load
@@ -7565,7 +7615,12 @@ public class Character extends AbstractCharacterObject {
                     wserv.loadAccountStorage(ret.accountid);
                     ret.storage = wserv.getAccountStorage(ret.accountid);
                 }
-                
+
+                if (ret.orestorage == null) {
+                    wserv.loadAccountOreStorage(ret.accountid);
+                    ret.orestorage = wserv.getAccountOreStorage(ret.accountid);
+                }
+
                 int startHp = ret.hp, startMp = ret.mp;
                 ret.reapplyLocalStats();
                 ret.changeHpMp(startHp, startMp, true);
@@ -8529,7 +8584,7 @@ public class Character extends AbstractCharacterObject {
             con.setTransactionIsolation(Connection.TRANSACTION_READ_UNCOMMITTED);
 
             try {
-                try (PreparedStatement ps = con.prepareStatement("UPDATE characters SET level = ?, fame = ?, str = ?, dex = ?, luk = ?, `int` = ?, exp = ?, gachaexp = ?, hp = ?, mp = ?, maxhp = ?, maxmp = ?, sp = ?, ap = ?, gm = ?, skincolor = ?, gender = ?, job = ?, hair = ?, face = ?, map = ?, meso = ?, hpMpUsed = ?, spawnpoint = ?, party = ?, buddyCapacity = ?, messengerid = ?, messengerposition = ?, mountlevel = ?, mountexp = ?, mounttiredness= ?, equipslots = ?, useslots = ?, setupslots = ?, etcslots = ?,  monsterbookcover = ?, vanquisherStage = ?, dojoPoints = ?, lastDojoStage = ?, finishedDojoTutorial = ?, vanquisherKills = ?, matchcardwins = ?, matchcardlosses = ?, matchcardties = ?, omokwins = ?, omoklosses = ?, omokties = ?, dataString = ?, fquest = ?, jailexpire = ?, partnerId = ?, marriageItemId = ?, lastExpGainTime = ?, ariantPoints = ?, partySearch = ? WHERE id = ?", Statement.RETURN_GENERATED_KEYS)) {
+                try (PreparedStatement ps = con.prepareStatement("UPDATE characters SET level = ?, fame = ?, str = ?, dex = ?, luk = ?, `int` = ?, exp = ?, gachaexp = ?, hp = ?, mp = ?, maxhp = ?, maxmp = ?, sp = ?, ap = ?, gm = ?, skincolor = ?, gender = ?, job = ?, hair = ?, face = ?, map = ?, meso = ?, hpMpUsed = ?, spawnpoint = ?, party = ?, buddyCapacity = ?, messengerid = ?, messengerposition = ?, mountlevel = ?, mountexp = ?, mounttiredness= ?, equipslots = ?, useslots = ?, setupslots = ?, etcslots = ?,  monsterbookcover = ?, vanquisherStage = ?, dojoPoints = ?, lastDojoStage = ?, finishedDojoTutorial = ?, vanquisherKills = ?, matchcardwins = ?, matchcardlosses = ?, matchcardties = ?, omokwins = ?, omoklosses = ?, omokties = ?, dataString = ?, fquest = ?, jailexpire = ?, partnerId = ?, marriageItemId = ?, lastExpGainTime = ?, ariantPoints = ?, partySearch = ?, autoOreStorage = ?, activeDamageSkin = ? WHERE id = ?", Statement.RETURN_GENERATED_KEYS)) {
                     ps.setInt(1, level);    // thanks CanIGetaPR for noticing an unnecessary "level" limitation when persisting DB data
                     ps.setInt(2, fame);
 
@@ -8643,7 +8698,9 @@ public class Character extends AbstractCharacterObject {
                     ps.setTimestamp(53, new Timestamp(lastExpGainTime));
                     ps.setInt(54, ariantPoints);
                     ps.setBoolean(55, canRecvPartySearchInvite);
-                    ps.setInt(56, id);
+                    ps.setInt(56, autoOreStorage ? 1 : 0);
+                    ps.setInt(57, activeDamageSkin);
+                    ps.setInt(58, id);
 
                     int updateRows = ps.executeUpdate();
                     if (updateRows < 1) {
@@ -8902,6 +8959,11 @@ public class Character extends AbstractCharacterObject {
                 if (storage != null && usedStorage) {
                     storage.saveToDB(con);
                     usedStorage = false;
+                }
+
+                if (orestorage != null && usedOreStorage) {
+                    orestorage.saveToDB(con);
+                    usedOreStorage = false;
                 }
 
                 con.commit();

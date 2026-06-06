@@ -1,5 +1,7 @@
 package constants.id;
 
+import java.util.Set;
+
 public class MapId {
     // Special
     public static final int NONE = 999999999;
@@ -278,4 +280,40 @@ public class MapId {
     public static final int CRIMSONWOOD_KEEP = 610020006;
     public static final int MU_LUNG_DOJO_HALL = 925020001;
     public static final int EXCLUSIVE_TRAINING_CENTER = 970030000;
+
+    // LumenMS: maps the Hyper Teleport Rock refuses to warp into.
+    private static final Set<Integer> BOSS_EXPEDITION_MAPS = Set.of(
+            // Balrog
+            105100300, 105100301, 105100400, 105100401,
+            // Papulatus
+            220080001,
+            // Zakum
+            280030000,
+            // Horntail
+            240060000, 240060100, 240060200, 240060201,
+            // Pink Bean
+            270050100, 270050200, 270050300,
+            // Von Leon
+            211070100,
+            // Toad
+            800040410,
+            // Showa
+            801040100, 801040101,
+            // Scarlion and Targa
+            551030200,
+            // Krexel
+            541020800,
+            // Crimsonwood Keep PQ expedition
+            610030100, 610030200, 610030300, 610030400, 610030500,
+            610030510, 610030520, 610030521, 610030522, 610030530,
+            610030540, 610030550, 610030600, 610030700, 610030800
+    );
+
+    public static boolean isBossExpeditionMap(int mapId) {
+        return BOSS_EXPEDITION_MAPS.contains(mapId);
+    }
+
+    public static boolean isTimeTemple(int mapId) {
+        return mapId >= 270050100 && mapId <= 270050999;
+    }
 }

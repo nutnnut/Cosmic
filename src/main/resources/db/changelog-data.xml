@@ -11,6 +11,9 @@
     <changeSet id="102" author="Ponk">
         <sqlFile path="db/data/102-shopitems-data.sql"/>
     </changeSet>
+    <changeSet id="103" author="Lumen">
+        <sqlFile path="db/data/103-lumenms-shop-data.sql"/>
+    </changeSet>
 
     <changeSet id="111" author="Ponk">
         <sqlFile path="db/data/111-makercreate-data.sql"/>

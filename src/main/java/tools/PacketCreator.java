@@ -23,6 +23,7 @@ package tools;
 import client.BuddylistEntry;
 import client.BuffStat;
 import client.Character;
+import client.DamageSkinCatalog;
 import client.Character.SkillEntry;
 import client.Client;
 import client.Disease;
@@ -7459,6 +7460,44 @@ public class PacketCreator {
         //8 or 16 = "You have reached the round of %n by default." | Encodes nState as %n ?!
         p.writeByte(nState);
 
+        return p;
+    }
+
+    public static Packet damageSkinCatalog() {
+        Map<Integer, Long> all = DamageSkinCatalog.getAll();
+        OutPacket p = OutPacket.create(SendOpcode.DAMAGE_SKIN_CATALOG);
+        p.writeShort(all.size());                   // client reads uint16
+        for (Map.Entry<Integer, Long> e : all.entrySet()) {
+            p.writeInt(e.getKey());
+            p.writeLong(e.getValue());              // client reads int64 via Decode8
+        }
+        return p;
+    }
+
+    public static Packet damageSkinInventory(Character chr) {
+        Set<Integer> owned = chr.getDamageSkinInventory().getOwnedIds();
+        OutPacket p = OutPacket.create(SendOpcode.DAMAGE_SKIN_INVENTORY);
+        p.writeInt(chr.getActiveDamageSkin());      // client reads int32
+        p.writeShort(owned.size());                 // client reads uint16
+        for (int id : owned) {
+            p.writeInt(id);
+        }
+        return p;
+    }
+
+    public static Packet damageSkinResult(int op, boolean ok, int skinId, int newMesos) {
+        OutPacket p = OutPacket.create(SendOpcode.DAMAGE_SKIN_RESULT);
+        p.writeByte(op);
+        p.writeByte(ok ? 1 : 0);
+        p.writeInt(skinId);
+        p.writeInt(newMesos);
+        return p;
+    }
+
+    public static Packet damageSkinBroadcast(int charId, int skinId) {
+        OutPacket p = OutPacket.create(SendOpcode.DAMAGE_SKIN_BROADCAST);
+        p.writeInt(charId);
+        p.writeInt(skinId);
         return p;
     }
 

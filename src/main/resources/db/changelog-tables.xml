@@ -105,4 +105,32 @@
         <sqlFile path="db/tables/025-bot-ownership.sql"/>
     </changeSet>
 
+    <changeSet id="26" author="Lumen">
+        <sqlFile path="db/tables/026-orestorage.sql"/>
+    </changeSet>
+
+    <changeSet id="27" author="Lumen">
+        <sqlFile path="db/tables/027-character-autoorestg.sql"/>
+    </changeSet>
+
+    <changeSet id="28" author="Lumen">
+        <sqlFile path="db/tables/028-damage-skin.sql"/>
+    </changeSet>
+
+    <changeSet id="29" author="Lumen">
+        <sqlFile path="db/tables/029-milestone-rewards.sql"/>
+    </changeSet>
+
+    <changeSet id="30" author="Lumen">
+        <sqlFile path="db/tables/030-character-rebirths.sql"/>
+    </changeSet>
+
+    <changeSet id="31" author="Lumen">
+        <sqlFile path="db/tables/031-character-rebirth-skills.sql"/>
+    </changeSet>
+
+    <changeSet id="32" author="Lumen">
+        <sqlFile path="db/tables/032-rebirth-ring.sql"/>
+    </changeSet>
+
 </databaseChangeLog>
