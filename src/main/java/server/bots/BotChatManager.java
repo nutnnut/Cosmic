@@ -6,6 +6,7 @@ import client.Skill;
 import client.SkillFactory;
 import client.SkinColor;
 import client.Stat;
+import server.ItemInformationProvider;
 import client.inventory.InventoryType;
 import client.inventory.Item;
 import client.inventory.WeaponType;
@@ -2445,8 +2446,10 @@ public class BotChatManager {
         int[] hairs = male ? MALE_HAIR : FEMALE_HAIR;
         int[] faces = male ? MALE_FACE : FEMALE_FACE;
 
-        int hair = hairs[rng.nextInt(hairs.length)] + rng.nextInt(8);   // base style + random color
-        int face = faces[rng.nextInt(faces.length)];
+        // Every applied id is validated against the WZ (getName != null) so an invalid
+        // hair/face can never be sent to clients (an invalid look crashes the client).
+        int hair = pickValidHair(hairs[rng.nextInt(hairs.length)], rng.nextInt(8), bot.getHair());
+        int face = pickValid(faces[rng.nextInt(faces.length)], bot.getFace());
         int skin = SKIN_COLORS[rng.nextInt(SKIN_COLORS.length)];
 
         bot.setHair(hair);
@@ -2458,6 +2461,19 @@ public class BotChatManager {
         bot.equipChanged();
 
         BotManager.getInstance().botReply(entry, STYLE_REPLIES.get(rng.nextInt(STYLE_REPLIES.size())));
+    }
+
+    // Prefer the color variant if it exists, else the base style, else keep the current look.
+    private static int pickValidHair(int base, int color, int fallback) {
+        ItemInformationProvider ii = ItemInformationProvider.getInstance();
+        if (ii.getName(base + color) != null) {
+            return base + color;
+        }
+        return ii.getName(base) != null ? base : fallback;
+    }
+
+    private static int pickValid(int candidate, int fallback) {
+        return ItemInformationProvider.getInstance().getName(candidate) != null ? candidate : fallback;
     }
 
     private static String dropOrTradePrompt(String category, int count) {
