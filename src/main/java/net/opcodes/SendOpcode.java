@@ -353,7 +353,11 @@ public enum SendOpcode {
     MAPLELIFE_RESULT(0x15D),
     MAPLELIFE_ERROR(0x15E),
     VICIOUS_HAMMER(0x162),
-    VEGA_SCROLL(0x166);
+    VEGA_SCROLL(0x166),
+    DAMAGE_SKIN_CATALOG(0x170),     // LumenMS custom client opcode
+    DAMAGE_SKIN_INVENTORY(0x171),   // LumenMS custom client opcode
+    DAMAGE_SKIN_RESULT(0x172),      // LumenMS custom client opcode
+    DAMAGE_SKIN_BROADCAST(0x173);   // LumenMS custom client opcode
     private int code = -2;
 
     SendOpcode(int code) {

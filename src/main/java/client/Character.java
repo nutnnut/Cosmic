@@ -252,6 +252,8 @@ public class Character extends AbstractCharacterObject {
     private boolean usedOreStorage = false;
     private boolean autoOreStorage = false;
     private OreStorage orestorage = null;
+    private DamageSkinInventory damageSkinInv = new DamageSkinInventory();
+    private int activeDamageSkin = 0;
     private String name;
     private String chalktext;
     private String commandtext;
@@ -6207,6 +6209,18 @@ public class Character extends AbstractCharacterObject {
         return orestorage;
     }
 
+    public DamageSkinInventory getDamageSkinInventory() {
+        return damageSkinInv;
+    }
+
+    public int getActiveDamageSkin() {
+        return activeDamageSkin;
+    }
+
+    public void setActiveDamageSkin(int skinId) {
+        this.activeDamageSkin = skinId;
+    }
+
     public Collection<Summon> getSummonsValues() {
         return new ArrayList<>(summons.values());
     }
@@ -7206,6 +7220,8 @@ public class Character extends AbstractCharacterObject {
                     ret.lastExpGainTime = rs.getTimestamp("lastExpGainTime").getTime();
                     ret.canRecvPartySearchInvite = rs.getBoolean("partySearch");
                     ret.autoOreStorage = rs.getBoolean("autoOreStorage");
+                    ret.activeDamageSkin = rs.getInt("activeDamageSkin");
+                    ret.damageSkinInv.loadSkins(charid);
 
                     wserv = Server.getInstance().getWorld(ret.world);
 
@@ -8568,7 +8584,7 @@ public class Character extends AbstractCharacterObject {
             con.setTransactionIsolation(Connection.TRANSACTION_READ_UNCOMMITTED);
 
             try {
-                try (PreparedStatement ps = con.prepareStatement("UPDATE characters SET level = ?, fame = ?, str = ?, dex = ?, luk = ?, `int` = ?, exp = ?, gachaexp = ?, hp = ?, mp = ?, maxhp = ?, maxmp = ?, sp = ?, ap = ?, gm = ?, skincolor = ?, gender = ?, job = ?, hair = ?, face = ?, map = ?, meso = ?, hpMpUsed = ?, spawnpoint = ?, party = ?, buddyCapacity = ?, messengerid = ?, messengerposition = ?, mountlevel = ?, mountexp = ?, mounttiredness= ?, equipslots = ?, useslots = ?, setupslots = ?, etcslots = ?,  monsterbookcover = ?, vanquisherStage = ?, dojoPoints = ?, lastDojoStage = ?, finishedDojoTutorial = ?, vanquisherKills = ?, matchcardwins = ?, matchcardlosses = ?, matchcardties = ?, omokwins = ?, omoklosses = ?, omokties = ?, dataString = ?, fquest = ?, jailexpire = ?, partnerId = ?, marriageItemId = ?, lastExpGainTime = ?, ariantPoints = ?, partySearch = ?, autoOreStorage = ? WHERE id = ?", Statement.RETURN_GENERATED_KEYS)) {
+                try (PreparedStatement ps = con.prepareStatement("UPDATE characters SET level = ?, fame = ?, str = ?, dex = ?, luk = ?, `int` = ?, exp = ?, gachaexp = ?, hp = ?, mp = ?, maxhp = ?, maxmp = ?, sp = ?, ap = ?, gm = ?, skincolor = ?, gender = ?, job = ?, hair = ?, face = ?, map = ?, meso = ?, hpMpUsed = ?, spawnpoint = ?, party = ?, buddyCapacity = ?, messengerid = ?, messengerposition = ?, mountlevel = ?, mountexp = ?, mounttiredness= ?, equipslots = ?, useslots = ?, setupslots = ?, etcslots = ?,  monsterbookcover = ?, vanquisherStage = ?, dojoPoints = ?, lastDojoStage = ?, finishedDojoTutorial = ?, vanquisherKills = ?, matchcardwins = ?, matchcardlosses = ?, matchcardties = ?, omokwins = ?, omoklosses = ?, omokties = ?, dataString = ?, fquest = ?, jailexpire = ?, partnerId = ?, marriageItemId = ?, lastExpGainTime = ?, ariantPoints = ?, partySearch = ?, autoOreStorage = ?, activeDamageSkin = ? WHERE id = ?", Statement.RETURN_GENERATED_KEYS)) {
                     ps.setInt(1, level);    // thanks CanIGetaPR for noticing an unnecessary "level" limitation when persisting DB data
                     ps.setInt(2, fame);
 
@@ -8683,7 +8699,8 @@ public class Character extends AbstractCharacterObject {
                     ps.setInt(54, ariantPoints);
                     ps.setBoolean(55, canRecvPartySearchInvite);
                     ps.setInt(56, autoOreStorage ? 1 : 0);
-                    ps.setInt(57, id);
+                    ps.setInt(57, activeDamageSkin);
+                    ps.setInt(58, id);
 
                     int updateRows = ps.executeUpdate();
                     if (updateRows < 1) {

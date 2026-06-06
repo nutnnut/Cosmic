@@ -204,7 +204,9 @@ public enum RecvOpcode {
     USE_MAPLELIFE(0x100),
     USE_HAMMER(0x104),
     HYPER_TELEPORT_ROCK(0x105),     // LumenMS custom client opcode
-    USE_GACHAPON_TICKET(0x106);     // LumenMS custom client opcode
+    USE_GACHAPON_TICKET(0x106),     // LumenMS custom client opcode
+    DAMAGE_SKIN_APPLY(0x110),       // LumenMS custom client opcode
+    DAMAGE_SKIN_PURCHASE(0x111);    // LumenMS custom client opcode
 
     private int code = -2;
 

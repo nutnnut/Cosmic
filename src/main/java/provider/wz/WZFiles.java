@@ -6,6 +6,7 @@ import java.nio.file.Path;
 public enum WZFiles {
     QUEST("Quest"),
     ETC("Etc"),
+    EFFECT("Effect"),
     ITEM("Item"),
     CHARACTER("Character"),
     STRING("String"),
