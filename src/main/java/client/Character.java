@@ -99,6 +99,7 @@ import org.slf4j.LoggerFactory;
 import scripting.AbstractPlayerInteraction;
 import scripting.event.EventInstanceManager;
 import scripting.item.ItemScriptManager;
+import service.MilestoneRewardService;
 import server.CashShop;
 import server.ExpLogger;
 import server.ExpLogger.ExpLogRecord;
@@ -6732,6 +6733,8 @@ public class Character extends AbstractCharacterObject {
                 }
             }
         }
+
+        MilestoneRewardService.onLevelReached(this, level);
     }
 
     public boolean leaveParty() {

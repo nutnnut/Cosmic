@@ -59,6 +59,7 @@ import org.slf4j.LoggerFactory;
 import scripting.event.EventInstanceManager;
 import server.life.MobSkill;
 import service.NoteService;
+import service.RebirthRingService;
 import tools.DatabaseConnection;
 import tools.PacketCreator;
 import tools.Pair;
@@ -239,6 +240,9 @@ public final class PlayerLoggedinHandler extends AbstractPacketHandler {
             if (diseases != null) {
                 player.silentApplyDiseases(diseases);
             }
+
+            // Rehydrate the rebirth ring's stats from the rebirth_ring stack counts.
+            RebirthRingService.applyOnLogin(player);
 
             c.sendPacket(PacketCreator.getCharInfo(player));
             if (!player.isHidden()) {

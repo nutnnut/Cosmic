@@ -27,6 +27,9 @@ import client.Client;
 import client.command.commands.gm0.ChangeLanguageCommand;
 import client.command.commands.gm0.DisposeCommand;
 import client.command.commands.gm0.StyleCommand;
+import client.command.commands.gm0.RebirthCommand;
+import client.command.commands.gm0.VesselCommand;
+import client.command.commands.gm0.LumenCommand;
 import client.command.commands.gm0.DropLimitCommand;
 import client.command.commands.gm0.EnableAuthCommand;
 import client.command.commands.gm0.EquipLvCommand;
@@ -53,6 +56,7 @@ import client.command.commands.gm0.ToggleExpCommand;
 import client.command.commands.gm0.UptimeCommand;
 import client.command.commands.gm1.BossHpCommand;
 import client.command.commands.gm1.BuffMeCommand;
+import client.command.commands.gm1.RingInspectCommand;
 import client.command.commands.gm1.DressingRoomCashCommand;
 import client.command.commands.gm1.DressingRoomCommand;
 import client.command.commands.gm1.GotoCommand;
@@ -365,6 +369,9 @@ public class CommandsExecutor {
         addCommand("gacha", GachaCommand.class);
         addCommand("dispose", DisposeCommand.class);
         addCommand("style", StyleCommand.class);
+        addCommand("rebirth", RebirthCommand.class);
+        addCommand(new String[]{"vessel", "soulvessel"}, VesselCommand.class);
+        addCommand("lumen", LumenCommand.class);
         addCommand("changel", ChangeLanguageCommand.class);
         addCommand("equiplv", EquipLvCommand.class);
         addCommand("showrates", ShowRatesCommand.class);
@@ -401,6 +408,7 @@ public class CommandsExecutor {
         addCommand("whatdropsfrom", 1, WhatDropsFromCommand.class);
         addCommand("whodrops", 1, WhoDropsCommand.class);
         addCommand("buffme", 1, BuffMeCommand.class);
+        addCommand("ringinspect", 1, RingInspectCommand.class);
         addCommand("goto", 1, GotoCommand.class);
 
         commandsNameDesc.add(levelCommandsCursor);
