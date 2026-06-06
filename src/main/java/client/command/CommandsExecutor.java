@@ -173,6 +173,8 @@ import client.command.commands.gm3.ToggleCouponCommand;
 import client.command.commands.gm3.UnBanCommand;
 import client.command.commands.gm4.BossDropRateCommand;
 import client.command.commands.gm4.CakeCommand;
+import client.command.commands.gm4.StartDoubleXpCommand;
+import client.command.commands.gm4.SetNxDropRateCommand;
 import client.command.commands.gm4.DropRateCommand;
 import client.command.commands.gm4.ExpRateCommand;
 import client.command.commands.gm4.FishingRateCommand;
@@ -541,6 +543,8 @@ public class CommandsExecutor {
 
         addCommand("servermessage", 4, ServerMessageCommand.class);
         addCommand("proitem", 4, ProItemCommand.class);
+        addCommand(new String[]{"startdoublexp", "2xevent"}, 4, StartDoubleXpCommand.class);
+        addCommand("setnxdroprate", 4, SetNxDropRateCommand.class);
         addCommand("seteqstat", 4, SetEqStatCommand.class);
         addCommand("exprate", 4, ExpRateCommand.class);
         addCommand("mesorate", 4, MesoRateCommand.class);

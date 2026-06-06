@@ -54,6 +54,7 @@ import net.server.world.PartyCharacter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import scripting.event.EventInstanceManager;
+import server.CashShop;
 import server.StatEffect;
 import server.TimerManager;
 import server.loot.LootManager;
@@ -778,6 +779,10 @@ public class Monster extends AbstractLoadedLife {
     public Character killBy(final Character killer) {
         distributeExperience(killer != null ? killer.getId() : 0);
 
+        if (killer != null && killer.isLoggedinWorld()) {
+            grantKillNX(killer);
+        }
+
         final Pair<Character, Boolean> lastController = aggroRemoveController();
         final List<Integer> toSpawn = this.getRevives();
         if (toSpawn != null) {
@@ -848,6 +853,18 @@ public class Monster extends AbstractLoadedLife {
 
         Character looter = map.getCharacterById(getHighestDamagerId());
         return looter != null ? looter : killer;
+    }
+
+    private void grantKillNX(Character killer) {
+        if (Randomizer.nextInt(100) >= YamlConfig.config.server.NX_KILL_DROP_RATE) {   // configurable % chance to award NX on a mob kill
+            return;
+        }
+        int mobLevel = getLevel();
+        int minNX = Math.max(1, mobLevel / 10);
+        int maxNX = Math.max(5, mobLevel / 2);
+        int nxReward = minNX + Randomizer.nextInt(maxNX - minNX + 1);
+        killer.getCashShop().gainCash(CashShop.NX_CREDIT, nxReward);
+        killer.dropMessage(6, "+" + nxReward + " NX earned for defeating " + getName() + "!");
     }
 
     public void dropFromFriendlyMonster(long delay) {
