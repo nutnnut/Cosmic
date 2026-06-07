@@ -74,4 +74,8 @@
         <sqlFile path="db/data/166-miki-damage-skin.sql"/>
     </changeSet>
 
+    <changeSet id="167" author="Lumen">
+        <sqlFile path="db/data/167-miki-beauty-salon.sql"/>
+    </changeSet>
+
 </databaseChangeLog>
