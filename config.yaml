@@ -4,28 +4,17 @@
 worlds:
     #Properties for Scania 0
   - flag: 0
-    server_message: Welcome to GreenCatMSv83! EXP x2-x6, Meso x2, Drop x2, Scroll +10%
-    event_message: GreenCatMSv83!
-    why_am_i_recommended: Welcome to GreenCatMSv83!
+    server_message: Welcome to Scania!
+    event_message: Scania!
+    why_am_i_recommended: Welcome to Scania!
     channels: 3
-    exp_rate: 2
-    level_exp_rate_multipliers:          #Applied multiplicatively on top of this world's EXP rate. Independent from USE_ADD_RATES_BY_LEVEL.
-      - level: 30
-        multiplier: 1.5
-      - level: 70
-        multiplier: 2.0
-      - level: 120
-        multiplier: 2.5
-      - level: 150
-        multiplier: 3.0
-    mob_rate: 1.5                            #Mob count multiplier
-    max_mob_per_spawnpoint: 2                #Must be equal or higher than mob_rate
-    meso_rate: 2
-    drop_rate: 2
-    boss_drop_rate: 2                      #NOTE: Boss drop rate OVERRIDES common drop rate, for bosses-only.
-    quest_rate: 1                           #Multiplier for Exp & Meso gains when completing a quest. Only available when USE_QUEST_RATE is true. Stacks with server Exp & Meso rates.
-    fishing_rate: 2                        #Multiplier for success likelihood on meso thrown during fishing.
-    travel_rate: 5                         #Means of transportation rides/departs using 1/N of the default time.
+    exp_rate: 4
+    meso_rate: 5
+    drop_rate: 4
+    boss_drop_rate: 10                      #NOTE: Boss drop rate OVERRIDES common drop rate, for bosses-only.
+    quest_rate: 3                           #Multiplier for Exp & Meso gains when completing a quest. Only available when USE_QUEST_RATE is true. Stacks with server Exp & Meso rates.
+    fishing_rate: 10                        #Multiplier for success likelihood on meso thrown during fishing.
+    travel_rate: 10                         #Means of transportation rides/departs using 1/N of the default time.
 
     #Properties for Bera 1
   - flag: 0
@@ -173,7 +162,7 @@ server:
     DB_URL_FORMAT: "jdbc:mysql://%s:3306/cosmic" # If the docker ENV for DB_HOST is anything but "db", this string format should be changed from 3306 to 3307 (or whichever port it was changed to in docker) 
     DB_HOST: "localhost" 
     DB_USER: "root"
-    DB_PASS: "1234"
+    DB_PASS: "Mymiddlenameisrae11"
     INIT_CONNECTION_POOL_TIMEOUT: 90    # Seconds
 
     #Login Configuration
@@ -189,8 +178,8 @@ server:
     COUPON_INTERVAL: 3600000            #60 minutes, 3600000.
     UPDATE_INTERVAL: 777                #Dictates the frequency on which the "centralized server time" is updated.
 
-    ENABLE_PIC: true               #Pick true/false to enable or disable Pic. Delete character requires PIC available.
-    ENABLE_PIN: false               #Pick true/false to enable or disable Pin.
+    ENABLE_PIC: false              #Pick true/false to enable or disable Pic. Delete character requires PIC available.
+    ENABLE_PIN: false              #Pick true/false to enable or disable Pin.
 
     BYPASS_PIC_EXPIRATION: 20           #Enables PIC bypass, which will remain active for that account by that client machine for N minutes. Set 0 to disable.
     BYPASS_PIN_EXPIRATION: 15           #Enables PIN bypass, which will remain active for that account by that client machine for N minutes. Set 0 to disable.
@@ -207,8 +196,8 @@ server:
     LOGIN_ATTEMPT_DURATION: 120         #Period in seconds the login attempt remains registered on the system.
 
     #Ip Configuration
-    HOST: 182.52.44.189                 #WAN IPv4 address
-    LANHOST: 192.168.50.10              #LAN IPv4 address
+    HOST: 15.204.224.159                 #WAN IPv4 address
+    LANHOST: 15.204.224.159              #LAN IPv4 address
     LOCALHOST: 127.0.0.1            #Loopback IPv4 address
     GMSERVER: false
 
@@ -230,7 +219,7 @@ server:
     USE_MAXRANGE_ECHO_OF_HERO: true
     USE_MTS: false
     USE_CPQ: true                       #Renders the CPQ available or not.
-    USE_AUTOHIDE_GM: false              #When enabled, GMs are automatically hidden when joining. Thanks to Steven Deblois (steven1152).
+    USE_AUTOHIDE_GM: true              #When enabled, GMs are automatically hidden when joining. Thanks to Steven Deblois (steven1152).
     USE_FIXED_RATIO_HPMP_UPDATE: false   #Enables the HeavenMS-builtin HPMP update based on the current pool to max pool ratio.
     USE_FAMILY_SYSTEM: true
     USE_DUEY: true
@@ -238,12 +227,12 @@ server:
     USE_STORAGE_ITEM_SORT: true         #Enables storage "Arrange Items" feature.
     USE_ITEM_SORT: true                 #Enables inventory "Item Sort/Merge" feature.
     USE_ITEM_SORT_BY_NAME: false        #Item sorting based on name rather than id.
-    USE_PARTY_FOR_STARTERS: true        #Players level 10 or below can create/invite other players on the given level range.
+    USE_PARTY_FOR_STARTERS: false        #Players level 10 or below can create/invite other players on the given level range.
     USE_AUTOASSIGN_STARTERS_AP: true   #Beginners level 10 or below have their AP autoassigned (they can't choose to levelup a stat). Set true ONLY if the localhost doesn't support AP assigning for beginners level 10 or below.
     USE_AUTOASSIGN_SECONDARY_CAP: true  #Prevents AP autoassign from spending on secondary stats after the player class' cap (defined on the autoassign handler) has been reached.
     USE_STARTING_AP_4: false             #Use early-GMS 4/4/4/4 starting stats. To overcome AP shortage, this gives 4AP/5AP at 1st/2nd job advancements.
     USE_AUTOBAN: false                  #Commands the server to detect infractors automatically.
-    USE_AUTOBAN_LOG: false               #Log autoban related messages. Still logs even with USE_AUTOBAN disabled.
+    USE_AUTOBAN_LOG: true               #Log autoban related messages. Still logs even with USE_AUTOBAN disabled.
     USE_EXP_GAIN_LOG: false #Logs characters exp gains; logs world rate & coupon exp, total gained exp, and current exp, level can be calculated from "ExpTable".
     USE_AUTOSAVE: true                  #Enables server autosaving feature (saves characters to DB each 1 hour).
     USE_SERVER_AUTOASSIGNER: false       #HeavenMS-builtin autoassigner, uses algorithm based on distributing AP accordingly with required secondary stat on equipments.
@@ -255,8 +244,9 @@ server:
     USE_ENFORCE_JOB_LEVEL_RANGE: false  #Caps the player level on the minimum required to advance their current jobs.
     USE_ENFORCE_JOB_SP_RANGE: false     #Caps the player SP level on the total obtainable by their current jobs. After changing jobs, missing SP will be retrieved.
     USE_ENFORCE_ITEM_SUGGESTION: false  #Forces the Owl of Minerva and the Cash Shop to always display the defined item array instead of those featured by the players.
-    USE_ENFORCE_UNMERCHABLE_CASH: true  #Forces players to not sell CASH items via merchants, drops of it disappears.
-    USE_ENFORCE_UNMERCHABLE_PET: true   #Forces players to not sell pets via merchants, drops of it disappears. (since non-named pets gets dirty name and other possible DB-related issues)
+    USE_ENFORCE_UNMERCHABLE_CASH: false  #Forces players to not sell CASH items via merchants, drops of it disappears.
+    USE_ENFORCE_UNMERCHABLE_PET: false   #Forces players to not sell pets via merchants, drops of it disappears. (since non-named pets gets dirty name and other possible DB-related issues)
+    UNTRADEABLE_ITEMS_TRADEABLE: true   #Allows items flagged tradeBlock/untradeable (incl. most cash items) to be placed in the trade window.
     USE_ENFORCE_MERCHANT_SAVE: true     #Forces automatic DB save on merchant owners, at every item movement on shop.
     USE_ENFORCE_MDOOR_POSITION: false   #Forces mystic door to be spawned near spawnpoints.
     USE_SPAWN_CLEAN_MDOOR: false         #Makes mystic doors to be spawned without deploy animation. This clears disconnecting issues that may happen when trying to cancel doors a couple seconds after deployment.
@@ -269,8 +259,8 @@ server:
     USE_MULTIPLE_SAME_EQUIP_DROP: true  #Enables multiple drops by mobs of the same equipment, number of possible drops based on the quantities provided at the drop data.
     USE_ENABLE_FULL_RESPAWN: false       #At respawn task, always respawn missing mobs when they're available. Spawn count doesn't depend on how many players are currently there.
     USE_ENABLE_CHAT_LOG: false          #Write in-game chat to log
-    USE_MAP_OWNERSHIP_SYSTEM: false      #Flag to enable/disable map ownership system
-    USE_FISHING_SYSTEM: false            #Flag to enable/disable custom fishing system
+    USE_MAP_OWNERSHIP_SYSTEM: true       #Flag to enable/disable map ownership system
+    USE_FISHING_SYSTEM: true             #Flag to enable/disable custom fishing system
     USE_NPCS_SCRIPTABLE: true           #Flag to enable/disable serverside predefined script NPCs.
 
     #Events/PQs Configuration
@@ -282,7 +272,7 @@ server:
     #Announcement Configuration
     USE_ANNOUNCE_SHOPITEMSOLD: false    #Automatic message sent to owner when an item from the Player Shop or Hired Merchant is sold.
     USE_ANNOUNCE_CHANGEJOB: false       #Automatic message sent to acquantainces when changing jobs.
-    USE_ANNOUNCE_NX_COUPON_LOOT: true    #Enables or disables the floating text when a player loots a NX card
+    USE_ANNOUNCE_NX_COUPON_LOOT: false    #Enables or disables the floating text when a player loots a NX card
 
     #Cash Shop Configuration
     USE_JOINT_CASHSHOP_INVENTORY: false  #Enables usage of a same cash shop inventory for explorers, cygnus and legends. Items from exclusive cash shop inventories won't show up on the shared inventory, though.
@@ -345,7 +335,7 @@ server:
 
     #Some Gameplay Enhancing Configurations
     #Scroll Configuration
-    USE_PERFECT_GM_SCROLL: false     #Scrolls from GMs never uses up slots nor fails.
+    USE_PERFECT_GM_SCROLL: true     #Scrolls from GMs never uses up slots nor fails.
     USE_PERFECT_SCROLLING: false     #Scrolls doesn't use slots upon failure.
     USE_ENHANCED_CHSCROLL: false     #Equips even more powerful with chaos upgrade.
     USE_ENHANCED_CRAFTING: false     #Apply chaos scroll on every equip crafted.
@@ -354,7 +344,7 @@ server:
     CHSCROLL_STAT_RANGE: 5              #Stat upgrade range (-N, N) on chaos scrolls.
 
     #Beginner Skills Configuration
-    USE_ULTRA_NIMBLE_FEET: true     #Massive speed & jump upgrade.
+    USE_ULTRA_NIMBLE_FEET: false     #Massive speed & jump upgrade.
     USE_ULTRA_RECOVERY: false        #Massive recovery amounts overtime.
     USE_ULTRA_THREE_SNAILS: false    #Massive damage on shell toss.
 
@@ -366,14 +356,13 @@ server:
     USE_FULL_HOLY_SYMBOL: false      #Holy symbol doesn't require EXP sharers to work in full.
 
     #Character Configuration
-    ALWAYS_MAX_INVENTORY_SLOTS: true #If true, new characters start with max equip/use/setup/etc slots and every login normalizes existing characters to max slots.
     USE_ADD_SLOTS_BY_LEVEL: false    #Slots are added each 20 levels.
     USE_ADD_RATES_BY_LEVEL: false    #Rates are added each 20 levels.
     USE_STACK_COUPON_RATES: false   #Multiple coupons effects builds up together.
     USE_PERFECT_PITCH: false         #For lvl 30 or above, each lvlup grants player 1 perfect pitch.
 
     #Quest Configuration
-    USE_QUEST_RATE: true           #Exp/Meso gained by quests uses fixed server exp/meso rate times quest rate as multiplier, instead of player rates.
+    USE_QUEST_RATE: true            #Exp/Meso gained by quests uses fixed server exp/meso rate times quest rate as multiplier, instead of player rates.
 
     #Quest Points Configuration
     QUEST_POINT_REPEATABLE_INTERVAL: 25  #Minimum interval between repeatable quest completions for quest points to be awarded.
@@ -396,12 +385,12 @@ server:
     FAMILY_MAX_GENERATIONS: 1000         #Maximum depth of family tree. (Distance from leader to farthest junior)
 
     #Equipment Configuration
-    USE_EQUIPMNT_LVLUP_SLOTS: false  #Equips can upgrade slots at level up.
-    USE_EQUIPMNT_LVLUP_POWER: false  #Enable more powerful stat upgrades at equip level up.
+    USE_EQUIPMNT_LVLUP_SLOTS: true   #Equips can upgrade slots at level up.
+    USE_EQUIPMNT_LVLUP_POWER: true   #Enable more powerful stat upgrades at equip level up.
     USE_EQUIPMNT_LVLUP_CASH: false   #Enable equip leveling up on cash equipments as well.
     MAX_EQUIPMNT_LVLUP_STAT_UP: 10000   #Max stat upgrade an equipment can have on a levelup.
     MAX_EQUIPMNT_STAT: 32767            #Max stat on an equipment by leveling up.
-    USE_EQUIPMNT_LVLUP: 1               #All equips lvlup at max level of N, set 1 to disable.
+    USE_EQUIPMNT_LVLUP: 7               #All equips lvlup at max level of N, set 1 to disable.
 
     #Map-Chair Configuration
     USE_CHAIR_EXTRAHEAL: false       #Enable map chairs to further recover player's HP and MP (player must have the Chair Mastery skill).
@@ -460,33 +449,15 @@ server:
     MINIMUM_GM_LEVEL_TO_USE_STORAGE: 4
     MINIMUM_GM_LEVEL_TO_USE_DUEY: 4
     MINIMUM_GM_LEVEL_TO_DROP: 4
-    GM_NO_FAME_COOLDOWN: false          #If true, GMs bypass the daily/monthly fame cooldown. Set false so bot GMs respect normal limits.
 
     #Any NPC ids that should search for a js override script (useful if they already have wz entries since otherwise they're ignored).
     NPCS_SCRIPTABLE:
       #9200000: Talk to Cody # Cody
       9001105: Rescue Gaga!  # Grandpa moon bunny
 
-    # NuTNNuT's custom features
-    # Scroll Success Bonus: adds a flat bonus % to all scroll success chances
-    SCROLL_SUCCESS_BONUS_ENABLED: true
-    SCROLL_SUCCESS_BONUS: 10             # Flat % added to every scroll's success chance (capped at 100)
+    #Lumen API (dev tooling; do not expose to the public internet)
 
-    # Maker Skills:
-    MAKER_CRYSTAL_ONLY_IMPROVE: true    # Black/Dark crystal only improves stats and never decreases, vanilla: false
+    # Godly Item (randomized equip drops with boosted stats)
 
-    # Godly Stats: chance for equipment to receive random bonus stats (like free-pre-applied chaos scroll)
-    GODLY_STATS_ENABLED: true
-    GODLY_STATS_DROP_CHANCE: 20          # % chance for dropped
-    GODLY_STATS_MAKER_CHANCE: 20         # % chance for maker skill (with stimulant)
-    GODLY_STATS_QUEST_CHANCE: 100        # % chance for quest reward equips
-    GODLY_STATS_NPC_CHANCE: 20           # % chance for NPC/event reward equips (e.g. KPQ reward)
-    GODLY_STATS_BONUS_SCALING: 0.1       # 0.1 -> lv 100 gear gain up to 10 str/dex/int/luk/atk/etc. (only if the stat already exists, like chaos scroll)
-    GODLY_STATS_MIN_BONUS: 5             # Minimum max stat bonus
-    GODLY_STATS_HPMP_SCALING: 1.0        # 1 -> lv 100 gear gain up to 100 bonus max HP/MP (even if equip had no hp/mp bonus)
-    GODLY_STATS_MIN_HPMP_BONUS: 30       # Minimum max HP/MP bonus
-    UNTRADEABLE_ITEMS_TRADEABLE: true    # Allow untradeable items to be traded, dropped, and included in bot recommendations
-    DISABLE_ONE_OF_A_KIND_CHECK: true    # Disable the one-of-a-kind item restriction (info/only == 1 items)
-
-    # NX on kill (LumenMS): % chance for a mob kill to award NX. 0 disables. Adjust live with @setnxdroprate.
-    NX_KILL_DROP_RATE: 0
+    # NX per mob kill
+    NX_KILL_DROP_RATE: 7              #Percent chance (0-100) a mob kill awards NX. Runtime-settable by GMs via !setnxdroprate.

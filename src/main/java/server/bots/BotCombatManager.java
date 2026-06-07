@@ -15,6 +15,7 @@ import constants.skills.Assassin;
 import constants.skills.Bandit;
 import constants.skills.Bowmaster;
 import constants.skills.Buccaneer;
+import constants.skills.ChiefBandit;
 import constants.skills.Cleric;
 import constants.skills.Corsair;
 import constants.skills.Crossbowman;
@@ -27,6 +28,7 @@ import constants.skills.Hermit;
 import constants.skills.Hunter;
 import constants.skills.Marksman;
 import constants.skills.NightWalker;
+import constants.skills.Paladin;
 import constants.skills.Priest;
 import constants.skills.Rogue;
 import constants.skills.Spearman;
@@ -50,6 +52,7 @@ import server.bots.combat.BotMobHitboxProvider;
 import server.combat.CombatFormulaProvider;
 import server.life.Monster;
 import server.maps.Foothold;
+import server.maps.MapItem;
 import server.maps.MapObject;
 import server.maps.MapObjectType;
 import server.maps.MapleMap;
@@ -83,6 +86,19 @@ class BotCombatManager {
             WhiteKnight.MAGIC_CRASH,
             DragonKnight.POWER_CRASH
     );
+    // Battleship cannons only fire while in Battleship form (a MONSTER_RIDING morph that disables a
+    // bot's normal attacks and uses a separate HP pool), so bots skip them and keep using Rapid Fire.
+    // Meso Explosion is NOT here: it's enabled conditionally in planSkillAttack once Pickpocket has
+    // dropped detonatable mesos near the target.
+    static final Set<Integer> BOT_UNUSABLE_ATTACK_SKILL_IDS = Set.of(
+            Corsair.BATTLESHIP_CANNON,
+            Corsair.BATTLESHIP_TORPEDO,
+            // Heaven's Hammer caps monsters at 1 HP (it can never kill), so a bot would spam it
+            // forever without finishing anything — leave it out and let Paladins use Blast.
+            Paladin.HEAVENS_HAMMER
+    );
+    private static final double MESO_EXPLOSION_RADIUS_SQ = 250.0 * 250.0;
+    private static final int MESO_EXPLOSION_MAX_MESOS = 15;
     private static final int DRAGON_ROAR_MIN_TARGETS_WITHOUT_HEALER = 10;
 
     enum AttackRoute {
@@ -917,10 +933,19 @@ class BotCombatManager {
 
             // "melee only" / "conserve mp": skip attack skills, fall back to the basic attack.
             if (!entry.meleeOnly) {
-                for (int skillId : cachedAttackSkillIds(entry)) {
-                    AttackPlan skillAttack = planSkillAttack(entry, bot, target, skillId);
-                    if (skillAttack != null) {
-                        candidates.add(skillAttack);
+                if (entry.forcedSkillId != 0) {
+                    // "spam <skill>": use only the forced skill when it can fire right now; if it
+                    // can't (range/MP/ammo/cooldown), fall through to the basic attack below.
+                    AttackPlan forced = planSkillAttack(entry, bot, target, entry.forcedSkillId);
+                    if (forced != null) {
+                        return forced;
+                    }
+                } else {
+                    for (int skillId : cachedAttackSkillIds(entry)) {
+                        AttackPlan skillAttack = planSkillAttack(entry, bot, target, skillId);
+                        if (skillAttack != null) {
+                            candidates.add(skillAttack);
+                        }
                     }
                 }
             }
@@ -996,6 +1021,19 @@ class BotCombatManager {
         List<PlanScore> scores = new ArrayList<>(candidates.size());
         for (AttackPlan candidate : candidates) {
             scores.add(scoreAttackPlan(bot, candidate));
+        }
+
+        // Bias toward skills: unless the basic attack already one-shots its target, drop it from
+        // contention so a usable attack skill is picked instead. The basic attack stays only when
+        // it can finish the mob in a single hit (no point spending MP/ammo a free swing would
+        // save) or when no skill plan is available at all (fallback). Without this, the basic
+        // attack (skillId 0) wins every DPS tie and every guaranteed-kill comparison against an
+        // equal-cooldown skill, so skills like Lucky Seven effectively never fire.
+        boolean basicOneShots = scores.stream()
+                .anyMatch(score -> score.plan.skillId == 0 && score.minimumKillsFullHpTargets);
+        boolean hasSkillPlan = scores.stream().anyMatch(score -> score.plan.skillId != 0);
+        if (!basicOneShots && hasSkillPlan) {
+            scores.removeIf(score -> score.plan.skillId == 0);
         }
 
         boolean hasGuaranteedFullHpKill = scores.stream().anyMatch(score -> score.minimumKillsFullHpTargets);
@@ -1148,11 +1186,101 @@ class BotCombatManager {
                     CombatFormulaProvider.getInstance().makeTarget(bot, target, attackPlan.numDamage,
                             attackPlan.skillId, damageProfile, attackPlan.hitDelayMs));
         }
+        recordCombatTelemetry(entry, attack.targets);
+        if (attackPlan.skillId == ChiefBandit.MESO_EXPLOSION && !attackPlan.targets.isEmpty()) {
+            // Detonate the mesos Pickpocket dropped near the target; applyAttack() removes them.
+            attack.explodedMesos = detonatableMesoOids(bot, attackPlan.targets.get(0));
+        }
 
         BotAttackExecutionProvider.applyAttackRoute(attackPlan.route, attack, bot);
         entry.attackCooldownMs = Math.max(entry.attackCooldownMs, attackPlan.cooldownMs);
         rememberAttackFacing(entry, attackPlan.stance);
         markAlerted(entry);
+    }
+
+    /** Accumulates damage/hit/miss totals for the "dps?" command (0-damage lines are misses). */
+    private static void recordCombatTelemetry(BotEntry entry,
+            java.util.Map<Integer, AbstractDealDamageHandler.AttackTarget> targets) {
+        if (targets == null || targets.isEmpty()) {
+            return;
+        }
+        if (entry.dpsWindowStartMs == 0L) {
+            entry.dpsWindowStartMs = System.currentTimeMillis();
+        }
+        for (AbstractDealDamageHandler.AttackTarget t : targets.values()) {
+            if (t == null || t.damageLines() == null) {
+                continue;
+            }
+            for (int dmg : t.damageLines()) {
+                if (dmg > 0) {
+                    entry.dpsDamage += dmg;
+                    entry.dpsHits++;
+                } else {
+                    entry.dpsMisses++;
+                }
+            }
+        }
+    }
+
+    /** OIDs of meso drops near {@code target} that Meso Explosion can detonate (Pickpocket-dropped). */
+    private static List<Integer> detonatableMesoOids(Character bot, Monster target) {
+        MapleMap map = bot.getMap();
+        if (map == null || target == null) {
+            return List.of();
+        }
+        List<Integer> oids = new ArrayList<>();
+        for (MapObject o : map.getMapObjectsInRange(target.getPosition(),
+                MESO_EXPLOSION_RADIUS_SQ, List.of(MapObjectType.ITEM))) {
+            if (o instanceof MapItem mi && mi.getMeso() > 0 && !mi.isPickedUp()) {
+                oids.add(mi.getObjectId());
+                if (oids.size() >= MESO_EXPLOSION_MAX_MESOS) {
+                    break;
+                }
+            }
+        }
+        return oids;
+    }
+
+    /** Resolves a learned attack-skill id from a (partial, case-insensitive) name, or 0 if none. */
+    static int resolveAttackSkillByName(BotEntry entry, Character bot, String query) {
+        if (query == null) {
+            return 0;
+        }
+        rebuildSkillCacheIfNeeded(entry, bot);
+        String q = query.toLowerCase().trim();
+        if (q.isEmpty()) {
+            return 0;
+        }
+        int best = 0;
+        String bestName = null;
+        for (int id : entry.attackSkillIds) {
+            String name = SkillFactory.getSkillName(id);
+            if (name == null) {
+                continue;
+            }
+            String lower = name.toLowerCase();
+            if (lower.equals(q)) {
+                return id; // exact match wins
+            }
+            if (lower.contains(q) && (bestName == null || name.length() < bestName.length())) {
+                best = id;
+                bestName = name;
+            }
+        }
+        return best;
+    }
+
+    /** Display names of the bot's learned attack skills, for the "spam" command's help reply. */
+    static List<String> listAttackSkillNames(BotEntry entry, Character bot) {
+        rebuildSkillCacheIfNeeded(entry, bot);
+        List<String> names = new ArrayList<>();
+        for (int id : entry.attackSkillIds) {
+            String name = SkillFactory.getSkillName(id);
+            if (name != null) {
+                names.add(name);
+            }
+        }
+        return names;
     }
 
     static void rememberAttackFacing(BotEntry entry, int attackPacketStance) {
@@ -1210,6 +1338,11 @@ class BotCombatManager {
         }
         int skillLevel = bot.getSkillLevel(skill);
         if (skillLevel <= 0) {
+            return null;
+        }
+        // Meso Explosion only works once Pickpocket (auto-cast via the buff loop) has dropped mesos
+        // near the target; otherwise skip it so the bot uses a normal attack.
+        if (skillId == ChiefBandit.MESO_EXPLOSION && detonatableMesoOids(bot, primaryTarget).isEmpty()) {
             return null;
         }
 
@@ -2496,7 +2629,8 @@ class BotCombatManager {
         if (skill == null || effect == null) {
             return false;
         }
-        if (NON_DAMAGE_ACTIVE_SKILL_IDS.contains(skill.getId())) {
+        if (NON_DAMAGE_ACTIVE_SKILL_IDS.contains(skill.getId())
+                || BOT_UNUSABLE_ATTACK_SKILL_IDS.contains(skill.getId())) {
             return false;
         }
         if (effect.isOverTime() || !declaresOffense(effect)) {

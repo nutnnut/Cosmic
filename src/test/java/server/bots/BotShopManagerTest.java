@@ -37,7 +37,7 @@ class BotShopManagerTest {
         Shop shop = mock(Shop.class);
 
         when(map.getMapObjectsInRange(any(Point.class), anyDouble(), any())).thenReturn(List.of(npc));
-        when(shop.getItems()).thenReturn(List.of());
+        when(shop.getItems()).thenReturn(merchantStock());
 
         try (Seam seam = withStarStats();
              MockedStatic<BotAttackExecutionProvider> attacks =
@@ -65,7 +65,7 @@ class BotShopManagerTest {
         Shop shop = mock(Shop.class);
 
         when(map.getMapObjectsInRange(any(Point.class), anyDouble(), any())).thenReturn(List.of(npc));
-        when(shop.getItems()).thenReturn(List.of());
+        when(shop.getItems()).thenReturn(merchantStock());
 
         try (Seam seam = withStarStats();
              MockedStatic<BotAttackExecutionProvider> attacks =
@@ -130,7 +130,7 @@ class BotShopManagerTest {
         when(bot.getInventory(InventoryType.USE)).thenReturn(new Inventory(bot, InventoryType.USE, (byte) 24));
         when(bot.getBuffedValue(any(BuffStat.class))).thenReturn(null);
         when(map.getMapObjectsInRange(any(Point.class), anyDouble(), any())).thenReturn(List.of(npc));
-        when(shop.getItems()).thenReturn(List.of());
+        when(shop.getItems()).thenReturn(merchantStock());
 
         try (MockedStatic<BotAttackExecutionProvider> attacks =
                      mockStatic(BotAttackExecutionProvider.class, org.mockito.Mockito.CALLS_REAL_METHODS);
@@ -151,6 +151,42 @@ class BotShopManagerTest {
         assertTrue(entry.shopVisitPending);
         assertTrue(entry.shopSellTrashPending);
         assertEquals(new Point(20, 0), entry.shopNpcPos);
+    }
+
+    @Test
+    void shouldNotShopAtNonMerchantWithOnlyFreeItems() {
+        // Regression: Inkwell (perfect-pitch NPC) has a "shop" whose items are all priced 0.
+        // The bot must treat it as a non-merchant and refuse the trip, not walk to it.
+        Character bot = mock(Character.class);
+        MapleMap map = mock(MapleMap.class);
+        BotEntry entry = new BotEntry(bot, null, null);
+        NPC npc = shopNpc(new Point(20, 0));
+        Shop shop = mock(Shop.class);
+
+        when(bot.getMap()).thenReturn(map);
+        when(bot.getPosition()).thenReturn(new Point(0, 0));
+        when(bot.getInventory(InventoryType.USE)).thenReturn(new Inventory(bot, InventoryType.USE, (byte) 24));
+        when(bot.getBuffedValue(any(BuffStat.class))).thenReturn(null);
+        when(map.getMapObjectsInRange(any(Point.class), anyDouble(), any())).thenReturn(List.of(npc));
+        when(shop.getItems()).thenReturn(List.of(new server.ShopItem((short) 1, 4000000, 0, 0)));
+
+        try (MockedStatic<BotAttackExecutionProvider> attacks =
+                     mockStatic(BotAttackExecutionProvider.class, org.mockito.Mockito.CALLS_REAL_METHODS);
+             MockedStatic<BotPotionManager> potions = mockStatic(BotPotionManager.class);
+             MockedStatic<ShopFactory> shops = mockStatic(ShopFactory.class);
+             MockedStatic<BotInventoryManager> inventories = mockStatic(BotInventoryManager.class)) {
+            ShopFactory factory = mock(ShopFactory.class);
+            shops.when(ShopFactory::getInstance).thenReturn(factory);
+            when(factory.getShopForNPC(npc.getId())).thenReturn(shop);
+            attacks.when(() -> BotAttackExecutionProvider.getEquippedWeaponType(bot)).thenReturn(WeaponType.CLAW);
+            potions.when(() -> BotPotionManager.countPotions(bot)).thenReturn(new int[]{9999, 9999});
+            inventories.when(() -> BotInventoryManager.collectSellTrashEquips(entry, bot))
+                    .thenReturn(List.of(mock(Item.class)));
+
+            BotShopManager.requestSellTrashVisit(entry, bot);
+        }
+
+        assertFalse(entry.shopVisitPending);
     }
 
     private static Character clawBotWithStars(int... quantities) {
@@ -212,7 +248,7 @@ class BotShopManagerTest {
         Shop shop = mock(Shop.class);
 
         when(map.getMapObjectsInRange(any(Point.class), anyDouble(), any())).thenReturn(List.of(npc));
-        when(shop.getItems()).thenReturn(List.<server.ShopItem>of());
+        when(shop.getItems()).thenReturn(merchantStock());
 
         try (MockedStatic<BotAttackExecutionProvider> attacks =
                      mockStatic(BotAttackExecutionProvider.class, org.mockito.Mockito.CALLS_REAL_METHODS);
@@ -236,5 +272,11 @@ class BotShopManagerTest {
         when(npc.getId()).thenReturn(9010000);
         when(npc.getPosition()).thenReturn(new Point(position));
         return npc;
+    }
+
+    // A real merchant's stock: one priced item so shopSellsGoods() treats it as a vendor.
+    // Uses an ETC id (4000000) so it doesn't read as ammo/potion/equip in the need-checks.
+    private static List<server.ShopItem> merchantStock() {
+        return List.of(new server.ShopItem((short) 1, 4000000, 100, 0));
     }
 }

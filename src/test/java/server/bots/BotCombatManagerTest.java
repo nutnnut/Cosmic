@@ -749,6 +749,63 @@ class BotCombatManagerTest {
     }
 
     @Test
+    void shouldPreferAttackSkillOverBasicWhenBasicDoesNotOneShot() {
+        MapleMap map = mock(MapleMap.class);
+        Character bot = mockBot(new Point(100, 200), map, 20_000, null);
+        // Single-target skill that hits for LESS than the basic attack and still can't one-shot
+        // the mob. The pure-DPS scorer used to keep the basic attack here (higher raw DPS); the
+        // skill bias now reaches for the skill because a basic swing won't finish the mob.
+        when(bot.calculateMinBaseDamage(100, 0.1d)).thenReturn(500); // basic min, far below mob HP
+        Skill weakSkill = skillWithAttack(Warrior.POWER_STRIKE, 1, 1, 50);
+        Monster primary = mockMob(new Point(140, 200), 9300300); // default 10,000 HP
+        when(map.getAllMonsters()).thenReturn(List.of(primary));
+        doAnswer(invocation -> {
+            Skill skill = invocation.getArgument(0);
+            return (byte) (skill.getId() == weakSkill.getId() ? 1 : 0);
+        }).when(bot).getSkillLevel(any(Skill.class));
+
+        BotEntry entry = new BotEntry(bot, null, null);
+        entry.attackSkillId = weakSkill.getId();
+
+        try (MockedStatic<SkillFactory> skillFactory = Mockito.mockStatic(SkillFactory.class)) {
+            skillFactory.when(() -> SkillFactory.getSkill(weakSkill.getId())).thenReturn(weakSkill);
+
+            BotCombatManager.AttackPlan plan = BotCombatManager.planAttack(entry, bot, primary);
+
+            assertEquals(Warrior.POWER_STRIKE, plan.skillId);
+        }
+    }
+
+    @Test
+    void shouldUseBasicAttackWhenItAlreadyOneShotsTheTarget() {
+        MapleMap map = mock(MapleMap.class);
+        Character bot = mockBot(new Point(100, 200), map, 20_000, null);
+        // A basic swing (min ~500 dmg) already kills this mob, so the bot should not spend MP/ammo
+        // on the skill even though one is available.
+        when(bot.calculateMinBaseDamage(100, 0.1d)).thenReturn(500); // basic min one-shots a 50 HP mob
+        Skill skill = skillWithAttack(Warrior.POWER_STRIKE, 1, 1, 260);
+        Monster primary = mockMob(new Point(140, 200), 9300301);
+        when(primary.getHp()).thenReturn(50);
+        when(primary.getMaxHp()).thenReturn(50);
+        when(map.getAllMonsters()).thenReturn(List.of(primary));
+        doAnswer(invocation -> {
+            Skill s = invocation.getArgument(0);
+            return (byte) (s.getId() == skill.getId() ? 1 : 0);
+        }).when(bot).getSkillLevel(any(Skill.class));
+
+        BotEntry entry = new BotEntry(bot, null, null);
+        entry.attackSkillId = skill.getId();
+
+        try (MockedStatic<SkillFactory> skillFactory = Mockito.mockStatic(SkillFactory.class)) {
+            skillFactory.when(() -> SkillFactory.getSkill(skill.getId())).thenReturn(skill);
+
+            BotCombatManager.AttackPlan plan = BotCombatManager.planAttack(entry, bot, primary);
+
+            assertEquals(0, plan.skillId);
+        }
+    }
+
+    @Test
     void shouldTreatBasicStaffAttacksAsCloseRange() {
         assertEquals(BotCombatManager.AttackRoute.CLOSE, BotAttackExecutionProvider.determineBasicWeaponRoute(WeaponType.STAFF));
     }

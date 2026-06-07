@@ -22,6 +22,9 @@ final class BotOfferManager {
     private static final Pattern NEGATIVE_CONFIRM_PATTERN = Pattern.compile(
             "\\b(no|nope|nah|nvm|never\\s*mind|dont|don't|not\\s+now|skip)\\b",
             Pattern.CASE_INSENSITIVE);
+    private static final Pattern KEEP_CONFIRM_PATTERN = Pattern.compile(
+            "\\b(keep|save|hold|lock|stash|hang\\s+onto|hold\\s+onto)\\b",
+            Pattern.CASE_INSENSITIVE);
     private static final List<String> BOT_ACCEPT_MSGS = List.of(
             "sure!", "ok!", "yes", "y!", "y", "yes!", "yes pls", "yes please!", "yes please", "ooh nice, ty", "that would be great!", "that would be awesome!", "of course!");
 
@@ -169,6 +172,17 @@ final class BotOfferManager {
                 || speaker == null
                 || speaker.getId() != entry.pendingLootOfferRecipientId) {
             return false;
+        }
+
+        if (!entry.pendingLootOfferBotRequesting && KEEP_CONFIRM_PATTERN.matcher(message).find()) {
+            Item kept = entry.pendingLootOfferItem;
+            clearPendingOffer(entry);
+            if (kept != null) {
+                BotInventoryManager.lockItem(kept);
+            }
+            BotManager.after(BotManager.randMs(400, 600), () ->
+                    BotManager.getInstance().botReply(entry, "ok, locked it — won't sell or move it"));
+            return true;
         }
 
         if (POSITIVE_CONFIRM_PATTERN.matcher(message).find()) {

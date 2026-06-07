@@ -358,7 +358,8 @@ public enum SendOpcode {
     DAMAGE_SKIN_CATALOG(0x170),     // LumenMS custom client opcode
     DAMAGE_SKIN_INVENTORY(0x171),   // LumenMS custom client opcode
     DAMAGE_SKIN_RESULT(0x172),      // LumenMS custom client opcode
-    DAMAGE_SKIN_BROADCAST(0x173);   // LumenMS custom client opcode
+    DAMAGE_SKIN_BROADCAST(0x173),   // LumenMS custom client opcode
+    BEAUTY_RESULT(0x174);           // Beauty Salon
     private int code = -2;
 
     SendOpcode(int code) {

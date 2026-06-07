@@ -206,7 +206,8 @@ public enum RecvOpcode {
     HYPER_TELEPORT_ROCK(0x105),     // LumenMS custom client opcode
     USE_GACHAPON_TICKET(0x106),     // LumenMS custom client opcode
     DAMAGE_SKIN_APPLY(0x110),       // LumenMS custom client opcode
-    DAMAGE_SKIN_PURCHASE(0x111);    // LumenMS custom client opcode
+    DAMAGE_SKIN_PURCHASE(0x111),    // LumenMS custom client opcode
+    BEAUTY_ACTION(0x174);           // Beauty Salon
 
     private int code = -2;
 

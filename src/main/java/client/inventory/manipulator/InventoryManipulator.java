@@ -183,8 +183,10 @@ public class InventoryManipulator {
 
         if (chr.isAutoOreStorage()
                 && ItemConstants.isOreBagAllowed(item.getItemId())
-                && chr.getOreStorage() != null && !chr.getOreStorage().isFull()) {
-            if (chr.getOreStorage().store(item)) {
+                && chr.getOreStorage() != null) {
+            // storeMerge stacks into existing entries, so a slot-full bag can still take more of an
+            // ore it already holds; it returns false only when the item genuinely can't fit.
+            if (chr.getOreStorage().storeMerge(item, c)) {
                 chr.setUsedOreStorage();
                 return true;
             }

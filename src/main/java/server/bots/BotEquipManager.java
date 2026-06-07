@@ -1414,6 +1414,26 @@ class BotEquipManager {
         return recommendations;
     }
 
+    /**
+     * Item ids among {@code candidates} that the autoEquip optimizer would actually equip — i.e.
+     * upgrades over what the bot currently wears. Used by the shop auto-buy path to decide what to
+     * purchase. Mirrors {@link #buildRecommendations}: the optimizer returns the same Equip objects
+     * passed in, so identity membership in {@code candidates} means it was chosen.
+     */
+    static List<Integer> chosenUpgradeItemIds(Character bot, Collection<Equip> candidates) {
+        OptimizerResult opt = runOptimizerWithExtras(bot, candidates);
+        List<Integer> chosen = new ArrayList<>();
+        if (opt.weapon() != null && candidates.contains(opt.weapon())) {
+            chosen.add(opt.weapon().getItemId());
+        }
+        for (Equip e : opt.picks().values()) {
+            if (candidates.contains(e)) {
+                chosen.add(e.getItemId());
+            }
+        }
+        return chosen;
+    }
+
     static List<Item> collectRecommendedItems(Character receiver, Character holder) {
         return new ArrayList<>(findRecommendedEquips(receiver, holder).stream()
                 .map(EquipRecommendation::candidate)

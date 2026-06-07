@@ -129,11 +129,20 @@ public class BotEntry {
     boolean skillBuffsEnabled = true;
     boolean lootEnabled = true;   // "loot off" / "loot on" verbal toggle
     boolean funnelOreBag = true;  // "@bag on" (default): funnel looted ores/scrolls into the owner's ore bag
+    boolean funnelMeso = false;   // "pool meso" / "keep meso": hand looted mesos to the owner (default off)
     BotLootEligibility.LootFilter lootFilter = BotLootEligibility.LootFilter.ALL;   // "only equips" / "mesos only" / "ignore junk"
     boolean meleeOnly = false;    // "melee only" / "conserve mp" — skip attack skills, use basic attack
     float chaseFactor = 1f;       // aggressive(>1) / careful(<1) chase-range multiplier
     String focusMobName = null;   // "focus <mob>" — prefer mobs whose name contains this (fallback: any)
+    int forcedSkillId = 0;        // "spam <skill>": force the planner to use only this learned attack skill (0 = off)
     java.util.List<String> pendingTrainRecs;   // remaining "where to train" options awaiting a yes
+
+    // Combat telemetry for the "dps?" command. Accumulated in BotCombatManager.attackMonster,
+    // reset when reported so each query measures activity since the last check.
+    long dpsWindowStartMs = 0L;
+    long dpsDamage = 0L;
+    int dpsHits = 0;
+    int dpsMisses = 0;
 
     // Ammo
     boolean noAmmo = false;
@@ -154,8 +163,10 @@ public class BotEntry {
     long shopVisitStartedAtMs = 0L;
     long shopSequenceStartedAtMs = 0L;
     boolean shopSellTrashPending = false;
+    boolean shopSellEtcPending = false;
     Point shopStuckCheckPos = null;
     long shopStuckCheckAtMs = 0L;
+    long nextWindowShopMsgMs = 0L;   // throttle for the "went window shopping" gear-upgrade notice
 
     // Damage taken
     long deadUntil = 0;

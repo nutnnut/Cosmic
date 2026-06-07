@@ -2545,6 +2545,22 @@ public class MapleMap {
 
         chr.receivePartyMemberHP();
         announcePlayerDiseases(chr.getClient());
+
+        // Damage skin: show the new arrival every resident's active skin, then
+        // broadcast their own active skin to everyone else on the map.
+        for (Character other : getAllPlayers()) {
+            if (other == chr) {
+                continue;
+            }
+            int sid = other.getActiveDamageSkin();
+            if (sid != 0) {
+                chr.sendPacket(PacketCreator.damageSkinBroadcast(other.getId(), sid));
+            }
+        }
+        if (chr.getActiveDamageSkin() != 0) {
+            broadcastMessage(chr, PacketCreator.damageSkinBroadcast(
+                    chr.getId(), chr.getActiveDamageSkin()), false);
+        }
     }
 
     private static void announcePlayerDiseases(final Client c) {

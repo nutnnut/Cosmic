@@ -692,6 +692,52 @@ public class BotManager {
         return List.copyOf(entries);
     }
 
+    /**
+     * One status line per spawned bot for the {@code @botinfo} command: level, job, HP/MP, map and
+     * current action. {@code nameFilter} (optional) limits to bots whose name contains it.
+     */
+    public List<String> describeBots(int ownerCharId, String nameFilter) {
+        String filter = nameFilter == null ? null : nameFilter.trim().toLowerCase();
+        List<String> out = new ArrayList<>();
+        for (BotEntry entry : getBotEntries(ownerCharId)) {
+            Character bot = entry.bot;
+            if (bot == null || !bot.isLoggedinWorld()) {
+                continue;
+            }
+            if (filter != null && !filter.isEmpty() && !bot.getName().toLowerCase().contains(filter)) {
+                continue;
+            }
+            String map = bot.getMap() != null ? bot.getMap().getMapName() : "?";
+            out.add(String.format("%s  Lv%d %s  HP %d/%d  MP %d/%d  @ %s  [%s]",
+                    bot.getName(), bot.getLevel(), bot.getJob(),
+                    bot.getHp(), bot.getCurrentMaxHp(), bot.getMp(), bot.getCurrentMaxMp(),
+                    map, describeAction(entry)));
+        }
+        return out;
+    }
+
+    private static String describeAction(BotEntry entry) {
+        if (entry.shopVisitPending) {
+            return "shopping";
+        }
+        if (entry.activeScriptTask != null) {
+            return "running script";
+        }
+        if (entry.grinding) {
+            return entry.focusMobName != null ? "grinding (focus " + entry.focusMobName + ")" : "grinding";
+        }
+        if (entry.following) {
+            return "following";
+        }
+        if (entry.moveTarget != null) {
+            return "moving";
+        }
+        if (entry.pendingAction != null) {
+            return "awaiting " + entry.pendingAction;
+        }
+        return "idle";
+    }
+
     /** Called when the owner picks up or receives an item; notifies bots that might want it. */
     public void notifyOwnerGainedItem(Character owner, Item item) {
         if (owner == null || item == null) return;
@@ -3387,6 +3433,8 @@ public class BotManager {
     private boolean handleDeadTick(BotEntry entry, Character bot, Character owner) {
         if (entry.deadUntil == 0 && bot.getHp() <= 0) {
             BotCombatManager.enterDeadState(entry, bot, false);
+            String where = bot.getMap() != null ? bot.getMap().getMapName() : "somewhere";
+            relayToOwner(entry, "i died @ " + where + "!");
         }
         if (entry.deadUntil == 0) {
             return false;
@@ -4060,6 +4108,40 @@ public class BotManager {
             bot.getClient().getWorldServer().partyChat(party, text, bot.getName());
         } else {
             botSay(bot, text);
+        }
+    }
+
+    private boolean ownerIsAway(BotEntry entry) {
+        Character bot = entry.bot;
+        Character owner = entry.owner;
+        return bot != null && owner != null && owner.isLoggedinWorld()
+                && owner.getClient() != null && owner.getMap() != bot.getMap();
+    }
+
+    /**
+     * Relays a noteworthy event to the owner: a normal map say when the owner is on the bot's map
+     * (they can see it), or a cross-map whisper when the owner is online elsewhere.
+     */
+    public void relayToOwner(BotEntry entry, String text) {
+        if (entry.bot == null) {
+            return;
+        }
+        if (ownerIsAway(entry)) {
+            entry.owner.sendPacket(PacketCreator.getWhisperReceive(
+                    entry.bot.getName(), entry.bot.getClient().getChannel() - 1, false, text));
+        } else {
+            botSay(entry.bot, text);
+        }
+    }
+
+    /**
+     * Like {@link #relayToOwner} but stays silent when the owner is on the bot's map — for events
+     * the owner can already see (e.g. level-ups), so they only get pinged when they're away.
+     */
+    public void whisperOwnerIfAway(BotEntry entry, String text) {
+        if (ownerIsAway(entry)) {
+            entry.owner.sendPacket(PacketCreator.getWhisperReceive(
+                    entry.bot.getName(), entry.bot.getClient().getChannel() - 1, false, text));
         }
     }
 

@@ -37,6 +37,7 @@ import java.util.function.Predicate;
 
 class BotInventoryManager {
     private static final Logger log = LoggerFactory.getLogger(BotInventoryManager.class);
+    private static final int RARE_DROP_MIN_VALUE = 100_000;   // sell price above which a looted equip is "rare" enough to relay
     private static final long TRADE_COMMAND_PROFILE_WARN_NS = 50_000_000L;
     private static final int MANUAL_TRADE_TIMEOUT_MS = 60_000;
     private static final int TRADE_WINDOW_ITEM_LIMIT = 9;
@@ -146,8 +147,9 @@ class BotInventoryManager {
                     InventoryType type = ItemConstants.getInventoryType(drop.getItemId());
                     Inventory inventory = bot.getInventory(type);
                     if (inventory != null && inventory.isFull() && entry.invFullWarnCooldownMs <= 0) {
-                        BotManager.getInstance().botReply(entry, type.name().toLowerCase() + " inventory is full!");
+                        BotManager.getInstance().relayToOwner(entry, type.name().toLowerCase() + " inventory is full!");
                         entry.invFullWarnCooldownMs = BotMovementManager.delayAfterCurrentTick(BotManager.cfg.INV_FULL_WARN_CD_MS);
+                        maybeProactiveSell(entry, bot, type);
                     }
                 }
                 continue;
@@ -170,8 +172,9 @@ class BotInventoryManager {
                 Inventory inventory = bot.getInventory(type);
                 if (inventory != null && inventory.isFull()) {
                     if (entry.invFullWarnCooldownMs <= 0) {
-                        BotManager.getInstance().botReply(entry, type.name().toLowerCase() + " inventory is full!");
+                        BotManager.getInstance().relayToOwner(entry, type.name().toLowerCase() + " inventory is full!");
                         entry.invFullWarnCooldownMs = BotMovementManager.delayAfterCurrentTick(BotManager.cfg.INV_FULL_WARN_CD_MS);
+                        maybeProactiveSell(entry, bot, type);
                     }
                     continue;
                 }
@@ -181,7 +184,8 @@ class BotInventoryManager {
             int pickedItemId = drop.getItemId();
             boolean autoGiveValuable = BotManager.cfg.BOT_AUTO_GIVE_VALUABLES
                     && BotLootEligibility.isOwnerValuable(pickedItemId);
-            if ((ItemId.isNxCard(pickedItemId) || autoGiveValuable) && ownerOnMap) {
+            boolean poolMeso = entry.funnelMeso && drop.getMeso() > 0;
+            if (ownerOnMap && (ItemId.isNxCard(pickedItemId) || autoGiveValuable || poolMeso)) {
                 entry.owner.pickupItem(drop);
             } else {
                 bot.pickupItem(drop);
@@ -190,6 +194,10 @@ class BotInventoryManager {
             if (pickedItem != null && pickedItemId > 0 && hasItem(bot, pickedItem)) {
                 InventoryType pickedType = ItemConstants.getInventoryType(pickedItemId);
                 if (pickedType == InventoryType.EQUIP) {
+                    if (ItemInformationProvider.getInstance().getPrice(pickedItemId, 1) >= RARE_DROP_MIN_VALUE) {
+                        BotManager.getInstance().whisperOwnerIfAway(entry,
+                                "found a " + ItemInformationProvider.getInstance().getName(pickedItemId) + "!");
+                    }
                     BotEquipManager.autoEquip(bot, entry.owner, entry.pendingLootOfferItem);
                     if (hasItem(bot, pickedItem)) {
                         BotOfferManager.scheduleLootOfferPrompt(entry, bot, pickedItem, 5_000L);
@@ -376,6 +384,40 @@ class BotInventoryManager {
      * taken, so the caller can fall back to a normal pickup. Mirrors the lock + pickItemDrop sequence
      * used by {@link Character#pickupItem}.
      */
+    /** When the EQUIP bag fills mid-grind, proactively go sell trash equips (if any) to free space. */
+    private static void maybeProactiveSell(BotEntry entry, Character bot, InventoryType type) {
+        // Never auto-sell the USE tab (potions/ammo the bot needs).
+        if (type != InventoryType.EQUIP && type != InventoryType.ETC) {
+            return;
+        }
+        // If a shop is right there, dump the full tab's non-saved items immediately.
+        if (BotShopManager.autoSellTabNearShop(entry, bot, type)) {
+            return;
+        }
+        // Otherwise (no shop nearby) walk to one to offload trash equips, as before.
+        if (type == InventoryType.EQUIP && !entry.shopVisitPending
+                && !collectSellTrashEquips(entry, bot).isEmpty()) {
+            BotShopManager.requestSellTrashVisit(entry, bot);
+        }
+    }
+
+    /** True if {@code item} is slot-locked (Equip.locked, or the LOCK flag bit on ETC/USE items). */
+    static boolean isItemLocked(Item item) {
+        if (item instanceof Equip equip) {
+            return equip.isLocked();
+        }
+        return item != null && (item.getFlag() & ItemConstants.LOCK) != 0;
+    }
+
+    /** Slot-locks an item so the bot won't sell, stash, or sort it (persisted by the normal save). */
+    static void lockItem(Item item) {
+        if (item instanceof Equip equip) {
+            equip.setLocked(true);
+        } else if (item != null) {
+            item.setFlag((short) (item.getFlag() | ItemConstants.LOCK));
+        }
+    }
+
     private static boolean funnelToOwnerOreBag(Character owner, Character bot, MapItem drop) {
         if (owner == null || drop == null) {
             return false;
@@ -386,11 +428,13 @@ class BotInventoryManager {
         }
         drop.lockItem();
         try {
-            if (drop.isPickedUp() || bag.isFull()) {
+            if (drop.isPickedUp()) {
                 return false;
             }
             Item item = drop.getItem();
-            if (item == null || !bag.store(item)) {
+            // storeMerge stacks ores/scrolls into existing entries; it also handles the bag-full case
+            // (still accepting a drop that can merge into a partial stack), returning false otherwise.
+            if (item == null || !bag.storeMerge(item, owner.getClient())) {
                 return false;
             }
             owner.setUsedOreStorage();
@@ -1745,6 +1789,9 @@ class BotInventoryManager {
     }
 
     static boolean shouldKeepForSellTrash(ItemInformationProvider ii, Equip equip) {
+        if (equip.isLocked()) {
+            return true;   // slot-locked: the owner asked the bot to save it
+        }
         if (equip.getLevel() > 0) {
             return true;
         }

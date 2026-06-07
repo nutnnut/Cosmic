@@ -50,6 +50,10 @@ public final class GeneralChatHandler extends AbstractPacketHandler {
             c.disconnect(true, false);
             return;
         }
+        if (s.equalsIgnoreCase("@beauty")) {
+            c.sendPacket(server.beauty.BeautyPackets.beautyOpen());
+            return;
+        }
         char heading = s.charAt(0);
         if (CommandsExecutor.isCommand(c, s)) {
             CommandsExecutor.getInstance().handle(c, s);

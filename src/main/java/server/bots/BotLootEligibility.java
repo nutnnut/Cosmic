@@ -43,6 +43,11 @@ public final class BotLootEligibility {
         if (entry == null || bot == null || drop == null || !drop.canBePickedBy(bot)) {
             return false;
         }
+        // Leave player-dropped mesos (e.g. Pickpocket drops) on the ground so a Chief Bandit can
+        // detonate them with Meso Explosion instead of the loot loop sweeping them up.
+        if (drop.getMeso() > 0 && drop.isPlayerDrop()) {
+            return false;
+        }
         if (!entry.lootEnabled) {
             return false;
         }

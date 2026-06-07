@@ -133,4 +133,12 @@
         <sqlFile path="db/tables/032-rebirth-ring.sql"/>
     </changeSet>
 
+    <changeSet id="33" author="Lumen">
+        <sqlFile path="db/tables/033-beauty.sql"/>
+    </changeSet>
+
+    <changeSet id="34" author="Lumen">
+        <sqlFile path="db/tables/034-beauty-unlock.sql"/>
+    </changeSet>
+
 </databaseChangeLog>

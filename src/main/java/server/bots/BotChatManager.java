@@ -146,10 +146,14 @@ public class BotChatManager {
             "\\b(?:ore\\s?bag|bag)\\s+on\\b|\\bfunnel\\s+(?:ores?|scrolls?)\\b", Pattern.CASE_INSENSITIVE);
     private static final Pattern BAG_OFF_PATTERN = Pattern.compile(
             "\\b(?:ore\\s?bag|bag)\\s+off\\b|\\b(?:stop\\s+funnel(?:ing)?|keep)\\s+(?:ores?|scrolls?)\\b", Pattern.CASE_INSENSITIVE);
+    private static final Pattern MESO_POOL_ON_PATTERN = Pattern.compile(
+            "\\b(?:pool|share|collect)\\s+(?:the\\s+)?meso[s]?\\b|\\b(?:give|send|hand)\\s+(?:me\\s+)?(?:the\\s+|your\\s+)?meso[s]?\\b|\\bmeso[s]?\\s+to\\s+me\\b", Pattern.CASE_INSENSITIVE);
+    private static final Pattern MESO_POOL_OFF_PATTERN = Pattern.compile(
+            "\\b(?:keep|hold(?:\\s+onto)?)\\s+(?:your\\s+|the\\s+)?meso[s]?\\b|\\bstop\\s+(?:pool(?:ing)?|sharing)\\s+meso[s]?\\b|\\bno\\s+meso[s]?\\s+pool", Pattern.CASE_INSENSITIVE);
     private static final Pattern AUTOPOT_PATTERN = Pattern.compile(
             "\\b(auto\\s*-?\\s*pot|autopot|pot\\s+(at|@))\\b", Pattern.CASE_INSENSITIVE);
     private static final Pattern BUY_AMMO_PATTERN = Pattern.compile(
-            "\\b(buy\\s+(arrows|bolts|ammo)|restock(\\s+(arrows|ammo|bolts))?|stock\\s+up|go\\s+shopping)\\b", Pattern.CASE_INSENSITIVE);
+            "\\b(buy\\s+(arrows|bolts|ammo)|restock(\\s+(arrows|ammo|bolts))?|stock\\s+up)\\b", Pattern.CASE_INSENSITIVE);
 
     private static final Pattern TRAIN_MORE_YES_PATTERN = Pattern.compile(
             "\\b(yes|yea|yeah|yep|ya|sure|ok|okay|more|please|show|the\\s+(other|rest|more)|go\\s+on|do\\s+it)\\b",
@@ -180,6 +184,14 @@ public class BotChatManager {
             Pattern.CASE_INSENSITIVE);
     private static final Pattern FOCUS_PATTERN = Pattern.compile(
             "\\b(?:focus(?:\\s+on)?|prioritize|target|only\\s+(?:hit|attack))\\s+(.+)$",
+            Pattern.CASE_INSENSITIVE);
+    private static final Pattern SPAM_OFF_PATTERN = Pattern.compile(
+            "\\b(?:spam\\s+off|stop\\s+spamming|use\\s+(?:any|all)\\s+skills?|normal\\s+(?:attacks?|skills?)|any\\s+skill)\\b",
+            Pattern.CASE_INSENSITIVE);
+    private static final Pattern SPAM_PATTERN = Pattern.compile(
+            "\\bspam\\s+(.+)$", Pattern.CASE_INSENSITIVE);
+    private static final Pattern DPS_PATTERN = Pattern.compile(
+            "(?:your\\s+|whats?\\s+your\\s+|how.?s\\s+your\\s+)?dps(?:\\s+report)?\\??|damage\\s+report",
             Pattern.CASE_INSENSITIVE);
     // Equip/unequip a specific cash (cosmetic) item by name. Checked after the "unequip all gear"
     // and "auto-equip" commands, so those keep priority over a by-name match.
@@ -486,6 +498,10 @@ public class BotChatManager {
             "\\b(\\d+)\\s*luk\\b", Pattern.CASE_INSENSITIVE);
     private static final Pattern AP_FIXED_STR_PATTERN = Pattern.compile(
             "\\b(\\d+)\\s*str\\b", Pattern.CASE_INSENSITIVE);
+    // "auto" / "auto-assign" — let the bot pick its job's standard AP build, like the player's auto-assign.
+    private static final Pattern AP_AUTO_PATTERN = Pattern.compile(
+            "\\b(auto(?:[\\s-]?assign)?|automatic|default|you\\s+(?:choose|decide|pick)|whatever.?s?\\s+best)\\b",
+            Pattern.CASE_INSENSITIVE);
     // Bare trade invite — whole-message match so "trade me" isn't swallowed by TRADE_ITEM_COMMAND_PATTERN
     private static final Pattern TRADE_INVITE_PATTERN = Pattern.compile(
             "^\\s*trade(\\s+(me|pls|please))?\\s*[?!.,]*\\s*$",
@@ -539,6 +555,14 @@ public class BotChatManager {
             Pattern.CASE_INSENSITIVE);
     private static final Pattern SELL_ETC_COMMAND_PATTERN = Pattern.compile(
             "^\\s*(?:sell|vendor|dump|unload)\\s+(?:(?:my|ur|your)\\s+)?etc(?:\\s+items?)?\\s*[?!.,]*\\s*$",
+            Pattern.CASE_INSENSITIVE);
+    private static final Pattern STASH_COMMAND_PATTERN = Pattern.compile(
+            "^\\s*(?:stash|deposit)\\s*(?:(?:my|ur|your)\\s+)?(this|loot|all|etc|use|equips?|gear|items?)?\\s*[?!.,]*\\s*$",
+            Pattern.CASE_INSENSITIVE);
+    private static final Pattern SHOP_TRIP_COMMAND_PATTERN = Pattern.compile(
+            "^\\s*(?:(?:go|head)\\s+(?:to\\s+)?(?:the\\s+)?)?(?:shop(?:ping)?|store|market)\\s*[?!.,]*\\s*$"
+            + "|^\\s*(?:hit|visit)\\s+(?:up\\s+)?(?:the\\s+)?(?:shop|store|market)\\s*[?!.,]*\\s*$"
+            + "|^\\s*go\\s+do\\s+(?:some|your)\\s+shopping\\s*[?!.,]*\\s*$",
             Pattern.CASE_INSENSITIVE);
     private static final Pattern TRADE_USE_COMMAND_PATTERN = Pattern.compile(
             "\\b" + TRADE_CMD_VERB + "\\s+" + TRANSFER_RECIPIENT + TRANSFER_OWNER + USE_WORDS + "\\b",
@@ -1003,6 +1027,20 @@ public class BotChatManager {
             });
             return;
         }
+        if (MESO_POOL_OFF_PATTERN.matcher(message).find()) {
+            BotManager.after(BotManager.randMs(400, 700), () -> {
+                entry.funnelMeso = false;
+                BotManager.getInstance().botReply(entry, "ok, keeping the mesos i loot");
+            });
+            return;
+        }
+        if (MESO_POOL_ON_PATTERN.matcher(message).find()) {
+            BotManager.after(BotManager.randMs(400, 700), () -> {
+                entry.funnelMeso = true;
+                BotManager.getInstance().botReply(entry, "ok, handing looted mesos to you");
+            });
+            return;
+        }
         if (AUTOPOT_PATTERN.matcher(message).find()) {
             BotManager.after(BotManager.randMs(400, 700), () -> setAutoPot(entry, message));
             return;
@@ -1070,6 +1108,30 @@ public class BotChatManager {
             BotManager.after(BotManager.randMs(400, 700), () -> {
                 entry.focusMobName = mob;
                 BotManager.getInstance().botReply(entry, "ok, focusing " + mob);
+            });
+            return;
+        }
+        if (SPAM_OFF_PATTERN.matcher(message).find()) {
+            BotManager.after(BotManager.randMs(400, 700), () -> {
+                entry.forcedSkillId = 0;
+                BotManager.getInstance().botReply(entry, "ok, using my normal skill rotation");
+            });
+            return;
+        }
+        Matcher spamMatcher = SPAM_PATTERN.matcher(message);
+        if (spamMatcher.find()) {
+            final String query = spamMatcher.group(1).trim();
+            BotManager.after(BotManager.randMs(400, 700), () -> {
+                int skillId = BotCombatManager.resolveAttackSkillByName(entry, entry.bot, query);
+                if (skillId != 0) {
+                    entry.forcedSkillId = skillId;
+                    BotManager.getInstance().botReply(entry, "ok, spamming " + SkillFactory.getSkillName(skillId));
+                } else {
+                    List<String> names = BotCombatManager.listAttackSkillNames(entry, entry.bot);
+                    BotManager.getInstance().botReply(entry, names.isEmpty()
+                            ? "i don't have any attack skills to spam"
+                            : "i don't know \"" + query + "\" — i can spam: " + String.join(", ", names));
+                }
             });
             return;
         }
@@ -1289,6 +1351,24 @@ public class BotChatManager {
                     BotShopManager.sellEtcNearby(entry, entry.bot));
             return;
         }
+        if (SHOP_TRIP_COMMAND_PATTERN.matcher(message).matches()) {
+            BotManager.after(BotManager.randMs(500, 700), () ->
+                    BotShopManager.requestShopTrip(entry, entry.bot));
+            return;
+        }
+        Matcher stashMatcher = STASH_COMMAND_PATTERN.matcher(message);
+        if (stashMatcher.matches()) {
+            String what = stashMatcher.group(1) == null ? "" : stashMatcher.group(1).toLowerCase();
+            final List<InventoryType> tabs = switch (what) {
+                case "etc" -> List.of(InventoryType.ETC);
+                case "use" -> List.of(InventoryType.USE);
+                case "equip", "equips", "gear" -> List.of(InventoryType.EQUIP);
+                default -> List.of(InventoryType.EQUIP, InventoryType.ETC); // this / loot / all / items / none
+            };
+            BotManager.after(BotManager.randMs(500, 700), () ->
+                    BotShopManager.stashNearby(entry, entry.bot, tabs));
+            return;
+        }
 
         TransferCommand transferCommand = matchTransferCommand(message);
         if (transferCommand != null) {
@@ -1335,6 +1415,8 @@ public class BotChatManager {
             BotManager.after(BotManager.randMs(900, 1100), () -> reportScrolls(entry, entry.bot));
         if (matchesWholeCommand(POTIONS_PATTERN, message))
             BotManager.after(BotManager.randMs(900, 1100), () -> reportPotions(entry, entry.bot));
+        if (matchesWholeCommand(DPS_PATTERN, message))
+            BotManager.after(BotManager.randMs(600, 900), () -> reportDps(entry));
         if (matchesWholeCommand(DEBUG_STATS_PATTERN, message))
             BotManager.after(BotManager.randMs(900, 1100), () -> reportDebugStats(entry, entry.bot));
         if (matchesWholeCommand(CRIT_DEBUG_PATTERN, message))
@@ -1684,6 +1766,26 @@ public class BotChatManager {
         queueBotReply(entry, buildExpReport(bot.getExp(), bot.getLevel()));
     }
 
+    // Reports DPS + accuracy accumulated in BotCombatManager since the last query, then resets the
+    // window so the next "dps?" measures fresh activity.
+    private static void reportDps(BotEntry entry) {
+        int swings = entry.dpsHits + entry.dpsMisses;
+        if (entry.dpsWindowStartMs == 0L || swings == 0) {
+            queueBotReply(entry, "haven't hit anything recently");
+            return;
+        }
+        double seconds = Math.max(1000L, System.currentTimeMillis() - entry.dpsWindowStartMs) / 1000.0;
+        long dps = (long) (entry.dpsDamage / seconds);
+        int accuracy = (int) Math.round(100.0 * entry.dpsHits / swings);
+        queueBotReply(entry, String.format(
+                "dps ~%,d over %.0fs (%,d dmg, %d%% acc, %d/%d swings landed)",
+                dps, seconds, entry.dpsDamage, accuracy, entry.dpsHits, swings));
+        entry.dpsWindowStartMs = 0L;
+        entry.dpsDamage = 0L;
+        entry.dpsHits = 0;
+        entry.dpsMisses = 0;
+    }
+
     static String buildExpReport(int currentExp, int level) {
         int needed = ExpTable.getExpNeededForLevel(level);
         if (needed <= 0) {
@@ -1867,11 +1969,16 @@ public class BotChatManager {
     }
 
     private static void reportHelp(BotEntry entry) {
-        queueBotReply(entry, "commands: follow, stop, move here, fidget, grind, stats, speed, skills, inventory, mesos, exp, slots, scrolls, pots, debug stats, crit, respec, respec ap");
-        queueBotReply(entry, "support: skill buffs on/off (= support on/off), heals on/off, buff on/off, buff cheap/max, proactive offers on/off, buff debug, skill buff debug");
-        queueBotReply(entry, "gear: ask 'any upgrades?' or say 'trade recommended gear'");
-        queueBotReply(entry, "supplies: need hp pot, need mp pot, need pot, need ammo");
-        queueBotReply(entry, "trade: mesos, scrolls, pots, equips, etc, or named items");
+        queueBotReply(entry, "move: follow / come, follow <name>, stop / stay / wait, move here, farm here (sentry/camp), patrol, spread out / stack up / line up");
+        queueBotReply(entry, "combat: grind / farm / hunt, be aggressive / careful / balanced, melee only, use skills, focus <mob> / focus off, spam <skill> / spam off");
+        queueBotReply(entry, "loot: loot on/off, loot equips/mesos/all only, ignore junk, bag on/off (funnel ores+scrolls), pool mesos / keep mesos");
+        queueBotReply(entry, "shop: go shopping (sell junk + buy & restock), sell trash, sell etc, stash <this/etc/use/gear/all>, auto pot, buy ammo / restock");
+        queueBotReply(entry, "supplies: need hp pot / mp pot / pot / ammo. support: support on/off, heals on/off, buff on/off, buff cheap/max, buff list, proactive offers on/off");
+        queueBotReply(entry, "gear: any upgrades?, trade recommended gear, need anything? (wishlist), auto equip [debug], show me <slot>");
+        queueBotReply(entry, "give to me: trade me <amt>/all mesos, trade scrolls/pots/use/equips/etc/ammo/buff pots, trade <item>, trade reserve, trade/show trash");
+        queueBotReply(entry, "ask me: give <scrolls/pots/use/equips/etc/buff pots>, drop <category> (to floor), do you have <item>? - if i offer loot say yes / keep (lock it) / no");
+        queueBotReply(entry, "status: stats, range, speed, build, skills, inventory, exp, mesos, slots, scrolls, pots, crit, dps, debug stats");
+        queueBotReply(entry, "me: respec / reset sp, respec ap / reset ap, change build, pick a job (warrior, mage, sin...), fame me / <name>, style / makeover, change gender, logout / relog");
     }
 
     static boolean isRespecCommand(String message) {
@@ -1917,7 +2024,18 @@ public class BotChatManager {
     private static void handleApBuildSelection(BotEntry entry, String message) {
         Job job = entry.bot.getJob();
 
-        if (job.isA(Job.WARRIOR) && AP_PURE_STR_PATTERN.matcher(message).find()) {
+        // "auto" — adopt the job's standard auto-assign build (primary-stat focus), like a player would.
+        if (AP_AUTO_PATTERN.matcher(message).find()) {
+            BotBuildManager.ApBuild build = BotBuildManager.defaultApBuild(job);
+            if (build != null) {
+                applyApBuildChoice(entry, build,
+                        "ok! auto-assigning my ap, focusing " + build.primaryStat.name().toLowerCase(Locale.ROOT),
+                        "already on auto ap!");
+            }
+            return;
+        }
+
+        if ((job.isA(Job.WARRIOR) || job.isA(Job.PIRATE)) && AP_PURE_STR_PATTERN.matcher(message).find()) {
             int minDex = minStatFloor(job, Stat.DEX);
             applyApBuildChoice(entry,
                     new BotBuildManager.ApBuild(BotBuildManager.StatType.STR, BotBuildManager.StatType.DEX, 4),
@@ -1950,14 +2068,14 @@ public class BotChatManager {
             return;
         }
 
-        if (job.isA(Job.WARRIOR) || job.isA(Job.THIEF)) {
+        if (job.isA(Job.WARRIOR) || job.isA(Job.THIEF) || job.isA(Job.PIRATE)) {
             Matcher matcher = AP_FIXED_DEX_PATTERN.matcher(message);
             if (matcher.find()) {
                 int dexTarget = Integer.parseInt(matcher.group(1));
                 int legalDexTarget = Math.max(minStatFloor(job, Stat.DEX), dexTarget);
-                BotBuildManager.StatType primary = job.isA(Job.WARRIOR)
-                        ? BotBuildManager.StatType.STR
-                        : BotBuildManager.StatType.LUK;
+                BotBuildManager.StatType primary = job.isA(Job.THIEF)
+                        ? BotBuildManager.StatType.LUK
+                        : BotBuildManager.StatType.STR;
                 applyApBuildChoice(entry,
                         new BotBuildManager.ApBuild(primary, BotBuildManager.StatType.DEX, dexTarget),
                         "ok! keeping dex at " + legalDexTarget + ", rest into " + primary.name().toLowerCase(Locale.ROOT),

@@ -23,6 +23,7 @@ import client.inventory.InventoryType;
 import client.inventory.Item;
 import client.inventory.ItemFactory;
 import constants.game.GameConstants;
+import constants.inventory.ItemConstants;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import tools.DatabaseConnection;
@@ -179,6 +180,66 @@ public class OreStorage {
         }
     }
 
+    /**
+     * Stores {@code item}, first merging it into existing stacks of the same item id (up to the
+     * per-slot max) before consuming a fresh slot — so repeated deposits of the same ore/scroll
+     * combine into one stack instead of many separate entries. All-or-nothing: returns false (item
+     * untouched) only when the whole quantity can't fit. {@code c} supplies the per-item slot max.
+     */
+    public boolean storeMerge(Item item, Client c) {
+        lock.lock();
+        try {
+            if (item == null) {
+                return false;
+            }
+            ItemInformationProvider ii = ItemInformationProvider.getInstance();
+            int itemId = item.getItemId();
+            boolean stackable = item.getInventoryType() != InventoryType.EQUIP
+                    && !ItemConstants.isRechargeable(itemId)
+                    && !ii.isPickupRestricted(itemId);
+
+            if (stackable) {
+                short slotMax = ii.getSlotMax(c, itemId);
+                int existingRoom = 0;
+                for (Item ex : items) {
+                    if (ex.getItemId() == itemId && ex.getQuantity() < slotMax
+                            && Objects.equals(ex.getOwner(), item.getOwner())) {
+                        existingRoom += slotMax - ex.getQuantity();
+                    }
+                }
+                // all-or-nothing: when slots are full, only accept what existing stacks can absorb
+                if (isFull() && existingRoom < item.getQuantity()) {
+                    return false;
+                }
+                for (Item ex : items) {
+                    if (item.getQuantity() <= 0) {
+                        break;
+                    }
+                    if (ex.getItemId() != itemId || ex.getQuantity() >= slotMax
+                            || !Objects.equals(ex.getOwner(), item.getOwner())) {
+                        continue;
+                    }
+                    int move = Math.min(slotMax - ex.getQuantity(), item.getQuantity());
+                    ex.setQuantity((short) (ex.getQuantity() + move));
+                    item.setQuantity((short) (item.getQuantity() - move));
+                }
+                if (item.getQuantity() <= 0) {
+                    typeItems.put(item.getInventoryType(), new ArrayList<>(filterItems(item.getInventoryType())));
+                    return true;
+                }
+            }
+
+            if (isFull()) {
+                return false;
+            }
+            items.add(item);
+            typeItems.put(item.getInventoryType(), new ArrayList<>(filterItems(item.getInventoryType())));
+            return true;
+        } finally {
+            lock.unlock();
+        }
+    }
+
     public List<Item> getItems() {
         lock.lock();
         try {
@@ -226,6 +287,12 @@ public class OreStorage {
 
         lock.lock();
         try {
+            // Consolidate duplicate stacks (e.g. many partial stacks of the same ore funneled in by
+            // bots) into merged stacks before showing the bag.
+            StorageInventory msi = new StorageInventory(c, items);
+            msi.mergeItems();
+            items = msi.sortItems();
+
             items.sort((o1, o2) -> {
                 if (o1.getInventoryType().getType() < o2.getInventoryType().getType()) {
                     return -1;

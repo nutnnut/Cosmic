@@ -53,7 +53,7 @@ public class OreBagCommand extends Command {
                         }
                         KarmaManipulator.toggleKarmaFlagToUntradeable(item);
                         item.setQuantity(qty);
-                        oreStorage.store(item);
+                        oreStorage.storeMerge(item, c);
                         player.setUsedOreStorage();
                     }
                 }

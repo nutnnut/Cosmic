@@ -1,9 +1,13 @@
 package server.bots;
 
 import client.Character;
+import client.inventory.Equip;
+import client.inventory.Inventory;
 import client.inventory.InventoryType;
 import client.inventory.Item;
 import client.inventory.WeaponType;
+import client.inventory.manipulator.InventoryManipulator;
+import client.inventory.manipulator.KarmaManipulator;
 import constants.game.GameConstants;
 import constants.inventory.ItemConstants;
 import server.ItemInformationProvider;
@@ -11,6 +15,7 @@ import server.Shop;
 import server.ShopFactory;
 import server.ShopItem;
 import server.StatEffect;
+import server.Storage;
 import server.life.NPC;
 import server.maps.Foothold;
 import server.maps.MapObject;
@@ -20,8 +25,10 @@ import java.awt.*;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.IdentityHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.function.IntUnaryOperator;
@@ -56,10 +63,13 @@ final class BotShopManager {
     private static final int AMMO_TRIGGER_THRESHOLD = 8;
     private static final int AMMO_TARGET_THRESHOLD = 10; // full target when buying at shop
     private static final int RECHARGE_MAX_SETS = 10; // cap recharge to the best N own-type stacks
+    private static final long WINDOW_SHOP_MSG_CD_MS = 300_000L; // throttle the "window shopping" notice (5 min)
 
     private BotShopManager() {}
 
     private record NpcShopMatch(NPC npc, Shop shop, Point npcPos) {}
+
+    private record ShopGearUpgrade(short slot, int itemId, int price, String name) {}
 
     private enum ShortfallReason { NONE, NO_MESO, NO_SPACE, OTHER }
 
@@ -114,7 +124,8 @@ final class BotShopManager {
         int potTrigger = BotManager.cfg.POT_LOW_WARN * POT_TRIGGER_THRESHOLD;
         boolean needsHpPots = pots[0] < potTrigger && findPotionItem(match.shop, bot, true) != null;
         boolean needsMpPots = pots[1] < potTrigger && findPotionItem(match.shop, bot, false) != null;
-        if (!needsRecharge && !needsAmmoForShop && !needsHpPots && !needsMpPots) {
+        boolean wantsGear = hasAffordableGearUpgrade(bot, match.shop);
+        if (!needsRecharge && !needsAmmoForShop && !needsHpPots && !needsMpPots && !wantsGear) {
             return;
         }
 
@@ -152,6 +163,32 @@ final class BotShopManager {
     }
 
     /**
+     * Full shop trip: walk to the nearest shop NPC, then on arrival buy any gear upgrades / restock
+     * ammo &amp; potions (the standard purchase sequence) AND sell off trash equips + junk ETC items.
+     * Backs the "go shopping" command. Locked/reserved items are left untouched.
+     */
+    static void requestShopTrip(BotEntry entry, Character bot) {
+        if (entry == null || bot == null || bot.getMap() == null) {
+            return;
+        }
+        if (entry.shopVisitPending) {
+            BotManager.getInstance().botReply(entry, "already on my way to a shop");
+            return;
+        }
+
+        NpcShopMatch match = findBestShop(bot, true);
+        if (match == null) {
+            BotManager.getInstance().botReply(entry, "can't find a shop around here");
+            return;
+        }
+
+        entry.shopSellTrashPending = true;
+        entry.shopSellEtcPending = true;
+        BotManager.getInstance().botReply(entry, "ok, heading to the shop");
+        startShopVisit(entry, bot, match);
+    }
+
+    /**
      * Immediately sells the bot's whole ETC inventory to a shop NPC near the bot (no walking). Used
      * by the "sell etc" command — replies that it isn't near a shop when none is within reach.
      */
@@ -177,7 +214,7 @@ final class BotShopManager {
         int sold = 0;
         int mesoBefore = bot.getMeso();
         for (Item item : new ArrayList<>(etc.list())) {
-            if (!BotInventoryManager.hasItem(bot, item)) {
+            if (!BotInventoryManager.hasItem(bot, item) || BotInventoryManager.isItemLocked(item)) {
                 continue;
             }
             shop.sell(bot.getClient(), InventoryType.ETC, item.getPosition(), item.getQuantity());
@@ -191,6 +228,134 @@ final class BotShopManager {
         } else {
             BotManager.getInstance().botReply(entry, "sold " + sold + " etc item" + (sold != 1 ? "s" : "")
                     + " for " + GameConstants.numberWithCommas(gained) + " mesos");
+        }
+    }
+
+    /**
+     * If a shop NPC is within reach, immediately sells the full tab's non-saved items — skipping
+     * slot-locked items, and (for EQUIP) reserved/useful equips. Returns true when a shop was
+     * nearby, so the caller skips the walk-to-shop fallback. Used for proactive full-bag selling.
+     */
+    static boolean autoSellTabNearShop(BotEntry entry, Character bot, InventoryType type) {
+        if (bot.getMap() == null) {
+            return false;
+        }
+        NPC npc = findNpcNear(bot, bot.getPosition());
+        if (npc == null) {
+            return false;
+        }
+        Shop shop = ShopFactory.getInstance().getShopForNPC(npc.getId());
+        if (shop == null) {
+            return false;
+        }
+        List<Item> toSell;
+        if (type == InventoryType.EQUIP) {
+            toSell = BotInventoryManager.collectSellTrashEquips(entry, bot); // skips reserved/useful/locked
+        } else {
+            Inventory inv = bot.getInventory(type);
+            toSell = new ArrayList<>();
+            if (inv != null) {
+                for (Item it : inv.list()) {
+                    if (!BotInventoryManager.isItemLocked(it)) {
+                        toSell.add(it);
+                    }
+                }
+            }
+        }
+        int sold = 0;
+        int mesoBefore = bot.getMeso();
+        for (Item item : new ArrayList<>(toSell)) {
+            if (!BotInventoryManager.hasItem(bot, item) || BotInventoryManager.isItemLocked(item)) {
+                continue;
+            }
+            shop.sell(bot.getClient(), type, item.getPosition(), item.getQuantity());
+            if (!BotInventoryManager.hasItem(bot, item)) {
+                sold++;
+            }
+        }
+        if (sold > 0) {
+            int gained = bot.getMeso() - mesoBefore;
+            BotManager.getInstance().botReply(entry, "bag was full — sold " + sold + " "
+                    + type.name().toLowerCase() + " item" + (sold != 1 ? "s" : "") + " for "
+                    + GameConstants.numberWithCommas(gained) + " mesos");
+        }
+        return true;
+    }
+
+    // Town storage-keeper NPC ids (every script under scripts/npc that opens account storage).
+    private static final Set<Integer> STORAGE_NPC_IDS = Set.of(
+            1002005, 1012009, 1022005, 1032006, 1052017, 1061008, 1091004, 1100000, 1200000,
+            2010006, 2020004, 2041008, 2050004, 2060008, 2070000, 2080005, 2090000, 2093003,
+            2100000, 2110000, 9030100, 9120009, 9201081, 9270042, 9270054);
+
+    private static boolean storageNpcNear(Character bot) {
+        for (MapObject obj : bot.getMap().getMapObjectsInRange(
+                bot.getPosition(), SHOP_NPC_SEARCH_DIST * SHOP_NPC_SEARCH_DIST,
+                Arrays.asList(MapObjectType.NPC))) {
+            if (STORAGE_NPC_IDS.contains(((NPC) obj).getId())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Deposits the given inventory tabs from the bot into the OWNER's account storage when the bot
+     * is near a storage NPC. Mirrors the player deposit path (remove from inv → copy → store →
+     * setUsedStorage). Used by the "stash" commands.
+     */
+    static void stashNearby(BotEntry entry, Character bot, List<InventoryType> tabs) {
+        if (entry == null || bot == null || bot.getMap() == null) {
+            return;
+        }
+        Character owner = entry.owner;
+        if (owner == null || !owner.isLoggedinWorld()) {
+            BotManager.getInstance().botReply(entry, "i don't know whose storage to use");
+            return;
+        }
+        if (!storageNpcNear(bot)) {
+            BotManager.getInstance().botReply(entry, "i'm not near a storage");
+            return;
+        }
+        Storage storage = owner.getStorage();
+        if (storage == null) {
+            BotManager.getInstance().botReply(entry, "couldn't reach your storage");
+            return;
+        }
+
+        int stashed = 0;
+        boolean storageFull = false;
+        for (InventoryType type : tabs) {
+            Inventory inv = bot.getInventory(type);
+            if (inv == null) {
+                continue;
+            }
+            for (Item item : new ArrayList<>(inv.list())) {
+                if (storage.isFull()) {
+                    storageFull = true;
+                    break;
+                }
+                if (!BotInventoryManager.hasItem(bot, item) || BotInventoryManager.isItemLocked(item)) {
+                    continue;
+                }
+                short qty = item.getQuantity();
+                InventoryManipulator.removeFromSlot(bot.getClient(), type, item.getPosition(), qty, false);
+                Item copy = item.copy();
+                copy.setQuantity(qty);
+                KarmaManipulator.toggleKarmaFlagToUntradeable(copy);
+                storage.store(copy);
+                stashed++;
+            }
+            if (storageFull) {
+                break;
+            }
+        }
+        if (stashed > 0) {
+            owner.setUsedStorage();
+            BotManager.getInstance().botReply(entry, "stashed " + stashed + " item" + (stashed != 1 ? "s" : "")
+                    + " in your storage" + (storageFull ? " (storage filled up)" : ""));
+        } else {
+            BotManager.getInstance().botReply(entry, storageFull ? "your storage is full" : "nothing to stash");
         }
     }
 
@@ -280,20 +445,39 @@ final class BotShopManager {
                 new Point(0, 0), Double.POSITIVE_INFINITY,
                 Arrays.asList(MapObjectType.NPC));
 
+        Point botPos = bot.getPosition();
+        NpcShopMatch best = null;
+        long bestDistSq = Long.MAX_VALUE;
         for (MapObject obj : objects) {
             NPC npc = (NPC) obj;
-            if (!npc.hasShop()) {
-                continue;
-            }
             Shop shop = ShopFactory.getInstance().getShopForNPC(npc.getId());
-            if (shop == null) {
+            if (shop == null || !shopSellsGoods(shop)) {
+                // Skip non-merchants: storage keepers and quest NPCs (e.g. Inkwell) that have a
+                // "shop" with no priced merchandise. The bot should only head to real vendors.
                 continue;
             }
-            if (allowAnyShop || shopHasAnythingNeeded(bot, shop)) {
-                return new NpcShopMatch(npc, shop, npc.getPosition());
+            // allowAnyShop: any vendor (sell trash / go shopping). Otherwise: only if it stocks
+            // something the bot currently needs (auto-resupply on map change).
+            if (!allowAnyShop && !shopHasAnythingNeeded(bot, shop)) {
+                continue;
+            }
+            long distSq = (long) botPos.distanceSq(npc.getPosition());
+            if (distSq < bestDistSq) {
+                bestDistSq = distSq;
+                best = new NpcShopMatch(npc, shop, npc.getPosition());
             }
         }
-        return null;
+        return best;
+    }
+
+    /** True if the shop actually vendors merchandise (≥1 item priced above 0), i.e. a real merchant. */
+    private static boolean shopSellsGoods(Shop shop) {
+        for (ShopItem si : shop.getItems()) {
+            if (si.getPrice() > 0) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static boolean shopHasAnythingNeeded(Character bot, Shop shop) {
@@ -311,7 +495,104 @@ final class BotShopManager {
         if (pots[1] < BotManager.cfg.POT_LOW_WARN * 5 && findPotionItem(shop, bot, false) != null) {
             return true;
         }
+        return hasAffordableGearUpgrade(bot, shop);
+    }
+
+    /**
+     * Equip items in {@code shop} that the autoEquip optimizer would put on the bot (upgrades over
+     * its current gear). One entry per slot — the optimizer already picks the single best per slot.
+     */
+    private static List<ShopGearUpgrade> findGearUpgrades(Character bot, Shop shop) {
+        List<ShopItem> items = shop.getItems();
+        // Cheap pre-scan with the pure id→type helper: skip shops with no equips entirely so we
+        // never touch ItemInformationProvider (and its DB-backed static init) for pot/ammo shops.
+        boolean hasEquip = false;
+        for (ShopItem si : items) {
+            if (si.getPrice() > 0 && ItemConstants.getInventoryType(si.getItemId()) == InventoryType.EQUIP) {
+                hasEquip = true;
+                break;
+            }
+        }
+        if (!hasEquip) {
+            return List.of();
+        }
+        ItemInformationProvider ii = ItemInformationProvider.getInstance();
+        List<Equip> candidates = new ArrayList<>();
+        Map<Integer, ShopGearUpgrade> byId = new HashMap<>();
+        for (short i = 0; i < items.size(); i++) {
+            ShopItem si = items.get(i);
+            int id = si.getItemId();
+            if (si.getPrice() <= 0 || byId.containsKey(id)) {
+                continue;
+            }
+            if (ItemConstants.getInventoryType(id) != InventoryType.EQUIP || ii.isCash(id)) {
+                continue;
+            }
+            if (!(ii.getEquipById(id) instanceof Equip equip)) {
+                continue;
+            }
+            candidates.add(equip);
+            byId.put(id, new ShopGearUpgrade(i, id, si.getPrice(), ii.getName(id)));
+        }
+        if (candidates.isEmpty()) {
+            return List.of();
+        }
+        List<ShopGearUpgrade> upgrades = new ArrayList<>();
+        for (int id : BotEquipManager.chosenUpgradeItemIds(bot, candidates)) {
+            ShopGearUpgrade u = byId.get(id);
+            if (u != null) {
+                upgrades.add(u);
+            }
+        }
+        return upgrades;
+    }
+
+    private static boolean hasAffordableGearUpgrade(Character bot, Shop shop) {
+        for (ShopGearUpgrade u : findGearUpgrades(bot, shop)) {
+            if (bot.getMeso() >= u.price()) {
+                return true;
+            }
+        }
         return false;
+    }
+
+    private static PurchaseSequence buyGearUpgrades(PurchaseSequence sequence, Shop shop) {
+        Character bot = sequence.bot();
+        List<ShopGearUpgrade> upgrades = new ArrayList<>(findGearUpgrades(bot, shop));
+        if (upgrades.isEmpty()) {
+            return sequence;
+        }
+        upgrades.sort((a, b) -> Integer.compare(a.price(), b.price())); // buy the cheapest upgrades first
+        boolean boughtAny = false;
+        ShopGearUpgrade unaffordable = null;
+        for (ShopGearUpgrade u : upgrades) {
+            if (bot.getMeso() >= u.price()) {
+                if (shop.buyDirect(bot, u.slot(), u.itemId(), (short) 1) == Shop.TransactionResult.SUCCESS) {
+                    sequence.bought().add(u.name());
+                    boughtAny = true;
+                }
+            } else if (unaffordable == null) {
+                unaffordable = u;
+            }
+        }
+        if (boughtAny) {
+            // Force-equip the freshly bought gear right away.
+            BotEquipManager.autoEquip(bot, sequence.entry().owner, null, true);
+        }
+        if (unaffordable != null) {
+            maybeWindowShop(sequence.entry(), bot, unaffordable);
+        }
+        return sequence;
+    }
+
+    private static void maybeWindowShop(BotEntry entry, Character bot, ShopGearUpgrade u) {
+        long now = System.currentTimeMillis();
+        if (now < entry.nextWindowShopMsgMs) {
+            return;
+        }
+        entry.nextWindowShopMsgMs = now + WINDOW_SHOP_MSG_CD_MS;
+        BotManager.getInstance().botSay(bot, "went window shopping — a " + u.name() + " ("
+                + GameConstants.numberWithCommas(u.price()) + " mesos) would be an upgrade but i can't afford it yet");
     }
 
     private static void executePurchases(BotEntry entry, Character bot, Point npcPos) {
@@ -352,6 +633,7 @@ final class BotShopManager {
             }
             return sequence;
         });
+        actions.add(BotShopManager::buyGearUpgrades);
 
         runPurchaseStep(new PurchaseSequence(entry, bot, npcPos, actions, new ArrayList<>(), null), 0);
     }
@@ -391,6 +673,15 @@ final class BotShopManager {
             return;
         }
 
+        if (sequence.entry().shopSellEtcPending) {
+            sequence.entry().shopSellEtcPending = false;
+            int sold = sellEtcAtShop(sequence.bot(), sequence.npcPos());
+            if (sold > 0) {
+                BotManager.getInstance().botSay(sequence.bot(),
+                        "sold " + sold + " etc item" + (sold != 1 ? "s" : ""));
+            }
+        }
+
         Runnable finish = () -> {
             if (!isShopSequenceValid(sequence.entry(), sequence.bot(), sequence.npcPos())) {
                 abortShop(sequence.entry(), sequence.bot(), "couldn't finish up at the shop");
@@ -414,6 +705,33 @@ final class BotShopManager {
         }
 
         finish.run();
+    }
+
+    /** Sells every non-locked ETC item to the shop at {@code npcPos}; returns how many sold. */
+    private static int sellEtcAtShop(Character bot, Point npcPos) {
+        NPC npc = findNpcNear(bot, npcPos);
+        if (npc == null) {
+            return 0;
+        }
+        Shop shop = ShopFactory.getInstance().getShopForNPC(npc.getId());
+        if (shop == null) {
+            return 0;
+        }
+        var etc = bot.getInventory(InventoryType.ETC);
+        if (etc == null) {
+            return 0;
+        }
+        int sold = 0;
+        for (Item item : new ArrayList<>(etc.list())) {
+            if (!BotInventoryManager.hasItem(bot, item) || BotInventoryManager.isItemLocked(item)) {
+                continue;
+            }
+            shop.sell(bot.getClient(), InventoryType.ETC, item.getPosition(), item.getQuantity());
+            if (!BotInventoryManager.hasItem(bot, item)) {
+                sold++;
+            }
+        }
+        return sold;
     }
 
     private static void startSellTrashSequence(PurchaseSequence sequence) {
@@ -834,6 +1152,7 @@ final class BotShopManager {
         entry.shopVisitStartedAtMs = 0L;
         entry.shopSequenceStartedAtMs = 0L;
         entry.shopSellTrashPending = false;
+        entry.shopSellEtcPending = false;
         entry.shopStuckCheckPos = null;
         entry.shopStuckCheckAtMs = 0L;
     }
@@ -916,14 +1235,22 @@ final class BotShopManager {
     }
 
     private static NPC findNpcNear(Character bot, Point pos) {
+        NPC nearest = null;
+        long bestDistSq = Long.MAX_VALUE;
         for (MapObject obj : bot.getMap().getMapObjectsInRange(
                 pos, SHOP_NPC_SEARCH_DIST * SHOP_NPC_SEARCH_DIST,
                 Arrays.asList(MapObjectType.NPC))) {
             NPC npc = (NPC) obj;
-            if (npc.hasShop()) {
-                return npc;
+            Shop shop = ShopFactory.getInstance().getShopForNPC(npc.getId());
+            if (shop == null || !shopSellsGoods(shop)) {
+                continue;   // only real merchants, never storage keepers / quest NPCs
+            }
+            long distSq = (long) pos.distanceSq(npc.getPosition());
+            if (distSq < bestDistSq) {
+                bestDistSq = distSq;
+                nearest = npc;
             }
         }
-        return null;
+        return nearest;
     }
 }

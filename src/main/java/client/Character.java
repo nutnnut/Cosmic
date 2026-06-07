@@ -2116,6 +2116,9 @@ public class Character extends AbstractCharacterObject {
                         && mapItem.getDropper().getObjectId() == getObjectId()) {
                     continue;   // don't auto-vacuum items this player dropped
                 }
+                if (mapItem.getMeso() > 0 && mapItem.isPlayerDrop()) {
+                    continue;   // leave player-dropped mesos (e.g. Pickpocket) for Meso Explosion
+                }
                 if (mapItem.getQuest() > 0 && !needQuestItem(mapItem.getQuest(), mapItem.getItemId())) {
                     continue;
                 }

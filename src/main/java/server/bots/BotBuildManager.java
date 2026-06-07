@@ -5,6 +5,7 @@ import client.Job;
 import client.Skill;
 import client.SkillFactory;
 import client.Stat;
+import client.inventory.WeaponType;
 import client.processor.stat.AssignAPProcessor;
 import constants.game.GameConstants;
 import java.util.ArrayList;
@@ -13,6 +14,7 @@ import java.util.Map;
 import server.bots.build.BowmanBuilds;
 import server.bots.build.BuildStep;
 import server.bots.build.MageBuilds;
+import server.bots.build.PirateBuilds;
 import server.bots.build.ThiefBuilds;
 import server.bots.build.WarriorBuilds;
 
@@ -149,7 +151,7 @@ class BotBuildManager {
     static void autoAssignSp(BotEntry entry, Character bot) {
         if (bot.getJob() == Job.HERO && entry.spVariant == null) return;
 
-        List<BuildStep> steps = getBuildOrder(bot.getJob(), entry.spVariant);
+        List<BuildStep> steps = getBuildOrder(bot.getJob(), effectiveSpVariant(entry, bot));
         if (steps == null) return;
 
         autoAssignSp(bot, steps);
@@ -195,8 +197,9 @@ class BotBuildManager {
             }
         }
 
+        String variant = effectiveSpVariant(entry, bot);
         for (Job job : buildPath) {
-            List<BuildStep> steps = getBuildOrder(job, entry.spVariant);
+            List<BuildStep> steps = getBuildOrder(job, variant);
             if (steps != null) {
                 autoAssignSp(bot, steps);
             }
@@ -244,18 +247,39 @@ class BotBuildManager {
             case HUNTER -> List.of(Job.BOWMAN, Job.HUNTER);
             case RANGER -> List.of(Job.BOWMAN, Job.HUNTER, Job.RANGER);
             case BOWMASTER -> List.of(Job.BOWMAN, Job.HUNTER, Job.RANGER, Job.BOWMASTER);
+            case CROSSBOWMAN -> List.of(Job.BOWMAN, Job.CROSSBOWMAN);
+            case SNIPER -> List.of(Job.BOWMAN, Job.CROSSBOWMAN, Job.SNIPER);
+            case MARKSMAN -> List.of(Job.BOWMAN, Job.CROSSBOWMAN, Job.SNIPER, Job.MARKSMAN);
             case THIEF -> List.of(Job.THIEF);
             case ASSASSIN -> List.of(Job.THIEF, Job.ASSASSIN);
             case HERMIT -> List.of(Job.THIEF, Job.ASSASSIN, Job.HERMIT);
             case NIGHTLORD -> List.of(Job.THIEF, Job.ASSASSIN, Job.HERMIT, Job.NIGHTLORD);
+            case BANDIT -> List.of(Job.THIEF, Job.BANDIT);
+            case CHIEFBANDIT -> List.of(Job.THIEF, Job.BANDIT, Job.CHIEFBANDIT);
+            case SHADOWER -> List.of(Job.THIEF, Job.BANDIT, Job.CHIEFBANDIT, Job.SHADOWER);
             case PAGE -> List.of(Job.WARRIOR, Job.PAGE);
             case WHITEKNIGHT -> List.of(Job.WARRIOR, Job.PAGE, Job.WHITEKNIGHT);
+            case PALADIN -> List.of(Job.WARRIOR, Job.PAGE, Job.WHITEKNIGHT, Job.PALADIN);
             case SPEARMAN -> List.of(Job.WARRIOR, Job.SPEARMAN);
             case DRAGONKNIGHT -> List.of(Job.WARRIOR, Job.SPEARMAN, Job.DRAGONKNIGHT);
+            case DARKKNIGHT -> List.of(Job.WARRIOR, Job.SPEARMAN, Job.DRAGONKNIGHT, Job.DARKKNIGHT);
             case MAGICIAN -> List.of(Job.MAGICIAN);
             case CLERIC -> List.of(Job.MAGICIAN, Job.CLERIC);
             case PRIEST -> List.of(Job.MAGICIAN, Job.CLERIC, Job.PRIEST);
             case BISHOP -> List.of(Job.MAGICIAN, Job.CLERIC, Job.PRIEST, Job.BISHOP);
+            case FP_WIZARD -> List.of(Job.MAGICIAN, Job.FP_WIZARD);
+            case FP_MAGE -> List.of(Job.MAGICIAN, Job.FP_WIZARD, Job.FP_MAGE);
+            case FP_ARCHMAGE -> List.of(Job.MAGICIAN, Job.FP_WIZARD, Job.FP_MAGE, Job.FP_ARCHMAGE);
+            case IL_WIZARD -> List.of(Job.MAGICIAN, Job.IL_WIZARD);
+            case IL_MAGE -> List.of(Job.MAGICIAN, Job.IL_WIZARD, Job.IL_MAGE);
+            case IL_ARCHMAGE -> List.of(Job.MAGICIAN, Job.IL_WIZARD, Job.IL_MAGE, Job.IL_ARCHMAGE);
+            case PIRATE -> List.of(Job.PIRATE);
+            case BRAWLER -> List.of(Job.PIRATE, Job.BRAWLER);
+            case MARAUDER -> List.of(Job.PIRATE, Job.BRAWLER, Job.MARAUDER);
+            case BUCCANEER -> List.of(Job.PIRATE, Job.BRAWLER, Job.MARAUDER, Job.BUCCANEER);
+            case GUNSLINGER -> List.of(Job.PIRATE, Job.GUNSLINGER);
+            case OUTLAW -> List.of(Job.PIRATE, Job.GUNSLINGER, Job.OUTLAW);
+            case CORSAIR -> List.of(Job.PIRATE, Job.GUNSLINGER, Job.OUTLAW, Job.CORSAIR);
             default -> null;
         };
     }
@@ -269,11 +293,31 @@ class BotBuildManager {
         if (bowmanBuild != null) {
             return bowmanBuild;
         }
-        List<BuildStep> thiefBuild = ThiefBuilds.getBuildOrder(job);
+        List<BuildStep> thiefBuild = ThiefBuilds.getBuildOrder(job, variant);
         if (thiefBuild != null) {
             return thiefBuild;
         }
+        List<BuildStep> pirateBuild = PirateBuilds.getBuildOrder(job, variant);
+        if (pirateBuild != null) {
+            return pirateBuild;
+        }
         return MageBuilds.getBuildOrder(job);
+    }
+
+    /**
+     * The SP build variant to use. Pirates need a weapon-aware variant for the shared 1st-job
+     * build (gun vs knuckler); everyone else uses the owner-chosen {@code entry.spVariant} (Hero).
+     */
+    private static String effectiveSpVariant(BotEntry entry, Character bot) {
+        if (bot.getJob().isA(Job.PIRATE)) {
+            return BotAttackExecutionProvider.getEquippedWeaponType(bot) == WeaponType.GUN
+                    ? "gun" : "knuckler";
+        }
+        if (bot.getJob().isA(Job.THIEF)) {
+            WeaponType wt = BotAttackExecutionProvider.getEquippedWeaponType(bot);
+            return (wt == WeaponType.DAGGER_THIEVES || wt == WeaponType.DAGGER_OTHER) ? "dagger" : "claw";
+        }
+        return entry.spVariant;
     }
 
     private static String apPromptForJob(Job job) {
@@ -281,16 +325,46 @@ class BotBuildManager {
             return null;
         }
         if (job.isA(Job.WARRIOR)) {
-            return "what AP build? type 'dexless'/'pure' or e.g. '25 dex' to set a dex target";
+            return "what AP build? 'auto' to let me handle it, 'dexless'/'pure', or e.g. '25 dex' for a dex target";
         }
         if (job.isA(Job.MAGICIAN)) {
-            return "what AP build? type 'lukless'/'pure' or e.g. '25 luk' to set a luk target";
+            return "what AP build? 'auto' to let me handle it, 'lukless'/'pure', or e.g. '25 luk' for a luk target";
         }
         if (job.isA(Job.BOWMAN)) {
-            return "what AP build? type 'strless'/'pure' or e.g. '25 str' to set a str target";
+            return "what AP build? 'auto' to let me handle it, 'strless'/'pure', or e.g. '25 str' for a str target";
         }
         if (job.isA(Job.THIEF)) {
-            return "what AP build? type 'dexless'/'pure' or e.g. '25 dex' to set a dex target";
+            return "what AP build? 'auto' to let me handle it, 'dexless'/'pure', or e.g. '25 dex' for a dex target";
+        }
+        if (job.isA(Job.PIRATE)) {
+            return "what AP build? 'auto' to let me handle it, 'dexless'/'pure', or e.g. '20 dex' for a dex target";
+        }
+        return null;
+    }
+
+    /**
+     * The standard "auto-assign" AP build for a job: keep the secondary stat at its equip floor and
+     * pour everything else into the primary stat — the same primary-stat-focused result the player's
+     * auto-assign produces. Covers every adventurer branch (pirates included). Null if unsupported.
+     */
+    static ApBuild defaultApBuild(Job job) {
+        if (job == null) {
+            return null;
+        }
+        if (job.isA(Job.WARRIOR)) {
+            return new ApBuild(StatType.STR, StatType.DEX, 4);
+        }
+        if (job.isA(Job.MAGICIAN)) {
+            return new ApBuild(StatType.INT, StatType.LUK, 4);
+        }
+        if (job.isA(Job.BOWMAN)) {
+            return new ApBuild(StatType.DEX, StatType.STR, 4);
+        }
+        if (job.isA(Job.THIEF)) {
+            return new ApBuild(StatType.LUK, StatType.DEX, 4);
+        }
+        if (job.isA(Job.PIRATE)) {
+            return new ApBuild(StatType.STR, StatType.DEX, 4);
         }
         return null;
     }
@@ -317,6 +391,10 @@ class BotBuildManager {
             autoAssignSp(entry, bot);
             autoAssignAp(entry, bot);
             return;
+        }
+
+        if (lvl > prev) {
+            BotManager.getInstance().whisperOwnerIfAway(entry, "leveled up — now level " + lvl + "!");
         }
 
         if (lvl == 8 || lvl == 10 || lvl == 30 || lvl == 70 || lvl == 120) {
