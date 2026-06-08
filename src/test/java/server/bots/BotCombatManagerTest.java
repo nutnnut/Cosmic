@@ -15,6 +15,7 @@ import constants.skills.Beginner;
 import constants.skills.Bowmaster;
 import constants.skills.Cleric;
 import constants.skills.DragonKnight;
+import constants.skills.Pirate;
 import constants.skills.Hunter;
 import constants.skills.ILWizard;
 import constants.skills.Magician;
@@ -182,7 +183,9 @@ class BotCombatManagerTest {
         BotCombatManager.rebuildSkillCacheIfNeeded(entry, bot);
 
         assertEquals(ILWizard.THUNDERBOLT, entry.aoeSkillId);
-        assertEquals(0, entry.attackSkillId);
+        // I/L mages lead with Thunder Bolt as the main attack (not Magic Claw / Cold Beam);
+        // MP Eater is still correctly excluded as a passive.
+        assertEquals(ILWizard.THUNDERBOLT, entry.attackSkillId);
         assertFalse(entry.buffSkillIds.contains(ILWizard.MP_EATER));
     }
 
@@ -394,7 +397,7 @@ class BotCombatManagerTest {
         // self-buff: the bot only casts buffs via a self/party SPECIAL_MOVE, so it is excluded.
         assertRealWzCache(Job.IL_WIZARD, 35,
                 Set.of(ILWizard.MP_EATER, ILWizard.MEDITATION, ILWizard.SLOW, ILWizard.COLD_BEAM, ILWizard.THUNDERBOLT),
-                ILWizard.COLD_BEAM, ILWizard.THUNDERBOLT,
+                ILWizard.THUNDERBOLT, ILWizard.THUNDERBOLT,
                 Set.of(ILWizard.MEDITATION),
                 Set.of(ILWizard.MP_EATER, ILWizard.SLOW));
         assertRealWzCache(Job.CLERIC, 35,
@@ -456,6 +459,17 @@ class BotCombatManagerTest {
         assertTrue(entry.buffSkillIds.contains(DragonKnight.DRAGON_BLOOD));
     }
 
+    @Test
+    void canUseAttackSkillWithWeaponGatesPirateGunVsKnuckleSkills() {
+        // The shared Pirate 1st job is free-maxed across both lines on advancement; firing the
+        // wrong-weapon skill routes a shoot action into a melee broadcast (or vice versa) and
+        // crashes watching clients. Double Shot is gun-only, Flash Fist is knuckle-only.
+        assertTrue(BotCombatManager.canUseAttackSkillWithWeapon(Pirate.DOUBLE_SHOT, WeaponType.GUN));
+        assertFalse(BotCombatManager.canUseAttackSkillWithWeapon(Pirate.DOUBLE_SHOT, WeaponType.KNUCKLE));
+        assertTrue(BotCombatManager.canUseAttackSkillWithWeapon(Pirate.FLASH_FIST, WeaponType.KNUCKLE));
+        assertFalse(BotCombatManager.canUseAttackSkillWithWeapon(Pirate.FLASH_FIST, WeaponType.GUN));
+    }
+
     // Regression: Teleport's WZ omits the "damage" attribute, so StatEffect's loader
     // defaults damage to 100. Before hasDamage() was plumbed through, isActiveAttackSkill
     // accepted Teleport as the bot's attack skill on a mid-build I/L Wizard that hadn't
@@ -489,9 +503,9 @@ class BotCombatManagerTest {
     }
 
     // Regression: Hunter.ARROW_BOMB declares no "damage" in WZ; the damage % lives in "x"
-    // (72 at level 1). getDamagePercent() must fall back to x instead of returning the
-    // loader-default 100, otherwise Arrow Bomb deals base weapon damage and the AoE
-    // scorer over-weights it as a 100% skill.
+    // (92 at level 1 after the LumenMS +20 buff). getDamagePercent() must fall back to x
+    // instead of returning the loader-default 100, otherwise Arrow Bomb deals base weapon
+    // damage and the AoE scorer over-weights it as a 100% skill.
     @Test
     void arrowBombShouldDeriveDamagePercentFromXNotLoaderDefault() {
         SkillFactory.loadAllSkills();
@@ -499,8 +513,8 @@ class BotCombatManagerTest {
         assertTrue(arrowBomb != null, "missing real WZ skill Hunter.ARROW_BOMB");
         StatEffect lvl1 = arrowBomb.getEffect(1);
         assertFalse(lvl1.hasDamage(), "Arrow Bomb WZ must not declare 'damage'");
-        assertEquals(72, lvl1.getDamagePercent(),
-                "level-1 'x' = 72 should be returned as damage %");
+        assertEquals(92, lvl1.getDamagePercent(),
+                "level-1 'x' = 92 should be returned as damage %");
     }
 
     @Test

@@ -50,6 +50,9 @@ public final class SituationBuilder {
         String mobs = describeMobs(map);
         if (!mobs.isEmpty()) sb.append("Mobs around: ").append(mobs).append('\n');
 
+        String boss = describeBoss(map);
+        if (!boss.isEmpty()) sb.append(boss).append('\n');
+
         String party = describeParty(bot);
         if (!party.isEmpty()) sb.append("Party: ").append(party).append('\n');
 
@@ -118,6 +121,22 @@ public final class SituationBuilder {
             shown++;
         }
         return sb.toString();
+    }
+
+    /** Flags an in-progress boss fight so banter/replies can react ("watch the adds", hype the team). */
+    private static String describeBoss(MapleMap map) {
+        if (map == null) return "";
+        try {
+            for (Monster mob : map.getAllMonsters()) {
+                if (mob != null && mob.isAlive() && mob.isBoss()) {
+                    return "[BOSS FIGHT in progress: " + mob.getName()
+                            + " — react to it: call out adds/mechanics or hype the team]";
+                }
+            }
+        } catch (Throwable t) {
+            return "";
+        }
+        return "";
     }
 
     private static String describeParty(Character bot) {

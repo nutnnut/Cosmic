@@ -325,7 +325,7 @@ final class BotPotionManager {
         startedAt = BotPerformanceMonitor.start();
         if (pots[0] < BotManager.cfg.POT_STOP && bot.getHp() < bot.getMaxHp() * 0.4f) {
             BotManager.getInstance().issueFollowOwner(entry);
-            BotManager.getInstance().botSay(bot, "low on pots!! walking to you");
+            BotManager.getInstance().botSay(bot, BotManager.randomReply(List.of("low on pots!! walking to you", "almost out of pots, coming to you", "need pots! heading your way", "running dry on pots, walking over")));
             bot.changeFaceExpression(Emote.GLARE.getValue());
         }
         BotPerformanceMonitor.recordSince("potion-grind-stop", startedAt);

@@ -133,7 +133,6 @@ public final class ThiefBuilds {
                 s(Hermit.AVENGER, 1),
                 s(Hermit.SHADOW_PARTNER, 30),
                 s(Hermit.AVENGER, 5),
-                s(Hermit.FLASH_JUMP, 20),
                 s(Hermit.AVENGER, 30),
                 s(Hermit.SHADOW_WEB, 20),
                 s(Hermit.ALCHEMIST, 20),

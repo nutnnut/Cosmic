@@ -323,6 +323,14 @@ public class ServerConfig {
     // LumenMS ported features
     public int NX_KILL_DROP_RATE;       // % chance for a mob kill to award NX (0 disables)
 
+    // Bot LLM chat (applied to server.bots.llm.BotLlmConfig at startup; see BotLlmConfig.applyServerConfig).
+    // The Anthropic API key is NOT here — it comes from the ANTHROPIC_API_KEY env var (docker-compose).
+    public boolean BOT_LLM_ENABLED;             // master on/off for LLM-backed bot replies
+    public String BOT_LLM_PROVIDER;             // "ANTHROPIC" (Claude) or "OLLAMA" (local)
+    public String BOT_LLM_ANTHROPIC_MODEL;      // e.g. "claude-haiku-4-5"
+    public boolean BOT_LLM_DEBUG;               // log prompts/replies for verifying the integration
+    public boolean BOT_LLM_BANTER;              // LLM-improvised idle banter between your own bots
+
     //Custom NPC overrides. List of NPC IDs.
     public Map<String, String> NPCS_SCRIPTABLE = new HashMap<>();
 }

@@ -864,7 +864,12 @@ public class Server {
         Instant beforeInit = Instant.now();
         log.info("Cosmic v{} starting up.", ServerConstants.VERSION);
 
-
+        // Apply config.yaml `server:` BOT_LLM_* keys onto the bot LLM toggles before any bot runs.
+        server.bots.llm.BotLlmConfig.applyServerConfig(YamlConfig.config.server);
+        log.info("Bot LLM chat: enabled={} provider={} model={}",
+                server.bots.llm.BotLlmConfig.enabled,
+                server.bots.llm.BotLlmConfig.provider,
+                server.bots.llm.BotLlmConfig.anthropicModel);
 
         if (YamlConfig.config.server.SHUTDOWNHOOK) {
             Runtime.getRuntime().addShutdownHook(new Thread(shutdown(false)));
@@ -909,6 +914,7 @@ public class Server {
 
         ThreadManager.getInstance().start();
         initializeTimelyTasks(channelDependencies);    // aggregated method for timely tasks thanks to lxconan
+        server.health.DeadlockMonitor.getInstance().start();   // detection + logging only (no force-release)
 
         try {
             for (int i = 0; i < worldCount; i++) {
@@ -1992,6 +1998,7 @@ public class Server {
 
         resetServerWorlds();
 
+        server.health.DeadlockMonitor.getInstance().stop();
         ThreadManager.getInstance().stop();
         TimerManager.getInstance().purge();
         TimerManager.getInstance().stop();

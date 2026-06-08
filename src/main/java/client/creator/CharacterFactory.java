@@ -26,6 +26,8 @@ import client.inventory.Inventory;
 import client.inventory.InventoryType;
 import client.inventory.Item;
 import config.YamlConfig;
+import constants.id.ItemId;
+import constants.inventory.ItemConstants;
 import net.server.Server;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -69,6 +71,13 @@ public abstract class CharacterFactory {
             eq_top.setPosition((byte) -5);
             equipped.addItemFromDB(eq_top);
         }
+
+        // Every character starts with the bound quest ring (Lilin's Ring) equipped in ring slot 2.
+        // Its stats grow with completed quests (see Character.applyQuestRingBoost).
+        Item questRing = ii.getEquipById(ItemId.QUEST_RING);
+        questRing.setPosition((byte) -13);
+        questRing.setFlag((short) (questRing.getFlag() | ItemConstants.UNTRADEABLE | ItemConstants.LOCK));
+        equipped.addItemFromDB(questRing);
 
         if (bottom > 0) {
             Item eq_bottom = ii.getEquipById(bottom);

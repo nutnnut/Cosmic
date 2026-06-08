@@ -129,6 +129,33 @@ public final class BotOwnershipService {
         return botIds;
     }
 
+    /** Whether the owner has @spawnbots auto-spawn-on-login enabled. */
+    public boolean isAutoSpawnEnabled(int ownerCharId) {
+        try (Connection con = DatabaseConnection.getConnection();
+             PreparedStatement ps = con.prepareStatement(
+                     "SELECT enabled FROM bot_autospawn WHERE owner_char_id = ?")) {
+            ps.setInt(1, ownerCharId);
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next() && rs.getInt("enabled") != 0;
+            }
+        } catch (SQLException e) {
+            return false;
+        }
+    }
+
+    public void setAutoSpawnEnabled(int ownerCharId, boolean enabled) {
+        try (Connection con = DatabaseConnection.getConnection();
+             PreparedStatement ps = con.prepareStatement(
+                     "INSERT INTO bot_autospawn (owner_char_id, enabled) VALUES (?, ?) "
+                             + "ON DUPLICATE KEY UPDATE enabled = VALUES(enabled)")) {
+            ps.setInt(1, ownerCharId);
+            ps.setInt(2, enabled ? 1 : 0);
+            ps.executeUpdate();
+        } catch (SQLException e) {
+            // best-effort; the toggle simply won't persist if the write fails
+        }
+    }
+
     public void registerOwner(int botCharId, int ownerCharId) {
         try (Connection con = DatabaseConnection.getConnection();
              PreparedStatement ps = con.prepareStatement(

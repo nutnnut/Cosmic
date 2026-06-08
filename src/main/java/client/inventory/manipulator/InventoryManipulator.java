@@ -203,6 +203,23 @@ public class InventoryManipulator {
         }
     }
 
+    /**
+     * Adds an item straight to the player's inventory, bypassing the auto-ore-storage funnel in
+     * {@link #addFromDrop}. Used by storage withdrawals: a deliberate take-out must land in the
+     * inventory, not get re-funneled back into the ore bag.
+     */
+    public static boolean addFromDropSkipOreBag(Client c, Item item, boolean show) {
+        Character chr = c.getPlayer();
+        InventoryType type = item.getInventoryType();
+        Inventory inv = chr.getInventory(type);
+        inv.lockInventory();
+        try {
+            return addFromDropInternal(c, chr, type, inv, item, show, item.getPetId());
+        } finally {
+            inv.unlockInventory();
+        }
+    }
+
     private static boolean addFromDropInternal(Client c, Character chr, InventoryType type, Inventory inv, Item item, boolean show, int petId) {
         ItemInformationProvider ii = ItemInformationProvider.getInstance();
         int itemid = item.getItemId();
@@ -775,6 +792,12 @@ public class InventoryManipulator {
             return;
         }
         int itemId = source.getItemId();
+
+        if (itemId == ItemId.QUEST_RING) {
+            chr.message("Your quest ring is bound to you — it can't be dropped.");
+            chr.forceUpdateItem(source);   // resync the slot the client tried to empty
+            return;
+        }
 
         MapleMap map = chr.getMap();
         if ((!ItemConstants.isRechargeable(itemId) && source.getQuantity() < quantity) || quantity < 0) {

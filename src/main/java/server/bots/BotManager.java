@@ -266,6 +266,27 @@ public class BotManager {
         return list.get(ThreadLocalRandom.current().nextInt(list.size()));
     }
 
+    private static final List<String> ACK_PREFIXES = List.of(
+            "ok", "kk", "sure", "alright", "aight", "yep", "yup", "k", "okok", "mk", "okie");
+    private static final java.util.regex.Pattern ACK_LEADING =
+            java.util.regex.Pattern.compile("^ok(?=[,! ])", java.util.regex.Pattern.CASE_INSENSITIVE);
+
+    /**
+     * Rotate a leading "ok"/"ok,"/"ok!" acknowledgement into varied slang so command
+     * confirmations don't always read identically. Only the leading "ok" token is swapped;
+     * the punctuation and detail after it are preserved. Non-ack replies pass through unchanged.
+     */
+    static String varyAck(String text) {
+        if (text == null) {
+            return null;
+        }
+        java.util.regex.Matcher m = ACK_LEADING.matcher(text);
+        if (!m.find()) {
+            return text;
+        }
+        return randomReply(ACK_PREFIXES) + text.substring(m.end());
+    }
+
     /** Schedule {@code r} to run after {@code ms} milliseconds. */
     static ScheduledFuture<?> after(long ms, Runnable r) {
         return TimerManager.getInstance().schedule(r, ms);
@@ -341,6 +362,78 @@ public class BotManager {
                 return SpawnResult.fail("Failed to load bot character '" + botName + "'.");
             }
         }
+    }
+
+    /**
+     * Handles the {@code @spawnbots [on|off]} command: toggles (and persists) whether the owner's
+     * registered bots auto-spawn on login. With no argument it reports the current state. Turning it
+     * on also spawns any not-yet-spawned registered bots immediately.
+     */
+    public void handleSpawnBotsToggle(Character owner, String arg) {
+        if (owner == null) {
+            return;
+        }
+        BotOwnershipService svc = BotOwnershipService.getInstance();
+        int ownerId = owner.getId();
+        String a = arg == null ? "" : arg.trim().toLowerCase();
+
+        if (a.isEmpty() || a.equals("status")) {
+            owner.yellowMessage("[Bots] Auto-spawn on login is " + (svc.isAutoSpawnEnabled(ownerId) ? "ON" : "OFF")
+                    + ". Use @spawnbots on / @spawnbots off.");
+            return;
+        }
+
+        boolean enable;
+        if (a.equals("on") || a.equals("true") || a.equals("enable")) {
+            enable = true;
+        } else if (a.equals("off") || a.equals("false") || a.equals("disable")) {
+            enable = false;
+        } else {
+            owner.yellowMessage("[Bots] Usage: @spawnbots on | @spawnbots off");
+            return;
+        }
+
+        svc.setAutoSpawnEnabled(ownerId, enable);
+        if (enable) {
+            int spawned = spawnRegisteredBots(owner);
+            owner.yellowMessage("[Bots] Auto-spawn ON — your registered bots will spawn when you log in."
+                    + (spawned > 0 ? " Spawning " + spawned + " now." : ""));
+        } else {
+            owner.yellowMessage("[Bots] Auto-spawn OFF — your bots won't spawn automatically on login.");
+        }
+    }
+
+    /** Login hook: if the owner enabled @spawnbots, spawn their registered bots (deferred so login settles first). */
+    public void maybeAutoSpawnBots(Character owner) {
+        if (owner == null || !BotOwnershipService.getInstance().isAutoSpawnEnabled(owner.getId())) {
+            return;
+        }
+        after(randMs(1500, 2500), () -> {
+            if (owner.getClient() == null || !owner.isLoggedinWorld() || owner.getMap() == null) {
+                return;
+            }
+            spawnRegisteredBots(owner);
+        });
+    }
+
+    /** Spawns the owner's registered bots that aren't already up. Returns how many spawned successfully. */
+    private int spawnRegisteredBots(Character owner) {
+        BotOwnershipService svc = BotOwnershipService.getInstance();
+        int spawned = 0;
+        for (int botId : svc.getRegisteredBotIds(owner.getId())) {
+            if (getBotEntry(owner.getId(), botId) != null) {
+                continue; // already spawned
+            }
+            BotOwnershipService.ResolvedCharacter resolved = svc.resolveCharacterById(botId);
+            if (resolved == null) {
+                continue;
+            }
+            SpawnResult result = spawnBotForOwner(owner, resolved.name());
+            if (result.success()) {
+                spawned++;
+            }
+        }
+        return spawned;
     }
 
     public void joinBotToOwnerParty(Character owner, Character bot) {
@@ -716,6 +809,39 @@ public class BotManager {
         return out;
     }
 
+    /**
+     * {@code @botslots} support: expands every spawned bot's four main inventory tabs
+     * (EQUIP/USE/SETUP/ETC) by {@code perTab} slots each. {@link Character#gainSlots} enforces the
+     * 96-slot cap and persists each successful change to the DB.
+     *
+     * @return the number of bots that gained at least one slot; {@code 0} if the owner has spawned
+     *         bots but every tab is already maxed; {@code -1} if the owner has no spawned bots.
+     */
+    public int expandBotInventorySlots(Character owner, int perTab) {
+        if (owner == null || perTab <= 0) {
+            return -1;
+        }
+        boolean hadBot = false;
+        int expanded = 0;
+        for (BotEntry entry : getBotEntries(owner.getId())) {
+            Character bot = entry.bot;
+            if (bot == null || !bot.isLoggedinWorld()) {
+                continue;
+            }
+            hadBot = true;
+            boolean grew = false;
+            for (byte type = 1; type <= 4; type++) {   // EQUIP, USE, SETUP, ETC — skips CASH (5)
+                if (bot.gainSlots(type, perTab, false)) {
+                    grew = true;
+                }
+            }
+            if (grew) {
+                expanded++;
+            }
+        }
+        return hadBot ? expanded : -1;
+    }
+
     private static String describeAction(BotEntry entry) {
         if (entry.shopVisitPending) {
             return "shopping";
@@ -982,6 +1108,13 @@ public class BotManager {
         List<BotEntry> entries = bots.get(owner.getId());
         if (entries == null || entries.isEmpty()) return;
 
+        // "#message" tag → address the whole squad at once via the LLM (each nearby bot replies in
+        // its own persona; a fuzzy instruction still works since each reply can emit a CMD).
+        if (message.startsWith("#") && server.bots.llm.BotLlmConfig.enabled
+                && handleGroupLlmAddress(owner, entries, message, channel)) {
+            return;
+        }
+
         // Dismiss: disown bot, leaves it idle in map
         Matcher dm = DISMISS_PATTERN.matcher(message);
         if (dm.find()) {
@@ -1011,16 +1144,46 @@ public class BotManager {
                     return;
                 }
             }
-            BotChatManager.handleChat(targetedBot.entry(), cmd);
-            boolean matched = BotChatManager.wasLastChatHandled();
+            targetedBot.entry().mayReact = true;
+            // Run the command first, capturing its acks so the LLM can re-word a single short one in
+            // the bot's persona (the command still executes — only the wording of the ack changes).
+            boolean llmOn = server.bots.llm.BotLlmConfig.enabled;
+            boolean matched;
+            List<String> acks;
+            if (llmOn) {
+                beginAckCapture();
+                try {
+                    BotChatManager.handleChat(targetedBot.entry(), cmd);
+                    matched = BotChatManager.wasLastChatHandled();
+                } finally {
+                    acks = endAckCapture();
+                }
+            } else {
+                BotChatManager.handleChat(targetedBot.entry(), cmd);
+                matched = BotChatManager.wasLastChatHandled();
+                acks = List.of();
+            }
             if (matched && targetedBot.entry().getOwner() != null
                     && owner.getId() == targetedBot.entry().getOwner().getId()) {
                 targetedBot.entry().lastOwnerCommand = cmd;
                 targetedBot.entry().lastOwnerCommandAtMs = System.currentTimeMillis();
             }
-            // Fall through to LLM only if no command pattern matched.
-            if (server.bots.llm.BotLlmConfig.enabled && !matched) {
-                server.bots.llm.BotLlmReplyManager.maybeRespond(targetedBot.entry(), owner, cmd);
+            if (matched) {
+                // A single short ack → persona re-word via LLM. Multiple/long acks (info dumps like
+                // stats, help, recommendations) are replayed verbatim so their content isn't lost.
+                if (acks.size() == 1 && acks.get(0).length() <= 90) {
+                    server.bots.llm.BotLlmReplyManager.rewordAck(targetedBot.entry(), owner, acks.get(0));
+                } else {
+                    for (String a : acks) {
+                        botReply(targetedBot.entry(), a);
+                    }
+                }
+                return;
+            }
+            // No command matched → conversational LLM reply (which may itself emit a CMD directive).
+            if (llmOn) {
+                server.bots.llm.BotLlmReplyManager.maybeRespond(targetedBot.entry(), owner, cmd,
+                        buildGroundedContext(targetedBot.entry(), cmd));
             }
             return;
         }
@@ -1041,9 +1204,23 @@ public class BotManager {
         // selecting the same best-stocked donor → duplicate offer messages and
         // duplicate trade requests to the owner.
         if (BotChatManager.isGroupSupplyRequest(message)) {
-            BotEntry responder = pickGroupSupplyResponder(owner, entries);
+            BotEntry responder = pickGroupResponder(owner, entries);
             if (responder != null) {
                 responder.replyChannel = channel;
+                responder.mayReact = true;
+                BotChatManager.handleChat(responder, message);
+            }
+            return;
+        }
+
+        // General informational queries ("where do I train?", "what drops X?") have a single,
+        // bot-agnostic answer — let one bot reply so the group doesn't repeat it once per bot.
+        // (Action commands below still broadcast so every bot acts.)
+        if (BotChatManager.isGeneralQuery(message)) {
+            BotEntry responder = pickGroupResponder(owner, entries);
+            if (responder != null) {
+                responder.replyChannel = channel;
+                responder.mayReact = true;
                 BotChatManager.handleChat(responder, message);
             }
             return;
@@ -1059,14 +1236,184 @@ public class BotManager {
                 return;
             }
         }
+        // Conversational follow-up: if a bot just LLM-replied, let the owner answer it without
+        // re-typing the bot's name for a short window — as long as this isn't a command verb and
+        // no yes/no confirmation is pending.
+        if (server.bots.llm.BotLlmConfig.enabled && !looksLikeCommandVerb(message) && !anyPendingAction(entries)) {
+            BotEntry convo = recentLlmConversationBot(entries, LLM_FOLLOWUP_WINDOW_MS);
+            if (convo != null) {
+                convo.replyChannel = channel;
+                server.bots.llm.BotLlmReplyManager.maybeRespond(convo, owner, message,
+                        buildGroundedContext(convo, message));
+                return;
+            }
+        }
+
+        // Only 1-2 bots may react to social chatter (ty/lol/gg/greetings) so the whole group
+        // doesn't pile on. Commands still broadcast to every bot below — the permit only gates
+        // the social-reaction replies inside handleChat.
+        assignReactionPermits(owner, entries);
         for (BotEntry entry : entries) {
             entry.replyChannel = channel;
             BotChatManager.handleChat(entry, message);
         }
     }
 
+    private static final long LLM_FOLLOWUP_WINDOW_MS = 60_000L;
+
+    /**
+     * "#message" group address — directed at the whole squad, but only ONE bot answers (a random
+     * on-map bot) so a squad question costs a single LLM call. The responder replies in its own
+     * persona/situation, and may emit a CMD for a group-style instruction. Returns true if a bot
+     * was picked to answer.
+     */
+    private boolean handleGroupLlmAddress(Character owner, List<BotEntry> entries, String message, ReplyChannel channel) {
+        String body = message.substring(1).trim();
+        if (body.isEmpty()) {
+            return false;
+        }
+        List<BotEntry> eligible = new ArrayList<>();
+        for (BotEntry entry : entries) {
+            Character bot = entry.bot;
+            if (bot != null && bot.isLoggedinWorld() && bot.getHp() > 0 && owner.getMap() == bot.getMap()) {
+                eligible.add(entry);
+            }
+        }
+        if (eligible.isEmpty()) {
+            return false;
+        }
+        BotEntry responder = eligible.get(ThreadLocalRandom.current().nextInt(eligible.size()));
+        responder.replyChannel = channel;
+        server.bots.llm.BotLlmReplyManager.maybeRespond(responder, owner, body, buildGroundedContext(responder, body));
+        return true;
+    }
+
+    /** The owner's bot that most recently produced an LLM reply within {@code windowMs}, or null. */
+    private static BotEntry recentLlmConversationBot(List<BotEntry> entries, long windowMs) {
+        long now = System.currentTimeMillis();
+        BotEntry best = null;
+        long bestAt = 0L;
+        for (BotEntry e : entries) {
+            long at = e.lastLlmReplyAtMs;
+            if (at > 0 && now - at <= windowMs && at > bestAt) {
+                best = e;
+                bestAt = at;
+            }
+        }
+        return best;
+    }
+
+    private static boolean looksLikeCommandVerb(String message) {
+        if (message == null) return false;
+        String m = message.trim().toLowerCase();
+        if (m.isEmpty()) return false;
+        String first = m.split("\\s+", 2)[0];
+        return server.bots.llm.CommandTypoSuggester.KNOWN_VERBS.contains(first);
+    }
+
+    private static boolean anyPendingAction(List<BotEntry> entries) {
+        for (BotEntry e : entries) {
+            if (e.pendingAction != null) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Read-only grounded context for owner-chat LLM replies: training spots (BotTrainingRecommender)
+     * and where-to-farm / what-drops lookups (BotFarmRecommender). Returns null when nothing relevant
+     * matches. Build/AP advice is intentionally left to the model (the recommenders that produce it
+     * mutate prompt state, so they're unsafe to call read-only).
+     */
+    public String buildGroundedContext(BotEntry entry, String message) {
+        if (entry == null || message == null || message.isBlank()) {
+            return null;
+        }
+        String m = message.toLowerCase();
+        StringBuilder sb = new StringBuilder();
+
+        boolean asksTraining = m.contains("train") || m.contains("grind")
+                || (m.contains("where") && (m.contains("level") || m.contains("xp") || m.contains("exp")));
+        if (asksTraining) {
+            Character ref = entry.owner != null ? entry.owner : entry.bot;
+            int lvl = ref != null ? ref.getLevel() : 1;
+            List<String> recs = BotTrainingRecommender.recommend(lvl, 3);
+            if (recs != null && !recs.isEmpty()) {
+                sb.append("Good training spots for level ").append(lvl).append(": ")
+                        .append(String.join("; ", recs)).append('\n');
+            }
+        }
+
+        boolean asksFarm = m.contains("drop") || m.contains("farm")
+                || (m.contains("where") && m.contains("get"));
+        if (asksFarm) {
+            String item = extractItemQuery(message);
+            if (item != null) {
+                String rec = BotFarmRecommender.recommend(item);
+                if (rec != null) {
+                    sb.append(rec).append('\n');
+                }
+            }
+        }
+
+        return sb.length() == 0 ? null : sb.toString().trim();
+    }
+
+    /** Pulls a likely item name out of a "what drops X" / "where to farm X" question. */
+    private static String extractItemQuery(String message) {
+        String m = message.toLowerCase();
+        for (String marker : new String[]{"drops ", "drop ", "farm ", "get ", "find "}) {
+            int i = m.indexOf(marker);
+            if (i >= 0) {
+                String after = message.substring(i + marker.length()).trim().replaceAll("[?.!]+$", "").trim();
+                if (after.length() >= 2 && after.length() <= 40) {
+                    return after;
+                }
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Runs {@code commandText} through the normal single-bot command path (used by the LLM
+     * command-interpreter). Returns true if it matched a real bot command.
+     */
+    public boolean tryRunBotCommand(BotEntry entry, String commandText) {
+        if (entry == null || commandText == null || commandText.isBlank()) {
+            return false;
+        }
+        BotChatManager.handleChat(entry, commandText);
+        return BotChatManager.wasLastChatHandled();
+    }
+
+    /** Randomly grant 1-2 bots (preferring the owner's map) permission to react to social chat. */
+    private static void assignReactionPermits(Character owner, List<BotEntry> entries) {
+        if (entries == null || entries.isEmpty()) {
+            return;
+        }
+        for (BotEntry e : entries) {
+            e.mayReact = false;
+        }
+        List<BotEntry> pool = new ArrayList<>();
+        int ownerMapId = owner != null ? owner.getMapId() : -1;
+        for (BotEntry e : entries) {
+            if (e.bot != null && e.bot.getMapId() == ownerMapId) {
+                pool.add(e);
+            }
+        }
+        if (pool.isEmpty()) {
+            pool.addAll(entries);
+        }
+        java.util.Collections.shuffle(pool);
+        int permits = (pool.size() >= 2 && ThreadLocalRandom.current().nextInt(100) < 45) ? 2 : 1;
+        for (int i = 0; i < permits && i < pool.size(); i++) {
+            pool.get(i).mayReact = true;
+        }
+    }
+
     /** Prefer a bot in the owner's current map so its reply/trade is visible. */
-    private static BotEntry pickGroupSupplyResponder(Character owner, List<BotEntry> entries) {
+    private static BotEntry pickGroupResponder(Character owner, List<BotEntry> entries) {
         if (entries == null || entries.isEmpty()) {
             return null;
         }
@@ -1980,12 +2327,19 @@ public class BotManager {
             BotMovementManager.broadcastMovement(entry);
         }
 
+        BotChatManager.tickBanter(entry, bot);
+
         BotOfferManager.expirePendingOffer(entry);
         boolean runAiTick = consumeAiTick(entry);
         entry.lastTickWasAi = runAiTick;
         entry.lastTickAtMs = System.currentTimeMillis();
 
         Character owner = resolveTickOwner(entry, ownerCharId);
+        // Mirror the owner's active 2x exp/drop coupons onto the bot, so the bot's kills and drops
+        // benefit from them too (resets to 1x when the owner is offline).
+        bot.setBotOwnerCoupons(
+                owner != null ? owner.getCouponExpRate() : 1,
+                owner != null ? owner.getCouponDropRate() : 1);
         if (handleOwnerOfflineOrDead(entry, bot, owner, nowMs, ownerCharId)) {
             return;
         }
@@ -2564,7 +2918,7 @@ public class BotManager {
     private void forceBotIdleAfterTickFailure(BotEntry entry) {
         issueStop(entry);
         try {
-            botReply(entry, "unrecoverable error caught, idling");
+            botReply(entry, randomReply(List.of("unrecoverable error caught, idling", "hit an error, gonna idle", "something broke, idling for now", "error caught, standing by")));
         } catch (Throwable chatError) {
             Character bot = entry.bot;
             log.warn("Failed to send bot failure idle message for '{}'",
@@ -3042,7 +3396,7 @@ public class BotManager {
         BotNavigationGraph graph = BotNavigationGraphProvider.peekGraph(map);
         int regionId = graph != null ? graph.findRegionId(map, ownerPos) : -1;
         if (regionId < 0) {
-            botReply(entry, "can't find a patrol region here");
+            botReply(entry, randomReply(List.of("can't find a patrol region here", "no patrol area here", "nowhere to patrol here", "can't patrol this spot")));
             return;
         }
         clearScriptTasks(entry);
@@ -3598,10 +3952,18 @@ public class BotManager {
         if (!entry.following || followAnchor == null || bot.getMapId() == followAnchor.getMapId()) {
             return false;
         }
+        MapleMap targetMap = followAnchor.getMap();
+        // Never follow the owner into an event instance (boss rooms, PQs). The owner is registered
+        // with the EventInstanceManager but bots are not, and that membership desync crashes the
+        // owner's client (e.g. the King Pepe & Yetis boss room, map 106021500). Wait put in the
+        // lobby until the owner returns to a normal map, where the next sync warps the bot back.
+        if (targetMap != null && targetMap.getEventInstance() != null) {
+            BotPhysicsEngine.idleOnGround(entry, bot);
+            return true;   // handled: don't warp in, and don't teleport-chase an off-map owner
+        }
         // Ground against the anchor's actual position in their NEW map. The previously-passed
         // followTargetPos was computed from the bot's OLD map (foothold snaps, formation offsets),
         // so it could land off-map in the new map and cause far-away/OOB spawns.
-        MapleMap targetMap = followAnchor.getMap();
         Point anchorPos = followAnchor.getPosition();
         Point spawn = BotPhysicsEngine.findGroundPoint(targetMap, new Point(anchorPos.x, anchorPos.y - 1));
         if (spawn == null) {
@@ -3610,7 +3972,33 @@ public class BotManager {
         BotPhysicsEngine.idleOnGround(entry, bot);
         bot.changeMap(targetMap, spawn);
         BotMovementManager.resetEntryState(entry);
+        maybeBotMapRemark(entry, bot, targetMap);
         return true;
+    }
+
+    /**
+     * Occasionally have one bot make a short LLM remark on arriving at a new map. Only the first bot
+     * speaks, only while the owner is on that map, deduped by map id and rate-limited so warps don't
+     * spam. The cooldown/dedup lives here (server.bots) where the BotEntry fields are accessible.
+     */
+    private void maybeBotMapRemark(BotEntry entry, Character bot, MapleMap newMap) {
+        if (!server.bots.llm.BotLlmConfig.enabled || !server.bots.llm.BotLlmConfig.banterEnabled) {
+            return;
+        }
+        if (entry == null || bot == null || newMap == null || !isFirstBotEntry(entry)) {
+            return;
+        }
+        Character owner = entry.owner;
+        if (owner == null || owner.getMap() != newMap) {
+            return;   // only remark where the owner can see it
+        }
+        long now = System.currentTimeMillis();
+        if (newMap.getId() == entry.lastMapRemarkMapId || now - entry.lastMapRemarkAtMs < 90_000L) {
+            return;
+        }
+        entry.lastMapRemarkAtMs = now;
+        entry.lastMapRemarkMapId = newMap.getId();
+        server.bots.llm.BotLlmReplyManager.maybeMapRemark(entry, bot);
     }
 
     private boolean recoverTeleportDistance(BotEntry entry, Character bot, Point targetPos) {
@@ -4027,7 +4415,7 @@ public class BotManager {
         BotPhysicsEngine.teleportTo(entry, bot, spawnPos != null ? spawnPos : ownerPos);
         BotMovementManager.resetEntryStateAfterTeleport(entry);
         BotMovementManager.broadcastMovement(entry);
-        botSay(bot, "back!");
+        botSay(bot, randomReply(List.of("back!", "i'm back!", "back again", "ok i'm back")));
         bot.changeFaceExpression(Emote.GLARE.getValue());
     }
 
@@ -4065,7 +4453,7 @@ public class BotManager {
     // Utility
     // -------------------------------------------------------------------------
 
-    void botSay(Character bot, String text) {
+    public void botSay(Character bot, String text) {
         bot.getMap().broadcastMessage(PacketCreator.getChatText(bot.getId(), text, false, 0));
     }
 
@@ -4082,7 +4470,29 @@ public class BotManager {
     }
 
     /** Owner-directed reply — routes MAP→map broadcast, PARTY→party, WHISPER→whisper to owner. */
+    // When set (during a named-bot command), owner-directed acks are captured here instead of being
+    // sent, so the LLM can re-word a single short ack in the bot's persona. See handleChat.
+    private static final ThreadLocal<List<String>> ackCapture = new ThreadLocal<>();
+
+    private static void beginAckCapture() {
+        ackCapture.set(new ArrayList<>());
+    }
+
+    private static List<String> endAckCapture() {
+        List<String> captured = ackCapture.get();
+        ackCapture.remove();
+        return captured != null ? captured : List.of();
+    }
+
     public void botReply(BotEntry entry, String text) {
+        List<String> cap = ackCapture.get();
+        if (cap != null) {
+            if (text != null && !text.isBlank()) {
+                cap.add(text);
+            }
+            return;   // captured for persona re-wording; not sent here
+        }
+        text = varyAck(text);
         switch (entry.replyChannel) {
             case PARTY -> botSayParty(entry.bot, text);
             case WHISPER -> {
@@ -4126,6 +4536,7 @@ public class BotManager {
         if (entry.bot == null) {
             return;
         }
+        text = varyAck(text);
         if (ownerIsAway(entry)) {
             entry.owner.sendPacket(PacketCreator.getWhisperReceive(
                     entry.bot.getName(), entry.bot.getClient().getChannel() - 1, false, text));
@@ -4162,6 +4573,7 @@ public class BotManager {
             return;
         }
         entry.replyChannel = ReplyChannel.WHISPER;
+        entry.mayReact = true;
         BotChatManager.handleChat(entry, message);
     }
 

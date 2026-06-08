@@ -14,6 +14,7 @@ public class ItemId {
     public static final int MAGICAL_MITTEN = 1472063;
     public static final int RPS_CERTIFICATE_BASE = 4031332;
     public static final int GOLDEN_MAPLE_LEAF = 4000313;
+    public static final int MAPLE_LEAF = 4001126;   // @leaf shop currency
     public static final int PERFECT_PITCH = 4310000;
     public static final int MAGIC_ROCK = 4006000;
     public static final int HYPER_TELEPORT_ROCK = 5041002;
@@ -273,6 +274,10 @@ public class ItemId {
 
     public static final int ENGAGEMENT_BOX_MIN = ENGAGEMENT_BOX_MOONSTONE;
     public static final int ENGAGEMENT_BOX_MAX = CARAT_RING_BOX_MAX;
+
+    // Quest ring (Lilin's Ring) — auto-granted to every character, grows +1 all-stats per
+    // completed quest, and is bound (cannot be dropped, traded, shop-listed, or NPC-sold).
+    public static final int QUEST_RING = 1112405;
 
     // Wedding ring
     public static final int WEDDING_RING_MOONSTONE = 1112803;

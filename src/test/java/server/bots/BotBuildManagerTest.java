@@ -139,6 +139,8 @@ class BotBuildManagerTest {
         learnedSkills.put(skills.get(Warrior.IMPROVED_MAXHP), new Character.SkillEntry((byte) 10, 0, -1));
 
         when(bot.getJob()).thenReturn(Job.WARRIOR);
+        // Level 16 → 1 + 3*(16-10) = 19 SP, matching the 19 points the build below allocates.
+        when(bot.getLevel()).thenReturn(16);
         when(bot.getSkills()).thenReturn(learnedSkills);
         stubSkillState(bot, remainingSps, skillLevels);
         when(bot.getMasterLevel(any(Skill.class))).thenReturn(0);
@@ -147,7 +149,7 @@ class BotBuildManagerTest {
             skillFactory.when(() -> SkillFactory.getSkill(anyInt()))
                     .thenAnswer(invocation -> skills.get(invocation.getArgument(0)));
 
-            assertEquals("ok, rebuilt my sp using the bot build", BotBuildManager.respecSp(entry, bot));
+            assertEquals("ok, maxed my earlier jobs and rebuilt this one with 19 sp", BotBuildManager.respecSp(entry, bot));
         }
 
         assertEquals(0, remainingSps[warriorBook]);

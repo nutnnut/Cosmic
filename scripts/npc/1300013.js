@@ -34,9 +34,9 @@ function action(mode, type, selection) {
             cm.sendSimple("#L0#Enter to fight #bKing Pepe#k and #bYeti Brothers#k.#l\r\n#L1#Enter to fight #bPrime Minister#k.#l");
         } else if (status == 1) {
             if (selection == 0) {
-                var pepe = cm.getEventManager("KingPepeAndYetis");
-                pepe.setProperty("player", cm.getPlayer().getName());
-                pepe.startInstance(cm.getPlayer());
+                // Normal-map boss (no event instance — the instance wrapper crashed clients on entry).
+                // Map 106021500 spawns the boss itself via onFirstUserEnter (summon_pepeking).
+                cm.warp(106021500);
                 cm.dispose();
 
             } else if (selection == 1) {
@@ -68,9 +68,9 @@ function action(mode, type, selection) {
             cm.sendSimple("#L1#Enter to fight #bKing Pepe#k and #bYeti Brothers#k.#l");
         } else if (status == 1) {
             if (selection == 1) {
-                var pepe = cm.getEventManager("KingPepeAndYetis");
-                pepe.setProperty("player", cm.getPlayer().getName());
-                pepe.startInstance(cm.getPlayer());
+                // "Stop the Wedding" quest (2330) entry — route to the normal map (no event instance,
+                // which crashed clients on entry). The room spawns the boss via onFirstUserEnter.
+                cm.warp(106021500);
                 cm.dispose();
 
             }

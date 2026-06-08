@@ -244,6 +244,10 @@ public class Shop {
             return false;
         }
 
+        if (item.getItemId() == ItemId.QUEST_RING) {   // bound quest ring is never NPC-sellable
+            return false;
+        }
+
         short iQuant = item.getQuantity();
         if (iQuant == 0xFFFF) {
             iQuant = 1;

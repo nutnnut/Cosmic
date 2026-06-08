@@ -204,8 +204,12 @@ public final class ItemConstants {
 
     public static boolean isOreBagAllowed(int itemId) {
         if (makerItemIds.contains(itemId)) return true;
-        // Upgrade scrolls: 2040000–2049999
-        return itemId / 10000 == 204;
+        // Upgrade scrolls: 2040000–2049999 (covers equip scrolls, Chaos, Clean Slate, etc.)
+        if (itemId / 10000 == 204) return true;
+        // White Scroll — the one enhancement scroll that lives outside the 204 family.
+        // (Return/teleport scrolls in 203xxxx are deliberately excluded: that range is a mixed bag
+        //  of warp items/milks and the ore bag is storage, so stashing them would make them unusable.)
+        return itemId == ItemId.WHITE_SCROLL;   // 2340000
     }
 
     public static InventoryType getInventoryType(final int itemId) {

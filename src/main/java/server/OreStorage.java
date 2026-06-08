@@ -60,7 +60,7 @@ public class OreStorage {
 
     private static OreStorage create(int id, int world) throws SQLException {
         try (Connection con = DatabaseConnection.getConnection();
-             PreparedStatement ps = con.prepareStatement("INSERT INTO orestorages (accountid, world, slots, meso) VALUES (?, ?, 48, 0)")) {
+             PreparedStatement ps = con.prepareStatement("INSERT INTO orestorages (accountid, world, slots, meso) VALUES (?, ?, 96, 0)")) {
             ps.setInt(1, id);
             ps.setInt(2, world);
             ps.executeUpdate();
@@ -100,7 +100,7 @@ public class OreStorage {
 
     public boolean canGainSlots(int slots) {
         slots += this.slots;
-        return slots <= 48;
+        return slots <= 96;
     }
 
     public boolean gainSlots(int slots) {

@@ -2,10 +2,34 @@ package server.bots.llm;
 
 public final class BotLlmConfig {
     public static volatile boolean enabled = false;
+    // LLM-improvised idle banter between an owner's own bots (gated separately from owner-chat replies
+    // because it's autonomous — it spends API tokens without the player initiating).
+    public static volatile boolean banterEnabled = true;
     public static volatile boolean typoSuggesterEnabled = false; // recommended off if LLM on, too many false positive and block LLM chat sometimes
 
+    // Which backend serves bot replies. OLLAMA = local model (free, private, CPU-bound);
+    // ANTHROPIC = Claude cloud API (better quality, costs per message, needs API key + network).
+    public enum Provider { OLLAMA, ANTHROPIC }
+    public static volatile Provider provider = Provider.OLLAMA;
+
+    // --- Ollama (local) backend, used when provider == OLLAMA ---
     public static volatile String endpoint = "http://localhost:11434";
     public static volatile String model = "gemma4:e2b";
+
+    // --- Anthropic (Claude) backend, used when provider == ANTHROPIC ---
+    // API key is read from the ANTHROPIC_API_KEY env var at startup — set it in the
+    // container environment (docker-compose), never commit it. Can be overridden at runtime.
+    public static volatile String anthropicApiKey = System.getenv("ANTHROPIC_API_KEY");
+    public static volatile String anthropicEndpoint = "https://api.anthropic.com/v1/messages";
+    public static volatile String anthropicVersion = "2023-06-01";
+    // Haiku 4.5 is the cheapest/fastest Claude model — the right fit for short MMO chatter.
+    // Swap to claude-sonnet-4-6 / claude-opus-4-8 for higher quality at higher cost.
+    public static volatile String anthropicModel = "claude-haiku-4-5";
+    // Mark the reused per-bot system prompt as cacheable. NOTE: Claude only caches prefixes
+    // over ~4096 tokens (Haiku/Opus), so short persona prompts won't actually cache yet —
+    // this is wired for when the system prompt grows (lore, long persona, few-shot examples).
+    public static volatile boolean anthropicPromptCaching = true;
+
     public static volatile int requestTimeoutMs = 30_000;
     public static volatile int maxConcurrentGlobal = 4;
     // Hard ceiling on the FULL reply (sum across split messages). Computed
@@ -63,7 +87,10 @@ public final class BotLlmConfig {
     // between each. Set to 1 to disable splitting.
     public static volatile int maxReplyMessages = 2;
     public static volatile int multiMessageDelayMs = 1800;
-    public static volatile int maxReplyCharsPerMessage = 120;
+    // Per-message char cap. The v83 chat balloon truncates long lines, so this must stay at/under the
+    // in-game display limit (~80) — otherwise a single reply gets cut off instead of split. splitForChat
+    // breaks anything longer onto a second message.
+    public static volatile int maxReplyCharsPerMessage = 80;
 
     // When true, every LLM call prints the full prompt + raw response + timing
     // to the server log. Use to diagnose nonsense / sampling issues, then turn off.
@@ -81,6 +108,30 @@ public final class BotLlmConfig {
     // (which is sized for chat replies) so the rolling memory can actually carry detail.
     // ~300 tokens ≈ 4-8 short sentences ≈ what fits comfortably in 800 chars.
     public static volatile int summaryMaxPredictTokens = 300;
+
+    /**
+     * Apply the {@code BOT_LLM_*} keys from the server config (config.yaml {@code server:} block)
+     * onto these static toggles at startup. The Anthropic API key is NOT set here — it stays in the
+     * ANTHROPIC_API_KEY env var. A blank/typo'd provider leaves the existing default untouched.
+     */
+    public static void applyServerConfig(config.ServerConfig sc) {
+        if (sc == null) {
+            return;
+        }
+        enabled = sc.BOT_LLM_ENABLED;
+        banterEnabled = sc.BOT_LLM_BANTER;
+        debugLog = sc.BOT_LLM_DEBUG;
+        if (sc.BOT_LLM_PROVIDER != null && !sc.BOT_LLM_PROVIDER.isBlank()) {
+            try {
+                provider = Provider.valueOf(sc.BOT_LLM_PROVIDER.trim().toUpperCase());
+            } catch (IllegalArgumentException ignored) {
+                // keep the default provider when the configured value isn't OLLAMA/ANTHROPIC
+            }
+        }
+        if (sc.BOT_LLM_ANTHROPIC_MODEL != null && !sc.BOT_LLM_ANTHROPIC_MODEL.isBlank()) {
+            anthropicModel = sc.BOT_LLM_ANTHROPIC_MODEL.trim();
+        }
+    }
 
     private BotLlmConfig() {}
 }

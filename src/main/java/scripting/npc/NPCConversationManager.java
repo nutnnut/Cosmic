@@ -372,6 +372,14 @@ public class NPCConversationManager extends AbstractPlayerInteraction {
         return GameConstants.getJobName(id);
     }
 
+    public int getJobId() {
+        return getPlayer().getJob().getId();
+    }
+
+    public int getLevel() {
+        return getPlayer().getLevel();
+    }
+
     public StatEffect getItemEffect(int itemId) {
         return ItemInformationProvider.getInstance().getItemEffect(itemId);
     }

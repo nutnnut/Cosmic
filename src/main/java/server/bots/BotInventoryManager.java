@@ -38,6 +38,24 @@ import java.util.function.Predicate;
 class BotInventoryManager {
     private static final Logger log = LoggerFactory.getLogger(BotInventoryManager.class);
     private static final int RARE_DROP_MIN_VALUE = 100_000;   // sell price above which a looted equip is "rare" enough to relay
+    static final long RECENT_DROP_WINDOW_MS = 300_000L;       // "best drop in the last few minutes" window (5 min)
+
+    /** Tracks the bot's best (priciest) recently-looted equip, for the "any good drops?" bot banter. */
+    private static void recordRecentBestDrop(BotEntry entry, String name, int value) {
+        if (entry == null || name == null || value <= 0) {
+            return;
+        }
+        long now = System.currentTimeMillis();
+        if (now - entry.recentBestDropAtMs > RECENT_DROP_WINDOW_MS) {
+            entry.recentBestDropValue = 0;   // previous best has aged out of the window
+            entry.recentBestDropName = null;
+        }
+        if (value > entry.recentBestDropValue) {
+            entry.recentBestDropValue = value;
+            entry.recentBestDropName = name;
+            entry.recentBestDropAtMs = now;
+        }
+    }
     private static final long TRADE_COMMAND_PROFILE_WARN_NS = 50_000_000L;
     private static final int MANUAL_TRADE_TIMEOUT_MS = 60_000;
     private static final int TRADE_WINDOW_ITEM_LIMIT = 9;
@@ -185,7 +203,12 @@ class BotInventoryManager {
             boolean autoGiveValuable = BotManager.cfg.BOT_AUTO_GIVE_VALUABLES
                     && BotLootEligibility.isOwnerValuable(pickedItemId);
             boolean poolMeso = entry.funnelMeso && drop.getMeso() > 0;
-            if (ownerOnMap && (ItemId.isNxCard(pickedItemId) || autoGiveValuable || poolMeso)) {
+            boolean sendEtc = entry.autoSendEtcToOwner && pickedItemId > 0
+                    && ItemConstants.getInventoryType(pickedItemId) == InventoryType.ETC;
+            // Maple Leaves are @leaf-shop currency — always funnel them to the owner (not the bot,
+            // not the ore bag) so they land in the owner's inventory where the shop can spend them.
+            boolean sendLeaf = pickedItemId == ItemId.MAPLE_LEAF;
+            if (ownerOnMap && (ItemId.isNxCard(pickedItemId) || autoGiveValuable || poolMeso || sendEtc || sendLeaf)) {
                 entry.owner.pickupItem(drop);
             } else {
                 bot.pickupItem(drop);
@@ -194,9 +217,11 @@ class BotInventoryManager {
             if (pickedItem != null && pickedItemId > 0 && hasItem(bot, pickedItem)) {
                 InventoryType pickedType = ItemConstants.getInventoryType(pickedItemId);
                 if (pickedType == InventoryType.EQUIP) {
-                    if (ItemInformationProvider.getInstance().getPrice(pickedItemId, 1) >= RARE_DROP_MIN_VALUE) {
-                        BotManager.getInstance().whisperOwnerIfAway(entry,
-                                "found a " + ItemInformationProvider.getInstance().getName(pickedItemId) + "!");
+                    int dropValue = ItemInformationProvider.getInstance().getPrice(pickedItemId, 1);
+                    String dropName = ItemInformationProvider.getInstance().getName(pickedItemId);
+                    recordRecentBestDrop(entry, dropName, dropValue);
+                    if (dropValue >= RARE_DROP_MIN_VALUE) {
+                        BotManager.getInstance().whisperOwnerIfAway(entry, "found a " + dropName + "!");
                     }
                     BotEquipManager.autoEquip(bot, entry.owner, entry.pendingLootOfferItem);
                     if (hasItem(bot, pickedItem)) {
@@ -506,15 +531,15 @@ class BotInventoryManager {
         }
         Character owner = entry.owner;
         if (owner == null) {
-            BotManager.getInstance().botReply(entry, "can't find you to trade!");
+            BotManager.getInstance().botReply(entry, BotManager.randomReply(List.of("can't find you to trade!", "can't find you to trade with!", "where'd you go? can't trade", "i don't see you to trade")));
             return;
         }
         if (bot.getTrade() != null || entry.pendingTradeCategory != null) {
-            BotManager.getInstance().botReply(entry, "already in a trade!");
+            BotManager.getInstance().botReply(entry, BotManager.randomReply(List.of("already in a trade!", "i'm in a trade already!", "hold on, mid-trade!", "busy trading rn!")));
             return;
         }
         if (owner.getTrade() != null) {
-            BotManager.getInstance().botReply(entry, "you're already in a trade!");
+            BotManager.getInstance().botReply(entry, BotManager.randomReply(List.of("you're already in a trade!", "you're mid-trade already!", "finish your other trade first!", "you've got a trade open already!")));
             return;
         }
         if ("equips".equals(category)) {
@@ -558,11 +583,11 @@ class BotInventoryManager {
 
     static void startTradeTransfer(Item item, Character recipient, BotEntry entry, Character bot) {
         if (recipient == null) {
-            BotManager.getInstance().botReply(entry, "can't find who to trade!");
+            BotManager.getInstance().botReply(entry, BotManager.randomReply(List.of("can't find who to trade!", "not sure who to trade with", "can't find the trade partner", "who am i trading with?")));
             return;
         }
         if (!hasItem(bot, item)) {
-            BotManager.getInstance().botReply(entry, "don't have it anymore");
+            BotManager.getInstance().botReply(entry, BotManager.randomReply(List.of("don't have it anymore", "i don't have that now", "that's gone now sorry", "no longer have it")));
             return;
         }
         if (bot.getTrade() != null || entry.pendingTradeCategory != null || recipient.getTrade() != null) {
@@ -689,7 +714,7 @@ class BotInventoryManager {
                                            BotEntry entry,
                                            Character bot) {
         if (recipient == null) {
-            BotManager.getInstance().botReply(entry, "can't find who to trade!");
+            BotManager.getInstance().botReply(entry, BotManager.randomReply(List.of("can't find who to trade!", "not sure who to trade with", "can't find the trade partner", "who am i trading with?")));
             return;
         }
         entry.pendingTradeCategory = category;
@@ -786,12 +811,12 @@ class BotInventoryManager {
                 entry.pendingTradeTimerMs  = BotMovementManager.delayAfterCurrentTick(1_000);
             } else if (entry.pendingTradeAllAdded) {
                 // Owner cancelled after items were added (items returned to bot)
-                BotManager.getInstance().botReply(entry, "trade cancelled");
+                BotManager.getInstance().botReply(entry, BotManager.randomReply(List.of("trade cancelled", "trade's off", "cancelled the trade", "nvm, trade cancelled")));
                 resetTradeState(entry, bot);
                 BotEquipManager.autoEquip(bot, entry.owner, null);
             } else {
                 // Owner declined invite
-                BotManager.getInstance().botReply(entry, "trade declined");
+                BotManager.getInstance().botReply(entry, BotManager.randomReply(List.of("trade declined", "declined the trade", "no thanks on the trade", "passing on that trade")));
                 resetTradeState(entry, bot);
             }
             return;
@@ -801,7 +826,7 @@ class BotInventoryManager {
         if (!trade.isFullTrade()) {
             entry.pendingTradeTimerMs += BotMovementManager.cfg.TICK_MS;
             if (entry.pendingTradeTimerMs > 30_000) {
-                BotManager.getInstance().botReply(entry, "trade request timed out");
+                BotManager.getInstance().botReply(entry, BotManager.randomReply(List.of("trade request timed out", "trade timed out", "took too long, trade expired", "trade request expired")));
                 Trade.cancelTrade(bot, Trade.TradeResult.NO_RESPONSE);
                 resetTradeState(entry, bot);
             }
@@ -890,7 +915,7 @@ class BotInventoryManager {
                 entry.pendingTradeBotDone = true;
                 entry.pendingTradeTimerMs = 0;
             } else if (entry.pendingTradeTimerMs > 60_000) { // 60 s timeout
-                BotManager.getInstance().botReply(entry, "trade timed out, cancelling");
+                BotManager.getInstance().botReply(entry, BotManager.randomReply(List.of("trade timed out, cancelling", "trade took too long, cancelling", "timed out, calling off the trade", "no response, cancelling trade")));
                 Trade.cancelTrade(bot, Trade.TradeResult.NO_RESPONSE);
                 resetTradeState(entry, bot);
             }
@@ -982,15 +1007,15 @@ class BotInventoryManager {
     private static void startTradeMesoTransfer(String category, BotEntry entry, Character bot) {
         Character owner = entry.owner;
         if (owner == null) {
-            BotManager.getInstance().botReply(entry, "can't find you to trade!");
+            BotManager.getInstance().botReply(entry, BotManager.randomReply(List.of("can't find you to trade!", "can't find you to trade with!", "where'd you go? can't trade", "i don't see you to trade")));
             return;
         }
         if (bot.getTrade() != null || entry.pendingTradeCategory != null) {
-            BotManager.getInstance().botReply(entry, "already in a trade!");
+            BotManager.getInstance().botReply(entry, BotManager.randomReply(List.of("already in a trade!", "i'm in a trade already!", "hold on, mid-trade!", "busy trading rn!")));
             return;
         }
         if (owner.getTrade() != null) {
-            BotManager.getInstance().botReply(entry, "you're already in a trade!");
+            BotManager.getInstance().botReply(entry, BotManager.randomReply(List.of("you're already in a trade!", "you're mid-trade already!", "finish your other trade first!", "you've got a trade open already!")));
             return;
         }
 
@@ -1002,7 +1027,7 @@ class BotInventoryManager {
 
         int requestedMesos = requestedTradeMesos(category);
         if (requestedMesos == 0) {
-            BotManager.getInstance().botReply(entry, "ask for more than 0 mesos, or just say 'trade mesos'");
+            BotManager.getInstance().botReply(entry, BotManager.randomReply(List.of("ask for more than 0 mesos, or just say 'trade mesos'", "more than 0 mesos please, or say 'trade mesos'", "gimme a real number, or just 'trade mesos'", "0 mesos? name an amount or say 'trade mesos'")));
             return;
         }
         if (requestedMesos > 0 && currentMesos < requestedMesos) {

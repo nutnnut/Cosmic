@@ -142,7 +142,7 @@ final class BotShopManager {
             return;
         }
         if (BotInventoryManager.collectSellTrashEquips(entry, bot).isEmpty()) {
-            BotManager.getInstance().botReply(entry, "no trash equips worth selling");
+            BotManager.getInstance().botReply(entry, BotManager.randomReply(List.of("no trash equips worth selling", "nothing junk worth vendoring", "no trash to sell", "my equips are all worth keeping")));
             return;
         }
 
@@ -154,11 +154,11 @@ final class BotShopManager {
         NpcShopMatch match = findBestShop(bot, true);
         if (match == null) {
             entry.shopSellTrashPending = false;
-            BotManager.getInstance().botReply(entry, "can't find a shop here");
+            BotManager.getInstance().botReply(entry, BotManager.randomReply(List.of("can't find a shop here", "no shop around here", "don't see a shop here", "no merchant nearby")));
             return;
         }
 
-        BotManager.getInstance().botReply(entry, "ok gonna sell the junk");
+        BotManager.getInstance().botReply(entry, BotManager.randomReply(List.of("ok gonna sell the junk", "selling the junk now", "off to vendor the trash", "time to dump the junk")));
         startShopVisit(entry, bot, match);
     }
 
@@ -172,19 +172,19 @@ final class BotShopManager {
             return;
         }
         if (entry.shopVisitPending) {
-            BotManager.getInstance().botReply(entry, "already on my way to a shop");
+            BotManager.getInstance().botReply(entry, BotManager.randomReply(List.of("already on my way to a shop", "already heading to a shop", "i'm en route to a shop", "on my way to the vendor already")));
             return;
         }
 
         NpcShopMatch match = findBestShop(bot, true);
         if (match == null) {
-            BotManager.getInstance().botReply(entry, "can't find a shop around here");
+            BotManager.getInstance().botReply(entry, BotManager.randomReply(List.of("can't find a shop around here", "no shop nearby", "no merchant around here", "can't find a vendor here")));
             return;
         }
 
         entry.shopSellTrashPending = true;
         entry.shopSellEtcPending = true;
-        BotManager.getInstance().botReply(entry, "ok, heading to the shop");
+        BotManager.getInstance().botReply(entry, BotManager.randomReply(List.of("ok, heading to the shop", "off to the shop!", "going shopping now", "heading to the vendor")));
         startShopVisit(entry, bot, match);
     }
 
@@ -198,12 +198,12 @@ final class BotShopManager {
         }
         NPC npc = findNpcNear(bot, bot.getPosition());
         if (npc == null) {
-            BotManager.getInstance().botReply(entry, "i'm not near a shop");
+            BotManager.getInstance().botReply(entry, BotManager.randomReply(List.of("i'm not near a shop", "no shop nearby", "not by a shop rn", "i'm not at a vendor")));
             return;
         }
         Shop shop = ShopFactory.getInstance().getShopForNPC(npc.getId());
         if (shop == null) {
-            BotManager.getInstance().botReply(entry, "this shop's closed");
+            BotManager.getInstance().botReply(entry, BotManager.randomReply(List.of("this shop's closed", "shop's not open", "can't shop here rn", "this vendor's closed")));
             return;
         }
 
@@ -224,7 +224,7 @@ final class BotShopManager {
         }
         int gained = bot.getMeso() - mesoBefore;
         if (sold == 0) {
-            BotManager.getInstance().botReply(entry, "nothing in my etc worth selling");
+            BotManager.getInstance().botReply(entry, BotManager.randomReply(List.of("nothing in my etc worth selling", "no etc junk to sell", "my etc tab's not worth vendoring", "nothing in etc to sell")));
         } else {
             BotManager.getInstance().botReply(entry, "sold " + sold + " etc item" + (sold != 1 ? "s" : "")
                     + " for " + GameConstants.numberWithCommas(gained) + " mesos");
@@ -310,16 +310,16 @@ final class BotShopManager {
         }
         Character owner = entry.owner;
         if (owner == null || !owner.isLoggedinWorld()) {
-            BotManager.getInstance().botReply(entry, "i don't know whose storage to use");
+            BotManager.getInstance().botReply(entry, BotManager.randomReply(List.of("i don't know whose storage to use", "not sure whose storage to open", "whose storage am i using?", "no storage owner set")));
             return;
         }
         if (!storageNpcNear(bot)) {
-            BotManager.getInstance().botReply(entry, "i'm not near a storage");
+            BotManager.getInstance().botReply(entry, BotManager.randomReply(List.of("i'm not near a storage", "no storage nearby", "not by a storage npc", "i'm not at storage")));
             return;
         }
         Storage storage = owner.getStorage();
         if (storage == null) {
-            BotManager.getInstance().botReply(entry, "couldn't reach your storage");
+            BotManager.getInstance().botReply(entry, BotManager.randomReply(List.of("couldn't reach your storage", "couldn't get to storage", "storage is out of reach", "can't reach the storage npc")));
             return;
         }
 
@@ -380,7 +380,7 @@ final class BotShopManager {
         if (entry.shopVisitStartedAtMs > 0
                 && !entry.shopSequenceActive
                 && now - entry.shopVisitStartedAtMs > SHOP_VISIT_TIMEOUT_MS) {
-            BotManager.getInstance().botSay(bot, "couldn't reach shop in time");
+            BotManager.getInstance().botSay(bot, BotManager.randomReply(List.of("couldn't reach shop in time", "couldn't make it to the shop in time", "ran out of time getting to the shop", "gave up reaching the shop")));
             clearShopState(entry);
             return false;
         }
@@ -775,7 +775,7 @@ final class BotShopManager {
             if (!failedItems.isEmpty()) {
                 BotManager.getInstance().botSay(bot, buildSellTrashFailureMessage(failedItems.size()));
             } else if (soldCount == 0) {
-                BotManager.getInstance().botSay(bot, "no trash equips worth selling");
+                BotManager.getInstance().botSay(bot, BotManager.randomReply(List.of("no trash equips worth selling", "nothing junk worth vendoring", "no trash to sell", "all my equips are keepers")));
             }
             finishPurchaseSequence(new PurchaseSequence(entry, bot, npcPos, List.of(), bought, firstShortfall), false);
             return;

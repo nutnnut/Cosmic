@@ -398,7 +398,7 @@ class BotChatManagerTest {
         reportHelp.setAccessible(true);
         reportHelp.invoke(null, entry);
 
-        assertEquals(5, entry.msgQueue.size());
+        assertEquals(10, entry.msgQueue.size());
         for (BotChatManager.QueuedMessage message : entry.msgQueue) {
             assertTrue(message.ownerDirected);
         }

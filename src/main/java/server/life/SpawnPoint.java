@@ -95,7 +95,7 @@ public class SpawnPoint {
             public void monsterKilled(int aniTime) {
                 nextPossibleSpawn = Server.getInstance().getCurrentTime();
                 if (mobTime > 0) {
-                    nextPossibleSpawn += SECONDS.toMillis(mobTime);
+                    nextPossibleSpawn += SECONDS.toMillis(mobTime) / 2;   // half respawn time
                 } else {
                     nextPossibleSpawn += aniTime;
                 }
@@ -109,7 +109,7 @@ public class SpawnPoint {
             public void monsterHealed(int trueHeal) {}
         });
         if (mobTime == 0) {
-            nextPossibleSpawn = Server.getInstance().getCurrentTime() + mobInterval;
+            nextPossibleSpawn = Server.getInstance().getCurrentTime() + mobInterval / 2;   // half respawn time
         }
         return mob;
     }

@@ -112,7 +112,9 @@ public class StorageProcessor {
                                 chr.setUsedStorage();
 
                                 KarmaManipulator.toggleKarmaFlagToUntradeable(item);
-                                InventoryManipulator.addFromDrop(c, item, false);
+                                // Bypass the ore-bag funnel — a deliberate withdrawal must go to the
+                                // inventory, not get re-funneled back into the bag when auto-collect is on.
+                                InventoryManipulator.addFromDropSkipOreBag(c, item, false);
 
                                 String itemName = ii.getName(item.getItemId());
                                 log.debug("Chr {} took out {}x {} ({})", c.getPlayer().getName(), item.getQuantity(), itemName, item.getItemId());
@@ -309,7 +311,9 @@ public class StorageProcessor {
                                     chr.setUsedStorage();
 
                                     KarmaManipulator.toggleKarmaFlagToUntradeable(item);
-                                    InventoryManipulator.addFromDrop(c, item, false);
+                                    // Bypass the ore-bag funnel — a deliberate withdrawal must go to the
+                                    // inventory, not get re-funneled back into the bag when auto-collect is on.
+                                    InventoryManipulator.addFromDropSkipOreBag(c, item, false);
 
                                     String itemName = ii.getName(item.getItemId());
                                     log.debug("Chr {} took out {}x {} ({})", c.getPlayer().getName(), item.getQuantity(), itemName, item.getItemId());

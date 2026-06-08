@@ -237,6 +237,8 @@ public class Character extends AbstractCharacterObject {
     private int possibleReports = 10;
     private int ariantPoints, dojoPoints, vanquisherStage, dojoStage, dojoEnergy, vanquisherKills;
     private int expRate = 1, mesoRate = 1, dropRate = 1, expCoupon = 1, mesoCoupon = 1, dropCoupon = 1;
+    // Bots mirror their owner's active 2x exp/drop coupon multipliers so they benefit too (1 = none).
+    private int botOwnerExpCoupon = 1, botOwnerDropCoupon = 1;
     private int omokwins, omokties, omoklosses, matchcardwins, matchcardties, matchcardlosses;
     private int owlSearch;
     private long lastfametime, lastUsedCashItem, lastExpression = 0, lastHealed, lastDeathtime, jailExpiration = -1;
@@ -1382,8 +1384,12 @@ public class Character extends AbstractCharacterObject {
         if (previousJob == null || previousJob == this.job) {
             return;
         }
+        maxJobSkills(previousJob.getId());
+    }
 
-        int previousJobId = previousJob.getId();
+    // Max out every skill that belongs to the given job id. Used on job advancement
+    // (previous job) and by the bot SP respec to restore earlier jobs to max.
+    public void maxJobSkills(int jobId) {
         for (Data skillData : DataProviderFactory.getDataProvider(WZFiles.STRING).getData("Skill.img").getChildren()) {
             int skillId;
             try {
@@ -1392,7 +1398,7 @@ public class Character extends AbstractCharacterObject {
                 continue;
             }
 
-            if (skillId / 10000 != previousJobId) {
+            if (skillId / 10000 != jobId) {
                 continue;
             }
 
@@ -3241,6 +3247,37 @@ public class Character extends AbstractCharacterObject {
         mods.add(new ModifyInventory(3, item));
         mods.add(new ModifyInventory(0, item));
         sendPacket(PacketCreator.modifyInventory(true, mods));
+    }
+
+    /**
+     * Re-derives the quest ring's (Lilin's Ring) stats from the number of completed quests — +1 to
+     * every stat per completed quest — and keeps it bound (untradeable + locked). No-op if the
+     * character has no quest ring. Called on quest completion and on login.
+     */
+    public void applyQuestRingBoost() {
+        Equip questRing = (Equip) getInventory(InventoryType.EQUIPPED).findById(ItemId.QUEST_RING);
+        if (questRing == null) {
+            questRing = (Equip) getInventory(InventoryType.EQUIP).findById(ItemId.QUEST_RING);
+        }
+        if (questRing == null) {
+            return;
+        }
+
+        short stat = (short) getCompletedQuests().size();   // +1 all stats per completed quest
+        short atk = (short) (stat / 2);                     // +1 w.atk/m.atk every other quest
+        questRing.setStr(stat);
+        questRing.setDex(stat);
+        questRing.setInt(stat);
+        questRing.setLuk(stat);
+        questRing.setHp(stat);
+        questRing.setMp(stat);
+        questRing.setWatk(atk);
+        questRing.setMatk(atk);
+        questRing.setFlag((short) (questRing.getFlag() | ItemConstants.UNTRADEABLE | ItemConstants.LOCK));
+
+        equipchanged = true;
+        forceUpdateItem(questRing);
+        recalcLocalStats();
     }
 
     public void gainGachaExp() {
@@ -5193,7 +5230,13 @@ public class Character extends AbstractCharacterObject {
             return Math.min(w.getExpRate(), 5);
         }
 
-        return expRate;
+        return expRate * botOwnerExpCoupon;
+    }
+
+    /** Bots: mirror the owner's active 2x exp/drop coupon multipliers (1 = none). No-op for players. */
+    public void setBotOwnerCoupons(int expCouponMult, int dropCouponMult) {
+        this.botOwnerExpCoupon = Math.max(1, expCouponMult);
+        this.botOwnerDropCoupon = Math.max(1, dropCouponMult);
     }
 
     public double getDynamicExpRateMultiplier() {
@@ -5229,7 +5272,7 @@ public class Character extends AbstractCharacterObject {
     }
 
     public int getDropRate() {
-        return dropRate;
+        return dropRate * botOwnerDropCoupon;
     }
 
     public int getCouponDropRate() {
@@ -5242,7 +5285,7 @@ public class Character extends AbstractCharacterObject {
 
     public int getBossDropRate() {
         World w = getWorldServer();
-        return (dropRate / w.getDropRate()) * w.getBossDropRate();
+        return (dropRate / w.getDropRate()) * w.getBossDropRate() * botOwnerDropCoupon;
     }
 
     public int getMesoRate() {
@@ -8211,9 +8254,15 @@ public class Character extends AbstractCharacterObject {
     }
 
     private void updateLocalStats() {
-        prtLock.lock();
-        effLock.lock();
-        statWlock.lock();
+        // Bounded acquisition (order prtLock -> effLock -> statWlock). Under a deadlock or
+        // severe contention, skip this recompute instead of parking forever — the derived
+        // stats self-heal on the next stat change. Skipping is safe here because this method
+        // only recomputes/broadcasts derived stats; it never mutates persisted state.
+        if (!tools.LockTimeouts.tryLockAll(5_000L, prtLock, effLock, statWlock)) {
+            log.warn("updateLocalStats: stat locks busy >5000ms for {}; skipping recompute (retries on next stat change)",
+                    getName());
+            return;
+        }
         try {
             int oldmaxhp = localmaxhp;
             List<Pair<Stat, Integer>> hpmpupdate = recalcLocalStats();
@@ -9969,6 +10018,7 @@ public class Character extends AbstractCharacterObject {
 
             announceUpdateQuest(DelayedQuestUpdate.COMPLETE, questid, qs.getCompletionTime());
             //announceUpdateQuest(DelayedQuestUpdate.INFO, qs); // happens after giving rewards, for non-next quests only
+            applyQuestRingBoost();   // grow the quest ring (+1 all stats per completed quest)
         } else if (qs.getStatus().equals(QuestStatus.Status.NOT_STARTED)) {
             announceUpdateQuest(DelayedQuestUpdate.UPDATE, qs, false);
             if (qs.getInfoNumber() > 0) {

@@ -75,12 +75,12 @@ final class BotOfferManager {
             return;
         }
         if (entry.pendingAction != null || entry.pendingTradeCategory != null || hasOfferReservation(entry)) {
-            BotManager.getInstance().botReply(entry, "busy rn, ask me again in a bit");
+            BotManager.getInstance().botReply(entry, BotManager.randomReply(List.of("busy rn, ask me again in a bit", "kinda busy, ask in a sec", "one moment, ask again shortly", "give me a min, then ask again")));
             return;
         }
         List<BotEquipManager.EquipRecommendation> recs = BotEquipManager.findRecommendedEquips(bot, owner);
         if (recs.isEmpty()) {
-            BotManager.getInstance().botReply(entry, "nothing i need from you rn, im good!");
+            BotManager.getInstance().botReply(entry, BotManager.randomReply(List.of("nothing i need from you rn, im good!", "i'm good, don't need anything!", "nah i'm all set, thanks!", "nothing needed rn, appreciate it!")));
             return;
         }
         Item candidate = recs.get(0).candidate();
@@ -181,7 +181,7 @@ final class BotOfferManager {
                 BotInventoryManager.lockItem(kept);
             }
             BotManager.after(BotManager.randMs(400, 600), () ->
-                    BotManager.getInstance().botReply(entry, "ok, locked it — won't sell or move it"));
+                    BotManager.getInstance().botReply(entry, BotManager.randomReply(List.of("ok, locked it — won't sell or move it", "locked it, safe from selling/moving", "got it locked, won't touch it", "secured it — won't sell or move it"))));
             return true;
         }
 
@@ -189,7 +189,7 @@ final class BotOfferManager {
             if (entry.pendingLootOfferBotRequesting) {
                 clearPendingOffer(entry);
                 BotManager.after(BotManager.randMs(400, 600), () ->
-                        BotManager.getInstance().botReply(entry, "ty! inv me?"));
+                        BotManager.getInstance().botReply(entry, BotManager.randomReply(List.of("ty! inv me?", "thanks! invite me?", "ty! send a trade?", "nice, inv me!"))));
             } else {
                 Item item = entry.pendingLootOfferItem;
                 entry.pendingDropCategory = null;
@@ -207,7 +207,7 @@ final class BotOfferManager {
             clearPendingOffer(entry);
             BotManager.after(BotManager.randMs(400, 600), () -> {
                 if (entry.owner != null && speaker.getId() == entry.owner.getId()) {
-                    BotManager.getInstance().botReply(entry, "ok, keeping it for now");
+                    BotManager.getInstance().botReply(entry, BotManager.randomReply(List.of("ok, keeping it for now", "alright, holding onto it", "sure, i'll keep it for now", "kept it for now")));
                 } else {
                     BotManager.getInstance().botSay(entry.bot, "ok, keeping it for now");
                 }

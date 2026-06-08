@@ -35,6 +35,10 @@ import client.inventory.Equip;
 import client.inventory.Inventory;
 import client.inventory.InventoryType;
 import client.inventory.Item;
+import client.inventory.manipulator.InventoryManipulator;
+import constants.id.ItemId;
+import constants.inventory.ItemConstants;
+import server.ItemInformationProvider;
 import client.inventory.Pet;
 import client.keybind.KeyBinding;
 import config.YamlConfig;
@@ -43,6 +47,7 @@ import net.AbstractPacketHandler;
 import net.packet.InPacket;
 import net.server.PlayerBuffValueHolder;
 import net.server.Server;
+import server.bots.BotManager;
 import net.server.channel.Channel;
 import net.server.channel.CharacterIdChannelPair;
 import net.server.coordinator.session.Hwid;
@@ -460,6 +465,20 @@ public final class PlayerLoggedinHandler extends AbstractPacketHandler {
             if (newcomer) {
                 player.setLoginTime(System.currentTimeMillis());
             }
+
+            // Quest ring: make sure every character has Lilin's bound quest ring, then sync its
+            // stats to their completed-quest count. New characters already have it equipped
+            // (CharacterFactory); this retrofits any older character that lacks one.
+            if (player.getInventory(InventoryType.EQUIPPED).findById(ItemId.QUEST_RING) == null
+                    && player.getInventory(InventoryType.EQUIP).findById(ItemId.QUEST_RING) == null) {
+                Item ring = ItemInformationProvider.getInstance().getEquipById(ItemId.QUEST_RING);
+                ring.setFlag((short) (ring.getFlag() | ItemConstants.UNTRADEABLE | ItemConstants.LOCK));
+                InventoryManipulator.addFromDrop(c, ring, false);
+            }
+            player.applyQuestRingBoost();
+
+            // @spawnbots: if enabled, spawn this player's registered bots shortly after login settles.
+            BotManager.getInstance().maybeAutoSpawnBots(player);
         } catch (Exception e) {
             e.printStackTrace();
         } finally {

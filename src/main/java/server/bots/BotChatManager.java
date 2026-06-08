@@ -150,6 +150,16 @@ public class BotChatManager {
             "\\b(?:pool|share|collect)\\s+(?:the\\s+)?meso[s]?\\b|\\b(?:give|send|hand)\\s+(?:me\\s+)?(?:the\\s+|your\\s+)?meso[s]?\\b|\\bmeso[s]?\\s+to\\s+me\\b", Pattern.CASE_INSENSITIVE);
     private static final Pattern MESO_POOL_OFF_PATTERN = Pattern.compile(
             "\\b(?:keep|hold(?:\\s+onto)?)\\s+(?:your\\s+|the\\s+)?meso[s]?\\b|\\bstop\\s+(?:pool(?:ing)?|sharing)\\s+meso[s]?\\b|\\bno\\s+meso[s]?\\s+pool", Pattern.CASE_INSENSITIVE);
+    // "auto send etc on/off" — route every looted ETC item straight to the owner. Check OFF first
+    // (its "...off" suffix would otherwise be matched by ON).
+    private static final Pattern ETC_AUTOSEND_OFF_PATTERN = Pattern.compile(
+            "\\bauto[\\s-]?send\\s+(?:etc|misc(?:ellaneous)?)\\s+off\\b"
+            + "|\\b(?:stop\\s+(?:auto[\\s-]?)?send(?:ing)?\\s+|no\\s+auto[\\s-]?send\\s+|keep\\s+(?:your\\s+|the\\s+)?)(?:etc|misc(?:ellaneous)?)\\b",
+            Pattern.CASE_INSENSITIVE);
+    private static final Pattern ETC_AUTOSEND_ON_PATTERN = Pattern.compile(
+            "\\bauto[\\s-]?send\\s+(?:all\\s+|me\\s+|your\\s+)*(?:etc|misc(?:ellaneous)?)\\b"
+            + "|\\bsend\\s+(?:me\\s+)?(?:all\\s+)?(?:your\\s+)?(?:etc|misc(?:ellaneous)?)\\s+(?:items?\\s+)?to\\s+me\\b",
+            Pattern.CASE_INSENSITIVE);
     private static final Pattern AUTOPOT_PATTERN = Pattern.compile(
             "\\b(auto\\s*-?\\s*pot|autopot|pot\\s+(at|@))\\b", Pattern.CASE_INSENSITIVE);
     private static final Pattern BUY_AMMO_PATTERN = Pattern.compile(
@@ -246,6 +256,18 @@ public class BotChatManager {
             Pattern.CASE_INSENSITIVE);
     private static final Pattern FIDGET_PATTERN = Pattern.compile(
             "^\\s*fidget\\s*[?!.,]*\\s*$",
+            Pattern.CASE_INSENSITIVE);
+
+    // Social reactions — MMO chatter the bots banter back with. Matched as a fallback (after all
+    // commands) and use .find() so they catch the word inside a longer message ("ty for the gear").
+    private static final Pattern THANKS_PATTERN = Pattern.compile(
+            "\\b(ty|tysm|tyvm|tks|thx|thnx|thanks|thank\\s*(?:u|you|ya)|appreciate\\s*(?:it|u|you))\\b",
+            Pattern.CASE_INSENSITIVE);
+    private static final Pattern LAUGH_PATTERN = Pattern.compile(
+            "\\b(lo+l+|lmao+|lmfao|rofl|ha(?:ha)+h?|he(?:he)+|kek|lel|xd+|ahaha+|jaja+)\\b",
+            Pattern.CASE_INSENSITIVE);
+    private static final Pattern GG_PATTERN = Pattern.compile(
+            "\\b(gg+|ggs|gg\\s*wp|ggwp|ez+|ez\\s*clap|pog+|poggers|clutch|nice\\s*one)\\b",
             Pattern.CASE_INSENSITIVE);
 
     private static final Pattern STATS_PATTERN = Pattern.compile(
@@ -467,7 +489,9 @@ public class BotChatManager {
             "\\b(?:auto[\\-\\s]?equip|optimi[sz]e\\s+(?:gear|equip(?:s|ment)?))\\s+(?:debug|verbose|why|explain)\\b",
             Pattern.CASE_INSENSITIVE);
     private static final Pattern AUTOEQUIP_PATTERN = Pattern.compile(
-            "\\b(?:auto[\\-\\s]?equip|optimi[sz]e\\s+(?:gear|equip(?:s|ment)?))\\b",
+            "\\b(?:auto[\\-\\s]?equip|optimi[sz]e\\s+(?:gear|equip(?:s|ment)?))\\b"
+            + "|\\bequip\\s+(?:your\\s+|the\\s+|my\\s+|our\\s+|ur\\s+)?best(?:\\s+(?:gear|stuff|weapon|equip(?:ment)?))?\\b"
+            + "|\\bgear\\s+up\\b",
             Pattern.CASE_INSENSITIVE);
     private static final Pattern TRADE_VIEW_SLOT_COMMAND_PATTERN = Pattern.compile(
             "\\b(?:can\\s+i\\s+(?:c|see)|let\\s+me\\s+(?:c|see)|show(?:\\s+me)?)\\s+"
@@ -700,6 +724,52 @@ public class BotChatManager {
     private static final List<String> GREETING_REPLIES = List.of(
             "hey", "hi", "sup", "yo", "heya", "hii", "hey!!", "hi!!", "hai", "haii",
             "heyo", "ello", "o/", "hai", "eyy", "henlo", "o hey", "yo dude", "hey there", "hi there", "hi guys", "what's up", "howdy", "how's it going");
+    private static final List<String> THANKS_REPLIES = List.of(
+            "np", "np!", "no prob", "no problem", "yw", "yw!", "anytime", "any time", "ofc", "ofc!",
+            "np np", "gotchu", "happy to help", "no worries", "np ^^", "np lol", "ur welcome", "anytime!");
+    private static final List<String> LAUGH_REPLIES = List.of(
+            "lol", "lmao", "ahaha", "haha", "lol fr", "right lol", "ikr", "hahaha", "lmaooo", "fr lol",
+            "xd", "heh", "lol same", "dead lmao", "lolol", "haha yeah", "lmaoo", "fr");
+    private static final List<String> GG_REPLIES = List.of(
+            "gg", "gg!", "ggs", "gg wp", "ggwp", "ez", "ez clap", "gg ez", "nice", "noice",
+            "lets gooo", "lesgo", "pog", "that was clean", "ggwp!", "gg all", "nice nice");
+    // Spontaneous ambient chatter (map chat) while grinding / hanging out, to read like a real player.
+    private static final List<String> GRIND_BANTER = List.of(
+            "this map's dead lol", "any good drops?", "grinding ftw", "exp is slow here ngl",
+            "this spot's decent", "more mobs pls", "where the drops at", "grind grind grind",
+            "we leveling tn", "this is the spot", "mobs keep coming lol", "ez exp", "love this map",
+            "need more mesos lol", "respawns are quick here", "good xp here", "lets get this lvl",
+            "so close to lvl up", "anyone got pots", "drop rate is rough lol", "almost there");
+    private static final List<String> IDLE_BANTER = List.of(
+            "what now?", "where to next?", "kinda bored lol", "any plans?", "just chillin",
+            "ready when u are", "lead the way", "what we doing", "standing around lol",
+            "town's busy today", "shops are pricey lol", "waiting on u", "lmk where to go",
+            "we moving or?", "i'm ready", "sup", "anyone wanna grind", "long day lol");
+    // --- Bot-to-bot idle conversation: one bot asks a question, a sibling on the same map answers ---
+    private static final List<String> CONVO_Q_DROPS = List.of(
+            "any good drops?", "you find anything good?", "getting any nice drops?",
+            "loot anything worth keeping?", "what's the best you've dropped?");
+    private static final List<String> CONVO_A_DROPS_NONE = List.of(
+            "nothing great lately", "just junk so far lol", "nah, dry streak",
+            "meh, nothing good yet", "barely any drops here");
+    private static final List<String> CONVO_Q_GRIND = List.of(
+            "how much longer we grinding?", "we staying here a while?", "when's the break lol",
+            "you sick of this map yet?", "we leveling all night or?");
+    private static final List<String> CONVO_A_GRIND = List.of(
+            "till the bag's full lol", "few more then break?", "im good to keep going",
+            "as long as the xp's good", "whenever the boss says", "one more level then i'm out");
+    private static final List<String> CONVO_Q_STATUS = List.of(
+            "you good over there?", "holding up ok?", "how you doing?",
+            "still alive lol?", "hp ok on your end?");
+    private static final List<String> CONVO_A_STATUS = List.of(
+            "all good here!", "doing great", "cant complain lol",
+            "living the dream", "same as always", "surviving lol");
+    private static final List<String> CONVO_Q_HYPE = List.of(
+            "we cooking or what", "good run so far yeah?", "this squad's cracked lol",
+            "we carrying huh", "team's looking strong");
+    private static final List<String> CONVO_A_HYPE = List.of(
+            "fr we eating good", "best squad ngl", "unstoppable lol",
+            "no cap we cracked", "carry mode on", "we got this");
     private static final List<String> WB_REPLIES = List.of(
             "wb", "wb!", "welcome back", "oh ur back", "hey ur back", "welcome back!!",
             "wb~", "there you are", "oh hey", "finally lol", "took ya a bit", "wb lol", "where were you lol", "ready to roll?", "lets continue!",
@@ -801,8 +871,11 @@ public class BotChatManager {
                 if (rest != null && !rest.isEmpty()
                         && !NEGATIVE_CONFIRM_PATTERN.matcher(message).find()
                         && TRAIN_MORE_YES_PATTERN.matcher(message).find()) {
-                    BotManager.after(BotManager.randMs(400, 700),
-                            () -> BotManager.getInstance().botReply(entry, "also: " + String.join("  |  ", rest)));
+                    BotManager.after(BotManager.randMs(400, 700), () -> {
+                        for (String r : rest) {
+                            BotManager.getInstance().botReply(entry, "- " + r);
+                        }
+                    });
                 }
                 return;
             }
@@ -825,7 +898,7 @@ public class BotChatManager {
                     entry.pendingAction       = null;
                     entry.pendingDropCategory = null;
                     BotManager.after(BotManager.randMs(400, 600),
-                            () -> BotManager.getInstance().botReply(entry, "ok! keeping them"));
+                            () -> BotManager.getInstance().botReply(entry, BotManager.randomReply(List.of("ok! keeping them", "alright, holding onto them", "sure, i'll keep them", "kept, no worries"))));
                 }
                 return;
             }
@@ -900,28 +973,28 @@ public class BotChatManager {
         if (SUPPORT_OFF_PATTERN.matcher(message).find()) {
             BotManager.after(BotManager.randMs(500, 700), () -> {
                 entry.skillBuffsEnabled = false;
-                BotManager.getInstance().botReply(entry, "ok, skill buffs off");
+                BotManager.getInstance().botReply(entry, BotManager.randomReply(List.of("ok, skill buffs off", "skill buffs off now", "alright, no more skill buffs", "got it, holding the buffs")));
             });
             return;
         }
         if (SUPPORT_ON_PATTERN.matcher(message).find()) {
             BotManager.after(BotManager.randMs(500, 700), () -> {
                 entry.skillBuffsEnabled = true;
-                BotManager.getInstance().botReply(entry, "ok, skill buffs on");
+                BotManager.getInstance().botReply(entry, BotManager.randomReply(List.of("ok, skill buffs on", "skill buffs on!", "alright, buffing the squad", "on it, buffs coming")));
             });
             return;
         }
         if (HEALS_OFF_PATTERN.matcher(message).find()) {
             BotManager.after(BotManager.randMs(500, 700), () -> {
                 entry.supportHealsEnabled = false;
-                BotManager.getInstance().botReply(entry, "ok, no heals");
+                BotManager.getInstance().botReply(entry, BotManager.randomReply(List.of("ok, no heals", "healing off", "alright, i won't heal", "heals off, got it")));
             });
             return;
         }
         if (HEALS_ON_PATTERN.matcher(message).find()) {
             BotManager.after(BotManager.randMs(500, 700), () -> {
                 entry.supportHealsEnabled = true;
-                BotManager.getInstance().botReply(entry, "ok, ill heal when needed");
+                BotManager.getInstance().botReply(entry, BotManager.randomReply(List.of("ok, ill heal when needed", "healing on!", "got it, i'll keep us healthy", "i'll patch us up when needed")));
             });
             return;
         }
@@ -929,7 +1002,7 @@ public class BotChatManager {
             BotManager.after(BotManager.randMs(500, 700), () -> {
                 entry.buffConsumablesEnabled = false;
                 entry.lastBuffScanMs = 0;
-                BotManager.getInstance().botReply(entry, "ok, no buff pots");
+                BotManager.getInstance().botReply(entry, BotManager.randomReply(List.of("ok, no buff pots", "buff pots off", "alright, skipping buff pots", "no buff pots, got it")));
             });
             return;
         }
@@ -946,7 +1019,7 @@ public class BotChatManager {
             BotManager.after(BotManager.randMs(500, 700), () -> {
                 entry.buffCheapMode = true;
                 entry.lastBuffScanMs = 0;
-                BotManager.getInstance().botReply(entry, "ok, using cheapest buff pots");
+                BotManager.getInstance().botReply(entry, BotManager.randomReply(List.of("ok, using cheapest buff pots", "cheap buff pots it is", "going budget on buffs", "thrifty buffs, got it")));
             });
             return;
         }
@@ -954,7 +1027,7 @@ public class BotChatManager {
             BotManager.after(BotManager.randMs(500, 700), () -> {
                 entry.buffCheapMode = false;
                 entry.lastBuffScanMs = 0;
-                BotManager.getInstance().botReply(entry, "ok, using best buff pots");
+                BotManager.getInstance().botReply(entry, BotManager.randomReply(List.of("ok, using best buff pots", "top-tier buff pots on", "only the good buffs now", "premium buffs, got it")));
             });
             return;
         }
@@ -1002,42 +1075,56 @@ public class BotChatManager {
         if (LOOT_OFF_PATTERN.matcher(message).find()) {
             BotManager.after(BotManager.randMs(400, 700), () -> {
                 entry.lootEnabled = false;
-                BotManager.getInstance().botReply(entry, "ok, i'll stop looting");
+                BotManager.getInstance().botReply(entry, BotManager.randomReply(List.of("ok, i'll stop looting", "looting off", "alright, leaving the loot", "no more looting, got it")));
             });
             return;
         }
         if (LOOT_ON_PATTERN.matcher(message).find()) {
             BotManager.after(BotManager.randMs(400, 700), () -> {
                 entry.lootEnabled = true;
-                BotManager.getInstance().botReply(entry, "ok, looting again");
+                BotManager.getInstance().botReply(entry, BotManager.randomReply(List.of("ok, looting again", "looting back on", "grabbing drops again", "back to picking up loot")));
             });
             return;
         }
         if (BAG_OFF_PATTERN.matcher(message).find()) {
             BotManager.after(BotManager.randMs(400, 700), () -> {
                 entry.funnelOreBag = false;
-                BotManager.getInstance().botReply(entry, "ok, keeping ores/scrolls myself");
+                BotManager.getInstance().botReply(entry, BotManager.randomReply(List.of("ok, keeping ores/scrolls myself", "i'll hold my own ores/scrolls", "ore bag funnel off", "keeping the ores/scrolls, got it")));
             });
             return;
         }
         if (BAG_ON_PATTERN.matcher(message).find()) {
             BotManager.after(BotManager.randMs(400, 700), () -> {
                 entry.funnelOreBag = true;
-                BotManager.getInstance().botReply(entry, "ok, funneling ores/scrolls to your ore bag");
+                BotManager.getInstance().botReply(entry, BotManager.randomReply(List.of("ok, funneling ores/scrolls to your ore bag", "ores/scrolls go to your bag now", "i'll send ores/scrolls your way", "funneling ores/scrolls to you")));
             });
             return;
         }
         if (MESO_POOL_OFF_PATTERN.matcher(message).find()) {
             BotManager.after(BotManager.randMs(400, 700), () -> {
                 entry.funnelMeso = false;
-                BotManager.getInstance().botReply(entry, "ok, keeping the mesos i loot");
+                BotManager.getInstance().botReply(entry, BotManager.randomReply(List.of("ok, keeping the mesos i loot", "i'll hold my mesos", "meso sharing off", "keeping my mesos, got it")));
             });
             return;
         }
         if (MESO_POOL_ON_PATTERN.matcher(message).find()) {
             BotManager.after(BotManager.randMs(400, 700), () -> {
                 entry.funnelMeso = true;
-                BotManager.getInstance().botReply(entry, "ok, handing looted mesos to you");
+                BotManager.getInstance().botReply(entry, BotManager.randomReply(List.of("ok, handing looted mesos to you", "my mesos go to you now", "i'll pass you the mesos", "meso sharing on")));
+            });
+            return;
+        }
+        if (ETC_AUTOSEND_OFF_PATTERN.matcher(message).find()) {
+            BotManager.after(BotManager.randMs(400, 700), () -> {
+                entry.autoSendEtcToOwner = false;
+                BotManager.getInstance().botReply(entry, BotManager.randomReply(List.of("ok, keeping the etc items i loot", "i'll hold my etc items", "etc sharing off", "keeping the etc, got it")));
+            });
+            return;
+        }
+        if (ETC_AUTOSEND_ON_PATTERN.matcher(message).find()) {
+            BotManager.after(BotManager.randMs(400, 700), () -> {
+                entry.autoSendEtcToOwner = true;
+                BotManager.getInstance().botReply(entry, BotManager.randomReply(List.of("ok, sending all etc items straight to you", "etc items go to you now", "i'll pass you the etc items", "etc sharing on")));
             });
             return;
         }
@@ -1048,7 +1135,7 @@ public class BotChatManager {
         if (BUY_AMMO_PATTERN.matcher(message).find()) {
             BotManager.after(BotManager.randMs(600, 1000), () -> {
                 if (!BotAmmoManager.restockNow(entry, entry.bot)) {
-                    BotManager.getInstance().botReply(entry, "i'm stocked up (or can't restock right now)");
+                    BotManager.getInstance().botReply(entry, BotManager.randomReply(List.of("i'm stocked up (or can't restock right now)", "all stocked up, or can't restock atm", "i'm good on supplies rn", "nothing to restock right now")));
                 }
             });
             return;
@@ -1084,21 +1171,21 @@ public class BotChatManager {
         if (USE_SKILLS_PATTERN.matcher(message).find()) {
             BotManager.after(BotManager.randMs(400, 700), () -> {
                 entry.meleeOnly = false;
-                BotManager.getInstance().botReply(entry, "ok, using skills again");
+                BotManager.getInstance().botReply(entry, BotManager.randomReply(List.of("ok, using skills again", "skills back on", "alright, full skills again", "back to using skills")));
             });
             return;
         }
         if (MELEE_ONLY_PATTERN.matcher(message).find()) {
             BotManager.after(BotManager.randMs(400, 700), () -> {
                 entry.meleeOnly = true;
-                BotManager.getInstance().botReply(entry, "ok, basic attacks only (saving mp)");
+                BotManager.getInstance().botReply(entry, BotManager.randomReply(List.of("ok, basic attacks only (saving mp)", "melee only, saving mp", "no skills, conserving mp", "basic attacks it is, saving mp")));
             });
             return;
         }
         if (FOCUS_OFF_PATTERN.matcher(message).find()) {
             BotManager.after(BotManager.randMs(400, 700), () -> {
                 entry.focusMobName = null;
-                BotManager.getInstance().botReply(entry, "ok, attacking anything");
+                BotManager.getInstance().botReply(entry, BotManager.randomReply(List.of("ok, attacking anything", "focus off, hitting whatever", "no focus, any mob goes", "clearing focus, attacking all")));
             });
             return;
         }
@@ -1114,7 +1201,7 @@ public class BotChatManager {
         if (SPAM_OFF_PATTERN.matcher(message).find()) {
             BotManager.after(BotManager.randMs(400, 700), () -> {
                 entry.forcedSkillId = 0;
-                BotManager.getInstance().botReply(entry, "ok, using my normal skill rotation");
+                BotManager.getInstance().botReply(entry, BotManager.randomReply(List.of("ok, using my normal skill rotation", "back to my usual skills", "normal rotation again", "spam off, normal skills")));
             });
             return;
         }
@@ -1138,14 +1225,14 @@ public class BotChatManager {
         if (PROACTIVE_OFFERS_OFF_PATTERN.matcher(message).find()) {
             BotManager.after(BotManager.randMs(500, 700), () -> {
                 entry.proactiveUpgradeOffers = false;
-                BotManager.getInstance().botReply(entry, "ok, only offering immediate upgrades");
+                BotManager.getInstance().botReply(entry, BotManager.randomReply(List.of("ok, only offering immediate upgrades", "proactive offers off", "i'll only flag upgrades i can use now", "no future-upgrade offers")));
             });
             return;
         }
         if (PROACTIVE_OFFERS_ON_PATTERN.matcher(message).find()) {
             BotManager.after(BotManager.randMs(500, 700), () -> {
                 entry.proactiveUpgradeOffers = true;
-                BotManager.getInstance().botReply(entry, "ok, proactive upgrade offers on");
+                BotManager.getInstance().botReply(entry, BotManager.randomReply(List.of("ok, proactive upgrade offers on", "i'll flag future upgrades too", "proactive offers on", "i'll let you know about upgrades")));
             });
             return;
         }
@@ -1205,7 +1292,7 @@ public class BotChatManager {
         if (AUTOEQUIP_PATTERN.matcher(message).find()) {
             BotManager.after(BotManager.randMs(400, 600), () -> {
                 BotEquipManager.autoEquip(entry.bot, entry.owner, entry.pendingLootOfferItem, true);
-                BotManager.getInstance().botReply(entry, "ok, gear optimized");
+                BotManager.getInstance().botReply(entry, BotManager.randomReply(List.of("ok, gear optimized", "gear all set", "optimized my equips", "geared up, all set")));
             });
             return;
         }
@@ -1231,6 +1318,13 @@ public class BotChatManager {
                         ? "equipped " + equipped
                         : "i don't have a cash item like \"" + name + "\"");
             });
+            return;
+        }
+
+        // If the bot just asked which AP build to use, a recognized answer (auto / dexless /
+        // "120 dex" / ...) is consumed here and nothing else runs — so answering "auto" assigns
+        // AP instead of also being read as the "auto" (grind/active-mode) command below.
+        if (entry.apPromptSent && handleApBuildSelection(entry, message)) {
             return;
         }
 
@@ -1292,37 +1386,48 @@ public class BotChatManager {
                 entry.bot.changeFaceExpression(randomFidgetExpression());
                 BotFidgetManager.maybeStartSocialFidget(entry);
             });
-        } else if (GREETING_PATTERN.matcher(message).matches()) {
+        } else if (entry.mayReact && GREETING_PATTERN.matcher(message).matches()) {
             BotManager.after(BotManager.randMs(900, 1100), () -> {
                 entry.bot.changeFaceExpression(Emote.HAPPY.getValue());
                 BotFidgetManager.maybeStartGreetingFidget(entry, ThreadLocalRandom.current().nextInt(100));
                 queueBotReply(entry, BotManager.randomReply(GREETING_REPLIES));
                 checkBotStatus(entry, entry.bot);
             });
+        } else if (entry.mayReact && THANKS_PATTERN.matcher(message).find()) {
+            // entry.mayReact already limits this to 1-2 bots per message (see BotManager.assignReactionPermits).
+            BotManager.after(BotManager.randMs(700, 1000), () ->
+                    queueBotReply(entry, BotManager.randomReply(THANKS_REPLIES)));
+        } else if (entry.mayReact && LAUGH_PATTERN.matcher(message).find()) {
+            BotManager.after(BotManager.randMs(600, 1000), () -> {
+                entry.bot.changeFaceExpression(Emote.HAPPY.getValue());
+                queueBotReply(entry, BotManager.randomReply(LAUGH_REPLIES));
+            });
+        } else if (entry.mayReact && GG_PATTERN.matcher(message).find()) {
+            BotManager.after(BotManager.randMs(600, 1000), () ->
+                    queueBotReply(entry, BotManager.randomReply(GG_REPLIES)));
         }
 
         // SP build variant selection — only matched when waiting for an answer (Hero 1h vs 2h)
         if (entry.spVariantPromptSent && entry.spVariant == null) {
             if (SP_1H_PATTERN.matcher(message).find()) {
                 entry.spVariant = "1h";
-                BotManager.getInstance().botReply(entry, "ok! going 1h sword build, Brandish first");
+                BotManager.getInstance().botReply(entry, BotManager.randomReply(List.of("ok! going 1h sword build, Brandish first", "1h sword it is, Brandish first", "alright, 1h build with Brandish priority", "going 1h, Brandish first!")));
                 BotBuildManager.autoAssignSp(entry, entry.bot);
             } else if (SP_2H_PATTERN.matcher(message).find()) {
                 entry.spVariant = "2h";
-                BotManager.getInstance().botReply(entry, "ok! going 2h build, interleaving AC early for faster charges");
+                BotManager.getInstance().botReply(entry, BotManager.randomReply(List.of("ok! going 2h build, interleaving AC early for faster charges", "2h build it is, AC early for charges", "alright, 2h with early Advanced Combo", "going 2h, faster charges!")));
                 BotBuildManager.autoAssignSp(entry, entry.bot);
             }
         }
 
-        // AP build selection — "change build" always triggers a re-prompt;
-        // "dexless" / "X dex" only apply when bot is actively waiting for the answer (apPromptSent=true)
+        // AP build re-prompt — "change build" / "respec ap" re-asks which build to use. The
+        // actual answer is consumed earlier (gated on apPromptSent) so a word like "auto" can't
+        // also trigger grind/active mode.
         if (AP_CHANGE_BUILD_PATTERN.matcher(message).find()) {
             entry.apBuild      = null;
             entry.apPromptSent = false;
             String prompt = BotBuildManager.requestApBuildPrompt(entry, entry.bot);
             if (prompt != null) BotManager.getInstance().botReply(entry, prompt);
-        } else if (entry.apPromptSent) {
-            handleApBuildSelection(entry, message);
         }
 
         if (TRADE_INVITE_PATTERN.matcher(message).find()) {
@@ -1461,7 +1566,7 @@ public class BotChatManager {
 
         if (AWAY_LOGOUT_CONFIRM_PATTERN.matcher(choice).matches()) {
             BotManager.after(BotManager.randMs(700, 900), () -> {
-                BotManager.getInstance().botReply(entry, "ok, logging us out");
+                BotManager.getInstance().botReply(entry, BotManager.randomReply(List.of("ok, logging us out", "alright, logging off", "cya, logging out", "logging us out, gg")));
                 logoutOwnerBots(entry);
             });
             return;
@@ -1485,12 +1590,12 @@ public class BotChatManager {
                 BotManager.getInstance().issueOwnerAwaySafeModeForOwner(ownerId, false);
             }
             BotManager.after(BotManager.randMs(700, 900), () ->
-                    BotManager.getInstance().botReply(entry, "ok, staying safe here"));
+                    BotManager.getInstance().botReply(entry, BotManager.randomReply(List.of("ok, staying safe here", "i'll wait here safely", "staying put, staying safe", "holding here, safe and sound"))));
             return;
         }
 
         BotManager.after(BotManager.randMs(700, 900), () ->
-                BotManager.getInstance().botReply(entry, "ok nvm, staying with you"));
+                BotManager.getInstance().botReply(entry, BotManager.randomReply(List.of("ok nvm, staying with you", "nvm, sticking with you", "alright, i'll stay with you", "changed my mind, staying"))));
     }
 
     private static void logoutOwnerBots(BotEntry entry) {
@@ -1557,6 +1662,113 @@ public class BotChatManager {
         BotManager.after(BotManager.randMs(4900, 5100), () -> drainMsgQueue(entry));
     }
 
+    /**
+     * Occasionally emits a line of ambient MMO chatter (map chat) while grinding or hanging out,
+     * so the bots feel like real players. Heavily throttled: a 2–4 min window with a ~40% chance
+     * to actually speak, so it's flavor, not spam. Only active (grinding/following) live bots talk.
+     */
+    private record ConvoTopic(List<String> questions, java.util.function.Function<BotEntry, String> answer) {
+    }
+
+    private static final List<ConvoTopic> CONVO_TOPICS = List.of(
+            new ConvoTopic(CONVO_Q_DROPS, BotChatManager::answerRecentDrops),
+            new ConvoTopic(CONVO_Q_GRIND, e -> BotManager.randomReply(CONVO_A_GRIND)),
+            new ConvoTopic(CONVO_Q_STATUS, e -> BotManager.randomReply(CONVO_A_STATUS)),
+            new ConvoTopic(CONVO_Q_HYPE, e -> BotManager.randomReply(CONVO_A_HYPE)));
+
+    /** Sibling's answer to "any good drops?": its best recent loot, or a "nothing good" line. */
+    private static String answerRecentDrops(BotEntry responder) {
+        if (responder.recentBestDropName != null
+                && System.currentTimeMillis() - responder.recentBestDropAtMs <= BotInventoryManager.RECENT_DROP_WINDOW_MS) {
+            String n = responder.recentBestDropName;
+            return BotManager.randomReply(List.of(
+                    "got a " + n + " earlier", "best was a " + n,
+                    n + " was my best lately", "a " + n + ", not bad"));
+        }
+        return BotManager.randomReply(CONVO_A_DROPS_NONE);
+    }
+
+    /** A live sibling bot of the same owner standing on the same map, or null if none. */
+    /** Live sibling bots (same owner) on this bot's map, shuffled. Empty if none. */
+    private static List<BotEntry> siblingsOnMap(BotEntry entry, Character bot) {
+        Character owner = entry.owner;
+        if (owner == null || bot.getMap() == null) {
+            return java.util.Collections.emptyList();
+        }
+        List<BotEntry> onMap = new ArrayList<>();
+        for (BotEntry sib : BotManager.getInstance().getBotEntries(owner.getId())) {
+            if (sib != entry && sib.bot != null && sib.bot.getHp() > 0 && sib.bot.getMap() == bot.getMap()) {
+                onMap.add(sib);
+            }
+        }
+        java.util.Collections.shuffle(onMap);
+        return onMap;
+    }
+
+    /**
+     * When a sibling bot is on the same map, sometimes turn a banter window into a short two-bot
+     * exchange: this bot asks a question and the sibling answers a moment later (e.g. "any good
+     * drops?" -> the sibling's best recent loot). Returns true if it started one.
+     */
+    private static boolean maybeStartBotConversation(BotEntry entry, Character bot) {
+        List<BotEntry> sibs = siblingsOnMap(entry, bot);
+        if (sibs.isEmpty() || ThreadLocalRandom.current().nextInt(100) >= 55) {
+            return false;
+        }
+        BotEntry sibling = sibs.get(0);
+        // Group thread: occasionally pull a third bot into the exchange.
+        BotEntry third = (sibs.size() > 1 && ThreadLocalRandom.current().nextInt(100) < 35) ? sibs.get(1) : null;
+        // LLM-improvised banter when enabled and the owner is around to read it; falls back to the
+        // canned question/answer pools below if the LLM is off or its concurrency gate is busy.
+        if (server.bots.llm.BotLlmConfig.enabled && server.bots.llm.BotLlmConfig.banterEnabled
+                && server.bots.llm.BotLlmReplyManager.maybeBanter(entry, bot, sibling, sibling.bot,
+                        third, third != null ? third.bot : null)) {
+            return true;
+        }
+        ConvoTopic topic = CONVO_TOPICS.get(ThreadLocalRandom.current().nextInt(CONVO_TOPICS.size()));
+        BotManager.getInstance().botSay(bot, BotManager.randomReply(topic.questions()));
+
+        Character responder = sibling.bot;
+        BotEntry responderEntry = sibling;
+        BotManager.after(BotManager.randMs(1800, 3600), () -> {
+            if (responder.getHp() <= 0 || responder.getMap() != bot.getMap()) {
+                return;  // sibling died/left before it could answer
+            }
+            String answer = topic.answer().apply(responderEntry);
+            if (answer != null) {
+                BotManager.getInstance().botSay(responder, answer);
+            }
+        });
+        return true;
+    }
+
+    static void tickBanter(BotEntry entry, Character bot) {
+        if (entry == null || bot == null || bot.getHp() <= 0) {
+            return;
+        }
+        if (!entry.grinding && !entry.following) {
+            return;
+        }
+        long now = System.currentTimeMillis();
+        if (entry.nextBanterAtMs == 0L) {
+            // First window — don't blurt out the moment grinding starts.
+            entry.nextBanterAtMs = now + BotManager.randMs(120_000, 240_000);
+            return;
+        }
+        if (now < entry.nextBanterAtMs) {
+            return;
+        }
+        entry.nextBanterAtMs = now + BotManager.randMs(120_000, 240_000);
+        if (ThreadLocalRandom.current().nextInt(100) >= 40) {
+            return;  // most windows pass in silence
+        }
+        if (maybeStartBotConversation(entry, bot)) {
+            return;  // turned this window into a two-bot exchange instead of a solo line
+        }
+        List<String> pool = entry.grinding ? GRIND_BANTER : IDLE_BANTER;
+        BotManager.getInstance().botSay(bot, BotManager.randomReply(pool));
+    }
+
     // Status check — called on spawn, grind start, greeting, and level-up
     static void checkBotStatus(BotEntry entry, Character bot) {
         String jobPrompt = BotBuildManager.buildJobPrompt(entry, bot);
@@ -1567,12 +1779,10 @@ public class BotChatManager {
         } else {
             BotBuildManager.autoAssignSp(entry, bot);
         }
-        String apPrompt = BotBuildManager.buildApPrompt(entry, bot);
-        if (apPrompt != null) {
-            queueBotReply(entry, apPrompt);
-        } else {
-            BotBuildManager.autoAssignAp(entry, bot);
-        }
+        // The AP build is asked only at job advancements (BotBuildManager.handleJobAdvance), not on
+        // every spawn/grind/level-up, so the bot doesn't keep re-asking. Just spend any pending AP
+        // (uses the chosen build, or defaults silently if none was picked).
+        BotBuildManager.autoAssignAp(entry, bot);
         maybeSuggestRecommendedGear(entry, bot);
         maybeSuggestGearToSiblings(entry, bot);
         if (!entry.spawnUpgradeCheckDone) {
@@ -1771,7 +1981,7 @@ public class BotChatManager {
     private static void reportDps(BotEntry entry) {
         int swings = entry.dpsHits + entry.dpsMisses;
         if (entry.dpsWindowStartMs == 0L || swings == 0) {
-            queueBotReply(entry, "haven't hit anything recently");
+            queueBotReply(entry, BotManager.randomReply(List.of("haven't hit anything recently", "no recent hits to report", "nothing hit lately", "haven't swung at anything recently")));
             return;
         }
         double seconds = Math.max(1000L, System.currentTimeMillis() - entry.dpsWindowStartMs) / 1000.0;
@@ -1943,7 +2153,7 @@ public class BotChatManager {
 
         int critPct = (int) Math.round(crit.critChance() * 100);
         if (critPct == 0) {
-            queueBotReply(entry, "i can't crit (my job doesn't have a crit passive)");
+            queueBotReply(entry, BotManager.randomReply(List.of("i can't crit (my job doesn't have a crit passive)", "no crits for me, my job has no crit passive", "my class doesn't get crits", "no crit passive on my job, sorry")));
             return;
         }
 
@@ -1971,7 +2181,7 @@ public class BotChatManager {
     private static void reportHelp(BotEntry entry) {
         queueBotReply(entry, "move: follow / come, follow <name>, stop / stay / wait, move here, farm here (sentry/camp), patrol, spread out / stack up / line up");
         queueBotReply(entry, "combat: grind / farm / hunt, be aggressive / careful / balanced, melee only, use skills, focus <mob> / focus off, spam <skill> / spam off");
-        queueBotReply(entry, "loot: loot on/off, loot equips/mesos/all only, ignore junk, bag on/off (funnel ores+scrolls), pool mesos / keep mesos");
+        queueBotReply(entry, "loot: loot on/off, loot equips/mesos/all only, ignore junk, bag on/off (funnel ores+scrolls), pool mesos / keep mesos, auto send etc on/off");
         queueBotReply(entry, "shop: go shopping (sell junk + buy & restock), sell trash, sell etc, stash <this/etc/use/gear/all>, auto pot, buy ammo / restock");
         queueBotReply(entry, "supplies: need hp pot / mp pot / pot / ammo. support: support on/off, heals on/off, buff on/off, buff cheap/max, buff list, proactive offers on/off");
         queueBotReply(entry, "gear: any upgrades?, trade recommended gear, need anything? (wishlist), auto equip [debug], show me <slot>");
@@ -2021,7 +2231,13 @@ public class BotChatManager {
         return matchesWholeCommand(STOP_PATTERN, message);
     }
 
-    private static void handleApBuildSelection(BotEntry entry, String message) {
+    /**
+     * Interprets a message as an answer to the "which AP build?" prompt. Returns true if the
+     * message matched a recognized build answer (and was applied), false otherwise. Callers gate
+     * this on {@code entry.apPromptSent} and return on a true result, so a build answer like
+     * "auto" is consumed here and can't also trigger an unrelated command (e.g. grind/active mode).
+     */
+    private static boolean handleApBuildSelection(BotEntry entry, String message) {
         Job job = entry.bot.getJob();
 
         // "auto" — adopt the job's standard auto-assign build (primary-stat focus), like a player would.
@@ -2032,7 +2248,7 @@ public class BotChatManager {
                         "ok! auto-assigning my ap, focusing " + build.primaryStat.name().toLowerCase(Locale.ROOT),
                         "already on auto ap!");
             }
-            return;
+            return true;
         }
 
         if ((job.isA(Job.WARRIOR) || job.isA(Job.PIRATE)) && AP_PURE_STR_PATTERN.matcher(message).find()) {
@@ -2041,7 +2257,7 @@ public class BotChatManager {
                     new BotBuildManager.ApBuild(BotBuildManager.StatType.STR, BotBuildManager.StatType.DEX, 4),
                     "dexless it is! keeping dex at " + minDex + ", rest into str",
                     "already doing dexless!");
-            return;
+            return true;
         }
         if (job.isA(Job.THIEF) && AP_DEXLESS_PATTERN.matcher(message).find()) {
             int minDex = minStatFloor(job, Stat.DEX);
@@ -2049,7 +2265,7 @@ public class BotChatManager {
                     new BotBuildManager.ApBuild(BotBuildManager.StatType.LUK, BotBuildManager.StatType.DEX, 4),
                     "dexless it is! keeping dex at " + minDex + ", rest into luk",
                     "already doing dexless!");
-            return;
+            return true;
         }
         if (job.isA(Job.MAGICIAN) && AP_LUKLESS_PATTERN.matcher(message).find()) {
             int minLuk = minStatFloor(job, Stat.LUK);
@@ -2057,7 +2273,7 @@ public class BotChatManager {
                     new BotBuildManager.ApBuild(BotBuildManager.StatType.INT, BotBuildManager.StatType.LUK, 4),
                     "lukless it is! keeping luk at " + minLuk + ", rest into int",
                     "already doing lukless!");
-            return;
+            return true;
         }
         if (job.isA(Job.BOWMAN) && AP_STRLESS_PATTERN.matcher(message).find()) {
             int minStr = minStatFloor(job, Stat.STR);
@@ -2065,7 +2281,7 @@ public class BotChatManager {
                     new BotBuildManager.ApBuild(BotBuildManager.StatType.DEX, BotBuildManager.StatType.STR, 4),
                     "strless it is! keeping str at " + minStr + ", rest into dex",
                     "already doing strless!");
-            return;
+            return true;
         }
 
         if (job.isA(Job.WARRIOR) || job.isA(Job.THIEF) || job.isA(Job.PIRATE)) {
@@ -2080,7 +2296,7 @@ public class BotChatManager {
                         new BotBuildManager.ApBuild(primary, BotBuildManager.StatType.DEX, dexTarget),
                         "ok! keeping dex at " + legalDexTarget + ", rest into " + primary.name().toLowerCase(Locale.ROOT),
                         "already doing " + legalDexTarget + " dex build!");
-                return;
+                return true;
             }
         }
         if (job.isA(Job.MAGICIAN)) {
@@ -2092,7 +2308,7 @@ public class BotChatManager {
                         new BotBuildManager.ApBuild(BotBuildManager.StatType.INT, BotBuildManager.StatType.LUK, lukTarget),
                         "ok! keeping luk at " + legalLukTarget + ", rest into int",
                         "already doing " + legalLukTarget + " luk build!");
-                return;
+                return true;
             }
         }
         if (job.isA(Job.BOWMAN)) {
@@ -2104,8 +2320,10 @@ public class BotChatManager {
                         new BotBuildManager.ApBuild(BotBuildManager.StatType.DEX, BotBuildManager.StatType.STR, strTarget),
                         "ok! keeping str at " + legalStrTarget + ", rest into dex",
                         "already doing " + legalStrTarget + " str build!");
+                return true;
             }
         }
+        return false;
     }
 
     private static int minStatFloor(Job job, Stat stat) {
@@ -2151,11 +2369,11 @@ public class BotChatManager {
     private static void reportRecommendedGear(BotEntry entry, Character bot) {
         Character owner = entry.owner;
         if (owner == null) {
-            queueBotReply(entry, "can't check your gear rn");
+            queueBotReply(entry, BotManager.randomReply(List.of("can't check your gear rn", "can't see your gear right now", "unable to check your gear atm", "gear check isn't working rn")));
             return;
         }
         if (!BotOfferManager.offerBestRecommendedGear(entry, bot, owner)) {
-            queueBotReply(entry, "no better gear for you rn");
+            queueBotReply(entry, BotManager.randomReply(List.of("no better gear for you rn", "nothing better for you right now", "no upgrades for you atm", "can't find an upgrade for you rn")));
         }
         entry.nextGearSuggestionAt = System.currentTimeMillis() + 60_000L;
     }
@@ -2242,6 +2460,17 @@ public class BotChatManager {
                 || isNeedAmmoCommand(message);
     }
 
+    /**
+     * Informational queries whose answer is the same no matter which bot replies
+     * ("where do I train?", "what drops X?"). Only one bot should answer so the group
+     * doesn't echo the same response once per bot. Action commands still broadcast so
+     * every bot acts.
+     */
+    static boolean isGeneralQuery(String message) {
+        return WHERE_TO_TRAIN_PATTERN.matcher(message).find()
+                || WHERE_TO_FARM_PATTERN.matcher(message).find();
+    }
+
     private static void handleRequestUpgradeCommand(BotEntry entry, Character bot) {
         BotOfferManager.requestBestUpgradeFromOwner(entry, bot);
     }
@@ -2282,7 +2511,7 @@ public class BotChatManager {
         Map<Integer, List<LearnedSkill>> skillTrees = collectLearnedSkillTrees(bot);
         if (skillTrees.isEmpty()) {
             entry.pendingAction = null;
-            queueBotReply(entry, "no job skills yet");
+            queueBotReply(entry, BotManager.randomReply(List.of("no job skills yet", "haven't learned job skills yet", "no skills to show yet", "no job skills so far")));
             return;
         }
 
@@ -2502,7 +2731,7 @@ public class BotChatManager {
                 && "trash".equals(category)
                 && message != null
                 && SHOW_JUNK_COMMAND_PATTERN.matcher(message).matches()) {
-            BotManager.getInstance().botReply(entry, "that sounded weird but ok");
+            BotManager.getInstance().botReply(entry, BotManager.randomReply(List.of("that sounded weird but ok", "uh, sure i guess?", "weird, but okay lol", "not sure what you mean, but ok")));
         }
         if (transferCommand.mode == TransferMode.TRADE && BotInventoryManager.isMesoCategory(category)) {
             BotManager.after(BotManager.randMs(500, 700), () ->
@@ -2868,7 +3097,7 @@ public class BotChatManager {
         int hair = firstValidHair(male ? MALE_HAIR : FEMALE_HAIR, rng);
         int face = firstValid(male ? MALE_FACE : FEMALE_FACE, rng);
         if (hair < 0 || face < 0) {
-            BotManager.getInstance().botReply(entry, "hmm, i can't restyle for that right now");
+            BotManager.getInstance().botReply(entry, BotManager.randomReply(List.of("hmm, i can't restyle for that right now", "can't do that restyle atm", "no can do on the makeover right now", "that style's not available rn")));
             return;
         }
 
@@ -2889,41 +3118,36 @@ public class BotChatManager {
             return;
         }
         Character ref = entry.owner != null ? entry.owner : bot;
-        int lo, hi;
+
+        // Cross-reference the player's (or party's average) level against the guide's level brackets.
+        int level = ref.getLevel();
         if (ref.getParty() != null) {
-            int min = Integer.MAX_VALUE, max = 0;
+            int sum = 0, n = 0;
             for (Character m : ref.getPartyMembersOnline()) {
-                if (m == null) {
-                    continue;
+                if (m != null) {
+                    sum += m.getLevel();
+                    n++;
                 }
-                min = Math.min(min, m.getLevel());
-                max = Math.max(max, m.getLevel());
             }
-            if (min > max) {
-                min = ref.getLevel();
-                max = ref.getLevel();
+            if (n > 0) {
+                level = sum / n;
             }
-            lo = min;
-            hi = max;
-        } else {
-            lo = ref.getLevel() - 5;
-            hi = ref.getLevel() + 5;
-        }
-        if (lo < 1) {
-            lo = 1;
         }
 
-        List<String> recs = BotTrainingRecommender.recommend(lo, hi, 3);
+        String label = BotTrainingRecommender.bracketLabel(level);
+        List<String> recs = BotTrainingRecommender.recommend(level, 8);
         BotManager bm = BotManager.getInstance();
-        if (recs.isEmpty()) {
-            bm.botReply(entry, "no great spots for Lv." + lo + "-" + hi + " in my notes");
+        if (label == null || recs.isEmpty()) {
+            bm.botReply(entry, "no training notes for Lv." + level);
             return;
         }
-        bm.botReply(entry, "Lv." + lo + "-" + hi + " → try " + recs.get(0));
+
+        // One recommendation up front; offer the rest of the bracket on request.
+        bm.botReply(entry, "Lv." + label + " (you're ~Lv." + level + ") → " + recs.get(0));
         if (recs.size() > 1) {
             entry.pendingTrainRecs = new java.util.ArrayList<>(recs.subList(1, recs.size()));
             entry.pendingAction = "train_more";
-            bm.botReply(entry, "want a couple more options? (yes/no)");
+            bm.botReply(entry, BotManager.randomReply(List.of("want more spots? (yes/no)", "want me to list more spots? (yes/no)", "more options? (yes/no)", "shall i name more? (yes/no)")));
         }
     }
 
@@ -2964,7 +3188,7 @@ public class BotChatManager {
         }
         Matcher m = Pattern.compile("(\\d{1,3})").matcher(message);
         if (!m.find()) {
-            BotManager.getInstance().botReply(entry, "tell me a %, like 'autopot at 50%'");
+            BotManager.getInstance().botReply(entry, BotManager.randomReply(List.of("tell me a %, like 'autopot at 50%'", "give me a %, e.g. 'autopot at 50%'", "what %? try 'autopot at 50%'", "need a %, like 'autopot at 50%'")));
             return;
         }
         int pct = Math.max(1, Math.min(99, Integer.parseInt(m.group(1))));
@@ -3134,11 +3358,11 @@ public class BotChatManager {
             return;
         }
         if (target.getId() == bot.getId()) {
-            BotManager.getInstance().botReply(entry, "lol can't fame myself");
+            BotManager.getInstance().botReply(entry, BotManager.randomReply(List.of("lol can't fame myself", "can't fame my own self lol", "no self-fame allowed haha", "wish i could fame myself lol")));
             return;
         }
         if (bot.getLevel() < 15) {
-            BotManager.getInstance().botReply(entry, "i'm too low level to fame");
+            BotManager.getInstance().botReply(entry, BotManager.randomReply(List.of("i'm too low level to fame", "gotta be higher level to fame", "too low level for faming sorry", "can't fame yet, too low level")));
             return;
         }
         Character.FameStatus status = bot.canGiveFame(target);
@@ -3157,7 +3381,7 @@ public class BotChatManager {
             String reply = template.contains("%s") ? String.format(template, target.getName()) : template;
             BotManager.getInstance().botReply(entry, reply);
         } else {
-            BotManager.getInstance().botReply(entry, "fame failed, might be at max already");
+            BotManager.getInstance().botReply(entry, BotManager.randomReply(List.of("fame failed, might be at max already", "couldn't fame, maybe they're maxed", "fame didn't go through, max fame?", "hmm fame failed, already maxed?")));
         }
     }
 }

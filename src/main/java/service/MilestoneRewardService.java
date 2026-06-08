@@ -36,6 +36,7 @@ public class MilestoneRewardService {
     private static final int TIMELESS_WEAPON_MILESTONE = 150;
 
     private static final int POWER_ELIXIR = 2000005;
+    private static final int BEAUTY_SALON_ITEM = 5920000;
 
     // Level 64 Maple weapon set, by player-facing weapon-type key.
     private static final Map<String, Integer> MAPLE_WEAPONS = new LinkedHashMap<>();
@@ -195,12 +196,23 @@ public class MilestoneRewardService {
             chr.yellowMessage("[Milestone] Make room in your Equip inventory first, then try again.");
             return;
         }
+        boolean grantBeauty = milestone == MAPLE_WEAPON_MILESTONE;
+        if (grantBeauty && !chr.canHold(BEAUTY_SALON_ITEM, 1)) {
+            chr.yellowMessage("[Milestone] Make room in your Cash inventory for the Beauty Salon coupon, then try again.");
+            return;
+        }
         if (!recordClaim(chr.getId(), milestone)) {
             chr.yellowMessage("[Milestone] That reward was already claimed.");
             return;
         }
         chr.getAbstractPlayerInteraction().gainItem(itemId, (short) 1, false, true);
+        if (grantBeauty) {
+            chr.getAbstractPlayerInteraction().gainItem(BEAUTY_SALON_ITEM, (short) 1, false, true);
+        }
         chr.yellowMessage("[Milestone] Level " + milestone + " weapon granted. Enjoy!");
+        if (grantBeauty) {
+            chr.yellowMessage("[Milestone] You also received a Beauty Salon coupon!");
+        }
     }
 
     private static void promptWeaponChoice(Character chr, int milestone) {
@@ -235,8 +247,9 @@ public class MilestoneRewardService {
             case 30 -> {
                 items.add(new int[]{POWER_ELIXIR, 300});
                 items.add(new int[]{ItemId.HYPER_TELEPORT_ROCK, 1});
+                items.add(new int[]{BEAUTY_SALON_ITEM, 1});
                 mesos = 1_000_000;
-                summary = "300 Power Elixirs, a Hyper Teleport Rock and 1,000,000 mesos";
+                summary = "300 Power Elixirs, a Hyper Teleport Rock, a Beauty Salon coupon and 1,000,000 mesos";
             }
             case 120 -> {
                 items.add(new int[]{POWER_ELIXIR, 500});

@@ -12,6 +12,7 @@ import java.util.Optional;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.Semaphore;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -53,7 +54,7 @@ public final class BotLlmReplyManager {
         return globalGate;
     }
 
-    public static void maybeRespond(BotEntry entry, Character sender, String message) {
+    public static void maybeRespond(BotEntry entry, Character sender, String message, String grounded) {
         if (!BotLlmConfig.enabled) return;
         if (entry == null || entry.getBot() == null || sender == null) return;
         if (message == null || message.isBlank()) return;
@@ -81,7 +82,7 @@ public final class BotLlmReplyManager {
         final String senderName = sender.getName();
         EXEC.submit(() -> {
             try {
-                runReply(entry, senderName, relation, message);
+                runReply(entry, senderName, relation, message, grounded);
             } catch (Throwable t) {
                 log.warn("llm reply failed: {}", t.toString());
             } finally {
@@ -91,7 +92,217 @@ public final class BotLlmReplyManager {
         });
     }
 
-    private static void runReply(BotEntry entry, String senderName, SenderRelation relation, String message) {
+    /**
+     * Re-word a command acknowledgement in the bot's persona, then send it. The command has already
+     * run; this only changes the wording. If the LLM is off/busy or fails, the original {@code ack}
+     * is sent verbatim so the acknowledgement is never lost.
+     */
+    public static void rewordAck(BotEntry entry, Character owner, String ack) {
+        BotManager bm = BotManager.getInstance();
+        if (entry == null || entry.getBot() == null || ack == null || ack.isBlank()) return;
+        if (!BotLlmConfig.enabled || owner == null) {
+            bm.botReply(entry, ack);
+            return;
+        }
+        AtomicInteger inflight = inflightByBotId.computeIfAbsent(entry.getBot().getId(), k -> new AtomicInteger(0));
+        if (!compareAndIncrement(inflight, 0, 1)) {
+            bm.botReply(entry, ack);   // bot already busy with an LLM call — just send the canned ack
+            return;
+        }
+        Semaphore g = gate();
+        if (!g.tryAcquire()) {
+            inflight.decrementAndGet();
+            bm.botReply(entry, ack);
+            return;
+        }
+        final String ownerName = owner.getName();
+        EXEC.submit(() -> {
+            String line = "";
+            try {
+                line = oneLine(LlmClient.generate(
+                        PromptBuilder.buildAckReword(entry, ownerName, ack),
+                        PromptBuilder.buildPlainSystem(entry)).orElse(""));
+            } catch (Throwable t) {
+                log.warn("llm ack reword failed: {}", t.toString());
+            } finally {
+                g.release();
+                inflight.decrementAndGet();
+            }
+            bm.botReply(entry, line.isEmpty() ? ack : line);
+        });
+    }
+
+    /**
+     * Improvise a short two-bot banter exchange between {@code speakerBot} and {@code listenerBot}
+     * (both the same owner's bots): one LLM call for the opener, one for the reply. Gated by the same
+     * global semaphore + per-bot in-flight guards as owner chat, and only runs while the owner is on
+     * the bots' map so we never spend tokens on banter nobody can read. Returns true if it started an
+     * exchange (caller then skips its canned fallback), false otherwise (disabled / owner away / gate busy).
+     */
+    public static boolean maybeBanter(BotEntry speaker, Character speakerBot, BotEntry listener, Character listenerBot,
+                                      BotEntry third, Character thirdBot) {
+        if (!BotLlmConfig.enabled || !BotLlmConfig.banterEnabled) return false;
+        if (speaker == null || speakerBot == null || listener == null || listenerBot == null) return false;
+        Character owner = speaker.getOwner();
+        if (owner == null || owner.getMap() == null || owner.getMap() != speakerBot.getMap()) return false;
+
+        AtomicInteger sIn = inflightByBotId.computeIfAbsent(speakerBot.getId(), k -> new AtomicInteger(0));
+        if (!compareAndIncrement(sIn, 0, 1)) return false;
+        AtomicInteger lIn = inflightByBotId.computeIfAbsent(listenerBot.getId(), k -> new AtomicInteger(0));
+        if (!compareAndIncrement(lIn, 0, 1)) {
+            sIn.decrementAndGet();
+            return false;
+        }
+        // Optional third participant for a 3-bot thread; best-effort (skip if its gate is busy).
+        boolean wantThird = third != null && thirdBot != null && thirdBot != speakerBot && thirdBot != listenerBot;
+        AtomicInteger tIn = wantThird ? inflightByBotId.computeIfAbsent(thirdBot.getId(), k -> new AtomicInteger(0)) : null;
+        boolean thirdLocked = wantThird && compareAndIncrement(tIn, 0, 1);
+
+        Semaphore g = gate();
+        if (!g.tryAcquire()) {
+            sIn.decrementAndGet();
+            lIn.decrementAndGet();
+            if (thirdLocked) tIn.decrementAndGet();
+            return false;
+        }
+        BotEntry fThird = thirdLocked ? third : null;
+        Character fThirdBot = thirdLocked ? thirdBot : null;
+        EXEC.submit(() -> {
+            try {
+                runBanter(speaker, speakerBot, listener, listenerBot, fThird, fThirdBot);
+            } catch (Throwable t) {
+                log.warn("llm banter failed: {}", t.toString());
+            } finally {
+                g.release();
+                sIn.decrementAndGet();
+                lIn.decrementAndGet();
+                if (thirdLocked) tIn.decrementAndGet();
+            }
+        });
+        return true;
+    }
+
+    /** Sanitize an LLM reply down to a single capped chat line. */
+    private static String oneLine(String raw) {
+        String s = sanitize(raw);
+        if (s == null || s.isBlank()) return "";
+        List<String> parts = splitForChat(s, 1, BotLlmConfig.maxReplyCharsPerMessage);
+        return parts.isEmpty() ? "" : parts.get(0);
+    }
+
+    /** If the reply is a command directive ("CMD: ..."), return the bare command text, else null. */
+    private static String extractCommand(String reply) {
+        if (reply == null) return null;
+        String s = reply.trim();
+        int idx = s.toUpperCase(Locale.ROOT).indexOf("CMD:");
+        if (idx < 0 || idx > 4) return null;   // must be at the very start (tolerate a stray leading char)
+        String cmd = s.substring(idx + 4).trim();
+        while (!cmd.isEmpty() && (cmd.charAt(0) == '"' || cmd.charAt(0) == '\'')) {
+            cmd = cmd.substring(1).trim();
+        }
+        while (!cmd.isEmpty() && "\"'.!".indexOf(cmd.charAt(cmd.length() - 1)) >= 0) {
+            cmd = cmd.substring(0, cmd.length() - 1).trim();
+        }
+        return cmd.isEmpty() ? null : cmd;
+    }
+
+    private static void runBanter(BotEntry speaker, Character speakerBot, BotEntry listener, Character listenerBot,
+                                  BotEntry third, Character thirdBot) {
+        BotManager bm = BotManager.getInstance();
+        String sName = speakerBot.getName();
+        String lName = listenerBot.getName();
+
+        List<BotMemoryStore.Turn> sRecent = BotMemoryStore.loadUncompacted(sName);
+        String openerLine = oneLine(LlmClient.generate(
+                PromptBuilder.buildBanterOpener(speaker, lName, sRecent),
+                PromptBuilder.buildBanterSystem(speaker, lName)).orElse(""));
+        if (openerLine.isEmpty()) return;
+        if (BotLlmConfig.debugLog) log.info("llm banter[{} -> {}]: {}", sName, lName, openerLine);
+        bm.botSay(speakerBot, openerLine);
+
+        if (listenerBot.getHp() <= 0 || listenerBot.getMap() != speakerBot.getMap()) return;
+        List<BotMemoryStore.Turn> lRecent = BotMemoryStore.loadUncompacted(lName);
+        String replyLine = oneLine(LlmClient.generate(
+                PromptBuilder.buildBanterReply(listener, sName, openerLine, lRecent),
+                PromptBuilder.buildBanterSystem(listener, sName)).orElse(""));
+        if (replyLine.isEmpty()) return;
+        if (BotLlmConfig.debugLog) log.info("llm banter[{} -> {}]: {}", lName, sName, replyLine);
+
+        // Cross-session memory: record the exchange on the listener so the squad can call back to it.
+        BotMemoryStore.appendTurn(lName, new BotMemoryStore.Turn(
+                System.currentTimeMillis(), "party", sName, openerLine, replyLine));
+        if (BotMemoryStore.countUncompacted(lName)
+                > BotLlmConfig.recentTurnsInPrompt + BotLlmConfig.compactBatchSize) {
+            EXEC.submit(() -> BotMemoryStore.compact(lName));
+        }
+
+        long replyDelay = 1800 + ThreadLocalRandom.current().nextInt(1800);
+        EXEC.schedule(() -> {
+            try {
+                if (listenerBot.getHp() > 0 && listenerBot.getMap() == speakerBot.getMap()) {
+                    bm.botSay(listenerBot, replyLine);
+                }
+            } catch (Throwable t) {
+                log.warn("llm banter reply failed: {}", t.toString());
+            }
+        }, replyDelay, TimeUnit.MILLISECONDS);
+
+        // Group thread: a third bot chimes in reacting to the exchange.
+        if (third == null || thirdBot == null) return;
+        if (thirdBot.getHp() <= 0 || thirdBot.getMap() != speakerBot.getMap()) return;
+        String tName = thirdBot.getName();
+        String combined = sName + " said \"" + openerLine + "\" and " + lName + " said \"" + replyLine + "\"";
+        List<BotMemoryStore.Turn> tRecent = BotMemoryStore.loadUncompacted(tName);
+        String chime = oneLine(LlmClient.generate(
+                PromptBuilder.buildBanterReply(third, "the squad", combined, tRecent),
+                PromptBuilder.buildBanterSystem(third, sName + " and " + lName)).orElse(""));
+        if (chime.isEmpty()) return;
+        if (BotLlmConfig.debugLog) log.info("llm banter[{} chimes]: {}", tName, chime);
+        long chimeDelay = replyDelay + 1800 + ThreadLocalRandom.current().nextInt(1800);
+        EXEC.schedule(() -> {
+            try {
+                if (thirdBot.getHp() > 0 && thirdBot.getMap() == speakerBot.getMap()) {
+                    bm.botSay(thirdBot, chime);
+                }
+            } catch (Throwable t) {
+                log.warn("llm banter chime failed: {}", t.toString());
+            }
+        }, chimeDelay, TimeUnit.MILLISECONDS);
+    }
+
+    /**
+     * One bot makes a short remark on arriving at a new map. Caller (BotManager) owns the
+     * cooldown/dedup/owner-present gating; this just does the gated LLM call + say.
+     */
+    public static void maybeMapRemark(BotEntry entry, Character bot) {
+        if (!BotLlmConfig.enabled || !BotLlmConfig.banterEnabled) return;
+        if (entry == null || bot == null) return;
+        AtomicInteger in = inflightByBotId.computeIfAbsent(bot.getId(), k -> new AtomicInteger(0));
+        if (!compareAndIncrement(in, 0, 1)) return;
+        Semaphore g = gate();
+        if (!g.tryAcquire()) {
+            in.decrementAndGet();
+            return;
+        }
+        EXEC.submit(() -> {
+            try {
+                String line = oneLine(LlmClient.generate(
+                        PromptBuilder.buildMapRemark(entry),
+                        PromptBuilder.buildBanterSystem(entry, "the squad")).orElse(""));
+                if (!line.isEmpty()) {
+                    if (BotLlmConfig.debugLog) log.info("llm map remark[{}]: {}", bot.getName(), line);
+                    BotManager.getInstance().botSay(bot, line);
+                }
+            } catch (Throwable t) {
+                log.warn("llm map remark failed: {}", t.toString());
+            } finally {
+                g.release();
+                in.decrementAndGet();
+            }
+        });
+    }
+
+    private static void runReply(BotEntry entry, String senderName, SenderRelation relation, String message, String grounded) {
         String botName = entry.getBot().getName();
         String summary = BotMemoryStore.loadSummary(botName);
         // Prompt shows ALL uncompacted turns (cursor..end). The summary covers everything before
@@ -99,7 +310,7 @@ public final class BotLlmReplyManager {
         // bounded to recentTurnsInPrompt..recentTurnsInPrompt+compactBatchSize turns.
         List<BotMemoryStore.Turn> recent = BotMemoryStore.loadUncompacted(botName);
         String system = PromptBuilder.buildSystem(entry, relation, senderName);
-        String prompt = PromptBuilder.buildPrompt(entry, senderName, message, summary, recent);
+        String prompt = PromptBuilder.buildPrompt(entry, senderName, message, summary, recent, grounded);
 
         long t0 = System.currentTimeMillis();
         if (BotLlmConfig.debugLog) {
@@ -110,7 +321,7 @@ public final class BotLlmReplyManager {
                     BotLlmConfig.numCtx, BotLlmConfig.maxPredictTokens, prompt);
         }
 
-        Optional<String> raw = OllamaClient.generate(prompt, system);
+        Optional<String> raw = LlmClient.generate(prompt, system);
         long elapsed = System.currentTimeMillis() - t0;
 
         if (raw.isEmpty()) {
@@ -131,6 +342,19 @@ public final class BotLlmReplyManager {
 //        }
         if (reply.isEmpty()) return;
 
+        // Command-interpreter: the model may turn a fuzzy instruction into one real bot command.
+        // We validate by running it through the normal command path; if it doesn't match, we say so.
+        String cmd = extractCommand(reply);
+        if (cmd != null && relation == SenderRelation.OWNER) {
+            if (BotLlmConfig.debugLog) log.info("llm[{}] -> CMD: {}", botName, cmd);
+            boolean ran = BotManager.getInstance().tryRunBotCommand(entry, cmd);
+            if (!ran) {
+                BotManager.getInstance().botReply(entry, "hmm, not sure how to do that one");
+            }
+            entry.markLlmReplied();
+            return;
+        }
+
         List<String> parts = splitForChat(reply, BotLlmConfig.maxReplyMessages,
                 BotLlmConfig.maxReplyCharsPerMessage);
         if (BotLlmConfig.debugLog && parts.size() > 1) {
@@ -146,6 +370,8 @@ public final class BotLlmReplyManager {
                 catch (Throwable t) { log.warn("llm follow-up reply failed: {}", t.toString()); }
             }, (long) BotLlmConfig.multiMessageDelayMs * i, TimeUnit.MILLISECONDS);
         }
+        // Mark the conversation open so the owner can reply without re-typing the bot's name for a bit.
+        entry.markLlmReplied();
 
         if (!looksLowQuality(message, reply)) {
             BotMemoryStore.appendTurn(botName,

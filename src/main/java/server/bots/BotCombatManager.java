@@ -3,6 +3,7 @@ package server.bots;
 import client.BuffStat;
 import client.Character;
 import client.Client;
+import client.Job;
 import client.Skill;
 import client.SkillFactory;
 import client.inventory.InventoryType;
@@ -13,22 +14,33 @@ import constants.inventory.ItemConstants;
 import constants.skills.Archer;
 import constants.skills.Assassin;
 import constants.skills.Bandit;
+import constants.skills.Bishop;
 import constants.skills.Bowmaster;
+import constants.skills.Brawler;
 import constants.skills.Buccaneer;
 import constants.skills.ChiefBandit;
 import constants.skills.Cleric;
 import constants.skills.Corsair;
 import constants.skills.Crossbowman;
 import constants.skills.Crusader;
+import constants.skills.DarkKnight;
 import constants.skills.DawnWarrior;
 import constants.skills.DragonKnight;
+import constants.skills.Evan;
 import constants.skills.Fighter;
+import constants.skills.FPArchMage;
+import constants.skills.FPMage;
 import constants.skills.GM;
+import constants.skills.Gunslinger;
 import constants.skills.Hermit;
+import constants.skills.Hero;
 import constants.skills.Hunter;
+import constants.skills.ILArchMage;
+import constants.skills.ILWizard;
 import constants.skills.Marksman;
 import constants.skills.NightWalker;
 import constants.skills.Paladin;
+import constants.skills.Pirate;
 import constants.skills.Priest;
 import constants.skills.Rogue;
 import constants.skills.Spearman;
@@ -87,7 +99,8 @@ class BotCombatManager {
             DragonKnight.POWER_CRASH
     );
     // Battleship cannons only fire while in Battleship form (a MONSTER_RIDING morph that disables a
-    // bot's normal attacks and uses a separate HP pool), so bots skip them and keep using Rapid Fire.
+    // bot's normal attacks and uses a separate HP pool), so bots skip them; Corsairs fall back to
+    // Aerial Strike / basic gun (Rapid Fire is keydown — see KEYDOWN_SKILL_IDS below).
     // Meso Explosion is NOT here: it's enabled conditionally in planSkillAttack once Pickpocket has
     // dropped detonatable mesos near the target.
     static final Set<Integer> BOT_UNUSABLE_ATTACK_SKILL_IDS = Set.of(
@@ -96,6 +109,33 @@ class BotCombatManager {
             // Heaven's Hammer caps monsters at 1 HP (it can never kill), so a bot would spam it
             // forever without finishing anything — leave it out and let Paladins use Blast.
             Paladin.HEAVENS_HAMMER
+    );
+    // Keydown / charge skills (press-and-hold). A real client casts these via a skill-prepare packet
+    // that the server rebroadcasts as a SKILL_EFFECT "charge" animation (SkillEffectHandler) BEFORE
+    // the attack body, putting watching clients into the keydown render state. Bots have no keydown
+    // cast path, so firing one as a normal one-shot attack broadcast makes observing v83 clients try
+    // to render an un-charged charge skill and crash mid-grind. Excluded from attack selection; the
+    // bot falls back to its non-keydown attacks / basic attack. Keep in sync with the authoritative
+    // keydown set in net.server.channel.handlers.SkillEffectHandler.
+    static final Set<Integer> KEYDOWN_SKILL_IDS = Set.of(
+            FPMage.EXPLOSION,
+            FPArchMage.BIG_BANG,
+            ILArchMage.BIG_BANG,
+            Bishop.BIG_BANG,
+            Bowmaster.HURRICANE,
+            Marksman.PIERCING_ARROW,
+            ChiefBandit.CHAKRA,
+            Brawler.CORKSCREW_BLOW,
+            Gunslinger.GRENADE,
+            Corsair.RAPID_FIRE,
+            WindArcher.HURRICANE,
+            NightWalker.POISON_BOMB,
+            ThunderBreaker.CORKSCREW_BLOW,
+            Paladin.MONSTER_MAGNET,
+            DarkKnight.MONSTER_MAGNET,
+            Hero.MONSTER_MAGNET,
+            Evan.FIRE_BREATH,
+            Evan.ICE_BREATH
     );
     private static final double MESO_EXPLOSION_RADIUS_SQ = 250.0 * 250.0;
     private static final int MESO_EXPLOSION_MAX_MESOS = 15;
@@ -448,6 +488,7 @@ class BotCombatManager {
         BotPhysicsEngine.markDead(entry, bot);
         BotMovementManager.broadcastMovement(entry);
         entry.deadUntil = System.currentTimeMillis() + cfg.BOT_DEAD_MS;
+        entry.lastDeathAtMs = System.currentTimeMillis();   // feeds moodHint (grumpy after dying)
         if (announceDeath) {
             BotManager.getInstance().botSay(bot, BotManager.randomReply(DEATH_REPLIES));
         }
@@ -487,6 +528,7 @@ class BotCombatManager {
         int bestAtkPriority = Integer.MIN_VALUE;
         int bestAtkDamage = Integer.MIN_VALUE;
         long bestAoeScore = 0;
+        WeaponType weaponType = BotAttackExecutionProvider.getEquippedWeaponType(bot);
 
         for (Skill skill : bot.getSkills().keySet()) {
             int lvl = bot.getSkillLevel(skill);
@@ -503,7 +545,12 @@ class BotCombatManager {
                 continue;  // not an attack skill; offensive use against undead handled in tickSupportHealing
             }
 
-            if (isActiveAttackSkill(skill, fx)) {
+            // Skip skills the equipped weapon can't use, so the bot doesn't pick a wrong-weapon
+            // skill (e.g. a knuckle Brawler choosing the free-maxed gun-line Double Shot) as its
+            // main attack. When the weapon is unknown (weaponType == null) we don't filter here —
+            // the use-time gate in planSkillAttack still blocks the actual cast either way.
+            if (isActiveAttackSkill(skill, fx)
+                    && (weaponType == null || canUseAttackSkillWithWeapon(skill.getId(), weaponType))) {
                 entry.attackSkillIds.add(skill.getId());
                 if (mobs >= 2) {
                     long score = (long) Math.max(0, fx.getDamagePercent()) * Math.max(1, atk) * Math.max(1, mobs);
@@ -532,6 +579,13 @@ class BotCombatManager {
             if (BUFF_BLACKLIST.contains(skill.getId())) continue;
             entry.buffSkillIds.add(skill.getId());
             entry.nextBuffAt.putIfAbsent(skill.getId(), 0L);
+        }
+
+        // I/L mages lead with Thunder Bolt as their main attack, not the weak 1st-job Magic Claw
+        // (which would otherwise win the single-target slot). Thunder Bolt is an AoE skill, so it's
+        // already the cluster pick; this also makes it the single-target attack once learned.
+        if (bot.getJob().isA(Job.IL_WIZARD) && entry.attackSkillIds.contains(ILWizard.THUNDERBOLT)) {
+            entry.attackSkillId = ILWizard.THUNDERBOLT;
         }
     }
 
@@ -895,7 +949,8 @@ class BotCombatManager {
                     continue;
                 }
                 long localScore = grindTargetScore(bot, botPos, botFoothold, candidate)
-                        - aoeClusterBonus(entry, candidate, candidates);
+                        - aoeClusterBonus(entry, candidate, candidates)
+                    - undeadTargetBonus(entry, candidate);
                 localTargets.add(new ScoredGrindTarget(candidate, localScore, localScore,
                         candidate.getPosition().distanceSq(botPos)));
             }
@@ -1040,7 +1095,12 @@ class BotCombatManager {
         PlanScore best = null;
         double bestScore = Double.NEGATIVE_INFINITY;
         for (PlanScore score : scores) {
-            if (hasGuaranteedFullHpKill && !score.minimumKillsFullHpTargets) {
+            // Keep a plan in contention if it guarantees a full-HP kill OR it's a big AoE (>=3 mobs):
+            // clearing a cluster of 3+ beats one-shotting a single mob, so the kill-filter must not
+            // drop a big AoE just because some single-target plan happens to one-shot one mob. The
+            // useful-DPS comparison below (summed over all targets) then favors the cluster clear.
+            boolean bigAoe = score.plan.targets.size() >= AOE_STRONG_PREFER_MOBS;
+            if (hasGuaranteedFullHpKill && !score.minimumKillsFullHpTargets && !bigAoe) {
                 continue;
             }
             double candidateScore = hasGuaranteedFullHpKill ? score.usefulDps : score.rawDps;
@@ -1464,6 +1524,12 @@ class BotCombatManager {
         return switch (skillId) {
             case DragonKnight.SPEAR_CRUSHER, DragonKnight.SPEAR_DRAGON_FURY -> isSpearWeapon(weaponType);
             case DragonKnight.POLE_ARM_CRUSHER, DragonKnight.POLE_ARM_DRAGON_FURY -> isPolearmWeapon(weaponType);
+            // The Pirate 1st job is shared between the gun and knuckle lines, and maxPreviousJobSkills
+            // free-maxes BOTH lines' skills on advancement. Firing the wrong-weapon skill routes a
+            // "shoot" action into a melee broadcast (or a punch into a ranged one) and crashes watching
+            // v83 clients. Gate the weapon-bound 1st-job attacks to their weapon.
+            case Pirate.DOUBLE_SHOT -> weaponType == WeaponType.GUN;
+            case Pirate.FLASH_FIST -> weaponType == WeaponType.KNUCKLE;
             default -> true;
         };
     }
@@ -1800,7 +1866,8 @@ class BotCombatManager {
         List<ScoredGrindTarget> scoredTargets = new ArrayList<>(candidates.size());
         for (Monster candidate : candidates) {
             long localScore = grindTargetScore(bot, botPos, botFoothold, candidate)
-                    - aoeClusterBonus(entry, candidate, candidates);
+                    - aoeClusterBonus(entry, candidate, candidates)
+                    - undeadTargetBonus(entry, candidate);
             scoredTargets.add(new ScoredGrindTarget(candidate, localScore, localScore,
                     candidate.getPosition().distanceSq(botPos)));
         }
@@ -1823,7 +1890,8 @@ class BotCombatManager {
             }
 
             long localScore = grindTargetScore(bot, botPos, botFoothold, candidate)
-                    - aoeClusterBonus(entry, candidate, candidates);
+                    - aoeClusterBonus(entry, candidate, candidates)
+                    - undeadTargetBonus(entry, candidate);
             GrindTargetGroup group = groupsByRegionId.computeIfAbsent(targetRegionId, GrindTargetGroup::new);
             group.add(candidate, localScore, targetPos.distanceSq(botPos));
         }
@@ -1931,6 +1999,18 @@ class BotCombatManager {
     // pile of 10 mobs doesn't crater scores past the natural distance/foothold penalties.
     static final int AOE_CLUSTER_RADIUS_PX = 150;
     static final long AOE_CLUSTER_BONUS_PER_MOB = 200L;
+    // An AoE plan hitting at least this many mobs is preferred even over a single-target one-shot.
+    static final int AOE_STRONG_PREFER_MOBS = 3;
+    // Heal-capable bots (clerics) prefer undead targets — Heal is their best damage vs undead.
+    static final long UNDEAD_HEAL_TARGET_BONUS = 250L;
+
+    /** Target-selection bias: clerics favor undead so they engage them and Heal-bomb (lower = better). */
+    private static long undeadTargetBonus(BotEntry entry, Monster target) {
+        if (entry == null || entry.healSkillId == 0 || target == null) {
+            return 0L;
+        }
+        return target.getStats().isUndead() ? UNDEAD_HEAL_TARGET_BONUS : 0L;
+    }
 
     private static long aoeClusterBonus(BotEntry entry, Monster target, List<Monster> candidates) {
         if (entry == null || entry.aoeSkillId == 0 || entry.aoeSkillMobs <= 1
@@ -2630,7 +2710,8 @@ class BotCombatManager {
             return false;
         }
         if (NON_DAMAGE_ACTIVE_SKILL_IDS.contains(skill.getId())
-                || BOT_UNUSABLE_ATTACK_SKILL_IDS.contains(skill.getId())) {
+                || BOT_UNUSABLE_ATTACK_SKILL_IDS.contains(skill.getId())
+                || KEYDOWN_SKILL_IDS.contains(skill.getId())) {
             return false;
         }
         if (effect.isOverTime() || !declaresOffense(effect)) {

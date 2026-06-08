@@ -1,6 +1,10 @@
 package server.bots;
 
 import client.Character;
+import client.Job;
+import constants.skills.Cleric;
+import constants.skills.FPWizard;
+import constants.skills.ILWizard;
 import io.netty.buffer.Unpooled;
 import net.packet.ByteBufInPacket;
 import net.packet.InPacket;
@@ -89,6 +93,13 @@ class BotMovementManager {
         // 4000 Manhattan threshold; this lets us recover sooner once we know the bot is OOB.
         public int OOB_TELEPORT_DIST = 600;
         public int FOLLOW_Y_CAP = 200; // max vertical distance for Y-snapped follow target
+        // Mage Teleport blink while grinding: instant hop toward the target, scaled by Teleport rank.
+        // DISABLED pending a fix — the blink repositions server-side without broadcasting the move,
+        // which desyncs/crashes nearby clients. Flip to true only after that broadcast is added.
+        public boolean TELEPORT_BLINK_ENABLED = false;
+        public int TELEPORT_BLINK_BASE = 130;        // px at Teleport Lv.1
+        public int TELEPORT_BLINK_PER_RANK = 6;      // +px per Teleport level (Lv.20 -> ~250px)
+        public int TELEPORT_BLINK_COOLDOWN_MS = 600; // min gap between blinks (teleport cadence)
     }
 
     static Config cfg = bindConfig(new Config());
@@ -532,11 +543,89 @@ class BotMovementManager {
                 }
                 targetPos = BotFallbackMovementManager.resolveSteeringTarget(entry, botPos, targetPos);
             }
+            if (maybeMageTeleportBlink(entry, currentFh, botPos, targetPos)) {
+                return;
+            }
             MoveAction action = planGroundAction(entry, currentFh, botPos, targetPos);
             applyGroundAction(entry, currentFh, action);
         } finally {
             BotPerformanceMonitor.record("move-ground", System.nanoTime() - startedAt);
         }
+    }
+
+    /**
+     * Mage grind QoL: when a 2nd-job-or-higher Magician is grinding and the next target is far along
+     * the current foothold, blink toward it with Teleport instead of walking. Conservative — it reuses
+     * the proven instant-reposition path, stays on the current foothold (never blinks off a ledge or
+     * past a wall), and the hop distance scales with the bot's Teleport skill rank. Returns true if it
+     * blinked (caller then skips the normal walk this tick). Flash Jump and other dash skills are not
+     * handled here.
+     */
+    private static boolean maybeMageTeleportBlink(BotEntry entry, Foothold currentFh, Point botPos, Point targetPos) {
+        if (!cfg.TELEPORT_BLINK_ENABLED) {
+            return false;
+        }
+        if (!entry.grinding || entry.navEdge != null || currentFh == null || botPos == null || targetPos == null) {
+            return false;
+        }
+        Character bot = entry.bot;
+        int teleportId = teleportSkillIdFor(bot.getJob());
+        if (teleportId == 0) {
+            return false;
+        }
+        int rank = bot.getSkillLevel(teleportId);
+        if (rank <= 0) {
+            return false;
+        }
+        long now = System.currentTimeMillis();
+        if (now < entry.nextTeleportBlinkAtMs) {
+            return false;
+        }
+
+        int dx = targetPos.x - botPos.x;
+        int blinkDist = cfg.TELEPORT_BLINK_BASE + cfg.TELEPORT_BLINK_PER_RANK * rank;
+        if (Math.abs(dx) <= blinkDist) {
+            return false; // close enough — walk the remainder so the bot doesn't overshoot
+        }
+
+        int destX = botPos.x + Integer.signum(dx) * blinkDist;
+        // Clamp the hop to the current foothold span so the bot never teleports off a ledge or past a wall.
+        int loX = Math.min(currentFh.getX1(), currentFh.getX2()) + cfg.GRIND_EDGE_MARGIN;
+        int hiX = Math.max(currentFh.getX1(), currentFh.getX2()) - cfg.GRIND_EDGE_MARGIN;
+        if (loX > hiX) {
+            return false;
+        }
+        destX = Math.max(loX, Math.min(hiX, destX));
+        if (Math.abs(destX - botPos.x) < cfg.STOP_DIST) {
+            return false; // not enough clear room on this platform to be worth a blink
+        }
+
+        Point dest = BotPhysicsEngine.findWalkRegionGroundPoint(bot.getMap(), currentFh, destX, botPos.y);
+        if (dest == null) {
+            return false;
+        }
+
+        BotPhysicsEngine.teleportTo(entry, bot, dest);
+        resetEntryStateAfterTeleport(entry);
+        entry.nextTeleportBlinkAtMs = now + cfg.TELEPORT_BLINK_COOLDOWN_MS;
+        return true;
+    }
+
+    /** Teleport skill id for a 2nd-job-or-higher Explorer Magician branch, or 0 if the job can't teleport. */
+    private static int teleportSkillIdFor(Job job) {
+        if (job == null) {
+            return 0;
+        }
+        if (job.isA(Job.FP_WIZARD)) {
+            return FPWizard.TELEPORT;
+        }
+        if (job.isA(Job.IL_WIZARD)) {
+            return ILWizard.TELEPORT;
+        }
+        if (job.isA(Job.CLERIC)) {
+            return Cleric.TELEPORT;
+        }
+        return 0;
     }
 
     /**

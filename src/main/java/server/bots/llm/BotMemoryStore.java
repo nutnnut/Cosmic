@@ -202,7 +202,7 @@ public final class BotMemoryStore {
                 + "promises made, gear/items mentioned, places visited, jokes/nicknames, anything personal. "
                 + "Drop small-talk filler. If prior memory exists, integrate the new chat into it without "
                 + "discarding earlier facts unless directly contradicted. Stay under 800 chars.";
-        return OllamaClient.generateLong(convo.toString(), sys, BotLlmConfig.summaryMaxPredictTokens).orElse(null);
+        return LlmClient.generateLong(convo.toString(), sys, BotLlmConfig.summaryMaxPredictTokens).orElse(null);
     }
 
     private static Path jsonlPath(String botName) {

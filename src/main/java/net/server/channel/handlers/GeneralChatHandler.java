@@ -54,6 +54,11 @@ public final class GeneralChatHandler extends AbstractPacketHandler {
             c.sendPacket(server.beauty.BeautyPackets.beautyOpen());
             return;
         }
+        if (s.equalsIgnoreCase("@spawnbots") || s.regionMatches(true, 0, "@spawnbots ", 0, 11)) {
+            String arg = s.length() > 10 ? s.substring(10).trim() : "";
+            BotManager.getInstance().handleSpawnBotsToggle(chr, arg);
+            return;
+        }
         char heading = s.charAt(0);
         if (CommandsExecutor.isCommand(c, s)) {
             CommandsExecutor.getInstance().handle(c, s);

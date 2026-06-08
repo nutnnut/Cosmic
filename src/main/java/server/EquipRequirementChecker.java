@@ -31,8 +31,8 @@ final class EquipRequirementChecker {
         if (stats.get("reqLUK") > luk) {
             return false;
         }
-        int reqPOP = stats.get("reqPOP");
-        return reqPOP <= 0 || reqPOP <= fame;
+        // Fame (reqPOP) requirement intentionally ignored — equips can be worn at any fame.
+        return true;
     }
 
     static boolean matchesReqJob(Job job, int reqJob) {

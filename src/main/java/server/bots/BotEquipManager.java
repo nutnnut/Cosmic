@@ -646,7 +646,7 @@ class BotEquipManager {
             short primary = (short) eslot.getPrimarySlot();
             if (primary == 0) continue;
             if (primary == (short) -11
-                    && !isWeaponCompatible(bot, ii.getWeaponType(equip.getItemId()))) continue;
+                    && !isJobWeapon(bot, ii.getWeaponType(equip.getItemId()))) continue;
             if (ii.canWearEquipment(bot, equip, primary) || statOnlyBlocked(bot, ii, equip)) {
                 bySlot.computeIfAbsent(primary, k -> new ArrayList<>()).add(equip);
             }
@@ -656,7 +656,7 @@ class BotEquipManager {
             if (!(it instanceof Equip e) || ii.isCash(e.getItemId())) continue;
             short pos = e.getPosition();
             if (pos == (short) -11
-                    && !isWeaponCompatible(bot, ii.getWeaponType(e.getItemId()))) continue;
+                    && !isJobWeapon(bot, ii.getWeaponType(e.getItemId()))) continue;
             short key = isRingSlot(pos) ? (short) -12 : pos;
             List<Equip> pool = bySlot.computeIfAbsent(key, k -> new ArrayList<>());
             if (!pool.contains(e)) pool.add(e);
@@ -711,7 +711,7 @@ class BotEquipManager {
             short pslot = (short) eslot.getPrimarySlot();
             if (pslot == 0) continue;
             if (pslot == (short) -11
-                    && !isWeaponCompatible(bot, ii.getWeaponType(ex.getItemId()))) continue;
+                    && !isJobWeapon(bot, ii.getWeaponType(ex.getItemId()))) continue;
             if (!isRecommendationCandidate(bot, ii, ex, pslot, scope)) continue;
             // Rings live in the shared -12 pool regardless of which equipped position they came from.
             short key = isRingSlot(pslot) ? (short) -12 : pslot;
@@ -1331,7 +1331,7 @@ class BotEquipManager {
             short primary = (short) eslot.getPrimarySlot();
             if (primary == 0) continue;
             if (primary == (short) -11
-                    && !isWeaponCompatible(bot, ii.getWeaponType(equip.getItemId()))) continue;
+                    && !isJobWeapon(bot, ii.getWeaponType(equip.getItemId()))) continue;
             if (!futureOnlyBlocked(bot, ii, equip)) continue;
             short key = isRingSlot(primary) ? (short) -12 : primary;
             bySlot.computeIfAbsent(key, k -> new ArrayList<>()).add(equip);
@@ -1340,7 +1340,7 @@ class BotEquipManager {
             if (!(it instanceof Equip e) || ii.isCash(e.getItemId())) continue;
             short pos = e.getPosition();
             if (pos == (short) -11
-                    && !isWeaponCompatible(bot, ii.getWeaponType(e.getItemId()))) continue;
+                    && !isJobWeapon(bot, ii.getWeaponType(e.getItemId()))) continue;
             if (!futureOnlyBlocked(bot, ii, e)) continue;
             short key = isRingSlot(pos) ? (short) -12 : pos;
             List<Equip> pool = bySlot.computeIfAbsent(key, k -> new ArrayList<>());
@@ -2188,11 +2188,20 @@ class BotEquipManager {
         };
     }
 
+    /**
+     * True only for a real weapon whose type suits the bot's job. Cosmetic cash weapons live in
+     * item category 170, which {@link ItemInformationProvider#getWeaponType} maps to NOT_A_WEAPON,
+     * so they're rejected here — the optimizer must never treat a cosmetic as the bot's weapon.
+     */
+    private static boolean isJobWeapon(Character bot, WeaponType wt) {
+        return wt != WeaponType.NOT_A_WEAPON && isWeaponCompatible(bot, wt);
+    }
+
     private static Equip compatibleWeaponOrNull(Character bot, ItemInformationProvider ii, Equip equip) {
-        if (equip == null) {
+        if (equip == null || ii.isCash(equip.getItemId())) {
             return null;
         }
-        return isWeaponCompatible(bot, ii.getWeaponType(equip.getItemId())) ? equip : null;
+        return isJobWeapon(bot, ii.getWeaponType(equip.getItemId())) ? equip : null;
     }
 
     private static boolean matchesWarriorWeaponFamily(Character bot,

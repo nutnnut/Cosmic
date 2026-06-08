@@ -504,6 +504,12 @@ public final class PlayerInteractionHandler extends AbstractPacketHandler {
                     return;
                 }
 
+                if (item.getItemId() == ItemId.QUEST_RING) {   // bound quest ring is never tradeable
+                    c.sendPacket(PacketCreator.serverNotice(1, "That ring is bound to you and cannot be traded."));
+                    c.sendPacket(PacketCreator.enableActions());
+                    return;
+                }
+
                 if (ii.isUnmerchable(item.getItemId())) {
                     if (ItemConstants.isPet(item.getItemId())) {
                         c.sendPacket(PacketCreator.serverNotice(1, "Pets are not allowed to be traded."));
@@ -576,6 +582,12 @@ public final class PlayerInteractionHandler extends AbstractPacketHandler {
                 short slot = p.readShort();
                 short bundles = p.readShort();
                 Item ivItem = chr.getInventory(ivType).getItem(slot);
+
+                if (ivItem != null && ivItem.getItemId() == ItemId.QUEST_RING) {   // bound quest ring can't be shop-listed
+                    c.sendPacket(PacketCreator.serverNotice(1, "That ring is bound to you and cannot be sold or traded."));
+                    c.sendPacket(PacketCreator.enableActions());
+                    return;
+                }
 
                 if (ivItem == null || (ivItem.isUntradeable() && !YamlConfig.config.server.UNTRADEABLE_ITEMS_TRADEABLE)) {
                     c.sendPacket(PacketCreator.serverNotice(1, "Could not perform shop operation with that item."));

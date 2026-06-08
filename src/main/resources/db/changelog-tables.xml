@@ -141,4 +141,12 @@
         <sqlFile path="db/tables/034-beauty-unlock.sql"/>
     </changeSet>
 
+    <changeSet id="35" author="Lumen">
+        <sqlFile path="db/tables/035-bot-autospawn.sql"/>
+    </changeSet>
+
+    <changeSet id="36" author="Lumen">
+        <sqlFile path="db/tables/036-rebirth-ring-repair.sql"/>
+    </changeSet>
+
 </databaseChangeLog>

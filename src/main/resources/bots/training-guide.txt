@@ -1,0 +1,97 @@
+# Curated leveling/training guide for the bot "where do I train?" command.
+# Format per line: <loLevel> <hiLevel> <recommendation text>
+# A character's level maps to the bracket with the greatest loLevel <= level.
+# Lines are surfaced in file order, so list the best spots for a bracket first.
+# '#' lines and blank lines are ignored.
+
+1 10 Maple Island — starter quests until Lv.10
+
+10 15 Slime — Southern Forest I (Forest S of Ellinia) (exp 32)
+10 15 Do your 1st-job advancement + lightbulb quests
+
+15 30 Genin — Castle Gate / first Castle Corridor (exp 240)
+15 30 Evil Eye — Cave of Evil Eye I (exp 160)
+15 30 Yellow Lizard — Small Jungle (Floating Market via Spinel) (exp 147)
+15 30 Wild Boar — Land of the Wild Boar I/II (exp 134)
+15 30 Axe Stump / Dark Axe Stump — East Rocky Mountain V (exp 96/121)
+15 30 Green / Horny Mushroom — Southern Forest IV (exp 83/112)
+15 30 Bubbling — Kerning Subway Line 1 <Area 1> (exp 83)
+15 30 KPQ — Kerning City (Lv.21+)
+
+30 51 Coolie Zombie — Forest of Dead Trees I-IV (exp 608)
+30 51 Trucker — Suburban Area 2 (exp 512)
+30 51 Wraith — Kerning Subway Line 1 <Area 4> (exp 384)
+30 51 Master Chronos — The Path of Time <4> (exp 368)
+30 51 Platoon Chronos — The Path of Time <1> (exp 316)
+30 51 Paper Lantern Ghost — A Night in the Forest (exp 297)
+30 51 Zombie Lupin — Monkey Swamp III (exp 288)
+30 51 Jr Wraith — Kerning Subway Line 1 <Area 3> (exp 224)
+30 51 Brown Teddy — Terrace Hall (exp 192)
+30 51 PQs: CPQ (30-51), LPQ (35+), Orbis PQ (51+)
+
+51 71 Windraider — Cavern of Pain: Tornado Corridor (exp 2560)
+51 71 Saitie — Authorized Personnel Only (exp 1536)
+51 71 Hoodoo / Voodoo — HeartStopper map (exp 1072)
+51 71 Captain / Kru — Red Nose Pirate Den 2 (exp 902/848)
+51 71 Sage Cat — Goblin Forest 2 (exp 816)
+51 71 Rodeo — Muddy Banks 2 (exp 800)
+51 71 Slimy / Selkie Jr. — Mysterious Path 3 / MP3 (exp 800/704)
+51 71 Python — Deep Jungle (Floating Market via Spinel) (exp 736)
+51 71 Mixed / Dark Golem — Forest of Golem (exp 640/672)
+51 71 Straw Target Dummy — Practice Field: Beginner (exp 432)
+51 71 PQs: CPQ2 (51-71), Orbis PQ (51+)
+
+71 80 Heads up — exp slows down a lot around this range
+71 80 Black Kentaurus — Area of Black Kentaurus (exp 5120)
+71 80 Wolf Spider — Wolf Spider Cavern (party) (exp 3840)
+71 80 Homunculus — Lab Unit 202 (exp 1760)
+71 80 Captain / Kru — Red Nose Pirate Den 2 (exp 902/848)
+71 80 Slimy / Selkie Jr. — Mysterious Path 3 / MP3 (exp 800/704)
+71 80 PQs: PPQ (70-101), RJPQ (71+), Orbis PQ
+
+80 100 Jr Newtie — Destroyed Dragon Nest (exp 12160)
+80 100 Dreamy Ghost / Himes — Encounter with the Buddha (exp 10240)
+80 100 Risell Squid — Dangerous Sea Gorge II (exp 8000)
+80 100 Kentaurus (Red/Blue/Black) — Battlefields (party) (exp 5120)
+80 100 Goby — Deep Sea Gorge II (exp 4480)
+80 100 Booper Scarlion — Fantasy Theme Park 2 (exp 4000)
+80 100 Jonin — Castle Corridor (exp 3680)
+80 100 Areas: ToT pre-quests + maps (91+), RJPQ (71+)
+
+100 120 Primitive Boar — Boulder Mountain Entrance (Ellin Forest, party) (exp 15040)
+100 120 Ninto — Castle Corridor (no mages; no safe HS spot) (exp 14720)
+100 120 Petrifighter — Ulu City Center (party) (exp 14560)
+100 120 Skelegon / Skelosaurus — Dragon's Nest Left Behind (party) (exp 14400/15200)
+100 120 Tree Rod — Mossy Tree Forest 2 (Ellin Forest, party) (exp 9760)
+100 120 Giant Eagle — Mountain Road 1 (Lushan via Spinel, party) (exp 9280)
+100 120 Male / Female Burglar — Mountain Road 2 (Lushan via Spinel, party) (exp 9280)
+100 120 Slygie / Veetron — Ulu Estate II (exp 8000/6080)
+100 120 Berserkie / Veetron — Ulu Estate I (exp 4640/6080)
+100 120 Areas/PQs: EPQ (110+), ToT
+
+120 135 Giant Gold Monk — Shaolin Temple F7 (Lushan via Spinel, party) (exp 34560)
+120 135 Giant Silver Monk — Shaolin Temple F7 (Lushan via Spinel, party) (exp 28800)
+120 135 Chief Oblivion Guardian — Road to Oblivion 5 (exp 22592)
+120 135 Petrifighter — Ulu City Center (party) (exp 14560)
+120 135 Skelegon / Skelosaurus — Dragon's Nest Left Behind (party) (exp 14400/15200)
+120 135 Slygie / Veetron — Ulu Estate II (exp 8000/6080)
+120 135 Big Foot — Crimsonwood Forest
+120 135 Bosses: Papulatus, Pianus
+120 135 Areas: Neo Tokyo pre-quests (130+)
+
+135 155 Bearwolves — LHC (base 204,800; party of 6 ~512,000)
+135 155 Reindeer — LHC (base 87,840-104,000; party of 6 up to ~260,000)
+135 155 Crocky — LHC (base 87,840; party of 6 ~219,600)
+135 155 Giant Gold Monk — Shaolin Temple F7 (exp 34560)
+135 155 Chief Oblivion Guardian — Road to Oblivion 5 (exp 22592)
+135 155 Skelegon / Skelosaurus — Dragon's Nest Left Behind (exp 14400/15200)
+135 155 Bosses: Zakum, Krexel, Anego, Wulin Yaoseng (Shao), Papulatus, Pianus
+135 155 Areas: LHC pre-quests (135+), ToT, Crimsonwood, Neo Tokyo
+
+155 200 Bearwolves — LHC (base 204,800; party of 6 ~512,000)
+155 200 Reindeer — LHC (base 87,840-104,000; party of 6 up to ~260,000)
+155 200 Crocky — LHC (base 87,840; party of 6 ~219,600)
+155 200 Chief Oblivion Guardian — Road to Oblivion 5 (exp 22592)
+155 200 Skelegon / Skelosaurus — Dragon's Nest Left Behind (exp 14400/15200)
+155 200 Bosses: Horntail, Zakum, Krexel, Anego, Shao, Castellan Toad, King Castle Golem (Rose Garden)
+155 200 Areas: ToT, Neo Tokyo (130+), Crimsonwood (Big Foot)

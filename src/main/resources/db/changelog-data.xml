@@ -78,4 +78,12 @@
         <sqlFile path="db/data/167-miki-beauty-salon.sql"/>
     </changeSet>
 
+    <changeSet id="168" author="Lumen">
+        <sqlFile path="db/data/168-maple-leaf-global-drop-2pct.sql"/>
+    </changeSet>
+
+    <changeSet id="169" author="Lumen">
+        <sqlFile path="db/data/169-orebag-slots-96.sql"/>
+    </changeSet>
+
 </databaseChangeLog>

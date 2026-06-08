@@ -10,7 +10,6 @@ import client.processor.stat.AssignAPProcessor;
 import constants.game.GameConstants;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
 import server.bots.build.BowmanBuilds;
 import server.bots.build.BuildStep;
 import server.bots.build.MageBuilds;
@@ -27,17 +26,28 @@ class BotBuildManager {
     }
 
     /**
-     * AP build by job tree: fill the secondary stat up to its target, then dump all remaining AP into the primary stat.
+     * AP build by job tree. Two modes:
+     *  - fixed target ({@code levelScaled == false}): fill the secondary stat up to {@code secondaryTarget},
+     *    then dump all remaining AP into the primary stat (used by "dexless", "120 dex", etc.).
+     *  - level-scaled ({@code levelScaled == true}, the auto build): the secondary target grows with level
+     *    (+1 per level, +2 on every even level), so each level puts 1 AP (2 every other level) into the
+     *    secondary stat and the remaining 4 (or 3) into the primary. See {@link #secondaryApForLevel(int)}.
      */
     public static class ApBuild {
         final StatType primaryStat;
         final StatType secondaryStat;
         final int secondaryTarget;
+        final boolean levelScaled;
 
         public ApBuild(StatType primaryStat, StatType secondaryStat, int secondaryTarget) {
+            this(primaryStat, secondaryStat, secondaryTarget, false);
+        }
+
+        public ApBuild(StatType primaryStat, StatType secondaryStat, int secondaryTarget, boolean levelScaled) {
             this.primaryStat = primaryStat;
             this.secondaryStat = secondaryStat;
             this.secondaryTarget = Math.max(4, secondaryTarget);
+            this.levelScaled = levelScaled;
         }
     }
 
@@ -68,17 +78,33 @@ class BotBuildManager {
         return prompt;
     }
 
-    /** Spends all remaining AP according to the stored build. */
+    /**
+     * Spends all remaining AP. Uses the player-chosen build when one is set; otherwise spends
+     * silently with the job's default build — UNLESS an AP-build prompt is currently outstanding,
+     * in which case it waits for the answer. This is what stops the nagging: the bot only ASKS at
+     * job advancements; every other spawn/level-up just auto-assigns (defaulting if never answered).
+     */
     static void autoAssignAp(BotEntry entry, Character bot) {
-        if (entry.apBuild == null || bot.getRemainingAp() < 1) return;
+        if (bot.getRemainingAp() < 1) return;
+
+        ApBuild build = entry.apBuild;
+        if (build == null) {
+            if (entry.apPromptSent) return;          // a prompt is waiting on the player's answer
+            build = defaultApBuild(bot.getJob());     // no choice made (respawn / ignored) — default silently
+            if (build == null) return;                // unsupported job
+        }
 
         int ap = bot.getRemainingAp();
         int[] gains = new int[StatType.values().length];
-        int secondaryNeeded = Math.max(0, entry.apBuild.secondaryTarget - currentStat(bot, entry.apBuild.secondaryStat));
+        int secondaryTarget = build.levelScaled
+                ? AssignAPProcessor.getMinStatFloor(bot.getJob(), toStat(build.secondaryStat))
+                        + secondaryApForLevel(bot.getLevel())
+                : build.secondaryTarget;
+        int secondaryNeeded = Math.max(0, secondaryTarget - currentStat(bot, build.secondaryStat));
         int secondaryGain = Math.min(secondaryNeeded, ap);
-        gains[entry.apBuild.secondaryStat.ordinal()] = secondaryGain;
+        gains[build.secondaryStat.ordinal()] = secondaryGain;
         ap -= secondaryGain;
-        gains[entry.apBuild.primaryStat.ordinal()] += ap;
+        gains[build.primaryStat.ordinal()] += ap;
 
         if (gains[StatType.STR.ordinal()] > 0
                 || gains[StatType.DEX.ordinal()] > 0
@@ -91,6 +117,27 @@ class BotBuildManager {
                     gains[StatType.LUK.ordinal()]
             );
         }
+    }
+
+    /**
+     * Cumulative AP the level-scaled auto build targets for the secondary stat at a given level:
+     * +1 per level, with +2 on every even level (so 1/4 split most levels, 2/3 every other level).
+     * Level 1 grants no level-up AP, so counting starts at level 2.
+     */
+    private static int secondaryApForLevel(int level) {
+        if (level < 2) {
+            return 0;
+        }
+        return level + level / 2 - 1;
+    }
+
+    private static Stat toStat(StatType type) {
+        return switch (type) {
+            case STR -> Stat.STR;
+            case DEX -> Stat.DEX;
+            case INT -> Stat.INT;
+            case LUK -> Stat.LUK;
+        };
     }
 
     static String respecAp(BotEntry entry, Character bot) {
@@ -115,8 +162,48 @@ class BotBuildManager {
             reallocateAp(entry, bot);
         }
 
+        // Character.changeJob just max-leveled the previous job's skills for free
+        // (maxPreviousJobSkills). Any SP the bot banked toward that now-free job — e.g. levels
+        // gained before it advanced — would otherwise dump into the new job in autoAssignSp
+        // below and over-build it (the "maxed 2nd-job skills at level 32" symptom). Drop the
+        // surplus to 1 SP so the new job builds only from SP earned after this advancement;
+        // the previous jobs stay fully usable via their free max.
+        if (oldJob != newJob) {
+            forceRemainingSpToOne(bot);
+        }
+
         autoAssignSp(entry, bot);
+
+        // Ask for the AP build ONLY at the two points where the stat/weapon path is chosen: the first
+        // job advance (Beginner -> 1st job) and the 2nd-job advance (~level 30, where weapons diverge).
+        // Reset the prior choice so the player re-picks for the new path; AP then waits for the answer
+        // (autoAssignAp no-ops while a prompt is outstanding). No other advance/spawn/level-up prompts.
+        if (oldJob != newJob && isApBuildChoicePoint(oldJob) && apPromptForJob(newJob) != null) {
+            entry.apBuild = null;
+            entry.apPromptSent = false;
+            String prompt = requestApBuildPrompt(entry, bot);
+            if (prompt != null) {
+                BotManager.getInstance().botReply(entry, prompt);
+            }
+        }
+
         autoAssignAp(entry, bot);
+    }
+
+    /** The two advances where the bot asks its AP build: Beginner -> 1st job, and 1st job -> 2nd job. */
+    private static boolean isApBuildChoicePoint(Job oldJob) {
+        return oldJob == Job.BEGINNER
+                || oldJob == Job.WARRIOR || oldJob == Job.MAGICIAN
+                || oldJob == Job.BOWMAN || oldJob == Job.THIEF || oldJob == Job.PIRATE;
+    }
+
+    /** Forcibly set the bot's remaining SP (current job's skill book) to 1 — see handleJobAdvance. */
+    private static void forceRemainingSpToOne(Character bot) {
+        int book = GameConstants.getSkillBook(bot.getJob().getId());
+        int current = bot.getRemainingSps()[book];
+        if (current != 1) {
+            bot.gainSp(1 - current, book, false);
+        }
     }
 
     private static boolean reallocateAp(BotEntry entry, Character bot) {
@@ -167,45 +254,49 @@ class BotBuildManager {
             return "dont have an sp respec build for my job yet";
         }
 
-        int[] refundedSp = new int[5];
-        List<Skill> skillsToReset = new ArrayList<>();
-        for (Map.Entry<Skill, Character.SkillEntry> learned : bot.getSkills().entrySet()) {
-            Skill skill = learned.getKey();
-            Character.SkillEntry skillEntry = learned.getValue();
-            if (skill == null || skillEntry == null || skillEntry.skillevel <= 0) {
-                continue;
-            }
+        Job currentJob = bot.getJob();
+        int currentJobId = currentJob.getId();
 
+        // Mirror a job advancement: wipe only THIS job's own skills (earlier jobs are restored
+        // to max below), then grant SP as if the bot had just advanced and leveled normally.
+        for (Skill skill : new ArrayList<>(bot.getSkills().keySet())) {
             int skillId = skill.getId();
             if (skill.isBeginnerSkill() || GameConstants.isHiddenSkills(skillId)) {
                 continue;
             }
-            if (!GameConstants.isInJobTree(skillId, bot.getJob().getId())) {
-                continue;
-            }
-
-            refundedSp[GameConstants.getSkillBook(skillId / 10000)] += skillEntry.skillevel;
-            skillsToReset.add(skill);
-        }
-
-        for (Skill skill : skillsToReset) {
-            bot.changeSkillLevel(skill, (byte) 0, bot.getMasterLevel(skill), bot.getSkillExpiration(skill));
-        }
-        for (int book = 0; book < refundedSp.length; book++) {
-            if (refundedSp[book] > 0) {
-                bot.gainSp(refundedSp[book], book, false);
+            if (skillId / 10000 == currentJobId) {
+                bot.changeSkillLevel(skill, (byte) 0, bot.getMasterLevel(skill), bot.getSkillExpiration(skill));
             }
         }
 
-        String variant = effectiveSpVariant(entry, bot);
+        // Set every previous job's skills to max for free (same as maxPreviousJobSkills on advance).
         for (Job job : buildPath) {
-            List<BuildStep> steps = getBuildOrder(job, variant);
-            if (steps != null) {
-                autoAssignSp(bot, steps);
+            if (job != currentJob) {
+                bot.maxJobSkills(job.getId());
             }
         }
 
-        return "ok, rebuilt my sp using the bot build";
+        // Grant 1 SP (the advancement award) + 3 per level gained since this job started.
+        int sp = 1 + 3 * Math.max(0, bot.getLevel() - jobAdvanceLevel(currentJob));
+        int book = GameConstants.getSkillBook(currentJobId);
+        int current = bot.getRemainingSps()[book];
+        bot.gainSp(sp - current, book, false);
+
+        // Rebuild this job's skills from the granted SP, following the bot build order.
+        autoAssignSp(entry, bot);
+
+        return "ok, maxed my earlier jobs and rebuilt this one with " + sp + " sp";
+    }
+
+    /** Canonical level a bot advances into the given job's tier (explorer thresholds). */
+    private static int jobAdvanceLevel(Job job) {
+        return switch (GameConstants.getJobBranch(job)) {
+            case 1 -> job.isA(Job.MAGICIAN) ? 8 : 10;
+            case 2 -> 30;
+            case 3 -> 70;
+            case 4 -> 120;
+            default -> 10;
+        };
     }
 
     private static void autoAssignSp(Character bot, List<BuildStep> steps) {
@@ -343,28 +434,29 @@ class BotBuildManager {
     }
 
     /**
-     * The standard "auto-assign" AP build for a job: keep the secondary stat at its equip floor and
-     * pour everything else into the primary stat — the same primary-stat-focused result the player's
-     * auto-assign produces. Covers every adventurer branch (pirates included). Null if unsupported.
+     * The standard "auto-assign" AP build for a job: each level puts 1 AP into the secondary stat
+     * (2 on every other level) and the remaining 4 (or 3) into the primary stat, so the secondary
+     * grows gently with level instead of staying at the floor. Covers every adventurer branch
+     * (pirates included). Null if unsupported.
      */
     static ApBuild defaultApBuild(Job job) {
         if (job == null) {
             return null;
         }
         if (job.isA(Job.WARRIOR)) {
-            return new ApBuild(StatType.STR, StatType.DEX, 4);
+            return new ApBuild(StatType.STR, StatType.DEX, 4, true);
         }
         if (job.isA(Job.MAGICIAN)) {
-            return new ApBuild(StatType.INT, StatType.LUK, 4);
+            return new ApBuild(StatType.INT, StatType.LUK, 4, true);
         }
         if (job.isA(Job.BOWMAN)) {
-            return new ApBuild(StatType.DEX, StatType.STR, 4);
+            return new ApBuild(StatType.DEX, StatType.STR, 4, true);
         }
         if (job.isA(Job.THIEF)) {
-            return new ApBuild(StatType.LUK, StatType.DEX, 4);
+            return new ApBuild(StatType.LUK, StatType.DEX, 4, true);
         }
         if (job.isA(Job.PIRATE)) {
-            return new ApBuild(StatType.STR, StatType.DEX, 4);
+            return new ApBuild(StatType.STR, StatType.DEX, 4, true);
         }
         return null;
     }

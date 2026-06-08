@@ -5,24 +5,20 @@ import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.List;
 
 /**
  * Recommends training spots for the "where should we train" bot command.
  *
- * Backed by a precomputed dataset (src/main/resources/bots/training-spots.tsv) generated offline
- * from the WZ data: each row is a non-boss mob that spawns on a named map, with level / exp / maxHP
- * and the map where it spawns most. Ranking is by exp-per-HP (kill speed), so it favours fast kills
- * over high-exp damage sponges. No WZ scanning happens at runtime.
+ * Backed by a curated level-bracket leveling guide (src/main/resources/bots/training-guide.txt).
+ * Each row is {@code <loLevel> <hiLevel> <recommendation text>}. A character's level maps to the
+ * bracket with the greatest {@code loLevel <= level} (so each level resolves to exactly one
+ * bracket, even where bracket labels share an endpoint). Rows are returned in file order, so the
+ * guide lists the best spots for a bracket first. No WZ scanning happens at runtime.
  */
 public final class BotTrainingRecommender {
 
-    private record Spot(int level, int exp, int maxHp, String mob, String map) {
-        double expPerHp() {
-            return maxHp > 0 ? (double) exp / maxHp : 0;
-        }
-    }
+    private record Spot(int lo, int hi, String text) {}
 
     private static volatile List<Spot> spots;
 
@@ -39,17 +35,24 @@ public final class BotTrainingRecommender {
                 return spots;
             }
             List<Spot> parsed = new ArrayList<>();
-            try (InputStream in = BotTrainingRecommender.class.getResourceAsStream("/bots/training-spots.tsv")) {
+            try (InputStream in = BotTrainingRecommender.class.getResourceAsStream("/bots/training-guide.txt")) {
                 if (in != null) {
                     BufferedReader r = new BufferedReader(new InputStreamReader(in, StandardCharsets.UTF_8));
                     String line;
                     while ((line = r.readLine()) != null) {
-                        String[] p = line.split("\t");
-                        if (p.length < 5) {
+                        line = line.strip();
+                        if (line.isEmpty() || line.startsWith("#")) {
                             continue;
                         }
-                        parsed.add(new Spot(Integer.parseInt(p[0]), Integer.parseInt(p[1]),
-                                Integer.parseInt(p[2]), p[3], p[4]));
+                        String[] p = line.split("\\s+", 3);
+                        if (p.length < 3) {
+                            continue;
+                        }
+                        try {
+                            parsed.add(new Spot(Integer.parseInt(p[0]), Integer.parseInt(p[1]), p[2]));
+                        } catch (NumberFormatException ignored) {
+                            // skip malformed rows
+                        }
                     }
                 }
             } catch (Exception ignored) {
@@ -59,24 +62,38 @@ public final class BotTrainingRecommender {
         }
     }
 
-    /** Up to {@code limit} spots whose mob level is within [loLevel, hiLevel], ranked by exp/HP. */
-    public static List<String> recommend(int loLevel, int hiLevel, int limit) {
-        List<Spot> inRange = new ArrayList<>();
-        for (Spot s : load()) {
-            if (s.level() >= loLevel && s.level() <= hiLevel) {
-                inRange.add(s);
-            }
-        }
-        inRange.sort(Comparator.comparingDouble(Spot::expPerHp).reversed());
+    /** Bracket label (e.g. "15-30") for the level, or null if no bracket matches. */
+    public static String bracketLabel(int level) {
+        Spot b = bracketFor(level);
+        return b == null ? null : b.lo() + "-" + b.hi();
+    }
 
+    /** Up to {@code limit} curated spots for the bracket containing {@code level}, in file order. */
+    public static List<String> recommend(int level, int limit) {
+        Spot bracket = bracketFor(level);
         List<String> out = new ArrayList<>();
-        for (Spot s : inRange) {
-            if (out.size() >= limit) {
-                break;
+        if (bracket == null) {
+            return out;
+        }
+        for (Spot s : load()) {
+            if (s.lo() == bracket.lo() && s.hi() == bracket.hi()) {
+                out.add(s.text());
+                if (out.size() >= limit) {
+                    break;
+                }
             }
-            String tag = out.isEmpty() ? ", best exp/kill" : "";
-            out.add(s.mob() + " (Lv." + s.level() + tag + ") — " + s.map());
         }
         return out;
+    }
+
+    /** The bracket with the greatest loLevel that is &lt;= level, so each level maps to one bracket. */
+    private static Spot bracketFor(int level) {
+        Spot best = null;
+        for (Spot s : load()) {
+            if (s.lo() <= level && (best == null || s.lo() > best.lo())) {
+                best = s;
+            }
+        }
+        return best;
     }
 }

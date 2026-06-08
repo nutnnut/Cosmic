@@ -104,6 +104,17 @@ public class BotEntry {
     volatile boolean grinding = false;
     Monster grindTarget = null;
     long nextGrindTargetSearchAtMs = 0L;
+    long nextBanterAtMs = 0L;            // throttle for spontaneous idle/grind banter
+    // Best equip the bot has looted recently — answers a sibling's "any good drops?" banter.
+    String recentBestDropName = null;
+    int recentBestDropValue = 0;
+    long recentBestDropAtMs = 0L;
+    volatile long lastLlmReplyAtMs = 0L; // when this bot last produced an LLM chat reply (owner follow-up window)
+    long lastDeathAtMs = 0L;             // when this bot last died (feeds moodHint)
+    long lastMapRemarkAtMs = 0L;         // throttle for LLM "new map" remarks
+    int lastMapRemarkMapId = 0;          // last map a remark was made about (avoid repeating)
+    boolean mayReact = true;             // per-message permit: only 1-2 bots react to social chat (set by BotManager.handleChat)
+    long nextTeleportBlinkAtMs = 0L;     // mage Teleport blink throttle (grind movement)
     int attackCooldownMs = 0;
     int moveWindowMs = 0;    // movement-only gap after attack animation; attacks blocked, walking allowed
 
@@ -130,6 +141,7 @@ public class BotEntry {
     boolean lootEnabled = true;   // "loot off" / "loot on" verbal toggle
     boolean funnelOreBag = true;  // "@bag on" (default): funnel looted ores/scrolls into the owner's ore bag
     boolean funnelMeso = false;   // "pool meso" / "keep meso": hand looted mesos to the owner (default off)
+    boolean autoSendEtcToOwner = false; // "auto send etc on/off": route looted ETC items straight to the owner
     BotLootEligibility.LootFilter lootFilter = BotLootEligibility.LootFilter.ALL;   // "only equips" / "mesos only" / "ignore junk"
     boolean meleeOnly = false;    // "melee only" / "conserve mp" — skip attack skills, use basic attack
     float chaseFactor = 1f;       // aggressive(>1) / careful(<1) chase-range multiplier
@@ -394,4 +406,22 @@ public class BotEntry {
     public Character getBot() { return bot; }
     public Character getOwner() { return owner; }
     public ReplyChannel getReplyChannel() { return replyChannel; }
+    public long getLastLlmReplyAtMs() { return lastLlmReplyAtMs; }
+    public void markLlmReplied() { lastLlmReplyAtMs = System.currentTimeMillis(); }
+
+    /**
+     * A short mood descriptor derived from recent events, fed into the LLM persona prompt so a bot
+     * that's been dying sounds rattled and one on a hot drop streak sounds hyped. Empty when neutral.
+     */
+    public String moodHint() {
+        long now = System.currentTimeMillis();
+        if (lastDeathAtMs > 0 && now - lastDeathAtMs < 120_000) {
+            return "a bit rattled/grumpy — you died recently";
+        }
+        if (recentBestDropName != null && recentBestDropValue >= 50_000
+                && now - recentBestDropAtMs < 180_000) {
+            return "hyped — you just looted a " + recentBestDropName;
+        }
+        return "";
+    }
 }
