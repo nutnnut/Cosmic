@@ -292,6 +292,16 @@ public class BotChatManager {
     private static final Pattern PROACTIVE_OFFERS_OFF_PATTERN = Pattern.compile(
             "\\b(?:(?:proactive|future)\\s+(?:offers?|upgrades?)\\s+off|offers?\\s+(?:proactive|future)\\s+off)\\b",
             Pattern.CASE_INSENSITIVE);
+    private static final Pattern SELF_SCROLL_ON_PATTERN = Pattern.compile(
+            "\\bscroll\\s+(?:on|my\\s+(?:gear|equips?)|gear|equips?)\\b"
+            + "|\\bauto-?scroll\\s+on\\b|\\bstart\\s+scrolling\\b",
+            Pattern.CASE_INSENSITIVE);
+    private static final Pattern SELF_SCROLL_OFF_PATTERN = Pattern.compile(
+            "\\bscroll\\s+off\\b|\\bauto-?scroll\\s+off\\b|\\bstop\\s+scrolling\\b",
+            Pattern.CASE_INSENSITIVE);
+    private static final Pattern SELF_SCROLL_NOW_PATTERN = Pattern.compile(
+            "\\bscroll\\s+(?:now|something|stuff)\\b",
+            Pattern.CASE_INSENSITIVE);
     private static final Pattern BUFF_LIST_PATTERN = Pattern.compile(
             "\\bbuff\\s+(pots?\\s+)?list\\b|\\bbuffs?\\s*\\?|\\bwhat\\s+buffs?\\b|\\bwhich\\s+buffs?\\b",
             Pattern.CASE_INSENSITIVE);
@@ -700,6 +710,10 @@ public class BotChatManager {
                 handleSkillTreeChoice(entry, entry.bot, message);
                 return;
             }
+            if ("scroll_confirm".equals(entry.pendingAction)) {
+                BotScrollManager.handleScrollConfirm(entry, message);
+                return;
+            }
             if (LOGOUT_CONFIRM_PATTERN.matcher(message).find()) {
                 String action = entry.pendingAction;
                 entry.pendingAction = null;
@@ -836,6 +850,26 @@ public class BotChatManager {
             BotManager.after(BotManager.randMs(500, 700), () -> {
                 entry.proactiveUpgradeOffers = true;
                 BotManager.getInstance().botReply(entry, "ok, proactive upgrade offers on");
+            });
+            return;
+        }
+        if (SELF_SCROLL_OFF_PATTERN.matcher(message).find()) {
+            BotManager.after(BotManager.randMs(500, 700), () -> {
+                entry.selfScrollEnabled = false;
+                BotScrollManager.cancelPending(entry);
+                BotManager.getInstance().botReply(entry, "ok, ill stop scrolling my gear");
+            });
+            return;
+        }
+        if (SELF_SCROLL_NOW_PATTERN.matcher(message).find()) {
+            BotManager.after(BotManager.randMs(500, 700), () -> BotScrollManager.requestScrollPass(entry, entry.bot));
+            return;
+        }
+        if (SELF_SCROLL_ON_PATTERN.matcher(message).find()) {
+            BotManager.after(BotManager.randMs(500, 700), () -> {
+                entry.selfScrollEnabled = true;
+                BotManager.getInstance().botReply(entry, "ok! ill scroll my gear, ill ask before each one");
+                BotManager.after(BotManager.randMs(700, 1000), () -> BotScrollManager.requestScrollPass(entry, entry.bot));
             });
             return;
         }

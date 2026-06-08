@@ -215,6 +215,13 @@ public class BotEntry {
     long pendingLootOfferExpiresAt = 0L;
     int lootInhibitMs = 0;
 
+    // Bot self-scrolling (companion scope; owner confirms each item). When enabled the bot proposes
+    // worthwhile scroll plays on its own gear and chains to the next after each confirmed scroll.
+    // The pending* refs hold the resolved equip + scroll while a "scroll_confirm" pendingAction is open.
+    boolean selfScrollEnabled = false;
+    Item pendingScrollEquip = null;
+    Item pendingScrollScroll = null;
+
     // Bot-initiated trade retry: when a pot-share / ammo-share / loot-offer is blocked
     // because the sender or recipient is already in a trade, the attempt is stored here
     // and re-fired once the sender's trade clears and the delay expires.

@@ -1,0 +1,518 @@
+package server.bots;
+
+import client.Character;
+import client.Client;
+import client.inventory.Equip;
+import client.inventory.Equip.ScrollResult;
+import client.inventory.Inventory;
+import client.inventory.InventoryType;
+import client.inventory.Item;
+import client.inventory.ModifyInventory;
+import client.inventory.manipulator.InventoryManipulator;
+import constants.id.ItemId;
+import constants.inventory.EquipSlot;
+import constants.inventory.ItemConstants;
+import server.ItemInformationProvider;
+import tools.PacketCreator;
+
+import java.util.ArrayList;
+import java.util.IdentityHashMap;
+import java.util.List;
+import java.util.Map;
+
+/**
+ * Bot self-scrolling (companion scope, owner-confirmed). Scans the bot's worn equips and owned
+ * scrolls, asks {@link BotScrollPlanner} for the single best play, proposes it to the owner one item
+ * at a time, and on confirmation applies the scroll through the same path the player
+ * {@code ScrollHandler} uses ({@link ItemInformationProvider#scrollEquipWithId}).
+ *
+ * <p>v1 scope: only NON-destroying scrolls are auto-proposed (any scroll with a boom/{@code cursed}
+ * chance is skipped), so this first build cannot destroy gear. {@link BotScrollPlanner} already
+ * handles boom-capable scrolls (fallback + strongly-positive EV); wiring those in — with slot
+ * fallback detection — is the next increment.
+ *
+ * <p>Equip value here is a transparent job-weighted offense metric (attack >> main stat > secondary),
+ * a v1 stand-in for the full equip-optimizer / reproduction-cost DP in docs/bot/economy-design.md.
+ */
+final class BotScrollManager {
+
+    private static final double ATT_WEIGHT = 5.0;
+    private static final double MAIN_STAT_WEIGHT = 1.0;
+    private static final double SECONDARY_STAT_WEIGHT = 0.3;
+
+    private static final int SCROLL_ITEM_PREFIX = 204; // itemId / 10000 for scroll items
+
+    private BotScrollManager() {}
+
+    /** Owner asked the bot to look for a worthwhile scroll play (one-shot, or chained when enabled). */
+    static void requestScrollPass(BotEntry entry, Character bot) {
+        if (entry == null || bot == null) {
+            return;
+        }
+        if (entry.pendingAction != null || entry.pendingTradeCategory != null) {
+            BotManager.getInstance().botReply(entry, "busy rn, ask me in a sec");
+            return;
+        }
+
+        ItemInformationProvider ii = ItemInformationProvider.getInstance();
+        Resolved resolved = buildBestPlan(bot, ii);
+        if (resolved == null) {
+            BotManager.getInstance().botReply(entry, explainNoPlan(bot, ii));
+            return;
+        }
+
+        BotScrollPlanner.ScrollPlan plan = resolved.plan();
+        Equip equip = resolved.equip();
+        Item scroll = findScroll(bot, plan.scroll().scrollItemId());
+        if (equip == null || scroll == null) {
+            BotManager.getInstance().botReply(entry, "nvm, my inventory changed");
+            return;
+        }
+
+        entry.pendingAction = "scroll_confirm";
+        entry.pendingScrollEquip = equip;
+        entry.pendingScrollScroll = scroll;
+        BotManager.getInstance().botReply(entry, plan.proposal());
+    }
+
+    /** Owner replied to a pending scroll proposal. Anything that isn't a clear "yes" cancels. */
+    static void handleScrollConfirm(BotEntry entry, String message) {
+        String m = message == null ? "" : message.trim().toLowerCase();
+        boolean yes = m.matches(".*\\b(yes|yep|yeah|yea|y|ok|okay|sure|do\\s*it|go|confirm)\\b.*");
+        entry.pendingAction = null;
+        if (yes) {
+            Character bot = entry.bot;
+            BotManager.after(BotManager.randMs(500, 700), () -> executeConfirmed(entry, bot));
+        } else {
+            cancelPending(entry);
+            BotManager.after(BotManager.randMs(400, 600),
+                    () -> BotManager.getInstance().botReply(entry, "ok, ill hold off"));
+        }
+    }
+
+    /** Clears any pending scroll proposal (e.g. on "scroll off"). */
+    static void cancelPending(BotEntry entry) {
+        if (entry == null) {
+            return;
+        }
+        if ("scroll_confirm".equals(entry.pendingAction)) {
+            entry.pendingAction = null;
+        }
+        entry.pendingScrollEquip = null;
+        entry.pendingScrollScroll = null;
+    }
+
+    private static void executeConfirmed(BotEntry entry, Character bot) {
+        Item equipItem = entry.pendingScrollEquip;
+        Item scrollItem = entry.pendingScrollScroll;
+        entry.pendingScrollEquip = null;
+        entry.pendingScrollScroll = null;
+
+        if (bot == null || !(equipItem instanceof Equip equip) || scrollItem == null
+                || !BotInventoryManager.hasItem(bot, equipItem)
+                || !BotInventoryManager.hasItem(bot, scrollItem)
+                || equip.getUpgradeSlots() < 1
+                || scrollItem.getQuantity() < 1) {
+            BotManager.getInstance().botReply(entry, "hmm, cant scroll that anymore");
+            return;
+        }
+
+        ScrollResult result = applyScroll(bot, equip, scrollItem);
+        announce(bot, result, equip);
+        if (result != null) {
+            BotManager.getInstance().notifyNearbyBotsOfScroll(bot, result, scrollItem.getItemId(), 3_000L);
+        }
+        // Confirm-each-item chaining: when armed, look for the next worthwhile play after a beat.
+        if (entry.selfScrollEnabled && result != null) {
+            BotManager.after(BotManager.randMs(2500, 3500), () -> requestScrollPass(entry, bot));
+        }
+    }
+
+    private static void announce(Character bot, ScrollResult result, Equip equip) {
+        String name = ItemInformationProvider.getInstance().getName(equip.getItemId());
+        if (name == null || name.isBlank()) {
+            name = "gear";
+        }
+        BotManager mgr = BotManager.getInstance();
+        if (result == ScrollResult.SUCCESS) {
+            mgr.botSay(bot, "yes! that hit, my " + name + " is better now");
+        } else if (result == ScrollResult.CURSE) {
+            mgr.botSay(bot, "noo it boomed...");
+        } else if (result == ScrollResult.FAIL) {
+            mgr.botSay(bot, "aw, failed - lost a slot");
+        } else {
+            mgr.botSay(bot, "couldnt scroll that, nvm");
+        }
+    }
+
+    // Mirrors the essential ScrollHandler steps for a bot: scrollEquipWithId rolls AND mutates the
+    // equip in place (returns the same ref, or null on a boom), then the scroll is consumed and the
+    // client view refreshed. Returns the outcome, or null if the scroll vanished before applying.
+    private static ScrollResult applyScroll(Character chr, Equip toScroll, Item scroll) {
+        ItemInformationProvider ii = ItemInformationProvider.getInstance();
+        Client c = chr.getClient();
+        int scrollId = scroll.getItemId();
+        boolean equipped = toScroll.getPosition() < 0;
+        Inventory equipInv = chr.getInventory(equipped ? InventoryType.EQUIPPED : InventoryType.EQUIP);
+        Inventory useInv = chr.getInventory(InventoryType.USE);
+        byte oldLevel = toScroll.getLevel();
+        byte oldSlots = toScroll.getUpgradeSlots();
+
+        Equip scrolled = (Equip) ii.scrollEquipWithId(toScroll, scrollId, false, 0, false);
+        ScrollResult result;
+        if (scrolled == null) {
+            result = ScrollResult.CURSE;
+        } else if (scrolled.getLevel() > oldLevel
+                || (ItemConstants.isCleanSlate(scrollId) && scrolled.getUpgradeSlots() == oldSlots + 1)
+                || ItemConstants.isFlagModifier(scrollId, scrolled.getFlag())) {
+            result = ScrollResult.SUCCESS;
+        } else {
+            result = ScrollResult.FAIL;
+        }
+
+        useInv.lockInventory();
+        try {
+            if (scroll.getQuantity() < 1) {
+                return null;
+            }
+            InventoryManipulator.removeFromSlot(c, InventoryType.USE, scroll.getPosition(), (short) 1, false);
+        } finally {
+            useInv.unlockInventory();
+        }
+
+        List<ModifyInventory> mods = new ArrayList<>();
+        if (result == ScrollResult.CURSE) {
+            mods.add(new ModifyInventory(3, toScroll));
+            equipInv.lockInventory();
+            try {
+                if (equipped) {
+                    chr.unequippedItem(toScroll);
+                }
+                equipInv.removeItem(toScroll.getPosition());
+            } finally {
+                equipInv.unlockInventory();
+            }
+        } else {
+            mods.add(new ModifyInventory(3, scrolled));
+            mods.add(new ModifyInventory(0, scrolled));
+        }
+        c.sendPacket(PacketCreator.modifyInventory(true, mods));
+        chr.getMap().broadcastMessage(PacketCreator.getScrollEffect(chr.getId(), result, false, false));
+        if (equipped && (result == ScrollResult.SUCCESS || result == ScrollResult.CURSE)) {
+            chr.equipChanged();
+        }
+        return result;
+    }
+
+    /** A planner decision plus the concrete {@link Equip} it refers to. Item ids are NOT unique — a
+     *  bot can own two of the same item with different stats/slots (e.g. a maxed worn copy and a fresh
+     *  slotted spare) — so we keep the exact instance rather than re-resolving by id. */
+    private record Resolved(BotScrollPlanner.ScrollPlan plan, Equip equip) {}
+
+    private static Resolved buildBestPlan(Character bot, ItemInformationProvider ii) {
+        List<Equip> all = collectEquips(bot, ii);
+        Map<Equip, Short> slotOf = new IdentityHashMap<>();
+        for (Equip e : all) {
+            Short slot = primarySlot(ii, e.getItemId());
+            if (slot != null) {
+                slotOf.put(e, slot);
+            }
+        }
+
+        List<BotScrollPlanner.EquipCandidate> candidates = new ArrayList<>();
+        IdentityHashMap<BotScrollPlanner.EquipCandidate, Equip> backing = new IdentityHashMap<>();
+        for (Equip eq : all) {
+            Short slot = slotOf.get(eq);
+            if (slot == null || eq.getUpgradeSlots() < 1) {
+                continue;
+            }
+            List<BotScrollPlanner.ScrollOption> options = buildOptions(bot, ii, eq);
+            if (options.isEmpty()) {
+                continue;
+            }
+            double value = offenseValue(bot, eq);
+            // betterItemAvailable = enough same-slot items dominate this one (better as-is AND >= slots)
+            // to fill the slot, so scrolling here can never make it the bot's best.
+            boolean betterAvailable = isDominated(bot, eq, value, slot, all, slotOf,
+                    slotCapacity(ii, eq.getItemId()));
+            // slotReserve = 0: no forward-looking estimate yet, so spend slots greedily on the best
+            // owned scroll (optimal for current inventory). The economy ledger will later supply the
+            // expected value of a better future scroll for this slot. hasFallbackForSlot stays false
+            // (no boom scrolls fed yet; it is only consulted for destroy-capable scrolls).
+            BotScrollPlanner.EquipCandidate c = new BotScrollPlanner.EquipCandidate(
+                    eq.getItemId(), equipName(ii, eq.getItemId()),
+                    value, betterAvailable, 0.0, false, options);
+            candidates.add(c);
+            backing.put(c, eq);
+        }
+        BotScrollPlanner.ScrollPlan plan = BotScrollPlanner.planBest(candidates);
+        return plan == null ? null : new Resolved(plan, backing.get(plan.equip()));
+    }
+
+    /**
+     * Worn + bagged equips (non-cash) the bot could plausibly scroll and keep using. Worn items are
+     * included unconditionally (already equipped ⇒ wearable); bagged items must actually be wearable by
+     * this bot — right job/level/stat reqs and, for weapons, a compatible weapon type — so the bot
+     * never burns scrolls on gear it can't use.
+     */
+    private static List<Equip> collectEquips(Character bot, ItemInformationProvider ii) {
+        List<Equip> out = new ArrayList<>();
+        for (Item it : bot.getInventory(InventoryType.EQUIPPED).list()) {
+            if (it instanceof Equip e && !ii.isCash(e.getItemId())) {
+                out.add(e);
+            }
+        }
+        for (Item it : bot.getInventory(InventoryType.EQUIP).list()) {
+            if (it instanceof Equip e && !ii.isCash(e.getItemId()) && wearable(bot, ii, e)) {
+                out.add(e);
+            }
+        }
+        return out;
+    }
+
+    /** Non-mutating "can this bot equip it" check (job/level/stat reqs + weapon-type compatibility). */
+    private static boolean wearable(Character bot, ItemInformationProvider ii, Equip e) {
+        int id = e.getItemId();
+        Short slot = primarySlot(ii, id);
+        if (slot != null && slot == (short) -11
+                && !BotEquipManager.isWeaponCompatible(bot, ii.getWeaponType(id))) {
+            return false;
+        }
+        return ii.meetsEquipRequirements(e, bot.getJob(), bot.getLevel(),
+                bot.getTotalStr(), bot.getTotalDex(), bot.getTotalInt(), bot.getTotalLuk(), bot.getFame());
+    }
+
+    /** Canonical equipment slot for an item id (works for unworn bag items too); null if not equippable. */
+    private static Short primarySlot(ItemInformationProvider ii, int itemId) {
+        EquipSlot eslot = EquipSlot.getFromTextSlot(ii.getEquipmentSlot(itemId));
+        if (eslot == null || eslot == EquipSlot.PET_EQUIP) {
+            return null;
+        }
+        short p = (short) eslot.getPrimarySlot();
+        return p == 0 ? null : p;
+    }
+
+    /**
+     * True when this equip is out-classed for its slot: at least {@code capacity} other same-slot
+     * equips each strictly dominate it (better as-is value AND ≥ upgrade slots), where capacity is how
+     * many can be worn at once (4 for rings, 1 for most). A dominator can always stay ahead no matter
+     * how this one is scrolled, so once enough exist to fill the slot(s) this one is benched and
+     * scrolling it is wasted. A weaker base with MORE slots is deliberately NOT dominated — its scroll
+     * potential can still surpass a maxed-out rival, which is exactly the case we want to chase.
+     */
+    private static boolean isDominated(Character bot, Equip eq, double value, Short slot,
+                                       List<Equip> all, Map<Equip, Short> slotOf, int capacity) {
+        int better = 0;
+        for (Equip other : all) {
+            if (other == eq || !slot.equals(slotOf.get(other))) {
+                continue;
+            }
+            if (offenseValue(bot, other) > value && other.getUpgradeSlots() >= eq.getUpgradeSlots()) {
+                if (++better >= capacity) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /** How many of this slot can be worn simultaneously (4 for rings, 1 for most). */
+    private static int slotCapacity(ItemInformationProvider ii, int itemId) {
+        return Math.max(1, EquipSlot.getFromTextSlot(ii.getEquipmentSlot(itemId)).getSlotCount());
+    }
+
+    /**
+     * Cheap "why nothing?" explanation for when {@link #buildBestPlan} yields no play. Re-walks the
+     * same gear/scroll scan at a coarse level (only runs on the no-op path, so cost is irrelevant) and
+     * picks the most specific reason: no slots, no fitting scrolls, only boom scrolls (v1 skips those),
+     * useless stats, gear too low to be worth it, or simply unfavorable odds.
+     */
+    private static String explainNoPlan(Character bot, ItemInformationProvider ii) {
+        List<Equip> all = collectEquips(bot, ii);
+        Map<Equip, Short> slotOf = new IdentityHashMap<>();
+        for (Equip e : all) {
+            Short slot = primarySlot(ii, e.getItemId());
+            if (slot != null) {
+                slotOf.put(e, slot);
+            }
+        }
+
+        boolean anySlotted = false;          // an equip (worn or bagged) with a free upgrade slot
+        boolean anyApplicableScroll = false; // a scroll that fits some slotted equip
+        boolean anyBoomSkipped = false;      // a fitting scroll skipped only for boom risk (v1)
+        boolean anyUsableOption = false;     // fitting + non-boom + positive stat gain
+        boolean anyUndominatedUsable = false; // a usable option on gear not already out-classed
+
+        for (Equip eq : all) {
+            Short slot = slotOf.get(eq);
+            if (slot == null || eq.getUpgradeSlots() < 1) {
+                continue;
+            }
+            anySlotted = true;
+            boolean dominated = isDominated(bot, eq, offenseValue(bot, eq), slot, all, slotOf,
+                    slotCapacity(ii, eq.getItemId()));
+            for (Item s : bot.getInventory(InventoryType.USE).list()) {
+                int sid = s.getItemId();
+                if (sid / 10000 != SCROLL_ITEM_PREFIX) {
+                    continue;
+                }
+                if (ItemConstants.isCleanSlate(sid) || ItemConstants.isModifierScroll(sid) || sid == ItemId.WHITE_SCROLL) {
+                    continue;
+                }
+                if (!applicable(ii, sid, eq.getItemId())) {
+                    continue;
+                }
+                anyApplicableScroll = true;
+                Map<String, Integer> st = ii.getEquipStats(sid);
+                if (st == null) {
+                    continue;
+                }
+                int success = st.getOrDefault("success", 0);
+                int cursed = st.getOrDefault("cursed", 0);
+                if (cursed > 0) {
+                    anyBoomSkipped = true;
+                    continue;
+                }
+                if (success <= 0 || offenseValueFromStats(bot, st) <= 0) {
+                    continue;
+                }
+                anyUsableOption = true;
+                if (!dominated) {
+                    anyUndominatedUsable = true;
+                }
+            }
+        }
+
+        if (!anySlotted) {
+            return "nothing to scroll - my gear's out of upgrade slots";
+        }
+        if (!anyApplicableScroll) {
+            return "i dont have any scrolls that fit my gear";
+        }
+        if (!anyUsableOption) {
+            return anyBoomSkipped
+                    ? "i only have boom-risk scrolls, ill skip those for now"
+                    : "those scrolls wouldnt add anything useful for me";
+        }
+        if (!anyUndominatedUsable) {
+            return "i already have better gear for those slots, saving the scrolls";
+        }
+        return "not worth it - the odds dont pay off, ill save the scrolls";
+    }
+
+    private static List<BotScrollPlanner.ScrollOption> buildOptions(Character bot, ItemInformationProvider ii, Equip eq) {
+        List<BotScrollPlanner.ScrollOption> options = new ArrayList<>();
+        for (Item s : bot.getInventory(InventoryType.USE).list()) {
+            int sid = s.getItemId();
+            if (sid / 10000 != SCROLL_ITEM_PREFIX) {
+                continue;
+            }
+            if (ItemConstants.isCleanSlate(sid) || ItemConstants.isModifierScroll(sid) || sid == ItemId.WHITE_SCROLL) {
+                continue;
+            }
+            if (!applicable(ii, sid, eq.getItemId())) {
+                continue;
+            }
+            Map<String, Integer> st = ii.getEquipStats(sid);
+            if (st == null) {
+                continue;
+            }
+            int success = st.getOrDefault("success", 0);
+            int cursed = st.getOrDefault("cursed", 0);
+            if (success <= 0 || cursed > 0) {
+                continue; // v1: skip destroy-capable scrolls entirely
+            }
+            double gain = offenseValueFromStats(bot, st);
+            if (gain <= 0) {
+                continue;
+            }
+            options.add(new BotScrollPlanner.ScrollOption(
+                    sid, scrollName(ii, sid), success / 100.0, 0.0, gain));
+        }
+        return options;
+    }
+
+    private static boolean applicable(ItemInformationProvider ii, int scrollId, int equipId) {
+        List<Integer> reqs = ii.getScrollReqs(scrollId);
+        if (reqs != null && !reqs.isEmpty()) {
+            return reqs.contains(equipId);
+        }
+        return (scrollId / 100) % 100 == (equipId / 10000) % 100;
+    }
+
+    private static Item findScroll(Character bot, int itemId) {
+        for (Item s : bot.getInventory(InventoryType.USE).list()) {
+            if (s.getItemId() == itemId && s.getQuantity() >= 1) {
+                return s;
+            }
+        }
+        return null;
+    }
+
+    // ---- Transparent job-weighted offense value (v1 stand-in for the equip optimizer) ----
+
+    private static double offenseValue(Character bot, Equip eq) {
+        boolean[] mage = new boolean[1];
+        char[] ms = mainSecondary(jobId(bot), mage);
+        int att = mage[0] ? eq.getMatk() : eq.getWatk();
+        return ATT_WEIGHT * att
+                + MAIN_STAT_WEIGHT * statOfEquip(eq, ms[0])
+                + SECONDARY_STAT_WEIGHT * statOfEquip(eq, ms[1]);
+    }
+
+    private static double offenseValueFromStats(Character bot, Map<String, Integer> st) {
+        boolean[] mage = new boolean[1];
+        char[] ms = mainSecondary(jobId(bot), mage);
+        int att = mage[0] ? st.getOrDefault("MAD", 0) : st.getOrDefault("PAD", 0);
+        return ATT_WEIGHT * att
+                + MAIN_STAT_WEIGHT * st.getOrDefault(statKey(ms[0]), 0)
+                + SECONDARY_STAT_WEIGHT * st.getOrDefault(statKey(ms[1]), 0);
+    }
+
+    private static int jobId(Character bot) {
+        return bot.getJob() == null ? 0 : bot.getJob().getId();
+    }
+
+    // [main, secondary] stat codes; mageOut[0] set true for magician branches.
+    private static char[] mainSecondary(int jobId, boolean[] mageOut) {
+        boolean mage = (jobId >= 200 && jobId < 300) || (jobId >= 1200 && jobId < 1300)
+                || jobId == 2001 || (jobId >= 2200 && jobId < 2300);
+        mageOut[0] = mage;
+        if (mage) return new char[]{'i', 'l'};
+        if ((jobId >= 300 && jobId < 400) || (jobId >= 1300 && jobId < 1400)) return new char[]{'d', 's'};
+        if ((jobId >= 400 && jobId < 500) || (jobId >= 1400 && jobId < 1500)) return new char[]{'l', 'd'};
+        if (jobId >= 520 && jobId < 530) return new char[]{'d', 's'};
+        if ((jobId >= 510 && jobId < 520) || (jobId >= 1500 && jobId < 1600)) return new char[]{'s', 'd'};
+        return new char[]{'s', 'd'};
+    }
+
+    private static int statOfEquip(Equip eq, char code) {
+        return switch (code) {
+            case 's' -> eq.getStr();
+            case 'd' -> eq.getDex();
+            case 'i' -> eq.getInt();
+            case 'l' -> eq.getLuk();
+            default -> 0;
+        };
+    }
+
+    private static String statKey(char code) {
+        return switch (code) {
+            case 's' -> "STR";
+            case 'd' -> "DEX";
+            case 'i' -> "INT";
+            case 'l' -> "LUK";
+            default -> "";
+        };
+    }
+
+    private static String equipName(ItemInformationProvider ii, int itemId) {
+        String name = ii.getName(itemId);
+        return name == null || name.isBlank() ? "gear" : name;
+    }
+
+    private static String scrollName(ItemInformationProvider ii, int itemId) {
+        String name = ii.getName(itemId);
+        return name == null || name.isBlank() ? "scroll" : name;
+    }
+}
