@@ -1,5 +1,6 @@
 package server.bots;
 
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -70,6 +71,64 @@ final class BotScrollValuer {
             restart = costFrom(tuc, baseScore, target, scrolls, baseCost, restart, memo);
         }
         return baseCost + restart;
+    }
+
+    /** One row of the reproduction-cost table (debug/export). */
+    record CurveRow(double target,
+                    double cost,
+                    int firstScroll) {} // index into the scroll list; -1 = abandon+rebuy, -2 = at/below base
+
+    /**
+     * Reproduction-cost table sampled on an integer stat-score grid from the clean base up to the max
+     * reachable score, each row tagged with the optimal FIRST scroll to throw. For the debug command.
+     */
+    static List<CurveRow> explain(double baseScore, int tuc, List<ScrollSpec> scrolls, double baseCostMeso) {
+        double base = Math.max(0.0, baseCostMeso);
+        List<CurveRow> rows = new ArrayList<>();
+        if (tuc <= 0 || scrolls == null || scrolls.isEmpty()) {
+            rows.add(new CurveRow(baseScore, base, -2));
+            return rows;
+        }
+        double maxGain = 0.0;
+        for (ScrollSpec s : scrolls) {
+            maxGain = Math.max(maxGain, Math.max(0.0, s.statGain()));
+        }
+        int lo = (int) Math.ceil(baseScore);
+        int hi = (int) Math.ceil(baseScore + tuc * maxGain);
+        for (int t = lo; t <= hi; t++) {
+            double[] cp = productionCostAndPolicy(t, baseScore, tuc, scrolls, base);
+            rows.add(new CurveRow(t, cp[0], (int) cp[1]));
+        }
+        return rows;
+    }
+
+    /** {@code [cost, firstScrollIndex]} for a target — same DP as {@link #productionCost} plus the root move. */
+    private static double[] productionCostAndPolicy(double target, double baseScore, int tuc,
+                                                    List<ScrollSpec> scrolls, double baseCost) {
+        if (target <= baseScore) {
+            return new double[]{baseCost, -2};
+        }
+        double restart = 0.0;
+        for (int iter = 0; iter < RESTART_ITERS; iter++) {
+            Map<Long, Double> memo = new HashMap<>();
+            restart = costFrom(tuc, baseScore, target, scrolls, baseCost, restart, memo);
+        }
+        Map<Long, Double> memo = new HashMap<>();
+        double best = baseCost + restart; // abandon+rebuy at the root
+        int move = -1;
+        for (int k = 0; k < scrolls.size(); k++) {
+            ScrollSpec sc = scrolls.get(k);
+            double p = clamp01(sc.successRate());
+            double na = Math.min(baseScore + sc.statGain(), target);
+            double v = sc.mesoCost()
+                    + p * costFrom(tuc - 1, na, target, scrolls, baseCost, restart, memo)
+                    + (1.0 - p) * costFrom(tuc - 1, baseScore, target, scrolls, baseCost, restart, memo);
+            if (v < best) {
+                best = v;
+                move = k;
+            }
+        }
+        return new double[]{baseCost + restart, move};
     }
 
     /** Expected meso from state {@code (s slots, a score)} to a finished item, given restart value D. */

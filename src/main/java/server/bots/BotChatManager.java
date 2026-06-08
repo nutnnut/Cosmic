@@ -302,6 +302,9 @@ public class BotChatManager {
     private static final Pattern SELF_SCROLL_NOW_PATTERN = Pattern.compile(
             "\\bscroll\\s+(?:now|something|stuff)\\b",
             Pattern.CASE_INSENSITIVE);
+    private static final Pattern SELF_SCROLL_DEBUG_PATTERN = Pattern.compile(
+            "\\bscroll\\s+debug\\b|\\bdebug\\s+scroll\\b",
+            Pattern.CASE_INSENSITIVE);
     private static final Pattern BUFF_LIST_PATTERN = Pattern.compile(
             "\\bbuff\\s+(pots?\\s+)?list\\b|\\bbuffs?\\s*\\?|\\bwhat\\s+buffs?\\b|\\bwhich\\s+buffs?\\b",
             Pattern.CASE_INSENSITIVE);
@@ -851,6 +854,10 @@ public class BotChatManager {
                 entry.proactiveUpgradeOffers = true;
                 BotManager.getInstance().botReply(entry, "ok, proactive upgrade offers on");
             });
+            return;
+        }
+        if (SELF_SCROLL_DEBUG_PATTERN.matcher(message).find()) {
+            BotManager.after(BotManager.randMs(300, 500), () -> BotScrollManager.exportScrollDecision(entry, entry.bot));
             return;
         }
         if (SELF_SCROLL_OFF_PATTERN.matcher(message).find()) {

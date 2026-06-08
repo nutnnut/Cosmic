@@ -233,6 +233,15 @@ final class BotScrollManager {
     private record Resolved(BotScrollPlanner.ScrollPlan plan, Equip equip) {}
 
     private static Resolved buildBestPlan(Character bot, ItemInformationProvider ii) {
+        IdentityHashMap<BotScrollPlanner.EquipCandidate, Equip> backing = new IdentityHashMap<>();
+        List<BotScrollPlanner.EquipCandidate> candidates = collectCandidates(bot, ii, backing);
+        BotScrollPlanner.ScrollPlan plan = BotScrollPlanner.planBest(candidates);
+        return plan == null ? null : new Resolved(plan, backing.get(plan.equip()));
+    }
+
+    /** Build a planner candidate for every scrollable equip, recording the backing {@link Equip}. */
+    private static List<BotScrollPlanner.EquipCandidate> collectCandidates(Character bot,
+            ItemInformationProvider ii, Map<BotScrollPlanner.EquipCandidate, Equip> backing) {
         List<Equip> all = collectEquips(bot, ii);
         Map<Equip, Short> slotOf = new IdentityHashMap<>();
         for (Equip e : all) {
@@ -243,7 +252,6 @@ final class BotScrollManager {
         }
 
         List<BotScrollPlanner.EquipCandidate> candidates = new ArrayList<>();
-        IdentityHashMap<BotScrollPlanner.EquipCandidate, Equip> backing = new IdentityHashMap<>();
         for (Equip eq : all) {
             Short slot = slotOf.get(eq);
             if (slot == null || eq.getUpgradeSlots() < 1) {
@@ -273,8 +281,83 @@ final class BotScrollManager {
             candidates.add(c);
             backing.put(c, eq);
         }
+        return candidates;
+    }
+
+    /**
+     * Debug command ("scroll debug"): dump the full scroll decision for this bot — every candidate
+     * equip with its score/slots/meso-value and applicable scrolls, the chosen (piece, scroll) play,
+     * and the reproduction-cost table (target stat-score → cheapest meso + optimal first scroll) for
+     * the piece the bot would scroll. Written to a file so the whole table survives (chat is tiny).
+     */
+    static void exportScrollDecision(BotEntry entry, Character bot) {
+        ItemInformationProvider ii = ItemInformationProvider.getInstance();
+        StringBuilder sb = new StringBuilder();
+        sb.append("=== bot scroll decision: ").append(bot.getName())
+                .append(" (job ").append(jobId(bot)).append(", lvl ").append(bot.getLevel()).append(") ===\n");
+
+        IdentityHashMap<BotScrollPlanner.EquipCandidate, Equip> backing = new IdentityHashMap<>();
+        List<BotScrollPlanner.EquipCandidate> candidates = collectCandidates(bot, ii, backing);
+
+        sb.append("\ncandidates (").append(candidates.size()).append("):\n");
+        for (BotScrollPlanner.EquipCandidate c : candidates) {
+            sb.append(String.format("  %-22s score=%.1f slots=%d value@now=%,.0f%s%n",
+                    c.equipName(), c.currentStatScore(), c.slotsRemaining(),
+                    c.value().applyAsDouble(c.currentStatScore()),
+                    c.betterItemAvailable() ? " [DOMINATED -> skipped]" : ""));
+            for (BotScrollPlanner.ScrollOption op : c.options()) {
+                sb.append(String.format("      - %-26s p=%.0f%% +%.1f score, apply-cost=%,.0f meso%n",
+                        op.scrollName(), op.successRate() * 100.0, op.statGain(), op.cost()));
+            }
+        }
+
         BotScrollPlanner.ScrollPlan plan = BotScrollPlanner.planBest(candidates);
-        return plan == null ? null : new Resolved(plan, backing.get(plan.equip()));
+        if (plan == null) {
+            sb.append("\nDECISION: nothing worth scrolling -> ").append(explainNoPlan(bot, ii)).append('\n');
+        } else {
+            sb.append("\nDECISION: scroll '").append(plan.equip().equipName()).append("' with '")
+                    .append(plan.scroll().scrollName()).append("'\n");
+            sb.append(String.format("  expected meso-value gained: %,.0f%n", plan.expectedValue()));
+            sb.append("  proposal: ").append(plan.proposal()).append('\n');
+            appendReproTable(sb, bot, ii, plan.equip());
+        }
+
+        String path = writeReport(bot, sb.toString());
+        BotManager.getInstance().botReply(entry,
+                path != null ? "scroll debug exported -> " + path : "scroll debug: couldnt write file");
+    }
+
+    /** Append the reproduction-cost table (target → cheapest meso + optimal first scroll) for an equip. */
+    private static void appendReproTable(StringBuilder sb, Character bot, ItemInformationProvider ii,
+            BotScrollPlanner.EquipCandidate cand) {
+        int itemId = cand.equipItemId();
+        List<BotScrollPlanner.ScrollOption> opts = cand.options();
+        double baseScore = baseOffenseValue(bot, ii, itemId);
+        int tuc = totalSlots(ii, itemId);
+        double baseCost = cleanBaseCostMeso(ii, itemId);
+        sb.append(String.format(
+                "%nreproduction-cost table for %s (base score %.1f, %d total slots, clean base ~%,.0f meso):%n",
+                cand.equipName(), baseScore, tuc, baseCost));
+        sb.append("  target score |        meso cost | optimal first scroll\n");
+        for (BotScrollValuer.CurveRow row : BotScrollValuer.explain(baseScore, tuc, reproSpecs(opts), baseCost)) {
+            String move = row.firstScroll() == -2 ? "(at base)"
+                    : row.firstScroll() == -1 ? "(abandon + rebuy base)"
+                    : opts.get(row.firstScroll()).scrollName();
+            sb.append(String.format("  %12.1f | %,16.0f | %s%n", row.target(), row.cost(), move));
+        }
+        sb.append(String.format("  (current item is at score %.1f with %d free slots)%n",
+                cand.currentStatScore(), cand.slotsRemaining()));
+    }
+
+    private static String writeReport(Character bot, String report) {
+        try {
+            String safe = bot.getName() == null ? "bot" : bot.getName().replaceAll("[^A-Za-z0-9_]", "");
+            java.nio.file.Path p = java.nio.file.Path.of("scroll-debug-" + safe + ".txt").toAbsolutePath();
+            java.nio.file.Files.writeString(p, report);
+            return p.toString();
+        } catch (java.io.IOException e) {
+            return null;
+        }
     }
 
     /**
