@@ -296,6 +296,8 @@ final class BotScrollManager {
         sb.append("=== bot scroll decision: ").append(bot.getName())
                 .append(" (job ").append(jobId(bot)).append(", lvl ").append(bot.getLevel()).append(") ===\n");
 
+        appendScrollInventory(sb, bot, ii);
+
         IdentityHashMap<BotScrollPlanner.EquipCandidate, Equip> backing = new IdentityHashMap<>();
         List<BotScrollPlanner.EquipCandidate> candidates = collectCandidates(bot, ii, backing);
 
@@ -325,6 +327,56 @@ final class BotScrollManager {
         String path = writeReport(bot, sb.toString());
         BotManager.getInstance().botReply(entry,
                 path != null ? "scroll debug exported -> " + path : "scroll debug: couldnt write file");
+    }
+
+    /**
+     * List EVERY scroll in the bot's USE inventory (not just ones tied to a candidate equip), with the
+     * raw facts the planner reads and a tag for why each is/ isn't usable. Gives full visibility into
+     * the bot's scroll stock — boom-risk, slate/modifier/white, and no-gain scrolls all show here even
+     * though the planner skips them.
+     */
+    private static void appendScrollInventory(StringBuilder sb, Character bot, ItemInformationProvider ii) {
+        List<Item> scrolls = new ArrayList<>();
+        for (Item s : bot.getInventory(InventoryType.USE).list()) {
+            if (s.getItemId() / 10000 == SCROLL_ITEM_PREFIX) {
+                scrolls.add(s);
+            }
+        }
+        sb.append("\nscrolls in inventory (").append(scrolls.size()).append("):\n");
+        if (scrolls.isEmpty()) {
+            sb.append("  (none)\n");
+            return;
+        }
+        for (Item s : scrolls) {
+            int sid = s.getItemId();
+            Map<String, Integer> st = ii.getEquipStats(sid);
+            int success = st == null ? 0 : st.getOrDefault("success", 0);
+            int cursed = st == null ? 0 : st.getOrDefault("cursed", 0);
+            double gain = st == null ? 0.0 : offenseValueFromStats(bot, st);
+            sb.append(String.format("  %-26s x%-3d  p=%3d%%  +%4.1f score  price=%,11.0f meso  %s%n",
+                    scrollName(ii, sid), s.getQuantity(), success, gain, scrollPriceMeso(sid),
+                    scrollTag(sid, cursed, gain)));
+        }
+    }
+
+    /** Short reason tag for a scroll in the inventory dump (mirrors the planner's skip rules). */
+    private static String scrollTag(int sid, int cursed, double gain) {
+        if (sid == ItemId.WHITE_SCROLL) {
+            return "[white scroll]";
+        }
+        if (ItemConstants.isCleanSlate(sid)) {
+            return "[clean slate]";
+        }
+        if (ItemConstants.isModifierScroll(sid)) {
+            return "[modifier]";
+        }
+        if (cursed > 0) {
+            return "[boom " + cursed + "% - v1 skip]";
+        }
+        if (gain <= 0) {
+            return "[no offense gain for this bot]";
+        }
+        return "[usable]";
     }
 
     /** Append the reproduction-cost table (target → cheapest meso + optimal first scroll) for an equip. */

@@ -484,3 +484,66 @@ goods vector (bases + scrolls) — same dual/LP machinery, higher-dimensional.
 - Price discovery: a periodic **background "market epoch"** (minutes), one convex solve (or a few
   tâtonnement steps). Off the hot path. → The heavy math is precomputed/cached; live decisions are
   lookups.
+
+---
+
+## Why self-scrolling is the prerequisite — the demand atom (2026-06)
+
+This records *why* the bot self-scrolling feature (the thing actually being built now) is the
+load-bearing prerequisite for the whole economy above, and what is already implemented vs. still
+open. The vision in one sentence:
+
+> **If both demand and supply are produced by agents acting on value, prices don't need to be
+> authored.** Everything else — equilibrium, adaptation, player impact — is consequence.
+
+### The chain (and where each link lives)
+
+1. **Supply is already real.** Bots farm legally; loot is dropped, never spawned/voided. (Existing
+   `server.bots.*` combat + farming.)
+2. **Demand needs an agent that *wants* goods at a price.** That want must come from a *value*, not a
+   flag. Self-scrolling is what gives a bot preferences over goods:
+   - **Valuation — built.** `BotScrollValuer.reproductionValue` answers "what is this item worth?" as
+     the cheapest expected meso to *reproduce* one this good (base stats + slots + scroll prices +
+     success odds, convex above base). This is §2's `V` for the scroll case, realized. → vision #1.
+   - **Decision — built.** `BotScrollPlanner` makes the 10%-vs-60%, gamble-early / abandon-early,
+     push-for-+11 calls *dynamically* from that curve — no scripted thresholds. → vision #2.
+   - **The bridge to demand — falls out for free.** A bot "wants" scroll *i* exactly when its
+     reproduction value for the result exceeds the scroll's market price. No separate wanting-system
+     is needed; it is `EV(Δvalue) > price` read off the same curve. → vision #3 → #4.
+3. **Real supply + real demand = a price-discovery loop has both its inputs.** Once demand is an
+   agent output rather than a table, §5's damped/anchored loop has something real to clear. → #5 → #6.
+4. **Player impact and farm-steering are then consequences**, not new systems: buying up a scroll
+   raises bot WTP → bots route to maps that drop it (the §4 inverse). → #7, #8, #9.
+
+So self-scrolling is not a side quest: it is the smallest unit that makes a bot *have a preference
+over goods at a price*, which is the atom the entire market is built from.
+
+### Built vs. open (honest status)
+
+| Piece | Status | Where |
+|---|---|---|
+| Reproduction-cost value curve (convex, meso) | **done, unit-tested** | `BotScrollValuer` |
+| Online scroll/stop decision from the curve | **done, unit-tested** | `BotScrollPlanner` |
+| Owner-confirmed legal apply via real player path | **done** | `BotScrollManager` (v1: non-boom only) |
+| Demand signal (`value > price ⇒ want`) | **implicit, works per-bot** | derived from the curve |
+| Clean-base cost (rarity→meso) | **stub** (`cleanBaseCostMeso`, level-scaled) | the curve's floor only |
+| WTP → a single *cleared* price across all goods | **open** | §3 + §5, not built |
+| Reflexive stability (demand↔price feedback) | **open / unproven at scale** | §5 damping |
+
+### The genuinely hard parts (not yet solved)
+
+- **From private willingness-to-pay to one emergent clearing price.** Equilibrium is the LP/convex
+  dual (proven; §"Equilibrium pricing"), and tâtonnement converges in a toy 2-scroll world. Scaling
+  that to *every* item/scroll simultaneously, online, as the population shifts is the open problem —
+  "solvable" in that the fixed point exists, but maybe not *cheaply enough to run live* without
+  approximation. An engineering bound, not a theoretical wall.
+- **Reflexivity.** Bot value depends on scroll price; scroll price depends on bot demand. That loop
+  is what makes it adaptive (#6, #8) and also what could oscillate or run away. Damping / epoch-
+  batching (§5) is the intended answer, unproven here.
+- **The clean-base floor is a stub.** Everything *above* the floor is principled; the floor itself
+  (`cleanBaseCostMeso`) is hand-set until the §4 `FarmingCostModel` (rarity→meso) lands.
+
+Bottom line: the demand-generation half (value → decision → derived want) is realized end-to-end
+today. The leap from "every bot has a private WTP" to "the server has one emergent clearing price" is
+the part that is still best-effort, not proven-at-scale — but even the semi-optimal version already
+prices gear and can steer farm targets without the full equilibrium.
