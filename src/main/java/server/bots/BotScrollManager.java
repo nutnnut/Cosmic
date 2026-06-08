@@ -63,8 +63,8 @@ final class BotScrollManager {
     private static final int CLEAN_BASE_COST_PER_LEVEL = 10_000;
     private static final int CLEAN_BASE_COST_FLOOR = 100_000;
 
-    /** Lazily-loaded cheapest NPC-shop buy price per item id (populate-once cache). */
-    private static volatile Map<Integer, Integer> scrollShopPrices;
+    /** Lazily-loaded cheapest NPC-shop buy price per item id (populate-once cache; all shop items). */
+    private static volatile Map<Integer, Integer> shopPrices;
 
     private BotScrollManager() {}
 
@@ -644,50 +644,14 @@ final class BotScrollManager {
     // ---- Reproduction-cost valuation inputs (v1: shopitems prices + stubbed clean-base cost) ----
 
     /**
-     * Expected offense value of a freshly-obtained CLEAN base — the reproduction curve's floor. Starts
-     * from the catalog stats and adds the expected godly-stats uplift: a dropped equip has a
-     * GODLY_STATS_DROP_CHANCE to gain a bonus on each stat it already has (so the base a bot reproduces
-     * by farming is, on average, a bit better than catalog). Mirrors {@code ItemInformationProvider}.
+     * Offense value of the CLEAN base (catalog) stats — the reproduction curve's floor. Deliberately
+     * NOT godly-uplifted: the floor is the cheapest clean base, and the cheapest source (often an NPC)
+     * yields clean catalog stats. Better-than-clean (godly) bases are higher-score products valued by
+     * their drop source, a separate acquisition path up the curve — see docs/bot/economy-design.md.
      */
     private static double baseOffenseValue(Character bot, ItemInformationProvider ii, int itemId) {
         Map<String, Integer> st = ii.getEquipStats(itemId);
-        if (st == null) {
-            return 0.0;
-        }
-        return offenseValueFromStats(bot, st) + expectedGodlyOffenseUplift(bot, st);
-    }
-
-    /**
-     * Expected godly-stats uplift to this base's offense value. A drop rolls godly with probability
-     * GODLY_STATS_DROP_CHANCE; when it hits, each stat the base ALREADY has gains a uniform 0..maxBonus
-     * (mean maxBonus/2) — {@code getRandUpgradedStat} leaves 0-stats at 0, so a glove with no base ATT
-     * gets no ATT uplift. maxBonus tracks reqLevel exactly as {@code randomizeGodlyStats} computes it.
-     */
-    private static double expectedGodlyOffenseUplift(Character bot, Map<String, Integer> st) {
-        if (!YamlConfig.config.server.GODLY_STATS_ENABLED) {
-            return 0.0;
-        }
-        double chance = YamlConfig.config.server.GODLY_STATS_DROP_CHANCE / 100.0;
-        if (chance <= 0.0) {
-            return 0.0;
-        }
-        int reqLevel = st.getOrDefault("reqLevel", 0);
-        int maxBonus = Math.max(Math.round((float) (reqLevel * YamlConfig.config.server.GODLY_STATS_BONUS_SCALING)),
-                YamlConfig.config.server.GODLY_STATS_MIN_BONUS);
-        double meanBonus = maxBonus / 2.0; // uniform 0..maxBonus
-        boolean[] mage = new boolean[1];
-        char[] ms = mainSecondary(jobId(bot), mage);
-        double uplift = 0.0;
-        if (st.getOrDefault(mage[0] ? "MAD" : "PAD", 0) > 0) {
-            uplift += ATT_WEIGHT * meanBonus;
-        }
-        if (st.getOrDefault(statKey(ms[0]), 0) > 0) {
-            uplift += MAIN_STAT_WEIGHT * meanBonus;
-        }
-        if (st.getOrDefault(statKey(ms[1]), 0) > 0) {
-            uplift += SECONDARY_STAT_WEIGHT * meanBonus;
-        }
-        return chance * uplift;
+        return st == null ? 0.0 : offenseValueFromStats(bot, st);
     }
 
     /** Effective scroll success %, mirroring {@code scrollEquipWithId}: the server's flat
@@ -716,21 +680,29 @@ final class BotScrollManager {
         return specs;
     }
 
-    /** Stubbed meso cost to acquire a clean base, scaled by level req (placeholder for rarity→meso). */
+    /**
+     * Meso cost to acquire a clean base = the MIN over all sources (cheapest source wins; pricier
+     * sources are irrelevant). Today two sources: the NPC shop price if it is shop-sold, and a
+     * drop-farm stub (reqLevel-scaled placeholder for the real rarity→meso). A rare drop an NPC sells
+     * cheaply is therefore correctly priced at the NPC price.
+     */
     private static double cleanBaseCostMeso(ItemInformationProvider ii, int itemId) {
         Map<String, Integer> st = ii.getEquipStats(itemId);
         int reqLevel = st == null ? 0 : st.getOrDefault("reqLevel", 0);
-        return Math.max(CLEAN_BASE_COST_FLOOR, reqLevel * CLEAN_BASE_COST_PER_LEVEL);
+        double dropFarmStub = Math.max(CLEAN_BASE_COST_FLOOR, reqLevel * CLEAN_BASE_COST_PER_LEVEL);
+        Integer npcPrice = shopPrices().get(itemId); // cache holds ALL NPC shop items, not only scrolls
+        return npcPrice != null ? Math.min(npcPrice, dropFarmStub) : dropFarmStub;
     }
 
     /** Cheapest NPC-shop buy price for a scroll, or a default when it is not shop-sold (drop-only). */
     private static double scrollPriceMeso(int scrollId) {
-        Integer price = scrollShopPrices().get(scrollId);
+        Integer price = shopPrices().get(scrollId);
         return price != null ? price : DEFAULT_SCROLL_COST_MESO;
     }
 
-    private static Map<Integer, Integer> scrollShopPrices() {
-        Map<Integer, Integer> cached = scrollShopPrices;
+    /** Lazily-loaded cheapest NPC-shop buy price per item id — all shop items (scrolls AND bases). */
+    private static Map<Integer, Integer> shopPrices() {
+        Map<Integer, Integer> cached = shopPrices;
         if (cached != null) {
             return cached;
         }
@@ -745,7 +717,7 @@ final class BotScrollManager {
         } catch (SQLException e) {
             // Leave whatever loaded; scrollPriceMeso falls back to DEFAULT_SCROLL_COST_MESO.
         }
-        scrollShopPrices = prices;
+        shopPrices = prices;
         return prices;
     }
 
