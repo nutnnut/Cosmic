@@ -9,6 +9,7 @@ import client.inventory.InventoryType;
 import client.inventory.Item;
 import client.inventory.ModifyInventory;
 import client.inventory.manipulator.InventoryManipulator;
+import config.YamlConfig;
 import constants.id.ItemId;
 import constants.inventory.EquipSlot;
 import constants.inventory.ItemConstants;
@@ -353,9 +354,10 @@ final class BotScrollManager {
             int success = st == null ? 0 : st.getOrDefault("success", 0);
             int cursed = st == null ? 0 : st.getOrDefault("cursed", 0);
             double gain = st == null ? 0.0 : offenseValueFromStats(bot, st);
+            // Show the effective success (incl. SCROLL_SUCCESS_BONUS) the bot actually plans on.
             sb.append(String.format("  %-26s x%-3d  p=%3d%%  +%4.1f score  price=%,11.0f meso  %s%n",
-                    scrollName(ii, sid), s.getQuantity(), success, gain, scrollPriceMeso(sid),
-                    scrollTag(sid, cursed, gain)));
+                    scrollName(ii, sid), s.getQuantity(), effectiveSuccessPct(success), gain,
+                    scrollPriceMeso(sid), scrollTag(sid, cursed, gain)));
         }
     }
 
@@ -404,7 +406,9 @@ final class BotScrollManager {
     private static String writeReport(Character bot, String report) {
         try {
             String safe = bot.getName() == null ? "bot" : bot.getName().replaceAll("[^A-Za-z0-9_]", "");
-            java.nio.file.Path p = java.nio.file.Path.of("scroll-debug-" + safe + ".txt").toAbsolutePath();
+            java.nio.file.Path dir = java.nio.file.Path.of("logs", "bot-scroll");
+            java.nio.file.Files.createDirectories(dir);
+            java.nio.file.Path p = dir.resolve("scroll-debug-" + safe + ".txt").toAbsolutePath();
             java.nio.file.Files.writeString(p, report);
             return p.toString();
         } catch (java.io.IOException e) {
@@ -589,9 +593,12 @@ final class BotScrollManager {
             if (gain <= 0) {
                 continue;
             }
+            // Use the EFFECTIVE success rate the server will actually roll (raw WZ success +
+            // SCROLL_SUCCESS_BONUS, capped at 100) so the DP odds match reality, not the catalog.
             // ScrollOption.cost = the per-apply opportunity cost (fraction of market price). The
             // reproduction value curve separately uses the FULL market price (see reproSpecs).
-            options.add(new BotScrollPlanner.ScrollOption(sid, scrollName(ii, sid), success / 100.0,
+            options.add(new BotScrollPlanner.ScrollOption(sid, scrollName(ii, sid),
+                    effectiveSuccessPct(success) / 100.0,
                     0.0, gain, SCROLL_OPPORTUNITY_FRACTION * scrollPriceMeso(sid)));
         }
         return options;
@@ -636,10 +643,60 @@ final class BotScrollManager {
 
     // ---- Reproduction-cost valuation inputs (v1: shopitems prices + stubbed clean-base cost) ----
 
-    /** Offense value of the item's CLEAN base (catalog) stats — the reproduction curve's floor. */
+    /**
+     * Expected offense value of a freshly-obtained CLEAN base — the reproduction curve's floor. Starts
+     * from the catalog stats and adds the expected godly-stats uplift: a dropped equip has a
+     * GODLY_STATS_DROP_CHANCE to gain a bonus on each stat it already has (so the base a bot reproduces
+     * by farming is, on average, a bit better than catalog). Mirrors {@code ItemInformationProvider}.
+     */
     private static double baseOffenseValue(Character bot, ItemInformationProvider ii, int itemId) {
         Map<String, Integer> st = ii.getEquipStats(itemId);
-        return st == null ? 0.0 : offenseValueFromStats(bot, st);
+        if (st == null) {
+            return 0.0;
+        }
+        return offenseValueFromStats(bot, st) + expectedGodlyOffenseUplift(bot, st);
+    }
+
+    /**
+     * Expected godly-stats uplift to this base's offense value. A drop rolls godly with probability
+     * GODLY_STATS_DROP_CHANCE; when it hits, each stat the base ALREADY has gains a uniform 0..maxBonus
+     * (mean maxBonus/2) — {@code getRandUpgradedStat} leaves 0-stats at 0, so a glove with no base ATT
+     * gets no ATT uplift. maxBonus tracks reqLevel exactly as {@code randomizeGodlyStats} computes it.
+     */
+    private static double expectedGodlyOffenseUplift(Character bot, Map<String, Integer> st) {
+        if (!YamlConfig.config.server.GODLY_STATS_ENABLED) {
+            return 0.0;
+        }
+        double chance = YamlConfig.config.server.GODLY_STATS_DROP_CHANCE / 100.0;
+        if (chance <= 0.0) {
+            return 0.0;
+        }
+        int reqLevel = st.getOrDefault("reqLevel", 0);
+        int maxBonus = Math.max(Math.round((float) (reqLevel * YamlConfig.config.server.GODLY_STATS_BONUS_SCALING)),
+                YamlConfig.config.server.GODLY_STATS_MIN_BONUS);
+        double meanBonus = maxBonus / 2.0; // uniform 0..maxBonus
+        boolean[] mage = new boolean[1];
+        char[] ms = mainSecondary(jobId(bot), mage);
+        double uplift = 0.0;
+        if (st.getOrDefault(mage[0] ? "MAD" : "PAD", 0) > 0) {
+            uplift += ATT_WEIGHT * meanBonus;
+        }
+        if (st.getOrDefault(statKey(ms[0]), 0) > 0) {
+            uplift += MAIN_STAT_WEIGHT * meanBonus;
+        }
+        if (st.getOrDefault(statKey(ms[1]), 0) > 0) {
+            uplift += SECONDARY_STAT_WEIGHT * meanBonus;
+        }
+        return chance * uplift;
+    }
+
+    /** Effective scroll success %, mirroring {@code scrollEquipWithId}: the server's flat
+     *  SCROLL_SUCCESS_BONUS is added (capped at 100) when enabled. */
+    private static int effectiveSuccessPct(int rawSuccess) {
+        if (YamlConfig.config.server.SCROLL_SUCCESS_BONUS_ENABLED) {
+            return Math.min(rawSuccess + YamlConfig.config.server.SCROLL_SUCCESS_BONUS, 100);
+        }
+        return rawSuccess;
     }
 
     /** Total upgrade slots a fresh copy of this item ships with (WZ "tuc"). */
