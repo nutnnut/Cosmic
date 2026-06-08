@@ -700,19 +700,34 @@ final class BotScrollManager {
         return price != null ? price : DEFAULT_SCROLL_COST_MESO;
     }
 
-    /** Lazily-loaded cheapest NPC-shop buy price per item id — all shop items (scrolls AND bases). */
+    /**
+     * Lazily-loaded cheapest <em>legitimate</em> NPC-shop buy price per item id — all shop items
+     * (scrolls AND bases). GM/junk shop listings are excluded: a real shop never sells an item below
+     * its NPC sell-back value (that would be free arbitrage), so any listing with
+     * {@code buyPrice <= sellBack} (e.g. the 1-meso GM shops) is dropped before taking the min.
+     */
     private static Map<Integer, Integer> shopPrices() {
         Map<Integer, Integer> cached = shopPrices;
         if (cached != null) {
             return cached;
         }
+        ItemInformationProvider ii = ItemInformationProvider.getInstance();
         Map<Integer, Integer> prices = new HashMap<>();
         try (Connection con = DatabaseConnection.getConnection();
              PreparedStatement ps = con.prepareStatement(
-                     "SELECT itemid, MIN(price) AS p FROM shopitems WHERE price > 1 GROUP BY itemid");
+                     "SELECT itemid, price FROM shopitems WHERE price > 1");
              ResultSet rs = ps.executeQuery()) {
             while (rs.next()) {
-                prices.put(rs.getInt("itemid"), rs.getInt("p"));
+                int itemId = rs.getInt("itemid");
+                int buy = rs.getInt("price");
+                int sellBack = ii.getWholePrice(itemId); // WZ price = NPC sell-back; -1 if unpriced
+                if (sellBack > 0 && buy <= sellBack) {
+                    continue; // GM/junk listing selling at or below intrinsic value
+                }
+                Integer prev = prices.get(itemId);
+                if (prev == null || buy < prev) {
+                    prices.put(itemId, buy); // min over surviving (legitimate) listings
+                }
             }
         } catch (SQLException e) {
             // Leave whatever loaded; scrollPriceMeso falls back to DEFAULT_SCROLL_COST_MESO.
