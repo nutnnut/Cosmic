@@ -399,3 +399,88 @@ brain for B1 (farm selection) and B2 (scrolling) once those land.
   resilience vs. write load).
 - **Last-login freshness window (§4.2):** how recent counts as "active" for frontier/aggregate
   inclusion — and which timestamp column on `characters` to key on (verify schema).
+
+---
+
+## Validated computational model — scroll reproduction cost & equilibrium (2026-06)
+
+Worked out and validated offline (no in-game testing). This is the concrete math behind the
+scroll-pricing parts above.
+
+### Value = reproduction cost, in MESO
+
+An item's value at a given state = the cheapest **expected meso to reproduce** it from scratch.
+Scroll cost is also meso: shop-sold → `shopitems.price`; drop-only → effort→meso; a clean base →
+its rarity→meso (drop chance × meso/kill, or a market anchor). Value and cost share one unit (meso),
+so "scroll iff expected meso-value gained > scroll's meso cost" is apples-to-apples.
+
+### The reproduction DP (cheapest-production, restart-on-ruin)
+
+State `(slots_remaining s, stat_score a)`. Backward induction with an explicit abandon option:
+```
+valueOf(s,a) = min(  rebuy:  B + D                              (abandon this base, D = value of a fresh one)
+                     per scroll i:  cost_i
+                        + p_i        · valueOf(s-1, min(a+g_i, T))     (success)
+                        + (1-p_i)    · valueOf(s-1, a) )               (fail: slot gone)
+```
+Maple wrinkle: a regular scroll **consumes the slot win-or-lose**, so the "retry" is at the *item*
+level — buy a fresh clean base (a boom OR slot-exhaustion-below-target both force a restart).
+`D = valueOf(S,0)` (the restart value) is a 1-D fixed point solved by a few sweeps. The resulting
+value-vs-stat curve is **convex** (binomial upper tail under a fixed slot budget) — that convexity is
+exactly what makes the online bot snowball winners and abandon losers, and it's denominated in meso.
+
+**Emergent, not hand-coded (verified by dumping the optimal policy):** for a hard target the DP
+throws the rarest/biggest gamble on the **first** slot and **abandons immediately** if it fails
+(`(5,0)→gamble`, `(4,0)→rebuy`). "Gamble early, cut losses early" falls out of the backward
+induction; the abandon frontier rises as slots run down.
+
+Worked example: **Oaker Garner glove 1082089** (reqLevel 60, base STR1/DEX1/WDEF22, `tuc`=5; dropped
+by mob 4230126 @chance 1000 ≈ 0.1%). Obtainable non-boom non-GM ATT scrolls (verified vs DB
+`shopitems`+`drop_data` and exact-boundary WZ extraction): **2040804 (60%/+2, 550k)**, **2040805
+(10%/+3, 1.1M)**. Blacklisted: 2040807 (GM 100%/+3, 11M), dark scrolls 2040808–2040815 (the only
+boomers, `cursed=50`, unobtainable here), all other +ATT scrolls (not in shop/drop). Reproduction
+table @ B=500k: +1≈1.42M, +5≈3.96M, +8≈7.47M, +10≈22.7M, +11≈124M — convex; recipe is mostly 60%/+2,
+with 10%/+3 only in the extreme tail.
+
+### Equilibrium pricing is a convex/LP solve — prices are DUALS, not a tuned loop
+
+Demand is endogenous: a bot's willingness-to-pay for scroll *i* = its marginal effect on reproduction
+cost (the DP's shadow price). Aggregate bot demand vs. **faucet supply** (drop rate × kill rate +
+NPC stock) clears the market. Formally:
+
+- Put a price/multiplier `λ_i` on each scroll's supply constraint. The per-bot inner problem at prices
+  `λ` **is** the reproduction DP (scroll cost = `λ_i`) — the DP is the Lagrangian inner minimization.
+- Equilibrium `λ*` maximizes the Lagrangian dual `g(λ)` (concave: pointwise min of linears) ⇒ a single
+  convex optimization. By LP duality, `λ*` = shadow prices of scroll supply = market prices.
+- Equivalent primal: min total reproduction cost s.t. meet demand + scroll caps; recipes are columns,
+  the **DP is the column-generation oracle**, duals on supply rows = prices, complementary slackness =
+  the DP's recipe rule. One LP picks recipes AND prices.
+- Few scrolls → solve KKT per binding-regime in closed form; many → Newton on the concave dual.
+  Tâtonnement (multiplicative price nudging) is just subgradient ascent on `g` — the crude version.
+- **Substitution is the clearing force** and reproduces real servers: 60%/+2 sits in most recipes →
+  high demand → commands a premium **even when 10%/+3 is rarer to drop**; as 60% gets pricey, bots
+  substitute to 10% (then abandon ambitious targets). Demo (toy supplies 900 vs 120): 60% ≈ 3.9M vs
+  10% ≈ 2.4M (1.65×), and the demand curve flips toward 10% only once 60% is ~2× equilibrium.
+- **Caveat — degeneracy:** a scroll with slack supply at the margin has a dual *range*, not a point
+  (the "lumpy" niche price). Intrinsic non-uniqueness; the LP returns the whole optimal dual face.
+
+### Cross-item alternatives — same emergence, one level up
+
+A **slot's** value = the lower envelope over all wearable base variants (e.g. the many Garner gloves)
+of their reproduction cost; variants differ in base stats, `tuc`, reqLevel, drop supply, and the
+cheapest-to-reproduce one wins each target (this generalizes the bot's existing dominance gate into
+reproduction-meso). Scroll demand **pools** across all variants sharing a scroll pool (more liquid
+prices, not fragmented). Base-item prices co-emerge from their own supply/demand; dominated variants →
+floor, the "meta" base → premium. Together it's one **joint general equilibrium** over the full
+goods vector (bases + scrolls) — same dual/LP machinery, higher-dimensional.
+
+### Cost & deployment — tiered; populate-once + cache, never per-decision
+
+- One item's reproduction curve: tiny DP (slots ≤ ~9 × bucketed score × a few scrolls) → sub-ms; one
+  solve yields the whole curve.
+- All items: build lazily only for items bots own/target; cache, dirty-flag on material price moves.
+- Bot's per-scroll decision: O(1) — read cached curve + current prices, run the small online DP over
+  its item's ≤9 slot-states. Hot-path safe.
+- Price discovery: a periodic **background "market epoch"** (minutes), one convex solve (or a few
+  tâtonnement steps). Off the hot path. → The heavy math is precomputed/cached; live decisions are
+  lookups.

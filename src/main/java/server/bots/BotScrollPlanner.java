@@ -1,158 +1,173 @@
 package server.bots;
 
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.function.DoubleUnaryOperator;
 
 /**
  * Pure decision core for bot self-scrolling. Given a bot's scrollable equips and the scrolls it
  * owns (already translated into {@link EquipCandidate}/{@link ScrollOption} records by the wiring
- * layer), it picks the single best scroll play to propose to the owner — or returns null when no
- * play clears the bar.
+ * layer), it picks the single best scroll to apply <em>now</em> — or returns null when no play
+ * clears the bar. The bot applies that one scroll, then rescans (the wiring re-derives candidates),
+ * so the policy is naturally adaptive: a success makes continuing the piece more attractive, a
+ * failure lowers its ceiling and the next pass may favour a different piece.
  *
  * <p>This class has NO dependency on WZ data, the equip optimizer, or live game state: callers
- * precompute {@code valueGain} (optimizer-score delta on success), {@code currentValue} (the
- * equip's current optimizer score), {@code slotReserve} (the slot's opportunity cost), and the
- * boolean signals. That keeps the value math unit testable in isolation (see BotScrollPlannerTest)
- * and mirrors the seam style used by BotShopManager.
+ * supply each scroll's {@code statGain} (weighted stat-score added on success) and {@code cost}
+ * (the scroll's farm-value, paid win-or-lose), each equip's {@code currentStatScore} and free
+ * {@code slotsRemaining}, the boolean signals, and a {@code rawValue} function mapping a stat-score
+ * to its value. That keeps the value math unit testable in isolation (see BotScrollPlannerTest).
  *
- * <h2>Decision rule</h2>
- * For a regular (non-destroying) scroll, every attempt consumes exactly one upgrade slot whether it
- * succeeds or fails, so the attempts are order-independent: with S slots you get S attempts and the
- * optimal policy is simply to spend each slot on the highest-{@code worth} scroll available. Hence
- * the worth of attempting a scroll is just its success-weighted gain, {@code p * valueGain} — the
- * slot would be spent on this (best) scroll regardless, so a failure carries no extra penalty here.
- * The only real reason NOT to spend a slot now is to keep it open for a better scroll later; that
- * cost is {@link EquipCandidate#slotReserve} (the slot opportunity cost). A play is worth proposing
- * when {@code worth - slotReserve > 0}, and we propose the play maximizing that net.
+ * <h2>Decision rule — bounded stochastic DP</h2>
+ * The value of an equip at state {@code (v, s)} (stat-score {@code v}, {@code s} free upgrade slots)
+ * is computed by backward induction:
+ * <pre>
+ *   valueOf(v, s) = max over { stop, and each owned scroll a } of
+ *       stop:    rawValue(v)
+ *       apply a: -cost_a
+ *                + p_a              * valueOf(v + statGain_a, s-1)   // success
+ *                + (1-p_a)(1-boom_a)* valueOf(v,             s-1)   // fail: slot gone, stat same
+ *                + (1-p_a) boom_a   * 0                              // destroyed
+ * </pre>
+ * The play to propose is the scroll whose {@code apply} branch maximizes {@code valueOf} at the
+ * equip's current state, across all candidate equips, provided it beats stopping.
  *
- * <p>A destroy-capable (boom) scroll additionally carries the expected loss of destroying the item,
- * and is gated behind a recoverable fallback and a strongly-positive worth.
- *
- * <p>With {@code slotReserve == 0} (no forward-looking estimate yet) this reduces to greedy
- * best-worth-first, which is optimal for the bot's currently-owned scrolls. A future increment can
- * feed a real {@code slotReserve} from the economy ledger (expected value of a better future scroll
- * for that slot) — see docs/bot/economy-design.md §2.1.
+ * <p><b>Why a DP and not greedy?</b> When {@code rawValue} is linear in the stat-score and scrolls
+ * are unlimited, this reduces exactly to greedy best-worth-first (spend each slot on the highest
+ * {@code p*statGain}) — every attempt deterministically burns one slot, so the attempts are
+ * order-independent and the sum of success-weighted gains is all that matters. The DP earns its keep
+ * once {@code rawValue} is <em>convex</em> (a rarer, harder-to-reproduce stat-score is worth more
+ * than linear): then it is rational to snowball an already-good piece (success compounds future
+ * value) and abandon a piece whose ceiling a failure has lowered. See docs/bot/economy-design.md.
  */
 final class BotScrollPlanner {
-
-    /**
-     * How strongly worth must beat the expected boom loss before a destroy-capable scroll is allowed.
-     * 1.0 means the success-weighted gain must be at least double the failure-weighted item loss.
-     * v1 stand-in for the reproduction-cost comparison in the economy design; tune/derive later.
-     */
-    private static final double STRONG_EV_MARGIN = 1.0;
 
     private BotScrollPlanner() {}
 
     /** One scroll the bot owns and could apply to a given equip. */
     record ScrollOption(int scrollItemId,
                         String scrollName,
-                        double successRate,    // 0..1
-                        double boomRate,       // 0..1: chance to DESTROY the item on a failed roll
-                        double valueGain) {}   // optimizer-score gain on success (job-weighted)
+                        double successRate,  // 0..1
+                        double boomRate,     // 0..1: chance to DESTROY the item on a failed roll
+                        double statGain,     // weighted stat-score added on success
+                        double cost) {}      // scroll's farm-value, consumed win or lose
 
     /**
-     * An equip the bot is using that still has at least one free upgrade slot, plus the signals the
-     * caller derived from the optimizer:
+     * An equip the bot is using that still has at least one free upgrade slot.
      * <ul>
-     *   <li>{@code currentValue} — the equip's current optimizer score (the stake a boom would lose).</li>
+     *   <li>{@code currentStatScore} — the equip's current stat-score (input to {@code rawValue}).</li>
+     *   <li>{@code slotsRemaining} — free upgrade slots, the DP horizon for this equip.</li>
      *   <li>{@code betterItemAvailable} — enough strictly-better same-slot items already exist to fill
      *       the slot, so this one is about to be benched: don't invest scrolls in it.</li>
-     *   <li>{@code slotReserve} — the slot's opportunity cost: the value of keeping this upgrade slot
-     *       open for a better (current or expected-future) scroll. Spend the slot only when a play
-     *       beats this. 0 means no forward-looking reason to save it (greedy-optimal for now).</li>
      *   <li>{@code hasFallbackForSlot} — another usable equip for this slot exists, so a boom is
-     *       recoverable rather than catastrophic.</li>
+     *       recoverable rather than catastrophic (gate for destroy-capable scrolls).</li>
      * </ul>
      */
     record EquipCandidate(int equipItemId,
                           String equipName,
-                          double currentValue,
+                          double currentStatScore,
+                          int slotsRemaining,
                           boolean betterItemAvailable,
-                          double slotReserve,
                           boolean hasFallbackForSlot,
-                          List<ScrollOption> options) {}
+                          List<ScrollOption> options,
+                          DoubleUnaryOperator value) {}
 
     /** The single best scroll play to propose, with the ASCII chat line for owner confirmation. */
     record ScrollPlan(EquipCandidate equip,
                       ScrollOption scroll,
-                      double expectedValue,
+                      double expectedValue,   // expected value gained over not scrolling at all
                       boolean usesBoomCapableScroll,
                       String proposal) {}
 
-    /** Best eligible (equip, scroll) play across all candidates, or null if none clear the bar. */
+    /**
+     * Best eligible (equip, scroll) play across all candidates, or null if none clear the bar. Each
+     * candidate carries its own {@code value} curve (meso reproduction cost — convex above the base);
+     * see {@link BotScrollValuer}.
+     */
     static ScrollPlan planBest(List<EquipCandidate> candidates) {
         if (candidates == null) {
             return null;
         }
         ScrollPlan best = null;
         for (EquipCandidate eq : candidates) {
-            if (eq == null || eq.options() == null || !investable(eq)) {
+            if (eq == null || eq.options() == null || eq.options().isEmpty() || eq.value() == null) {
                 continue;
             }
+            if (eq.betterItemAvailable() || eq.slotsRemaining() <= 0) {
+                continue;
+            }
+            Map<Long, Double> memo = new HashMap<>();
+            double stopNow = eq.value().applyAsDouble(eq.currentStatScore());
+            ScrollOption pick = null;
+            double pickValue = stopNow;
             for (ScrollOption op : eq.options()) {
-                if (op == null || !eligible(eq, op)) {
+                if (op == null || !allowed(eq, op)) {
                     continue;
                 }
-                double net = net(eq, op);
-                if (best == null || net > best.expectedValue()) {
-                    best = new ScrollPlan(eq, op, net, op.boomRate() > 0.0, buildProposal(eq, op));
+                double ev = evApply(eq, op, eq.currentStatScore(), eq.slotsRemaining(), memo);
+                if (ev > pickValue) {
+                    pickValue = ev;
+                    pick = op;
                 }
+            }
+            if (pick == null) {
+                continue;
+            }
+            double improvement = pickValue - stopNow;
+            if (improvement <= 0.0) {
+                continue;
+            }
+            if (best == null || improvement > best.expectedValue()) {
+                best = new ScrollPlan(eq, pick, improvement, pick.boomRate() > 0.0, buildProposal(eq, pick));
             }
         }
         return best;
     }
 
-    /** Conservative gate that applies to the equip regardless of which scroll is considered. */
-    private static boolean investable(EquipCandidate eq) {
-        return !eq.betterItemAvailable();
+    /** Optimal value achievable from state {@code (v, s)} under the recurrence above (memoized). */
+    private static double valueOf(EquipCandidate eq, double v, int s, Map<Long, Double> memo) {
+        if (s <= 0) {
+            return eq.value().applyAsDouble(v);
+        }
+        long key = s * 1_000_003L + Math.round(v * 1000.0);
+        Double cached = memo.get(key);
+        if (cached != null) {
+            return cached;
+        }
+        double best = eq.value().applyAsDouble(v); // stop: leave the remaining slots unused
+        for (ScrollOption op : eq.options()) {
+            if (op == null || !allowed(eq, op)) {
+                continue;
+            }
+            double ev = evApply(eq, op, v, s, memo);
+            if (ev > best) {
+                best = ev;
+            }
+        }
+        memo.put(key, best);
+        return best;
     }
 
-    /** Whether this specific scroll play is worth proposing. */
-    private static boolean eligible(EquipCandidate eq, ScrollOption op) {
-        double worth = worth(eq, op);
-        if (worth <= 0.0) {
-            return false;
-        }
-        if (worth - Math.max(0.0, eq.slotReserve()) <= 0.0) {
-            return false; // doesn't beat the cost of keeping the slot for something better
-        }
-        if (op.boomRate() > 0.0) {
-            // Destroy-capable scroll: only with a recoverable fallback AND a strongly positive worth.
-            if (!eq.hasFallbackForSlot()) {
-                return false;
-            }
-            if (worth < STRONG_EV_MARGIN * boomLoss(eq, op)) {
-                return false;
-            }
-        }
-        return true;
+    /** Expected value of applying {@code op} at state {@code (v, s)} and then playing optimally. */
+    private static double evApply(EquipCandidate eq, ScrollOption op, double v, int s,
+                                  Map<Long, Double> memo) {
+        double p = clamp01(op.successRate());
+        double boom = clamp01(op.boomRate());
+        double keepFail = (1.0 - p) * (1.0 - boom);
+        double success = p * valueOf(eq, v + op.statGain(), s - 1, memo);
+        double fail = keepFail * valueOf(eq, v, s - 1, memo);
+        // destroy branch, prob (1-p)*boom: item gone, value 0. Cost is paid on every attempt.
+        return success + fail - op.cost();
     }
 
     /**
-     * Expected immediate value of attempting the scroll. Regular scrolls: the success-weighted gain
-     * (the burned-on-failure slot's only real cost is the chance to use it on a better future scroll,
-     * accounted for separately via {@link EquipCandidate#slotReserve}). Boom scrolls additionally
-     * subtract the expected loss of destroying the item.
+     * Equip-level gate independent of the value math. A destroy-capable scroll is only ever
+     * considered when a fallback exists for the slot; the expected destruction loss is already
+     * priced into {@link #evApply}, so EV-positivity carries the rest of the decision.
      */
-    private static double worth(EquipCandidate eq, ScrollOption op) {
-        double p = clamp01(op.successRate());
-        double gain = p * op.valueGain();
-        double boom = clamp01(op.boomRate());
-        if (boom <= 0.0) {
-            return gain;
-        }
-        return gain - (1.0 - p) * boom * Math.max(0.0, eq.currentValue());
-    }
-
-    /** Net benefit of spending the slot now: worth minus the slot's opportunity cost. */
-    private static double net(EquipCandidate eq, ScrollOption op) {
-        return worth(eq, op) - Math.max(0.0, eq.slotReserve());
-    }
-
-    /** Failure-weighted expected loss from the item being destroyed. */
-    private static double boomLoss(EquipCandidate eq, ScrollOption op) {
-        double p = clamp01(op.successRate());
-        return (1.0 - p) * clamp01(op.boomRate()) * Math.max(0.0, eq.currentValue());
+    private static boolean allowed(EquipCandidate eq, ScrollOption op) {
+        return !(op.boomRate() > 0.0 && !eq.hasFallbackForSlot());
     }
 
     private static String buildProposal(EquipCandidate eq, ScrollOption op) {

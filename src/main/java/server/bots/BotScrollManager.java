@@ -13,12 +13,19 @@ import constants.id.ItemId;
 import constants.inventory.EquipSlot;
 import constants.inventory.ItemConstants;
 import server.ItemInformationProvider;
+import tools.DatabaseConnection;
 import tools.PacketCreator;
 
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.SQLException;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.DoubleUnaryOperator;
 
 /**
  * Bot self-scrolling (companion scope, owner-confirmed). Scans the bot's worn equips and owned
@@ -41,6 +48,22 @@ final class BotScrollManager {
     private static final double SECONDARY_STAT_WEIGHT = 0.3;
 
     private static final int SCROLL_ITEM_PREFIX = 204; // itemId / 10000 for scroll items
+
+    /** Meso cost assumed for an owned scroll with no NPC-shop price (drop-only). Stub until the
+     *  drop-effort→meso / economy ledger lands. */
+    private static final int DEFAULT_SCROLL_COST_MESO = 1_000_000;
+    /** Opportunity cost of USING an owned scroll, as a fraction of its market price: scrolls are
+     *  liquid/valuable, so consuming one forgoes nearly its full sale value. Near 1.0; this is the
+     *  per-apply action cost only (the value curve still uses full market price). Could later be a
+     *  per-bot personality knob (more/less willing to burn scrolls). */
+    private static final double SCROLL_OPPORTUNITY_FRACTION = 0.9;
+    /** Per-level meso assumed to acquire a clean base, a placeholder for the rarity→meso of the base
+     *  item. Stub until the economy ledger supplies real reproduction/acquisition costs. */
+    private static final int CLEAN_BASE_COST_PER_LEVEL = 10_000;
+    private static final int CLEAN_BASE_COST_FLOOR = 100_000;
+
+    /** Lazily-loaded cheapest NPC-shop buy price per item id (populate-once cache). */
+    private static volatile Map<Integer, Integer> scrollShopPrices;
 
     private BotScrollManager() {}
 
@@ -235,13 +258,18 @@ final class BotScrollManager {
             // to fill the slot, so scrolling here can never make it the bot's best.
             boolean betterAvailable = isDominated(bot, eq, value, slot, all, slotOf,
                     slotCapacity(ii, eq.getItemId()));
-            // slotReserve = 0: no forward-looking estimate yet, so spend slots greedily on the best
-            // owned scroll (optimal for current inventory). The economy ledger will later supply the
-            // expected value of a better future scroll for this slot. hasFallbackForSlot stays false
-            // (no boom scrolls fed yet; it is only consulted for destroy-capable scrolls).
+            // Per-candidate value = the meso reproduction-cost curve (convex above the clean base):
+            // how much this item is worth = cheapest expected meso to reproduce one this good. Built
+            // from the item's clean-base score + total upgrade slots + the obtainable scroll set, with
+            // a stubbed clean-base cost. This is what makes the DP snowball winners / abandon losers.
+            DoubleUnaryOperator valueFn = BotScrollValuer.reproductionValue(
+                    baseOffenseValue(bot, ii, eq.getItemId()), totalSlots(ii, eq.getItemId()),
+                    reproSpecs(options), cleanBaseCostMeso(ii, eq.getItemId()));
+            // slotsRemaining = free upgrade slots = the DP horizon. hasFallbackForSlot stays false
+            // (no boom scrolls fed in v1; it only gates destroy-capable scrolls).
             BotScrollPlanner.EquipCandidate c = new BotScrollPlanner.EquipCandidate(
                     eq.getItemId(), equipName(ii, eq.getItemId()),
-                    value, betterAvailable, 0.0, false, options);
+                    value, eq.getUpgradeSlots(), betterAvailable, false, options, valueFn);
             candidates.add(c);
             backing.put(c, eq);
         }
@@ -426,8 +454,10 @@ final class BotScrollManager {
             if (gain <= 0) {
                 continue;
             }
-            options.add(new BotScrollPlanner.ScrollOption(
-                    sid, scrollName(ii, sid), success / 100.0, 0.0, gain));
+            // ScrollOption.cost = the per-apply opportunity cost (fraction of market price). The
+            // reproduction value curve separately uses the FULL market price (see reproSpecs).
+            options.add(new BotScrollPlanner.ScrollOption(sid, scrollName(ii, sid), success / 100.0,
+                    0.0, gain, SCROLL_OPPORTUNITY_FRACTION * scrollPriceMeso(sid)));
         }
         return options;
     }
@@ -467,6 +497,64 @@ final class BotScrollManager {
         return ATT_WEIGHT * att
                 + MAIN_STAT_WEIGHT * st.getOrDefault(statKey(ms[0]), 0)
                 + SECONDARY_STAT_WEIGHT * st.getOrDefault(statKey(ms[1]), 0);
+    }
+
+    // ---- Reproduction-cost valuation inputs (v1: shopitems prices + stubbed clean-base cost) ----
+
+    /** Offense value of the item's CLEAN base (catalog) stats — the reproduction curve's floor. */
+    private static double baseOffenseValue(Character bot, ItemInformationProvider ii, int itemId) {
+        Map<String, Integer> st = ii.getEquipStats(itemId);
+        return st == null ? 0.0 : offenseValueFromStats(bot, st);
+    }
+
+    /** Total upgrade slots a fresh copy of this item ships with (WZ "tuc"). */
+    private static int totalSlots(ItemInformationProvider ii, int itemId) {
+        Map<String, Integer> st = ii.getEquipStats(itemId);
+        return st == null ? 0 : st.getOrDefault("tuc", 0);
+    }
+
+    /** Translate the owned scroll options into reproduction specs. Uses the FULL market price (an item
+     *  is worth what it costs to remake), not the discounted per-apply opportunity cost in op.cost(). */
+    private static List<BotScrollValuer.ScrollSpec> reproSpecs(List<BotScrollPlanner.ScrollOption> options) {
+        List<BotScrollValuer.ScrollSpec> specs = new ArrayList<>(options.size());
+        for (BotScrollPlanner.ScrollOption op : options) {
+            specs.add(new BotScrollValuer.ScrollSpec(
+                    op.successRate(), op.statGain(), scrollPriceMeso(op.scrollItemId())));
+        }
+        return specs;
+    }
+
+    /** Stubbed meso cost to acquire a clean base, scaled by level req (placeholder for rarity→meso). */
+    private static double cleanBaseCostMeso(ItemInformationProvider ii, int itemId) {
+        Map<String, Integer> st = ii.getEquipStats(itemId);
+        int reqLevel = st == null ? 0 : st.getOrDefault("reqLevel", 0);
+        return Math.max(CLEAN_BASE_COST_FLOOR, reqLevel * CLEAN_BASE_COST_PER_LEVEL);
+    }
+
+    /** Cheapest NPC-shop buy price for a scroll, or a default when it is not shop-sold (drop-only). */
+    private static double scrollPriceMeso(int scrollId) {
+        Integer price = scrollShopPrices().get(scrollId);
+        return price != null ? price : DEFAULT_SCROLL_COST_MESO;
+    }
+
+    private static Map<Integer, Integer> scrollShopPrices() {
+        Map<Integer, Integer> cached = scrollShopPrices;
+        if (cached != null) {
+            return cached;
+        }
+        Map<Integer, Integer> prices = new HashMap<>();
+        try (Connection con = DatabaseConnection.getConnection();
+             PreparedStatement ps = con.prepareStatement(
+                     "SELECT itemid, MIN(price) AS p FROM shopitems WHERE price > 1 GROUP BY itemid");
+             ResultSet rs = ps.executeQuery()) {
+            while (rs.next()) {
+                prices.put(rs.getInt("itemid"), rs.getInt("p"));
+            }
+        } catch (SQLException e) {
+            // Leave whatever loaded; scrollPriceMeso falls back to DEFAULT_SCROLL_COST_MESO.
+        }
+        scrollShopPrices = prices;
+        return prices;
     }
 
     private static int jobId(Character bot) {
