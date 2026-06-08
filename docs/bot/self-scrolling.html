@@ -177,16 +177,27 @@
 
   <h3>6.3 &nbsp;Cost &amp; rarity → meso <span class="pill acc">how prices are derived</span></h3>
   <p>Both the value curve and the scroll cost need a meso figure for every scroll and base. The intended model is <b>rarity → meso</b>: how hard a thing is to pull out of the world (drop-rate × farming effort). Here is what is <b>actually computed today</b> vs. what is still designed:</p>
+  <p>Cost for both scrolls and bases is the <b>minimum over sources</b> (cheapest source wins; pricier ones are irrelevant):</p>
   <table>
-    <tr><th>Thing</th><th>Cost today</th><th>Notes</th></tr>
-    <tr><td><b>Scroll</b></td><td>Cheapest <i>legitimate</i> NPC-shop buy price (<code>shopitems</code>), else a flat <b>1,000,000</b> stub if drop-only.</td><td>The full price is used for the value curve; the per-apply cost is <b>0.9 ×</b> price (scrolls are liquid, so using one forgoes nearly its full resale).</td></tr>
-    <tr><td><b>Base item</b></td><td><b>min</b>(NPC-shop price if sold, &nbsp;<code>max(100k, reqLevel × 10k)</code> drop-farm stub).</td><td>Cheapest source wins. A rare drop an NPC sells cheaply is correctly priced at the NPC price.</td></tr>
+    <tr><th>Source</th><th>Cost</th><th>Notes</th></tr>
+    <tr><td><b>NPC shop</b></td><td>Cheapest <i>legitimate</i> buy price (<code>shopitems</code>).</td><td>GM/junk listings excluded (below). Used for both scrolls and bases.</td></tr>
+    <tr><td><b>Farming a drop</b></td><td><code>rarity_meso</code> (below) if any mob drops it.</td><td>Real drop-rate rarity — now implemented.</td></tr>
+    <tr><td class="muted">Fallback</td><td class="muted">Flat 1M (scroll) / <code>max(100k, reqLevel×10k)</code> (base).</td><td class="muted">Only when an item is neither shop-sold nor dropped.</td></tr>
   </table>
-  <div class="note">
-    <b>GM / junk shops are filtered out.</b> Some shops list valuables for 1 meso. A legitimate shop never sells an item <i>below</i> its NPC sell-back value (that would be free arbitrage), so any listing with <code>buyPrice ≤ sellBack</code> is dropped before taking the cheapest price.
+  <p class="muted">The full price feeds the value curve (an item is worth what it costs to remake); the per-apply cost of <i>using</i> an owned scroll is <b>0.9 ×</b> price (scrolls are liquid, so using one forgoes nearly its resale).</p>
+  <div class="formula">
+    rarity_meso = expectedKills × (secondsPerKill + seekOverhead) × mesoPerSecond<br>
+    &nbsp;&nbsp; expectedKills &nbsp;= 1 / baseDropRate &nbsp;<span class="muted">(drop_data chance ÷ 1,000,000; capped)</span><br>
+    &nbsp;&nbsp; secondsPerKill = <b>max</b>(attackCycle, mobHP / DPS) &nbsp;<span class="muted">(floored at one swing)</span>
+  </div>
+  <div class="ok">
+    <b>Realistic, capped kill-time.</b> Time-to-kill is floored at one attack cycle, so a tiny-HP mob with huge DPS gives <i>one kill per swing</i>, never "1000 kills/sec". DPS = the <b>asking bot's</b> live max physical hit reduced by the mob's defense; a bot that can't damage the mob gets ∞ cost (un-farmable), so it falls back to other sources.
   </div>
   <div class="note">
-    <b>What "rarity" means today — be honest.</b> There is <b>no drop-rate-based rarity math yet</b>. "Rarity" currently reduces to <i>market price when known</i> (the NPC shop, GM-filtered) and a crude <i>level-scaled placeholder</i> otherwise. The real model — <code>cost = (1 / dropRate) × effortPerKill</code>, returning ∞ when content is unreachable — is designed in <code>economy-design.md §4</code> (<code>FarmingCostModel</code>) but not built. When it lands it simply replaces the two stubs above; nothing else changes.
+    <b>GM / junk shops are filtered out.</b> Some shops list valuables for 1 meso. A legitimate shop never sells an item <i>below</i> its NPC sell-back value (free arbitrage), so any listing with <code>buyPrice ≤ sellBack</code> is dropped before taking the cheapest price.
+  </div>
+  <div class="note">
+    <b>Still coarse (next slices).</b> The producer attack period is a flat 0.72s (real per-weapon animation timing is the refinement), and <b>mob commonness</b> (spawns/map, #maps, respawn) is a flat per-kill <code>seekOverhead</code> until the Map-WZ spawn data is cached into an index. <code>mesoPerSecond</code> is the single effort→meso anchor (economy-design §9).
   </div>
   <div class="ok">
     <b>Godly (better-than-clean) bases.</b> A <i>dropped</i> base has a <code>GODLY_STATS_DROP_CHANCE</code> to roll bonus stats, making it better than catalog. These are <b>not</b> averaged into the clean floor (the cheapest source — often an NPC — gives clean stats). They are higher-score <i>products</i> valued by their own drop source — a separate acquisition path up the curve, deferred until the rarity→meso model and the roll distribution exist.
@@ -240,8 +251,8 @@
     <div class="panel">
       <h3>Known gaps</h3>
       <ul style="margin:6px 0 0;padding-left:18px">
-        <li><b>Rarity is price + stub, not drop-rate</b> — cost = GM-filtered NPC price when known, else a level-scaled placeholder. The real <code>(1/dropRate) × effort</code> model (§6.3) isn't built.</li>
-        <li><b>Offense-only value</b> — HP/DEF/avoid/accuracy/utility score 0, so defensive scrolls are never used.</li>
+        <li><b>Rarity kill-time is coarse</b> — drop-rate × kill-time is implemented (§6.3), but attack timing is a flat 0.72s and mob commonness (spawn density) is a flat overhead pending the Map-WZ spawn cache.</li>
+        <li><b>Offense-only value</b> — HP/DEF/avoid/accuracy/utility score 0, so defensive scrolls are never used. Producer DPS is also physical-only (mages under-estimated).</li>
         <li><b>No live market</b> — the value curve uses owned scrolls + NPC prices, not bot-driven supply/demand prices (the economy capstone).</li>
         <li><b>No periodic re-scan</b> — when armed it only chains after a confirmed scroll, not on a timer as it farms new scrolls.</li>
         <li><b>Toggle not persisted</b> across relog.</li>
