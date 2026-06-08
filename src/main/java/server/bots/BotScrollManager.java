@@ -2,6 +2,8 @@ package server.bots;
 
 import client.Character;
 import client.Client;
+import client.Skill;
+import client.SkillFactory;
 import client.inventory.Equip;
 import client.inventory.Equip.ScrollResult;
 import client.inventory.Inventory;
@@ -14,6 +16,7 @@ import constants.id.ItemId;
 import constants.inventory.EquipSlot;
 import constants.inventory.ItemConstants;
 import server.ItemInformationProvider;
+import server.StatEffect;
 import server.life.LifeFactory;
 import server.life.Monster;
 import tools.DatabaseConnection;
@@ -97,7 +100,7 @@ final class BotScrollManager {
         }
 
         ItemInformationProvider ii = ItemInformationProvider.getInstance();
-        Resolved resolved = buildBestPlan(bot, ii);
+        Resolved resolved = buildBestPlan(entry, bot, ii);
         if (resolved == null) {
             BotManager.getInstance().botReply(entry, explainNoPlan(bot, ii));
             return;
@@ -251,15 +254,16 @@ final class BotScrollManager {
      *  slotted spare) — so we keep the exact instance rather than re-resolving by id. */
     private record Resolved(BotScrollPlanner.ScrollPlan plan, Equip equip) {}
 
-    private static Resolved buildBestPlan(Character bot, ItemInformationProvider ii) {
+    private static Resolved buildBestPlan(BotEntry entry, Character bot, ItemInformationProvider ii) {
         IdentityHashMap<BotScrollPlanner.EquipCandidate, Equip> backing = new IdentityHashMap<>();
-        List<BotScrollPlanner.EquipCandidate> candidates = collectCandidates(bot, ii, backing);
+        ProducerCombat pc = resolveProducerCombat(entry, bot);
+        List<BotScrollPlanner.EquipCandidate> candidates = collectCandidates(pc, bot, ii, backing);
         BotScrollPlanner.ScrollPlan plan = BotScrollPlanner.planBest(candidates);
         return plan == null ? null : new Resolved(plan, backing.get(plan.equip()));
     }
 
     /** Build a planner candidate for every scrollable equip, recording the backing {@link Equip}. */
-    private static List<BotScrollPlanner.EquipCandidate> collectCandidates(Character bot,
+    private static List<BotScrollPlanner.EquipCandidate> collectCandidates(ProducerCombat pc, Character bot,
             ItemInformationProvider ii, Map<BotScrollPlanner.EquipCandidate, Equip> backing) {
         List<Equip> all = collectEquips(bot, ii);
         Map<Equip, Short> slotOf = new IdentityHashMap<>();
@@ -276,7 +280,7 @@ final class BotScrollManager {
             if (slot == null || eq.getUpgradeSlots() < 1) {
                 continue;
             }
-            List<BotScrollPlanner.ScrollOption> options = buildOptions(bot, ii, eq);
+            List<BotScrollPlanner.ScrollOption> options = buildOptions(pc, bot, ii, eq);
             if (options.isEmpty()) {
                 continue;
             }
@@ -291,7 +295,7 @@ final class BotScrollManager {
             // a stubbed clean-base cost. This is what makes the DP snowball winners / abandon losers.
             DoubleUnaryOperator valueFn = BotScrollValuer.reproductionValue(
                     baseOffenseValue(bot, ii, eq.getItemId()), totalSlots(ii, eq.getItemId()),
-                    reproSpecs(bot, options), cleanBaseCostMeso(bot, ii, eq.getItemId()));
+                    reproSpecs(pc, options), cleanBaseCostMeso(pc, ii, eq.getItemId()));
             // slotsRemaining = free upgrade slots = the DP horizon. hasFallbackForSlot stays false
             // (no boom scrolls fed in v1; it only gates destroy-capable scrolls).
             BotScrollPlanner.EquipCandidate c = new BotScrollPlanner.EquipCandidate(
@@ -315,10 +319,11 @@ final class BotScrollManager {
         sb.append("=== bot scroll decision: ").append(bot.getName())
                 .append(" (job ").append(jobId(bot)).append(", lvl ").append(bot.getLevel()).append(") ===\n");
 
-        appendScrollInventory(sb, bot, ii);
+        ProducerCombat pc = resolveProducerCombat(entry, bot);
+        appendScrollInventory(sb, pc, bot, ii);
 
         IdentityHashMap<BotScrollPlanner.EquipCandidate, Equip> backing = new IdentityHashMap<>();
-        List<BotScrollPlanner.EquipCandidate> candidates = collectCandidates(bot, ii, backing);
+        List<BotScrollPlanner.EquipCandidate> candidates = collectCandidates(pc, bot, ii, backing);
 
         sb.append("\ncandidates (").append(candidates.size()).append("):\n");
         for (BotScrollPlanner.EquipCandidate c : candidates) {
@@ -340,7 +345,7 @@ final class BotScrollManager {
                     .append(plan.scroll().scrollName()).append("'\n");
             sb.append(String.format("  expected meso-value gained: %,.0f%n", plan.expectedValue()));
             sb.append("  proposal: ").append(plan.proposal()).append('\n');
-            appendReproTable(sb, bot, ii, plan.equip());
+            appendReproTable(sb, pc, bot, ii, plan.equip());
         }
 
         String path = writeReport(bot, sb.toString());
@@ -354,7 +359,7 @@ final class BotScrollManager {
      * the bot's scroll stock — boom-risk, slate/modifier/white, and no-gain scrolls all show here even
      * though the planner skips them.
      */
-    private static void appendScrollInventory(StringBuilder sb, Character bot, ItemInformationProvider ii) {
+    private static void appendScrollInventory(StringBuilder sb, ProducerCombat pc, Character bot, ItemInformationProvider ii) {
         List<Item> scrolls = new ArrayList<>();
         for (Item s : bot.getInventory(InventoryType.USE).list()) {
             if (s.getItemId() / 10000 == SCROLL_ITEM_PREFIX) {
@@ -375,7 +380,7 @@ final class BotScrollManager {
             // Show the effective success (incl. SCROLL_SUCCESS_BONUS) the bot actually plans on.
             sb.append(String.format("  %-26s x%-3d  p=%3d%%  +%4.1f score  price=%,11.0f meso  %s%n",
                     scrollName(ii, sid), s.getQuantity(), effectiveSuccessPct(success), gain,
-                    scrollPriceMeso(bot, sid), scrollTag(sid, cursed, gain)));
+                    scrollPriceMeso(pc, sid), scrollTag(sid, cursed, gain)));
         }
     }
 
@@ -400,18 +405,18 @@ final class BotScrollManager {
     }
 
     /** Append the reproduction-cost table (target → cheapest meso + optimal first scroll) for an equip. */
-    private static void appendReproTable(StringBuilder sb, Character bot, ItemInformationProvider ii,
-            BotScrollPlanner.EquipCandidate cand) {
+    private static void appendReproTable(StringBuilder sb, ProducerCombat pc, Character bot,
+            ItemInformationProvider ii, BotScrollPlanner.EquipCandidate cand) {
         int itemId = cand.equipItemId();
         List<BotScrollPlanner.ScrollOption> opts = cand.options();
         double baseScore = baseOffenseValue(bot, ii, itemId);
         int tuc = totalSlots(ii, itemId);
-        double baseCost = cleanBaseCostMeso(bot, ii, itemId);
+        double baseCost = cleanBaseCostMeso(pc, ii, itemId);
         sb.append(String.format(
                 "%nreproduction-cost table for %s (base score %.1f, %d total slots, clean base ~%,.0f meso):%n",
                 cand.equipName(), baseScore, tuc, baseCost));
         sb.append("  target score |        meso cost | optimal first scroll\n");
-        for (BotScrollValuer.CurveRow row : BotScrollValuer.explain(baseScore, tuc, reproSpecs(bot, opts), baseCost)) {
+        for (BotScrollValuer.CurveRow row : BotScrollValuer.explain(baseScore, tuc, reproSpecs(pc, opts), baseCost)) {
             String move = row.firstScroll() == -2 ? "(at base)"
                     : row.firstScroll() == -1 ? "(abandon + rebuy base)"
                     : opts.get(row.firstScroll()).scrollName();
@@ -585,7 +590,7 @@ final class BotScrollManager {
         return "not worth it - the odds dont pay off, ill save the scrolls";
     }
 
-    private static List<BotScrollPlanner.ScrollOption> buildOptions(Character bot, ItemInformationProvider ii, Equip eq) {
+    private static List<BotScrollPlanner.ScrollOption> buildOptions(ProducerCombat pc, Character bot, ItemInformationProvider ii, Equip eq) {
         List<BotScrollPlanner.ScrollOption> options = new ArrayList<>();
         for (Item s : bot.getInventory(InventoryType.USE).list()) {
             int sid = s.getItemId();
@@ -617,7 +622,7 @@ final class BotScrollManager {
             // reproduction value curve separately uses the FULL market price (see reproSpecs).
             options.add(new BotScrollPlanner.ScrollOption(sid, scrollName(ii, sid),
                     effectiveSuccessPct(success) / 100.0,
-                    0.0, gain, SCROLL_OPPORTUNITY_FRACTION * scrollPriceMeso(bot, sid)));
+                    0.0, gain, SCROLL_OPPORTUNITY_FRACTION * scrollPriceMeso(pc, sid)));
         }
         return options;
     }
@@ -689,11 +694,11 @@ final class BotScrollManager {
 
     /** Translate the owned scroll options into reproduction specs. Uses the FULL market price (an item
      *  is worth what it costs to remake), not the discounted per-apply opportunity cost in op.cost(). */
-    private static List<BotScrollValuer.ScrollSpec> reproSpecs(Character bot, List<BotScrollPlanner.ScrollOption> options) {
+    private static List<BotScrollValuer.ScrollSpec> reproSpecs(ProducerCombat pc, List<BotScrollPlanner.ScrollOption> options) {
         List<BotScrollValuer.ScrollSpec> specs = new ArrayList<>(options.size());
         for (BotScrollPlanner.ScrollOption op : options) {
             specs.add(new BotScrollValuer.ScrollSpec(
-                    op.successRate(), op.statGain(), scrollPriceMeso(bot, op.scrollItemId())));
+                    op.successRate(), op.statGain(), scrollPriceMeso(pc, op.scrollItemId())));
         }
         return specs;
     }
@@ -704,13 +709,13 @@ final class BotScrollManager {
      * if any mob drops it. A rare drop an NPC sells cheaply is therefore priced at the NPC price. If
      * neither source exists (not shop-sold, not dropped), falls back to the reqLevel-scaled placeholder.
      */
-    private static double cleanBaseCostMeso(Character bot, ItemInformationProvider ii, int itemId) {
+    private static double cleanBaseCostMeso(ProducerCombat pc, ItemInformationProvider ii, int itemId) {
         double best = Double.POSITIVE_INFINITY;
         Integer npcPrice = shopPrices().get(itemId);
         if (npcPrice != null) {
             best = npcPrice;
         }
-        double farm = farmingCostMeso(bot, itemId);
+        double farm = farmingCostMeso(pc, itemId);
         if (farm < best) {
             best = farm;
         }
@@ -723,12 +728,41 @@ final class BotScrollManager {
     }
 
     /**
+     * The asking bot's farming attack profile, resolved once per pass: max physical hit, its attack
+     * skill's damage multiplier (e.g. 2.6 for a 260% skill) and line count, and the attack cycle. This
+     * is what makes {@link #farmingCostMeso} estimate kill time off the bot's <em>real</em> attack, not
+     * a bare 100%/1-line swing. Falls back to a basic attack when the bot has no resolved attack skill.
+     */
+    private record ProducerCombat(int maxHit, double skillMultiplier, int lines, double attackCycleSeconds) {}
+
+    private static ProducerCombat resolveProducerCombat(BotEntry entry, Character bot) {
+        int maxHit = Math.max(1, bot.calculateMaxBaseDamage(bot.getTotalWatk()));
+        double mult = 1.0;
+        int lines = 1;
+        // Prefer the bot's chosen single-target attack skill; fall back to its AoE skill, then basic.
+        int skillId = entry == null ? 0 : (entry.attackSkillId != 0 ? entry.attackSkillId : entry.aoeSkillId);
+        int level = skillId != 0 ? bot.getSkillLevel(skillId) : 0;
+        if (skillId != 0 && level > 0) {
+            Skill skill = SkillFactory.getSkill(skillId);
+            StatEffect fx = skill != null ? skill.getEffect(level) : null;
+            if (fx != null) {
+                if (fx.getDamage() > 0) {
+                    mult = fx.getDamage() / 100.0;
+                }
+                lines = Math.max(1, Math.max(fx.getAttackCount(), fx.getBulletCount()));
+            }
+        }
+        return new ProducerCombat(maxHit, mult, lines, FARM_ATTACK_CYCLE_SECONDS);
+    }
+
+    /**
      * Drop-effort → meso (rarity) for an item the <em>asking bot</em> would farm: expected kills (from
      * the item's best drop rate) × realistic capped time-to-kill × the meso/sec anchor. Returns
      * {@code +∞} when no mob drops it or the bot can't damage the dropper, so callers fall back to
-     * other sources. Producer DPS = the bot's live max physical hit reduced by the mob's defense.
+     * other sources. Producer DPS = the bot's attack-skill damage (max hit × skill % × lines) reduced
+     * by the mob's physical defense.
      */
-    private static double farmingCostMeso(Character bot, int itemId) {
+    private static double farmingCostMeso(ProducerCombat pc, int itemId) {
         int[] dropper = bestDropperByItem().get(itemId); // {mobId, chance}
         if (dropper == null) {
             return Double.POSITIVE_INFINITY;
@@ -739,13 +773,12 @@ final class BotScrollManager {
         }
         int mobHp = Math.max(1, mob.getMaxHp());
         int mobWdef = mob.getStats() != null ? mob.getStats().getPDDamage() : 0;
-        // Asking-bot capability: live max physical hit, reduced by the mob's physical defense.
-        int maxHit = bot.calculateMaxBaseDamage(bot.getTotalWatk());
-        double perHit = BotEquipManager.expectedDamageAfterDef(maxHit, mobWdef);
-        double dps = perHit / FARM_ATTACK_CYCLE_SECONDS;
+        int skillMax = (int) Math.round(pc.maxHit() * pc.skillMultiplier());
+        double perAttack = BotEquipManager.expectedDamageAfterDef(skillMax, mobWdef) * pc.lines();
+        double dps = perAttack / pc.attackCycleSeconds();
         BotFarmingCostModel.FarmInput in = new BotFarmingCostModel.FarmInput(
                 dropper[1] / DROP_CHANCE_DENOMINATOR, mobHp, dps,
-                FARM_ATTACK_CYCLE_SECONDS, FARM_SEEK_OVERHEAD_SECONDS, FARM_MESO_PER_SECOND);
+                pc.attackCycleSeconds(), FARM_SEEK_OVERHEAD_SECONDS, FARM_MESO_PER_SECOND);
         return BotFarmingCostModel.rarityMeso(in);
     }
 
@@ -777,12 +810,12 @@ final class BotScrollManager {
 
     /** Meso price of a scroll = MIN over sources: cheapest NPC-shop price, else its drop-farm cost
      *  (rarity→meso). Falls back to a flat default only when it is neither shop-sold nor dropped. */
-    private static double scrollPriceMeso(Character bot, int scrollId) {
+    private static double scrollPriceMeso(ProducerCombat pc, int scrollId) {
         Integer price = shopPrices().get(scrollId);
         if (price != null) {
             return price;
         }
-        double farm = farmingCostMeso(bot, scrollId);
+        double farm = farmingCostMeso(pc, scrollId);
         return Double.isFinite(farm) ? farm : DEFAULT_SCROLL_COST_MESO;
     }
 
