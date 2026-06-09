@@ -294,11 +294,17 @@ final class BotScrollManager {
             DoubleUnaryOperator valueFn = BotScrollValuer.reproductionValue(
                     baseOffenseValue(bot, ii, eq.getItemId()), totalSlots(ii, eq.getItemId()),
                     reproSpecs(pc, options), cleanBaseCostMeso(pc, ii, eq.getItemId()));
-            // slotsRemaining = free upgrade slots = the DP horizon. hasFallbackForSlot stays false
-            // (no boom scrolls fed in v1; it only gates destroy-capable scrolls).
+            // Self-combat floor: value of the item the bot WEARS in this slot (no decay). For a worn
+            // candidate this equals its own stop-now; for a bag piece it's the rival it must beat.
+            Equip worn = wornInSlot(bot, ii, slot);
+            double wornRivalValue = worn == null ? 0.0 : reproValueNow(pc, bot, ii, worn);
+            // slotsRemaining = free upgrade slots = the DP horizon; totalSlots = catalog tuc, so
+            // (totalSlots - slotsRemaining) = slots already consumed (the profit-decay exponent).
+            // hasFallbackForSlot stays false (no boom scrolls fed in v1; it only gates destroy scrolls).
             BotScrollPlanner.EquipCandidate c = new BotScrollPlanner.EquipCandidate(
                     eq.getItemId(), equipName(ii, eq.getItemId()),
-                    value, eq.getUpgradeSlots(), betterAvailable, false, options, valueFn);
+                    value, eq.getUpgradeSlots(), totalSlots(ii, eq.getItemId()), wornRivalValue,
+                    betterAvailable, false, options, valueFn);
             candidates.add(c);
             backing.put(c, eq);
         }
@@ -328,7 +334,8 @@ final class BotScrollManager {
             sb.append(String.format("  %-22s score=%.1f slots=%d value@now=%,.0f%s%n",
                     c.equipName(), c.currentStatScore(), c.slotsRemaining(),
                     c.value().applyAsDouble(c.currentStatScore()),
-                    c.betterItemAvailable() ? " [DOMINATED -> skipped]" : ""));
+                    c.betterItemAvailable() ? " [out-classed -> combat pass skips; profit pass may still scroll-to-sell]" : ""));
+            appendWornRival(sb, pc, bot, ii, c.equipItemId());
             for (BotScrollPlanner.ScrollOption op : c.options()) {
                 sb.append(String.format("      - %-26s p=%.0f%% +%.1f score, apply-cost=%,.0f meso%n",
                         op.scrollName(), op.successRate() * 100.0, op.statGain(), op.cost()));
@@ -341,7 +348,12 @@ final class BotScrollManager {
         } else {
             sb.append("\nDECISION: scroll '").append(plan.equip().equipName()).append("' with '")
                     .append(plan.scroll().scrollName()).append("'\n");
-            sb.append(String.format("  expected meso-value gained: %,.0f%n", plan.expectedValue()));
+            sb.append("  driver: ").append(plan.profitDriven()
+                    ? "PROFIT (scroll-to-sell, market value decayed 0.9^slots-used)"
+                    : "SELF-COMBAT (must beat the worn item in this slot)").append('\n');
+            sb.append(String.format("  expected play value (EV at current state): ~%,.0f%n", plan.achievableValue()));
+            sb.append(String.format("  value gained vs alternative: %,.0f%n", plan.expectedValue()));
+            appendWornRival(sb, pc, bot, ii, plan.equip().equipItemId());
             sb.append("  proposal: ").append(plan.proposal()).append('\n');
             appendReproTable(sb, pc, bot, ii, plan.equip());
         }
@@ -422,6 +434,51 @@ final class BotScrollManager {
         }
         sb.append(String.format("  (current item is at score %.1f with %d free slots)%n",
                 cand.currentStatScore(), cand.slotsRemaining()));
+    }
+
+    /**
+     * Show the item the bot is ACTUALLY WEARING in this candidate's slot, with its reproduction
+     * value@now. This is the rival the bot keeps if it does nothing — for a single-capacity slot the
+     * scroll play only helps if the candidate's <em>achievable</em> value exceeds this. The planner
+     * does NOT use this as a floor today (it measures improvement against the candidate's own current
+     * value), so a bag piece can be proposed even when its ceiling stays below the worn item.
+     */
+    private static void appendWornRival(StringBuilder sb, ProducerCombat pc, Character bot,
+            ItemInformationProvider ii, int candidateItemId) {
+        Short slot = primarySlot(ii, candidateItemId);
+        if (slot == null) {
+            return;
+        }
+        Equip worn = wornInSlot(bot, ii, slot);
+        if (worn == null) {
+            sb.append("      worn in this slot: (none)\n");
+            return;
+        }
+        sb.append(String.format("      worn in this slot: %-22s score=%.1f slots=%d value@now=%,.0f%s%n",
+                equipName(ii, worn.getItemId()), offenseValue(bot, worn), worn.getUpgradeSlots(),
+                reproValueNow(pc, bot, ii, worn),
+                worn.getItemId() == candidateItemId ? " (this is the worn copy)" : ""));
+    }
+
+    /** The non-cash equip the bot currently wears in the given primary slot, or null. */
+    private static Equip wornInSlot(Character bot, ItemInformationProvider ii, short slot) {
+        for (Item it : bot.getInventory(InventoryType.EQUIPPED).list()) {
+            if (it instanceof Equip e && !ii.isCash(e.getItemId())) {
+                Short s = primarySlot(ii, e.getItemId());
+                if (s != null && s == slot) {
+                    return e;
+                }
+            }
+        }
+        return null;
+    }
+
+    /** Reproduction value of an equip at its current offense score, using its own value curve. */
+    private static double reproValueNow(ProducerCombat pc, Character bot, ItemInformationProvider ii, Equip eq) {
+        DoubleUnaryOperator vf = BotScrollValuer.reproductionValue(
+                baseOffenseValue(bot, ii, eq.getItemId()), totalSlots(ii, eq.getItemId()),
+                reproSpecs(pc, buildOptions(pc, bot, ii, eq)), cleanBaseCostMeso(pc, ii, eq.getItemId()));
+        return vf.applyAsDouble(offenseValue(bot, eq));
     }
 
     private static String writeReport(Character bot, String report) {

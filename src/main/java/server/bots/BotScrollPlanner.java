@@ -58,16 +58,26 @@ final class BotScrollPlanner {
      * <ul>
      *   <li>{@code currentStatScore} — the equip's current stat-score (input to {@code rawValue}).</li>
      *   <li>{@code slotsRemaining} — free upgrade slots, the DP horizon for this equip.</li>
+     *   <li>{@code totalSlots} — the item's full upgrade-slot count (catalog tuc); with
+     *       {@code slotsRemaining} it gives slots-consumed, the exponent for the profit-pass decay.</li>
+     *   <li>{@code wornRivalValue} — value (no decay) of the item the bot currently WEARS in this slot.
+     *       It is the self-combat floor: scrolling this piece is a real upgrade only if its expected
+     *       value clears the rival it would replace. For the worn piece itself this equals stop-now.</li>
      *   <li>{@code betterItemAvailable} — enough strictly-better same-slot items already exist to fill
-     *       the slot, so this one is about to be benched: don't invest scrolls in it.</li>
+     *       the slot, so this one is about to be benched: don't invest combat scrolls in it (the
+     *       profit pass still may, since a benched piece can be scrolled to sell).</li>
      *   <li>{@code hasFallbackForSlot} — another usable equip for this slot exists, so a boom is
      *       recoverable rather than catastrophic (gate for destroy-capable scrolls).</li>
+     *   <li>{@code value} — reproduction value of a given stat-score, WITHOUT the slot-usage decay
+     *       (the profit pass applies {@link #SLOT_DECAY} on top; the combat pass uses it raw).</li>
      * </ul>
      */
     record EquipCandidate(int equipItemId,
                           String equipName,
                           double currentStatScore,
                           int slotsRemaining,
+                          int totalSlots,
+                          double wornRivalValue,
                           boolean betterItemAvailable,
                           boolean hasFallbackForSlot,
                           List<ScrollOption> options,
@@ -76,36 +86,68 @@ final class BotScrollPlanner {
     /** The single best scroll play to propose, with the ASCII chat line for owner confirmation. */
     record ScrollPlan(EquipCandidate equip,
                       ScrollOption scroll,
-                      double expectedValue,   // expected value gained over not scrolling at all
+                      double expectedValue,    // value gained over the alternative (worn rival / sell-as-is)
+                      double achievableValue,  // expected value of the chosen play itself (EV at current state)
+                      boolean profitDriven,    // false = self-combat upgrade; true = scroll-to-sell (decayed)
                       boolean usesBoomCapableScroll,
                       String proposal) {}
 
+    /** Profit-pass market decay: each <em>consumed</em> upgrade slot discounts an item's resale value
+     *  by this factor. A scrolled item is worth less than its pristine potential, so the profit pass is
+     *  intrinsically loss-leaning and only fires when a price premium beats the decay + scroll cost.
+     *  The combat pass does NOT apply it (the bot upgrades its own gear on raw expected stat). */
+    private static final double SLOT_DECAY = 0.9;
+
     /**
-     * Best eligible (equip, scroll) play across all candidates, or null if none clear the bar. Each
-     * candidate carries its own {@code value} curve (meso reproduction cost — convex above the base);
-     * see {@link BotScrollValuer}.
+     * Best eligible (equip, scroll) play across all candidates, or null if none clear the bar.
+     *
+     * <p>Two passes, in priority order:
+     * <ol>
+     *   <li><b>Self-combat</b> — no decay; the bar is the {@code wornRivalValue} this piece would
+     *       replace. A play is proposed only if its expected value (after scroll cost) clears the item
+     *       the bot already wears. Skips out-classed gear ({@code betterItemAvailable}).</li>
+     *   <li><b>Profit</b> (only if combat found nothing) — decay on; the bar is the piece's own
+     *       sell-as-is value. Scroll-to-sell stays eligible but the {@link #SLOT_DECAY} haircut makes it
+     *       almost always net-negative until a real economy prices some scroll-ups above their cost.</li>
+     * </ol>
+     * Each candidate carries its own {@code value} curve (meso reproduction cost — convex above the
+     * base); see {@link BotScrollValuer}.
      */
     static ScrollPlan planBest(List<EquipCandidate> candidates) {
         if (candidates == null) {
             return null;
         }
+        ScrollPlan combat = bestPlay(candidates, false);
+        return combat != null ? combat : bestPlay(candidates, true);
+    }
+
+    /** One pass of the search. {@code profit} selects the decayed market lens + sell-as-is floor; else
+     *  the raw lens + worn-rival floor (self-combat). Returns the best EV-positive play or null. */
+    private static ScrollPlan bestPlay(List<EquipCandidate> candidates, boolean profit) {
         ScrollPlan best = null;
         for (EquipCandidate eq : candidates) {
             if (eq == null || eq.options() == null || eq.options().isEmpty() || eq.value() == null) {
                 continue;
             }
-            if (eq.betterItemAvailable() || eq.slotsRemaining() <= 0) {
+            if (eq.slotsRemaining() <= 0) {
+                continue;
+            }
+            // Combat won't invest in soon-benched gear; profit still may (you can scroll it to sell).
+            if (!profit && eq.betterItemAvailable()) {
                 continue;
             }
             Map<Long, Double> memo = new HashMap<>();
-            double stopNow = eq.value().applyAsDouble(eq.currentStatScore());
+            double stopNow = lens(eq, eq.currentStatScore(), eq.slotsRemaining(), profit);
+            // Combat: the real alternative is to keep wearing the rival, so the floor is the better of
+            // this piece as-is and the worn rival. Profit: the alternative is selling this piece as-is.
+            double floor = profit ? stopNow : Math.max(stopNow, eq.wornRivalValue());
             ScrollOption pick = null;
             double pickValue = stopNow;
             for (ScrollOption op : eq.options()) {
                 if (op == null || !allowed(eq, op)) {
                     continue;
                 }
-                double ev = evApply(eq, op, eq.currentStatScore(), eq.slotsRemaining(), memo);
+                double ev = evApply(eq, op, eq.currentStatScore(), eq.slotsRemaining(), profit, memo);
                 if (ev > pickValue) {
                     pickValue = ev;
                     pick = op;
@@ -114,33 +156,45 @@ final class BotScrollPlanner {
             if (pick == null) {
                 continue;
             }
-            double improvement = pickValue - stopNow;
+            double improvement = pickValue - floor;
             if (improvement <= 0.0) {
                 continue;
             }
             if (best == null || improvement > best.expectedValue()) {
-                best = new ScrollPlan(eq, pick, improvement, pick.boomRate() > 0.0, buildProposal(eq, pick));
+                best = new ScrollPlan(eq, pick, improvement, pickValue, profit,
+                        pick.boomRate() > 0.0, buildProposal(eq, pick));
             }
         }
         return best;
     }
 
+    /** Item value at state {@code (v, s)} under the active lens: reproduction value of stat-score
+     *  {@code v}, times the slot-usage decay ({@code SLOT_DECAY^slotsConsumed}) in the profit pass. */
+    private static double lens(EquipCandidate eq, double v, int s, boolean profit) {
+        double base = eq.value().applyAsDouble(v);
+        if (!profit) {
+            return base;
+        }
+        int consumed = Math.max(0, eq.totalSlots() - s);
+        return base * Math.pow(SLOT_DECAY, consumed);
+    }
+
     /** Optimal value achievable from state {@code (v, s)} under the recurrence above (memoized). */
-    private static double valueOf(EquipCandidate eq, double v, int s, Map<Long, Double> memo) {
+    private static double valueOf(EquipCandidate eq, double v, int s, boolean profit, Map<Long, Double> memo) {
         if (s <= 0) {
-            return eq.value().applyAsDouble(v);
+            return lens(eq, v, 0, profit);
         }
         long key = s * 1_000_003L + Math.round(v * 1000.0);
         Double cached = memo.get(key);
         if (cached != null) {
             return cached;
         }
-        double best = eq.value().applyAsDouble(v); // stop: leave the remaining slots unused
+        double best = lens(eq, v, s, profit); // stop: leave the remaining slots unused
         for (ScrollOption op : eq.options()) {
             if (op == null || !allowed(eq, op)) {
                 continue;
             }
-            double ev = evApply(eq, op, v, s, memo);
+            double ev = evApply(eq, op, v, s, profit, memo);
             if (ev > best) {
                 best = ev;
             }
@@ -151,12 +205,12 @@ final class BotScrollPlanner {
 
     /** Expected value of applying {@code op} at state {@code (v, s)} and then playing optimally. */
     private static double evApply(EquipCandidate eq, ScrollOption op, double v, int s,
-                                  Map<Long, Double> memo) {
+                                  boolean profit, Map<Long, Double> memo) {
         double p = clamp01(op.successRate());
         double boom = clamp01(op.boomRate());
         double keepFail = (1.0 - p) * (1.0 - boom);
-        double success = p * valueOf(eq, v + op.statGain(), s - 1, memo);
-        double fail = keepFail * valueOf(eq, v, s - 1, memo);
+        double success = p * valueOf(eq, v + op.statGain(), s - 1, profit, memo);
+        double fail = keepFail * valueOf(eq, v, s - 1, profit, memo);
         // destroy branch, prob (1-p)*boom: item gone, value 0. Cost is paid on every attempt.
         return success + fail - op.cost();
     }

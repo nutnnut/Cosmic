@@ -37,8 +37,19 @@ class BotScrollPlannerTest {
     private static BotScrollPlanner.EquipCandidate equipV(
             DoubleUnaryOperator value, String name, double score, int slots, boolean betterAvailable,
             boolean fallback, BotScrollPlanner.ScrollOption... options) {
+        // totalSlots = slots (fresh, nothing consumed yet) and no worn rival -> combat floor = stop-now,
+        // so these legacy cases behave exactly as the single-pass planner did.
+        return equipR(value, name, score, slots, slots, 0.0, betterAvailable, fallback, options);
+    }
+
+    /** Full candidate with explicit totalSlots + worn-rival floor (for the two-pass behaviours). */
+    private static BotScrollPlanner.EquipCandidate equipR(
+            DoubleUnaryOperator value, String name, double score, int slots, int totalSlots,
+            double wornRivalValue, boolean betterAvailable, boolean fallback,
+            BotScrollPlanner.ScrollOption... options) {
         return new BotScrollPlanner.EquipCandidate(
-                1302000, name, score, slots, betterAvailable, fallback, List.of(options), value);
+                1302000, name, score, slots, totalSlots, wornRivalValue,
+                betterAvailable, fallback, List.of(options), value);
     }
 
     @Test
@@ -56,10 +67,51 @@ class BotScrollPlannerTest {
 
     @Test
     void skipsEquipWithBetterReplacementAvailable() {
-        // Great scroll, but the slot is already out-classed -> don't invest in soon-benched gear.
+        // Out-classed for combat -> the self-combat pass refuses to invest in soon-benched gear. The
+        // profit pass still considers it (you could scroll it to sell), but with the scroll's cost (20)
+        // against the 0.9^slot decay the scroll-to-sell is net-negative too, so overall: no play.
+        BotScrollPlanner.ScrollOption costly =
+                new BotScrollPlanner.ScrollOption(2040000, "60% str", 0.60, 0.0, 50.0, 20.0);
         assertNull(BotScrollPlanner.planBest(List.of(
-                equip("old glove", 100.0, 1, true, false,
-                        scroll("60% str", 0.60, 50.0)))));
+                equip("old glove", 100.0, 1, true, false, costly))));
+    }
+
+    @Test
+    void selfCombatRefusesPieceThatCannotBeatWornRival() {
+        // The glove bug: a bag glove (5 free slots) whose EXPECTED scrolled value can't reach the worn
+        // glove (worth 1000) is NOT a combat upgrade. The self-combat pass refuses it; only the profit
+        // pass (scroll-to-sell) considers it, so any plan returned must be profit-driven, never combat.
+        BotScrollPlanner.ScrollPlan plan = BotScrollPlanner.planBest(List.of(
+                equipR(LINEAR, "bag glove", 3.0, 5, 5, 1000.0, false, false,
+                        scroll("70% att", 0.70, 10.0))));
+        assertNotNull(plan);
+        assertTrue(plan.profitDriven(), "high worn rival must push the play out of the combat pass");
+    }
+
+    @Test
+    void selfCombatProposesWhenExpectedValueClearsWornRival() {
+        // Same scroll/shape, but the worn rival is weak (worth 20): the expected scrolled value clears
+        // it, so this IS a combat upgrade and is proposed by the (priority) self-combat pass.
+        BotScrollPlanner.ScrollPlan plan = BotScrollPlanner.planBest(List.of(
+                equipR(LINEAR, "bag glove", 10.0, 3, 3, 20.0, false, false,
+                        scroll("70% att", 0.70, 10.0))));
+        assertNotNull(plan);
+        assertFalse(plan.profitDriven(), "beating the worn rival is a combat play, not a profit play");
+    }
+
+    @Test
+    void profitPassFiresOnlyWhenNoCombatPlayAndIsDecayed() {
+        // Out-classed for combat (betterAvailable) so combat is empty; a free, high-odds scroll makes
+        // scroll-to-sell net-positive even after the decay -> a profit-driven play is returned.
+        BotScrollPlanner.ScrollPlan plan = BotScrollPlanner.planBest(List.of(
+                equipR(LINEAR, "spare glove", 100.0, 2, 2, 0.0, true, false,
+                        scroll("100% att", 1.00, 30.0))));
+        assertNotNull(plan);
+        assertTrue(plan.profitDriven());
+        // Decay: two 100% successes -> stat 160, but each consumed slot x0.9 -> 160*0.9^2 = 129.6.
+        // achievable EV = 129.6; floor = sell-as-is = 100*0.9^0 = 100; gain = 29.6.
+        assertEquals(129.6, plan.achievableValue(), 1e-6);
+        assertEquals(29.6, plan.expectedValue(), 1e-6);
     }
 
     @Test
