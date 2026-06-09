@@ -1017,6 +1017,45 @@ class BotCombatManager {
         }
     }
 
+    /**
+     * Best expected per-attack damage the bot would deal to {@code mob} using one of its attack skills,
+     * computed with the SAME damage model the live planner uses ({@link CombatFormulaProvider}) — so
+     * magic vs physical, skill %, line count and the mob's defense are all handled identically. Spatial
+     * targeting (hitbox/facing/reach) is intentionally ignored; this is the bot's raw damage capability
+     * against that mob, for farming-cost / valuation. Returns 0 when the bot has no usable attack skill
+     * (the caller falls back to a basic-attack estimate). This is the SSOT for "how hard the bot hits".
+     */
+    public static double estimateBestSkillHitDamage(BotEntry entry, Character bot, Monster mob) {
+        if (entry == null || bot == null || mob == null) {
+            return 0.0;
+        }
+        WeaponType weaponType = BotAttackExecutionProvider.getEquippedWeaponType(bot);
+        double best = 0.0;
+        for (int skillId : cachedAttackSkillIds(entry)) {
+            Skill skill = SkillFactory.getSkill(skillId);
+            if (skill == null) {
+                continue;
+            }
+            int skillLevel = bot.getSkillLevel(skill);
+            if (skillLevel <= 0) {
+                continue;
+            }
+            StatEffect effect = skill.getEffect(skillLevel);
+            if (effect == null) {
+                continue;
+            }
+            AttackRoute route = BotAttackExecutionProvider.determineSkillRoute(bot, skillId);
+            int lines = Math.max(1, effectiveHitCount(effect) * shadowPartnerHitMultiplier(bot, route));
+            CombatFormulaProvider.DamageProfile profile = CombatFormulaProvider.getInstance()
+                    .resolveDamageProfile(bot, skillId, skillLevel, route == AttackRoute.MAGIC, weaponType);
+            double dmg = CombatFormulaProvider.getInstance().estimateExpectedDamage(bot, mob, lines, skillId, profile);
+            if (dmg > best) {
+                best = dmg;
+            }
+        }
+        return best;
+    }
+
     private static List<Integer> cachedAttackSkillIds(BotEntry entry) {
         if (!entry.attackSkillIds.isEmpty()) {
             return entry.attackSkillIds;

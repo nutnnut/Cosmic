@@ -2,8 +2,6 @@ package server.bots;
 
 import client.Character;
 import client.Client;
-import client.Skill;
-import client.SkillFactory;
 import client.inventory.Equip;
 import client.inventory.Equip.ScrollResult;
 import client.inventory.Inventory;
@@ -16,7 +14,6 @@ import constants.id.ItemId;
 import constants.inventory.EquipSlot;
 import constants.inventory.ItemConstants;
 import server.ItemInformationProvider;
-import server.StatEffect;
 import server.life.LifeFactory;
 import server.life.Monster;
 import tools.DatabaseConnection;
@@ -728,39 +725,23 @@ final class BotScrollManager {
     }
 
     /**
-     * The asking bot's farming attack profile, resolved once per pass: max physical hit, its attack
-     * skill's damage multiplier (e.g. 2.6 for a 260% skill) and line count, and the attack cycle. This
-     * is what makes {@link #farmingCostMeso} estimate kill time off the bot's <em>real</em> attack, not
-     * a bare 100%/1-line swing. Falls back to a basic attack when the bot has no resolved attack skill.
+     * The asking bot's farming combat context, resolved once per pass: its {@link BotEntry} (for the
+     * chosen attack skills), the bot itself, and the attack cycle (DPS denominator). Per-mob damage is
+     * computed in {@link #farmingCostMeso} via the combat SSOT so it stays magic/physical-correct.
      */
-    private record ProducerCombat(int maxHit, double skillMultiplier, int lines, double attackCycleSeconds) {}
+    private record ProducerCombat(BotEntry entry, Character bot, double attackCycleSeconds) {}
 
     private static ProducerCombat resolveProducerCombat(BotEntry entry, Character bot) {
-        int maxHit = Math.max(1, bot.calculateMaxBaseDamage(bot.getTotalWatk()));
-        double mult = 1.0;
-        int lines = 1;
-        // Prefer the bot's chosen single-target attack skill; fall back to its AoE skill, then basic.
-        int skillId = entry == null ? 0 : (entry.attackSkillId != 0 ? entry.attackSkillId : entry.aoeSkillId);
-        int level = skillId != 0 ? bot.getSkillLevel(skillId) : 0;
-        if (skillId != 0 && level > 0) {
-            Skill skill = SkillFactory.getSkill(skillId);
-            StatEffect fx = skill != null ? skill.getEffect(level) : null;
-            if (fx != null) {
-                if (fx.getDamage() > 0) {
-                    mult = fx.getDamage() / 100.0;
-                }
-                lines = Math.max(1, Math.max(fx.getAttackCount(), fx.getBulletCount()));
-            }
-        }
-        return new ProducerCombat(maxHit, mult, lines, FARM_ATTACK_CYCLE_SECONDS);
+        return new ProducerCombat(entry, bot, FARM_ATTACK_CYCLE_SECONDS);
     }
 
     /**
      * Drop-effort → meso (rarity) for an item the <em>asking bot</em> would farm: expected kills (from
      * the item's best drop rate) × realistic capped time-to-kill × the meso/sec anchor. Returns
      * {@code +∞} when no mob drops it or the bot can't damage the dropper, so callers fall back to
-     * other sources. Producer DPS = the bot's attack-skill damage (max hit × skill % × lines) reduced
-     * by the mob's physical defense.
+     * other sources. Producer per-attack damage uses the combat SSOT
+     * ({@link BotCombatManager#estimateBestSkillHitDamage}) — magic vs physical, skill %, lines and mob
+     * defense all handled there — falling back to a basic physical hit only when the bot has no skill.
      */
     private static double farmingCostMeso(ProducerCombat pc, int itemId) {
         int[] dropper = bestDropperByItem().get(itemId); // {mobId, chance}
@@ -772,9 +753,12 @@ final class BotScrollManager {
             return Double.POSITIVE_INFINITY;
         }
         int mobHp = Math.max(1, mob.getMaxHp());
-        int mobWdef = mob.getStats() != null ? mob.getStats().getPDDamage() : 0;
-        int skillMax = (int) Math.round(pc.maxHit() * pc.skillMultiplier());
-        double perAttack = BotEquipManager.expectedDamageAfterDef(skillMax, mobWdef) * pc.lines();
+        double perAttack = BotCombatManager.estimateBestSkillHitDamage(pc.entry(), pc.bot(), mob);
+        if (perAttack <= 0.0) {
+            // No usable attack skill: fall back to a basic physical hit after the mob's defense.
+            int mobWdef = mob.getStats() != null ? mob.getStats().getPDDamage() : 0;
+            perAttack = BotEquipManager.expectedDamageAfterDef(pc.bot().calculateMaxBaseDamage(pc.bot().getTotalWatk()), mobWdef);
+        }
         double dps = perAttack / pc.attackCycleSeconds();
         BotFarmingCostModel.FarmInput in = new BotFarmingCostModel.FarmInput(
                 dropper[1] / DROP_CHANCE_DENOMINATOR, mobHp, dps,
