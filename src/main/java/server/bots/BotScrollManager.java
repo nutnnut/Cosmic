@@ -114,7 +114,8 @@ final class BotScrollManager {
         entry.pendingAction = "scroll_confirm";
         entry.pendingScrollEquip = equip;
         entry.pendingScrollScroll = scroll;
-        BotManager.getInstance().botReply(entry, plan.proposal());
+        BotManager.getInstance().botReply(entry,
+                plan.proposal() + String.format(" (worth ~%,.0f meso to me)", plan.expectedValue()));
     }
 
     /** Owner replied to a pending scroll proposal. Anything that isn't a clear "yes" cancels. */

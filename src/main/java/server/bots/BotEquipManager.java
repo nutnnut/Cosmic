@@ -136,6 +136,7 @@ class BotEquipManager {
         Map<Short, Equip> bestPicks = null;
         EquipScore bestScore = null;
         Equip bestWeapon = currentWeapon;
+        boolean bestCapHit = false;
         boolean anyCapHit = false;
         for (Equip w : weaponPool) {
             DpResult r = solveForWeapon(bot, ii, naked, w, dpSlots, currentBySlot, bySlot, mob, reqRel);
@@ -145,6 +146,7 @@ class BotEquipManager {
                 bestScore = r.score();
                 bestPicks = r.picks();
                 bestWeapon = w;
+                bestCapHit = r.paretoCapHit();
             }
         }
         // Every weapon failed reqs — fall back to a no-weapon plan so the armor pass still runs.
@@ -154,11 +156,14 @@ class BotEquipManager {
                 bestScore = r.score();
                 bestPicks = r.picks();
                 bestWeapon = null;
+                bestCapHit = r.paretoCapHit();
                 if (r.paretoCapHit()) anyCapHit = true;
             }
         }
 
         if (bestPicks != null) {
+            log.info("Bot {} autoequip: {}", bot.getName(),
+                    describeEquipPlan(ii, bestWeapon, bestScore, bestPicks, bestCapHit));
             applyEquipPlan(bot, ii, eqdInv, currentBySlot, bestPicks, bestWeapon, dpSlots);
             // Sweep currently-equipped items whose reqs aren't met against the bot's now-final
             // stats. This catches gear left equipped via prior trade-debug or stat changes that
@@ -1945,6 +1950,28 @@ class BotEquipManager {
     private static boolean isRingSlot(short slot) {
         for (short rs : RING_SLOTS) if (slot == rs) return true;
         return false;
+    }
+
+    /** One-line, human-readable summary of a chosen equip plan, for the autoequip log. */
+    private static String describeEquipPlan(ItemInformationProvider ii, Equip weapon,
+                                            EquipScore score, Map<Short, Equip> picks, boolean capHit) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("weapon ").append(weapon == null ? "(none)" : ii.getName(weapon.getItemId()));
+        sb.append(" -> score ").append(score.statSum()).append(", damage ").append(score.damage());
+        if (capHit) {
+            sb.append(" (frontier cap hit)");
+        }
+        if (!picks.isEmpty()) {
+            sb.append(" [");
+            boolean first = true;
+            for (Map.Entry<Short, Equip> e : picks.entrySet()) {
+                if (!first) sb.append(", ");
+                first = false;
+                sb.append(slotLabel(e.getKey())).append(": ").append(ii.getName(e.getValue().getItemId()));
+            }
+            sb.append("]");
+        }
+        return sb.toString();
     }
 
     private static String slotLabel(short slot) {

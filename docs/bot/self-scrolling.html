@@ -78,7 +78,7 @@
 
   <div class="panel chat">
     <div><span class="you">you:</span> scroll now</div>
-    <div><span class="bot">bot:</span> want me to use 60% Scroll for Gloves (ATT) on my Work Glove? ~60% success (yes/no)</div>
+    <div><span class="bot">bot:</span> want me to use 60% Scroll for Gloves (ATT) on my Work Glove? ~60% success (yes/no) (worth ~1,234,567 meso to me)</div>
     <div><span class="you">you:</span> yes</div>
     <div><span class="bot">bot:</span> yes! that hit, my Work Glove is better now</div>
   </div>
@@ -265,7 +265,7 @@
   <div class="panel files">
     <p><code>server.bots.BotScrollValuer</code> — pure reproduction-cost DP: the convex value-vs-score curve (§6.1) + the <kbd>scroll debug</kbd> table. Unit-tested in isolation.</p>
     <p><code>server.bots.BotScrollPlanner</code> — pure decision core: per-candidate improvement over the value curve, dominance gate, boom gate. Unit-tested in isolation.</p>
-    <p><code>server.bots.BotScrollManager</code> — wiring: gathers gear &amp; scrolls, slot/wearability/dominance, builds the value curve (NPC prices, GM filter, effective odds), applies the scroll, "nothing to scroll" reasons, the debug export.</p>
+    <p><code>server.bots.BotScrollManager</code> — wiring: gathers gear &amp; scrolls, slot/wearability/dominance, builds the value curve (NPC prices, GM filter, effective odds), applies the scroll, "nothing to scroll" reasons, the debug export. The chat proposal appends the plan's expected meso value so the owner sees <i>why</i> the play is worth it.</p>
     <p><code>server.bots.BotChatManager</code> — the <kbd>scroll on/off/now</kbd> + yes/no chat handling.</p>
     <p><code>server.bots.BotEntry</code> — per-bot state: <code>selfScrollEnabled</code> + pending proposal.</p>
     <p><code>constants.inventory.EquipSlot</code> — slot capacity (rings = 4).</p>
