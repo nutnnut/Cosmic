@@ -162,8 +162,8 @@ class BotEquipManager {
         }
 
         if (bestPicks != null) {
-            log.info("Bot {} autoequip: {}", bot.getName(),
-                    describeEquipPlan(ii, bestWeapon, bestScore, bestPicks, bestCapHit));
+//            log.info("Bot {} autoequip: {}", bot.getName(),
+//                    describeEquipPlan(ii, bestWeapon, bestScore, bestPicks, bestCapHit));
             applyEquipPlan(bot, ii, eqdInv, currentBySlot, bestPicks, bestWeapon, dpSlots);
             // Sweep currently-equipped items whose reqs aren't met against the bot's now-final
             // stats. This catches gear left equipped via prior trade-debug or stat changes that
