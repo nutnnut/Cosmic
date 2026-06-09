@@ -1921,6 +1921,24 @@ public class BotManager {
         return wander;
     }
 
+    /**
+     * True when the bot is physically standing in its patrol region. Gates roam-mode
+     * opportunity attacks: while in-region the bot may fire at any mob in attack range
+     * (including out-of-region ones), but if a knockback shoves it out of its region we
+     * suppress OA so it paths home first instead of drifting away chasing stray mobs.
+     */
+    private static boolean isBotInPatrolRegion(BotEntry entry, Character bot, Point botPos) {
+        if (entry.patrolRegionId < 0 || bot == null) {
+            return false;
+        }
+        MapleMap map = bot.getMap();
+        BotNavigationGraph graph = BotNavigationGraphProvider.peekBestGraph(map, entry.movementProfile);
+        if (graph == null) {
+            return false;
+        }
+        return BotNavigationManager.resolveCurrentRegionId(graph, entry, map, botPos) == entry.patrolRegionId;
+    }
+
     // Main tick
     // -------------------------------------------------------------------------
 
@@ -2287,6 +2305,24 @@ public class BotManager {
                 BotMovementManager.tickAirborne(entry, targetPos);
                 return new LocalOpportunityAttackResult(true, targetPos);
             } else {
+                // Patrol mode: prefer an opportunity shot over wandering. As long as we're
+                // standing inside our own patrol region, fire at any mob already in attack
+                // range — even one sitting outside the region — instead of idling. If a
+                // knockback pushed us out of the region, skip OA so the wander logic paths
+                // us back home first.
+                if (entry.patrolRegionId >= 0 && isBotInPatrolRegion(entry, bot, botPos)) {
+                    LocalOpportunityAttackResult oa = tryLocalOpportunityAttack(
+                            entry, bot, botPos, botPos, botPos, true, true);
+                    if (oa.consumedTick()) {
+                        return oa;
+                    }
+                    if (oa.targetPos() != botPos) {
+                        // OA found a mob but needs ranged spacing — move to the spacing point
+                        // instead of wandering.
+                        stepMovementCore(entry, oa.targetPos(), runAiTick);
+                        return new LocalOpportunityAttackResult(true, oa.targetPos());
+                    }
+                }
                 // No mob in seek range — pick a wander direction once and walk that way until
                 // a mob enters range. Beats standing still and lets the bot self-relocate.
                 if (entry.wanderDirection == 0) {
