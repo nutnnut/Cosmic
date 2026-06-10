@@ -17,6 +17,11 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Where do mobs actually spawn? A world-wide index built once from {@code Map.wz} (the DB
@@ -95,10 +100,16 @@ final class BotSpawnIndex {
     }
 
     private static Map<Integer, MapSpawns> scanWz() {
-        Map<Integer, MapSpawns> byMap = new HashMap<>();
-        DataProvider mapSource = DataProviderFactory.getDataProvider(WZFiles.MAP);
+        // Per-file parsing fans out to a worker pool. XMLWZFile.getData is synchronized per
+        // instance, so one shared provider would serialize the workers — each worker thread
+        // builds its own (the per-provider directory walk is cheap next to parsing ~5.8k XMLs).
+        Map<Integer, MapSpawns> byMap = new ConcurrentHashMap<>();
+        ThreadLocal<DataProvider> mapSources =
+                ThreadLocal.withInitial(() -> DataProviderFactory.getDataProvider(WZFiles.MAP));
+        ExecutorService pool = Executors.newFixedThreadPool(
+                Math.max(2, Math.min(8, Runtime.getRuntime().availableProcessors())));
         Path mapRoot = Path.of(WZFiles.MAP.getFilePath(), "Map");
-        int failures = 0;
+        AtomicInteger failures = new AtomicInteger();
         for (int area = 0; area <= 9; area++) {
             Path areaDir = mapRoot.resolve("Map" + area);
             if (!Files.isDirectory(areaDir)) {
@@ -110,24 +121,35 @@ final class BotSpawnIndex {
                     if (!name.endsWith(".img.xml")) {
                         continue;
                     }
+                    final int fileArea = area;
                     try {
                         int mapId = Integer.parseInt(name.substring(0, name.length() - ".img.xml".length()));
-                        MapSpawns spawns = readMap(mapSource, area, mapId);
-                        if (spawns != null) {
-                            byMap.put(mapId, spawns);
-                        }
+                        pool.execute(() -> {
+                            try {
+                                MapSpawns spawns = readMap(mapSources.get(), fileArea, mapId);
+                                if (spawns != null) {
+                                    byMap.put(mapId, spawns);
+                                }
+                            } catch (RuntimeException e) {
+                                failures.incrementAndGet();
+                            }
+                        });
                     } catch (NumberFormatException ignored) {
                         // non-map file (e.g. AreaCode.img.xml) — skip
-                    } catch (RuntimeException e) {
-                        failures++;
                     }
                 }
             } catch (IOException e) {
                 log.warn("Bot spawn index: can't list {}", areaDir, e);
             }
         }
-        if (failures > 0) {
-            log.warn("Bot spawn index: {} map files failed to parse (skipped)", failures);
+        pool.shutdown();
+        try {
+            pool.awaitTermination(10, TimeUnit.MINUTES);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        if (failures.get() > 0) {
+            log.warn("Bot spawn index: {} map files failed to parse (skipped)", failures.get());
         }
         return byMap;
     }

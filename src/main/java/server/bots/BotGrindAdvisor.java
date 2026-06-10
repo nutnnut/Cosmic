@@ -85,10 +85,14 @@ final class BotGrindAdvisor {
             return;
         }
         cachesWarmed = true;
-        DECIDE_POOL.execute(() -> {
-            BotSpawnIndex.get();
-            BotWorldGraph.get();
-        });
+        // One daemon thread per cache: each warmup is seconds of WZ scanning on a cold boot,
+        // so neither should wait on the other or queue ahead of real passes on DECIDE_POOL.
+        Thread spawnWarmup = new Thread(BotSpawnIndex::get, "bot-spawn-index-warmup");
+        spawnWarmup.setDaemon(true);
+        spawnWarmup.start();
+        Thread worldWarmup = new Thread(BotWorldGraph::get, "bot-world-graph-warmup");
+        worldWarmup.setDaemon(true);
+        worldWarmup.start();
     }
 
     /** Owner asked where to grind: decide (off-thread), then explain the what/why in chat. */

@@ -3,6 +3,7 @@ package server.bots;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import server.maps.Foothold;
+import server.maps.MapManager;
 import server.maps.MapleMap;
 import server.maps.Portal;
 import server.maps.Rope;
@@ -379,6 +380,25 @@ final class BotNavigationGraphProvider {
             return;
         }
         getOrStartGraphLoad(map, movementProfile, key, true);
+    }
+
+    /**
+     * Route-ahead prewarm for multi-hop travel: load each map and queue its graph warmup, so
+     * the bot doesn't land in graph-warmup fallback at every hop. {@code MapManager.getMap}
+     * itself loads the map from WZ on first touch — heavy, hence the whole loop runs on the
+     * warmup executor, never on a bot tick thread.
+     */
+    static void warmGraphsForRouteAsync(MapManager mapFactory, List<Integer> mapIds,
+                                        BotMovementProfile movementProfile) {
+        GRAPH_WARMUP_EXECUTOR.execute(() -> {
+            for (int mapId : mapIds) {
+                try {
+                    warmGraphAsync(mapFactory.getMap(mapId), movementProfile);
+                } catch (RuntimeException e) {
+                    log.warn("Route prewarm failed for map {}", mapId, e);
+                }
+            }
+        });
     }
 
     static BotNavigationGraph rebuildGraph(MapleMap map) {

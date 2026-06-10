@@ -23,6 +23,11 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Which maps connect to which? A world-wide portal adjacency graph built once from
@@ -283,8 +288,8 @@ final class BotWorldGraph {
             return loaded;
         }
         long startedAt = System.currentTimeMillis();
-        Map<Integer, int[]> edges = new HashMap<>();
-        Map<Integer, Integer> returnMaps = new HashMap<>();
+        Map<Integer, int[]> edges = new ConcurrentHashMap<>(); // scanWz fans out per file
+        Map<Integer, Integer> returnMaps = new ConcurrentHashMap<>();
         scanWz(edges, returnMaps);
         Map<Integer, Integer> scrollTargets = computeScrollTargets(edges, returnMaps);
         log.info("Bot world graph: scanned {} maps ({} with outgoing portals, {} scroll shortcuts) in {} ms",
@@ -298,9 +303,16 @@ final class BotWorldGraph {
     }
 
     private static void scanWz(Map<Integer, int[]> edges, Map<Integer, Integer> returnMaps) {
-        DataProvider mapSource = DataProviderFactory.getDataProvider(WZFiles.MAP);
+        // Per-file parsing fans out to a worker pool ({@code edges}/{@code returnMaps} are
+        // concurrent). XMLWZFile.getData is synchronized per instance, so one shared provider
+        // would serialize the workers — each worker thread builds its own (the per-provider
+        // directory walk is cheap next to parsing ~5.8k XMLs).
+        ThreadLocal<DataProvider> mapSources =
+                ThreadLocal.withInitial(() -> DataProviderFactory.getDataProvider(WZFiles.MAP));
+        ExecutorService pool = Executors.newFixedThreadPool(
+                Math.max(2, Math.min(8, Runtime.getRuntime().availableProcessors())));
         Path mapRoot = Path.of(WZFiles.MAP.getFilePath(), "Map");
-        int failures = 0;
+        AtomicInteger failures = new AtomicInteger();
         for (int area = 0; area <= 9; area++) {
             Path areaDir = mapRoot.resolve("Map" + area);
             if (!Files.isDirectory(areaDir)) {
@@ -312,21 +324,32 @@ final class BotWorldGraph {
                     if (!name.endsWith(".img.xml")) {
                         continue;
                     }
+                    final int fileArea = area;
                     try {
                         int mapId = Integer.parseInt(name.substring(0, name.length() - ".img.xml".length()));
-                        readMap(mapSource, area, mapId, edges, returnMaps);
+                        pool.execute(() -> {
+                            try {
+                                readMap(mapSources.get(), fileArea, mapId, edges, returnMaps);
+                            } catch (RuntimeException e) {
+                                failures.incrementAndGet();
+                            }
+                        });
                     } catch (NumberFormatException ignored) {
                         // non-map file (e.g. AreaCode.img.xml) — skip
-                    } catch (RuntimeException e) {
-                        failures++;
                     }
                 }
             } catch (IOException e) {
                 log.warn("Bot world graph: can't list {}", areaDir, e);
             }
         }
-        if (failures > 0) {
-            log.warn("Bot world graph: {} map files failed to parse (skipped)", failures);
+        pool.shutdown();
+        try {
+            pool.awaitTermination(10, TimeUnit.MINUTES);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        if (failures.get() > 0) {
+            log.warn("Bot world graph: {} map files failed to parse (skipped)", failures.get());
         }
     }
 

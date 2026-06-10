@@ -53,8 +53,8 @@ final class BotTravelManager {
     private static final int TAXI_TRIGGER_RADIUS_PX = 500;
 
     // Test seams: stepMovementCore drags in the full physics/nav stack; the world graph's
-    // default lookups trigger a WZ scan on first use; scroll/taxi defaults touch inventory,
-    // meso and the live map factory.
+    // default lookups trigger a WZ scan on first use; scroll/taxi/prewarm defaults touch
+    // inventory, meso and the live map factory.
     @FunctionalInterface
     interface MovementStep {
         void step(BotEntry entry, Point targetPos, boolean runAiTick);
@@ -85,6 +85,11 @@ final class BotTravelManager {
         boolean ride(Character bot, BotWorldGraph.TaxiEdge edge);
     }
 
+    @FunctionalInterface
+    interface RoutePrewarm {
+        void prewarm(BotEntry entry, Character bot, List<Integer> route);
+    }
+
     static MovementStep movementStep =
             (entry, targetPos, runAiTick) -> BotManager.getInstance().stepMovementCore(entry, targetPos, runAiTick);
     static RouteLookup routeLookup = BotWorldGraph::route;
@@ -107,6 +112,26 @@ final class BotTravelManager {
         bot.changeMap(dest, dest.getPortal(0)); // cab scripts do cm.warp(dest, 0)
         return true;
     };
+    static RoutePrewarm routePrewarm = BotTravelManager::prewarmRouteGraphs;
+
+    // Look this many hops down a freshly-planned route and pre-warm those maps' nav graphs,
+    // so the bot doesn't idle in graph-warmup fallback at every landing.
+    private static final int ROUTE_PREWARM_MAPS = 3;
+
+    /**
+     * Default route prewarm: hand the next few hops to the nav-graph warmup executor.
+     * MapManager.getMap loads the map from WZ on first touch, so nothing heavy runs here on
+     * the tick thread. No client/channel (unit tests, disconnecting bot) — quietly skip.
+     */
+    private static void prewarmRouteGraphs(BotEntry entry, Character bot, List<Integer> route) {
+        var client = bot.getClient();
+        if (client == null || client.getChannelServer() == null) {
+            return;
+        }
+        List<Integer> ahead = List.copyOf(route.subList(0, Math.min(ROUTE_PREWARM_MAPS, route.size())));
+        BotNavigationGraphProvider.warmGraphsForRouteAsync(
+                client.getChannelServer().getMapFactory(), ahead, entry.movementProfile);
+    }
 
     private BotTravelManager() {}
 
@@ -201,6 +226,7 @@ final class BotTravelManager {
                 if (route == null || route.isEmpty()) {
                     return false; // too far or unreachable by walking — warp fallback
                 }
+                routePrewarm.prewarm(entry, bot, route);
                 nextHopMapId = route.get(0);
                 portal = findAdjacentPortal(map.getPortals(), nextHopMapId, bot.getPosition());
                 if (portal == null) {
