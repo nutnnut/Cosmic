@@ -58,6 +58,13 @@ final class BotShopManager {
     private static final int RECHARGE_MAX_SETS = 10; // cap recharge to the best N own-type stacks
     private static final int AUTO_SELL_FREE_SLOT_THRESHOLD = 4; // bag tab "cramped" when this few slots left
 
+    static class Config {
+        // Debug/verify aid: after a sell-trash visit, list the USE/ETC items that were sold so
+        // the owner can spot a valuable being misclassified. Equips are excluded (well tested).
+        public boolean REPORT_SOLD_USE_ETC = true;
+    }
+    static Config cfg = new Config();
+
     private BotShopManager() {}
 
     private record NpcShopMatch(NPC npc, Shop shop, Point npcPos) {}
@@ -418,13 +425,15 @@ final class BotShopManager {
                         sequence.bot(),
                         sequence.npcPos(),
                         0,
+                        new ArrayList<>(),
                         Collections.newSetFromMap(new IdentityHashMap<>()),
                         plan,
                         sequence.bought(),
                         sequence.firstShortfall()));
     }
 
-    private static void runSellTrashStep(BotEntry entry, Character bot, Point npcPos, int soldCount, Set<Item> failedItems, List<Item> plan,
+    private static void runSellTrashStep(BotEntry entry, Character bot, Point npcPos, int soldCount, List<String> soldUseEtc,
+                                         Set<Item> failedItems, List<Item> plan,
                                          List<String> bought, BuyReport firstShortfall) {
         if (!isShopSequenceValid(entry, bot, npcPos)) {
             abortShop(entry, bot, "couldn't stay at the shop to sell, never mind");
@@ -439,6 +448,11 @@ final class BotShopManager {
             entry.shopSellTrashPending = false;
             if (soldCount > 0) {
                 BotManager.getInstance().botSay(bot, "sold " + soldCount + " junk item" + (soldCount != 1 ? "s" : ""));
+                if (cfg.REPORT_SOLD_USE_ETC) {
+                    for (String line : buildSoldDetailLines(soldUseEtc)) {
+                        BotManager.getInstance().botSay(bot, line);
+                    }
+                }
             }
             if (!failedItems.isEmpty()) {
                 BotManager.getInstance().botSay(bot, buildSellTrashFailureMessage(failedItems.size()));
@@ -452,7 +466,7 @@ final class BotShopManager {
         Item item = items.get(0);
         if (!BotInventoryManager.hasItem(bot, item)) {
             scheduleShopStep(entry, SELL_TRASH_STEP_DELAY_MS,
-                    () -> runSellTrashStep(entry, bot, npcPos, soldCount, failedItems, plan, bought, firstShortfall));
+                    () -> runSellTrashStep(entry, bot, npcPos, soldCount, soldUseEtc, failedItems, plan, bought, firstShortfall));
             return;
         }
 
@@ -469,17 +483,38 @@ final class BotShopManager {
 
         // Sell the whole stack (equips have quantity 1); quantity is read at sell time so a
         // stack that grew since planning still clears in one step.
-        shop.sell(bot.getClient(), item.getInventoryType(), item.getPosition(), item.getQuantity());
+        short soldQuantity = item.getQuantity();
+        shop.sell(bot.getClient(), item.getInventoryType(), item.getPosition(), soldQuantity);
         if (BotInventoryManager.hasItem(bot, item)) {
             failedItems.add(item);
             scheduleShopStep(entry, SELL_TRASH_STEP_DELAY_MS,
-                    () -> runSellTrashStep(entry, bot, npcPos, soldCount, failedItems, plan, bought, firstShortfall));
+                    () -> runSellTrashStep(entry, bot, npcPos, soldCount, soldUseEtc, failedItems, plan, bought, firstShortfall));
             return;
         }
 
+        if (item.getInventoryType() != InventoryType.EQUIP) {
+            soldUseEtc.add(soldQuantity + " " + resolveItemName(item.getItemId(), "item"));
+        }
         int nextSoldCount = soldCount + 1;
         scheduleShopStep(entry, SELL_TRASH_STEP_DELAY_MS,
-                () -> runSellTrashStep(entry, bot, npcPos, nextSoldCount, failedItems, plan, bought, firstShortfall));
+                () -> runSellTrashStep(entry, bot, npcPos, nextSoldCount, soldUseEtc, failedItems, plan, bought, firstShortfall));
+    }
+
+    // One or more ASCII chat lines listing the USE/ETC items sold, e.g. "unloaded: 12 Squid Ink, 3 Blue Potion".
+    private static List<String> buildSoldDetailLines(List<String> soldUseEtc) {
+        List<String> lines = new ArrayList<>();
+        StringBuilder line = new StringBuilder();
+        for (String soldEntry : soldUseEtc) {
+            if (!line.isEmpty() && line.length() + soldEntry.length() + 2 > 90) {
+                lines.add(line.toString());
+                line = new StringBuilder();
+            }
+            line.append(line.isEmpty() ? (lines.isEmpty() ? "unloaded: " : "") : ", ").append(soldEntry);
+        }
+        if (!line.isEmpty()) {
+            lines.add(line.toString());
+        }
+        return lines;
     }
 
     private static String buildSellTrashFailureMessage(int failedCount) {
