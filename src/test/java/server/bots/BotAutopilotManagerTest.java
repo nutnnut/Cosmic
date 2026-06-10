@@ -133,6 +133,22 @@ class BotAutopilotManagerTest {
     }
 
     @Test
+    void shouldNotAnnounceArrivalWhenPickIsTheCurrentMap() {
+        Fixture f = fixture(HUNTING_GROUND);
+
+        try (Seams seams = new Seams(expRec(HUNTING_GROUND, "Henesys Hunting Ground I"))) {
+            BotAutopilotManager.start(f.entry(), f.bot());
+            assertTrue(f.entry().autopilotArrivalAnnounced);
+
+            // Already on site: "this map works" was the whole announcement — no extra
+            // "arrived at ..." line on the next tick.
+            assertFalse(BotAutopilotManager.tick(f.entry(), f.bot(), true));
+            assertEquals(1, seams.replies.size());
+            assertTrue(seams.replies.get(0).startsWith("this map works"), seams.replies.get(0));
+        }
+    }
+
+    @Test
     void shouldRedecideOnTimerAndAnnounceWhenMovingOn() {
         Fixture f = fixture(HUNTING_GROUND);
         f.entry().autopilotMapId = HUNTING_GROUND;

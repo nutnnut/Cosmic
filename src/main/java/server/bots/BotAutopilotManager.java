@@ -73,7 +73,7 @@ final class BotAutopilotManager {
         // issueGrind sets the active-combat baseline (pot-share, self-buff, ammo fallback all
         // gate on grinding) and clears any previous autopilot state — set the destination AFTER.
         BotManager.getInstance().issueGrind(entry);
-        installPlan(entry, rec);
+        installPlan(entry, rec, bot.getMapId());
         entry.autopilotNextDecisionAtMs = nextDecisionAt();
         announcePlan(entry, rec, bot.getMapId());
     }
@@ -115,7 +115,7 @@ final class BotAutopilotManager {
         if (rec == null || rec.pick().mapId() == entry.autopilotMapId) {
             return; // current spot is still the call
         }
-        installPlan(entry, rec);
+        installPlan(entry, rec, bot.getMapId());
         announcePlan(entry, rec, bot.getMapId());
     }
 
@@ -149,12 +149,14 @@ final class BotAutopilotManager {
         reply.accept(entry, "arrived at " + spot + ", entering grind mode to " + objective);
     }
 
-    private static void installPlan(BotEntry entry, Recommendation rec) {
+    private static void installPlan(BotEntry entry, Recommendation rec, int fromMapId) {
         MobCandidate pick = rec.pick();
         entry.autopilotMapId = pick.mapId();
         entry.autopilotDestinationName = destinationName(pick);
         entry.autopilotObjectiveSummary = objectiveSummary(rec);
-        entry.autopilotArrivalAnnounced = false;
+        // Already on the picked map: announcePlan's "this map works" covers it — a separate
+        // "arrived" line right after would be redundant chatter.
+        entry.autopilotArrivalAnnounced = pick.mapId() == fromMapId;
     }
 
     private static String destinationName(MobCandidate pick) {
