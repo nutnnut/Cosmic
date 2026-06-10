@@ -6,13 +6,16 @@ import server.maps.Portal;
 
 import java.awt.*;
 import java.util.Collection;
+import java.util.List;
 
 /**
- * Follow-mode cross-map travel: when the owner is ONE portal hop away, walk to the portal
- * in the current map and enter it legally — exactly what a trailing player would do —
- * instead of warping straight to the owner. Multi-hop routes, maps with no direct portal,
- * scripted-only portals, and walks that fail or time out all fall back to the legacy warp
- * in {@code BotManager.syncFollowMap}.
+ * Follow-mode cross-map travel: when the owner is within a few portal hops, walk to the
+ * next portal on the route and enter it legally — exactly what a trailing player would do —
+ * instead of warping straight to the owner. Routes come from {@link BotWorldGraph}; each hop
+ * reuses the same walk-and-enter machinery, re-planning from whatever map the bot lands in.
+ * Routes beyond {@link #MAX_FOLLOW_TRAVEL_HOPS}, maps with no usable portal (boat rides,
+ * scripted gates), and walks that fail or time out all fall back to the legacy warp in
+ * {@code BotManager.syncFollowMap}.
  */
 final class BotTravelManager {
 
@@ -32,15 +35,26 @@ final class BotTravelManager {
     // (the legacy behavior) for this long.
     private static final long GIVE_UP_WARP_WINDOW_MS = 45_000L;
     private static final long PORTAL_USE_COOLDOWN_MS = 250L; // matches BotNavigationManager
+    // Walk at most this many portal hops to reach the owner; anything farther warps. Keeps a
+    // party bot from being minutes behind when the owner taxis across the world, while the
+    // common "owner walked a couple of maps ahead" case stays fully legal.
+    private static final int MAX_FOLLOW_TRAVEL_HOPS = 4;
 
-    // Test seam: stepMovementCore drags in the full physics/nav stack.
+    // Test seams: stepMovementCore drags in the full physics/nav stack; the world graph's
+    // default lookup triggers a WZ scan on first use.
     @FunctionalInterface
     interface MovementStep {
         void step(BotEntry entry, Point targetPos, boolean runAiTick);
     }
 
+    @FunctionalInterface
+    interface RouteLookup {
+        List<Integer> route(int fromMapId, int toMapId, int maxHops);
+    }
+
     static MovementStep movementStep =
             (entry, targetPos, runAiTick) -> BotManager.getInstance().stepMovementCore(entry, targetPos, runAiTick);
+    static RouteLookup routeLookup = BotWorldGraph::route;
 
     private BotTravelManager() {}
 
@@ -85,18 +99,31 @@ final class BotTravelManager {
             return true; // warp is in flight — hold still
         }
 
-        Portal portal = active
-                ? map.getPortal(entry.followTravelPortalId)
-                : findAdjacentPortal(map.getPortals(), targetMapId, bot.getPosition());
-        if (portal == null || !portal.getPortalStatus()) {
-            if (active) {
+        Portal portal;
+        if (active) {
+            portal = map.getPortal(entry.followTravelPortalId);
+            if (portal == null || !portal.getPortalStatus()) {
                 giveUp(entry, now); // our portal closed mid-walk
+                return false;
             }
-            return false; // multi-hop or no direct edge — warp fallback
-        }
-
-        if (!active) {
+        } else {
+            // Direct hop when the owner's map is adjacent; otherwise take the first hop of the
+            // shortest world-graph route. Each landing re-plans, so only the next hop matters.
+            int nextHopMapId = targetMapId;
+            portal = findAdjacentPortal(map.getPortals(), targetMapId, bot.getPosition());
+            if (portal == null) {
+                List<Integer> route = routeLookup.route(bot.getMapId(), targetMapId, MAX_FOLLOW_TRAVEL_HOPS);
+                if (route == null || route.isEmpty()) {
+                    return false; // too far or unreachable by walking — warp fallback
+                }
+                nextHopMapId = route.get(0);
+                portal = findAdjacentPortal(map.getPortals(), nextHopMapId, bot.getPosition());
+                if (portal == null) {
+                    return false; // graph edge exists but no live usable portal (closed/scripted at runtime)
+                }
+            }
             entry.followTravelTargetMapId = targetMapId;
+            entry.followTravelNextHopMapId = nextHopMapId;
             entry.followTravelFromMapId = bot.getMapId();
             entry.followTravelPortalId = portal.getId();
             long budget = Math.min(TRAVEL_BUDGET_MAX_MS, TRAVEL_BUDGET_BASE_MS
@@ -152,6 +179,7 @@ final class BotTravelManager {
     static void clear(BotEntry entry) {
         clearMoveTargetPin(entry);
         entry.followTravelTargetMapId = -1;
+        entry.followTravelNextHopMapId = -1;
         entry.followTravelPortalId = -1;
         entry.followTravelFromMapId = -1;
         entry.followTravelDeadlineMs = 0L;

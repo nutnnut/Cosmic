@@ -71,6 +71,20 @@ class BotTravelManagerTest {
         }
     }
 
+    /** Swaps the world-graph seam (the default lookup would trigger a WZ scan); restore via close(). */
+    private static final class RouteStub implements AutoCloseable {
+        private final BotTravelManager.RouteLookup previous = BotTravelManager.routeLookup;
+
+        RouteStub(BotTravelManager.RouteLookup stub) {
+            BotTravelManager.routeLookup = stub;
+        }
+
+        @Override
+        public void close() {
+            BotTravelManager.routeLookup = previous;
+        }
+    }
+
     @Test
     void shouldPickNearestOpenUnscriptedPortalToTargetMap() {
         Portal near = portal(1, HENESYS, Portal.MAP_PORTAL, null, Portal.OPEN, new Point(100, 0));
@@ -115,11 +129,57 @@ class BotTravelManagerTest {
     }
 
     @Test
-    void shouldFallBackToWarpWhenNoDirectPortalExists() {
+    void shouldFallBackToWarpWhenNoRouteExists() {
         Portal unrelated = portal(1, HUNTING_GROUND, Portal.MAP_PORTAL, null, Portal.OPEN, new Point(50, 0));
         Fixture f = fixture(HUNTING_GROUND, HENESYS, new Point(0, 0), List.of(unrelated));
 
-        try (MovementRecorder movement = new MovementRecorder()) {
+        try (MovementRecorder movement = new MovementRecorder();
+             RouteStub route = new RouteStub((from, to, maxHops) -> null)) {
+            assertFalse(BotTravelManager.tickFollowTravel(f.entry(), f.bot(), f.anchor(), true));
+            assertEquals(-1, f.entry().followTravelTargetMapId);
+            assertTrue(movement.steps.isEmpty());
+        }
+    }
+
+    @Test
+    void shouldWalkFirstHopOfMultiHopRoute() {
+        int startMap = 999999;
+        // No direct portal to Henesys — only one into the hunting ground, which the route says to take.
+        Portal toHunting = portal(1, HUNTING_GROUND, Portal.MAP_PORTAL, null, Portal.OPEN, new Point(400, 0));
+        Fixture f = fixture(startMap, HENESYS, new Point(0, 0), List.of(toHunting));
+
+        try (MovementRecorder movement = new MovementRecorder();
+             RouteStub route = new RouteStub((from, to, maxHops) ->
+                     from == startMap && to == HENESYS ? List.of(HUNTING_GROUND, HENESYS) : null)) {
+            assertTrue(BotTravelManager.tickFollowTravel(f.entry(), f.bot(), f.anchor(), true));
+            assertEquals(HENESYS, f.entry().followTravelTargetMapId);
+            assertEquals(HUNTING_GROUND, f.entry().followTravelNextHopMapId);
+            assertEquals(List.of(new Point(400, 0)), movement.steps);
+
+            // Hop lands: bot is now in the hunting ground (map-change tick already ran) and a
+            // direct portal to Henesys exists — travel re-plans and walks the final hop.
+            Portal toHenesys = portal(7, HENESYS, Portal.MAP_PORTAL, null, Portal.OPEN, new Point(-200, 0));
+            MapleMap huntingGround = mock(MapleMap.class);
+            when(huntingGround.getPortals()).thenReturn(List.of(toHenesys));
+            when(huntingGround.getPortal(7)).thenReturn(toHenesys);
+            when(f.bot().getMap()).thenReturn(huntingGround);
+            when(f.bot().getMapId()).thenReturn(HUNTING_GROUND);
+            f.entry().lastMapId = HUNTING_GROUND;
+
+            assertTrue(BotTravelManager.tickFollowTravel(f.entry(), f.bot(), f.anchor(), true));
+            assertEquals(HENESYS, f.entry().followTravelNextHopMapId);
+            assertEquals(new Point(-200, 0), movement.steps.get(movement.steps.size() - 1));
+        }
+    }
+
+    @Test
+    void shouldFallBackWhenRouteEdgeHasNoLiveUsablePortal() {
+        // The graph claims a hop into the hunting ground, but the only live portal there is scripted.
+        Portal scripted = portal(1, HUNTING_GROUND, Portal.MAP_PORTAL, "enter_gate", Portal.OPEN, new Point(50, 0));
+        Fixture f = fixture(999999, HENESYS, new Point(0, 0), List.of(scripted));
+
+        try (MovementRecorder movement = new MovementRecorder();
+             RouteStub route = new RouteStub((from, to, maxHops) -> List.of(HUNTING_GROUND, HENESYS))) {
             assertFalse(BotTravelManager.tickFollowTravel(f.entry(), f.bot(), f.anchor(), true));
             assertEquals(-1, f.entry().followTravelTargetMapId);
             assertTrue(movement.steps.isEmpty());

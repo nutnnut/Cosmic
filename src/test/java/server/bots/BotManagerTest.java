@@ -307,6 +307,9 @@ class BotManagerTest {
         Character bot = mockMovingBot(new Point(100, 1700), map);
         BotEntry entry = new BotEntry(bot, owner, null);
         entry.grinding = true;
+        // Mid-map recovery, not a fresh map change: the map-change tick (which now runs before
+        // the recovery checks) must not consume the tick.
+        entry.lastMapId = map.getId();
 
         BotManager.getInstance().stepMovementOnly(entry, bot.getPosition(), owner.getPosition(), true);
 

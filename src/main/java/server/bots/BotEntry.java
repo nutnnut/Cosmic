@@ -159,6 +159,7 @@ public class BotEntry {
     // owner, walk to a portal in the current map that leads to the owner's map and enter it
     // legally. targetMapId == -1 means inactive.
     int followTravelTargetMapId = -1;
+    int followTravelNextHopMapId = -1;  // map the current portal hop leads to (== target on last hop)
     int followTravelPortalId = -1;
     int followTravelFromMapId = -1;     // map the walk started in — landing anywhere else re-plans
     long followTravelDeadlineMs = 0L;   // give up walking and warp once this passes

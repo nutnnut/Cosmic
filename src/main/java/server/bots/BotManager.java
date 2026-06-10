@@ -2090,22 +2090,9 @@ public class BotManager {
             return;
         }
 
-        // Map change and teleport checks only apply when following a live anchor.
-        // Shop visits are intentional same-map detours and must not be pulled back
-        // to the owner while walking to the NPC.
-        if (!entry.shopVisitPending && syncFollowMap(entry, bot, followAnchor, runAiTick)) {
-            return;
-        }
-        if (recoverGrindPartyTeleportDistance(entry, bot, followAnchor)) {
-            return;
-        }
-        // Teleport if hopelessly far — applies to both follow and grind (catches falling off map)
-        if (recoverTeleportDistance(entry, bot, targetPos)) {
-            return;
-        }
-
-        // On any map change (e.g. NPC-triggered portal): rebuild footholds, reset physics,
-        // and snap to ground so the bot doesn't carry over airborne state from the previous map.
+        // On any map change (legacy warp landing, travel portal hop, NPC-triggered portal):
+        // rebuild footholds, reset physics, and snap to ground BEFORE any follow/warp/recovery
+        // decision runs — none of those may act on stale footholds or a half-landed position.
         if (entry.lastMapId != bot.getMapId()) {
             if (!perf) {
                 entry.fhIndex  = BotMovementManager.buildFhIndex(bot.getMap());
@@ -2141,6 +2128,20 @@ public class BotManager {
                     BotPerformanceMonitor.record("tick-map-change", System.nanoTime() - tMapChange);
                 }
             }
+            return;
+        }
+
+        // Map change and teleport checks only apply when following a live anchor.
+        // Shop visits are intentional same-map detours and must not be pulled back
+        // to the owner while walking to the NPC.
+        if (!entry.shopVisitPending && syncFollowMap(entry, bot, followAnchor, runAiTick)) {
+            return;
+        }
+        if (recoverGrindPartyTeleportDistance(entry, bot, followAnchor)) {
+            return;
+        }
+        // Teleport if hopelessly far — applies to both follow and grind (catches falling off map)
+        if (recoverTeleportDistance(entry, bot, targetPos)) {
             return;
         }
 
@@ -3642,17 +3643,7 @@ public class BotManager {
             return;
         }
 
-        if (owner != null && !entry.shopVisitPending && syncFollowMap(entry, bot, owner, runAiTick)) {
-            return;
-        }
-        Character followAnchor = resolveFollowAnchor(entry, owner);
-        if (recoverGrindPartyTeleportDistance(entry, bot, followAnchor)) {
-            return;
-        }
-        if (recoverTeleportDistance(entry, bot, targetPos)) {
-            return;
-        }
-
+        // Rebuild physics on map change BEFORE follow/warp/recovery decisions (see tickEntry).
         if (entry.lastMapId != bot.getMapId()) {
             entry.fhIndex  = BotMovementManager.buildFhIndex(bot.getMap());
             entry.lastMapId = bot.getMapId();
@@ -3663,6 +3654,17 @@ public class BotManager {
             BotMovementManager.broadcastMovement(entry);
             BotShopManager.onMapChange(entry, bot);
             BotChatManager.checkBotStatus(entry, bot);
+            return;
+        }
+
+        if (owner != null && !entry.shopVisitPending && syncFollowMap(entry, bot, owner, runAiTick)) {
+            return;
+        }
+        Character followAnchor = resolveFollowAnchor(entry, owner);
+        if (recoverGrindPartyTeleportDistance(entry, bot, followAnchor)) {
+            return;
+        }
+        if (recoverTeleportDistance(entry, bot, targetPos)) {
             return;
         }
 
