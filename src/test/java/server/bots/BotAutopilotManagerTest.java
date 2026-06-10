@@ -51,8 +51,6 @@ class BotAutopilotManagerTest {
         private final BotAutopilotManager.FarmAdvisor previousFarmAdvisor = BotAutopilotManager.farmAdvisor;
         private final java.util.function.BiConsumer<BotEntry, String> previousReply = BotAutopilotManager.reply;
         private final BotAutopilotManager.DecisionRunner previousRunner = BotAutopilotManager.decisionRunner;
-        private final BotAutopilotManager.RouteLookup previousRouteLookup = BotAutopilotManager.routeLookup;
-        private final BotAutopilotManager.ReturnScrollUse previousReturnScrollUse = BotAutopilotManager.returnScrollUse;
 
         Seams(Recommendation recommendation) {
             BotAutopilotManager.advisor = (entry, bot, fromMapId, maxHops) -> recommendation;
@@ -60,8 +58,6 @@ class BotAutopilotManagerTest {
             BotAutopilotManager.farmAdvisor = (entry, bot, itemId, fromMapId, maxHops) -> null;
             BotAutopilotManager.reply = (entry, text) -> replies.add(text);
             BotAutopilotManager.decisionRunner = (compute, apply) -> apply.accept(compute.get());
-            BotAutopilotManager.routeLookup = (fromMapId, toMapId, maxHops) -> List.of();
-            BotAutopilotManager.returnScrollUse = bot -> false;
         }
 
         @Override
@@ -71,8 +67,6 @@ class BotAutopilotManagerTest {
             BotAutopilotManager.farmAdvisor = previousFarmAdvisor;
             BotAutopilotManager.reply = previousReply;
             BotAutopilotManager.decisionRunner = previousRunner;
-            BotAutopilotManager.routeLookup = previousRouteLookup;
-            BotAutopilotManager.returnScrollUse = previousReturnScrollUse;
         }
     }
 
@@ -289,30 +283,6 @@ class BotAutopilotManagerTest {
             assertTrue(BotAutopilotManager.requestResupplyErrand(f.entry(), f.bot()));
             assertEquals(-1, f.entry().autopilotErrandMapId);
             assertTrue(seams.replies.isEmpty());
-        }
-    }
-
-    @Test
-    void shouldUseNearestTownScrollForLongResupplyErrand() {
-        Fixture f = fixture(HUNTING_GROUND);
-        f.entry().autopilotMapId = HUNTING_GROUND;
-        f.entry().autopilotNextDecisionAtMs = Long.MAX_VALUE;
-        f.entry().grinding = true;
-        MapleMap town = mock(MapleMap.class);
-        when(town.getId()).thenReturn(TOWN);
-        when(f.bot().getMap().getReturnMap()).thenReturn(town);
-        java.util.concurrent.atomic.AtomicBoolean usedScroll = new java.util.concurrent.atomic.AtomicBoolean(false);
-
-        try (Seams seams = new Seams(null)) {
-            BotAutopilotManager.routeLookup = (fromMapId, toMapId, maxHops) -> List.of(100040001, 100040002, TOWN);
-            BotAutopilotManager.returnScrollUse = bot -> {
-                usedScroll.set(true);
-                return true;
-            };
-
-            assertTrue(BotAutopilotManager.requestResupplyErrand(f.entry(), f.bot()));
-            assertEquals(TOWN, f.entry().autopilotErrandMapId);
-            assertTrue(usedScroll.get());
         }
     }
 

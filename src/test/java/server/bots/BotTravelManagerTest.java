@@ -85,6 +85,44 @@ class BotTravelManagerTest {
         }
     }
 
+    /**
+     * Swaps the consumable-hop seams (the default scroll-target lookup triggers a WZ scan;
+     * scroll use / cab rides touch inventory, meso and the map factory); restore via close().
+     * Defaults: no scroll shortcut, no scrolls in the bag, cab NPC missing, ride succeeds.
+     */
+    private static final class ConsumableSeams implements AutoCloseable {
+        private final BotTravelManager.ScrollTargetLookup previousScrollTarget = BotTravelManager.scrollTargetLookup;
+        private final java.util.function.ToIntFunction<Character> previousScrollCount = BotTravelManager.returnScrollCount;
+        private final BotTravelManager.ReturnScrollUse previousScrollUse = BotTravelManager.returnScrollUse;
+        private final BotTravelManager.TaxiNpcLocator previousNpcLocator = BotTravelManager.taxiNpcLocator;
+        private final BotTravelManager.TaxiRide previousTaxiRide = BotTravelManager.taxiRide;
+        final List<Integer> scrollUses = new ArrayList<>();
+        final List<BotWorldGraph.TaxiEdge> rides = new ArrayList<>();
+
+        ConsumableSeams() {
+            BotTravelManager.scrollTargetLookup = mapId -> -1;
+            BotTravelManager.returnScrollCount = bot -> 0;
+            BotTravelManager.returnScrollUse = bot -> {
+                scrollUses.add(1);
+                return true;
+            };
+            BotTravelManager.taxiNpcLocator = (map, npcId) -> null;
+            BotTravelManager.taxiRide = (bot, edge) -> {
+                rides.add(edge);
+                return true;
+            };
+        }
+
+        @Override
+        public void close() {
+            BotTravelManager.scrollTargetLookup = previousScrollTarget;
+            BotTravelManager.returnScrollCount = previousScrollCount;
+            BotTravelManager.returnScrollUse = previousScrollUse;
+            BotTravelManager.taxiNpcLocator = previousNpcLocator;
+            BotTravelManager.taxiRide = previousTaxiRide;
+        }
+    }
+
     @Test
     void shouldPickNearestOpenUnscriptedPortalToTargetMap() {
         Portal near = portal(1, HENESYS, Portal.MAP_PORTAL, null, Portal.OPEN, new Point(100, 0));
@@ -134,7 +172,7 @@ class BotTravelManagerTest {
         Fixture f = fixture(HUNTING_GROUND, HENESYS, new Point(0, 0), List.of(unrelated));
 
         try (MovementRecorder movement = new MovementRecorder();
-             RouteStub route = new RouteStub((from, to, maxHops) -> null)) {
+             RouteStub route = new RouteStub((from, to, maxHops, options) -> null)) {
             assertFalse(BotTravelManager.tickFollowTravel(f.entry(), f.bot(), f.anchor(), true));
             assertEquals(-1, f.entry().followTravelTargetMapId);
             assertTrue(movement.steps.isEmpty());
@@ -149,7 +187,7 @@ class BotTravelManagerTest {
         Fixture f = fixture(startMap, HENESYS, new Point(0, 0), List.of(toHunting));
 
         try (MovementRecorder movement = new MovementRecorder();
-             RouteStub route = new RouteStub((from, to, maxHops) ->
+             RouteStub route = new RouteStub((from, to, maxHops, options) ->
                      from == startMap && to == HENESYS ? List.of(HUNTING_GROUND, HENESYS) : null)) {
             assertTrue(BotTravelManager.tickFollowTravel(f.entry(), f.bot(), f.anchor(), true));
             assertEquals(HENESYS, f.entry().followTravelTargetMapId);
@@ -179,9 +217,91 @@ class BotTravelManagerTest {
         Fixture f = fixture(999999, HENESYS, new Point(0, 0), List.of(scripted));
 
         try (MovementRecorder movement = new MovementRecorder();
-             RouteStub route = new RouteStub((from, to, maxHops) -> List.of(HUNTING_GROUND, HENESYS))) {
+             ConsumableSeams seams = new ConsumableSeams();
+             RouteStub route = new RouteStub((from, to, maxHops, options) -> List.of(HUNTING_GROUND, HENESYS))) {
             assertFalse(BotTravelManager.tickFollowTravel(f.entry(), f.bot(), f.anchor(), true));
             assertEquals(-1, f.entry().followTravelTargetMapId);
+            assertTrue(movement.steps.isEmpty());
+        }
+    }
+
+    @Test
+    void shouldUseReturnScrollWhenRouteTakesTheScrollShortcut() {
+        int deepMap = 105050100;
+        Fixture f = fixture(deepMap, HENESYS, new Point(0, 0), List.of());
+
+        try (MovementRecorder movement = new MovementRecorder();
+             ConsumableSeams seams = new ConsumableSeams();
+             RouteStub route = new RouteStub((from, to, maxHops, options) ->
+                     options.withReturnScroll() ? List.of(HENESYS) : null)) {
+            BotTravelManager.scrollTargetLookup = mapId -> mapId == deepMap ? HENESYS : -1;
+            BotTravelManager.returnScrollCount = bot -> 1;
+
+            assertTrue(BotTravelManager.tickFollowTravel(f.entry(), f.bot(), f.anchor(), true));
+            assertEquals(1, seams.scrollUses.size());
+            assertTrue(f.entry().followTravelEnteredAtMs > 0); // warp in flight, land grace applies
+            assertTrue(movement.steps.isEmpty()); // no walking — the scroll fires on the spot
+        }
+    }
+
+    @Test
+    void shouldNotPlanScrollHopsWithoutAScrollInTheBag() {
+        int deepMap = 105050100;
+        Fixture f = fixture(deepMap, HENESYS, new Point(0, 0), List.of());
+
+        try (MovementRecorder movement = new MovementRecorder();
+             ConsumableSeams seams = new ConsumableSeams();
+             RouteStub route = new RouteStub((from, to, maxHops, options) ->
+                     options.withReturnScroll() ? List.of(HENESYS) : null)) {
+            BotTravelManager.scrollTargetLookup = mapId -> mapId == deepMap ? HENESYS : -1;
+
+            // returnScrollCount stays 0: planning never sees the scroll edge → warp fallback.
+            assertFalse(BotTravelManager.tickFollowTravel(f.entry(), f.bot(), f.anchor(), true));
+            assertTrue(seams.scrollUses.isEmpty());
+        }
+    }
+
+    @Test
+    void shouldWalkToCabNpcThenPayAndRide() {
+        int lith = 104000000;
+        Fixture f = fixture(HENESYS, lith, new Point(0, 0), List.of());
+        Character bot = f.bot();
+        when(bot.getMeso()).thenReturn(5000);
+
+        try (MovementRecorder movement = new MovementRecorder();
+             ConsumableSeams seams = new ConsumableSeams();
+             RouteStub route = new RouteStub((from, to, maxHops, options) -> List.of(lith))) {
+            BotTravelManager.taxiNpcLocator = (map, npcId) -> npcId == 1012000 ? new Point(800, 0) : null;
+
+            // Too far from the cab: walk toward it.
+            assertTrue(BotTravelManager.tickFollowTravel(f.entry(), bot, f.anchor(), true));
+            assertEquals(1012000, f.entry().followTravelTaxiNpcId);
+            assertEquals(List.of(new Point(800, 0)), movement.steps);
+            assertTrue(seams.rides.isEmpty());
+
+            // Within 500px: pay the fare and ride.
+            when(bot.getPosition()).thenReturn(new Point(350, 0));
+            assertTrue(BotTravelManager.tickFollowTravel(f.entry(), bot, f.anchor(), true));
+            assertEquals(1, seams.rides.size());
+            assertEquals(lith, seams.rides.get(0).toMapId());
+            assertEquals(1000, seams.rides.get(0).fare());
+            assertTrue(f.entry().followTravelEnteredAtMs > 0);
+        }
+    }
+
+    @Test
+    void shouldFallBackWhenMesoCannotCoverTheCabFare() {
+        int lith = 104000000;
+        Fixture f = fixture(HENESYS, lith, new Point(0, 0), List.of());
+        when(f.bot().getMeso()).thenReturn(500); // Henesys→Lith cab costs 1000
+
+        try (MovementRecorder movement = new MovementRecorder();
+             ConsumableSeams seams = new ConsumableSeams();
+             RouteStub route = new RouteStub((from, to, maxHops, options) -> List.of(lith))) {
+            BotTravelManager.taxiNpcLocator = (map, npcId) -> new Point(800, 0);
+
+            assertFalse(BotTravelManager.tickFollowTravel(f.entry(), f.bot(), f.anchor(), true));
+            assertTrue(seams.rides.isEmpty());
             assertTrue(movement.steps.isEmpty());
         }
     }

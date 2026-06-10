@@ -33,7 +33,6 @@ final class BotAutopilotManager {
     private static final long DECISION_JITTER_MS = 6 * 60_000L; // de-syncs many bots' re-decides
     private static final long ERRAND_COOLDOWN_MS = 5 * 60_000L; // min spacing between resupply trips
     private static final long OWNER_SUPPLY_GRACE_MS = 20_000L;
-    private static final int RETURN_SCROLL_MIN_HOPS = 3;
 
     private static final List<String> NO_SPOT_REPLIES = List.of(
             "can't find anywhere worth grinding that i can walk to, staying put",
@@ -50,7 +49,7 @@ final class BotAutopilotManager {
     }
 
     static Advisor advisor = (entry, bot, fromMapId, maxHops) -> {
-        Set<Integer> reachable = BotWorldGraph.reachableWithin(fromMapId, maxHops);
+        Set<Integer> reachable = BotWorldGraph.reachableWithin(fromMapId, maxHops, travelOptions(bot));
         return BotGrindAdvisor.recommend(entry, bot, reachable::contains);
     };
 
@@ -60,9 +59,14 @@ final class BotAutopilotManager {
     }
 
     static FarmAdvisor farmAdvisor = (entry, bot, itemId, fromMapId, maxHops) -> {
-        Set<Integer> reachable = BotWorldGraph.reachableWithin(fromMapId, maxHops);
+        Set<Integer> reachable = BotWorldGraph.reachableWithin(fromMapId, maxHops, travelOptions(bot));
         return BotGrindAdvisor.recommendFarmItem(entry, bot, itemId, reachable::contains);
     };
+
+    /** What the bot can spend on travel right now: scroll edges if it carries one, taxis per meso. */
+    private static BotWorldGraph.RouteOptions travelOptions(Character bot) {
+        return new BotWorldGraph.RouteOptions(BotShopManager.countReturnScrolls(bot) > 0, bot.getMeso());
+    }
 
     @FunctionalInterface
     interface PartyDecider {
@@ -73,7 +77,8 @@ final class BotAutopilotManager {
         // The shared map must be walkable for EVERY member (they can start scattered).
         Set<Integer> common = null;
         for (BotEntry member : members) {
-            Set<Integer> reachable = BotWorldGraph.reachableWithin(member.bot.getMapId(), MAX_TRAVEL_HOPS);
+            Set<Integer> reachable = BotWorldGraph.reachableWithin(
+                    member.bot.getMapId(), MAX_TRAVEL_HOPS, travelOptions(member.bot));
             if (common == null) {
                 common = new HashSet<>(reachable);
             } else {
@@ -96,20 +101,6 @@ final class BotAutopilotManager {
 
     static BiConsumer<BotEntry, String> reply =
             (entry, text) -> BotManager.getInstance().botReply(entry, text);
-
-    @FunctionalInterface
-    interface RouteLookup {
-        List<Integer> route(int fromMapId, int toMapId, int maxHops);
-    }
-
-    static RouteLookup routeLookup = BotWorldGraph::route;
-
-    @FunctionalInterface
-    interface ReturnScrollUse {
-        boolean use(Character bot);
-    }
-
-    static ReturnScrollUse returnScrollUse = bot -> BotManager.getInstance().tryUseReturnScroll(bot);
 
     /**
      * Decision scheduling: compute on the advisor pool (a full pass iterates every known mob
@@ -320,15 +311,9 @@ final class BotAutopilotManager {
         entry.autopilotErrandMapId = returnMap.getId();
         entry.autopilotNextErrandAtMs = System.currentTimeMillis() + ERRAND_COOLDOWN_MS;
         reply.accept(entry, "running low on supplies, popping back to town real quick");
-        tryUseReturnScrollForLongErrand(bot, returnMap.getId());
+        // No explicit scroll use here: scroll-to-town is a world-graph edge now, so the
+        // travel tick takes it whenever it beats walking (BotTravelManager consumable hops).
         return true;
-    }
-
-    private static void tryUseReturnScrollForLongErrand(Character bot, int returnMapId) {
-        List<Integer> route = routeLookup.route(bot.getMapId(), returnMapId, MAX_TRAVEL_HOPS);
-        if (route != null && route.size() >= RETURN_SCROLL_MIN_HOPS) {
-            returnScrollUse.use(bot);
-        }
     }
 
     private static void maybeRedecide(BotEntry entry, Character bot) {

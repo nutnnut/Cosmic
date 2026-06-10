@@ -29,7 +29,18 @@ import java.util.TreeSet;
  * {@code Map.wz}, used to route multi-hop cross-map travel ("owner is 3 portal hops away —
  * which portal do I take first?"). Edges mirror what {@code BotTravelManager.findAdjacentPortal}
  * can actually execute: unscripted, non-door portals with a real target map. Scripted portals
- * (quest gates, taxis, boats) are deliberately absent — those routes fall back to the warp.
+ * (quest gates, boats) are deliberately absent — those routes fall back to the warp.
+ *
+ * <p>Two consumable edge kinds are baked in on top of portals, both opt-in per query via
+ * {@link RouteOptions} because they cost the bot something:
+ * <ul>
+ *   <li><b>Return scroll</b> (Nearest Town Scroll, 2030000): map → its {@code info/returnMap}
+ *       town. Only present where the portal-only walk to that town needs
+ *       {@link #RETURN_SCROLL_MIN_HOPS}+ hops (or doesn't exist) — a scroll on a short walk
+ *       is a waste.</li>
+ *   <li><b>Taxi</b>: the hardcoded Victoria cab table ({@link #TAXI_EDGES}, verified against
+ *       the NPC scripts) — town → town for a meso fare, plus the VIP cab to the Ant Tunnel.</li>
+ * </ul>
  *
  * <p>Same pattern as {@link BotSpawnIndex}: ~5.8k map XMLs scanned in seconds on first boot,
  * then cached as a TSV under {@code cache/bot-world/v<N>/}. The {@code info/link} indirection
@@ -39,15 +50,98 @@ import java.util.TreeSet;
 final class BotWorldGraph {
 
     private static final Logger log = LoggerFactory.getLogger(BotWorldGraph.class);
-    private static final int GRAPH_VERSION = 1;
+    private static final int GRAPH_VERSION = 2;
     private static final Path CACHE_FILE =
             Path.of("cache", "bot-world", "v" + GRAPH_VERSION, "portal-graph.tsv");
     private static final int NO_TARGET_MAPID = 999999999; // tm of spawn points / doors
+    // A return scroll is only worth an edge when walking to the town would take this many hops.
+    static final int RETURN_SCROLL_MIN_HOPS = 3;
 
-    /** Directed adjacency: mapId → distinct target mapIds (sorted). */
-    record Index(Map<Integer, int[]> edges) {
+    /** Per-query toggles for the consumable edges; pure portal walking ignores both. */
+    record RouteOptions(boolean withReturnScroll, int meso) {
+        static final RouteOptions PORTALS_ONLY = new RouteOptions(false, 0);
+    }
+
+    /** One paid NPC ride: stand near {@code npcId} in {@code fromMapId}, pay, land in {@code toMapId}. */
+    record TaxiEdge(int fromMapId, int npcId, int toMapId, int fare) {
+    }
+
+    // Victoria cab rides, mirrored from the NPC scripts (scripts/npc/<npcId>.js): each cab
+    // warps to portal 0 of the destination for the listed fare. The 10k VIP cabs go to the
+    // Ant Tunnel park. Beginner discounts are ignored — bots always have a job.
+    private static final List<TaxiEdge> TAXI_EDGES = List.of(
+            // Lith Harbor 104000000 — Regular Cab 1002007, VIP Cab 1002004
+            new TaxiEdge(104000000, 1002007, 100000000, 1000),
+            new TaxiEdge(104000000, 1002007, 102000000, 1000),
+            new TaxiEdge(104000000, 1002007, 101000000, 800),
+            new TaxiEdge(104000000, 1002007, 103000000, 1000),
+            new TaxiEdge(104000000, 1002007, 120000000, 800),
+            new TaxiEdge(104000000, 1002004, 105070001, 10000),
+            // Henesys 100000000 — Regular Cab 1012000
+            new TaxiEdge(100000000, 1012000, 104000000, 1000),
+            new TaxiEdge(100000000, 1012000, 102000000, 1000),
+            new TaxiEdge(100000000, 1012000, 101000000, 800),
+            new TaxiEdge(100000000, 1012000, 103000000, 1000),
+            new TaxiEdge(100000000, 1012000, 120000000, 800),
+            // Perion 102000000 — Regular Cab 1022001
+            new TaxiEdge(102000000, 1022001, 104000000, 1000),
+            new TaxiEdge(102000000, 1022001, 100000000, 1000),
+            new TaxiEdge(102000000, 1022001, 101000000, 800),
+            new TaxiEdge(102000000, 1022001, 103000000, 1000),
+            new TaxiEdge(102000000, 1022001, 120000000, 800),
+            // Ellinia 101000000 — Regular Cab 1032000, VIP Cab 1032005
+            new TaxiEdge(101000000, 1032000, 104000000, 1000),
+            new TaxiEdge(101000000, 1032000, 102000000, 1000),
+            new TaxiEdge(101000000, 1032000, 100000000, 1000),
+            new TaxiEdge(101000000, 1032000, 103000000, 1000),
+            new TaxiEdge(101000000, 1032000, 120000000, 800),
+            new TaxiEdge(101000000, 1032005, 105070001, 10000),
+            // Kerning City 103000000 — Regular Cab 1052016
+            new TaxiEdge(103000000, 1052016, 104000000, 1000),
+            new TaxiEdge(103000000, 1052016, 102000000, 1000),
+            new TaxiEdge(103000000, 1052016, 100000000, 1000),
+            new TaxiEdge(103000000, 1052016, 101000000, 800),
+            new TaxiEdge(103000000, 1052016, 120000000, 800),
+            // Nautilus Harbor 120000000 — Regular Cab 1092014
+            new TaxiEdge(120000000, 1092014, 104000000, 1000),
+            new TaxiEdge(120000000, 1092014, 102000000, 1000),
+            new TaxiEdge(120000000, 1092014, 100000000, 1000),
+            new TaxiEdge(120000000, 1092014, 101000000, 800),
+            new TaxiEdge(120000000, 1092014, 103000000, 1000));
+
+    private static final Map<Integer, List<TaxiEdge>> TAXI_BY_MAP = buildTaxiByMap();
+
+    private static Map<Integer, List<TaxiEdge>> buildTaxiByMap() {
+        Map<Integer, List<TaxiEdge>> byMap = new HashMap<>();
+        for (TaxiEdge edge : TAXI_EDGES) {
+            byMap.computeIfAbsent(edge.fromMapId(), k -> new ArrayList<>()).add(edge);
+        }
+        byMap.replaceAll((k, v) -> List.copyOf(v));
+        return Collections.unmodifiableMap(byMap);
+    }
+
+    /** The taxi ride from one map to another, or null when no cab drives that route. */
+    static TaxiEdge findTaxiEdge(int fromMapId, int toMapId) {
+        for (TaxiEdge edge : TAXI_BY_MAP.getOrDefault(fromMapId, List.of())) {
+            if (edge.toMapId() == toMapId) {
+                return edge;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Directed adjacency: mapId → distinct portal target mapIds (sorted), plus the per-map
+     * return-scroll shortcut (mapId → returnMap town) where it beats walking.
+     */
+    record Index(Map<Integer, int[]> edges, Map<Integer, Integer> scrollTargets) {
         int[] neighbors(int mapId) {
             return edges.getOrDefault(mapId, new int[0]);
+        }
+
+        /** Town a return scroll warps this map to, or -1 when the walk is short enough anyway. */
+        int scrollTarget(int mapId) {
+            return scrollTargets.getOrDefault(mapId, -1);
         }
     }
 
@@ -70,16 +164,22 @@ final class BotWorldGraph {
     }
 
     /**
-     * Shortest portal route from one map to another: the sequence of map ids to enter, ending
+     * Shortest route from one map to another: the sequence of map ids to enter, ending
      * with {@code toMapId}. Empty when already there; null when unreachable within
      * {@code maxHops} (boat rides, scripted gates, other continents — caller warps instead).
+     * Portal hops only — scrolls and taxis need the {@link RouteOptions} overload.
      */
     static List<Integer> route(int fromMapId, int toMapId, int maxHops) {
-        return route(get(), fromMapId, toMapId, maxHops);
+        return route(get(), fromMapId, toMapId, maxHops, RouteOptions.PORTALS_ONLY);
     }
 
-    /** Pure BFS over an explicit graph; see {@link #route(int, int, int)}. */
-    static List<Integer> route(Index graph, int fromMapId, int toMapId, int maxHops) {
+    /** Like {@link #route(int, int, int)} but may spend a return scroll or taxi fare per options. */
+    static List<Integer> route(int fromMapId, int toMapId, int maxHops, RouteOptions options) {
+        return route(get(), fromMapId, toMapId, maxHops, options);
+    }
+
+    /** Pure BFS over an explicit graph; see {@link #route(int, int, int, RouteOptions)}. */
+    static List<Integer> route(Index graph, int fromMapId, int toMapId, int maxHops, RouteOptions options) {
         if (fromMapId == toMapId) {
             return List.of();
         }
@@ -95,7 +195,7 @@ final class BotWorldGraph {
             depth++;
             for (int level = frontier.size(); level > 0; level--) {
                 int current = frontier.poll();
-                for (int next : graph.neighbors(current)) {
+                for (int next : expand(graph, current, options)) {
                     if (cameFrom.putIfAbsent(next, current) != null) {
                         continue;
                     }
@@ -111,11 +211,16 @@ final class BotWorldGraph {
 
     /** All maps reachable within maxHops portal hops of fromMapId, including fromMapId itself. */
     static Set<Integer> reachableWithin(int fromMapId, int maxHops) {
-        return reachableWithin(get(), fromMapId, maxHops);
+        return reachableWithin(get(), fromMapId, maxHops, RouteOptions.PORTALS_ONLY);
     }
 
-    /** Pure BFS flood over an explicit graph; see {@link #reachableWithin(int, int)}. */
-    static Set<Integer> reachableWithin(Index graph, int fromMapId, int maxHops) {
+    /** Like {@link #reachableWithin(int, int)} but may spend a return scroll or taxi fare per options. */
+    static Set<Integer> reachableWithin(int fromMapId, int maxHops, RouteOptions options) {
+        return reachableWithin(get(), fromMapId, maxHops, options);
+    }
+
+    /** Pure BFS flood over an explicit graph; see {@link #reachableWithin(int, int, RouteOptions)}. */
+    static Set<Integer> reachableWithin(Index graph, int fromMapId, int maxHops, RouteOptions options) {
         Set<Integer> seen = new HashSet<>();
         ArrayDeque<Integer> frontier = new ArrayDeque<>();
         seen.add(fromMapId);
@@ -123,7 +228,7 @@ final class BotWorldGraph {
         for (int depth = 0; depth < maxHops && !frontier.isEmpty(); depth++) {
             for (int level = frontier.size(); level > 0; level--) {
                 int current = frontier.poll();
-                for (int next : graph.neighbors(current)) {
+                for (int next : expand(graph, current, options)) {
                     if (seen.add(next)) {
                         frontier.add(next);
                     }
@@ -131,6 +236,29 @@ final class BotWorldGraph {
             }
         }
         return seen;
+    }
+
+    /** A map's outgoing edges under the given options: portals, then scroll/taxi when affordable. */
+    private static List<Integer> expand(Index graph, int mapId, RouteOptions options) {
+        int[] portals = graph.neighbors(mapId);
+        List<Integer> out = new ArrayList<>(portals.length + 6);
+        for (int next : portals) {
+            out.add(next);
+        }
+        if (options.withReturnScroll()) {
+            int scrollTarget = graph.scrollTarget(mapId);
+            if (scrollTarget != -1) {
+                out.add(scrollTarget);
+            }
+        }
+        // Fares are gated per edge, not cumulatively along the route — the travel executor
+        // re-checks meso at every ride, and a broke bot mid-route just falls back/re-plans.
+        for (TaxiEdge taxi : TAXI_BY_MAP.getOrDefault(mapId, List.of())) {
+            if (options.meso() >= taxi.fare()) {
+                out.add(taxi.toMapId());
+            }
+        }
+        return out;
     }
 
     private static List<Integer> reconstruct(Map<Integer, Integer> cameFrom, int fromMapId, int toMapId) {
@@ -149,18 +277,21 @@ final class BotWorldGraph {
             return loaded;
         }
         long startedAt = System.currentTimeMillis();
-        Map<Integer, int[]> edges = scanWz();
-        log.info("Bot world graph: scanned {} maps ({} with outgoing portals) in {} ms",
+        Map<Integer, int[]> edges = new HashMap<>();
+        Map<Integer, Integer> returnMaps = new HashMap<>();
+        scanWz(edges, returnMaps);
+        Map<Integer, Integer> scrollTargets = computeScrollTargets(edges, returnMaps);
+        log.info("Bot world graph: scanned {} maps ({} with outgoing portals, {} scroll shortcuts) in {} ms",
                 edges.size(),
                 edges.values().stream().filter(targets -> targets.length > 0).count(),
+                scrollTargets.size(),
                 System.currentTimeMillis() - startedAt);
-        Index built = new Index(Collections.unmodifiableMap(edges));
+        Index built = new Index(Collections.unmodifiableMap(edges), Collections.unmodifiableMap(scrollTargets));
         writeCache(built);
         return built;
     }
 
-    private static Map<Integer, int[]> scanWz() {
-        Map<Integer, int[]> edges = new HashMap<>();
+    private static void scanWz(Map<Integer, int[]> edges, Map<Integer, Integer> returnMaps) {
         DataProvider mapSource = DataProviderFactory.getDataProvider(WZFiles.MAP);
         Path mapRoot = Path.of(WZFiles.MAP.getFilePath(), "Map");
         int failures = 0;
@@ -177,10 +308,7 @@ final class BotWorldGraph {
                     }
                     try {
                         int mapId = Integer.parseInt(name.substring(0, name.length() - ".img.xml".length()));
-                        int[] targets = readMapEdges(mapSource, area, mapId);
-                        if (targets != null) {
-                            edges.put(mapId, targets);
-                        }
+                        readMap(mapSource, area, mapId, edges, returnMaps);
                     } catch (NumberFormatException ignored) {
                         // non-map file (e.g. AreaCode.img.xml) — skip
                     } catch (RuntimeException e) {
@@ -194,26 +322,32 @@ final class BotWorldGraph {
         if (failures > 0) {
             log.warn("Bot world graph: {} map files failed to parse (skipped)", failures);
         }
-        return edges;
     }
 
     /**
-     * Outgoing walkable edges of one map, following {@code info/link} like MapFactory so the
-     * portal set matches what the runtime map actually loads.
+     * Outgoing walkable edges and returnMap of one map. Portals follow {@code info/link} like
+     * MapFactory so the set matches what the runtime map loads; returnMap is the map's own
+     * (MapFactory reads it before the link redirect too).
      */
-    private static int[] readMapEdges(DataProvider mapSource, int area, int mapId) {
+    private static void readMap(DataProvider mapSource, int area, int mapId,
+                                Map<Integer, int[]> edges, Map<Integer, Integer> returnMaps) {
         Data mapData = mapSource.getData(mapImgPath(area, mapId));
         if (mapData == null) {
-            return null;
+            return;
         }
         Data info = mapData.getChildByPath("info");
+        int returnMapId = info != null ? DataTool.getInt("returnMap", info, NO_TARGET_MAPID) : NO_TARGET_MAPID;
+        if (returnMapId != NO_TARGET_MAPID && returnMapId != mapId) {
+            returnMaps.put(mapId, returnMapId);
+        }
         String link = info != null ? DataTool.getString("link", info, "") : "";
         if (!link.isEmpty()) {
             try {
                 int linkId = Integer.parseInt(link);
                 mapData = mapSource.getData(mapImgPath(linkId / 100000000, linkId));
                 if (mapData == null) {
-                    return new int[0];
+                    edges.put(mapId, new int[0]);
+                    return;
                 }
             } catch (NumberFormatException ignored) {
                 // malformed link — read the map as-is
@@ -221,7 +355,8 @@ final class BotWorldGraph {
         }
         Data portals = mapData.getChildByPath("portal");
         if (portals == null) {
-            return new int[0];
+            edges.put(mapId, new int[0]);
+            return;
         }
         Set<Integer> targets = new TreeSet<>();
         for (Data portal : portals) {
@@ -243,14 +378,32 @@ final class BotWorldGraph {
         for (int target : targets) {
             out[i++] = target;
         }
-        return out;
+        edges.put(mapId, out);
+    }
+
+    /**
+     * The maps whose return scroll is worth an edge: walking to their returnMap town would take
+     * {@link #RETURN_SCROLL_MIN_HOPS}+ portal hops (or isn't possible at all). Computed once
+     * over the finished portal graph — a depth-limited BFS per map is cheap.
+     */
+    static Map<Integer, Integer> computeScrollTargets(Map<Integer, int[]> edges, Map<Integer, Integer> returnMaps) {
+        Index portalsOnly = new Index(edges, Map.of());
+        Map<Integer, Integer> scrollTargets = new HashMap<>();
+        for (Map.Entry<Integer, Integer> e : returnMaps.entrySet()) {
+            int mapId = e.getKey();
+            int returnMapId = e.getValue();
+            if (route(portalsOnly, mapId, returnMapId, RETURN_SCROLL_MIN_HOPS - 1, RouteOptions.PORTALS_ONLY) == null) {
+                scrollTargets.put(mapId, returnMapId);
+            }
+        }
+        return scrollTargets;
     }
 
     private static String mapImgPath(int area, int mapId) {
         return "Map/Map" + area + "/" + String.format("%09d", mapId) + ".img";
     }
 
-    // ---- disk cache: one row per map: mapId \t target,target,... ----
+    // ---- disk cache: one row per map: mapId \t target,target,... \t scrollTarget ----
 
     private static Index loadCache() {
         if (!Files.isRegularFile(CACHE_FILE)) {
@@ -258,6 +411,7 @@ final class BotWorldGraph {
         }
         try {
             Map<Integer, int[]> edges = new HashMap<>();
+            Map<Integer, Integer> scrollTargets = new HashMap<>();
             for (String line : Files.readAllLines(CACHE_FILE, StandardCharsets.US_ASCII)) {
                 if (line.isBlank()) {
                     continue;
@@ -275,8 +429,12 @@ final class BotWorldGraph {
                     targets = new int[0];
                 }
                 edges.put(mapId, targets);
+                if (cols.length > 2 && !cols[2].isEmpty()) {
+                    scrollTargets.put(mapId, Integer.parseInt(cols[2]));
+                }
             }
-            return edges.isEmpty() ? null : new Index(Collections.unmodifiableMap(edges));
+            return edges.isEmpty() ? null
+                    : new Index(Collections.unmodifiableMap(edges), Collections.unmodifiableMap(scrollTargets));
         } catch (IOException | RuntimeException e) {
             log.warn("Bot world graph: cache unreadable, rescanning WZ", e);
             return null;
@@ -296,6 +454,11 @@ final class BotWorldGraph {
                     }
                     sb.append(targets[i]);
                 }
+                sb.append('\t');
+                int scrollTarget = built.scrollTarget(e.getKey());
+                if (scrollTarget != -1) {
+                    sb.append(scrollTarget);
+                }
                 sb.append('\n');
             }
             Files.writeString(CACHE_FILE, sb.toString(), StandardCharsets.US_ASCII);
@@ -306,10 +469,15 @@ final class BotWorldGraph {
 
     /** Test/debug helper: build an index straight from explicit adjacency, bypassing WZ/cache. */
     static Index indexOf(Map<Integer, int[]> edges) {
+        return indexOf(edges, Map.of());
+    }
+
+    /** Test/debug helper with explicit scroll shortcuts (map → returnMap town). */
+    static Index indexOf(Map<Integer, int[]> edges, Map<Integer, Integer> scrollTargets) {
         Map<Integer, int[]> copy = new HashMap<>();
         for (Map.Entry<Integer, int[]> e : edges.entrySet()) {
             copy.put(e.getKey(), Arrays.copyOf(e.getValue(), e.getValue().length));
         }
-        return new Index(Collections.unmodifiableMap(copy));
+        return new Index(Collections.unmodifiableMap(copy), Map.copyOf(scrollTargets));
     }
 }

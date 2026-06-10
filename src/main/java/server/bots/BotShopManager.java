@@ -653,7 +653,7 @@ final class BotShopManager {
         return null;
     }
 
-    private static int countReturnScrolls(Character bot) {
+    static int countReturnScrolls(Character bot) {
         var use = bot.getInventory(InventoryType.USE);
         if (use == null) {
             return 0;

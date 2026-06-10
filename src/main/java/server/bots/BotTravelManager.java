@@ -16,6 +16,16 @@ import java.util.List;
  * Routes beyond {@link #MAX_FOLLOW_TRAVEL_HOPS}, maps with no usable portal (boat rides,
  * scripted gates), and walks that fail or time out all fall back to the legacy warp in
  * {@code BotManager.syncFollowMap}.
+ *
+ * <p>Two consumable hop kinds ride on top of portal hops, both planned by the world graph
+ * and re-checked here at use time:
+ * <ul>
+ *   <li><b>Return scroll</b>: the next hop is this map's scroll-shortcut town and the bot
+ *       carries a Nearest Town Scroll — use it on the spot, no walking.</li>
+ *   <li><b>Taxi</b>: the next hop is a cab destination — walk to within
+ *       {@link #TAXI_TRIGGER_RADIUS_PX} of the cab NPC, pay the fare, warp to portal 0,
+ *       exactly what the NPC script charges a player.</li>
+ * </ul>
  */
 final class BotTravelManager {
 
@@ -39,9 +49,12 @@ final class BotTravelManager {
     // party bot from being minutes behind when the owner taxis across the world, while the
     // common "owner walked a couple of maps ahead" case stays fully legal.
     private static final int MAX_FOLLOW_TRAVEL_HOPS = 4;
+    // The cab NPC doesn't need a precise approach — anywhere near it counts as "talked to it".
+    private static final int TAXI_TRIGGER_RADIUS_PX = 500;
 
     // Test seams: stepMovementCore drags in the full physics/nav stack; the world graph's
-    // default lookup triggers a WZ scan on first use.
+    // default lookups trigger a WZ scan on first use; scroll/taxi defaults touch inventory,
+    // meso and the live map factory.
     @FunctionalInterface
     interface MovementStep {
         void step(BotEntry entry, Point targetPos, boolean runAiTick);
@@ -49,12 +62,51 @@ final class BotTravelManager {
 
     @FunctionalInterface
     interface RouteLookup {
-        List<Integer> route(int fromMapId, int toMapId, int maxHops);
+        List<Integer> route(int fromMapId, int toMapId, int maxHops, BotWorldGraph.RouteOptions options);
+    }
+
+    @FunctionalInterface
+    interface ScrollTargetLookup {
+        int scrollTarget(int mapId);
+    }
+
+    @FunctionalInterface
+    interface ReturnScrollUse {
+        boolean use(Character bot);
+    }
+
+    @FunctionalInterface
+    interface TaxiNpcLocator {
+        Point locate(MapleMap map, int npcId);
+    }
+
+    @FunctionalInterface
+    interface TaxiRide {
+        boolean ride(Character bot, BotWorldGraph.TaxiEdge edge);
     }
 
     static MovementStep movementStep =
             (entry, targetPos, runAiTick) -> BotManager.getInstance().stepMovementCore(entry, targetPos, runAiTick);
     static RouteLookup routeLookup = BotWorldGraph::route;
+    static ScrollTargetLookup scrollTargetLookup = mapId -> BotWorldGraph.get().scrollTarget(mapId);
+    static java.util.function.ToIntFunction<Character> returnScrollCount = BotShopManager::countReturnScrolls;
+    static ReturnScrollUse returnScrollUse = bot -> BotManager.getInstance().tryUseReturnScroll(bot);
+    static TaxiNpcLocator taxiNpcLocator = (map, npcId) -> {
+        var npc = map.getNPCById(npcId);
+        return npc != null ? npc.getPosition() : null;
+    };
+    static TaxiRide taxiRide = (bot, edge) -> {
+        if (bot.getMeso() < edge.fare()) {
+            return false;
+        }
+        MapleMap dest = bot.getClient().getChannelServer().getMapFactory().getMap(edge.toMapId());
+        if (dest == null) {
+            return false;
+        }
+        bot.gainMeso(-edge.fare(), false);
+        bot.changeMap(dest, dest.getPortal(0)); // cab scripts do cm.warp(dest, 0)
+        return true;
+    };
 
     private BotTravelManager() {}
 
@@ -106,6 +158,9 @@ final class BotTravelManager {
 
         Portal portal;
         if (active) {
+            if (entry.followTravelTaxiNpcId != 0) {
+                return tickTaxiHop(entry, bot, now, runAiTick);
+            }
             portal = map.getPortal(entry.followTravelPortalId);
             if (portal == null || !portal.getPortalStatus()) {
                 giveUp(entry, now); // our portal closed mid-walk
@@ -117,14 +172,16 @@ final class BotTravelManager {
             int nextHopMapId = targetMapId;
             portal = findAdjacentPortal(map.getPortals(), targetMapId, bot.getPosition());
             if (portal == null) {
-                List<Integer> route = routeLookup.route(bot.getMapId(), targetMapId, maxHops);
+                BotWorldGraph.RouteOptions options = new BotWorldGraph.RouteOptions(
+                        returnScrollCount.applyAsInt(bot) > 0, bot.getMeso());
+                List<Integer> route = routeLookup.route(bot.getMapId(), targetMapId, maxHops, options);
                 if (route == null || route.isEmpty()) {
                     return false; // too far or unreachable by walking — warp fallback
                 }
                 nextHopMapId = route.get(0);
                 portal = findAdjacentPortal(map.getPortals(), nextHopMapId, bot.getPosition());
                 if (portal == null) {
-                    return false; // graph edge exists but no live usable portal (closed/scripted at runtime)
+                    return tryConsumableHop(entry, bot, map, targetMapId, nextHopMapId, now, runAiTick);
                 }
             }
             entry.followTravelTargetMapId = targetMapId;
@@ -153,6 +210,70 @@ final class BotTravelManager {
 
         pinMoveTarget(entry, portalPos);
         movementStep.step(entry, portalPos, runAiTick);
+        return true;
+    }
+
+    /**
+     * The route's next hop has no walkable portal — it came from a consumable graph edge.
+     * Scroll hops fire on the spot; taxi hops start a walk toward the cab NPC. Returns false
+     * (caller falls back) when neither applies after the use-time re-checks.
+     */
+    private static boolean tryConsumableHop(BotEntry entry, Character bot, MapleMap map,
+                                            int targetMapId, int nextHopMapId, long now, boolean runAiTick) {
+        if (nextHopMapId == scrollTargetLookup.scrollTarget(bot.getMapId())
+                && returnScrollCount.applyAsInt(bot) > 0) {
+            if (!returnScrollUse.use(bot)) {
+                return false;
+            }
+            entry.followTravelTargetMapId = targetMapId;
+            entry.followTravelNextHopMapId = nextHopMapId;
+            entry.followTravelFromMapId = bot.getMapId();
+            entry.followTravelPortalId = -1;
+            entry.followTravelDeadlineMs = now + PORTAL_LAND_GRACE_MS;
+            entry.followTravelEnteredAtMs = now;
+            return true;
+        }
+        BotWorldGraph.TaxiEdge taxi = BotWorldGraph.findTaxiEdge(bot.getMapId(), nextHopMapId);
+        if (taxi == null || bot.getMeso() < taxi.fare()) {
+            return false;
+        }
+        Point npcPos = taxiNpcLocator.locate(map, taxi.npcId());
+        if (npcPos == null) {
+            return false; // cab NPC missing from the live map — warp fallback
+        }
+        entry.followTravelTargetMapId = targetMapId;
+        entry.followTravelNextHopMapId = nextHopMapId;
+        entry.followTravelFromMapId = bot.getMapId();
+        entry.followTravelPortalId = -1;
+        entry.followTravelTaxiNpcId = taxi.npcId();
+        entry.followTravelTaxiPos = new Point(npcPos);
+        long budget = Math.min(TRAVEL_BUDGET_MAX_MS, TRAVEL_BUDGET_BASE_MS
+                + TRAVEL_BUDGET_PER_PX_MS * manhattan(bot.getPosition(), npcPos));
+        entry.followTravelDeadlineMs = now + budget;
+        return tickTaxiHop(entry, bot, now, runAiTick);
+    }
+
+    /** Walk toward the cab NPC; once close enough, pay and ride. */
+    private static boolean tickTaxiHop(BotEntry entry, Character bot, long now, boolean runAiTick) {
+        Point npcPos = entry.followTravelTaxiPos;
+        Point botPos = bot.getPosition();
+        if (npcPos == null) {
+            giveUp(entry, now);
+            return false;
+        }
+        if (!entry.inAir && !entry.climbing && manhattan(botPos, npcPos) <= TAXI_TRIGGER_RADIUS_PX) {
+            BotWorldGraph.TaxiEdge taxi =
+                    BotWorldGraph.findTaxiEdge(entry.followTravelFromMapId, entry.followTravelNextHopMapId);
+            clearMoveTargetPin(entry);
+            if (taxi == null || !taxiRide.ride(bot, taxi)) {
+                giveUp(entry, now); // fare spent elsewhere mid-walk — don't retry the same hop
+                return false;
+            }
+            entry.followTravelEnteredAtMs = now;
+            return true;
+        }
+        pinMoveTarget(entry, npcPos);
+        movementStep.step(entry, npcPos, runAiTick);
         return true;
     }
 
@@ -189,6 +310,8 @@ final class BotTravelManager {
         entry.followTravelFromMapId = -1;
         entry.followTravelDeadlineMs = 0L;
         entry.followTravelEnteredAtMs = 0L;
+        entry.followTravelTaxiNpcId = 0;
+        entry.followTravelTaxiPos = null;
     }
 
     private static void giveUp(BotEntry entry, long now) {
