@@ -3,7 +3,6 @@ package server.bots;
 import client.BotClient;
 import client.Character;
 import client.Job;
-import client.processor.action.MakerProcessor;
 import client.inventory.Equip;
 import client.inventory.Inventory;
 import client.inventory.InventoryType;
@@ -37,7 +36,6 @@ import java.util.concurrent.ThreadLocalRandom;
 import java.util.function.IntPredicate;
 import java.util.function.IntUnaryOperator;
 import java.util.function.Predicate;
-import java.util.function.ToIntFunction;
 
 class BotInventoryManager {
     private static final Logger log = LoggerFactory.getLogger(BotInventoryManager.class);
@@ -1646,6 +1644,8 @@ class BotInventoryManager {
     // <=1% yet clean average rolls are NPC fodder — good rolls are already stat-protected
     // (shouldKeepForSellTrash) and self-useful gear is reserved (collectPotentialSelfUpgradeItems).
     private static final int RARE_DROP_KEEP_CHANCE = 10_000;
+    private static final int PARTY_ARROW_RESERVE = 5_000;
+    private static final int MONSTER_CRYSTAL_LEFTOVER_KEEP_QUANTITY = 100;
 
     // Test seams: ItemInformationProvider's WZ/DB static initializer can't run in unit tests
     // (same pattern as BotShopManager) — price/leftover/rarity/maker lookups go through these.
@@ -1658,11 +1658,42 @@ class BotInventoryManager {
     static IntUnaryOperator makerCrystalFromLeftover =
             id -> ItemInformationProvider.getInstance().getMakerCrystalFromLeftover(id);
     static IntUnaryOperator bestDropChance = BotScrollManager::bestDropChance;
-    static ToIntFunction<Character> makerSkillLevel = MakerProcessor::getMakerSkillLevel;
 
     private static boolean isRareDrop(int itemId) {
         int chance = bestDropChance.applyAsInt(itemId);
         return chance > 0 && chance <= RARE_DROP_KEEP_CHANCE;
+    }
+
+    private static boolean isMakerMaterial(int itemId) {
+        return ItemConstants.isMakerReagent(itemId)
+                || isInRange(itemId, 4004000, 4004004) // stat crystal ores
+                || isInRange(itemId, 4005000, 4005004) // stat crystals
+                || isInRange(itemId, 4007000, 4007007) // magic powders
+                || isInRange(itemId, 4010000, 4010007) // ores
+                || isInRange(itemId, 4011000, 4011008) // plates, Moon Rock, Lidium
+                || isInRange(itemId, 4020000, 4020009) // jewel ores, Piece of Time
+                || isInRange(itemId, 4021000, 4021009) // jewels, Star Rock
+                || itemId / 10000 == 413 // stimulators and crafting manuals
+                || itemId / 10000 == 426; // monster crystals
+    }
+
+    private static boolean isInRange(int itemId, int first, int last) {
+        return itemId >= first && itemId <= last;
+    }
+
+    static short sellTrashQuantity(Item item) {
+        if (item == null || item.getQuantity() <= 0) {
+            return 0;
+        }
+        if (isPartyArrowReserveItem(item.getItemId())) {
+            return (short) Math.max(0, item.getQuantity() - PARTY_ARROW_RESERVE);
+        }
+        return item.getQuantity();
+    }
+
+    private static boolean isPartyArrowReserveItem(int itemId) {
+        return isInRange(itemId, 2060001, 2060004)
+                || isInRange(itemId, 2061001, 2061004);
     }
 
     // Trash USE = ammo for a weapon the bot isn't using, non-rechargeable only (stars/bullets
@@ -1678,23 +1709,24 @@ class BotInventoryManager {
                     && ammoType != ownAmmoType
                     && !ItemConstants.isRechargeable(id)
                     && !isRareDrop(id)
-                    && sellPrice.price(id, item.getQuantity()) > 0;
+                    && sellTrashQuantity(item) > 0
+                    && sellPrice.price(id, sellTrashQuantity(item)) > 0;
         });
         return result;
     }
 
     // Trash ETC = anything an NPC pays for. Quest items/untradeables are already excluded by
-    // collectFromBag (isSafeToDrop). Kept: skill-consumed rocks, maker reagents, rare drops, and
-    // crystal leftovers while the bot has the Maker skill (worth more as crystals than NPC price).
+    // collectFromBag (isSafeToDrop). Kept: skill-consumed rocks, Maker/crafting materials,
+    // rare drops, and crystal leftovers that can become Maker monster crystals.
     static List<Item> collectSellTrashEtcItems(Character bot) {
-        boolean keepsCrystalLeftovers = makerSkillLevel.applyAsInt(bot) >= 1;
         List<Item> result = new ArrayList<>();
         collectFromBag(bot, result, InventoryType.ETC, item -> {
             int id = item.getItemId();
-            if (SKILL_CONSUMED_ETC.contains(id) || ItemConstants.isMakerReagent(id) || isRareDrop(id)) {
+            if (SKILL_CONSUMED_ETC.contains(id) || isMakerMaterial(id) || isRareDrop(id)) {
                 return false;
             }
-            if (keepsCrystalLeftovers && makerCrystalFromLeftover.applyAsInt(id) != -1) {
+            if (makerCrystalFromLeftover.applyAsInt(id) != -1
+                    && item.getQuantity() >= MONSTER_CRYSTAL_LEFTOVER_KEEP_QUANTITY) {
                 return false;
             }
             return sellPrice.price(id, item.getQuantity()) > 0;

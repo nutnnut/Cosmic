@@ -15,7 +15,11 @@ import server.maps.MapleMap;
 import testutil.Items;
 
 import java.awt.*;
+import java.lang.reflect.Method;
+import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.function.IntUnaryOperator;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -23,8 +27,11 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyDouble;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.mockStatic;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class BotShopManagerTest {
@@ -206,6 +213,46 @@ class BotShopManagerTest {
 
         assertTrue(entry.shopVisitPending);
         assertTrue(entry.shopSellTrashPending);
+    }
+
+    @Test
+    void shouldSellOnlyEnhancedArrowExcessAbovePartyReserve() throws Exception {
+        Character bot = mock(Character.class);
+        MapleMap map = mock(MapleMap.class);
+        BotEntry entry = new BotEntry(bot, null, null);
+        Point npcPos = new Point(20, 0);
+        NPC npc = shopNpc(npcPos);
+        Shop shop = mock(Shop.class);
+        Inventory use = new Inventory(bot, InventoryType.USE, (byte) 24);
+        Item arrows = Items.itemWithQuantity(2061004, 7_000);
+        short slot = use.addItem(arrows);
+
+        entry.shopVisitPending = true;
+        entry.shopSequenceActive = true;
+        when(bot.getMap()).thenReturn(map);
+        when(bot.getPosition()).thenReturn(new Point(20, 0));
+        when(bot.getInventory(InventoryType.USE)).thenReturn(use);
+        when(map.getMapObjectsInRange(any(Point.class), anyDouble(), any())).thenReturn(List.of(npc));
+
+        Method runSellTrashStep = BotShopManager.class.getDeclaredMethod(
+                "runSellTrashStep",
+                BotEntry.class, Character.class, Point.class, int.class, List.class, Set.class,
+                List.class, List.class, Class.forName("server.bots.BotShopManager$BuyReport"));
+        runSellTrashStep.setAccessible(true);
+
+        try (MockedStatic<ShopFactory> shops = mockStatic(ShopFactory.class);
+             MockedStatic<BotManager> managers =
+                     mockStatic(BotManager.class, org.mockito.Mockito.CALLS_REAL_METHODS)) {
+            ShopFactory factory = mock(ShopFactory.class);
+            shops.when(ShopFactory::getInstance).thenReturn(factory);
+            when(factory.getShopForNPC(npc.getId())).thenReturn(shop);
+            managers.when(() -> BotManager.after(anyLong(), any(Runnable.class))).thenReturn(null);
+
+            runSellTrashStep.invoke(null, entry, bot, npcPos, 0, new ArrayList<String>(), new HashSet<Item>(),
+                    List.of(arrows), List.of(), null);
+        }
+
+        verify(shop).sell(any(), eq(InventoryType.USE), eq(slot), eq((short) 2_000));
     }
 
     private static Character clawBotWithStars(int... quantities) {

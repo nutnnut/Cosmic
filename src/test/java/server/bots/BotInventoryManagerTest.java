@@ -22,7 +22,6 @@ import java.util.Map;
 import java.util.Set;
 import java.util.function.IntPredicate;
 import java.util.function.IntUnaryOperator;
-import java.util.function.ToIntFunction;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -158,16 +157,18 @@ class BotInventoryManagerTest {
     }
 
     @Test
-    void shouldCollectOnlyOffWeaponNonRechargeableAmmoAsTrashUse() {
+    void shouldCollectOnlySellableOffWeaponNonRechargeableAmmoAsTrashUse() {
         Character bot = mock(Character.class);
         Inventory use = new Inventory(bot, InventoryType.USE, (byte) 24);
         use.addItem(Items.itemWithQuantity(2060000, 500));  // bow arrows = own ammo -> keep
         use.addItem(Items.itemWithQuantity(2061000, 500));  // xbow bolts = off-weapon -> trash
+        use.addItem(Items.itemWithQuantity(2061003, 4_000)); // blue arrows under reserve -> keep
+        use.addItem(Items.itemWithQuantity(2061004, 7_000)); // diamond arrows over reserve -> sell excess
         use.addItem(Items.itemWithQuantity(2070000, 200));  // stars: rechargeable -> keep
         use.addItem(Items.itemWithQuantity(2000000, 100));  // potion: not ammo -> keep
         when(bot.getInventory(InventoryType.USE)).thenReturn(use);
 
-        try (AutoCloseable seams = withSellSeams((id, qty) -> 10, id -> -1, id -> 0, b -> 0);
+        try (AutoCloseable seams = withSellSeams((id, qty) -> 10, id -> -1, id -> 0);
              MockedStatic<BotAttackExecutionProvider> attacks =
                      mockStatic(BotAttackExecutionProvider.class)) {
             attacks.when(() -> BotAttackExecutionProvider.getEquippedWeaponType(bot))
@@ -175,42 +176,51 @@ class BotInventoryManagerTest {
 
             List<Item> trash = BotInventoryManager.collectSellTrashUseItems(bot);
 
-            assertEquals(1, trash.size());
-            assertEquals(2061000, trash.get(0).getItemId());
+            assertEquals(2, trash.size());
+            assertTrue(trash.stream().anyMatch(item ->
+                    item.getItemId() == 2061000 && BotInventoryManager.sellTrashQuantity(item) == 500));
+            assertTrue(trash.stream().anyMatch(item ->
+                    item.getItemId() == 2061004 && BotInventoryManager.sellTrashQuantity(item) == 2_000));
         } catch (Exception e) {
             throw new AssertionError(e);
         }
     }
 
     @Test
-    void shouldKeepRareReagentSkillRockAndCrystalLeftoversOutOfTrashEtc() {
+    void shouldKeepRareAndCraftingEtcOutOfSellTrash() {
         Character bot = mock(Character.class);
         Inventory etc = new Inventory(bot, InventoryType.ETC, (byte) 24);
         etc.addItem(Items.itemWithQuantity(4000000, 50));   // common junk -> trash
         etc.addItem(Items.itemWithQuantity(4000001, 2));    // rare drop (0.5%) -> keep
         etc.addItem(Items.itemWithQuantity(4250000, 3));    // maker reagent -> keep
         etc.addItem(Items.itemWithQuantity(4006000, 5));    // magic rock (skill-consumed) -> keep
-        etc.addItem(Items.itemWithQuantity(4000100, 120));  // crystal leftover -> keep w/ Maker skill
+        etc.addItem(Items.itemWithQuantity(4006001, 5));    // summoning rock (skill-consumed) -> keep
+        etc.addItem(Items.itemWithQuantity(4000100, 45));   // small crystal leftover stack -> trash
+        etc.addItem(Items.itemWithQuantity(4000101, 1252)); // crystal leftover stack >=100 -> keep
+        etc.addItem(Items.itemWithQuantity(4000102, 200));  // crystal leftover stack >=100 -> keep
         etc.addItem(Items.itemWithQuantity(4000200, 9));    // NPC pays nothing -> keep
+        etc.addItem(Items.itemWithQuantity(4004000, 7));    // stat crystal ore -> keep
+        etc.addItem(Items.itemWithQuantity(4005004, 1));    // stat crystal -> keep
+        etc.addItem(Items.itemWithQuantity(4007003, 11));   // magic powder -> keep
+        etc.addItem(Items.itemWithQuantity(4010006, 8));    // ore -> keep
+        etc.addItem(Items.itemWithQuantity(4011008, 2));    // plate/refined material -> keep
+        etc.addItem(Items.itemWithQuantity(4020007, 8));    // jewel ore -> keep
+        etc.addItem(Items.itemWithQuantity(4021009, 1));    // jewel/refined material -> keep
+        etc.addItem(Items.itemWithQuantity(4130000, 1));    // stimulator -> keep
+        etc.addItem(Items.itemWithQuantity(4131000, 1));    // crafting manual -> keep
+        etc.addItem(Items.itemWithQuantity(4260000, 4));    // monster crystal -> keep
         when(bot.getInventory(InventoryType.ETC)).thenReturn(etc);
 
         BotInventoryManager.SellPriceLookup price = (id, qty) -> id == 4000200 ? -1 : 10;
-        IntUnaryOperator leftover = id -> id == 4000100 ? 4260000 : -1;
+        IntUnaryOperator leftover = id -> isIn(id, 4000100, 4000101, 4000102) ? 4260000 : -1;
         IntUnaryOperator dropChance = id -> id == 4000001 ? 5000 : 600000;
 
-        try (AutoCloseable seams = withSellSeams(price, leftover, dropChance, b -> 1)) {
-            List<Item> trash = BotInventoryManager.collectSellTrashEtcItems(bot);
-            assertEquals(1, trash.size());
-            assertEquals(4000000, trash.get(0).getItemId());
-        } catch (Exception e) {
-            throw new AssertionError(e);
-        }
-
-        // Without the Maker skill the crystal leftover is just another common drop: sell it.
-        try (AutoCloseable seams = withSellSeams(price, leftover, dropChance, b -> 0)) {
+        try (AutoCloseable seams = withSellSeams(price, leftover, dropChance)) {
             List<Item> trash = BotInventoryManager.collectSellTrashEtcItems(bot);
             assertEquals(2, trash.size());
-            assertTrue(trash.stream().anyMatch(item -> item.getItemId() == 4000100));
+            assertTrue(trash.stream().anyMatch(item -> item.getItemId() == 4000000));
+            assertTrue(trash.stream().anyMatch(item ->
+                    item.getItemId() == 4000100 && BotInventoryManager.sellTrashQuantity(item) == 45));
         } catch (Exception e) {
             throw new AssertionError(e);
         }
@@ -220,28 +230,33 @@ class BotInventoryManagerTest {
     // always answers "not a quest item" so collectFromBag's isSafeToDrop stays inert.
     private static AutoCloseable withSellSeams(BotInventoryManager.SellPriceLookup price,
                                                IntUnaryOperator leftover,
-                                               IntUnaryOperator dropChance,
-                                               ToIntFunction<Character> makerLevel) {
+                                               IntUnaryOperator dropChance) {
         BotInventoryManager.SellPriceLookup prevPrice = BotInventoryManager.sellPrice;
         IntUnaryOperator prevLeftover = BotInventoryManager.makerCrystalFromLeftover;
         IntUnaryOperator prevDrop = BotInventoryManager.bestDropChance;
-        ToIntFunction<Character> prevMaker = BotInventoryManager.makerSkillLevel;
         IntPredicate prevQuest = BotInventoryManager.questItem;
         java.util.function.Predicate<Item> prevUntradeable = BotInventoryManager.untradeable;
         BotInventoryManager.sellPrice = price;
         BotInventoryManager.makerCrystalFromLeftover = leftover;
         BotInventoryManager.bestDropChance = dropChance;
-        BotInventoryManager.makerSkillLevel = makerLevel;
         BotInventoryManager.questItem = id -> false;
         BotInventoryManager.untradeable = item -> false;
         return () -> {
             BotInventoryManager.sellPrice = prevPrice;
             BotInventoryManager.makerCrystalFromLeftover = prevLeftover;
             BotInventoryManager.bestDropChance = prevDrop;
-            BotInventoryManager.makerSkillLevel = prevMaker;
             BotInventoryManager.questItem = prevQuest;
             BotInventoryManager.untradeable = prevUntradeable;
         };
+    }
+
+    private static boolean isIn(int itemId, int... itemIds) {
+        for (int candidate : itemIds) {
+            if (itemId == candidate) {
+                return true;
+            }
+        }
+        return false;
     }
 
     @Test

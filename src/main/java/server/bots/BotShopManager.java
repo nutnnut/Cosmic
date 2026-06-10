@@ -448,6 +448,7 @@ final class BotShopManager {
         List<Item> items = plan.stream()
                 .filter(item -> BotInventoryManager.hasItem(bot, item))
                 .filter(item -> !failedItems.contains(item))
+                .filter(item -> BotInventoryManager.sellTrashQuantity(item) > 0)
                 .toList();
         if (items.isEmpty()) {
             entry.shopSellTrashPending = false;
@@ -486,11 +487,12 @@ final class BotShopManager {
             return;
         }
 
-        // Sell the whole stack (equips have quantity 1); quantity is read at sell time so a
-        // stack that grew since planning still clears in one step.
-        short soldQuantity = item.getQuantity();
+        // Quantity is read at sell time so stacks that grew since planning still sell correctly.
+        short beforeQuantity = item.getQuantity();
+        short soldQuantity = BotInventoryManager.sellTrashQuantity(item);
         shop.sell(bot.getClient(), item.getInventoryType(), item.getPosition(), soldQuantity);
-        if (BotInventoryManager.hasItem(bot, item)) {
+        if (BotInventoryManager.hasItem(bot, item)
+                && item.getQuantity() > beforeQuantity - soldQuantity) {
             failedItems.add(item);
             scheduleShopStep(entry, SELL_TRASH_STEP_DELAY_MS,
                     () -> runSellTrashStep(entry, bot, npcPos, soldCount, soldUseEtc, failedItems, plan, bought, firstShortfall));
