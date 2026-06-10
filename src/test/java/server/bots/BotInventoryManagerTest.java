@@ -4,6 +4,7 @@ import client.Character;
 import client.Job;
 import client.inventory.Equip;
 import client.inventory.Inventory;
+import client.inventory.InventoryType;
 import client.inventory.Item;
 import org.junit.jupiter.api.Test;
 import org.mockito.MockedStatic;
@@ -11,6 +12,7 @@ import server.Trade;
 import server.maps.Foothold;
 import server.maps.MapItem;
 import server.maps.MapleMap;
+import testutil.Items;
 
 import java.awt.*;
 import java.lang.reflect.Field;
@@ -18,6 +20,9 @@ import java.lang.reflect.Method;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.IntPredicate;
+import java.util.function.IntUnaryOperator;
+import java.util.function.ToIntFunction;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -150,6 +155,93 @@ class BotInventoryManagerTest {
         assertTrue(BotInventoryManager.hasProtectedSellTrashStat(Map.of("reqJob", 1, "DEX", 10), pureHighDex, 6, 10));
         assertTrue(BotInventoryManager.hasProtectedSellTrashWeaponStat(Map.of("reqJob", 1), currentWarriorWeapon, baseWarriorWeapon));
         assertTrue(BotInventoryManager.hasProtectedSellTrashWeaponStat(Map.of("reqJob", 2), currentMageWeapon, baseMageWeapon));
+    }
+
+    @Test
+    void shouldCollectOnlyOffWeaponNonRechargeableAmmoAsTrashUse() {
+        Character bot = mock(Character.class);
+        Inventory use = new Inventory(bot, InventoryType.USE, (byte) 24);
+        use.addItem(Items.itemWithQuantity(2060000, 500));  // bow arrows = own ammo -> keep
+        use.addItem(Items.itemWithQuantity(2061000, 500));  // xbow bolts = off-weapon -> trash
+        use.addItem(Items.itemWithQuantity(2070000, 200));  // stars: rechargeable -> keep
+        use.addItem(Items.itemWithQuantity(2000000, 100));  // potion: not ammo -> keep
+        when(bot.getInventory(InventoryType.USE)).thenReturn(use);
+
+        try (AutoCloseable seams = withSellSeams((id, qty) -> 10, id -> -1, id -> 0, b -> 0);
+             MockedStatic<BotAttackExecutionProvider> attacks =
+                     mockStatic(BotAttackExecutionProvider.class)) {
+            attacks.when(() -> BotAttackExecutionProvider.getEquippedWeaponType(bot))
+                    .thenReturn(client.inventory.WeaponType.BOW);
+
+            List<Item> trash = BotInventoryManager.collectSellTrashUseItems(bot);
+
+            assertEquals(1, trash.size());
+            assertEquals(2061000, trash.get(0).getItemId());
+        } catch (Exception e) {
+            throw new AssertionError(e);
+        }
+    }
+
+    @Test
+    void shouldKeepRareReagentSkillRockAndCrystalLeftoversOutOfTrashEtc() {
+        Character bot = mock(Character.class);
+        Inventory etc = new Inventory(bot, InventoryType.ETC, (byte) 24);
+        etc.addItem(Items.itemWithQuantity(4000000, 50));   // common junk -> trash
+        etc.addItem(Items.itemWithQuantity(4000001, 2));    // rare drop (0.5%) -> keep
+        etc.addItem(Items.itemWithQuantity(4250000, 3));    // maker reagent -> keep
+        etc.addItem(Items.itemWithQuantity(4006000, 5));    // magic rock (skill-consumed) -> keep
+        etc.addItem(Items.itemWithQuantity(4000100, 120));  // crystal leftover -> keep w/ Maker skill
+        etc.addItem(Items.itemWithQuantity(4000200, 9));    // NPC pays nothing -> keep
+        when(bot.getInventory(InventoryType.ETC)).thenReturn(etc);
+
+        BotInventoryManager.SellPriceLookup price = (id, qty) -> id == 4000200 ? -1 : 10;
+        IntUnaryOperator leftover = id -> id == 4000100 ? 4260000 : -1;
+        IntUnaryOperator dropChance = id -> id == 4000001 ? 5000 : 600000;
+
+        try (AutoCloseable seams = withSellSeams(price, leftover, dropChance, b -> 1)) {
+            List<Item> trash = BotInventoryManager.collectSellTrashEtcItems(bot);
+            assertEquals(1, trash.size());
+            assertEquals(4000000, trash.get(0).getItemId());
+        } catch (Exception e) {
+            throw new AssertionError(e);
+        }
+
+        // Without the Maker skill the crystal leftover is just another common drop: sell it.
+        try (AutoCloseable seams = withSellSeams(price, leftover, dropChance, b -> 0)) {
+            List<Item> trash = BotInventoryManager.collectSellTrashEtcItems(bot);
+            assertEquals(2, trash.size());
+            assertTrue(trash.stream().anyMatch(item -> item.getItemId() == 4000100));
+        } catch (Exception e) {
+            throw new AssertionError(e);
+        }
+    }
+
+    // Swap the ItemInformationProvider/DB-backed seams (restored on close); quest lookup
+    // always answers "not a quest item" so collectFromBag's isSafeToDrop stays inert.
+    private static AutoCloseable withSellSeams(BotInventoryManager.SellPriceLookup price,
+                                               IntUnaryOperator leftover,
+                                               IntUnaryOperator dropChance,
+                                               ToIntFunction<Character> makerLevel) {
+        BotInventoryManager.SellPriceLookup prevPrice = BotInventoryManager.sellPrice;
+        IntUnaryOperator prevLeftover = BotInventoryManager.makerCrystalFromLeftover;
+        IntUnaryOperator prevDrop = BotInventoryManager.bestDropChance;
+        ToIntFunction<Character> prevMaker = BotInventoryManager.makerSkillLevel;
+        IntPredicate prevQuest = BotInventoryManager.questItem;
+        java.util.function.Predicate<Item> prevUntradeable = BotInventoryManager.untradeable;
+        BotInventoryManager.sellPrice = price;
+        BotInventoryManager.makerCrystalFromLeftover = leftover;
+        BotInventoryManager.bestDropChance = dropChance;
+        BotInventoryManager.makerSkillLevel = makerLevel;
+        BotInventoryManager.questItem = id -> false;
+        BotInventoryManager.untradeable = item -> false;
+        return () -> {
+            BotInventoryManager.sellPrice = prevPrice;
+            BotInventoryManager.makerCrystalFromLeftover = prevLeftover;
+            BotInventoryManager.bestDropChance = prevDrop;
+            BotInventoryManager.makerSkillLevel = prevMaker;
+            BotInventoryManager.questItem = prevQuest;
+            BotInventoryManager.untradeable = prevUntradeable;
+        };
     }
 
     @Test

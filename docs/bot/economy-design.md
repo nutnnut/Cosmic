@@ -102,24 +102,8 @@ discovery); success %, stat gain, and **boom flag** are ground truth read from i
 not knobs — verify boom flags against WZ when implementing, since only some v83 scrolls destroy the
 item); `marketValue` of the as-is item is endogenous.
 
-### 2.2 Cube / potential probability (`RollProbability`)
-
-For potentials/cubes (many i.i.d. lines) the exact DP is overkill; a CLT normal approximation is
-fine and fast. Adapt `net.swordie.ms.util.ICOGProbabilityCalculator` (v232) as the starting point:
-it builds a per-roll outcome distribution, takes its mean/variance, and returns
-`P(sum ≥ score)` via a `NormalDistribution` over `trials` rolls.
-
-Improvements to make over the reference:
-- It assumes a **uniform** line pool (`11×11` grid). Real cube pools are **weighted** per tier/line;
-  feed the actual weighted line distribution so mean/variance reflect reality.
-- Expose `P(value ≥ threshold)` *and* `E[rolls to reach threshold]` so it plugs into the same
-  reproduction-cost framing as scrolls (`expectedRolls × cubePrice`).
-- Keep the normal approximation only for the tail region where it's accurate; for small `trials`
-  with skewed pools, fall back to exact convolution.
-
-The probability layer is **estimate-grade by design** (the reference itself is "good estimate, not
-guaranteed correct"). That is acceptable: prices are anchored (§9) and self-correct, so small
-probability errors do not destabilize the market.
+### 2.2 Cube / potential
+no cube/potential in this version
 
 ---
 

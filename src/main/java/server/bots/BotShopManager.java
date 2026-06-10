@@ -130,8 +130,8 @@ final class BotShopManager {
         if (entry == null || bot == null || bot.getMap() == null) {
             return;
         }
-        if (BotInventoryManager.collectSellTrashEquips(entry, bot).isEmpty()) {
-            BotManager.getInstance().botReply(entry, "no trash equips worth selling");
+        if (BotInventoryManager.collectSellTrashItems(entry, bot).isEmpty()) {
+            BotManager.getInstance().botReply(entry, "no junk worth selling");
             return;
         }
 
@@ -374,10 +374,10 @@ final class BotShopManager {
     }
 
     private static void startSellTrashSequence(PurchaseSequence sequence) {
-        List<Item> items = BotInventoryManager.collectSellTrashEquips(sequence.entry(), sequence.bot());
+        List<Item> items = BotInventoryManager.collectSellTrashItems(sequence.entry(), sequence.bot());
         if (items.isEmpty()) {
             sequence.entry().shopSellTrashPending = false;
-            BotManager.getInstance().botSay(sequence.bot(), "no trash equips worth selling");
+            BotManager.getInstance().botSay(sequence.bot(), "no junk worth selling");
             finishPurchaseSequence(sequence, false);
             return;
         }
@@ -409,12 +409,12 @@ final class BotShopManager {
         if (items.isEmpty()) {
             entry.shopSellTrashPending = false;
             if (soldCount > 0) {
-                BotManager.getInstance().botSay(bot, "sold " + soldCount + " trash equip" + (soldCount != 1 ? "s" : ""));
+                BotManager.getInstance().botSay(bot, "sold " + soldCount + " junk item" + (soldCount != 1 ? "s" : ""));
             }
             if (!failedItems.isEmpty()) {
                 BotManager.getInstance().botSay(bot, buildSellTrashFailureMessage(failedItems.size()));
             } else if (soldCount == 0) {
-                BotManager.getInstance().botSay(bot, "no trash equips worth selling");
+                BotManager.getInstance().botSay(bot, "no junk worth selling");
             }
             finishPurchaseSequence(new PurchaseSequence(entry, bot, npcPos, List.of(), bought, firstShortfall), false);
             return;
@@ -438,7 +438,9 @@ final class BotShopManager {
             return;
         }
 
-        shop.sell(bot.getClient(), InventoryType.EQUIP, item.getPosition(), (short) 1);
+        // Sell the whole stack (equips have quantity 1); quantity is read at sell time so a
+        // stack that grew since planning still clears in one step.
+        shop.sell(bot.getClient(), item.getInventoryType(), item.getPosition(), item.getQuantity());
         if (BotInventoryManager.hasItem(bot, item)) {
             failedItems.add(item);
             scheduleShopStep(entry, SELL_TRASH_STEP_DELAY_MS,

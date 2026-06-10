@@ -824,6 +824,13 @@ final class BotScrollManager {
         return BotFarmingCostModel.rarityMeso(in);
     }
 
+    /** Best (highest) {@code drop_data} chance for the item across all droppers (out of 1,000,000),
+     *  or 0 when nothing drops it. */
+    static int bestDropChance(int itemId) {
+        int[] dropper = bestDropperByItem().get(itemId);
+        return dropper != null ? dropper[1] : 0;
+    }
+
     /** Lazily-loaded best (highest drop chance) dropper mob per item id, from {@code drop_data}. */
     private static Map<Integer, int[]> bestDropperByItem() {
         Map<Integer, int[]> cached = bestDropperByItem;

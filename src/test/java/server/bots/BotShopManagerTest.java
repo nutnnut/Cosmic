@@ -142,7 +142,7 @@ class BotShopManagerTest {
             when(factory.getShopForNPC(npc.getId())).thenReturn(shop);
             attacks.when(() -> BotAttackExecutionProvider.getEquippedWeaponType(bot)).thenReturn(WeaponType.CLAW);
             potions.when(() -> BotPotionManager.countPotions(bot)).thenReturn(new int[]{9999, 9999});
-            inventories.when(() -> BotInventoryManager.collectSellTrashEquips(entry, bot))
+            inventories.when(() -> BotInventoryManager.collectSellTrashItems(entry, bot))
                     .thenReturn(List.of(mock(Item.class)));
 
             BotShopManager.requestSellTrashVisit(entry, bot);

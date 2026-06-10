@@ -3,6 +3,7 @@ package server.bots;
 import client.BotClient;
 import client.Character;
 import client.Job;
+import client.processor.action.MakerProcessor;
 import client.inventory.Equip;
 import client.inventory.Inventory;
 import client.inventory.InventoryType;
@@ -33,7 +34,10 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ThreadLocalRandom;
+import java.util.function.IntPredicate;
+import java.util.function.IntUnaryOperator;
 import java.util.function.Predicate;
+import java.util.function.ToIntFunction;
 
 class BotInventoryManager {
     private static final Logger log = LoggerFactory.getLogger(BotInventoryManager.class);
@@ -1631,6 +1635,81 @@ class BotInventoryManager {
         return result;
     }
 
+    // ETC items consumed by skills (itemCon) — never trash, even though NPCs pay for them.
+    private static final Set<Integer> SKILL_CONSUMED_ETC = Set.of(
+            ItemId.MAGIC_ROCK, 4006001 /* Summoning Rock */);
+
+    // "Rare drop" keep gate: an item whose BEST dropper hands it out at most this often (out of
+    // 1,000,000 kills, i.e. <=1%) is worth far more to a future buyer than any NPC pays — a human
+    // wouldn't NPC it. drop_data check: this keeps ~75 of ~870 droppable ETC items; common mob
+    // drops (typically >=10%) all sell. Equips are NOT gated by rarity: most droppable equips are
+    // <=1% yet clean average rolls are NPC fodder — good rolls are already stat-protected
+    // (shouldKeepForSellTrash) and self-useful gear is reserved (collectPotentialSelfUpgradeItems).
+    private static final int RARE_DROP_KEEP_CHANCE = 10_000;
+
+    // Test seams: ItemInformationProvider's WZ/DB static initializer can't run in unit tests
+    // (same pattern as BotShopManager) — price/leftover/rarity/maker lookups go through these.
+    @FunctionalInterface
+    interface SellPriceLookup {
+        int price(int itemId, int quantity);
+    }
+    static SellPriceLookup sellPrice =
+            (id, qty) -> ItemInformationProvider.getInstance().getPrice(id, qty);
+    static IntUnaryOperator makerCrystalFromLeftover =
+            id -> ItemInformationProvider.getInstance().getMakerCrystalFromLeftover(id);
+    static IntUnaryOperator bestDropChance = BotScrollManager::bestDropChance;
+    static ToIntFunction<Character> makerSkillLevel = MakerProcessor::getMakerSkillLevel;
+
+    private static boolean isRareDrop(int itemId) {
+        int chance = bestDropChance.applyAsInt(itemId);
+        return chance > 0 && chance <= RARE_DROP_KEEP_CHANCE;
+    }
+
+    // Trash USE = ammo for a weapon the bot isn't using, non-rechargeable only (stars/bullets
+    // keep resale/trade value). Potions, buffs, scrolls and uncategorized USE items all stay:
+    // selling something useful costs more than the bag slot it frees.
+    static List<Item> collectSellTrashUseItems(Character bot) {
+        WeaponType ownAmmoType = tradeAmmoWeaponType(bot);
+        List<Item> result = new ArrayList<>();
+        collectFromBag(bot, result, InventoryType.USE, item -> {
+            int id = item.getItemId();
+            WeaponType ammoType = ammoWeaponType(id);
+            return ammoType != null
+                    && ammoType != ownAmmoType
+                    && !ItemConstants.isRechargeable(id)
+                    && !isRareDrop(id)
+                    && sellPrice.price(id, item.getQuantity()) > 0;
+        });
+        return result;
+    }
+
+    // Trash ETC = anything an NPC pays for. Quest items/untradeables are already excluded by
+    // collectFromBag (isSafeToDrop). Kept: skill-consumed rocks, maker reagents, rare drops, and
+    // crystal leftovers while the bot has the Maker skill (worth more as crystals than NPC price).
+    static List<Item> collectSellTrashEtcItems(Character bot) {
+        boolean keepsCrystalLeftovers = makerSkillLevel.applyAsInt(bot) >= 1;
+        List<Item> result = new ArrayList<>();
+        collectFromBag(bot, result, InventoryType.ETC, item -> {
+            int id = item.getItemId();
+            if (SKILL_CONSUMED_ETC.contains(id) || ItemConstants.isMakerReagent(id) || isRareDrop(id)) {
+                return false;
+            }
+            if (keepsCrystalLeftovers && makerCrystalFromLeftover.applyAsInt(id) != -1) {
+                return false;
+            }
+            return sellPrice.price(id, item.getQuantity()) > 0;
+        });
+        return result;
+    }
+
+    // Everything a "sell trash" shop visit should unload: trash equips + trash USE + trash ETC.
+    static List<Item> collectSellTrashItems(BotEntry entry, Character bot) {
+        List<Item> result = new ArrayList<>(collectSellTrashEquips(entry, bot));
+        result.addAll(collectSellTrashUseItems(bot));
+        result.addAll(collectSellTrashEtcItems(bot));
+        return result;
+    }
+
     private static EquipTradeGroups classifyEquipTradeGroups(BotEntry entry, Character bot) {
         long startedAt = profileTradeCategory("equips") ? System.nanoTime() : 0L;
         long bagScanStartedAt = startedAt != 0L ? System.nanoTime() : 0L;
@@ -1811,10 +1890,14 @@ class BotInventoryManager {
     }
 
     static boolean isSafeToDrop(Item item) {
-        if (item.isUntradeable() && !YamlConfig.config.server.UNTRADEABLE_ITEMS_TRADEABLE) return false;
-        if (ItemInformationProvider.getInstance().isQuestItem(item.getItemId())) return false;
+        if (untradeable.test(item) && !YamlConfig.config.server.UNTRADEABLE_ITEMS_TRADEABLE) return false;
+        if (questItem.test(item.getItemId())) return false;
         return true;
     }
+
+    // Test seams (see sellPrice et al.): both lookups go through ItemInformationProvider.
+    static IntPredicate questItem = id -> ItemInformationProvider.getInstance().isQuestItem(id);
+    static Predicate<Item> untradeable = Item::isUntradeable;
 
     private static void reply(BotEntry entry, Character bot, int count, String noun) {
         BotManager.getInstance().botReply(entry,
