@@ -41,7 +41,7 @@ class BotWorldGraphTest {
 
         assertEquals(List.of(2, 3, 4), BotWorldGraph.route(graph, 1, 4, 4, PORTALS_ONLY));
         assertEquals(List.of(4),
-                BotWorldGraph.route(graph, 1, 4, 4, new BotWorldGraph.RouteOptions(true, 0)));
+                BotWorldGraph.route(graph, 1, 4, 4, new BotWorldGraph.RouteOptions(true, 0, false)));
         // The shortcut also shortens routes PAST the town.
         assertEquals(List.of(2, 3), BotWorldGraph.route(graph, 1, 3, 4, PORTALS_ONLY));
     }
@@ -71,13 +71,32 @@ class BotWorldGraphTest {
 
         // Henesys→Lith costs 1000.
         assertEquals(List.of(104000000),
-                BotWorldGraph.route(graph, 100000000, 104000000, 4, new BotWorldGraph.RouteOptions(false, 1000)));
-        assertNull(BotWorldGraph.route(graph, 100000000, 104000000, 4, new BotWorldGraph.RouteOptions(false, 999)));
+                BotWorldGraph.route(graph, 100000000, 104000000, 4, new BotWorldGraph.RouteOptions(false, 1000, false)));
+        assertNull(BotWorldGraph.route(graph, 100000000, 104000000, 4, new BotWorldGraph.RouteOptions(false, 999, false)));
         // Henesys→Ellinia costs only 800.
         assertEquals(List.of(101000000),
-                BotWorldGraph.route(graph, 100000000, 101000000, 4, new BotWorldGraph.RouteOptions(false, 800)));
+                BotWorldGraph.route(graph, 100000000, 101000000, 4, new BotWorldGraph.RouteOptions(false, 800, false)));
         // Broke bots don't see taxi edges at all.
         assertNull(BotWorldGraph.route(graph, 100000000, 101000000, 4, PORTALS_ONLY));
+    }
+
+    @Test
+    void shouldSailFerryOnlyWhenOptedInWithTicketMoney() {
+        // Stations only, no portal edges: crossing the sea must use the ferry edge.
+        BotWorldGraph.Index graph = BotWorldGraph.indexOf(Map.of(
+                101000300, new int[0], 200000100, new int[0]));
+
+        assertEquals(List.of(200000100),
+                BotWorldGraph.route(graph, 101000300, 200000100, 4, new BotWorldGraph.RouteOptions(false, 5000, true)));
+        assertEquals(List.of(101000300),
+                BotWorldGraph.route(graph, 200000100, 101000300, 4, new BotWorldGraph.RouteOptions(false, 5000, true)));
+        // Not enough for the 5k ticket, or ferries not opted in (follow mode) — no route.
+        assertNull(BotWorldGraph.route(graph, 101000300, 200000100, 4, new BotWorldGraph.RouteOptions(false, 4999, true)));
+        assertNull(BotWorldGraph.route(graph, 101000300, 200000100, 4, new BotWorldGraph.RouteOptions(false, 5000, false)));
+        // The whole Orbis boarding chain carries the edge, so a bot mid-chain keeps moving forward.
+        BotWorldGraph.Index pier = BotWorldGraph.indexOf(Map.of(200000111, new int[0]));
+        assertEquals(List.of(101000300),
+                BotWorldGraph.route(pier, 200000111, 101000300, 4, new BotWorldGraph.RouteOptions(false, 5000, true)));
     }
 
     @Test

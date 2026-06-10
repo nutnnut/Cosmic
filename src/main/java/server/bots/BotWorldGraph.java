@@ -57,9 +57,9 @@ final class BotWorldGraph {
     // A return scroll is only worth an edge when walking to the town would take this many hops.
     static final int RETURN_SCROLL_MIN_HOPS = 3;
 
-    /** Per-query toggles for the consumable edges; pure portal walking ignores both. */
-    record RouteOptions(boolean withReturnScroll, int meso) {
-        static final RouteOptions PORTALS_ONLY = new RouteOptions(false, 0);
+    /** Per-query toggles for the consumable edges; pure portal walking ignores them all. */
+    record RouteOptions(boolean withReturnScroll, int meso, boolean withFerry) {
+        static final RouteOptions PORTALS_ONLY = new RouteOptions(false, 0, false);
     }
 
     /** One paid NPC ride: stand near {@code npcId} in {@code fromMapId}, pay, land in {@code toMapId}. */
@@ -256,6 +256,12 @@ final class BotWorldGraph {
         for (TaxiEdge taxi : TAXI_BY_MAP.getOrDefault(mapId, List.of())) {
             if (options.meso() >= taxi.fare()) {
                 out.add(taxi.toMapId());
+            }
+        }
+        if (options.withFerry()) {
+            BotFerryManager.FerryRoute ferry = BotFerryManager.routeBoardingAt(mapId);
+            if (ferry != null && options.meso() >= ferry.ticketCost()) {
+                out.add(ferry.destinationMapId());
             }
         }
         return out;

@@ -168,6 +168,7 @@ public class BotEntry {
     Point followTravelMoveTarget = null; // the exact moveTarget instance travel pinned (identity-checked on clear)
     int followTravelTaxiNpcId = 0;       // != 0: current hop is a cab ride — walk to this NPC, pay, warp
     Point followTravelTaxiPos = null;    // cab NPC position (static, cached at hop start)
+    boolean followTravelFerry = false;   // current hop is a ferry boarding leg (BotFerryManager)
 
     // Autopilot (BotAutopilotManager): owner-ordered independent play. -1 = off.
     // Deliberately NOT cleared on death: the bot revives in town and walks back.

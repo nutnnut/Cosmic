@@ -290,6 +290,46 @@ class BotTravelManagerTest {
     }
 
     @Test
+    void shouldStartFerryBoardingOnlyWhenFerriesAreAllowed() {
+        int elliniaStation = 101000300;
+        int orbisStation = 200000100;
+        Fixture f = fixture(elliniaStation, orbisStation, new Point(0, 0), List.of());
+        when(f.bot().getMeso()).thenReturn(5000);
+
+        try (MovementRecorder movement = new MovementRecorder();
+             ConsumableSeams seams = new ConsumableSeams();
+             RouteStub route = new RouteStub((from, to, maxHops, options) ->
+                     options.withFerry() ? List.of(orbisStation) : null)) {
+            BotTravelManager.taxiNpcLocator = (map, npcId) -> npcId == 1032007 ? new Point(800, 0) : null;
+
+            // Follow travel never plans a 15-minute boat ride — warp fallback instead.
+            assertFalse(BotTravelManager.tickFollowTravel(f.entry(), f.bot(), f.anchor(), true));
+
+            // Autopilot travel boards: first leg walks toward the ticket seller.
+            assertTrue(BotTravelManager.tickTravel(f.entry(), f.bot(), orbisStation, 8, true, true));
+            assertTrue(f.entry().followTravelFerry);
+            assertEquals(List.of(new Point(800, 0)), movement.steps);
+        }
+    }
+
+    @Test
+    void shouldKeepRidingTheFerryEvenInsideGiveUpWindow() {
+        int deck = 200090010; // boat to Orbis
+        Fixture f = fixture(deck, HENESYS, new Point(0, 0), List.of());
+        f.entry().followTravelGiveUpUntilMs = System.currentTimeMillis() + 60_000;
+        BotFerryManager.ThreatCheck previousThreat = BotFerryManager.threatCheck;
+        BotFerryManager.threatCheck = bot -> false;
+
+        try (MovementRecorder movement = new MovementRecorder()) {
+            // Mid-ocean there is nothing to give up to: the tick stays consumed, no warp.
+            assertTrue(BotTravelManager.tickFollowTravel(f.entry(), f.bot(), f.anchor(), true));
+            assertTrue(movement.steps.isEmpty());
+        } finally {
+            BotFerryManager.threatCheck = previousThreat;
+        }
+    }
+
+    @Test
     void shouldFallBackWhenMesoCannotCoverTheCabFare() {
         int lith = 104000000;
         Fixture f = fixture(HENESYS, lith, new Point(0, 0), List.of());

@@ -111,7 +111,7 @@ class BotAutopilotManagerTest {
 
         try (Seams seams = new Seams(null);
              MockedStatic<BotTravelManager> travel = mockStatic(BotTravelManager.class)) {
-            travel.when(() -> BotTravelManager.tickTravel(any(), any(), anyInt(), anyInt(), anyBoolean()))
+            travel.when(() -> BotTravelManager.tickTravel(any(), any(), anyInt(), anyInt(), anyBoolean(), anyBoolean()))
                     .thenReturn(true);
             assertTrue(BotAutopilotManager.tick(f.entry(), f.bot(), true));
 
@@ -238,7 +238,7 @@ class BotAutopilotManagerTest {
 
         try (Seams seams = new Seams(null);
              MockedStatic<BotTravelManager> travel = mockStatic(BotTravelManager.class)) {
-            travel.when(() -> BotTravelManager.tickTravel(any(), any(), anyInt(), anyInt(), anyBoolean()))
+            travel.when(() -> BotTravelManager.tickTravel(any(), any(), anyInt(), anyInt(), anyBoolean(), anyBoolean()))
                     .thenReturn(true);
 
             assertTrue(BotAutopilotManager.requestResupplyErrand(f.entry(), f.bot()));
@@ -248,7 +248,7 @@ class BotAutopilotManagerTest {
             // While the errand is on, travel runs toward the TOWN, not the grind map.
             assertTrue(BotAutopilotManager.tick(f.entry(), f.bot(), true));
             travel.verify(() -> BotTravelManager.tickTravel(any(), any(), org.mockito.ArgumentMatchers.eq(TOWN),
-                    anyInt(), anyBoolean()));
+                    anyInt(), anyBoolean(), anyBoolean()));
 
             // Arrived in town, shop visit already over (or never needed): errand completes...
             when(f.bot().getMapId()).thenReturn(TOWN);
@@ -259,7 +259,7 @@ class BotAutopilotManagerTest {
             // ...and the next tick travels back toward the grind map.
             assertTrue(BotAutopilotManager.tick(f.entry(), f.bot(), true));
             travel.verify(() -> BotTravelManager.tickTravel(any(), any(),
-                    org.mockito.ArgumentMatchers.eq(HUNTING_GROUND), anyInt(), anyBoolean()));
+                    org.mockito.ArgumentMatchers.eq(HUNTING_GROUND), anyInt(), anyBoolean(), anyBoolean()));
 
             // Cooldown: an immediate second request doesn't bounce to the owner...
             assertTrue(BotAutopilotManager.requestResupplyErrand(f.entry(), f.bot()));

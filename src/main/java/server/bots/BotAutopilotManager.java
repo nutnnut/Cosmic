@@ -63,9 +63,9 @@ final class BotAutopilotManager {
         return BotGrindAdvisor.recommendFarmItem(entry, bot, itemId, reachable::contains);
     };
 
-    /** What the bot can spend on travel right now: scroll edges if it carries one, taxis per meso. */
+    /** What the bot can spend on travel right now: scrolls if carried, taxis and ferries per meso. */
     private static BotWorldGraph.RouteOptions travelOptions(Character bot) {
-        return new BotWorldGraph.RouteOptions(BotShopManager.countReturnScrolls(bot) > 0, bot.getMeso());
+        return new BotWorldGraph.RouteOptions(BotShopManager.countReturnScrolls(bot) > 0, bot.getMeso(), true);
     }
 
     @FunctionalInterface
@@ -262,7 +262,7 @@ final class BotAutopilotManager {
         if (entry.shopVisitPending) {
             return false; // resupply detour en route; travel resumes once it's done
         }
-        if (BotTravelManager.tickTravel(entry, bot, destination, MAX_TRAVEL_HOPS, runAiTick)) {
+        if (BotTravelManager.tickTravel(entry, bot, destination, MAX_TRAVEL_HOPS, runAiTick, true)) {
             return true;
         }
         // No legal progress right now (route gone, or a hop failed and travel is in its

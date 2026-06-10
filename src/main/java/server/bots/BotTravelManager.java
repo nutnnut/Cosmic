@@ -110,9 +110,13 @@ final class BotTravelManager {
 
     private BotTravelManager() {}
 
-    /** Follow-mode wrapper: travel toward wherever the anchor currently is. */
+    /**
+     * Follow-mode wrapper: travel toward wherever the anchor currently is. No ferry hops —
+     * a 15-minute boat ride is never the right way to catch up with a waiting owner, so
+     * cross-sea follows keep the legacy warp fallback.
+     */
     static boolean tickFollowTravel(BotEntry entry, Character bot, Character anchor, boolean runAiTick) {
-        return tickTravel(entry, bot, anchor.getMapId(), MAX_FOLLOW_TRAVEL_HOPS, runAiTick);
+        return tickTravel(entry, bot, anchor.getMapId(), MAX_FOLLOW_TRAVEL_HOPS, runAiTick, false);
     }
 
     /**
@@ -121,10 +125,11 @@ final class BotTravelManager {
      * made right now (no route within maxHops, no live portal, walk failed/timed out) — the
      * caller decides the fallback (follow warps; autopilot waits or re-decides).
      */
-    static boolean tickTravel(BotEntry entry, Character bot, int targetMapId, int maxHops, boolean runAiTick) {
+    static boolean tickTravel(BotEntry entry, Character bot, int targetMapId, int maxHops,
+                              boolean runAiTick, boolean allowFerry) {
         long now = System.currentTimeMillis();
         MapleMap map = bot.getMap();
-        if (map == null || now < entry.followTravelGiveUpUntilMs) {
+        if (map == null) {
             clear(entry);
             return false;
         }
@@ -133,6 +138,15 @@ final class BotTravelManager {
         // handled by syncFollowMap before this is called, so reaching here mid-change means
         // the portal dropped us somewhere unexpected: let the warp fallback recover.
         if (entry.lastMapId != bot.getMapId()) {
+            clear(entry);
+            return false;
+        }
+        // On a ferry the boat decides everything (even past give-up windows): wait it out,
+        // hide from Balrogs in the cabin, follow the owner in/out of it.
+        if (BotFerryManager.tickTransit(entry, bot, targetMapId, runAiTick)) {
+            return true;
+        }
+        if (now < entry.followTravelGiveUpUntilMs) {
             clear(entry);
             return false;
         }
@@ -158,6 +172,15 @@ final class BotTravelManager {
 
         Portal portal;
         if (active) {
+            if (entry.followTravelFerry) {
+                BotFerryManager.FerryRoute ferry =
+                        BotFerryManager.findFerryEdge(bot.getMapId(), entry.followTravelNextHopMapId);
+                if (ferry == null || !BotFerryManager.tickBoarding(entry, bot, ferry, now, runAiTick)) {
+                    giveUp(entry, now);
+                    return false;
+                }
+                return true;
+            }
             if (entry.followTravelTaxiNpcId != 0) {
                 return tickTaxiHop(entry, bot, now, runAiTick);
             }
@@ -173,7 +196,7 @@ final class BotTravelManager {
             portal = findAdjacentPortal(map.getPortals(), targetMapId, bot.getPosition());
             if (portal == null) {
                 BotWorldGraph.RouteOptions options = new BotWorldGraph.RouteOptions(
-                        returnScrollCount.applyAsInt(bot) > 0, bot.getMeso());
+                        returnScrollCount.applyAsInt(bot) > 0, bot.getMeso(), allowFerry);
                 List<Integer> route = routeLookup.route(bot.getMapId(), targetMapId, maxHops, options);
                 if (route == null || route.isEmpty()) {
                     return false; // too far or unreachable by walking — warp fallback
@@ -193,6 +216,14 @@ final class BotTravelManager {
             entry.followTravelDeadlineMs = now + budget;
         }
 
+        return walkToPortalAndEnter(entry, bot, portal, now, runAiTick);
+    }
+
+    /**
+     * Walk toward a plain portal and enter it once in range — the shared walk-and-enter step
+     * used by the main hop flow above and the ferry legs (cabin door, station walkway).
+     */
+    static boolean walkToPortalAndEnter(BotEntry entry, Character bot, Portal portal, long now, boolean runAiTick) {
         Point portalPos = portal.getPosition();
         Point botPos = bot.getPosition();
         if (!entry.inAir && !entry.climbing
@@ -207,7 +238,6 @@ final class BotTravelManager {
             portal.enterPortal(bot.getClient());
             return true;
         }
-
         pinMoveTarget(entry, portalPos);
         movementStep.step(entry, portalPos, runAiTick);
         return true;
@@ -234,23 +264,35 @@ final class BotTravelManager {
             return true;
         }
         BotWorldGraph.TaxiEdge taxi = BotWorldGraph.findTaxiEdge(bot.getMapId(), nextHopMapId);
-        if (taxi == null || bot.getMeso() < taxi.fare()) {
-            return false;
+        if (taxi != null && bot.getMeso() >= taxi.fare()) {
+            Point npcPos = taxiNpcLocator.locate(map, taxi.npcId());
+            if (npcPos == null) {
+                return false; // cab NPC missing from the live map — warp fallback
+            }
+            entry.followTravelTargetMapId = targetMapId;
+            entry.followTravelNextHopMapId = nextHopMapId;
+            entry.followTravelFromMapId = bot.getMapId();
+            entry.followTravelPortalId = -1;
+            entry.followTravelTaxiNpcId = taxi.npcId();
+            entry.followTravelTaxiPos = new Point(npcPos);
+            long budget = Math.min(TRAVEL_BUDGET_MAX_MS, TRAVEL_BUDGET_BASE_MS
+                    + TRAVEL_BUDGET_PER_PX_MS * manhattan(bot.getPosition(), npcPos));
+            entry.followTravelDeadlineMs = now + budget;
+            return tickTaxiHop(entry, bot, now, runAiTick);
         }
-        Point npcPos = taxiNpcLocator.locate(map, taxi.npcId());
-        if (npcPos == null) {
-            return false; // cab NPC missing from the live map — warp fallback
+        BotFerryManager.FerryRoute ferry = BotFerryManager.findFerryEdge(bot.getMapId(), nextHopMapId);
+        if (ferry != null && BotFerryManager.tickBoarding(entry, bot, ferry, now, runAiTick)) {
+            entry.followTravelTargetMapId = targetMapId;
+            entry.followTravelNextHopMapId = nextHopMapId;
+            entry.followTravelFromMapId = bot.getMapId();
+            entry.followTravelPortalId = -1;
+            entry.followTravelFerry = true;
+            // Per-leg budget; map changes re-plan with a fresh one, legitimate waits at the
+            // closed gate re-arm it from inside tickBoarding.
+            entry.followTravelDeadlineMs = now + TRAVEL_BUDGET_MAX_MS;
+            return true;
         }
-        entry.followTravelTargetMapId = targetMapId;
-        entry.followTravelNextHopMapId = nextHopMapId;
-        entry.followTravelFromMapId = bot.getMapId();
-        entry.followTravelPortalId = -1;
-        entry.followTravelTaxiNpcId = taxi.npcId();
-        entry.followTravelTaxiPos = new Point(npcPos);
-        long budget = Math.min(TRAVEL_BUDGET_MAX_MS, TRAVEL_BUDGET_BASE_MS
-                + TRAVEL_BUDGET_PER_PX_MS * manhattan(bot.getPosition(), npcPos));
-        entry.followTravelDeadlineMs = now + budget;
-        return tickTaxiHop(entry, bot, now, runAiTick);
+        return false;
     }
 
     /** Walk toward the cab NPC; once close enough, pay and ride. */
@@ -312,6 +354,7 @@ final class BotTravelManager {
         entry.followTravelEnteredAtMs = 0L;
         entry.followTravelTaxiNpcId = 0;
         entry.followTravelTaxiPos = null;
+        entry.followTravelFerry = false;
     }
 
     private static void giveUp(BotEntry entry, long now) {
@@ -322,7 +365,7 @@ final class BotTravelManager {
     // moveTarget makes the movement stack treat the portal as a precise destination (exact
     // approach, stuck detection, fidget suppression). Pin/clear by instance identity so a
     // moveTarget issued by a player command is never clobbered.
-    private static void pinMoveTarget(BotEntry entry, Point portalPos) {
+    static void pinMoveTarget(BotEntry entry, Point portalPos) {
         if (entry.moveTarget != null && entry.moveTarget == entry.followTravelMoveTarget
                 && entry.moveTarget.equals(portalPos)) {
             return;
@@ -332,7 +375,7 @@ final class BotTravelManager {
         entry.moveTargetPrecise = true;
     }
 
-    private static void clearMoveTargetPin(BotEntry entry) {
+    static void clearMoveTargetPin(BotEntry entry) {
         if (entry.moveTarget != null && entry.moveTarget == entry.followTravelMoveTarget) {
             entry.moveTarget = null;
             entry.moveTargetPrecise = false;
