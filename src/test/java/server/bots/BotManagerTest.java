@@ -532,7 +532,7 @@ class BotManagerTest {
     }
 
     @Test
-    void shouldResetPhysicsWhenOnlineBotIsSpawnedAtOwnerPosition() {
+    void shouldResetPhysicsWhenOnlineBotIsReactivatedAtCurrentPosition() {
         MapleMap map = createEmptyTestMap(910000023);
         map.getFootholds().insert(new Foothold(new Point(0, 100), new Point(200, 100), 1));
         Character bot = mockMovingBot(new Point(20, 100), map);
@@ -544,11 +544,11 @@ class BotManagerTest {
         entry.airVelX = 6;
         entry.navTargetPos = new Point(120, 100);
 
-        BotManager.placeSpawnedOnlineBot(entry, bot, map, new Point(80, 100));
+        BotManager.placeSpawnedOnlineBot(entry, bot);
 
-        assertEquals(new Point(80, 100), bot.getPosition());
+        assertEquals(new Point(20, 100), bot.getPosition());
         assertFalse(entry.inAir);
-        assertEquals(80.0, entry.physX);
+        assertEquals(20.0, entry.physX);
         assertEquals(100.0, entry.physY);
         assertEquals(0, entry.airVelX);
         assertNull(entry.navTargetPos);
@@ -754,6 +754,20 @@ class BotManagerTest {
         assertTrue(direction == -1 || direction == 1);
         assertEquals(new Point(100 + direction * 200, 100), first);
         assertEquals(first, second);
+    }
+
+    @Test
+    void shouldUseWanderTargetForGrindingSnapshotWithoutMobTarget() {
+        Character bot = mockMovingBot(new Point(100, 100), createEmptyTestMap(910000133));
+        Character owner = mockMovingBot(new Point(50, 100), bot.getMap());
+        BotEntry entry = new BotEntry(bot, owner, null);
+        entry.grinding = true;
+
+        BotManager.TargetSnapshot snapshot = BotManager.getInstance().captureTargetSnapshot(entry);
+
+        assertEquals("grind-wander", snapshot.primaryTargetSource());
+        assertEquals(100, snapshot.primaryTargetPos().y);
+        assertTrue(snapshot.primaryTargetPos().x == -100 || snapshot.primaryTargetPos().x == 300);
     }
 
     @Test

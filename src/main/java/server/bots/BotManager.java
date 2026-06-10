@@ -304,7 +304,7 @@ public class BotManager {
         }
     }
 
-    /** Spawn a registered bot for the given owner, placing it at the owner's current position in follow mode. */
+    /** Spawn a registered bot for the given owner, leaving it at its legal login/current map and entering follow mode. */
     public SpawnResult spawnBotForOwner(Character owner, String botName) {
         BotOwnershipService ownershipService = BotOwnershipService.getInstance();
         BotOwnershipService.ResolvedCharacter resolved = ownershipService.resolveCharacterByName(botName);
@@ -318,8 +318,6 @@ public class BotManager {
         if (!auth.allowed()) {
             return SpawnResult.fail(auth.failureMessage());
         }
-        MapleMap map = owner.getMap();
-        Point pos = resolveSpawnPosition(map, owner.getPosition());
         if (resolved.isOnline()) {
             Character botChar = resolved.onlineCharacter();
             Character activeOwner = getActiveOwnerByBotCharId(botChar.getId());
@@ -329,17 +327,14 @@ public class BotManager {
             BotEntry entry = activeOwner == null
                     ? registerSpawnedBot(owner.getId(), owner, botChar)
                     : getBotEntry(owner.getId(), botChar.getId());
-            if (botChar.getMapId() != map.getId()) {
-                botChar.forceChangeMap(map, map.findClosestPortal(pos));
-            }
-            placeSpawnedOnlineBot(entry, botChar, map, pos);
+            placeSpawnedOnlineBot(entry, botChar);
             if (entry != null) {
                 issueFollowOwner(entry);
             }
             return SpawnResult.ok(botChar, auth.autoRegistered());
         } else {
             try {
-                Character botChar = loadOfflineBot(resolved.id(), owner.getClient().getWorld(), owner.getClient().getChannel(), map, pos);
+                Character botChar = loadOfflineBot(resolved.id(), owner.getClient().getWorld(), owner.getClient().getChannel());
                 BotEntry entry = registerSpawnedBot(owner.getId(), owner, botChar);
                 issueFollowOwner(entry);
                 return SpawnResult.ok(botChar, auth.autoRegistered());
@@ -386,7 +381,7 @@ public class BotManager {
         return null;
     }
 
-    public Character loadOfflineBot(int charId, int world, int channel, MapleMap targetMap, Point desiredPosition) throws SQLException {
+    public Character loadOfflineBot(int charId, int world, int channel) throws SQLException {
         BotClient botClient = new BotClient(world, channel);
         Character botChar = Character.loadCharFromDB(charId, botClient, true);
         botClient.setPlayer(botChar);
@@ -397,10 +392,8 @@ public class BotManager {
             botChar.silentApplyDiseases(diseases);
         }
 
-        MapleMap spawnMap = targetMap != null
-                ? targetMap
-                : Server.getInstance().getChannel(world, channel).getMapFactory().getMap(botChar.getMapId());
-        Point spawnPos = resolveSpawnPosition(spawnMap, desiredPosition != null ? desiredPosition : botChar.getPosition());
+        MapleMap spawnMap = Server.getInstance().getChannel(world, channel).getMapFactory().getMap(botChar.getMapId());
+        Point spawnPos = resolveSpawnPosition(spawnMap, botChar.getPosition());
 
         botChar.setMapId(spawnMap.getId());
         botChar.newClient(botClient);
@@ -425,14 +418,14 @@ public class BotManager {
         return botChar;
     }
 
-    static void placeSpawnedOnlineBot(BotEntry entry, Character botChar, MapleMap spawnMap, Point spawnPos) {
+    static void placeSpawnedOnlineBot(BotEntry entry, Character botChar) {
         if (entry == null) {
-            botChar.setPosition(spawnPos);
-            botChar.broadcastStance();
             botChar.updatePartyMemberHP();
             return;
         }
 
+        MapleMap spawnMap = botChar.getMap();
+        Point spawnPos = getInstance().resolveSpawnPosition(spawnMap, botChar.getPosition());
         BotPhysicsEngine.teleportTo(entry, botChar, spawnPos);
         BotMovementManager.resetEntryStateAfterTeleport(entry);
         entry.deadUntil = 0;
@@ -445,7 +438,6 @@ public class BotManager {
         entry.aiTickAccumulatorMs = 0;
         entry.moveDir = 0;
         entry.movementBroadcastValid = false;
-        BotMovementManager.broadcastMovement(entry);
         botChar.updatePartyMemberHP();
     }
 
@@ -507,7 +499,6 @@ public class BotManager {
         entry.aiTickAccumulatorMs = 0;
         entry.moveDir = 0;
         entry.movementBroadcastValid = false;
-        BotMovementManager.broadcastMovement(entry);
         if (entry.owner != null) {
             joinBotToOwnerParty(entry.owner, bot);
         }
@@ -1322,8 +1313,8 @@ public class BotManager {
             primaryTargetPos = grindTargetPos;
             primaryTargetSource = "grind-target";
         } else if (entry.grinding) {
-            primaryTargetPos = fallbackPos;
-            primaryTargetSource = "grind-idle";
+            primaryTargetPos = resolveNoGrindTargetPosition(entry, fallbackPos, bot.getMap());
+            primaryTargetSource = "grind-wander";
         } else if (entry.following) {
             primaryTargetPos = followTargetPos;
             primaryTargetSource = "follow-target";
@@ -3989,11 +3980,10 @@ public class BotManager {
         if (owner == null) return; // owner logged off — skip
 
         try {
-            MapleMap map = owner.getMap();
-            Point pos = resolveSpawnPosition(map, owner.getPosition());
-            Character botChar = loadOfflineBot(charId, world, channel, map, pos);
+            Character botChar = loadOfflineBot(charId, world, channel);
 
-            registerSpawnedBot(ownerCharId, owner, botChar);
+            BotEntry entry = registerSpawnedBot(ownerCharId, owner, botChar);
+            issueFollowOwner(entry);
             after(randMs(900, 1100), () -> {
                 botSay(botChar, "back!!");
                 botChar.changeFaceExpression(Emote.HAPPY.getValue());
