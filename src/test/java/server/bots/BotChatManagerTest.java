@@ -86,6 +86,13 @@ class BotChatManagerTest {
         assertFalse(BotChatManager.isPartyAutopilotCommand("go grind somewhere"));
         assertFalse(BotChatManager.isPartyAutopilotCommand("go grind"));
 
+        assertTrue(BotChatManager.isSailAwayCommand("sail away"));
+        assertTrue(BotChatManager.isSailAwayCommand("Sail away!"));
+        assertTrue(BotChatManager.isSailAwayCommand("take the boat"));
+        assertTrue(BotChatManager.isSailAwayCommand("go sail"));
+        assertFalse(BotChatManager.isSailAwayCommand("sail"));
+        assertFalse(BotChatManager.isSailAwayCommand("we could sail away someday"));
+
         assertEquals("scroll for gloves 60%", BotChatManager.matchFarmItemArgs("farm scroll for gloves 60%"));
         assertEquals("2040705", BotChatManager.matchFarmItemArgs("farm 2040705"));
         assertNull(BotChatManager.matchFarmItemArgs("farm here"));

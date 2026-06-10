@@ -1,23 +1,28 @@
 package server.bots;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
+import java.util.function.IntToDoubleFunction;
 
 /**
- * Pure decision core for "where should I grind?": balances <b>exp rate</b> against <b>gear
- * progression</b> across candidate (mob, map) pairs and picks one, with enough numbers attached
- * for the chat layer to explain the choice.
+ * Pure decision core for "where should I grind?": <b>gear progression first</b>, exp as the
+ * tiebreaker, across candidate (mob, map) pairs — with enough numbers attached for the chat
+ * layer to explain the choice.
  *
  * <p><b>Model.</b> Each candidate yields a kill cycle (kill time + seek time, where seek shrinks
  * with spawn density), hence exp/h and gear-value/h. Gear value of a drop = expected offense-score
  * gain over the bot's own currently-worn item (stat randomization is the caller's job — it feeds
- * the <em>expected</em> roll, godly mixture included). The two lenses are blended by a dynamic
- * <em>need</em> weight: the bigger and more <em>attainable</em> the best wearable upgrade is, the
- * more the bot "wants gear" — a +30% DPS drop it can expect within a couple of hours fully
- * dominates exp; a 1-in-a-million jackpot does not (attainability discounts it).
+ * the <em>expected</em> roll, godly mixture included), discounted by <em>attainability</em>: a
+ * +30% DPS drop the bot can expect within a couple of hours is worth chasing; a 1-in-a-million
+ * jackpot is noise. When any candidate carries meaningful attainable gear value, the pick is
+ * restricted to candidates gear-comparable to the best ({@link #GEAR_POOL_FRACTION}) and exp
+ * decides among those; with no attainable upgrade anywhere it falls back to pure exp ranking.
+ * An optional per-map score weight discounts far-away maps (travel-time penalty, see
+ * {@code BotTravelCost}).
  *
  * <p><b>Anti-clogging.</b> With many bots asking the same question, a deterministic argmax sends
  * everyone to the same map. {@link #planBest} samples among near-best candidates (within
@@ -41,6 +46,14 @@ final class BotGrindPlanner {
     static final double ATTAINABILITY_HORIZON_HOURS = 2.0;
     /** Candidates scoring within this fraction of the best join the weighted-random draw. */
     static final double NEAR_BEST_FRACTION = 0.85;
+    /** Gear progression is PRIMARY: an attainable upgrade of at least this desirability
+     *  (DPS-gain x attainability) anywhere in the pool switches planning to gear-first. */
+    static final double MEANINGFUL_GEAR_DESIRE = 0.02;
+    /** Gear-first shortlist: candidates within this fraction of the best gear-value/h stay in;
+     *  exp breaks the tie among them. */
+    static final double GEAR_POOL_FRACTION = 0.7;
+    /** Party blend: exp is a secondary tiebreaker next to the primary gear lens. */
+    static final double EXP_TIEBREAK_WEIGHT = 0.25;
 
     private BotGrindPlanner() {}
 
@@ -57,10 +70,13 @@ final class BotGrindPlanner {
                         int mapId, String mapName, int spawnPoints,
                         List<GearProspect> gearDrops) {}
 
-    /** The chosen option plus the numbers that justify it (for the chat reply). */
+    /** The chosen option plus the numbers that justify it (for the chat reply). {@code score}
+     *  is the pick's selection-lens value (travel-weighted gear-value/h when gear-first,
+     *  exp/h otherwise; expected items/h for farm picks) — same units across decision passes
+     *  for the same bot, so callers can compare alternative plans (ferry teaser). */
     record Recommendation(MobCandidate pick, double killsPerHour, double expPerHour,
                           boolean gearFocused, double needGear,
-                          GearProspect wantedGear, double wantedGearPerHour) {}
+                          GearProspect wantedGear, double wantedGearPerHour, double score) {}
 
     /** Seek overhead per kill: sparse maps cost walking time, dense maps barely any. */
     static double seekSeconds(int spawnPoints) {
@@ -79,10 +95,17 @@ final class BotGrindPlanner {
         return g.dpsGainFraction() * Math.min(1.0, expectedCopies);
     }
 
-    /** Per-list scoring shared by solo and party planning (same math, same normalization). */
-    private record Scored(double[] score, double[] expPerHour, double best, double needGear) {}
+    /** Both lenses for one candidate list: raw exp/h (for reporting) plus the travel-weighted
+     *  exp/h and gear-value/h used for selection, and the dynamic gear-need. */
+    private record Lenses(double[] expPerHour, double[] weightedExp, double[] weightedGear,
+                          double bestDesire, double needGear) {
+        /** Meaningful attainable gear value anywhere => gear progression drives the pick. */
+        boolean gearFirst() {
+            return bestDesire >= MEANINGFUL_GEAR_DESIRE;
+        }
+    }
 
-    private static Scored scoreSet(List<MobCandidate> candidates) {
+    private static Lenses computeLenses(List<MobCandidate> candidates, IntToDoubleFunction mapScoreWeight) {
         // Dynamic need: the best attainable upgrade anywhere sets how gear-hungry the bot is.
         double bestDesire = 0.0;
         for (MobCandidate c : candidates) {
@@ -93,33 +116,22 @@ final class BotGrindPlanner {
         }
         double needGear = Math.min(1.0, bestDesire / GEAR_DOMINANT_DPS_GAIN);
 
-        // Score every candidate on both lenses, normalized so the blend is scale-free.
-        double maxExpPerHour = 0.0;
-        double maxGearPerHour = 0.0;
         double[] expPerHour = new double[candidates.size()];
-        double[] gearPerHour = new double[candidates.size()];
+        double[] weightedExp = new double[candidates.size()];
+        double[] weightedGear = new double[candidates.size()];
         for (int i = 0; i < candidates.size(); i++) {
             MobCandidate c = candidates.get(i);
             double kph = killsPerHour(c);
+            double weight = mapScoreWeight.applyAsDouble(c.mapId());
             expPerHour[i] = c.exp() * kph;
+            weightedExp[i] = expPerHour[i] * weight;
             double gear = 0.0;
             for (GearProspect g : c.gearDrops()) {
                 gear += desirability(g, kph) * kph * g.chancePerKill();
             }
-            gearPerHour[i] = gear;
-            maxExpPerHour = Math.max(maxExpPerHour, expPerHour[i]);
-            maxGearPerHour = Math.max(maxGearPerHour, gearPerHour[i]);
+            weightedGear[i] = gear * weight;
         }
-
-        double[] score = new double[candidates.size()];
-        double best = 0.0;
-        for (int i = 0; i < candidates.size(); i++) {
-            double exp = maxExpPerHour > 0 ? expPerHour[i] / maxExpPerHour : 0.0;
-            double gear = maxGearPerHour > 0 ? gearPerHour[i] / maxGearPerHour : 0.0;
-            score[i] = (1.0 - needGear) * exp + needGear * gear;
-            best = Math.max(best, score[i]);
-        }
-        return new Scored(score, expPerHour, best, needGear);
+        return new Lenses(expPerHour, weightedExp, weightedGear, bestDesire, needGear);
     }
 
     /** Weighted-random index among entries scoring within NEAR_BEST_FRACTION of the best. */
@@ -145,17 +157,30 @@ final class BotGrindPlanner {
     }
 
     static Recommendation planBest(List<MobCandidate> candidates, Random rng) {
+        return planBest(candidates, mapId -> 1.0, rng);
+    }
+
+    /** Gear-first pick: when meaningful attainable gear value exists anywhere, restrict to
+     *  candidates within {@link #GEAR_POOL_FRACTION} of the best gear-value/h and let exp
+     *  break the tie (near-best weighted draw); otherwise pure exp ranking as before.
+     *  {@code mapScoreWeight} discounts far maps (travel-time penalty, BotTravelCost). */
+    static Recommendation planBest(List<MobCandidate> candidates, IntToDoubleFunction mapScoreWeight,
+                                   Random rng) {
         if (candidates == null || candidates.isEmpty()) {
             return null;
         }
-
-        Scored scored = scoreSet(candidates);
-        if (scored.best() <= 0.0) {
-            return null;
+        Lenses lenses = computeLenses(candidates, mapScoreWeight);
+        boolean gearFirst = lenses.gearFirst();
+        int picked;
+        if (gearFirst) {
+            picked = drawGearFirst(lenses, rng);
+        } else {
+            double bestExp = max(lenses.weightedExp());
+            if (bestExp <= 0.0) {
+                return null;
+            }
+            picked = drawNearBest(lenses.weightedExp(), bestExp, rng);
         }
-        double needGear = scored.needGear();
-        double[] expPerHour = scored.expPerHour();
-        int picked = drawNearBest(scored.score(), scored.best(), rng);
 
         MobCandidate pick = candidates.get(picked);
         double kph = killsPerHour(pick);
@@ -168,10 +193,44 @@ final class BotGrindPlanner {
                 wanted = g;
             }
         }
-        boolean gearFocused = needGear >= 0.5 && wanted != null;
+        boolean gearFocused = gearFirst && wanted != null;
         double wantedPerHour = wanted != null ? wanted.chancePerKill() * kph : 0.0;
-        return new Recommendation(pick, kph, expPerHour[picked], gearFocused, needGear,
-                wanted, wantedPerHour);
+        double score = gearFirst ? lenses.weightedGear()[picked] : lenses.weightedExp()[picked];
+        return new Recommendation(pick, kph, lenses.expPerHour()[picked], gearFocused,
+                lenses.needGear(), wanted, wantedPerHour, score);
+    }
+
+    /** Shortlist gear-comparable candidates, then let exp break the tie (weighted draw). */
+    private static int drawGearFirst(Lenses lenses, Random rng) {
+        double[] gear = lenses.weightedGear();
+        double bestGear = max(gear);
+        List<Integer> pool = new ArrayList<>();
+        for (int i = 0; i < gear.length; i++) {
+            if (gear[i] >= bestGear * GEAR_POOL_FRACTION) {
+                pool.add(i);
+            }
+        }
+        double[] poolExp = new double[pool.size()];
+        double[] poolGear = new double[pool.size()];
+        double bestPoolExp = 0.0;
+        for (int i = 0; i < pool.size(); i++) {
+            poolExp[i] = lenses.weightedExp()[pool.get(i)];
+            poolGear[i] = gear[pool.get(i)];
+            bestPoolExp = Math.max(bestPoolExp, poolExp[i]);
+        }
+        // Pool with no exp signal at all (e.g. farm-shaped data): draw by gear value itself.
+        int inPool = bestPoolExp > 0.0
+                ? drawNearBest(poolExp, bestPoolExp, rng)
+                : drawNearBest(poolGear, bestGear, rng);
+        return pool.get(inPool);
+    }
+
+    private static double max(double[] values) {
+        double best = 0.0;
+        for (double v : values) {
+            best = Math.max(best, v);
+        }
+        return best;
     }
 
     // ---- party planning: one shared map, per-member objectives ----
@@ -180,14 +239,23 @@ final class BotGrindPlanner {
      *  for that member on this map — they tag along to back the party up). */
     record PartyPlan(int mapId, List<Recommendation> perMember) {}
 
+    static PartyPlan planPartyBest(List<List<MobCandidate>> perMember, Random rng) {
+        List<IntToDoubleFunction> flat = perMember == null ? List.of()
+                : Collections.nCopies(perMember.size(), (IntToDoubleFunction) mapId -> 1.0);
+        return planPartyBest(perMember, flat, rng);
+    }
+
     /**
      * Pick ONE map for the whole group: each member's candidates are competition-adjusted
-     * (N members share the spawns), scored with the same two-lens blend as solo planning,
-     * and each member's best score per map is summed — so a map where several members gain
-     * (one farms its gear drop, others take good exp) beats a map that's optimal for only
-     * one. The near-best weighted draw keeps multiple parties from clogging the same spot.
+     * (N members share the spawns), scored with the same gear-first model as solo planning
+     * (gear primary, exp the tiebreaker — see {@link #partyScores}), and each member's best
+     * score per map is summed — so a map where several members gain (one farms its gear drop,
+     * others take good exp) beats a map that's optimal for only one. The near-best weighted
+     * draw keeps multiple parties from clogging the same spot. {@code mapScoreWeights} is the
+     * per-member travel-time penalty (members can start scattered).
      */
-    static PartyPlan planPartyBest(List<List<MobCandidate>> perMember, Random rng) {
+    static PartyPlan planPartyBest(List<List<MobCandidate>> perMember,
+                                   List<IntToDoubleFunction> mapScoreWeights, Random rng) {
         if (perMember == null || perMember.isEmpty()) {
             return null;
         }
@@ -201,13 +269,14 @@ final class BotGrindPlanner {
             adjusted.add(shared);
         }
 
-        // Sum each member's best blended score per map.
+        // Sum each member's best score per map.
         Map<Integer, Double> scoreByMap = new HashMap<>();
-        for (List<MobCandidate> candidates : adjusted) {
+        for (int m = 0; m < adjusted.size(); m++) {
+            List<MobCandidate> candidates = adjusted.get(m);
             if (candidates.isEmpty()) {
                 continue;
             }
-            double[] score = scoreSet(candidates).score();
+            double[] score = partyScores(candidates, mapScoreWeights.get(m));
             Map<Integer, Double> bestByMap = new HashMap<>();
             for (int i = 0; i < candidates.size(); i++) {
                 bestByMap.merge(candidates.get(i).mapId(), score[i], Math::max);
@@ -233,16 +302,32 @@ final class BotGrindPlanner {
         int pickedMapId = mapIds.get(drawNearBest(score, best, rng));
 
         List<Recommendation> recs = new ArrayList<>(partySize);
-        for (List<MobCandidate> candidates : adjusted) {
+        for (int m = 0; m < adjusted.size(); m++) {
             List<MobCandidate> onMap = new ArrayList<>();
-            for (MobCandidate c : candidates) {
+            for (MobCandidate c : adjusted.get(m)) {
                 if (c.mapId() == pickedMapId) {
                     onMap.add(c);
                 }
             }
-            recs.add(planBest(onMap, rng));
+            recs.add(planBest(onMap, mapScoreWeights.get(m), rng));
         }
         return new PartyPlan(pickedMapId, recs);
+    }
+
+    /** One comparable number per candidate for the party sum, gear-first like solo planning:
+     *  when the member has meaningful attainable gear value anywhere, the normalized gear lens
+     *  is primary and exp only breaks ties ({@link #EXP_TIEBREAK_WEIGHT}); otherwise pure exp. */
+    private static double[] partyScores(List<MobCandidate> candidates, IntToDoubleFunction mapScoreWeight) {
+        Lenses lenses = computeLenses(candidates, mapScoreWeight);
+        double bestExp = max(lenses.weightedExp());
+        double bestGear = max(lenses.weightedGear());
+        double[] score = new double[candidates.size()];
+        for (int i = 0; i < score.length; i++) {
+            double exp = bestExp > 0 ? lenses.weightedExp()[i] / bestExp : 0.0;
+            double gear = bestGear > 0 ? lenses.weightedGear()[i] / bestGear : 0.0;
+            score[i] = lenses.gearFirst() ? gear + EXP_TIEBREAK_WEIGHT * exp : exp;
+        }
+        return score;
     }
 
     /**
@@ -251,6 +336,12 @@ final class BotGrindPlanner {
      * is farm-shaped: gearFocused, wantedGear = the item, wantedGearPerHour = items/hour.
      */
     static Recommendation planFarmBest(List<MobCandidate> candidates, Random rng) {
+        return planFarmBest(candidates, mapId -> 1.0, rng);
+    }
+
+    /** Like {@link #planFarmBest(List, Random)} with a per-map travel-time score weight. */
+    static Recommendation planFarmBest(List<MobCandidate> candidates, IntToDoubleFunction mapScoreWeight,
+                                       Random rng) {
         if (candidates == null || candidates.isEmpty()) {
             return null;
         }
@@ -259,7 +350,7 @@ final class BotGrindPlanner {
         for (int i = 0; i < candidates.size(); i++) {
             MobCandidate c = candidates.get(i);
             double chance = c.gearDrops().isEmpty() ? 0.0 : c.gearDrops().get(0).chancePerKill();
-            score[i] = chance * killsPerHour(c);
+            score[i] = chance * killsPerHour(c) * mapScoreWeight.applyAsDouble(c.mapId());
             best = Math.max(best, score[i]);
         }
         if (best <= 0.0) {
@@ -269,7 +360,10 @@ final class BotGrindPlanner {
         MobCandidate pick = candidates.get(picked);
         double kph = killsPerHour(pick);
         GearProspect want = pick.gearDrops().isEmpty() ? null : pick.gearDrops().get(0);
-        return new Recommendation(pick, kph, pick.exp() * kph, true, 1.0, want, score[picked]);
+        // wantedGearPerHour reports the RAW items/hour at the site, not the travel-weighted score.
+        double rawPerHour = want != null ? want.chancePerKill() * kph : 0.0;
+        return new Recommendation(pick, kph, pick.exp() * kph, true, 1.0, want, rawPerHour,
+                score[picked]);
     }
 
     private static MobCandidate withSpawnShare(MobCandidate c, int partySize) {

@@ -125,6 +125,11 @@ final class BotWorldGraph {
         return Collections.unmodifiableMap(byMap);
     }
 
+    /** All outgoing taxi rides from this map (empty when no cab parks there). */
+    static List<TaxiEdge> taxiEdgesFrom(int fromMapId) {
+        return TAXI_BY_MAP.getOrDefault(fromMapId, List.of());
+    }
+
     /** The taxi ride from one map to another, or null when no cab drives that route. */
     static TaxiEdge findTaxiEdge(int fromMapId, int toMapId) {
         for (TaxiEdge edge : TAXI_BY_MAP.getOrDefault(fromMapId, List.of())) {

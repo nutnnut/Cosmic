@@ -463,6 +463,10 @@ public class BotChatManager {
                     + "(?:on\\s+(?:your|ur)\\s+own|somewhere(?:\\s+(?:good|else|nice))?|wherever(?:\\s+(?:you|u)\\s+want)?)"
                     + "|autopilot|go\\s+solo|go\\s+(?:be\\s+)?independent)\\s*[?!.,~]*\\s*$",
             Pattern.CASE_INSENSITIVE);
+    // Ferry permission: the bot only boards cross-sea boats with the owner around after this.
+    private static final Pattern SAIL_AWAY_PATTERN = Pattern.compile(
+            "^\\s*(?:sail\\s+away|take\\s+the\\s+boat|go\\s+sail)\\s*[?!.,~]*\\s*$",
+            Pattern.CASE_INSENSITIVE);
     // Party autopilot: the whole group shares ONE grind decision instead of scattering.
     private static final Pattern PARTY_AUTOPILOT_PATTERN = Pattern.compile(
             "^\\s*(?:(?:go\\s+)?(?:grind|train|farm|level|play|hunt)\\s+together"
@@ -959,6 +963,16 @@ public class BotChatManager {
             BotManager.after(BotManager.randMs(400, 600), () -> {
                 BotEquipManager.autoEquip(entry.bot, entry.owner, entry.pendingLootOfferItem, true);
                 BotManager.getInstance().botReply(entry, "ok, gear optimized");
+            });
+            return;
+        }
+
+        // Ferry green light: keep whatever the bot is doing, just widen its travel horizon
+        // and let the next decision tick take the boat if it's still worth it.
+        if (isSailAwayCommand(message)) {
+            BotManager.after(BotManager.randMs(500, 900), () -> {
+                BotAutopilotManager.approveFerry(entry);
+                BotManager.getInstance().botReply(entry, "aye, i'll take the boat when it's worth it");
             });
             return;
         }
@@ -1755,6 +1769,10 @@ public class BotChatManager {
 
     static boolean isPartyAutopilotCommand(String message) {
         return message != null && PARTY_AUTOPILOT_PATTERN.matcher(message).matches();
+    }
+
+    static boolean isSailAwayCommand(String message) {
+        return message != null && SAIL_AWAY_PATTERN.matcher(message).matches();
     }
 
     /** The item-name/id args of a "farm <item>" command, or null when it isn't one. */

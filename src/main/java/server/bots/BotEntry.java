@@ -183,6 +183,9 @@ public class BotEntry {
     // Farm-item objective override ("farm <item>"): re-decides only re-pick the SITE for this
     // item instead of running the general advisor; the item is never sold as trash.
     int autopilotFarmItemId = 0;
+    // Owner said "sail away": the bot may board cross-continent ferries while the owner is
+    // online. Owner-offline autopilot never needs it. Reset in BotAutopilotManager.clear().
+    boolean autopilotFerryApproved = false;
     // Resupply errand: temporary detour destination (return-map town) when supplies run low
     // mid-grind. -1 = none. The shop visit triggers on arrival; afterwards travel resumes
     // toward autopilotMapId. NextErrandAtMs rate-limits errands (survives clear()).

@@ -129,9 +129,17 @@ final class BotGrindAdvisor {
 
     /** Decision pass restricted to allowed maps (autopilot: only maps the bot can walk to). */
     static Recommendation recommend(BotEntry entry, Character bot, java.util.function.IntPredicate mapAllowed) {
+        return recommend(entry, bot, mapAllowed, mapId -> 1.0);
+    }
+
+    /** Like {@link #recommend(BotEntry, Character, java.util.function.IntPredicate)} with a
+     *  per-map score weight (autopilot travel-time penalty, see {@link BotTravelCost}). */
+    static Recommendation recommend(BotEntry entry, Character bot,
+                                    java.util.function.IntPredicate mapAllowed,
+                                    java.util.function.IntToDoubleFunction mapScoreWeight) {
         List<MobCandidate> candidates = buildCandidates(entry, bot);
         candidates.removeIf(c -> !mapAllowed.test(c.mapId()));
-        return BotGrindPlanner.planBest(candidates, ThreadLocalRandom.current());
+        return BotGrindPlanner.planBest(candidates, mapScoreWeight, ThreadLocalRandom.current());
     }
 
     /** Candidate pool for external planners (party autopilot). Same pool recommend() uses. */
@@ -211,6 +219,14 @@ final class BotGrindAdvisor {
      */
     static Recommendation recommendFarmItem(BotEntry entry, Character bot, int itemId,
                                             java.util.function.IntPredicate mapAllowed) {
+        return recommendFarmItem(entry, bot, itemId, mapAllowed, mapId -> 1.0);
+    }
+
+    /** Like {@link #recommendFarmItem(BotEntry, Character, int, java.util.function.IntPredicate)}
+     *  with a per-map score weight (autopilot travel-time penalty). */
+    static Recommendation recommendFarmItem(BotEntry entry, Character bot, int itemId,
+                                            java.util.function.IntPredicate mapAllowed,
+                                            java.util.function.IntToDoubleFunction mapScoreWeight) {
         Map<Integer, Integer> droppers = droppersForItem.droppers(itemId);
         if (droppers.isEmpty()) {
             return null;
@@ -247,7 +263,7 @@ final class BotGrindAdvisor {
             addSiteCandidates(candidates, index, mi, BotSpawnIndex.spawnSites(mobId),
                     mobId, stats.getLevel(), exp, killSeconds, objective, mapAllowed);
         }
-        return BotGrindPlanner.planFarmBest(candidates, ThreadLocalRandom.current());
+        return BotGrindPlanner.planFarmBest(candidates, mapScoreWeight, ThreadLocalRandom.current());
     }
 
     /** All mobs dropping an item with their best chance ({@code drop_data}); test seam. */

@@ -26,26 +26,48 @@ class BotAutopilotManagerTest {
     private static final int HUNTING_GROUND = 100040000;
 
     private static Recommendation expRec(int mapId, String mapName) {
+        return expRec(mapId, mapName, 27_000);
+    }
+
+    private static Recommendation expRec(int mapId, String mapName, double score) {
         MobCandidate pick = new MobCandidate(130101, "Orange Mushroom", 8, 15, 1.2,
                 mapId, mapName, 12, List.of());
-        return new Recommendation(pick, 1800, 27_000, false, 0.1, null, 0);
+        return new Recommendation(pick, 1800, 27_000, false, 0.1, null, 0, score);
+    }
+
+    private static Recommendation gearRec(int mapId, String mapName, String itemName, double score) {
+        MobCandidate pick = new MobCandidate(3210100, "Drake", 35, 86, 3.0,
+                mapId, mapName, 10, List.of());
+        return new Recommendation(pick, 900, 77_000, true, 1.0,
+                new BotGrindPlanner.GearProspect(1402000, itemName, 0.01, 50, 0.35), 9, score);
     }
 
     private record Fixture(BotEntry entry, Character bot) {}
 
     private static Fixture fixture(int mapId) {
+        return fixture(mapId, null);
+    }
+
+    private static Fixture fixture(int mapId, Character owner) {
         Character bot = mock(Character.class);
         MapleMap map = mock(MapleMap.class);
         when(bot.getMap()).thenReturn(map);
         when(bot.getMapId()).thenReturn(mapId);
-        BotEntry entry = new BotEntry(bot, null, null);
+        BotEntry entry = new BotEntry(bot, owner, null);
         entry.lastMapId = mapId;
         return new Fixture(entry, bot);
+    }
+
+    private static Character onlineOwner() {
+        Character owner = mock(Character.class);
+        when(owner.isLoggedinWorld()).thenReturn(true);
+        return owner;
     }
 
     /** Swaps the advisor/party/farm/reply/runner seams (runner = synchronous); restore via close(). */
     private static final class Seams implements AutoCloseable {
         final List<String> replies = new ArrayList<>();
+        final List<Boolean> advisorFerryFlags = new ArrayList<>();
         private final BotAutopilotManager.Advisor previousAdvisor = BotAutopilotManager.advisor;
         private final BotAutopilotManager.PartyDecider previousPartyDecider = BotAutopilotManager.partyDecider;
         private final BotAutopilotManager.FarmAdvisor previousFarmAdvisor = BotAutopilotManager.farmAdvisor;
@@ -53,9 +75,17 @@ class BotAutopilotManagerTest {
         private final BotAutopilotManager.DecisionRunner previousRunner = BotAutopilotManager.decisionRunner;
 
         Seams(Recommendation recommendation) {
-            BotAutopilotManager.advisor = (entry, bot, fromMapId, maxHops) -> recommendation;
+            this(recommendation, recommendation);
+        }
+
+        /** Separate picks for the ferry-off and ferry-on advisor passes (ferry teaser tests). */
+        Seams(Recommendation localRec, Recommendation ferryRec) {
+            BotAutopilotManager.advisor = (entry, bot, fromMapId, maxHops, withFerry) -> {
+                advisorFerryFlags.add(withFerry);
+                return withFerry ? ferryRec : localRec;
+            };
             BotAutopilotManager.partyDecider = members -> null;
-            BotAutopilotManager.farmAdvisor = (entry, bot, itemId, fromMapId, maxHops) -> null;
+            BotAutopilotManager.farmAdvisor = (entry, bot, itemId, fromMapId, maxHops, withFerry) -> null;
             BotAutopilotManager.reply = (entry, text) -> replies.add(text);
             BotAutopilotManager.decisionRunner = (compute, apply) -> apply.accept(compute.get());
         }
@@ -87,6 +117,25 @@ class BotAutopilotManagerTest {
             assertEquals(1, seams.replies.size());
             assertTrue(seams.replies.get(0).contains("Henesys Hunting Ground I"), seams.replies.get(0));
             assertTrue(seams.replies.get(0).contains("to grind Orange Mushroom"), seams.replies.get(0));
+            // Plain words only: no exp/hr or any other rate numbers in chat.
+            assertFalse(seams.replies.get(0).contains("/hr"), seams.replies.get(0));
+            assertFalse(seams.replies.get(0).contains("exp"), seams.replies.get(0));
+        }
+    }
+
+    @Test
+    void shouldAnnounceGearObjectiveAsItemFromMobWithoutNumbers() {
+        Fixture f = fixture(TOWN);
+
+        try (Seams seams = new Seams(gearRec(HUNTING_GROUND, "Drake Cave", "sword", 9_000))) {
+            BotAutopilotManager.start(f.entry(), f.bot());
+
+            assertEquals("farm sword from Drake", f.entry().autopilotObjectiveSummary);
+            assertEquals(1, seams.replies.size());
+            assertTrue(seams.replies.get(0).contains("farm sword from Drake"), seams.replies.get(0));
+            assertFalse(seams.replies.get(0).contains("/hr"), seams.replies.get(0));
+            assertFalse(seams.replies.get(0).contains("dps"), seams.replies.get(0));
+            assertFalse(seams.replies.get(0).contains("%"), seams.replies.get(0));
         }
     }
 
@@ -212,10 +261,10 @@ class BotAutopilotManagerTest {
                         HUNTING_GROUND, "Henesys Hunting Ground I", 12, List.of()),
                 1800, 27_000, true, 1.0,
                 new BotGrindPlanner.GearProspect(2040705, "Scroll for Gloves for ATT 60%", 0.02, 0, 0),
-                2.5);
+                2.5, 2.5);
 
         try (Seams seams = new Seams(null)) {
-            BotAutopilotManager.farmAdvisor = (entry, bot, itemId, fromMapId, maxHops) -> farmRec;
+            BotAutopilotManager.farmAdvisor = (entry, bot, itemId, fromMapId, maxHops, withFerry) -> farmRec;
             BotAutopilotManager.startFarmItem(f.entry(), f.bot(), 2040705, "Scroll for Gloves for ATT 60%");
 
             assertEquals(2040705, f.entry().autopilotFarmItemId);
@@ -302,5 +351,145 @@ class BotAutopilotManagerTest {
         assertEquals("", f.entry().autopilotObjectiveSummary);
         assertFalse(f.entry().autopilotArrivalAnnounced);
         assertTrue(f.entry().following);
+    }
+
+    // ---- ferry permission gate ----
+
+    private static final int ORBIS = 200000100;
+
+    @Test
+    void shouldAskBeforeFerryingOnlyWhileOwnerIsAround() {
+        // Owner online, not approved: the decision runs ferry-off, plus one ferry-on teaser pass.
+        Fixture supervised = fixture(TOWN, onlineOwner());
+        try (Seams seams = new Seams(expRec(HUNTING_GROUND, "Henesys Hunting Ground I"))) {
+            BotAutopilotManager.start(supervised.entry(), supervised.bot());
+            assertEquals(List.of(false, true), seams.advisorFerryFlags);
+        }
+
+        // Owner absent: ferries are the bot's own call — single ferry-on pass, no teaser.
+        Fixture unsupervised = fixture(TOWN);
+        try (Seams seams = new Seams(expRec(HUNTING_GROUND, "Henesys Hunting Ground I"))) {
+            BotAutopilotManager.start(unsupervised.entry(), unsupervised.bot());
+            assertEquals(List.of(true), seams.advisorFerryFlags);
+        }
+
+        // Owner online but "sail away" approved: same single ferry-on pass.
+        Fixture approved = fixture(TOWN, onlineOwner());
+        approved.entry().autopilotFerryApproved = true;
+        try (Seams seams = new Seams(expRec(HUNTING_GROUND, "Henesys Hunting Ground I"))) {
+            BotAutopilotManager.start(approved.entry(), approved.bot());
+            assertEquals(List.of(true), seams.advisorFerryFlags);
+            // The clear() inside issueGrind must not revoke the permission the plan used.
+            assertTrue(approved.entry().autopilotFerryApproved);
+        }
+    }
+
+    @Test
+    void shouldTeaseFerryOnceWhenOverseasIsWayBetter() {
+        Fixture f = fixture(TOWN, onlineOwner());
+
+        try (Seams seams = new Seams(
+                expRec(HUNTING_GROUND, "Henesys Hunting Ground I", 10_000),
+                expRec(ORBIS, "Orbis", 20_000))) {
+            BotAutopilotManager.start(f.entry(), f.bot());
+
+            // The plan itself stays local — sailing needs the owner's word.
+            assertEquals(HUNTING_GROUND, f.entry().autopilotMapId);
+            assertEquals(2, seams.replies.size());
+            assertTrue(seams.replies.get(1).contains("way better grind across the sea at Orbis"),
+                    seams.replies.get(1));
+            assertTrue(seams.replies.get(1).contains("sail away"), seams.replies.get(1));
+        }
+    }
+
+    @Test
+    void shouldNotTeaseFerryWhenOverseasIsOnlySlightlyBetter() {
+        Fixture f = fixture(TOWN, onlineOwner());
+
+        try (Seams seams = new Seams(
+                expRec(HUNTING_GROUND, "Henesys Hunting Ground I", 10_000),
+                expRec(ORBIS, "Orbis", 12_000))) {
+            BotAutopilotManager.start(f.entry(), f.bot());
+
+            assertEquals(HUNTING_GROUND, f.entry().autopilotMapId);
+            assertEquals(1, seams.replies.size());
+        }
+    }
+
+    @Test
+    void shouldRedecideWithFerriesRightAfterSailAwayApproval() {
+        Fixture f = fixture(HUNTING_GROUND, onlineOwner());
+        f.entry().autopilotMapId = HUNTING_GROUND;
+        f.entry().autopilotNextDecisionAtMs = Long.MAX_VALUE;
+        f.entry().autopilotArrivalAnnounced = true;
+        f.entry().grinding = true;
+
+        try (Seams seams = new Seams(
+                expRec(HUNTING_GROUND, "Henesys Hunting Ground I", 10_000),
+                expRec(ORBIS, "Orbis", 20_000))) {
+            BotAutopilotManager.approveFerry(f.entry());
+            assertTrue(f.entry().autopilotFerryApproved);
+            assertEquals(0L, f.entry().autopilotNextDecisionAtMs);
+
+            // The very next on-site tick re-decides with the ferry horizon and moves on.
+            assertFalse(BotAutopilotManager.tick(f.entry(), f.bot(), true));
+            assertEquals(List.of(true), seams.advisorFerryFlags);
+            assertEquals(ORBIS, f.entry().autopilotMapId);
+        }
+    }
+
+    @Test
+    void shouldPassFerryPermissionToTravelTicks() {
+        Fixture f = fixture(TOWN, onlineOwner());
+        f.entry().autopilotMapId = HUNTING_GROUND;
+        f.entry().autopilotNextDecisionAtMs = Long.MAX_VALUE;
+        f.entry().grinding = true;
+
+        try (Seams seams = new Seams(null);
+             MockedStatic<BotTravelManager> travel = mockStatic(BotTravelManager.class)) {
+            travel.when(() -> BotTravelManager.tickTravel(any(), any(), anyInt(), anyInt(), anyBoolean(), anyBoolean()))
+                    .thenReturn(true);
+
+            assertTrue(BotAutopilotManager.tick(f.entry(), f.bot(), true));
+            travel.verify(() -> BotTravelManager.tickTravel(any(), any(), anyInt(), anyInt(), anyBoolean(),
+                    org.mockito.ArgumentMatchers.eq(false)));
+
+            f.entry().autopilotFerryApproved = true;
+            assertTrue(BotAutopilotManager.tick(f.entry(), f.bot(), true));
+            travel.verify(() -> BotTravelManager.tickTravel(any(), any(), anyInt(), anyInt(), anyBoolean(),
+                    org.mockito.ArgumentMatchers.eq(true)));
+        }
+    }
+
+    @Test
+    void shouldResetFerryApprovalWhenAutopilotClears() {
+        Fixture f = fixture(HUNTING_GROUND);
+        f.entry().autopilotMapId = HUNTING_GROUND;
+        f.entry().autopilotFerryApproved = true;
+
+        BotAutopilotManager.clear(f.entry());
+
+        assertFalse(f.entry().autopilotFerryApproved);
+    }
+
+    @Test
+    void shouldAttributePartyGearGoalsToTheirBeneficiary() {
+        Fixture leader = fixture(TOWN);
+        Fixture buddy = fixture(TOWN);
+        when(buddy.bot().getName()).thenReturn("Buddy");
+        Character owner = mock(Character.class);
+
+        try (Seams seams = new Seams(null)) {
+            BotAutopilotManager.partyDecider = members -> new BotGrindPlanner.PartyPlan(
+                    HUNTING_GROUND,
+                    java.util.Arrays.asList(
+                            expRec(HUNTING_GROUND, "Henesys Hunting Ground I"),
+                            gearRec(HUNTING_GROUND, "Henesys Hunting Ground I", "sword", 9_000)));
+            BotAutopilotManager.startParty(owner, List.of(leader.entry(), buddy.entry()));
+
+            assertEquals(2, seams.replies.size());
+            assertTrue(seams.replies.get(0).startsWith("party plan:"), seams.replies.get(0));
+            assertEquals("farm sword from Drake for Buddy", seams.replies.get(1));
+        }
     }
 }

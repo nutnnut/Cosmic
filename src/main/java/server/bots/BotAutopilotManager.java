@@ -1,8 +1,6 @@
 package server.bots;
 
 import client.Character;
-import constants.game.GameConstants;
-import server.bots.BotGrindPlanner.GearProspect;
 import server.bots.BotGrindPlanner.MobCandidate;
 import server.bots.BotGrindPlanner.PartyPlan;
 import server.bots.BotGrindPlanner.Recommendation;
@@ -10,9 +8,12 @@ import server.bots.BotGrindPlanner.Recommendation;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.function.BiConsumer;
+import java.util.function.IntToDoubleFunction;
+import java.util.function.IntToLongFunction;
 
 /**
  * Owner-ordered independent play ("go grind somewhere"): pick a grind map with the advisor
@@ -45,27 +46,52 @@ final class BotAutopilotManager {
     // Test seams: the real advisor needs WZ/DB; replies go through the owner's chat channel.
     @FunctionalInterface
     interface Advisor {
-        Recommendation recommend(BotEntry entry, Character bot, int fromMapId, int maxHops);
+        Recommendation recommend(BotEntry entry, Character bot, int fromMapId, int maxHops, boolean withFerry);
     }
 
-    static Advisor advisor = (entry, bot, fromMapId, maxHops) -> {
-        Set<Integer> reachable = BotWorldGraph.reachableWithin(fromMapId, maxHops, travelOptions(bot));
-        return BotGrindAdvisor.recommend(entry, bot, reachable::contains);
+    static Advisor advisor = (entry, bot, fromMapId, maxHops, withFerry) -> {
+        BotWorldGraph.RouteOptions options = travelOptions(bot, withFerry);
+        Set<Integer> reachable = BotWorldGraph.reachableWithin(fromMapId, maxHops, options);
+        return BotGrindAdvisor.recommend(entry, bot, reachable::contains,
+                travelWeight(bot, fromMapId, maxHops, options));
     };
 
     @FunctionalInterface
     interface FarmAdvisor {
-        Recommendation recommend(BotEntry entry, Character bot, int itemId, int fromMapId, int maxHops);
+        Recommendation recommend(BotEntry entry, Character bot, int itemId, int fromMapId, int maxHops,
+                                 boolean withFerry);
     }
 
-    static FarmAdvisor farmAdvisor = (entry, bot, itemId, fromMapId, maxHops) -> {
-        Set<Integer> reachable = BotWorldGraph.reachableWithin(fromMapId, maxHops, travelOptions(bot));
-        return BotGrindAdvisor.recommendFarmItem(entry, bot, itemId, reachable::contains);
+    static FarmAdvisor farmAdvisor = (entry, bot, itemId, fromMapId, maxHops, withFerry) -> {
+        BotWorldGraph.RouteOptions options = travelOptions(bot, withFerry);
+        Set<Integer> reachable = BotWorldGraph.reachableWithin(fromMapId, maxHops, options);
+        return BotGrindAdvisor.recommendFarmItem(entry, bot, itemId, reachable::contains,
+                travelWeight(bot, fromMapId, maxHops, options));
     };
 
-    /** What the bot can spend on travel right now: scrolls if carried, taxis and ferries per meso. */
-    private static BotWorldGraph.RouteOptions travelOptions(Character bot) {
-        return new BotWorldGraph.RouteOptions(BotShopManager.countReturnScrolls(bot) > 0, bot.getMeso(), true);
+    /** Ferries need the owner's green light ("sail away") while the owner is around; with the
+     *  owner absent/offline nobody is waiting, so the bot may sail on its own judgment. */
+    static boolean ferryAllowed(BotEntry entry) {
+        return entry.autopilotFerryApproved || entry.owner == null || !entry.owner.isLoggedinWorld();
+    }
+
+    /** What the bot can spend on travel right now: scrolls if carried, taxis per meso,
+     *  ferries per the caller's owner-permission gate ({@link #ferryAllowed}). */
+    private static BotWorldGraph.RouteOptions travelOptions(Character bot, boolean withFerry) {
+        return new BotWorldGraph.RouteOptions(BotShopManager.countReturnScrolls(bot) > 0, bot.getMeso(), withFerry);
+    }
+
+    /**
+     * SSOT travel-time penalty: ONE {@link BotTravelCost} flood from the bot's current map per
+     * decision pass (heavy-ish — only ever runs on DECIDE_POOL), turned into the per-map score
+     * multiplier the planner applies. Ferry time reads the runtime-mutable travelrate through
+     * the bot's world at query time, never cached.
+     */
+    private static IntToDoubleFunction travelWeight(Character bot, int fromMapId, int maxHops,
+                                                    BotWorldGraph.RouteOptions options) {
+        IntToLongFunction transportationTime = ms -> bot.getWorldServer().getTransportationTime(ms);
+        Map<Integer, Double> seconds = BotTravelCost.floodSeconds(fromMapId, maxHops, options, transportationTime);
+        return mapId -> BotTravelCost.scoreWeight(seconds, mapId);
     }
 
     @FunctionalInterface
@@ -74,11 +100,15 @@ final class BotAutopilotManager {
     }
 
     static PartyDecider partyDecider = members -> {
-        // The shared map must be walkable for EVERY member (they can start scattered).
+        // The shared map must be walkable for EVERY member (they can start scattered), and
+        // each member pays its own travel penalty from wherever it stands.
         Set<Integer> common = null;
+        List<IntToDoubleFunction> weights = new ArrayList<>(members.size());
         for (BotEntry member : members) {
+            BotWorldGraph.RouteOptions options = travelOptions(member.bot, ferryAllowed(member));
             Set<Integer> reachable = BotWorldGraph.reachableWithin(
-                    member.bot.getMapId(), MAX_TRAVEL_HOPS, travelOptions(member.bot));
+                    member.bot.getMapId(), MAX_TRAVEL_HOPS, options);
+            weights.add(travelWeight(member.bot, member.bot.getMapId(), MAX_TRAVEL_HOPS, options));
             if (common == null) {
                 common = new HashSet<>(reachable);
             } else {
@@ -96,7 +126,7 @@ final class BotAutopilotManager {
             }
             perMember.add(mine);
         }
-        return BotGrindPlanner.planPartyBest(perMember, ThreadLocalRandom.current());
+        return BotGrindPlanner.planPartyBest(perMember, weights, ThreadLocalRandom.current());
     };
 
     static BiConsumer<BotEntry, String> reply =
@@ -137,6 +167,7 @@ final class BotAutopilotManager {
         entry.autopilotArrivalAnnounced = false;
         entry.autopilotParty = false;
         entry.autopilotFarmItemId = 0;
+        entry.autopilotFerryApproved = false;
         entry.autopilotErrandMapId = -1;
         entry.autopilotReturningFromErrand = false;
         entry.autopilotDecisionInFlight = false;
@@ -151,21 +182,27 @@ final class BotAutopilotManager {
             return;
         }
         int epoch = entry.activityEpoch;
+        boolean ferryApprovedBefore = entry.autopilotFerryApproved;
         decisionRunner.run(() -> decide(entry, bot), result -> {
-            Recommendation rec = (Recommendation) result;
+            Decision decision = (Decision) result;
+            Recommendation rec = decision != null ? decision.rec() : null;
             if (entry.activityEpoch != epoch || bot.getMap() == null) {
                 return; // a newer owner directive won while we were thinking
             }
             if (rec == null) {
                 reply.accept(entry, BotManager.randomReply(NO_SPOT_REPLIES));
+                maybeTeaseFerry(entry, decision);
                 return;
             }
             // issueGrind sets the active-combat baseline (pot-share, self-buff, ammo fallback
             // all gate on grinding) and clears any previous autopilot state — destination AFTER.
             BotManager.getInstance().issueGrind(entry);
+            entry.autopilotFerryApproved = ferryApprovedBefore; // the clear() in issueGrind
+            // must not revoke the permission this very plan was decided with.
             installPlan(entry, rec, bot.getMapId());
             entry.autopilotNextDecisionAtMs = nextDecisionAt();
             announcePlan(entry, rec, bot.getMapId());
+            maybeTeaseFerry(entry, decision);
         });
     }
 
@@ -208,7 +245,8 @@ final class BotAutopilotManager {
         int epoch = entry.activityEpoch;
         decisionRunner.run(() -> {
             try {
-                return farmAdvisor.recommend(entry, bot, itemId, bot.getMapId(), MAX_TRAVEL_HOPS);
+                return farmAdvisor.recommend(entry, bot, itemId, bot.getMapId(), MAX_TRAVEL_HOPS,
+                        ferryAllowed(entry));
             } catch (RuntimeException e) {
                 return null;
             }
@@ -262,7 +300,8 @@ final class BotAutopilotManager {
         if (entry.shopVisitPending) {
             return false; // resupply detour en route; travel resumes once it's done
         }
-        if (BotTravelManager.tickTravel(entry, bot, destination, MAX_TRAVEL_HOPS, runAiTick, true)) {
+        if (BotTravelManager.tickTravel(entry, bot, destination, MAX_TRAVEL_HOPS, runAiTick,
+                ferryAllowed(entry))) {
             return true;
         }
         // No legal progress right now (route gone, or a hop failed and travel is in its
@@ -330,10 +369,12 @@ final class BotAutopilotManager {
         int epoch = entry.activityEpoch;
         decisionRunner.run(() -> decide(entry, bot), result -> {
             entry.autopilotDecisionInFlight = false;
-            Recommendation rec = (Recommendation) result;
+            Decision decision = (Decision) result;
             if (entry.activityEpoch != epoch || !isActive(entry) || entry.autopilotParty) {
                 return;
             }
+            maybeTeaseFerry(entry, decision);
+            Recommendation rec = decision != null ? decision.rec() : null;
             if (rec == null || rec.pick().mapId() == entry.autopilotMapId) {
                 return; // current spot is still the call
             }
@@ -342,18 +383,70 @@ final class BotAutopilotManager {
         });
     }
 
+    /** A decision pass's outcome: the plan plus at most ONE ferry teaser line (when the owner
+     *  is around, ferries are off, and the world across the sea is clearly better). */
+    record Decision(Recommendation rec, String ferryTeaser) {}
+
+    /** Overseas plan must beat the local one by this factor before the bot asks to sail. */
+    static final double FERRY_TEASER_SCORE_RATIO = 1.5;
+
     /** Farm-item override keeps the objective and only re-picks the SITE; otherwise the
-     *  general two-lens advisor decides. */
-    private static Recommendation decide(BotEntry entry, Character bot) {
+     *  general gear-first advisor decides. When ferries are owner-gated off, a second
+     *  ferry-enabled pass feeds the "say 'sail away'" teaser. */
+    private static Decision decide(BotEntry entry, Character bot) {
         try {
-            if (entry.autopilotFarmItemId != 0) {
-                return farmAdvisor.recommend(entry, bot, entry.autopilotFarmItemId,
-                        bot.getMapId(), MAX_TRAVEL_HOPS);
+            boolean withFerry = ferryAllowed(entry);
+            Recommendation local = recommendOnce(entry, bot, withFerry);
+            if (withFerry) {
+                return new Decision(local, null);
             }
-            return advisor.recommend(entry, bot, bot.getMapId(), MAX_TRAVEL_HOPS);
+            return new Decision(local, ferryTeaser(local, recommendOnce(entry, bot, true)));
         } catch (RuntimeException e) {
             return null;
         }
+    }
+
+    private static Recommendation recommendOnce(BotEntry entry, Character bot, boolean withFerry) {
+        if (entry.autopilotFarmItemId != 0) {
+            return farmAdvisor.recommend(entry, bot, entry.autopilotFarmItemId,
+                    bot.getMapId(), MAX_TRAVEL_HOPS, withFerry);
+        }
+        return advisor.recommend(entry, bot, bot.getMapId(), MAX_TRAVEL_HOPS, withFerry);
+    }
+
+    /** The one-line "can i take the boat?" ask, or null when overseas isn't clearly better. */
+    private static String ferryTeaser(Recommendation local, Recommendation overseas) {
+        if (overseas == null || (local != null && overseas.pick().mapId() == local.pick().mapId())) {
+            return null;
+        }
+        boolean worthIt;
+        if (local == null) {
+            worthIt = true; // nothing walkable at all, but the ferry opens somewhere
+        } else if (overseas.gearFocused() != local.gearFocused()) {
+            // The ferry pool is a superset of the local one, so a mode flip means the only
+            // attainable gear is across the sea — gear-first says that wins outright.
+            worthIt = overseas.gearFocused();
+        } else {
+            worthIt = overseas.score() >= local.score() * FERRY_TEASER_SCORE_RATIO;
+        }
+        if (!worthIt) {
+            return null;
+        }
+        return "way better grind across the sea at " + destinationName(overseas.pick())
+                + " - say 'sail away' if i can take the boat";
+    }
+
+    private static void maybeTeaseFerry(BotEntry entry, Decision decision) {
+        if (decision != null && decision.ferryTeaser() != null) {
+            reply.accept(entry, decision.ferryTeaser());
+        }
+    }
+
+    /** Owner said "sail away": ferries are allowed and the wider horizon is worth a fresh
+     *  decision right away — the next on-site tick's {@link #maybeRedecide} picks it up. */
+    static void approveFerry(BotEntry entry) {
+        entry.autopilotFerryApproved = true;
+        entry.autopilotNextDecisionAtMs = 0L;
     }
 
     // ---- party internals ----
@@ -440,12 +533,14 @@ final class BotAutopilotManager {
         line += leaderRec != null ? " - " + objectiveSummary(leader, leaderRec) : " - good spot for the group";
         reply.accept(leader, line);
 
-        // One follow-up line listing what the others are hoping for (gear goals only).
+        // One follow-up line listing the others' gear goals, attributed to their beneficiary
+        // ("farm <item> from <mob> for <member>") since the leader speaks for the group.
         List<String> hopes = new ArrayList<>();
         for (int i = 1; i < members.size() && hopes.size() < 3; i++) {
             Recommendation rec = plan.perMember().get(i);
             if (rec != null && rec.gearFocused() && rec.wantedGear() != null) {
-                hopes.add(members.get(i).bot.getName() + " wants " + rec.wantedGear().itemName());
+                hopes.add("farm " + rec.wantedGear().itemName() + " from " + rec.pick().mobName()
+                        + " for " + members.get(i).bot.getName());
             }
         }
         if (!hopes.isEmpty()) {
@@ -489,29 +584,13 @@ final class BotAutopilotManager {
         return pick.mapName().isEmpty() ? ("map " + pick.mapId()) : pick.mapName();
     }
 
+    /** Plain words only — never exp/hr, drop-rate or dps numbers (they read like a bot). */
     private static String objectiveSummary(BotEntry entry, Recommendation rec) {
         MobCandidate pick = rec.pick();
-        if (entry.autopilotFarmItemId != 0 && rec.wantedGear() != null) {
-            return "farm " + rec.wantedGear().itemName() + " from " + pick.mobName()
-                    + " (" + dropRateText(rec.wantedGearPerHour()) + ")";
+        if (rec.wantedGear() != null && (entry.autopilotFarmItemId != 0 || rec.gearFocused())) {
+            return "farm " + rec.wantedGear().itemName() + " from " + pick.mobName();
         }
-        if (rec.gearFocused() && rec.wantedGear() != null) {
-            GearProspect want = rec.wantedGear();
-            return "farm " + want.itemName() + " from " + pick.mobName()
-                    + " (+" + Math.round(want.dpsGainFraction() * 100) + "% dps for me)";
-        }
-        return "grind " + pick.mobName() + ", ~"
-                + GameConstants.numberWithCommas((int) Math.round(rec.expPerHour())) + " exp/hr";
-    }
-
-    private static String dropRateText(double itemsPerHour) {
-        if (itemsPerHour >= 1.0) {
-            return "~" + Math.round(itemsPerHour) + "/hr";
-        }
-        if (itemsPerHour > 0.0) {
-            return "~" + Math.max(1, Math.round(1.0 / itemsPerHour)) + " hrs per drop";
-        }
-        return "rare";
+        return "grind " + pick.mobName();
     }
 
     private static long nextDecisionAt() {

@@ -38,7 +38,8 @@ class BotGrindPlannerTest {
 
     @Test
     void shouldChaseBigAttainableUpgradeOverBetterExp() {
-        // 1% drop, +35% DPS at ~700 kills/h -> expected ~14 copies over the horizon: fully attainable.
+        // Gear progression is PRIMARY: 1% drop, +35% DPS at ~700 kills/h -> expected ~14 copies
+        // over the horizon, so the gear-rich map wins over the much better exp map outright.
         GearProspect bigUpgrade = new GearProspect(1402000, "sword", 0.01, 50.0, 0.35);
         MobCandidate gearMob = mob(1, 30, 3.0, 10, 8, List.of(bigUpgrade));
         MobCandidate expMob = mob(2, 200, 3.0, 20, 8, List.of());
@@ -50,6 +51,38 @@ class BotGrindPlannerTest {
         assertTrue(rec.gearFocused());
         assertEquals(1402000, rec.wantedGear().itemId());
         assertEquals(1.0, rec.needGear(), 1e-9);
+    }
+
+    @Test
+    void shouldTiebreakGearComparableMapsByExp() {
+        // Same attainable upgrade on both maps -> both join the gear shortlist; exp decides.
+        GearProspect upgrade = new GearProspect(1402000, "sword", 0.01, 50.0, 0.35);
+        MobCandidate gearGoodExp = mob(1, 200, 2.0, 10, 8, List.of(upgrade));
+        MobCandidate gearPoorExp = mob(2, 60, 2.0, 20, 8, List.of(upgrade));
+
+        for (int seed = 0; seed < 20; seed++) {
+            Recommendation rec = BotGrindPlanner.planBest(
+                    List.of(gearPoorExp, gearGoodExp), new Random(seed));
+            assertEquals(10, rec.pick().mapId(), "exp must break the tie among gear-comparable maps");
+            assertTrue(rec.gearFocused());
+        }
+    }
+
+    @Test
+    void shouldPenalizeFarMapsViaTravelWeight() {
+        // The far map has better raw exp, but the travel-penalty floor (0.25x) flips the pick.
+        MobCandidate near = mob(1, 100, 2.0, 10, 8, List.of());
+        MobCandidate far = mob(2, 150, 2.0, 20, 8, List.of());
+        java.util.function.IntToDoubleFunction weight = mapId -> mapId == 20 ? 0.25 : 1.0;
+
+        for (int seed = 0; seed < 20; seed++) {
+            Recommendation rec = BotGrindPlanner.planBest(List.of(near, far), weight, new Random(seed));
+            assertEquals(10, rec.pick().mapId(), "far map must lose to the slightly-worse near map");
+            // Reported exp/hr stays RAW (chat layer), only the selection score is travel-weighted.
+            assertEquals(rec.expPerHour(), rec.score(), 1e-9);
+        }
+        // Sanity: without the weight the far map wins.
+        assertEquals(20, BotGrindPlanner.planBest(List.of(near, far), new Random(7)).pick().mapId());
     }
 
     @Test
@@ -163,5 +196,21 @@ class BotGrindPlannerTest {
 
         // No candidate actually carries the item -> null (caller reports "nothing drops it").
         assertNull(BotGrindPlanner.planFarmBest(List.of(mob(3, 50, 2.0, 10, 8, List.of())), new Random(7)));
+    }
+
+    @Test
+    void shouldPenalizeFarFarmSitesViaTravelWeight() {
+        GearProspect target = new GearProspect(2040705, "scroll", 0.02, 0, 0);
+        GearProspect targetBetter = new GearProspect(2040705, "scroll", 0.03, 0, 0);
+        MobCandidate near = mob(1, 50, 2.0, 10, 8, List.of(target));
+        MobCandidate far = mob(2, 50, 2.0, 20, 8, List.of(targetBetter));
+        java.util.function.IntToDoubleFunction weight = mapId -> mapId == 20 ? 0.25 : 1.0;
+
+        for (int seed = 0; seed < 20; seed++) {
+            Recommendation rec = BotGrindPlanner.planFarmBest(List.of(far, near), weight, new Random(seed));
+            assertEquals(10, rec.pick().mapId(), "far farm site must lose under the travel penalty");
+            // wantedGearPerHour reports the RAW items/hour at the site, not the weighted score.
+            assertEquals(0.02 * rec.killsPerHour(), rec.wantedGearPerHour(), 1e-9);
+        }
     }
 }
