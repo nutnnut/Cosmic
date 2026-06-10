@@ -56,6 +56,7 @@ final class BotShopManager {
     private static final int AMMO_TRIGGER_THRESHOLD = 8;
     private static final int AMMO_TARGET_THRESHOLD = 10; // full target when buying at shop
     private static final int RECHARGE_MAX_SETS = 10; // cap recharge to the best N own-type stacks
+    private static final int AUTO_SELL_FREE_SLOT_THRESHOLD = 4; // bag tab "cramped" when this few slots left
 
     private BotShopManager() {}
 
@@ -102,7 +103,8 @@ final class BotShopManager {
     static void onMapChange(BotEntry entry, Character bot) {
         clearShopState(entry);
 
-        NpcShopMatch match = findBestShop(bot, false);
+        boolean wantsSellTrash = shouldAutoSellTrash(entry, bot);
+        NpcShopMatch match = findBestShop(bot, wantsSellTrash);
         if (match == null) {
             return;
         }
@@ -114,8 +116,12 @@ final class BotShopManager {
         int potTrigger = BotManager.cfg.POT_LOW_WARN * POT_TRIGGER_THRESHOLD;
         boolean needsHpPots = pots[0] < potTrigger && findPotionItem(match.shop, bot, true) != null;
         boolean needsMpPots = pots[1] < potTrigger && findPotionItem(match.shop, bot, false) != null;
-        if (!needsRecharge && !needsAmmoForShop && !needsHpPots && !needsMpPots) {
+        if (!needsRecharge && !needsAmmoForShop && !needsHpPots && !needsMpPots && !wantsSellTrash) {
             return;
+        }
+
+        if (wantsSellTrash) {
+            entry.shopSellTrashPending = true;
         }
 
         long distSq = (long) bot.getPosition().distanceSq(match.npcPos);
@@ -124,6 +130,29 @@ final class BotShopManager {
         }
 
         startShopVisit(entry, bot, match);
+    }
+
+    /** Bags filling up while farming: unload junk at a shop without being told — but only when a
+     *  cramped tab actually holds sellable trash (selling can't free slots otherwise). */
+    private static boolean shouldAutoSellTrash(BotEntry entry, Character bot) {
+        boolean equipCramped = isCramped(bot, InventoryType.EQUIP);
+        boolean useCramped = isCramped(bot, InventoryType.USE);
+        boolean etcCramped = isCramped(bot, InventoryType.ETC);
+        if (!equipCramped && !useCramped && !etcCramped) {
+            return false;
+        }
+        if (equipCramped && !BotInventoryManager.collectSellTrashEquips(entry, bot).isEmpty()) {
+            return true;
+        }
+        if (useCramped && !BotInventoryManager.collectSellTrashUseItems(bot).isEmpty()) {
+            return true;
+        }
+        return etcCramped && !BotInventoryManager.collectSellTrashEtcItems(bot).isEmpty();
+    }
+
+    private static boolean isCramped(Character bot, InventoryType type) {
+        var inv = bot.getInventory(type);
+        return inv != null && inv.getNumFreeSlot() <= AUTO_SELL_FREE_SLOT_THRESHOLD;
     }
 
     static void requestSellTrashVisit(BotEntry entry, Character bot) {
