@@ -75,6 +75,9 @@ public class BotManager {
 
         // Owner inactivity (offline or dead) before bot scrolls/warps to nearest town and idles.
         public long OWNER_INACTIVE_TOWN_RETURN_MS = 5L * 60_000L;
+        // Hard stop for explicitly-ordered autopilot bots playing on while the owner is
+        // offline/dead: after this they take the normal town safe mode. Test value: 1 hour.
+        public long AUTOPILOT_OWNER_OFFLINE_LIMIT_MS = 60L * 60_000L;
 
         // Grind recovery is looser than follow recovery so bots can work nearby platforms,
         // but still get pulled back to a same-map party anchor if they fall far out of bounds.
@@ -286,6 +289,9 @@ public class BotManager {
     }
 
     public BotEntry registerSpawnedBot(int ownerCharId, Character owner, Character bot) {
+        // Pre-build the spawn index + world graph off-thread: the first grind/autopilot
+        // decision otherwise pays ~30s of WZ scanning right when the owner asks for it.
+        BotGrindAdvisor.warmCachesAsync();
         return registerBotInternal(ownerCharId, owner, bot, true);
     }
 
@@ -2044,7 +2050,7 @@ public class BotManager {
             return;
         }
 
-        if (owner == null) {
+        if (owner == null && !BotAutopilotManager.isActive(entry)) {
             entry.following = false;
             if (groundAfterMapChange(entry, bot)) {
                 return;
@@ -2061,6 +2067,12 @@ public class BotManager {
                 tickIdleEntry(entry, bot);
             }
             return;
+        }
+        if (owner == null) {
+            // Explicitly-ordered autopilot keeps playing while the owner is offline (until
+            // handleOwnerOfflineOrDead's hard limit warps it home). The pipeline below is
+            // owner-null tolerant: snapshot/follow/recovery/common systems all guard.
+            entry.following = false;
         }
 
         BotMovementManager.refreshMovementProfile(entry);
@@ -2807,7 +2819,12 @@ public class BotManager {
             return false;
         }
 
-        if (nowMs - entry.ownerOfflineOrDeadSinceMs < cfg.OWNER_INACTIVE_TOWN_RETURN_MS) {
+        // Normal bots take the town safe mode after 5 min. A bot the owner explicitly ordered
+        // independent (autopilot) keeps playing until the hard offline limit, then stops too.
+        long inactiveLimitMs = BotAutopilotManager.isActive(entry)
+                ? cfg.AUTOPILOT_OWNER_OFFLINE_LIMIT_MS
+                : cfg.OWNER_INACTIVE_TOWN_RETURN_MS;
+        if (nowMs - entry.ownerOfflineOrDeadSinceMs < inactiveLimitMs) {
             return false;
         }
 
@@ -3460,7 +3477,9 @@ public class BotManager {
         BotBuildManager.checkLevelUp(entry, bot);
         if (perf) BotPerformanceMonitor.record("common-build-levelup", System.nanoTime() - t);
         if (perf) t = System.nanoTime();
-        BotChatManager.tickAfkCheck(entry, owner);
+        if (owner != null) { // owner-null tick = autopilot playing while owner is offline
+            BotChatManager.tickAfkCheck(entry, owner);
+        }
         if (perf) BotPerformanceMonitor.record("common-afk-check", System.nanoTime() - t);
         if (perf) t = System.nanoTime();
         BotInventoryManager.tickTrade(entry, bot);
@@ -3469,7 +3488,9 @@ public class BotManager {
         BotInventoryManager.tickManualTrade(entry, bot);
         if (perf) BotPerformanceMonitor.record("common-manual-trade", System.nanoTime() - t);
         if (perf) t = System.nanoTime();
-        BotPqHooks.tick(entry, bot, owner);
+        if (owner != null) { // PQ scripts need a live owner
+            BotPqHooks.tick(entry, bot, owner);
+        }
         if (perf) BotPerformanceMonitor.record("common-pq-hooks", System.nanoTime() - t);
         if (perf) t = System.nanoTime();
         tickScriptTasks(entry);
@@ -3618,6 +3639,44 @@ public class BotManager {
             return executeRecoveryTeleport(entry, bot, anchorPos);
         }
         return false;
+    }
+
+    // ~1.5s of airborne ticks with zero motion before the watchdog teleports the bot out.
+    private static final int AIR_STUCK_RECOVER_TICKS = 30;
+
+    /**
+     * Frozen-air watchdog: a falling/jumping bot's position must change every tick. Zero
+     * motion while {@code inAir} means it is wall-pinned at a map edge with no foothold
+     * below (the WALL collision re-pins the same point forever — see
+     * logs/bot-nav/pathlog-Clawer-2026-06-10T094813.txt, stuck 3px under the OOB recovery
+     * threshold). Regular stuck handling skips airborne bots, so catch it here and teleport
+     * to the active goal's ground.
+     */
+    private static void tickFrozenAirborneWatchdog(BotEntry entry) {
+        if (!entry.inAir || entry.climbing) {
+            entry.airStuckTicks = 0;
+            entry.airStuckX = Integer.MIN_VALUE;
+            return;
+        }
+        Point pos = entry.bot.getPosition();
+        if (pos.x != entry.airStuckX || pos.y != entry.airStuckY) {
+            entry.airStuckTicks = 0;
+            entry.airStuckX = pos.x;
+            entry.airStuckY = pos.y;
+            return;
+        }
+        if (++entry.airStuckTicks < AIR_STUCK_RECOVER_TICKS) {
+            return;
+        }
+        entry.airStuckTicks = 0;
+        entry.airStuckX = Integer.MIN_VALUE;
+
+        Point goal = entry.moveTarget != null ? entry.moveTarget : entry.navTargetPos;
+        if (goal == null && entry.bot.getMap() != null) {
+            var portal = entry.bot.getMap().findClosestPortal(pos);
+            goal = portal != null ? portal.getPosition() : null;
+        }
+        getInstance().executeRecoveryTeleport(entry, entry.bot, goal != null ? goal : pos);
     }
 
     private static boolean isInKnownMapBounds(MapleMap map, Point point) {
@@ -3865,6 +3924,8 @@ public class BotManager {
 
     private static void doStuckDetection(BotEntry entry) {
         entry.unstuckCooldownMs = BotMovementManager.tickDown(entry.unstuckCooldownMs);
+
+        tickFrozenAirborneWatchdog(entry);
 
         // Only detect/act while actively navigating — idling near owner is not stuck.
         if (entry.inAir || entry.climbing

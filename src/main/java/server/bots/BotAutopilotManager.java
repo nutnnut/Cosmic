@@ -91,6 +91,27 @@ final class BotAutopilotManager {
     static BiConsumer<BotEntry, String> reply =
             (entry, text) -> BotManager.getInstance().botReply(entry, text);
 
+    /**
+     * Decision scheduling: compute on the advisor pool (a full pass iterates every known mob
+     * and can take seconds — on a tick/timer thread that's a visible server freeze), apply
+     * back on the bot scheduler. Tests swap this for a synchronous runner.
+     */
+    @FunctionalInterface
+    interface DecisionRunner {
+        void run(java.util.function.Supplier<Object> compute, java.util.function.Consumer<Object> apply);
+    }
+
+    static DecisionRunner decisionRunner = (compute, apply) -> BotGrindAdvisor.DECIDE_POOL.execute(() -> {
+        Object result;
+        try {
+            result = compute.get();
+        } catch (RuntimeException e) {
+            result = null;
+        }
+        Object applied = result;
+        BotManager.after(0L, () -> apply.accept(applied));
+    });
+
     private BotAutopilotManager() {}
 
     static boolean isActive(BotEntry entry) {
@@ -106,25 +127,32 @@ final class BotAutopilotManager {
         entry.autopilotParty = false;
         entry.autopilotFarmItemId = 0;
         entry.autopilotErrandMapId = -1;
+        entry.autopilotDecisionInFlight = false;
         // autopilotNextErrandAtMs deliberately survives: it rate-limits errands, not the mode.
     }
 
-    /** Owner ordered independent play: decide, announce, head out. */
+    /** Owner ordered independent play: decide (off-thread), announce, head out. */
     static void start(BotEntry entry, Character bot) {
         if (entry == null || bot == null || bot.getMap() == null) {
             return;
         }
-        Recommendation rec = decide(entry, bot);
-        if (rec == null) {
-            reply.accept(entry, BotManager.randomReply(NO_SPOT_REPLIES));
-            return;
-        }
-        // issueGrind sets the active-combat baseline (pot-share, self-buff, ammo fallback all
-        // gate on grinding) and clears any previous autopilot state — set the destination AFTER.
-        BotManager.getInstance().issueGrind(entry);
-        installPlan(entry, rec, bot.getMapId());
-        entry.autopilotNextDecisionAtMs = nextDecisionAt();
-        announcePlan(entry, rec, bot.getMapId());
+        int epoch = entry.activityEpoch;
+        decisionRunner.run(() -> decide(entry, bot), result -> {
+            Recommendation rec = (Recommendation) result;
+            if (entry.activityEpoch != epoch || bot.getMap() == null) {
+                return; // a newer owner directive won while we were thinking
+            }
+            if (rec == null) {
+                reply.accept(entry, BotManager.randomReply(NO_SPOT_REPLIES));
+                return;
+            }
+            // issueGrind sets the active-combat baseline (pot-share, self-buff, ammo fallback
+            // all gate on grinding) and clears any previous autopilot state — destination AFTER.
+            BotManager.getInstance().issueGrind(entry);
+            installPlan(entry, rec, bot.getMapId());
+            entry.autopilotNextDecisionAtMs = nextDecisionAt();
+            announcePlan(entry, rec, bot.getMapId());
+        });
     }
 
     /** Owner ordered the whole group out together: ONE shared map, per-member objectives. */
@@ -141,13 +169,21 @@ final class BotAutopilotManager {
         if (members.isEmpty()) {
             return;
         }
-        PartyPlan plan = decideParty(members);
-        if (plan == null) {
-            reply.accept(members.get(0), "can't find a spot we can all reach that's worth it");
-            return;
-        }
-        applyPartyPlan(members, plan);
-        announceParty(members, plan);
+        int[] epochs = members.stream().mapToInt(m -> m.activityEpoch).toArray();
+        decisionRunner.run(() -> decideParty(members), result -> {
+            PartyPlan plan = (PartyPlan) result;
+            for (int i = 0; i < members.size(); i++) {
+                if (members.get(i).activityEpoch != epochs[i]) {
+                    return; // somebody got a newer directive mid-decision — drop the stale plan
+                }
+            }
+            if (plan == null) {
+                reply.accept(members.get(0), "can't find a spot we can all reach that's worth it");
+                return;
+            }
+            applyPartyPlan(members, plan);
+            announceParty(members, plan);
+        });
     }
 
     /** Owner ordered "farm <item>": same autopilot, objective pinned to the item. */
@@ -155,21 +191,28 @@ final class BotAutopilotManager {
         if (entry == null || bot == null || bot.getMap() == null) {
             return;
         }
-        Recommendation rec;
-        try {
-            rec = farmAdvisor.recommend(entry, bot, itemId, bot.getMapId(), MAX_TRAVEL_HOPS);
-        } catch (RuntimeException e) {
-            rec = null;
-        }
-        if (rec == null) {
-            reply.accept(entry, "can't farm " + itemName + " - nothing i can reach drops it");
-            return;
-        }
-        BotManager.getInstance().issueGrind(entry);
-        entry.autopilotFarmItemId = itemId; // before installPlan: the objective text keys on it
-        installPlan(entry, rec, bot.getMapId());
-        entry.autopilotNextDecisionAtMs = nextDecisionAt();
-        announcePlan(entry, rec, bot.getMapId());
+        int epoch = entry.activityEpoch;
+        decisionRunner.run(() -> {
+            try {
+                return farmAdvisor.recommend(entry, bot, itemId, bot.getMapId(), MAX_TRAVEL_HOPS);
+            } catch (RuntimeException e) {
+                return null;
+            }
+        }, result -> {
+            Recommendation rec = (Recommendation) result;
+            if (entry.activityEpoch != epoch || bot.getMap() == null) {
+                return;
+            }
+            if (rec == null) {
+                reply.accept(entry, "can't farm " + itemName + " - nothing i can reach drops it");
+                return;
+            }
+            BotManager.getInstance().issueGrind(entry);
+            entry.autopilotFarmItemId = itemId; // before installPlan: the objective text keys on it
+            installPlan(entry, rec, bot.getMapId());
+            entry.autopilotNextDecisionAtMs = nextDecisionAt();
+            announcePlan(entry, rec, bot.getMapId());
+        });
     }
 
     /**
@@ -239,7 +282,7 @@ final class BotAutopilotManager {
 
     private static void maybeRedecide(BotEntry entry, Character bot) {
         long now = System.currentTimeMillis();
-        if (now < entry.autopilotNextDecisionAtMs) {
+        if (now < entry.autopilotNextDecisionAtMs || entry.autopilotDecisionInFlight) {
             return;
         }
         entry.autopilotNextDecisionAtMs = nextDecisionAt();
@@ -247,12 +290,20 @@ final class BotAutopilotManager {
             redecideParty(entry, bot);
             return;
         }
-        Recommendation rec = decide(entry, bot);
-        if (rec == null || rec.pick().mapId() == entry.autopilotMapId) {
-            return; // current spot is still the call
-        }
-        installPlan(entry, rec, bot.getMapId());
-        announcePlan(entry, rec, bot.getMapId());
+        entry.autopilotDecisionInFlight = true;
+        int epoch = entry.activityEpoch;
+        decisionRunner.run(() -> decide(entry, bot), result -> {
+            entry.autopilotDecisionInFlight = false;
+            Recommendation rec = (Recommendation) result;
+            if (entry.activityEpoch != epoch || !isActive(entry) || entry.autopilotParty) {
+                return;
+            }
+            if (rec == null || rec.pick().mapId() == entry.autopilotMapId) {
+                return; // current spot is still the call
+            }
+            installPlan(entry, rec, bot.getMapId());
+            announcePlan(entry, rec, bot.getMapId());
+        });
     }
 
     /** Farm-item override keeps the objective and only re-picks the SITE; otherwise the
@@ -308,7 +359,7 @@ final class BotAutopilotManager {
         }
     }
 
-    /** Leader-only group re-decide; members just wait for the leader's next call. */
+    /** Leader-only group re-decide (off-thread); members just wait for the leader's next call. */
     private static void redecideParty(BotEntry entry, Character bot) {
         Character owner = entry.owner;
         if (owner == null) {
@@ -323,12 +374,22 @@ final class BotAutopilotManager {
         if (members.isEmpty() || members.get(0) != entry) {
             return;
         }
-        PartyPlan plan = decideParty(members);
-        if (plan == null || plan.mapId() == entry.autopilotMapId) {
-            return; // current spot is still the call for the group
-        }
-        applyPartyPlan(members, plan);
-        announceParty(members, plan);
+        entry.autopilotDecisionInFlight = true;
+        int[] epochs = members.stream().mapToInt(m -> m.activityEpoch).toArray();
+        decisionRunner.run(() -> decideParty(members), result -> {
+            entry.autopilotDecisionInFlight = false;
+            PartyPlan plan = (PartyPlan) result;
+            for (int i = 0; i < members.size(); i++) {
+                if (members.get(i).activityEpoch != epochs[i] || !members.get(i).autopilotParty) {
+                    return; // group composition changed mid-decision — wait for the next cycle
+                }
+            }
+            if (plan == null || plan.mapId() == entry.autopilotMapId) {
+                return; // current spot is still the call for the group
+            }
+            applyPartyPlan(members, plan);
+            announceParty(members, plan);
+        });
     }
 
     private static void announceParty(List<BotEntry> members, PartyPlan plan) {

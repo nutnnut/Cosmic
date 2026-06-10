@@ -43,19 +43,21 @@ class BotAutopilotManagerTest {
         return new Fixture(entry, bot);
     }
 
-    /** Swaps the advisor/party/farm/reply seams; restore via close(). */
+    /** Swaps the advisor/party/farm/reply/runner seams (runner = synchronous); restore via close(). */
     private static final class Seams implements AutoCloseable {
         final List<String> replies = new ArrayList<>();
         private final BotAutopilotManager.Advisor previousAdvisor = BotAutopilotManager.advisor;
         private final BotAutopilotManager.PartyDecider previousPartyDecider = BotAutopilotManager.partyDecider;
         private final BotAutopilotManager.FarmAdvisor previousFarmAdvisor = BotAutopilotManager.farmAdvisor;
         private final java.util.function.BiConsumer<BotEntry, String> previousReply = BotAutopilotManager.reply;
+        private final BotAutopilotManager.DecisionRunner previousRunner = BotAutopilotManager.decisionRunner;
 
         Seams(Recommendation recommendation) {
             BotAutopilotManager.advisor = (entry, bot, fromMapId, maxHops) -> recommendation;
             BotAutopilotManager.partyDecider = members -> null;
             BotAutopilotManager.farmAdvisor = (entry, bot, itemId, fromMapId, maxHops) -> null;
             BotAutopilotManager.reply = (entry, text) -> replies.add(text);
+            BotAutopilotManager.decisionRunner = (compute, apply) -> apply.accept(compute.get());
         }
 
         @Override
@@ -64,6 +66,7 @@ class BotAutopilotManagerTest {
             BotAutopilotManager.partyDecider = previousPartyDecider;
             BotAutopilotManager.farmAdvisor = previousFarmAdvisor;
             BotAutopilotManager.reply = previousReply;
+            BotAutopilotManager.decisionRunner = previousRunner;
         }
     }
 

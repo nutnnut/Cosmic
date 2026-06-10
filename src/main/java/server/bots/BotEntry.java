@@ -185,6 +185,15 @@ public class BotEntry {
     // toward autopilotMapId. NextErrandAtMs rate-limits errands (survives clear()).
     int autopilotErrandMapId = -1;
     long autopilotNextErrandAtMs = 0L;
+    // True while an async advisor pass for this entry is running (re-decides only) — stops
+    // the tick from stacking decisions while one is still computing.
+    volatile boolean autopilotDecisionInFlight = false;
+
+    // Frozen-air watchdog (BotManager.doStuckDetection): airborne position must change every
+    // tick (free fall); a bot wall-pinned at a map edge with no foothold below freezes here.
+    int airStuckTicks = 0;
+    int airStuckX = Integer.MIN_VALUE;
+    int airStuckY = Integer.MIN_VALUE;
 
     // Damage taken
     long deadUntil = 0;

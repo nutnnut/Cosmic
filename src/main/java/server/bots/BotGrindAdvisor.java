@@ -64,29 +64,58 @@ final class BotGrindAdvisor {
 
     private BotGrindAdvisor() {}
 
-    /** Owner asked where to grind: decide, then explain the what/why in chat. */
+    /**
+     * Every heavy advisor pass runs here, NEVER on the bot tick threads or the shared
+     * TimerManager pool: the first pass builds the spawn index + world graph (~30s of WZ
+     * scanning) and even warm passes iterate every known mob — on a game thread that reads
+     * as a server freeze. Single thread also serializes a party's member passes.
+     */
+    static final java.util.concurrent.ExecutorService DECIDE_POOL =
+            java.util.concurrent.Executors.newSingleThreadExecutor(r -> {
+                Thread t = new Thread(r, "bot-grind-advisor");
+                t.setDaemon(true);
+                return t;
+            });
+
+    private static volatile boolean cachesWarmed = false;
+
+    /** Pre-build the WZ-derived caches off-thread so the first real decision doesn't pay them. */
+    static void warmCachesAsync() {
+        if (cachesWarmed) {
+            return;
+        }
+        cachesWarmed = true;
+        DECIDE_POOL.execute(() -> {
+            BotSpawnIndex.get();
+            BotWorldGraph.get();
+        });
+    }
+
+    /** Owner asked where to grind: decide (off-thread), then explain the what/why in chat. */
     static void requestGrindAdvice(BotEntry entry, Character bot) {
         if (entry == null || bot == null) {
             return;
         }
-        Recommendation rec;
-        try {
-            rec = recommend(entry, bot);
-        } catch (RuntimeException e) {
-            log.warn("Grind advice failed for {}", bot.getName(), e);
-            BotManager.getInstance().botReply(entry, "hmm, can't think of a good spot rn");
-            return;
-        }
-        if (rec == null) {
-            BotManager.getInstance().botReply(entry, "honestly nowhere looks worth it for me rn");
-            return;
-        }
-        List<String> lines = composeAdvice(rec);
-        BotManager.getInstance().botReply(entry, lines.get(0));
-        if (lines.size() > 1) {
-            BotManager.after(BotManager.randMs(700, 1100),
-                    () -> BotManager.getInstance().botReply(entry, lines.get(1)));
-        }
+        DECIDE_POOL.execute(() -> {
+            Recommendation rec;
+            try {
+                rec = recommend(entry, bot);
+            } catch (RuntimeException e) {
+                log.warn("Grind advice failed for {}", bot.getName(), e);
+                BotManager.getInstance().botReply(entry, "hmm, can't think of a good spot rn");
+                return;
+            }
+            if (rec == null) {
+                BotManager.getInstance().botReply(entry, "honestly nowhere looks worth it for me rn");
+                return;
+            }
+            List<String> lines = composeAdvice(rec);
+            BotManager.getInstance().botReply(entry, lines.get(0));
+            if (lines.size() > 1) {
+                BotManager.after(BotManager.randMs(700, 1100),
+                        () -> BotManager.getInstance().botReply(entry, lines.get(1)));
+            }
+        });
     }
 
     /** Full decision pass over the world. Heavy-ish on first call (WZ mob loads); fine async. */
@@ -365,6 +394,10 @@ final class BotGrindAdvisor {
 
     /** "grind debug": dump the top candidates with both lenses' numbers to a report file. */
     static void exportGrindDecision(BotEntry entry, Character bot) {
+        DECIDE_POOL.execute(() -> exportGrindDecisionBlocking(entry, bot));
+    }
+
+    private static void exportGrindDecisionBlocking(BotEntry entry, Character bot) {
         List<MobCandidate> candidates;
         try {
             candidates = buildCandidates(entry, bot);
