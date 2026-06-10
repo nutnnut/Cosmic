@@ -450,6 +450,12 @@ public class BotChatManager {
     private static final Pattern SELL_TRASH_COMMAND_PATTERN = Pattern.compile(
             "^\\s*(?:sell|vendor)\\s+(?:(?:my|ur|your)\\s+)?(?:trash|junk)\\s*[?!.,]*\\s*$",
             Pattern.CASE_INSENSITIVE);
+    private static final Pattern GRIND_WHERE_PATTERN = Pattern.compile(
+            "^\\s*where\\s+(?:should|do|can|could|to)?\\s*(?:we|i|u|you)?\\s*(?:wanna\\s+|want\\s+to\\s+)?"
+                    + "(?:go\\s+(?:to\\s+)?)?(?:grind|train|farm|level|lvl)(?:\\s+(?:up|at|next))?\\s*[?!.,]*\\s*$",
+            Pattern.CASE_INSENSITIVE);
+    private static final Pattern GRIND_DEBUG_PATTERN = Pattern.compile(
+            "^\\s*(?:grind\\s+debug|debug\\s+grind)\\s*[?!.,]*\\s*$", Pattern.CASE_INSENSITIVE);
     private static final Pattern MAKE_CRYSTALS_COMMAND_PATTERN = Pattern.compile(
             "^\\s*(?:make|craft|create)\\s+(?:some\\s+)?(?:mob|mon|monster|monsters|mobs)\\s+crystals?\\s*[?!.,]*\\s*$",
             Pattern.CASE_INSENSITIVE);
@@ -1051,6 +1057,19 @@ public class BotChatManager {
         if (SELL_TRASH_COMMAND_PATTERN.matcher(message).matches()) {
             BotManager.after(BotManager.randMs(500, 700), () ->
                     BotShopManager.requestSellTrashVisit(entry, entry.bot));
+            return;
+        }
+
+        if (GRIND_WHERE_PATTERN.matcher(message).matches()) {
+            // First pass scans WZ mob data — answer arrives when the thinking's done.
+            BotManager.after(BotManager.randMs(900, 1600), () ->
+                    BotGrindAdvisor.requestGrindAdvice(entry, entry.bot));
+            return;
+        }
+
+        if (GRIND_DEBUG_PATTERN.matcher(message).matches()) {
+            BotManager.after(BotManager.randMs(300, 500), () ->
+                    BotGrindAdvisor.exportGrindDecision(entry, entry.bot));
             return;
         }
 

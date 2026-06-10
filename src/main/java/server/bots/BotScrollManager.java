@@ -461,7 +461,7 @@ final class BotScrollManager {
     }
 
     /** The non-cash equip the bot currently wears in the given primary slot, or null. */
-    private static Equip wornInSlot(Character bot, ItemInformationProvider ii, short slot) {
+    static Equip wornInSlot(Character bot, ItemInformationProvider ii, short slot) {
         for (Item it : bot.getInventory(InventoryType.EQUIPPED).list()) {
             if (it instanceof Equip e && !ii.isCash(e.getItemId())) {
                 Short s = primarySlot(ii, e.getItemId());
@@ -516,7 +516,7 @@ final class BotScrollManager {
     }
 
     /** Non-mutating "can this bot equip it" check (job/level/stat reqs + weapon-type compatibility). */
-    private static boolean wearable(Character bot, ItemInformationProvider ii, Equip e) {
+    static boolean wearable(Character bot, ItemInformationProvider ii, Equip e) {
         int id = e.getItemId();
         Short slot = primarySlot(ii, id);
         if (slot != null && slot == (short) -11
@@ -528,7 +528,7 @@ final class BotScrollManager {
     }
 
     /** Canonical equipment slot for an item id (works for unworn bag items too); null if not equippable. */
-    private static Short primarySlot(ItemInformationProvider ii, int itemId) {
+    static Short primarySlot(ItemInformationProvider ii, int itemId) {
         EquipSlot eslot = EquipSlot.getFromTextSlot(ii.getEquipmentSlot(itemId));
         if (eslot == null || eslot == EquipSlot.PET_EQUIP) {
             return null;
@@ -701,7 +701,7 @@ final class BotScrollManager {
 
     // ---- Transparent job-weighted offense value (v1 stand-in for the equip optimizer) ----
 
-    private static double offenseValue(Character bot, Equip eq) {
+    static double offenseValue(Character bot, Equip eq) {
         boolean[] mage = new boolean[1];
         char[] ms = mainSecondary(jobId(bot), mage);
         int att = mage[0] ? eq.getMatk() : eq.getWatk();
@@ -710,7 +710,7 @@ final class BotScrollManager {
                 + SECONDARY_STAT_WEIGHT * statOfEquip(eq, ms[1]);
     }
 
-    private static double offenseValueFromStats(Character bot, Map<String, Integer> st) {
+    static double offenseValueFromStats(Character bot, Map<String, Integer> st) {
         boolean[] mage = new boolean[1];
         char[] ms = mainSecondary(jobId(bot), mage);
         int att = mage[0] ? st.getOrDefault("MAD", 0) : st.getOrDefault("PAD", 0);
