@@ -101,6 +101,11 @@ final class BotGrindAdvisor {
         return BotGrindPlanner.planBest(candidates, ThreadLocalRandom.current());
     }
 
+    /** Candidate pool for external planners (party autopilot). Same pool recommend() uses. */
+    static List<MobCandidate> candidatesFor(BotEntry entry, Character bot) {
+        return buildCandidates(entry, bot);
+    }
+
     private static List<MobCandidate> buildCandidates(BotEntry entry, Character bot) {
         ItemInformationProvider ii = ItemInformationProvider.getInstance();
         BotSpawnIndex.Index index = BotSpawnIndex.get();
@@ -133,26 +138,109 @@ final class BotGrindAdvisor {
 
             List<GearProspect> gear = gearProspects(bot, ii, mobId, wornScoreBySlot, totalWornOffense);
             int exp = stats.getExp() * bot.getExpRate();
-
-            int sitesUsed = 0;
-            for (BotSpawnIndex.SpawnSite site : e.getValue()) {
-                if (sitesUsed >= MAX_SITES_PER_MOB) {
-                    break;
-                }
-                if (site.spawnPoints() < MIN_SPAWN_POINTS || site.mapId() >= INSTANCED_MAPID_FLOOR) {
-                    continue;
-                }
-                BotSpawnIndex.MapSpawns map = index.byMap().get(site.mapId());
-                if (map == null || map.town()) {
-                    continue;
-                }
-                candidates.add(new MobCandidate(
-                        mobId, mobName(mi, mobId), stats.getLevel(), exp, killSeconds,
-                        site.mapId(), mapName(site.mapId()), site.spawnPoints(), gear));
-                sitesUsed++;
-            }
+            addSiteCandidates(candidates, index, mi, e.getValue(), mobId, stats.getLevel(), exp,
+                    killSeconds, gear, mapId -> true);
         }
         return candidates;
+    }
+
+    /** Shared site filter: top-N densest, populated, non-town, non-instanced, allowed maps. */
+    private static void addSiteCandidates(List<MobCandidate> out, BotSpawnIndex.Index index,
+                                          MonsterInformationProvider mi,
+                                          List<BotSpawnIndex.SpawnSite> sites,
+                                          int mobId, int mobLevel, int exp, double killSeconds,
+                                          List<GearProspect> gear,
+                                          java.util.function.IntPredicate mapAllowed) {
+        int sitesUsed = 0;
+        for (BotSpawnIndex.SpawnSite site : sites) {
+            if (sitesUsed >= MAX_SITES_PER_MOB) {
+                break;
+            }
+            if (site.spawnPoints() < MIN_SPAWN_POINTS || site.mapId() >= INSTANCED_MAPID_FLOOR
+                    || !mapAllowed.test(site.mapId())) {
+                continue;
+            }
+            BotSpawnIndex.MapSpawns map = index.byMap().get(site.mapId());
+            if (map == null || map.town()) {
+                continue;
+            }
+            out.add(new MobCandidate(
+                    mobId, mobName(mi, mobId), mobLevel, exp, killSeconds,
+                    site.mapId(), mapName(site.mapId()), site.spawnPoints(), gear));
+            sitesUsed++;
+        }
+    }
+
+    /**
+     * "farm &lt;item&gt;": candidates are every allowed site of every mob that drops the item,
+     * handed to {@link BotGrindPlanner#planFarmBest} which scores purely by expected items/hour.
+     * Null when nothing the bot can reach (and damage) drops it.
+     */
+    static Recommendation recommendFarmItem(BotEntry entry, Character bot, int itemId,
+                                            java.util.function.IntPredicate mapAllowed) {
+        Map<Integer, Integer> droppers = droppersForItem.droppers(itemId);
+        if (droppers.isEmpty()) {
+            return null;
+        }
+        ItemInformationProvider ii = ItemInformationProvider.getInstance();
+        MonsterInformationProvider mi = MonsterInformationProvider.getInstance();
+        BotSpawnIndex.Index index = BotSpawnIndex.get();
+        String name = itemName(ii, itemId);
+
+        List<MobCandidate> candidates = new ArrayList<>();
+        for (Map.Entry<Integer, Integer> dropper : droppers.entrySet()) {
+            int mobId = dropper.getKey();
+            Monster mob;
+            try {
+                mob = LifeFactory.getMonster(mobId);
+            } catch (RuntimeException ex) {
+                continue;
+            }
+            if (mob == null || mob.getStats() == null) {
+                continue;
+            }
+            var stats = mob.getStats();
+            if (stats.isBoss() || stats.isFriendly()) {
+                continue;
+            }
+            double killSeconds = killSeconds(entry, bot, mob);
+            if (killSeconds <= 0) {
+                continue;
+            }
+            double chancePerKill = Math.min(1.0,
+                    dropper.getValue() * bot.getDropRate() / DROP_CHANCE_DENOMINATOR);
+            List<GearProspect> objective = List.of(new GearProspect(itemId, name, chancePerKill, 0, 0));
+            int exp = stats.getExp() * bot.getExpRate();
+            addSiteCandidates(candidates, index, mi, BotSpawnIndex.spawnSites(mobId),
+                    mobId, stats.getLevel(), exp, killSeconds, objective, mapAllowed);
+        }
+        return BotGrindPlanner.planFarmBest(candidates, ThreadLocalRandom.current());
+    }
+
+    /** All mobs dropping an item with their best chance ({@code drop_data}); test seam. */
+    @FunctionalInterface
+    interface DroppersLookup {
+        Map<Integer, Integer> droppers(int itemId);
+    }
+
+    static DroppersLookup droppersForItem = BotGrindAdvisor::queryDroppers;
+
+    private static Map<Integer, Integer> queryDroppers(int itemId) {
+        Map<Integer, Integer> droppers = new HashMap<>();
+        try (Connection con = DatabaseConnection.getConnection();
+             PreparedStatement ps = con.prepareStatement(
+                     "SELECT dropperid, MAX(chance) AS chance FROM drop_data"
+                             + " WHERE itemid = ? AND chance > 0 GROUP BY dropperid")) {
+            ps.setInt(1, itemId);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    droppers.put(rs.getInt("dropperid"), rs.getInt("chance"));
+                }
+            }
+        } catch (SQLException e) {
+            log.warn("Couldn't load droppers for item {}", itemId, e);
+        }
+        return droppers;
     }
 
     /** Time to kill one mob for THIS bot — same shape as the scroll farming-cost producer model. */

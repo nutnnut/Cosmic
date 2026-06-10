@@ -102,4 +102,66 @@ class BotGrindPlannerTest {
         // exp 0 and no drops -> nothing worth recommending
         assertNull(BotGrindPlanner.planBest(List.of(mob(1, 0, 2.0, 10, 8, List.of())), new Random(7)));
     }
+
+    @Test
+    void shouldShiftPartyToRoomierMapWhenSharedSpawnsGetCramped() {
+        // Solo math: dense-but-small map 10 (exp 350, sp 8) beats wide map 20 (exp 100, sp 48).
+        // Four members sharing the spawns flips it: sp 8/4=2 starves everyone, sp 48/4=12 doesn't.
+        MobCandidate smallDense = mob(1, 350, 1.0, 10, 8, List.of());
+        MobCandidate wideOpen = mob(2, 100, 1.0, 20, 48, List.of());
+        List<MobCandidate> options = List.of(smallDense, wideOpen);
+
+        assertEquals(10, BotGrindPlanner.planBest(options, new Random(7)).pick().mapId());
+
+        BotGrindPlanner.PartyPlan plan = BotGrindPlanner.planPartyBest(
+                List.of(options, options, options, options), new Random(7));
+        assertNotNull(plan);
+        assertEquals(20, plan.mapId());
+        assertEquals(4, plan.perMember().size());
+        for (Recommendation rec : plan.perMember()) {
+            assertNotNull(rec);
+            assertEquals(20, rec.pick().mapId());
+        }
+    }
+
+    @Test
+    void shouldPickSharedMapThatBenefitsSeveralMembersOverOneMembersFavorite() {
+        // Map 30 is decent for everyone (good exp + an attainable upgrade for member B);
+        // map 10 is member A's solo favorite but worthless for B. The summed score wins.
+        GearProspect bUpgrade = new GearProspect(1402000, "sword", 0.01, 50.0, 0.35);
+        List<MobCandidate> memberA = List.of(
+                mob(1, 200, 2.0, 10, 12, List.of()),
+                mob(2, 150, 2.0, 30, 12, List.of()));
+        List<MobCandidate> memberB = List.of(
+                mob(2, 150, 2.0, 30, 12, List.of(bUpgrade)));
+
+        BotGrindPlanner.PartyPlan plan = BotGrindPlanner.planPartyBest(
+                List.of(memberA, memberB), new Random(7));
+
+        assertNotNull(plan);
+        assertEquals(30, plan.mapId());
+        assertNotNull(plan.perMember().get(0));
+        assertNotNull(plan.perMember().get(1));
+        assertTrue(plan.perMember().get(1).gearFocused());
+    }
+
+    @Test
+    void shouldPlanFarmSiteByExpectedItemsPerHour() {
+        GearProspect target = new GearProspect(2040705, "scroll", 0.02, 0, 0);
+        GearProspect targetRare = new GearProspect(2040705, "scroll", 0.002, 0, 0);
+        // Same kill cycle: 10x the drop chance wins regardless of rng.
+        MobCandidate goodSource = mob(1, 50, 2.0, 10, 8, List.of(target));
+        MobCandidate poorSource = mob(2, 50, 2.0, 20, 8, List.of(targetRare));
+
+        Recommendation rec = BotGrindPlanner.planFarmBest(List.of(poorSource, goodSource), new Random(7));
+
+        assertNotNull(rec);
+        assertEquals(10, rec.pick().mapId());
+        assertTrue(rec.gearFocused());
+        assertEquals("scroll", rec.wantedGear().itemName());
+        assertEquals(0.02 * rec.killsPerHour(), rec.wantedGearPerHour(), 1e-9);
+
+        // No candidate actually carries the item -> null (caller reports "nothing drops it").
+        assertNull(BotGrindPlanner.planFarmBest(List.of(mob(3, 50, 2.0, 10, 8, List.of())), new Random(7)));
+    }
 }

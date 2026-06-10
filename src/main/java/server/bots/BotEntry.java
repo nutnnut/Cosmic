@@ -174,6 +174,17 @@ public class BotEntry {
     String autopilotDestinationName = "";
     String autopilotObjectiveSummary = "";
     boolean autopilotArrivalAnnounced = false;
+    // Party autopilot: this bot follows the group plan; the leader (first party-mode entry in
+    // the owner's bot list) runs the shared re-decide for everyone.
+    boolean autopilotParty = false;
+    // Farm-item objective override ("farm <item>"): re-decides only re-pick the SITE for this
+    // item instead of running the general advisor; the item is never sold as trash.
+    int autopilotFarmItemId = 0;
+    // Resupply errand: temporary detour destination (return-map town) when supplies run low
+    // mid-grind. -1 = none. The shop visit triggers on arrival; afterwards travel resumes
+    // toward autopilotMapId. NextErrandAtMs rate-limits errands (survives clear()).
+    int autopilotErrandMapId = -1;
+    long autopilotNextErrandAtMs = 0L;
 
     // Damage taken
     long deadUntil = 0;

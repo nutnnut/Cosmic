@@ -998,6 +998,22 @@ public class BotManager {
             return;
         }
 
+        // Party autopilot ("go grind together"): ONE shared decision for the whole group.
+        // Broadcasting would have every bot plan its own trip and scatter.
+        if (BotChatManager.isPartyAutopilotCommand(message)) {
+            List<BotEntry> snapshot = List.copyOf(entries);
+            for (BotEntry e : snapshot) {
+                e.replyChannel = channel;
+            }
+            after(randMs(900, 1600), () -> {
+                for (BotEntry e : snapshot) {
+                    BotChatManager.prepareActiveModeEntry(e);
+                }
+                BotAutopilotManager.startParty(owner, snapshot);
+            });
+            return;
+        }
+
         // Group supply requests ("need pots", "anyone have hp pots", "need arrows"
         // etc.) elicit a single response from the bot group. Broadcasting these
         // would have every bot run handleNeedPotionCommand independently, each

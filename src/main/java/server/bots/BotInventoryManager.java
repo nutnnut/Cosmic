@@ -1707,6 +1707,10 @@ class BotInventoryManager {
         List<Item> result = new ArrayList<>(collectSellTrashEquips(entry, bot));
         result.addAll(collectSellTrashUseItems(bot));
         result.addAll(collectSellTrashEtcItems(bot));
+        // The "farm <item>" objective is the whole point of the trip — never sell it.
+        if (entry.autopilotFarmItemId != 0) {
+            result.removeIf(item -> item.getItemId() == entry.autopilotFarmItemId);
+        }
         return result;
     }
 

@@ -141,7 +141,7 @@ final class BotShopManager {
 
     /** Bags filling up while farming: unload junk at a shop without being told — but only when a
      *  cramped tab actually holds sellable trash (selling can't free slots otherwise). */
-    private static boolean shouldAutoSellTrash(BotEntry entry, Character bot) {
+    static boolean shouldAutoSellTrash(BotEntry entry, Character bot) {
         boolean equipCramped = isCramped(bot, InventoryType.EQUIP);
         boolean useCramped = isCramped(bot, InventoryType.USE);
         boolean etcCramped = isCramped(bot, InventoryType.ETC);

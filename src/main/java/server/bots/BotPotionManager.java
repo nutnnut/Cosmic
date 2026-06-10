@@ -315,10 +315,17 @@ final class BotPotionManager {
             return;
         }
         startedAt = BotPerformanceMonitor.start();
-        if (pots[0] < BotManager.cfg.POT_STOP && bot.getHp() < bot.getMaxHp() * 0.4f) {
+        if (pots[0] < BotManager.cfg.POT_STOP
+                && BotAutopilotManager.requestResupplyErrand(entry, bot)) {
+            // Autopilot restocks on its own: town errand, shop, walk back. Proactive — no
+            // HP gate, an independent bot shouldn't grind its last potions dry first.
+        } else if (pots[0] < BotManager.cfg.POT_STOP && bot.getHp() < bot.getMaxHp() * 0.4f) {
             BotManager.getInstance().issueFollowOwner(entry);
             BotManager.getInstance().botSay(bot, "low on pots!! walking to you");
             bot.changeFaceExpression(Emote.GLARE.getValue());
+        } else if (BotAutopilotManager.isActive(entry) && BotShopManager.shouldAutoSellTrash(entry, bot)) {
+            // Bags filled up mid-grind (passive loot): same errand, the visit also sells.
+            BotAutopilotManager.requestResupplyErrand(entry, bot);
         }
         BotPerformanceMonitor.recordSince("potion-grind-stop", startedAt);
     }

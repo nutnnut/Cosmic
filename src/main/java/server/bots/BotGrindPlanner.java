@@ -1,7 +1,9 @@
 package server.bots;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Random;
 
 /**
@@ -77,11 +79,10 @@ final class BotGrindPlanner {
         return g.dpsGainFraction() * Math.min(1.0, expectedCopies);
     }
 
-    static Recommendation planBest(List<MobCandidate> candidates, Random rng) {
-        if (candidates == null || candidates.isEmpty()) {
-            return null;
-        }
+    /** Per-list scoring shared by solo and party planning (same math, same normalization). */
+    private record Scored(double[] score, double[] expPerHour, double best, double needGear) {}
 
+    private static Scored scoreSet(List<MobCandidate> candidates) {
         // Dynamic need: the best attainable upgrade anywhere sets how gear-hungry the bot is.
         double bestDesire = 0.0;
         for (MobCandidate c : candidates) {
@@ -118,11 +119,11 @@ final class BotGrindPlanner {
             score[i] = (1.0 - needGear) * exp + needGear * gear;
             best = Math.max(best, score[i]);
         }
-        if (best <= 0.0) {
-            return null;
-        }
+        return new Scored(score, expPerHour, best, needGear);
+    }
 
-        // Weighted-random draw among near-best options so a fleet of bots spreads out.
+    /** Weighted-random index among entries scoring within NEAR_BEST_FRACTION of the best. */
+    private static int drawNearBest(double[] score, double best, Random rng) {
         List<Integer> nearBest = new ArrayList<>();
         double totalWeight = 0.0;
         for (int i = 0; i < score.length; i++) {
@@ -140,6 +141,21 @@ final class BotGrindPlanner {
                 break;
             }
         }
+        return picked;
+    }
+
+    static Recommendation planBest(List<MobCandidate> candidates, Random rng) {
+        if (candidates == null || candidates.isEmpty()) {
+            return null;
+        }
+
+        Scored scored = scoreSet(candidates);
+        if (scored.best() <= 0.0) {
+            return null;
+        }
+        double needGear = scored.needGear();
+        double[] expPerHour = scored.expPerHour();
+        int picked = drawNearBest(scored.score(), scored.best(), rng);
 
         MobCandidate pick = candidates.get(picked);
         double kph = killsPerHour(pick);
@@ -156,5 +172,109 @@ final class BotGrindPlanner {
         double wantedPerHour = wanted != null ? wanted.chancePerKill() * kph : 0.0;
         return new Recommendation(pick, kph, expPerHour[picked], gearFocused, needGear,
                 wanted, wantedPerHour);
+    }
+
+    // ---- party planning: one shared map, per-member objectives ----
+
+    /** The shared map plus each member's own best objective there (null = nothing worthwhile
+     *  for that member on this map — they tag along to back the party up). */
+    record PartyPlan(int mapId, List<Recommendation> perMember) {}
+
+    /**
+     * Pick ONE map for the whole group: each member's candidates are competition-adjusted
+     * (N members share the spawns), scored with the same two-lens blend as solo planning,
+     * and each member's best score per map is summed — so a map where several members gain
+     * (one farms its gear drop, others take good exp) beats a map that's optimal for only
+     * one. The near-best weighted draw keeps multiple parties from clogging the same spot.
+     */
+    static PartyPlan planPartyBest(List<List<MobCandidate>> perMember, Random rng) {
+        if (perMember == null || perMember.isEmpty()) {
+            return null;
+        }
+        int partySize = perMember.size();
+        List<List<MobCandidate>> adjusted = new ArrayList<>(partySize);
+        for (List<MobCandidate> candidates : perMember) {
+            List<MobCandidate> shared = new ArrayList<>(candidates.size());
+            for (MobCandidate c : candidates) {
+                shared.add(withSpawnShare(c, partySize));
+            }
+            adjusted.add(shared);
+        }
+
+        // Sum each member's best blended score per map.
+        Map<Integer, Double> scoreByMap = new HashMap<>();
+        for (List<MobCandidate> candidates : adjusted) {
+            if (candidates.isEmpty()) {
+                continue;
+            }
+            double[] score = scoreSet(candidates).score();
+            Map<Integer, Double> bestByMap = new HashMap<>();
+            for (int i = 0; i < candidates.size(); i++) {
+                bestByMap.merge(candidates.get(i).mapId(), score[i], Math::max);
+            }
+            for (Map.Entry<Integer, Double> e : bestByMap.entrySet()) {
+                scoreByMap.merge(e.getKey(), e.getValue(), Double::sum);
+            }
+        }
+        if (scoreByMap.isEmpty()) {
+            return null;
+        }
+
+        List<Integer> mapIds = new ArrayList<>(scoreByMap.keySet());
+        double[] score = new double[mapIds.size()];
+        double best = 0.0;
+        for (int i = 0; i < mapIds.size(); i++) {
+            score[i] = scoreByMap.get(mapIds.get(i));
+            best = Math.max(best, score[i]);
+        }
+        if (best <= 0.0) {
+            return null;
+        }
+        int pickedMapId = mapIds.get(drawNearBest(score, best, rng));
+
+        List<Recommendation> recs = new ArrayList<>(partySize);
+        for (List<MobCandidate> candidates : adjusted) {
+            List<MobCandidate> onMap = new ArrayList<>();
+            for (MobCandidate c : candidates) {
+                if (c.mapId() == pickedMapId) {
+                    onMap.add(c);
+                }
+            }
+            recs.add(planBest(onMap, rng));
+        }
+        return new PartyPlan(pickedMapId, recs);
+    }
+
+    /**
+     * Farm-item site pick: every candidate carries the target item as its single gear prospect;
+     * the score is purely expected items/hour (chance × kill rate). The returned Recommendation
+     * is farm-shaped: gearFocused, wantedGear = the item, wantedGearPerHour = items/hour.
+     */
+    static Recommendation planFarmBest(List<MobCandidate> candidates, Random rng) {
+        if (candidates == null || candidates.isEmpty()) {
+            return null;
+        }
+        double[] score = new double[candidates.size()];
+        double best = 0.0;
+        for (int i = 0; i < candidates.size(); i++) {
+            MobCandidate c = candidates.get(i);
+            double chance = c.gearDrops().isEmpty() ? 0.0 : c.gearDrops().get(0).chancePerKill();
+            score[i] = chance * killsPerHour(c);
+            best = Math.max(best, score[i]);
+        }
+        if (best <= 0.0) {
+            return null;
+        }
+        int picked = drawNearBest(score, best, rng);
+        MobCandidate pick = candidates.get(picked);
+        double kph = killsPerHour(pick);
+        GearProspect want = pick.gearDrops().isEmpty() ? null : pick.gearDrops().get(0);
+        return new Recommendation(pick, kph, pick.exp() * kph, true, 1.0, want, score[picked]);
+    }
+
+    private static MobCandidate withSpawnShare(MobCandidate c, int partySize) {
+        int shared = Math.max(1, c.spawnPoints() / partySize);
+        return new MobCandidate(c.mobId(), c.mobName(), c.mobLevel(), c.exp(), c.killSeconds(),
+                c.mapId(), c.mapName(), shared, c.gearDrops());
     }
 }

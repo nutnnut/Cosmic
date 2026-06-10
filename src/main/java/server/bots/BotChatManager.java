@@ -12,6 +12,7 @@ import client.processor.stat.AssignAPProcessor;
 import constants.game.ExpTable;
 import constants.game.GameConstants;
 import constants.inventory.ItemConstants;
+import server.ItemInformationProvider;
 import server.Trade;
 import server.combat.CombatFormulaProvider;
 import server.maps.FieldLimit;
@@ -461,6 +462,15 @@ public class BotChatManager {
             "^\\s*(?:(?:go\\s+)?(?:grind|train|farm|level|play|hunt)\\s+"
                     + "(?:on\\s+(?:your|ur)\\s+own|somewhere(?:\\s+(?:good|else|nice))?|wherever(?:\\s+(?:you|u)\\s+want)?)"
                     + "|autopilot|go\\s+solo|go\\s+(?:be\\s+)?independent)\\s*[?!.,~]*\\s*$",
+            Pattern.CASE_INSENSITIVE);
+    // Party autopilot: the whole group shares ONE grind decision instead of scattering.
+    private static final Pattern PARTY_AUTOPILOT_PATTERN = Pattern.compile(
+            "^\\s*(?:(?:go\\s+)?(?:grind|train|farm|level|play|hunt)\\s+together"
+                    + "|party\\s+(?:grind|autopilot)|go\\s+together)\\s*[?!.,~]*\\s*$",
+            Pattern.CASE_INSENSITIVE);
+    // "farm <item>": excludes the farm-here / autopilot / party suffixes handled above.
+    private static final Pattern FARM_ITEM_PATTERN = Pattern.compile(
+            "^\\s*farm\\s+(?!here\\b|somewhere\\b|wherever\\b|together\\b|on\\s+(?:your|ur)\\s+own\\b)(.+?)\\s*$",
             Pattern.CASE_INSENSITIVE);
     private static final Pattern MAKE_CRYSTALS_COMMAND_PATTERN = Pattern.compile(
             "^\\s*(?:make|craft|create)\\s+(?:some\\s+)?(?:mob|mon|monster|monsters|mobs)\\s+crystals?\\s*[?!.,]*\\s*$",
@@ -960,6 +970,24 @@ public class BotChatManager {
                 prepareActiveModeEntry(entry);
                 BotAutopilotManager.start(entry, entry.bot);
             });
+            return;
+        }
+
+        // Targeted form ("Jason go grind together"): a party of one, routed through the party
+        // planner for consistent behavior. The broadcast form is intercepted at the owner
+        // level (BotManager.handleChat) so the whole group shares ONE decision.
+        if (isPartyAutopilotCommand(message)) {
+            BotManager.after(BotManager.randMs(900, 1600), () -> {
+                prepareActiveModeEntry(entry);
+                BotAutopilotManager.startParty(entry.owner, List.of(entry));
+            });
+            return;
+        }
+
+        // "farm <item name|id>": autopilot with the objective pinned to that item.
+        String farmItemArgs = matchFarmItemArgs(message);
+        if (farmItemArgs != null) {
+            handleFarmItemCommand(entry, farmItemArgs);
             return;
         }
 
@@ -1725,6 +1753,87 @@ public class BotChatManager {
         return message != null && AUTOPILOT_PATTERN.matcher(message).matches();
     }
 
+    static boolean isPartyAutopilotCommand(String message) {
+        return message != null && PARTY_AUTOPILOT_PATTERN.matcher(message).matches();
+    }
+
+    /** The item-name/id args of a "farm <item>" command, or null when it isn't one. */
+    static String matchFarmItemArgs(String message) {
+        if (message == null) {
+            return null;
+        }
+        Matcher matcher = FARM_ITEM_PATTERN.matcher(message);
+        return matcher.matches() ? matcher.group(1) : null;
+    }
+
+    // Test seams: ItemInformationProvider's static init needs WZ/DB.
+    static java.util.function.Function<String, List<tools.Pair<Integer, String>>> farmItemSearch =
+            name -> ItemInformationProvider.getInstance().getItemDataByName(name);
+    static java.util.function.IntFunction<String> farmItemName =
+            id -> ItemInformationProvider.getInstance().getName(id);
+
+    /**
+     * Resolve "farm <item name|id>" to one item. Exact name match wins; otherwise ambiguity
+     * gets a short numbered list back so the owner can repeat with the id (or more words).
+     */
+    private static void handleFarmItemCommand(BotEntry entry, String args) {
+        String query = args.strip();
+        int itemId;
+        String itemName;
+        Integer directId = null;
+        try {
+            directId = Integer.parseInt(query);
+        } catch (NumberFormatException ignored) {
+        }
+        if (directId != null) {
+            String name = farmItemName.apply(directId);
+            if (name == null) {
+                queueBotReply(entry, "don't know any item with id " + directId);
+                return;
+            }
+            itemId = directId;
+            itemName = name;
+        } else {
+            List<tools.Pair<Integer, String>> matches = farmItemSearch.apply(query);
+            tools.Pair<Integer, String> exact = null;
+            for (tools.Pair<Integer, String> m : matches) {
+                if (m.getRight().equalsIgnoreCase(query)) {
+                    exact = m;
+                    break;
+                }
+            }
+            if (matches.isEmpty()) {
+                queueBotReply(entry, "never heard of '" + query + "'");
+                return;
+            }
+            if (exact == null && matches.size() > 1) {
+                StringBuilder options = new StringBuilder("which one? ");
+                int shown = Math.min(4, matches.size());
+                for (int i = 0; i < shown; i++) {
+                    if (i > 0) {
+                        options.append(", ");
+                    }
+                    options.append(matches.get(i).getRight()).append(" (").append(matches.get(i).getLeft()).append(")");
+                }
+                if (matches.size() > shown) {
+                    options.append(", +").append(matches.size() - shown).append(" more");
+                }
+                queueBotReply(entry, options.toString());
+                queueBotReply(entry, "say 'farm <id>' or be more specific");
+                return;
+            }
+            tools.Pair<Integer, String> pick = exact != null ? exact : matches.get(0);
+            itemId = pick.getLeft();
+            itemName = pick.getRight();
+        }
+        int finalItemId = itemId;
+        String finalItemName = itemName;
+        BotManager.after(BotManager.randMs(900, 1600), () -> {
+            prepareActiveModeEntry(entry);
+            BotAutopilotManager.startFarmItem(entry, entry.bot, finalItemId, finalItemName);
+        });
+    }
+
     static boolean isStopCommand(String message) {
         return matchesWholeCommand(STOP_PATTERN, message);
     }
@@ -1891,7 +2000,7 @@ public class BotChatManager {
      * autopot keybind setup, and the initial pot-share request — otherwise new
      * modes silently miss one of these (the original sentry-mode bug).
      */
-    private static void prepareActiveModeEntry(BotEntry entry) {
+    static void prepareActiveModeEntry(BotEntry entry) {
         BotEquipManager.autoEquip(entry.bot, entry.owner, entry.pendingLootOfferItem);
         entry.nextGearSuggestionAt = 0;
         maybeSuggestGearToSiblings(entry, entry.bot);
