@@ -72,8 +72,12 @@ class BotAutopilotManagerTest {
             assertTrue(f.entry().grinding);
             assertFalse(f.entry().following);
             assertTrue(f.entry().autopilotNextDecisionAtMs > System.currentTimeMillis());
+            assertEquals("Henesys Hunting Ground I", f.entry().autopilotDestinationName);
+            assertTrue(f.entry().autopilotObjectiveSummary.contains("Orange Mushroom"));
+            assertFalse(f.entry().autopilotArrivalAnnounced);
             assertEquals(1, seams.replies.size());
             assertTrue(seams.replies.get(0).contains("Henesys Hunting Ground I"), seams.replies.get(0));
+            assertTrue(seams.replies.get(0).contains("to grind Orange Mushroom"), seams.replies.get(0));
         }
     }
 
@@ -110,10 +114,30 @@ class BotAutopilotManagerTest {
     }
 
     @Test
+    void shouldAnnounceArrivalOnceBeforeGrindingOnSite() {
+        Fixture f = fixture(TOWN);
+
+        try (Seams seams = new Seams(expRec(HUNTING_GROUND, "Henesys Hunting Ground I"))) {
+            BotAutopilotManager.start(f.entry(), f.bot());
+            when(f.bot().getMapId()).thenReturn(HUNTING_GROUND);
+
+            assertFalse(BotAutopilotManager.tick(f.entry(), f.bot(), true));
+            assertEquals(2, seams.replies.size());
+            assertTrue(seams.replies.get(1).contains("arrived at Henesys Hunting Ground I"), seams.replies.get(1));
+            assertTrue(seams.replies.get(1).contains("entering grind mode"), seams.replies.get(1));
+            assertTrue(f.entry().autopilotArrivalAnnounced);
+
+            assertFalse(BotAutopilotManager.tick(f.entry(), f.bot(), true));
+            assertEquals(2, seams.replies.size());
+        }
+    }
+
+    @Test
     void shouldRedecideOnTimerAndAnnounceWhenMovingOn() {
         Fixture f = fixture(HUNTING_GROUND);
         f.entry().autopilotMapId = HUNTING_GROUND;
         f.entry().autopilotNextDecisionAtMs = System.currentTimeMillis() - 1;
+        f.entry().autopilotArrivalAnnounced = true;
         f.entry().grinding = true;
 
         try (Seams seams = new Seams(expRec(104040000, "Somewhere Better"))) {
@@ -130,11 +154,17 @@ class BotAutopilotManagerTest {
     void shouldClearOnOwnerModeCommands() {
         Fixture f = fixture(HUNTING_GROUND);
         f.entry().autopilotMapId = HUNTING_GROUND;
+        f.entry().autopilotDestinationName = "Henesys Hunting Ground I";
+        f.entry().autopilotObjectiveSummary = "grind Orange Mushroom";
+        f.entry().autopilotArrivalAnnounced = true;
         f.entry().grinding = true;
 
         BotManager.getInstance().issueFollowOwner(f.entry());
 
         assertFalse(BotAutopilotManager.isActive(f.entry()));
+        assertEquals("", f.entry().autopilotDestinationName);
+        assertEquals("", f.entry().autopilotObjectiveSummary);
+        assertFalse(f.entry().autopilotArrivalAnnounced);
         assertTrue(f.entry().following);
     }
 }

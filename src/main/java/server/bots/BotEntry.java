@@ -171,6 +171,9 @@ public class BotEntry {
     // Deliberately NOT cleared on death: the bot revives in town and walks back.
     int autopilotMapId = -1;            // chosen grind map; travel destination while != current map
     long autopilotNextDecisionAtMs = 0L; // when to re-run the grind advisor
+    String autopilotDestinationName = "";
+    String autopilotObjectiveSummary = "";
+    boolean autopilotArrivalAnnounced = false;
 
     // Damage taken
     long deadUntil = 0;

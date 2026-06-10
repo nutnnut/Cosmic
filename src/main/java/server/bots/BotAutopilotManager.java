@@ -55,6 +55,9 @@ final class BotAutopilotManager {
     static void clear(BotEntry entry) {
         entry.autopilotMapId = -1;
         entry.autopilotNextDecisionAtMs = 0L;
+        entry.autopilotDestinationName = "";
+        entry.autopilotObjectiveSummary = "";
+        entry.autopilotArrivalAnnounced = false;
     }
 
     /** Owner ordered independent play: decide, announce, head out. */
@@ -70,7 +73,7 @@ final class BotAutopilotManager {
         // issueGrind sets the active-combat baseline (pot-share, self-buff, ammo fallback all
         // gate on grinding) and clears any previous autopilot state — set the destination AFTER.
         BotManager.getInstance().issueGrind(entry);
-        entry.autopilotMapId = rec.pick().mapId();
+        installPlan(entry, rec);
         entry.autopilotNextDecisionAtMs = nextDecisionAt();
         announcePlan(entry, rec, bot.getMapId());
     }
@@ -85,6 +88,7 @@ final class BotAutopilotManager {
             return false;
         }
         if (bot.getMapId() == entry.autopilotMapId) {
+            announceArrival(entry);
             maybeRedecide(entry, bot);
             return false; // on site: normal grind flow runs this tick
         }
@@ -111,7 +115,7 @@ final class BotAutopilotManager {
         if (rec == null || rec.pick().mapId() == entry.autopilotMapId) {
             return; // current spot is still the call
         }
-        entry.autopilotMapId = rec.pick().mapId();
+        installPlan(entry, rec);
         announcePlan(entry, rec, bot.getMapId());
     }
 
@@ -125,22 +129,47 @@ final class BotAutopilotManager {
 
     private static void announcePlan(BotEntry entry, Recommendation rec, int fromMapId) {
         MobCandidate pick = rec.pick();
-        String spot = pick.mapName().isEmpty() ? ("map " + pick.mapId()) : pick.mapName();
-        String line;
-        if (pick.mapId() == fromMapId) {
-            line = "this map works - ";
-        } else {
-            line = "heading to " + spot + " - ";
+        String line = pick.mapId() == fromMapId
+                ? "this map works - "
+                : "heading to " + destinationName(pick) + " to ";
+        reply.accept(entry, line + objectiveSummary(rec));
+    }
+
+    private static void announceArrival(BotEntry entry) {
+        if (entry.autopilotArrivalAnnounced) {
+            return;
         }
+        entry.autopilotArrivalAnnounced = true;
+        String spot = entry.autopilotDestinationName == null || entry.autopilotDestinationName.isEmpty()
+                ? ("map " + entry.autopilotMapId)
+                : entry.autopilotDestinationName;
+        String objective = entry.autopilotObjectiveSummary == null || entry.autopilotObjectiveSummary.isEmpty()
+                ? "grind"
+                : entry.autopilotObjectiveSummary;
+        reply.accept(entry, "arrived at " + spot + ", entering grind mode to " + objective);
+    }
+
+    private static void installPlan(BotEntry entry, Recommendation rec) {
+        MobCandidate pick = rec.pick();
+        entry.autopilotMapId = pick.mapId();
+        entry.autopilotDestinationName = destinationName(pick);
+        entry.autopilotObjectiveSummary = objectiveSummary(rec);
+        entry.autopilotArrivalAnnounced = false;
+    }
+
+    private static String destinationName(MobCandidate pick) {
+        return pick.mapName().isEmpty() ? ("map " + pick.mapId()) : pick.mapName();
+    }
+
+    private static String objectiveSummary(Recommendation rec) {
+        MobCandidate pick = rec.pick();
         if (rec.gearFocused() && rec.wantedGear() != null) {
             GearProspect want = rec.wantedGear();
-            line += "gonna farm " + want.itemName() + " from " + pick.mobName()
+            return "farm " + want.itemName() + " from " + pick.mobName()
                     + " (+" + Math.round(want.dpsGainFraction() * 100) + "% dps for me)";
-        } else {
-            line += "grinding " + pick.mobName() + ", ~"
-                    + GameConstants.numberWithCommas((int) Math.round(rec.expPerHour())) + " exp/hr";
         }
-        reply.accept(entry, line);
+        return "grind " + pick.mobName() + ", ~"
+                + GameConstants.numberWithCommas((int) Math.round(rec.expPerHour())) + " exp/hr";
     }
 
     private static long nextDecisionAt() {
