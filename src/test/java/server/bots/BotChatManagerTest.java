@@ -74,6 +74,11 @@ class BotChatManagerTest {
         assertTrue(BotChatManager.isGrindCommand("go grind"));
         assertFalse(BotChatManager.isGrindCommand("Im going to the farm today"));
 
+        assertTrue(BotChatManager.isAutopilotCommand("go grind somewhere"));
+        assertTrue(BotChatManager.isAutopilotCommand("autopilot"));
+        assertTrue(BotChatManager.isAutopilotCommand("go solo"));
+        assertFalse(BotChatManager.isAutopilotCommand("go grind"));
+
         assertTrue(BotChatManager.isFarmHereCommand("farm here"));
         assertTrue(BotChatManager.isFarmHereCommand("grind here please"));
         assertFalse(BotChatManager.isFarmHereCommand("Im going to farm here today"));

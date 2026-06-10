@@ -319,6 +319,23 @@ class BotManagerTest {
     }
 
     @Test
+    void shouldRespawnDeadBotEvenWhenOwnerIsUnavailable() throws Exception {
+        MapleMap map = createEmptyTestMap(910000053);
+        Character bot = mockMovingBot(new Point(100, 100), map);
+        BotEntry entry = new BotEntry(bot, null, null);
+        entry.lastMapId = map.getId();
+        entry.deadUntil = System.currentTimeMillis() - 1;
+
+        Method handleDeadTick = BotManager.class.getDeclaredMethod(
+                "handleDeadTick", BotEntry.class, Character.class, Character.class);
+        handleDeadTick.setAccessible(true);
+
+        assertTrue((Boolean) handleDeadTick.invoke(BotManager.getInstance(), entry, bot, null));
+        assertEquals(0L, entry.deadUntil);
+        verify(bot).respawn(map.getReturnMapId());
+    }
+
+    @Test
     void shouldNotUseLowerPlatformDropAsCrossRegionRetreat() {
         MapleMap map = createEmptyTestMap(910000060);
         FootholdTree footholds = map.getFootholds();

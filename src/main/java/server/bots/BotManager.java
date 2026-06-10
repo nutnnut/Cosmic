@@ -2020,6 +2020,14 @@ public class BotManager {
         if (handleOwnerOfflineOrDead(entry, bot, owner, nowMs, ownerCharId)) {
             return;
         }
+
+        // Dead state must run even when the owner is offline/null. Otherwise a bot
+        // that dies just before owner disconnect stays dead because the owner-null
+        // idle path below returns before respawn can fire.
+        if (handleDeadTick(entry, bot, owner)) {
+            return;
+        }
+
         if (owner == null) {
             entry.following = false;
             if (groundAfterMapChange(entry, bot)) {
@@ -2036,12 +2044,6 @@ public class BotManager {
             } else {
                 tickIdleEntry(entry, bot);
             }
-            return;
-        }
-
-        // Dead state: skip AI until respawn timer expires.
-        // Also catch stale hp=0 (e.g. deadUntil was lost on save/reconnect) — re-enter dead state.
-        if (handleDeadTick(entry, bot, owner)) {
             return;
         }
 

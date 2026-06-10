@@ -953,6 +953,16 @@ public class BotChatManager {
             return;
         }
 
+        // Independent supervised grind must run before plain "go grind"; otherwise
+        // "go grind somewhere" schedules local grind and then clears autopilot.
+        if (isAutopilotCommand(message)) {
+            BotManager.after(BotManager.randMs(900, 1600), () -> {
+                prepareActiveModeEntry(entry);
+                BotAutopilotManager.start(entry, entry.bot);
+            });
+            return;
+        }
+
         if (isFarmHereCommand(message)) {
             Point dest = entry.owner != null ? new Point(entry.owner.getPosition()) : null;
             if (dest != null) {
@@ -1070,14 +1080,6 @@ public class BotChatManager {
             // First pass scans WZ mob data — answer arrives when the thinking's done.
             BotManager.after(BotManager.randMs(900, 1600), () ->
                     BotGrindAdvisor.requestGrindAdvice(entry, entry.bot));
-            return;
-        }
-
-        // "go grind somewhere" / "autopilot": pick a map and travel there independently.
-        // Plain "go grind" stays a whole-match of GRIND_PATTERN ("grind this map") above.
-        if (AUTOPILOT_PATTERN.matcher(message).matches()) {
-            BotManager.after(BotManager.randMs(900, 1600), () ->
-                    BotAutopilotManager.start(entry, entry.bot));
             return;
         }
 
@@ -1717,6 +1719,10 @@ public class BotChatManager {
 
     static boolean isGrindCommand(String message) {
         return matchesWholeCommand(GRIND_PATTERN, message);
+    }
+
+    static boolean isAutopilotCommand(String message) {
+        return message != null && AUTOPILOT_PATTERN.matcher(message).matches();
     }
 
     static boolean isStopCommand(String message) {
