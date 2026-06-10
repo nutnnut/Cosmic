@@ -2093,7 +2093,7 @@ public class BotManager {
         // Map change and teleport checks only apply when following a live anchor.
         // Shop visits are intentional same-map detours and must not be pulled back
         // to the owner while walking to the NPC.
-        if (!entry.shopVisitPending && syncFollowMap(entry, bot, followAnchor)) {
+        if (!entry.shopVisitPending && syncFollowMap(entry, bot, followAnchor, runAiTick)) {
             return;
         }
         if (recoverGrindPartyTeleportDistance(entry, bot, followAnchor)) {
@@ -3512,9 +3512,15 @@ public class BotManager {
         return true;
     }
 
-    private boolean syncFollowMap(BotEntry entry, Character bot, Character followAnchor) {
+    private boolean syncFollowMap(BotEntry entry, Character bot, Character followAnchor, boolean runAiTick) {
         if (!entry.following || followAnchor == null || bot.getMapId() == followAnchor.getMapId()) {
+            BotTravelManager.clear(entry);
             return false;
+        }
+        // Anchor is one portal hop away: walk to that portal and enter it legally like a
+        // trailing player would. Multi-hop / no-portal / failed walks fall through to the warp.
+        if (BotTravelManager.tickFollowTravel(entry, bot, followAnchor, runAiTick)) {
+            return true;
         }
         // Ground against the anchor's actual position in their NEW map. The previously-passed
         // followTargetPos was computed from the bot's OLD map (foothold snaps, formation offsets),
@@ -3636,7 +3642,7 @@ public class BotManager {
             return;
         }
 
-        if (owner != null && !entry.shopVisitPending && syncFollowMap(entry, bot, owner)) {
+        if (owner != null && !entry.shopVisitPending && syncFollowMap(entry, bot, owner, runAiTick)) {
             return;
         }
         Character followAnchor = resolveFollowAnchor(entry, owner);
@@ -3726,9 +3732,9 @@ public class BotManager {
                 && Math.abs(targetPos.y - botPos.y) <= BotMovementManager.cfg.STOP_DIST;
     }
 
-    private void stepMovementCore(BotEntry entry,
-                                  Point targetPos,
-                                  boolean runAiTick) {
+    void stepMovementCore(BotEntry entry,
+                          Point targetPos,
+                          boolean runAiTick) {
         BotNavigationManager.NavigationDirective navDirective = BotNavigationManager.resolveTarget(entry, targetPos, runAiTick);
         if (navDirective.consumedTick) {
             return;

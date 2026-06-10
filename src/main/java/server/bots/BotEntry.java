@@ -155,6 +155,17 @@ public class BotEntry {
     Point shopStuckCheckPos = null;
     long shopStuckCheckAtMs = 0L;
 
+    // Follow-mode cross-map travel (BotTravelManager): instead of warping straight to the
+    // owner, walk to a portal in the current map that leads to the owner's map and enter it
+    // legally. targetMapId == -1 means inactive.
+    int followTravelTargetMapId = -1;
+    int followTravelPortalId = -1;
+    int followTravelFromMapId = -1;     // map the walk started in — landing anywhere else re-plans
+    long followTravelDeadlineMs = 0L;   // give up walking and warp once this passes
+    long followTravelEnteredAtMs = 0L;  // enterPortal fired; waiting for the map change to land
+    long followTravelGiveUpUntilMs = 0L; // after a failed attempt, warp directly for a while
+    Point followTravelMoveTarget = null; // the exact moveTarget instance travel pinned (identity-checked on clear)
+
     // Damage taken
     long deadUntil = 0;
     int mobHitCooldownMs = 0;
