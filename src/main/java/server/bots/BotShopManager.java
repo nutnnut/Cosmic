@@ -55,6 +55,8 @@ final class BotShopManager {
     private static final int POT_TARGET_THRESHOLD = 5; // full target when buying at shop
     private static final int AMMO_TRIGGER_THRESHOLD = 8;
     private static final int AMMO_TARGET_THRESHOLD = 10; // full target when buying at shop
+    private static final int RETURN_SCROLL_NEAREST_TOWN = 2030000;
+    private static final int RETURN_SCROLL_TARGET_QTY = 10;
     private static final int RECHARGE_MAX_SETS = 10; // cap recharge to the best N own-type stacks
     private static final int AUTO_SELL_FREE_SLOT_THRESHOLD = 4; // bag tab "cramped" when this few slots left
 
@@ -331,6 +333,9 @@ final class BotShopManager {
         if (shouldBuyFixedAmmoWhileShopping(bot, wt)) {
             actions.add((sequence, shop) -> appendBuyReport(sequence, buyAmmo(bot, shop, wt), "ammo"));
         }
+        if (shouldBuyReturnScrollWhileShopping(bot)) {
+            actions.add((sequence, shop) -> appendBuyReport(sequence, buyReturnScrolls(bot, shop), "Return Scroll - Nearest Town"));
+        }
         actions.add((sequence, shop) -> {
             int[] pots = BotPotionManager.countPotions(bot);
             if (pots[0] < BotManager.cfg.POT_LOW_WARN * 5) {
@@ -586,6 +591,10 @@ final class BotShopManager {
         return needsAmmo(bot, wt) && BotCombatManager.countAmmo(bot, wt) < ammoTargetThreshold();
     }
 
+    static boolean shouldBuyReturnScrollWhileShopping(Character bot) {
+        return countReturnScrolls(bot) < RETURN_SCROLL_TARGET_QTY;
+    }
+
     private static boolean isRechargeWeaponType(WeaponType wt) {
         return wt == WeaponType.CLAW || wt == WeaponType.GUN;
     }
@@ -620,6 +629,40 @@ final class BotShopManager {
         int target = ammoTargetThreshold();
         int current = BotCombatManager.countAmmo(bot, wt);
         return buyFixedCostItem(bot, shop, ammo, Math.max(0, target - current), 1000);
+    }
+
+    private static BuyReport buyReturnScrolls(Character bot, Shop shop) {
+        ShopSlotItem scroll = findReturnScrollItem(shop);
+        if (scroll == null) {
+            return new BuyReport(0, 0, 0, ShortfallReason.NONE);
+        }
+        int current = countReturnScrolls(bot);
+        return buyFixedCostItem(bot, shop, scroll, Math.max(0, RETURN_SCROLL_TARGET_QTY - current), 10);
+    }
+
+    private static ShopSlotItem findReturnScrollItem(Shop shop) {
+        List<ShopItem> items = shop.getItems();
+        for (int i = 0; i < items.size(); i++) {
+            ShopItem si = items.get(i);
+            if (si.getItemId() == RETURN_SCROLL_NEAREST_TOWN && si.getPrice() > 0) {
+                return new ShopSlotItem((short) i, si);
+            }
+        }
+        return null;
+    }
+
+    private static int countReturnScrolls(Character bot) {
+        var use = bot.getInventory(InventoryType.USE);
+        if (use == null) {
+            return 0;
+        }
+        int count = 0;
+        for (Item item : use.list()) {
+            if (item.getItemId() == RETURN_SCROLL_NEAREST_TOWN && item.getQuantity() > 0) {
+                count += item.getQuantity();
+            }
+        }
+        return count;
     }
 
     private static int bestRechargeAmmoId(Character bot, WeaponType wt) {

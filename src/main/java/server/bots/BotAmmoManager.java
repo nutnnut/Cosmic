@@ -82,7 +82,8 @@ final class BotAmmoManager {
             ammoShareCooldownUntil.put(owner.getId(), now + 30_000L);
         }
 
-        BotManager.getInstance().botSay(bot, BotManager.randomReply(
+        BotAutopilotManager.noteLowSupplyPartyRequest(entry);
+        saySupplyRequest(bot, BotManager.randomReply(
                 weaponType == WeaponType.BOW ? ARROW_REQUEST_MSGS : BOLT_REQUEST_MSGS));
 
         AmmoDonorPlan plan = selectAmmoDonor(entry, bot, weaponType);
@@ -174,6 +175,14 @@ final class BotAmmoManager {
             BotManager.after(BotManager.randMs(900, 1100), () ->
                     BotInventoryManager.startAmmoShareTransfer(items, recipient, donorEntry, donorBot, maxQty));
         });
+    }
+
+    private static void saySupplyRequest(Character bot, String message) {
+        if (bot.getParty() != null) {
+            BotManager.getInstance().botSayParty(bot, message);
+        } else {
+            BotManager.getInstance().botSay(bot, message);
+        }
     }
 
     private static boolean isBetterDonor(AmmoDonorPlan candidate, AmmoDonorPlan best) {

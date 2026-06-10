@@ -185,6 +185,8 @@ public class BotEntry {
     // toward autopilotMapId. NextErrandAtMs rate-limits errands (survives clear()).
     int autopilotErrandMapId = -1;
     long autopilotNextErrandAtMs = 0L;
+    long autopilotOwnerSupplyGraceUntilMs = 0L;
+    boolean autopilotReturningFromErrand = false;
     // True while an async advisor pass for this entry is running (re-decides only) — stops
     // the tick from stacking decisions while one is still computing.
     volatile boolean autopilotDecisionInFlight = false;

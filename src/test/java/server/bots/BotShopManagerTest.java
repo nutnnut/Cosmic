@@ -118,6 +118,23 @@ class BotShopManagerTest {
     }
 
     @Test
+    void shouldWantReturnScrollsBelowTenWithoutTriggeringShopVisitByItself() {
+        Character bot = bowBotWithArrows(5000);
+        bot.getInventory(InventoryType.USE).addItem(Items.itemWithQuantity(2030000, 3));
+
+        assertTrue(BotShopManager.shouldBuyReturnScrollWhileShopping(bot));
+        assertFalse(entryWouldTriggerShopVisit(bot, WeaponType.BOW));
+    }
+
+    @Test
+    void shouldNotWantReturnScrollsAtTen() {
+        Character bot = bowBotWithArrows(5000);
+        bot.getInventory(InventoryType.USE).addItem(Items.itemWithQuantity(2030000, 10));
+
+        assertFalse(BotShopManager.shouldBuyReturnScrollWhileShopping(bot));
+    }
+
+    @Test
     void shouldTriggerSellTrashShopVisitEvenWhenNoResupplyIsNeeded() {
         Character bot = mock(Character.class);
         MapleMap map = mock(MapleMap.class);

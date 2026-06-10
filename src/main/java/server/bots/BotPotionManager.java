@@ -319,6 +319,10 @@ final class BotPotionManager {
                 && BotAutopilotManager.requestResupplyErrand(entry, bot)) {
             // Autopilot restocks on its own: town errand, shop, walk back. Proactive — no
             // HP gate, an independent bot shouldn't grind its last potions dry first.
+        } else if (pots[1] < BotManager.cfg.POT_STOP
+                && BotAutopilotManager.requestResupplyErrand(entry, bot)) {
+            // Mages can be combat-stopped by zero MP pots; give them the same autopilot
+            // resupply path after the party/owner grace request has had a chance to land.
         } else if (pots[0] < BotManager.cfg.POT_STOP && bot.getHp() < bot.getMaxHp() * 0.4f) {
             BotManager.getInstance().issueFollowOwner(entry);
             BotManager.getInstance().botSay(bot, "low on pots!! walking to you");
@@ -429,7 +433,8 @@ final class BotPotionManager {
             potShareCooldownUntil.put(owner.getId(), now + 30_000L);
         }
 
-        BotManager.getInstance().botSay(bot, BotManager.randomReply(forHp ? POT_REQUEST_HP_MSGS : POT_REQUEST_MP_MSGS));
+        BotAutopilotManager.noteLowSupplyPartyRequest(entry);
+        saySupplyRequest(bot, BotManager.randomReply(forHp ? POT_REQUEST_HP_MSGS : POT_REQUEST_MP_MSGS));
 
         PotDonorPlan plan = selectPotDonor(owner, bot, entry, forHp);
         if (plan == null) {
@@ -444,14 +449,6 @@ final class BotPotionManager {
             if (!bypassShareLimits) {
                 categoryBackoff.put(owner.getId(), now + 10 * 60_000L);
             }
-            String ownerName = owner.getName();
-            List<String> noQualMessages = List.of(
-                    "low too, maybe " + ownerName + " has some?",
-                    "wish i could help, try " + ownerName + "?",
-                    "i'm low too :/ check with " + ownerName,
-                    "barely have any myself, ask " + ownerName);
-            BotManager.after(BotManager.randMs(4000, 6000), () ->
-                    BotManager.getInstance().botSay(plan.entry().bot, BotManager.randomReply(noQualMessages)));
         } else {
             schedulePotShare(plan, bot, forHp, BotManager.randMs(2000, 3000));
         }
@@ -515,6 +512,14 @@ final class BotPotionManager {
             BotManager.after(BotManager.randMs(900, 1100), () ->
                     BotInventoryManager.startPotShareTransfer(items, recipient, donorEntry, donorBot, maxQty));
         });
+    }
+
+    private static void saySupplyRequest(Character bot, String message) {
+        if (bot.getParty() != null) {
+            BotManager.getInstance().botSayParty(bot, message);
+        } else {
+            BotManager.getInstance().botSay(bot, message);
+        }
     }
 
     private record PotDonorPlan(BotEntry entry, int count) {

@@ -32,10 +32,16 @@ final class BotAutopilotManager {
     private static final long DECISION_INTERVAL_MS = 12 * 60_000L;
     private static final long DECISION_JITTER_MS = 6 * 60_000L; // de-syncs many bots' re-decides
     private static final long ERRAND_COOLDOWN_MS = 5 * 60_000L; // min spacing between resupply trips
+    private static final long OWNER_SUPPLY_GRACE_MS = 20_000L;
+    private static final int RETURN_SCROLL_MIN_HOPS = 3;
 
     private static final List<String> NO_SPOT_REPLIES = List.of(
             "can't find anywhere worth grinding that i can walk to, staying put",
             "hmm, nowhere walkable looks good rn");
+    private static final List<String> BACK_REPLIES = List.of(
+            "back",
+            "back, continuing",
+            "back, resuming");
 
     // Test seams: the real advisor needs WZ/DB; replies go through the owner's chat channel.
     @FunctionalInterface
@@ -91,6 +97,20 @@ final class BotAutopilotManager {
     static BiConsumer<BotEntry, String> reply =
             (entry, text) -> BotManager.getInstance().botReply(entry, text);
 
+    @FunctionalInterface
+    interface RouteLookup {
+        List<Integer> route(int fromMapId, int toMapId, int maxHops);
+    }
+
+    static RouteLookup routeLookup = BotWorldGraph::route;
+
+    @FunctionalInterface
+    interface ReturnScrollUse {
+        boolean use(Character bot);
+    }
+
+    static ReturnScrollUse returnScrollUse = bot -> BotManager.getInstance().tryUseReturnScroll(bot);
+
     /**
      * Decision scheduling: compute on the advisor pool (a full pass iterates every known mob
      * and can take seconds — on a tick/timer thread that's a visible server freeze), apply
@@ -127,8 +147,11 @@ final class BotAutopilotManager {
         entry.autopilotParty = false;
         entry.autopilotFarmItemId = 0;
         entry.autopilotErrandMapId = -1;
+        entry.autopilotReturningFromErrand = false;
         entry.autopilotDecisionInFlight = false;
         // autopilotNextErrandAtMs deliberately survives: it rate-limits errands, not the mode.
+        // autopilotOwnerSupplyGraceUntilMs also survives: player trade grace is supply state,
+        // not a combat-mode destination.
     }
 
     /** Owner ordered independent play: decide (off-thread), announce, head out. */
@@ -233,8 +256,13 @@ final class BotAutopilotManager {
                 // The auto shop visit (triggered by the map change) is over or never fired —
                 // errand done either way, head back to the grind map.
                 entry.autopilotErrandMapId = -1;
+                entry.autopilotReturningFromErrand = true;
                 reply.accept(entry, "restocked, heading back");
                 return false;
+            }
+            if (entry.autopilotReturningFromErrand) {
+                entry.autopilotReturningFromErrand = false;
+                reply.accept(entry, BotManager.randomReply(BACK_REPLIES));
             }
             announceArrival(entry);
             maybeRedecide(entry, bot);
@@ -251,9 +279,21 @@ final class BotAutopilotManager {
         // travel retries by itself once the window passes.
         if (entry.autopilotErrandMapId != -1) {
             entry.autopilotErrandMapId = -1; // unreachable errand: forget it, the cooldown gates retries
+            entry.autopilotReturningFromErrand = false;
         }
         maybeRedecide(entry, bot);
         return false;
+    }
+
+    static void noteLowSupplyPartyRequest(BotEntry entry) {
+        if (entry != null && isActive(entry)) {
+            entry.autopilotOwnerSupplyGraceUntilMs = System.currentTimeMillis() + OWNER_SUPPLY_GRACE_MS;
+            int retryMs = BotMovementManager.delayAfterCurrentTick(
+                    (int) OWNER_SUPPLY_GRACE_MS + BotManager.cfg.POT_CHECK_RETRY_SOON_MS);
+            if (entry.potCheckTimerMs <= 0 || entry.potCheckTimerMs > retryMs) {
+                entry.potCheckTimerMs = retryMs;
+            }
+        }
     }
 
     /**
@@ -270,6 +310,9 @@ final class BotAutopilotManager {
                 || System.currentTimeMillis() < entry.autopilotNextErrandAtMs) {
             return true; // already handling it / just tried — don't bounce to the owner
         }
+        if (System.currentTimeMillis() < entry.autopilotOwnerSupplyGraceUntilMs) {
+            return true; // party request just went out; give owner trade a short chance to land
+        }
         var returnMap = bot.getMap().getReturnMap();
         if (returnMap == null || returnMap.getId() == bot.getMapId()) {
             return false;
@@ -277,7 +320,15 @@ final class BotAutopilotManager {
         entry.autopilotErrandMapId = returnMap.getId();
         entry.autopilotNextErrandAtMs = System.currentTimeMillis() + ERRAND_COOLDOWN_MS;
         reply.accept(entry, "running low on supplies, popping back to town real quick");
+        tryUseReturnScrollForLongErrand(bot, returnMap.getId());
         return true;
+    }
+
+    private static void tryUseReturnScrollForLongErrand(Character bot, int returnMapId) {
+        List<Integer> route = routeLookup.route(bot.getMapId(), returnMapId, MAX_TRAVEL_HOPS);
+        if (route != null && route.size() >= RETURN_SCROLL_MIN_HOPS) {
+            returnScrollUse.use(bot);
+        }
     }
 
     private static void maybeRedecide(BotEntry entry, Character bot) {

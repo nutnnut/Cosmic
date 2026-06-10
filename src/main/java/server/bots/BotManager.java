@@ -3366,7 +3366,7 @@ public class BotManager {
      * we only need to remove the consumable afterwards (mirrors ScrollHandler).
      * Returns false when no 2030000 is in the bot's USE inventory or applyTo failed.
      */
-    private boolean tryUseReturnScroll(Character bot) {
+    boolean tryUseReturnScroll(Character bot) {
         var use = bot.getInventory(InventoryType.USE);
         if (use == null) {
             return false;

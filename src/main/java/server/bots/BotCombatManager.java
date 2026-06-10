@@ -2627,6 +2627,10 @@ class BotCombatManager {
             if (!entry.noAmmo) {
                 entry.noAmmo = true;
                 if (entry.grinding) {
+                    if (BotAutopilotManager.isActive(entry)) {
+                        BotManager.getInstance().botSay(bot, BotManager.randomReply(MP_POTS_OUT_MSGS));
+                        return;
+                    }
                     BotManager.getInstance().issueFollowOwner(entry);
                     BotManager.getInstance().botSay(bot, BotManager.randomReply(MP_POTS_OUT_MSGS));
                 }
@@ -2647,9 +2651,18 @@ class BotCombatManager {
             return;
         }
 
+        if (ammo <= 0 && entry.noAmmo && entry.grinding && BotAutopilotManager.isActive(entry)) {
+            BotAutopilotManager.requestResupplyErrand(entry, bot);
+            return;
+        }
+
         if (ammo <= 0 && !entry.noAmmo) {
             entry.noAmmo = true;
             if (entry.grinding) {
+                BotAmmoManager.requestLowAmmoShare(entry, bot, false);
+                if (BotAutopilotManager.requestResupplyErrand(entry, bot)) {
+                    return;
+                }
                 BotManager.getInstance().issueFollowOwner(entry);
                 BotManager.getInstance().botSay(bot, BotManager.randomReply(AMMO_OUT_MSGS));
             }
