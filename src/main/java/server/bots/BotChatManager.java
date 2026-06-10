@@ -456,6 +456,12 @@ public class BotChatManager {
             Pattern.CASE_INSENSITIVE);
     private static final Pattern GRIND_DEBUG_PATTERN = Pattern.compile(
             "^\\s*(?:grind\\s+debug|debug\\s+grind)\\s*[?!.,]*\\s*$", Pattern.CASE_INSENSITIVE);
+    // Autopilot: independent play on owner's order. Distinct from plain "go grind" (this map).
+    private static final Pattern AUTOPILOT_PATTERN = Pattern.compile(
+            "^\\s*(?:(?:go\\s+)?(?:grind|train|farm|level|play|hunt)\\s+"
+                    + "(?:on\\s+(?:your|ur)\\s+own|somewhere(?:\\s+(?:good|else|nice))?|wherever(?:\\s+(?:you|u)\\s+want)?)"
+                    + "|autopilot|go\\s+solo|go\\s+(?:be\\s+)?independent)\\s*[?!.,~]*\\s*$",
+            Pattern.CASE_INSENSITIVE);
     private static final Pattern MAKE_CRYSTALS_COMMAND_PATTERN = Pattern.compile(
             "^\\s*(?:make|craft|create)\\s+(?:some\\s+)?(?:mob|mon|monster|monsters|mobs)\\s+crystals?\\s*[?!.,]*\\s*$",
             Pattern.CASE_INSENSITIVE);
@@ -1064,6 +1070,14 @@ public class BotChatManager {
             // First pass scans WZ mob data — answer arrives when the thinking's done.
             BotManager.after(BotManager.randMs(900, 1600), () ->
                     BotGrindAdvisor.requestGrindAdvice(entry, entry.bot));
+            return;
+        }
+
+        // "go grind somewhere" / "autopilot": pick a map and travel there independently.
+        // Plain "go grind" stays a whole-match of GRIND_PATTERN ("grind this map") above.
+        if (AUTOPILOT_PATTERN.matcher(message).matches()) {
+            BotManager.after(BotManager.randMs(900, 1600), () ->
+                    BotAutopilotManager.start(entry, entry.bot));
             return;
         }
 

@@ -181,7 +181,9 @@ class BotCombatManager {
         // Mob damage
         public int   MOB_TOUCH_SWEEP_HEIGHT = 50;
         public int   MOB_HIT_COOLDOWN_MS = 1500;
-        public long  BOT_DEAD_MS      = 30_000L;
+        // Time between dying and clicking "OK" on the revive dialog, like a player would.
+        // The walk back from town replaces the old long respawn-in-place wait.
+        public long  BOT_DEAD_MS      = 5_000L;
 
         // Support
         public int   SUPPORT_RANGE = 400;

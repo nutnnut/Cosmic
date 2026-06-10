@@ -58,12 +58,18 @@ final class BotTravelManager {
 
     private BotTravelManager() {}
 
-    /**
-     * One tick of follow-mode portal travel toward the anchor's map. Returns true when the
-     * tick is consumed (walking toward / entering / waiting on a portal); false when the
-     * caller should fall back to the legacy warp.
-     */
+    /** Follow-mode wrapper: travel toward wherever the anchor currently is. */
     static boolean tickFollowTravel(BotEntry entry, Character bot, Character anchor, boolean runAiTick) {
+        return tickTravel(entry, bot, anchor.getMapId(), MAX_FOLLOW_TRAVEL_HOPS, runAiTick);
+    }
+
+    /**
+     * One tick of portal travel toward a target map. Returns true when the tick is consumed
+     * (walking toward / entering / waiting on a portal); false when no legal progress can be
+     * made right now (no route within maxHops, no live portal, walk failed/timed out) — the
+     * caller decides the fallback (follow warps; autopilot waits or re-decides).
+     */
+    static boolean tickTravel(BotEntry entry, Character bot, int targetMapId, int maxHops, boolean runAiTick) {
         long now = System.currentTimeMillis();
         MapleMap map = bot.getMap();
         if (map == null || now < entry.followTravelGiveUpUntilMs) {
@@ -79,7 +85,6 @@ final class BotTravelManager {
             return false;
         }
 
-        int targetMapId = anchor.getMapId();
         boolean active = entry.followTravelTargetMapId != -1;
         if (active && (entry.followTravelTargetMapId != targetMapId
                 || entry.followTravelFromMapId != bot.getMapId())) {
@@ -112,7 +117,7 @@ final class BotTravelManager {
             int nextHopMapId = targetMapId;
             portal = findAdjacentPortal(map.getPortals(), targetMapId, bot.getPosition());
             if (portal == null) {
-                List<Integer> route = routeLookup.route(bot.getMapId(), targetMapId, MAX_FOLLOW_TRAVEL_HOPS);
+                List<Integer> route = routeLookup.route(bot.getMapId(), targetMapId, maxHops);
                 if (route == null || route.isEmpty()) {
                     return false; // too far or unreachable by walking — warp fallback
                 }

@@ -91,7 +91,13 @@ final class BotGrindAdvisor {
 
     /** Full decision pass over the world. Heavy-ish on first call (WZ mob loads); fine async. */
     static Recommendation recommend(BotEntry entry, Character bot) {
+        return recommend(entry, bot, mapId -> true);
+    }
+
+    /** Decision pass restricted to allowed maps (autopilot: only maps the bot can walk to). */
+    static Recommendation recommend(BotEntry entry, Character bot, java.util.function.IntPredicate mapAllowed) {
         List<MobCandidate> candidates = buildCandidates(entry, bot);
+        candidates.removeIf(c -> !mapAllowed.test(c.mapId()));
         return BotGrindPlanner.planBest(candidates, ThreadLocalRandom.current());
     }
 

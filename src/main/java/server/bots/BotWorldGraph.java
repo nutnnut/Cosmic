@@ -18,6 +18,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -106,6 +107,30 @@ final class BotWorldGraph {
             }
         }
         return null;
+    }
+
+    /** All maps reachable within maxHops portal hops of fromMapId, including fromMapId itself. */
+    static Set<Integer> reachableWithin(int fromMapId, int maxHops) {
+        return reachableWithin(get(), fromMapId, maxHops);
+    }
+
+    /** Pure BFS flood over an explicit graph; see {@link #reachableWithin(int, int)}. */
+    static Set<Integer> reachableWithin(Index graph, int fromMapId, int maxHops) {
+        Set<Integer> seen = new HashSet<>();
+        ArrayDeque<Integer> frontier = new ArrayDeque<>();
+        seen.add(fromMapId);
+        frontier.add(fromMapId);
+        for (int depth = 0; depth < maxHops && !frontier.isEmpty(); depth++) {
+            for (int level = frontier.size(); level > 0; level--) {
+                int current = frontier.poll();
+                for (int next : graph.neighbors(current)) {
+                    if (seen.add(next)) {
+                        frontier.add(next);
+                    }
+                }
+            }
+        }
+        return seen;
     }
 
     private static List<Integer> reconstruct(Map<Integer, Integer> cameFrom, int fromMapId, int toMapId) {

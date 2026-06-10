@@ -2131,6 +2131,12 @@ public class BotManager {
             return;
         }
 
+        // Autopilot: owner-ordered independent play. Consumes the tick while walking a
+        // travel hop toward its chosen grind map; on site it lets the grind flow run.
+        if (BotAutopilotManager.tick(entry, bot, runAiTick)) {
+            return;
+        }
+
         // Map change and teleport checks only apply when following a live anchor.
         // Shop visits are intentional same-map detours and must not be pulled back
         // to the owner while walking to the NPC.
@@ -3033,6 +3039,7 @@ public class BotManager {
     }
 
     private void startFollow(BotEntry entry, Character target) {
+        BotAutopilotManager.clear(entry);
         Character owner = entry.owner;
         entry.followTargetId = owner != null && target != null && owner.getId() != target.getId()
                 ? target.getId()
@@ -3075,6 +3082,9 @@ public class BotManager {
      * pot-share, self-buff, and ammo-low fallback paths.
      */
     private void enterActiveMode(BotEntry entry) {
+        // Owner-issued grind/sentry/patrol replaces autopilot. BotAutopilotManager.start
+        // relies on this ordering: it calls issueGrind first, then sets its destination.
+        BotAutopilotManager.clear(entry);
         entry.followTargetId = 0;
         entry.following = false;
         entry.moveTarget = null;
@@ -3226,6 +3236,7 @@ public class BotManager {
     }
 
     private static void clearMode(BotEntry entry) {
+        BotAutopilotManager.clear(entry);
         entry.followTargetId = 0;
         entry.following = false;
         entry.grinding = false;
@@ -3913,8 +3924,44 @@ public class BotManager {
         }
     }
 
+    private static final List<String> RESPAWN_REPLIES = List.of(
+            "ouch... omw back", "died lol, running back", "rip. be right back",
+            "that hurt, coming back now", "welp. respawning, omw"
+    );
+
     private void respawnBot(BotEntry entry, Character bot, Character owner) {
         entry.deadUntil = 0;
+
+        // Inside a PQ/event instance a town respawn can't re-enter the run — keep the
+        // legacy warp-to-owner there so the party isn't down a member for the whole PQ.
+        boolean inEvent = bot.getEventInstance() != null
+                || (owner != null && owner.getEventInstance() != null)
+                || BotPqHooks.requiresGrind(entry, bot)
+                || BotPqHooks.requiresFollow(entry, bot);
+        if (inEvent && owner != null) {
+            respawnAtOwner(entry, bot, owner);
+            return;
+        }
+
+        // Player-legal respawn: revive in the return map with the standard 50 HP —
+        // the exact Character.respawn path ChangeMapHandler runs for real players —
+        // then walk back through portals like anyone else (follow/autopilot travel
+        // handles the trip; autopot tops the HP back up).
+        bot.respawn(bot.getMap().getReturnMapId());
+        if (!groundAfterMapChange(entry, bot)) {
+            // Died in a map that is its own return map (e.g. a town): no map change
+            // happened, so revive the physics state in place.
+            Point cur = bot.getPosition();
+            Point ground = BotPhysicsEngine.findGroundPoint(bot.getMap(), new Point(cur.x, cur.y - 1));
+            BotPhysicsEngine.teleportTo(entry, bot, ground != null ? ground : cur);
+            BotMovementManager.resetEntryStateAfterTeleport(entry);
+            BotMovementManager.broadcastMovement(entry);
+        }
+        botSay(bot, randomReply(RESPAWN_REPLIES));
+        bot.changeFaceExpression(Emote.GLARE.getValue());
+    }
+
+    private void respawnAtOwner(BotEntry entry, Character bot, Character owner) {
         bot.updateHp(bot.getMaxHp());
 
         if (bot.getMapId() != owner.getMapId()) {

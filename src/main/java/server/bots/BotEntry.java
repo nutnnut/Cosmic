@@ -167,6 +167,11 @@ public class BotEntry {
     long followTravelGiveUpUntilMs = 0L; // after a failed attempt, warp directly for a while
     Point followTravelMoveTarget = null; // the exact moveTarget instance travel pinned (identity-checked on clear)
 
+    // Autopilot (BotAutopilotManager): owner-ordered independent play. -1 = off.
+    // Deliberately NOT cleared on death: the bot revives in town and walks back.
+    int autopilotMapId = -1;            // chosen grind map; travel destination while != current map
+    long autopilotNextDecisionAtMs = 0L; // when to re-run the grind advisor
+
     // Damage taken
     long deadUntil = 0;
     int mobHitCooldownMs = 0;
