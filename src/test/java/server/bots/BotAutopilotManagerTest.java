@@ -428,6 +428,50 @@ class BotAutopilotManagerTest {
     }
 
     @Test
+    void shouldExplainWhyInStatusReports() {
+        Fixture f = fixture(TOWN);
+        when(f.bot().getHp()).thenReturn(50);
+        when(f.bot().getMap().getMapName()).thenReturn("Henesys");
+
+        try (Seams seams = new Seams(expRec(HUNTING_GROUND, "Henesys Hunting Ground I"))) {
+            BotAutopilotManager.start(f.entry(), f.bot());
+
+            String reason = f.entry().autopilotObjectiveReason;
+            assertFalse(reason.isEmpty());
+            assertFalse(reason.matches(".*\\d.*"), reason); // plain words, no numbers
+
+            // Both the traveling and the on-site answer carry the why.
+            String traveling = BotAutopilotManager.statusReport(f.entry(), f.bot());
+            assertTrue(traveling.endsWith("- " + reason), traveling);
+            when(f.bot().getMapId()).thenReturn(HUNTING_GROUND);
+            when(f.bot().getMap().getMapName()).thenReturn("Henesys Hunting Ground I");
+            String onSite = BotAutopilotManager.statusReport(f.entry(), f.bot());
+            assertTrue(onSite.contains("grinding Orange Mushroom at Henesys Hunting Ground I"), onSite);
+            assertTrue(onSite.endsWith("- " + reason), onSite);
+        }
+    }
+
+    @Test
+    void shouldGiveGearReasonWhenGearFocusedAndNoneWhenOwnerPinnedTheItem() {
+        Fixture gear = fixture(TOWN);
+        try (Seams seams = new Seams(gearRec(HUNTING_GROUND, "Drake Cave", "sword", 9_000))) {
+            BotAutopilotManager.start(gear.entry(), gear.bot());
+            String reason = gear.entry().autopilotObjectiveReason;
+            assertFalse(reason.isEmpty());
+            assertFalse(reason.contains("exp"), reason); // gear plan explains the gear, not exp
+        }
+
+        Fixture pinned = fixture(TOWN);
+        try (Seams seams = new Seams(null)) {
+            BotAutopilotManager.farmAdvisor = (entry, bot, itemId, fromMapId, maxHops, withFerry) ->
+                    gearRec(HUNTING_GROUND, "Drake Cave", "sword", 9_000);
+            BotAutopilotManager.startFarmItem(pinned.entry(), pinned.bot(), 1402000, "sword");
+            // Owner picked the goal: "farm sword from Drake" needs no extra excuse.
+            assertEquals("", pinned.entry().autopilotObjectiveReason);
+        }
+    }
+
+    @Test
     void shouldReportAutopilotResupplyDetour() {
         Fixture f = fixture(TOWN);
         when(f.bot().getHp()).thenReturn(50);

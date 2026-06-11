@@ -176,6 +176,9 @@ public class BotEntry {
     long autopilotNextDecisionAtMs = 0L; // when to re-run the grind advisor
     String autopilotDestinationName = "";
     String autopilotObjectiveSummary = "";
+    // Why this plan won, in plain words ("good exp", "could be a real upgrade for me") —
+    // picked once at install so repeated "what are you doing" answers stay consistent.
+    String autopilotObjectiveReason = "";
     boolean autopilotArrivalAnnounced = false;
     // Party autopilot: this bot follows the group plan; the leader (first party-mode entry in
     // the owner's bot list) runs the shared re-decide for everyone.

@@ -164,6 +164,7 @@ final class BotAutopilotManager {
         entry.autopilotNextDecisionAtMs = 0L;
         entry.autopilotDestinationName = "";
         entry.autopilotObjectiveSummary = "";
+        entry.autopilotObjectiveReason = "";
         entry.autopilotArrivalAnnounced = false;
         entry.autopilotParty = false;
         entry.autopilotFarmItemId = 0;
@@ -446,7 +447,7 @@ final class BotAutopilotManager {
                     + destination + " to " + objective;
         }
         if (onDestination) {
-            return objective + " at " + currentMap;
+            return objective + " at " + currentMap + reasonSuffix(entry);
         }
         if (entry.shopVisitPending) {
             return objective + " at " + destination + " - at " + currentMap + ", restocking at the shop";
@@ -466,7 +467,12 @@ final class BotAutopilotManager {
         if (entry.autopilotWaitingForStragglers) {
             return objective + " at " + destination + " - at " + currentMap + ", waiting for the party to catch up";
         }
-        return "im at " + currentMap + ", heading to " + destination + " to " + objective;
+        return "im at " + currentMap + ", heading to " + destination + " to " + objective + reasonSuffix(entry);
+    }
+
+    private static String reasonSuffix(BotEntry entry) {
+        String reason = entry.autopilotObjectiveReason;
+        return reason == null || reason.isBlank() ? "" : " - " + reason;
     }
 
     private static String currentMapName(Character bot) {
@@ -883,6 +889,7 @@ final class BotAutopilotManager {
         entry.autopilotMapId = pick.mapId();
         entry.autopilotDestinationName = destinationName(pick);
         entry.autopilotObjectiveSummary = objectiveSummary(entry, rec);
+        entry.autopilotObjectiveReason = objectiveReason(entry, rec);
         // Already on the picked map: announcePlan's "this map works" covers it — a separate
         // "arrived" line right after would be redundant chatter.
         entry.autopilotArrivalAnnounced = pick.mapId() == fromMapId;
@@ -899,6 +906,26 @@ final class BotAutopilotManager {
             return "farm " + rec.wantedGear().itemName() + " from " + pick.mobName();
         }
         return "grind " + pick.mobName();
+    }
+
+    private static final List<String> EXP_REASONS = List.of(
+            "good exp", "solid exp for me", "fast levels here");
+    private static final List<String> GEAR_REASONS = List.of(
+            "could be a real upgrade for me", "i really want that drop", "best gear odds i can reach");
+
+    /** Why this plan won, same plain-words rule. Empty when the objective says it all
+     *  (owner-pinned "farm <item>" orders). */
+    private static String objectiveReason(BotEntry entry, Recommendation rec) {
+        if (entry.autopilotFarmItemId != 0) {
+            return ""; // the owner picked the goal, "farm <item> from <mob>" needs no excuse
+        }
+        if (rec.wantedGear() != null && rec.gearFocused()) {
+            return BotManager.randomReply(GEAR_REASONS);
+        }
+        if (rec.wantedGear() != null) {
+            return BotManager.randomReply(EXP_REASONS) + " plus a shot at " + rec.wantedGear().itemName();
+        }
+        return BotManager.randomReply(EXP_REASONS);
     }
 
     private static long nextDecisionAt() {
