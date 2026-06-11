@@ -48,4 +48,34 @@ class BotGrindAdvisorTest {
         assertEquals(0.0, BotGrindAdvisor.expectedImprovement(null, 5.0), 1e-9);
         assertEquals(0.0, BotGrindAdvisor.expectedImprovement(new double[0], 5.0), 1e-9);
     }
+
+    // ---- scroll prospects: pure EV, no tiering ----
+
+    @Test
+    void shouldValueScrollsByExpectedGain() {
+        // Offense-SSOT units (att weight 5.0): 60% +2 att = 6.0 EV beats both the safe
+        // 100% +1 att (5.0) and the 10% +5 att jackpot (2.5) — "good" mid scrolls win
+        // on expectation alone.
+        double midOdds = BotGrindAdvisor.scrollExpectedGain(0.6, 10.0, true);
+        double safe = BotGrindAdvisor.scrollExpectedGain(1.0, 5.0, true);
+        double jackpot = BotGrindAdvisor.scrollExpectedGain(0.1, 25.0, true);
+
+        assertEquals(6.0, midOdds, 1e-9);
+        assertTrue(midOdds > safe, "60% with a big payload must beat the safe small scroll");
+        assertTrue(safe > jackpot, "long-shot 10% must not dominate on raw payload");
+    }
+
+    @Test
+    void shouldNotValueScrollsWithoutAnOpenSlotTarget() {
+        // Nothing worn that the scroll applies to (or no upgrade slots left) = vendor trash.
+        assertEquals(0.0, BotGrindAdvisor.scrollExpectedGain(0.6, 10.0, false), 1e-9);
+    }
+
+    @Test
+    void shouldNotValueUselessOrImpossibleScrolls() {
+        assertEquals(0.0, BotGrindAdvisor.scrollExpectedGain(0.0, 10.0, true), 1e-9,
+                "0% success has no expectation");
+        assertEquals(0.0, BotGrindAdvisor.scrollExpectedGain(0.6, 0.0, true), 1e-9,
+                "no offense value for this class (e.g. matk scroll on a bowman)");
+    }
 }

@@ -50,7 +50,7 @@ final class BotScrollManager {
     private static final double MAIN_STAT_WEIGHT = 1.0;
     private static final double SECONDARY_STAT_WEIGHT = 0.3;
 
-    private static final int SCROLL_ITEM_PREFIX = 204; // itemId / 10000 for scroll items
+    static final int SCROLL_ITEM_PREFIX = 204; // itemId / 10000 for scroll items
 
     /** Meso cost assumed for an owned scroll with no NPC-shop price (drop-only). Stub until the
      *  drop-effort→meso / economy ledger lands. */
@@ -682,7 +682,7 @@ final class BotScrollManager {
         return options;
     }
 
-    private static boolean applicable(ItemInformationProvider ii, int scrollId, int equipId) {
+    static boolean applicable(ItemInformationProvider ii, int scrollId, int equipId) {
         List<Integer> reqs = ii.getScrollReqs(scrollId);
         if (reqs != null && !reqs.isEmpty()) {
             return reqs.contains(equipId);
@@ -734,7 +734,7 @@ final class BotScrollManager {
 
     /** Effective scroll success %, mirroring {@code scrollEquipWithId}: the server's flat
      *  SCROLL_SUCCESS_BONUS is added (capped at 100) when enabled. */
-    private static int effectiveSuccessPct(int rawSuccess) {
+    static int effectiveSuccessPct(int rawSuccess) {
         if (YamlConfig.config.server.SCROLL_SUCCESS_BONUS_ENABLED) {
             return Math.min(rawSuccess + YamlConfig.config.server.SCROLL_SUCCESS_BONUS, 100);
         }

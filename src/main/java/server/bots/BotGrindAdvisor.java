@@ -5,6 +5,8 @@ import client.inventory.Equip;
 import client.inventory.InventoryType;
 import client.inventory.Item;
 import constants.game.GameConstants;
+import constants.id.ItemId;
+import constants.inventory.ItemConstants;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import server.ItemInformationProvider;
@@ -43,6 +45,13 @@ import java.util.concurrent.ThreadLocalRandom;
  * worth the full mean — so stay-or-leave emerges from the planner's gear-first shortlist plus
  * the travel penalty, with no drop counters or stay timers anywhere.
  *
+ * <p>Equip SCROLL drops are gear prospects too (gear progression isn't only new items): one
+ * scroll is worth {@code effective success x stat value} through the same offense SSOT (att
+ * outweighs main stat; matk is worthless to non-mages), and only counts while the bot wears
+ * something it applies to with an open upgrade slot — see {@link #scrollExpectedGain}. This
+ * values the LOOT for planning only; actually using scrolls stays behind the owner-confirmed
+ * self-scrolling command.
+ *
  * <p>Skipped on purpose (documented, not silent): towns, instanced/event fields (mapId &ge;
  * 900000000), sites with fewer than {@link #MIN_SPAWN_POINTS} spawn points, bosses, friendlies,
  * 0-exp props, and {@code drop_data_global} (it adds the same items to every mob, washing out
@@ -63,8 +72,8 @@ final class BotGrindAdvisor {
     /** Monte Carlo drop rolls per item per pass (~microseconds each; runs on DECIDE_POOL). */
     private static final int ROLL_SAMPLES = 32;
 
-    /** Lazily-loaded equip drops per mob: mobId → list of {itemId, chance}. */
-    private static volatile Map<Integer, List<int[]>> equipDropsByMob;
+    /** Lazily-loaded gear-progression drops per mob (equips + equip scrolls): mobId → {itemId, chance}. */
+    private static volatile Map<Integer, List<int[]>> gearDropsByMob;
 
     private BotGrindAdvisor() {}
 
@@ -159,6 +168,7 @@ final class BotGrindAdvisor {
         double totalWornOffense = totalWornOffense(bot, ii);
         Map<Short, Double> wornScoreBySlot = new HashMap<>();
         Map<Integer, double[]> rollScoreCache = new HashMap<>(); // per pass: same item drops from many mobs
+        Map<Integer, Double> scrollGainCache = new HashMap<>();
 
         List<MobCandidate> candidates = new ArrayList<>();
         for (Map.Entry<Integer, List<BotSpawnIndex.SpawnSite>> e : index.byMob().entrySet()) {
@@ -183,7 +193,7 @@ final class BotGrindAdvisor {
             }
 
             List<GearProspect> gear = gearProspects(bot, ii, mobId, wornScoreBySlot, rollScoreCache,
-                    totalWornOffense);
+                    scrollGainCache, totalWornOffense);
             int exp = stats.getExp() * bot.getExpRate();
             addSiteCandidates(candidates, index, mi, e.getValue(), mobId, stats.getLevel(), exp,
                     killSeconds, gear, mapId -> true);
@@ -313,41 +323,23 @@ final class BotGrindAdvisor {
         return Math.max(ATTACK_CYCLE_SECONDS, Math.max(1, mob.getMaxHp()) / dps);
     }
 
-    /** Wearable equip drops of this mob, valued as expected improvement over the worn item. */
+    /** Gear-progression drops of this mob: wearable equips valued as expected improvement over
+     *  the worn item, equip scrolls valued by {@link #scrollExpectedGain}. */
     private static List<GearProspect> gearProspects(Character bot, ItemInformationProvider ii, int mobId,
                                                     Map<Short, Double> wornScoreBySlot,
                                                     Map<Integer, double[]> rollScoreCache,
+                                                    Map<Integer, Double> scrollGainCache,
                                                     double totalWornOffense) {
-        List<int[]> drops = equipDropsByMob().get(mobId);
+        List<int[]> drops = gearDropsByMob().get(mobId);
         if (drops == null) {
             return List.of();
         }
         List<GearProspect> out = new ArrayList<>(2);
         for (int[] drop : drops) {
             int itemId = drop[0];
-            if (ii.getEquipStats(itemId) == null) {
-                continue;
-            }
-            Short slot = BotScrollManager.primarySlot(ii, itemId);
-            if (slot == null) {
-                continue;
-            }
-            Item catalog;
-            try {
-                catalog = ii.getEquipById(itemId);
-            } catch (RuntimeException ex) {
-                continue;
-            }
-            if (!(catalog instanceof Equip eq) || !BotScrollManager.wearable(bot, ii, eq)) {
-                continue;
-            }
-            double wornScore = wornScoreBySlot.computeIfAbsent(slot, s -> {
-                Equip worn = BotScrollManager.wornInSlot(bot, ii, s);
-                return worn != null ? BotScrollManager.offenseValue(bot, worn) : 0.0;
-            });
-            double[] samples = rollScoreCache.computeIfAbsent(itemId,
-                    id -> rollScores.sample(bot, id, ROLL_SAMPLES));
-            double gain = expectedImprovement(samples, wornScore);
+            double gain = itemId / 10000 == BotScrollManager.SCROLL_ITEM_PREFIX
+                    ? scrollGainCache.computeIfAbsent(itemId, id -> scrollGains.gain(bot, id))
+                    : equipGain(bot, ii, itemId, wornScoreBySlot, rollScoreCache);
             if (gain < MIN_GEAR_GAIN_SCORE) {
                 continue;
             }
@@ -357,6 +349,83 @@ final class BotGrindAdvisor {
                     gain, gain / Math.max(1.0, totalWornOffense)));
         }
         return out;
+    }
+
+    /** Expected improvement of one more drop roll of this equip over what's worn in its slot. */
+    private static double equipGain(Character bot, ItemInformationProvider ii, int itemId,
+                                    Map<Short, Double> wornScoreBySlot,
+                                    Map<Integer, double[]> rollScoreCache) {
+        if (ii.getEquipStats(itemId) == null) {
+            return 0.0;
+        }
+        Short slot = BotScrollManager.primarySlot(ii, itemId);
+        if (slot == null) {
+            return 0.0;
+        }
+        Item catalog;
+        try {
+            catalog = ii.getEquipById(itemId);
+        } catch (RuntimeException ex) {
+            return 0.0;
+        }
+        if (!(catalog instanceof Equip eq) || !BotScrollManager.wearable(bot, ii, eq)) {
+            return 0.0;
+        }
+        double wornScore = wornScoreBySlot.computeIfAbsent(slot, s -> {
+            Equip worn = BotScrollManager.wornInSlot(bot, ii, s);
+            return worn != null ? BotScrollManager.offenseValue(bot, worn) : 0.0;
+        });
+        double[] samples = rollScoreCache.computeIfAbsent(itemId,
+                id -> rollScores.sample(bot, id, ROLL_SAMPLES));
+        return expectedImprovement(samples, wornScore);
+    }
+
+    /** One looted scroll's expected offense gain for THIS bot; test seam (the real lookup
+     *  needs ItemInformationProvider, which can't load in unit tests). */
+    @FunctionalInterface
+    interface ScrollGainLookup {
+        double gain(Character bot, int scrollId);
+    }
+
+    static ScrollGainLookup scrollGains = BotGrindAdvisor::scrollGain;
+
+    /** Wires {@link #scrollExpectedGain} to the live catalog: skips meta scrolls (clean slate /
+     *  modifier / white) and boom-risk ones (self-scrolling v1 refuses to use those, so they're
+     *  worthless to farm), then checks the WORN gear for an applicable open-slot target. */
+    private static double scrollGain(Character bot, int scrollId) {
+        if (ItemConstants.isCleanSlate(scrollId) || ItemConstants.isModifierScroll(scrollId)
+                || scrollId == ItemId.WHITE_SCROLL) {
+            return 0.0;
+        }
+        ItemInformationProvider ii = ItemInformationProvider.getInstance();
+        Map<String, Integer> st = ii.getEquipStats(scrollId);
+        if (st == null || st.getOrDefault("cursed", 0) > 0) {
+            return 0.0;
+        }
+        boolean hasTarget = false;
+        for (Item it : bot.getInventory(InventoryType.EQUIPPED).list()) {
+            if (it instanceof Equip eq && eq.getUpgradeSlots() >= 1
+                    && BotScrollManager.applicable(ii, scrollId, eq.getItemId())) {
+                hasTarget = true;
+                break;
+            }
+        }
+        return scrollExpectedGain(
+                BotScrollManager.effectiveSuccessPct(st.getOrDefault("success", 0)) / 100.0,
+                BotScrollManager.offenseValueFromStats(bot, st), hasTarget);
+    }
+
+    /**
+     * Pure EV core of scroll valuation: {@code success x stat value} while the bot has an
+     * applicable worn item with an open upgrade slot, nothing otherwise. No tiering anywhere —
+     * a 60% scroll with a big payload out-values a safe 100% with a small one on expectation,
+     * and att scrolls dominate stat scrolls through the offense SSOT's weights.
+     */
+    static double scrollExpectedGain(double successRate, double offenseGain, boolean hasOpenSlotTarget) {
+        if (!hasOpenSlotTarget || successRate <= 0 || offenseGain <= 0) {
+            return 0.0;
+        }
+        return successRate * offenseGain;
     }
 
     /** Offense scores of {@code n} fresh drop rolls of an item for this bot; test seam
@@ -507,9 +576,10 @@ final class BotGrindAdvisor {
         return name != null ? name : ("item " + itemId);
     }
 
-    /** Equip drops per mob from {@code drop_data} (populate-once, same pattern as shopPrices). */
-    private static Map<Integer, List<int[]>> equipDropsByMob() {
-        Map<Integer, List<int[]>> cached = equipDropsByMob;
+    /** Equip + equip-scroll drops per mob from {@code drop_data} (populate-once, same pattern
+     *  as shopPrices). */
+    private static Map<Integer, List<int[]>> gearDropsByMob() {
+        Map<Integer, List<int[]>> cached = gearDropsByMob;
         if (cached != null) {
             return cached;
         }
@@ -517,16 +587,17 @@ final class BotGrindAdvisor {
         try (Connection con = DatabaseConnection.getConnection();
              PreparedStatement ps = con.prepareStatement(
                      "SELECT dropperid, itemid, chance FROM drop_data"
-                             + " WHERE chance > 0 AND itemid BETWEEN 1000000 AND 1999999");
+                             + " WHERE chance > 0 AND (itemid BETWEEN 1000000 AND 1999999"
+                             + " OR itemid BETWEEN 2040000 AND 2049999)");
              ResultSet rs = ps.executeQuery()) {
             while (rs.next()) {
                 m.computeIfAbsent(rs.getInt("dropperid"), k -> new ArrayList<>())
                         .add(new int[]{rs.getInt("itemid"), rs.getInt("chance")});
             }
         } catch (SQLException e) {
-            log.warn("Couldn't load equip drops for grind advisor", e);
+            log.warn("Couldn't load gear drops for grind advisor", e);
         }
-        equipDropsByMob = m;
+        gearDropsByMob = m;
         return m;
     }
 }
