@@ -817,6 +817,22 @@ final class BotScrollManager {
         return best;
     }
 
+    /** Best possible offense gain one upgrade slot can add, ignoring success odds. */
+    static double maxScrollOffenseGainPerSlot(Character bot, ItemInformationProvider ii, int equipId) {
+        double best = 0.0;
+        for (int sid : scrollsByCategory(ii).getOrDefault((equipId / 10000) % 100, List.of())) {
+            if (!applicable(ii, sid, equipId)) {
+                continue;
+            }
+            Map<String, Integer> st = ii.getEquipStats(sid);
+            if (st == null || st.getOrDefault("success", 0) <= 0 || st.getOrDefault("cursed", 0) > 0) {
+                continue;
+            }
+            best = Math.max(best, offenseValueFromStats(bot, st));
+        }
+        return best;
+    }
+
     /** An equip's worth INCLUDING its remaining upgrade slots — what drop-vs-worn comparisons
      *  should use, so a maxed-out item can lose to a weaker one that still scrolls higher. */
     static double potentialValue(Character bot, ItemInformationProvider ii, Equip eq) {

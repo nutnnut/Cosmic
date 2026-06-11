@@ -618,6 +618,102 @@ class BotEquipManagerTest {
     }
 
     @Test
+    void selfReserveKeepsLowerStatItemWhenSlotsCanBeatFinishedItem() {
+        Character bot = mock(Character.class);
+        when(bot.getJob()).thenReturn(Job.MAGICIAN);
+
+        Equip finishedEarring = equipWithSlots(1032000, 8, 0, 0, 0);
+        Equip cleanEarring = equipWithSlots(1032000, 0, 0, 0, 5);
+
+        BotEquipManager.SelfReserveHooks hooks = mock(BotEquipManager.SelfReserveHooks.class);
+        stubReserveItem(hooks, Job.MAGICIAN, finishedEarring, "Ae", 15, 0, 0, 0, 0, 0, 0);
+        stubReserveItem(hooks, Job.MAGICIAN, cleanEarring, "Ae", 15, 0, 0, 0, 0, 0, 0);
+        when(hooks.maxScrollOffenseGainPerSlot(bot, 1032000)).thenReturn(3.0);
+
+        Set<Equip> keep = BotEquipManager.selectOwnedItemsForSelfReserve(bot, hooks,
+                List.of(finishedEarring, cleanEarring));
+
+        assertTrue(keep.contains(finishedEarring));
+        assertTrue(keep.contains(cleanEarring),
+                "clean earring should survive because its open slots can exceed the finished copy");
+    }
+
+    @Test
+    void selfReserveFinishedGloveDominatesCleanGloveWhenSlotsCannotCatchUp() {
+        Character bot = mock(Character.class);
+        when(bot.getJob()).thenReturn(Job.ASSASSIN);
+
+        Equip finishedGlove = equipWithSlots(1082000, 0, 0, 15, 0);
+        Equip cleanGlove = equipWithSlots(1082000, 0, 0, 0, 5);
+
+        BotEquipManager.SelfReserveHooks hooks = mock(BotEquipManager.SelfReserveHooks.class);
+        stubReserveItem(hooks, Job.ASSASSIN, finishedGlove, "Gv", 10, 0, 0, 0, 0, 0, 0);
+        stubReserveItem(hooks, Job.ASSASSIN, cleanGlove, "Gv", 10, 0, 0, 0, 0, 0, 0);
+        when(hooks.maxScrollOffenseGainPerSlot(bot, 1082000)).thenReturn(15.0);
+
+        Set<Equip> keep = BotEquipManager.selectOwnedItemsForSelfReserve(bot, hooks,
+                List.of(finishedGlove, cleanGlove));
+
+        assertTrue(keep.contains(finishedGlove));
+        assertFalse(keep.contains(cleanGlove),
+                "15 ATT finished glove should dominate 0 ATT/5-slot glove because the clean copy cannot exceed it");
+    }
+
+    @Test
+    void selfReserveKeepsOneDuplicateCleanScrollableItem() {
+        Character bot = mock(Character.class);
+        when(bot.getJob()).thenReturn(Job.ASSASSIN);
+
+        List<Equip> gloves = new ArrayList<>();
+        for (int i = 1; i <= 10; i++) {
+            Equip glove = equipWithSlots(1082000, 0, 0, 0, 5);
+            when(glove.getPosition()).thenReturn((short) i);
+            gloves.add(glove);
+        }
+
+        BotEquipManager.SelfReserveHooks hooks = mock(BotEquipManager.SelfReserveHooks.class);
+        for (Equip glove : gloves) {
+            stubReserveItem(hooks, Job.ASSASSIN, glove, "Gv", 10, 0, 0, 0, 0, 0, 0);
+        }
+        when(hooks.maxScrollOffenseGainPerSlot(bot, 1082000)).thenReturn(15.0);
+
+        Set<Equip> keep = BotEquipManager.selectOwnedItemsForSelfReserve(bot, hooks, gloves);
+
+        assertEquals(1, keep.size(), "identical clean full-slot duplicates should collapse to one reserve item");
+        assertTrue(keep.contains(gloves.get(0)), "lowest bag slot should win the duplicate tiebreak");
+    }
+
+    @Test
+    void selfReserveCurrentTotalWearableCrossbowDominatesWeakerZeroReqCrossbow() {
+        Character bot = mock(Character.class);
+        when(bot.getJob()).thenReturn(Job.CROSSBOWMAN);
+        when(bot.getLevel()).thenReturn(64);
+        when(bot.getFame()).thenReturn(0);
+        when(bot.getTotalStr()).thenReturn(52);
+        when(bot.getTotalDex()).thenReturn(250);
+        when(bot.getTotalInt()).thenReturn(4);
+        when(bot.getTotalLuk()).thenReturn(4);
+
+        Equip strongerCurrentTotalWearable = equipWithSlots(1462001, 0, 0, 86, 0);
+        Equip weakerZeroReq = equipWithSlots(1462002, 0, 0, 66, 0);
+
+        BotEquipManager.SelfReserveHooks hooks = mock(BotEquipManager.SelfReserveHooks.class);
+        stubReserveItem(hooks, Job.CROSSBOWMAN, strongerCurrentTotalWearable, "Wp", 61, 4, 38, 0, 0, 0, 0);
+        stubReserveItem(hooks, Job.CROSSBOWMAN, weakerZeroReq, "Wp", 43, 4, 0, 0, 0, 0, 0);
+        when(hooks.getWeaponType(1462001)).thenReturn(WeaponType.CROSSBOW);
+        when(hooks.getWeaponType(1462002)).thenReturn(WeaponType.CROSSBOW);
+        when(hooks.meetsReqs(strongerCurrentTotalWearable, Job.CROSSBOWMAN, 64,
+                52, 250, 4, 4, 0)).thenReturn(true);
+
+        Set<Equip> keep = BotEquipManager.selectOwnedItemsForSelfReserve(bot, hooks,
+                List.of(strongerCurrentTotalWearable, weakerZeroReq));
+
+        assertTrue(keep.contains(strongerCurrentTotalWearable));
+        assertFalse(keep.contains(weakerZeroReq),
+                "weaker zero-req crossbow should not be reserved once the stronger higher-req crossbow is wearable with current totals");
+    }
+
+    @Test
     void selfReserveSameReqDifferentItemIdDoesDominate() {
         Character bot = mock(Character.class);
         when(bot.getJob()).thenReturn(Job.SPEARMAN);
@@ -1016,6 +1112,27 @@ class BotEquipManagerTest {
         when(e.getWatk()).thenReturn((short) 0);
         when(e.getMatk()).thenReturn((short) 0);
         when(e.getAcc()).thenReturn((short) acc);
+        return e;
+    }
+
+    private static Equip equipWithSlots(int itemId, int int_, int luk, int watk, int slots) {
+        Equip e = mock(Equip.class);
+        when(e.getItemId()).thenReturn(itemId);
+        when(e.getStr()).thenReturn((short) 0);
+        when(e.getDex()).thenReturn((short) 0);
+        when(e.getInt()).thenReturn((short) int_);
+        when(e.getLuk()).thenReturn((short) luk);
+        when(e.getWatk()).thenReturn((short) watk);
+        when(e.getMatk()).thenReturn((short) 0);
+        when(e.getWdef()).thenReturn((short) 0);
+        when(e.getMdef()).thenReturn((short) 0);
+        when(e.getAcc()).thenReturn((short) 0);
+        when(e.getAvoid()).thenReturn((short) 0);
+        when(e.getHp()).thenReturn((short) 0);
+        when(e.getMp()).thenReturn((short) 0);
+        when(e.getSpeed()).thenReturn((short) 0);
+        when(e.getJump()).thenReturn((short) 0);
+        when(e.getUpgradeSlots()).thenReturn((byte) slots);
         return e;
     }
 

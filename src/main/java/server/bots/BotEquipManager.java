@@ -714,6 +714,7 @@ class BotEquipManager {
     interface SelfReserveHooks extends EquipUsefulnessHooks {
         int getEquipLevelReq(int itemId);
         Map<String, Integer> getEquipStats(int itemId);
+        double maxScrollOffenseGainPerSlot(Character bot, int itemId);
 
         static SelfReserveHooks from(ItemInformationProvider ii) {
             return new SelfReserveHooks() {
@@ -726,6 +727,9 @@ class BotEquipManager {
                 }
                 @Override public int getEquipLevelReq(int itemId) { return ii.getEquipLevelReq(itemId); }
                 @Override public Map<String, Integer> getEquipStats(int itemId) { return ii.getEquipStats(itemId); }
+                @Override public double maxScrollOffenseGainPerSlot(Character bot, int itemId) {
+                    return BotScrollManager.maxScrollOffenseGainPerSlot(bot, ii, itemId);
+                }
             };
         }
     }
@@ -1549,7 +1553,7 @@ class BotEquipManager {
         for (Equip equip : ownedItems) {
             if (equip == null || hooks.isCash(equip.getItemId())) continue;
             if (!isFutureOwnClassEquip(bot, hooks, equip)) continue;
-            if (!hasPositiveRelevant(relevant, equip)) continue;
+            if (!hasPositiveRelevant(relevant, equip) && maxScrollReserveUpside(hooks, bot, equip) <= 0.0) continue;
             String track = selfReserveTrackKey(bot, hooks, equip);
             if (track == null) continue;
             byTrack.computeIfAbsent(track, ignored -> new ArrayList<>()).add(equip);
@@ -1622,15 +1626,40 @@ class BotEquipManager {
     private static boolean dominatesForSelfReserve(SelfReserveHooks hooks, EnumSet<RelevantStat> relevant,
                                                    Character bot, Equip better, Equip worse) {
         boolean relevantDominates = paretoDominates(relevant, better, worse);
-        boolean duplicateTieBreakDominates = sameRequirementSignature(hooks, better, worse)
-                && better.getItemId() == worse.getItemId()
-                && relevantStatsEqual(relevant, better, worse)
-                && usefulStatSum(better, bot.getJob()) > usefulStatSum(worse, bot.getJob());
-        if (!relevantDominates && !duplicateTieBreakDominates) return false;
-        if (!reqsAtLeastAsEasy(hooks, better, worse)
-                && !hooks.meetsReqs(better, bot.getJob(), bot.getLevel(),
-                                    bot.getStr(), bot.getDex(), bot.getInt(), bot.getLuk(), bot.getFame())) return false;
+        boolean tieBreakDominates = relevantStatsEqual(relevant, better, worse)
+                && selfReserveTieBreak(hooks, bot, better, worse) > 0;
+        if (!relevantDominates && !tieBreakDominates) return false;
+        if (!reqsAtLeastAsEasy(hooks, better, worse) && !currentlyWearable(bot, hooks, better)) return false;
+        if (selfReserveCeiling(hooks, bot, better) < selfReserveCeiling(hooks, bot, worse)) return false;
         return true;
+    }
+
+    private static int selfReserveTieBreak(SelfReserveHooks hooks, Character bot, Equip better, Equip worse) {
+        if (!sameRequirementSignature(hooks, better, worse)) return 0;
+        int betterScore = usefulStatSum(better, bot.getJob());
+        int worseScore = usefulStatSum(worse, bot.getJob());
+        if (betterScore != worseScore) return Integer.compare(betterScore, worseScore);
+        if (better.getUpgradeSlots() != worse.getUpgradeSlots()) {
+            return Integer.compare(better.getUpgradeSlots(), worse.getUpgradeSlots());
+        }
+        int betterPos = better.getPosition();
+        int worsePos = worse.getPosition();
+        if (betterPos != worsePos && betterPos > 0 && worsePos > 0) return Integer.compare(worsePos, betterPos);
+        return Integer.compare(System.identityHashCode(worse), System.identityHashCode(better));
+    }
+
+    private static double selfReserveCeiling(SelfReserveHooks hooks, Character bot, Equip equip) {
+        return BotScrollManager.offenseValue(bot, equip) + maxScrollReserveUpside(hooks, bot, equip);
+    }
+
+    private static double maxScrollReserveUpside(SelfReserveHooks hooks, Character bot, Equip equip) {
+        return Math.max(0, equip.getUpgradeSlots())
+                * Math.max(0.0, hooks.maxScrollOffenseGainPerSlot(bot, equip.getItemId()));
+    }
+
+    private static boolean currentlyWearable(Character bot, EquipUsefulnessHooks hooks, Equip equip) {
+        return hooks.meetsReqs(equip, bot.getJob(), bot.getLevel(),
+                bot.getTotalStr(), bot.getTotalDex(), bot.getTotalInt(), bot.getTotalLuk(), bot.getFame());
     }
 
     private static boolean relevantStatsEqual(EnumSet<RelevantStat> relevant, Equip a, Equip b) {
