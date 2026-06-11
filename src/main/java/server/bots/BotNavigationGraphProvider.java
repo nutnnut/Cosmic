@@ -31,7 +31,9 @@ final class BotNavigationGraphProvider {
 
     // 47: forbidFallDown footholds stay solid during down-jump grace (landing predictions
     //     change on maps with stacked platforms) — caches must rebuild.
-    private static final int GRAPH_VERSION = 47;
+    // 48: WZ info/fs reinterpreted as slipperiness (was a bogus ground-speed scale): walk
+    //     step on fs maps jumps back to full speed, runways stretch by 1/fs.
+    private static final int GRAPH_VERSION = 48;
     private static final int ENDPOINT_ANCHOR_SPACING_PX = 10;
     private static final int DOWN_JUMP_PRELAUNCH_WINDOW_PX = 20;
     private static final int SAME_SOLID_NEST_GAP_PX = 8;

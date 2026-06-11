@@ -246,7 +246,7 @@ final class BotPhysicsEngine {
     }
 
     static int walkStep(MapleMap map, BotMovementProfile profile) {
-        double step = maxHSpeedPerClientStep(profile) * cfg.TICK_MS * mapGroundSpeedScale(map) / CLIENT_GROUND_STEP_MS;
+        double step = maxHSpeedPerClientStep(profile) * cfg.TICK_MS / CLIENT_GROUND_STEP_MS;
         return Math.max(1, (int) Math.round(step));
     }
 
@@ -261,7 +261,8 @@ final class BotPhysicsEngine {
      */
     static int launchRunwayPx(MapleMap map, BotMovementProfile profile) {
         int step = walkStep(map, profile);
-        return Math.max(40, step * 6);
+        // Slippery fields stretch time-to-terminal by 1/fs — the runway grows with it.
+        return (int) Math.max(40, Math.round(step * 6 / mapGroundSlipScale(map)));
     }
 
     static int velocityFromDeltaX(double deltaX) {
@@ -1705,8 +1706,9 @@ final class BotPhysicsEngine {
 
         double physX = state.physX();
         double hspeed = state.hspeed();
+        double slipScale = mapGroundSlipScale(map);
         for (int i = 0; i < counter.steps(); i++) {
-            hspeed = applyGroundPhysicsStep(hspeed, foothold, desiredDir, profile);
+            hspeed = applyGroundPhysicsStep(hspeed, foothold, desiredDir, profile, slipScale);
             physX += hspeed;
         }
         return new GroundTravelState(physX, hspeed, counter.carryMs());
@@ -1716,13 +1718,14 @@ final class BotPhysicsEngine {
     }
 
     private static GroundStepCounter groundPhysicsSteps(double carryMs, MapleMap map) {
-        double nextCarryMs = carryMs + cfg.TICK_MS * mapGroundSpeedScale(map);
+        double nextCarryMs = carryMs + cfg.TICK_MS;
         int steps = (int) (nextCarryMs / CLIENT_GROUND_STEP_MS);
         nextCarryMs -= steps * CLIENT_GROUND_STEP_MS;
         return new GroundStepCounter(steps, nextCarryMs);
     }
 
-    private static double applyGroundPhysicsStep(double hspeed, Foothold foothold, int desiredDir, BotMovementProfile profile) {
+    private static double applyGroundPhysicsStep(double hspeed, Foothold foothold, int desiredDir,
+                                                 BotMovementProfile profile, double slipScale) {
         double hforce = desiredDir * maxHForcePerClientStep(profile);
         if (hforce == 0.0 && Math.abs(hspeed) < 0.1) {
             return 0.0;
@@ -1731,7 +1734,9 @@ final class BotPhysicsEngine {
         double inertia = hspeed / cfg.GROUNDSLIP;
         double slope = clampedSlope(foothold);
         double drag = (cfg.FRICTION + cfg.SLOPEFACTOR * (1.0 + slope * -inertia)) * inertia;
-        return hspeed + hforce - drag;
+        // Slippery fields scale force and friction together: terminal speed is unchanged
+        // (hforce == drag there), only the approach to it slows — slow starts, long slides.
+        return hspeed + (hforce - drag) * slipScale;
     }
 
     private static double clampedSlope(Foothold foothold) {
@@ -1749,12 +1754,15 @@ final class BotPhysicsEngine {
                 && dy >= -cfg.MAX_SLOPE_UP;
     }
 
-    private static double mapGroundSpeedScale(MapleMap map) {
-        float footholdSpeed = map.getFootholdSpeed();
-        if (footholdSpeed <= 0.0f) {
-            return 1.0;
-        }
-        return footholdSpeed;
+    /**
+     * WZ {@code info/fs} is the field's SLIPPERINESS factor (El Nath snow = 0.2), not a speed
+     * multiplier: the client scales walk force AND friction by it, so top speed is unchanged
+     * while acceleration and braking take 1/fs as long — slow starts, long slides. (It was
+     * previously misread as a ground-speed scale, which made El Nath bots crawl at 20% speed.)
+     */
+    private static double mapGroundSlipScale(MapleMap map) {
+        float fs = map != null ? map.getFootholdSpeed() : 0.0f;
+        return fs > 0.0f && fs < 1.0f ? fs : 1.0;
     }
 
     private static double maxHForcePerClientStep(BotMovementProfile profile) {
@@ -2092,12 +2100,12 @@ final class BotPhysicsEngine {
     }
 
     private static double groundHSpeedFromTickDelta(MapleMap map, double deltaXPerTick, BotMovementProfile profile) {
-        double stepsPerTick = Math.max(1.0, (cfg.TICK_MS * mapGroundSpeedScale(map)) / CLIENT_GROUND_STEP_MS);
+        double stepsPerTick = Math.max(1.0, cfg.TICK_MS / CLIENT_GROUND_STEP_MS);
         return Math.clamp(deltaXPerTick / stepsPerTick, -maxHSpeedPerClientStep(profile), maxHSpeedPerClientStep(profile));
     }
 
     private static double tickDeltaFromGroundHSpeed(MapleMap map, double groundHSpeed, BotMovementProfile profile) {
-        double stepsPerTick = Math.max(1.0, (cfg.TICK_MS * mapGroundSpeedScale(map)) / CLIENT_GROUND_STEP_MS);
+        double stepsPerTick = Math.max(1.0, cfg.TICK_MS / CLIENT_GROUND_STEP_MS);
         double clampedHSpeed = Math.clamp(groundHSpeed, -maxHSpeedPerClientStep(profile), maxHSpeedPerClientStep(profile));
         return clampedHSpeed * stepsPerTick;
     }

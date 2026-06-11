@@ -539,6 +539,55 @@ class BotPhysicsEngineTest {
         return (int) Math.round(foothold.getY1() + (foothold.getY2() - foothold.getY1()) * ratio);
     }
 
+    @Test
+    void shouldSlipOnSnowFields() {
+        MapleMap normal = flatGroundMap(0f);
+        MapleMap snow = flatGroundMap(0.2f); // El Nath info/fs
+
+        // Slow start: one tick in, the snow bot has a fraction of the normal speed.
+        double normalEarly = hspeedAfterTicks(normal, 1, 1, 0.0);
+        double snowEarly = hspeedAfterTicks(snow, 1, 1, 0.0);
+        assertTrue(snowEarly < normalEarly * 0.5,
+                "snow accel " + snowEarly + " vs normal " + normalEarly);
+
+        // Same top speed: slipperiness scales force AND friction, terminal is unchanged.
+        double normalTop = hspeedAfterTicks(normal, 1, 40, 0.0);
+        double snowTop = hspeedAfterTicks(snow, 1, 200, 0.0);
+        assertEquals(normalTop, snowTop, 0.2);
+
+        // Long slide: input released at top speed, the snow bot keeps most of it.
+        double normalBrake = hspeedAfterTicks(normal, 0, 1, normalTop);
+        double snowBrake = hspeedAfterTicks(snow, 0, 1, normalTop);
+        assertTrue(snowBrake > normalBrake * 2,
+                "snow brake " + snowBrake + " vs normal " + normalBrake);
+    }
+
+    private static MapleMap flatGroundMap(float fs) {
+        MapleMap map = new MapleMap(211000000, 0, 0, 211000000, 1.0f);
+        server.maps.FootholdTree tree = new server.maps.FootholdTree(
+                new Point(-20000, -2000), new Point(20000, 2000));
+        tree.insert(new Foothold(new Point(-15000, 100), new Point(15000, 100), 1));
+        map.setFootholds(tree);
+        if (fs > 0f) {
+            map.setFootholdSpeed(fs);
+        }
+        return map;
+    }
+
+    private static double hspeedAfterTicks(MapleMap map, int desiredDir, int ticks, double initialHSpeed) {
+        Foothold fh = map.getFootholds().findBelow(new Point(0, 99));
+        BotPhysicsEngine.GroundTravelState state =
+                new BotPhysicsEngine.GroundTravelState(0, initialHSpeed, 0.0);
+        Point pos = new Point(0, 100);
+        for (int i = 0; i < ticks; i++) {
+            BotPhysicsEngine.GroundStepResult step =
+                    BotPhysicsEngine.simulateGroundMotion(map, pos, fh, desiredDir, state, BotMovementProfile.base());
+            state = step.state();
+            pos = step.point();
+        }
+        return Math.abs(state.hspeed());
+    }
+
     private static MapleMap createEmptyTestMap(int mapId) {
         MapleMap map = new MapleMap(mapId, 0, 0, mapId, 1.0f);
         map.setFootholds(new server.maps.FootholdTree(new Point(-2000, -2000), new Point(2000, 2000)));
