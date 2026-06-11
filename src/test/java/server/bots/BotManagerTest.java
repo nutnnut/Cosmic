@@ -1328,6 +1328,42 @@ class BotManagerTest {
     }
 
     @Test
+    void shouldShareThrowingStarsBeforeAssassinNeedsTownErrand() throws Exception {
+        BotManager manager = BotManager.getInstance();
+        Character owner = mock(Character.class);
+        Character needy = projectileBot(10, 1000, 2070000, 0);
+        Character donor = projectileBot(11, 1000, 2070000, 1500);
+
+        when(owner.getId()).thenReturn(84);
+
+        BotEntry needyEntry = new BotEntry(needy, owner, null);
+        BotEntry donorEntry = new BotEntry(donor, owner, null);
+        needyEntry.autopilotMapId = 1000;
+
+        @SuppressWarnings("unchecked")
+        Map<Integer, List<BotEntry>> bots = (Map<Integer, List<BotEntry>>) field(BotManager.class, "bots").get(manager);
+        bots.put(owner.getId(), List.of(needyEntry, donorEntry));
+
+        try (MockedStatic<BotAttackExecutionProvider> attacks = mockStatic(BotAttackExecutionProvider.class,
+                     invocation -> WeaponType.CLAW);
+             MockedStatic<BotManager> managers =
+                     mockStatic(BotManager.class, org.mockito.Mockito.CALLS_REAL_METHODS)) {
+            managers.when(() -> BotManager.after(anyLong(), any(Runnable.class))).thenReturn(null);
+
+            assertTrue(BotAmmoManager.requestLowAmmoShare(needyEntry, needy, true));
+            BotAmmoManager.AmmoDonorPlan plan = BotAmmoManager.selectAmmoDonor(needyEntry, needy, WeaponType.CLAW);
+
+            assertNotNull(plan);
+            assertEquals(donorEntry, plan.entry());
+            assertTrue(needyEntry.ammoShareRequested);
+            assertTrue(needyEntry.autopilotOwnerSupplyGraceUntilMs > System.currentTimeMillis(),
+                    "ammo share request should give autopilot time before town errand");
+        } finally {
+            bots.remove(owner.getId());
+        }
+    }
+
+    @Test
     void shouldSplitSingleAmmoStackByShareBudget() {
         BotEntry entry = new BotEntry(mock(Character.class), mock(Character.class), null);
         entry.pendingPotShareBudget = 2250;
@@ -1522,10 +1558,16 @@ class BotManagerTest {
     }
 
     private static Character ammoBot(int id, int mapId, int arrowCount) {
+        return projectileBot(id, mapId, 2060000, arrowCount);
+    }
+
+    private static Character projectileBot(int id, int mapId, int itemId, int count) {
         Character bot = mock(Character.class);
+        MapleMap map = mock(MapleMap.class);
         Inventory use = new Inventory(bot, InventoryType.USE, (byte) 24);
-        use.addItem(Items.itemWithQuantity(2060000, arrowCount));
+        use.addItem(Items.itemWithQuantity(itemId, count));
         when(bot.getId()).thenReturn(id);
+        when(bot.getMap()).thenReturn(map);
         when(bot.getMapId()).thenReturn(mapId);
         when(bot.getInventory(InventoryType.USE)).thenReturn(use);
         when(bot.getBuffedValue(any(BuffStat.class))).thenReturn(null);

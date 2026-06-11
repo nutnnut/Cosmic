@@ -185,7 +185,7 @@ class BotShopManagerTest {
         NPC npc = shopNpc(new Point(20, 0));
         Shop shop = mock(Shop.class);
 
-        Inventory etc = new Inventory(bot, InventoryType.ETC, (byte) 4); // <= threshold -> cramped
+        Inventory etc = new Inventory(bot, InventoryType.ETC, (byte) 3); // 2 free slots -> cramped
         etc.addItem(Items.itemWithQuantity(4000000, 50));
         when(bot.getMap()).thenReturn(map);
         when(bot.getPosition()).thenReturn(new Point(0, 0));
@@ -213,6 +213,19 @@ class BotShopManagerTest {
 
         assertTrue(entry.shopVisitPending);
         assertTrue(entry.shopSellTrashPending);
+    }
+
+    @Test
+    void shouldNotAutoTriggerSellTrashVisitWithThreeFreeSlots() {
+        Character bot = mock(Character.class);
+        BotEntry entry = new BotEntry(bot, null, null);
+        Inventory etc = new Inventory(bot, InventoryType.ETC, (byte) 4);
+        etc.addItem(Items.itemWithQuantity(4000000, 50));
+        when(bot.getInventory(InventoryType.EQUIP)).thenReturn(null);
+        when(bot.getInventory(InventoryType.USE)).thenReturn(null);
+        when(bot.getInventory(InventoryType.ETC)).thenReturn(etc);
+
+        assertFalse(BotShopManager.shouldAutoSellTrash(entry, bot));
     }
 
     @Test

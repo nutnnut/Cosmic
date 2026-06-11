@@ -58,7 +58,7 @@ final class BotShopManager {
     private static final int RETURN_SCROLL_NEAREST_TOWN = 2030000;
     private static final int RETURN_SCROLL_TARGET_QTY = 10;
     private static final int RECHARGE_MAX_SETS = 10; // cap recharge to the best N own-type stacks
-    private static final int AUTO_SELL_FREE_SLOT_THRESHOLD = 4; // bag tab "cramped" when this few slots left
+    private static final int AUTO_SELL_FREE_SLOT_THRESHOLD = 2; // bag tab "cramped" when this few slots left
 
     static class Config {
         // Debug/verify aid: after a sell-trash visit, list the USE/ETC items that were sold so

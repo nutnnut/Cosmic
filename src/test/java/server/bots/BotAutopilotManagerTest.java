@@ -293,6 +293,7 @@ class BotAutopilotManagerTest {
             assertTrue(BotAutopilotManager.requestResupplyErrand(f.entry(), f.bot()));
             assertEquals(TOWN, f.entry().autopilotErrandMapId);
             assertEquals(1, seams.replies.size());
+            assertEquals("supplies low, popping back to town real quick", seams.replies.get(0));
 
             // While the errand is on, travel runs toward the TOWN, not the grind map.
             assertTrue(BotAutopilotManager.tick(f.entry(), f.bot(), true));
@@ -313,6 +314,18 @@ class BotAutopilotManagerTest {
             // Cooldown: an immediate second request doesn't bounce to the owner...
             assertTrue(BotAutopilotManager.requestResupplyErrand(f.entry(), f.bot()));
             assertEquals(-1, f.entry().autopilotErrandMapId); // ...but doesn't start a new errand either
+        }
+    }
+
+    @Test
+    void shouldNameSellTrashReasonWhenStartingResupplyErrand() {
+        Fixture f = fixture(HUNTING_GROUND);
+
+        try (MockedStatic<BotShopManager> shop = mockStatic(BotShopManager.class)) {
+            shop.when(() -> BotShopManager.shouldAutoSellTrash(f.entry(), f.bot())).thenReturn(true);
+
+            assertEquals("bags are full enough to sell junk - popping back to town real quick",
+                    BotAutopilotManager.resupplyErrandMessage(f.entry(), f.bot()));
         }
     }
 

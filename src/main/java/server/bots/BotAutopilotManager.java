@@ -1,6 +1,7 @@
 package server.bots;
 
 import client.Character;
+import client.inventory.WeaponType;
 import server.bots.BotGrindPlanner.MobCandidate;
 import server.bots.BotGrindPlanner.PartyPlan;
 import server.bots.BotGrindPlanner.Recommendation;
@@ -346,10 +347,61 @@ final class BotAutopilotManager {
         }
         entry.autopilotErrandMapId = returnMap.getId();
         entry.autopilotNextErrandAtMs = System.currentTimeMillis() + ERRAND_COOLDOWN_MS;
-        reply.accept(entry, "running low on supplies, popping back to town real quick");
+        reply.accept(entry, resupplyErrandMessage(entry, bot));
         // No explicit scroll use here: scroll-to-town is a world-graph edge now, so the
         // travel tick takes it whenever it beats walking (BotTravelManager consumable hops).
         return true;
+    }
+
+    static String resupplyErrandMessage(BotEntry entry, Character bot) {
+        List<String> reasons = resupplyErrandReasons(entry, bot);
+        if (reasons.isEmpty()) {
+            return "supplies low, popping back to town real quick";
+        }
+        return String.join(", ", reasons) + " - popping back to town real quick";
+    }
+
+    private static List<String> resupplyErrandReasons(BotEntry entry, Character bot) {
+        List<String> reasons = new ArrayList<>();
+        try {
+            int[] pots = BotPotionManager.countPotions(bot);
+            if (pots[0] < BotManager.cfg.POT_STOP) {
+                reasons.add("low HP pots (" + pots[0] + " left)");
+            }
+            if (pots[1] < BotManager.cfg.POT_STOP) {
+                reasons.add("low MP pots (" + pots[1] + " left)");
+            }
+        } catch (RuntimeException ignored) {
+            // Some tests and edge states use partial character mocks; keep the errand alive.
+        }
+
+        try {
+            WeaponType wt = BotAttackExecutionProvider.getEquippedWeaponType(bot);
+            int ammo = BotCombatManager.countAmmo(bot, wt);
+            if (ammo <= 0) {
+                String ammoName = switch (wt) {
+                    case BOW -> "arrows";
+                    case CROSSBOW -> "bolts";
+                    case CLAW -> "throwing stars";
+                    case GUN -> "bullets";
+                    default -> null;
+                };
+                if (ammoName != null) {
+                    reasons.add("out of " + ammoName);
+                }
+            }
+        } catch (RuntimeException ignored) {
+            // Ammo is best-effort diagnostic text; route even if it cannot be inspected.
+        }
+
+        try {
+            if (BotShopManager.shouldAutoSellTrash(entry, bot)) {
+                reasons.add("bags are full enough to sell junk");
+            }
+        } catch (RuntimeException ignored) {
+            // Same as above: never make a chat detail block the town errand.
+        }
+        return reasons;
     }
 
     static String statusReport(BotEntry entry, Character bot) {
