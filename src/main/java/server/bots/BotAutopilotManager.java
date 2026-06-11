@@ -119,13 +119,7 @@ final class BotAutopilotManager {
         Set<Integer> allowed = common == null ? Set.of() : common;
         List<List<MobCandidate>> perMember = new ArrayList<>(members.size());
         for (BotEntry member : members) {
-            List<MobCandidate> mine = new ArrayList<>();
-            for (MobCandidate c : BotGrindAdvisor.candidatesFor(member, member.bot)) {
-                if (allowed.contains(c.mapId())) {
-                    mine.add(c);
-                }
-            }
-            perMember.add(mine);
+            perMember.add(BotGrindAdvisor.candidatesFor(member, member.bot, allowed::contains));
         }
         return BotGrindPlanner.planPartyBest(perMember, weights, ThreadLocalRandom.current());
     };

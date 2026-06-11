@@ -163,17 +163,19 @@ final class BotGrindAdvisor {
     static Recommendation recommend(BotEntry entry, Character bot,
                                     java.util.function.IntPredicate mapAllowed,
                                     java.util.function.IntToDoubleFunction mapScoreWeight) {
-        List<MobCandidate> candidates = buildCandidates(entry, bot);
-        candidates.removeIf(c -> !mapAllowed.test(c.mapId()));
+        List<MobCandidate> candidates = buildCandidates(entry, bot, mapAllowed);
         return BotGrindPlanner.planBest(candidates, mapScoreWeight, ThreadLocalRandom.current());
     }
 
-    /** Candidate pool for external planners (party autopilot). Same pool recommend() uses. */
-    static List<MobCandidate> candidatesFor(BotEntry entry, Character bot) {
-        return buildCandidates(entry, bot);
+    /** Candidate pool for external planners (party autopilot). Same pool recommend() uses;
+     *  pass the allowed-map filter IN so unreachable maps skip the per-mob profiling cost. */
+    static List<MobCandidate> candidatesFor(BotEntry entry, Character bot,
+                                            java.util.function.IntPredicate mapAllowed) {
+        return buildCandidates(entry, bot, mapAllowed);
     }
 
-    private static List<MobCandidate> buildCandidates(BotEntry entry, Character bot) {
+    private static List<MobCandidate> buildCandidates(BotEntry entry, Character bot,
+                                                      java.util.function.IntPredicate mapAllowed) {
         ItemInformationProvider ii = ItemInformationProvider.getInstance();
         BotSpawnIndex.Index index = BotSpawnIndex.get();
         MonsterInformationProvider mi = MonsterInformationProvider.getInstance();
@@ -186,7 +188,8 @@ final class BotGrindAdvisor {
 
         List<MobCandidate> candidates = new ArrayList<>();
         for (BotSpawnIndex.MapSpawns map : index.byMap().values()) {
-            if (map.town() || map.mapId() >= INSTANCED_MAPID_FLOOR) {
+            if (map.town() || map.mapId() >= INSTANCED_MAPID_FLOOR
+                    || !mapAllowed.test(map.mapId())) {
                 continue;
             }
             Map<MobProfile, Integer> pointsByMob = new HashMap<>();
@@ -655,7 +658,7 @@ final class BotGrindAdvisor {
     private static void exportGrindDecisionBlocking(BotEntry entry, Character bot) {
         List<MobCandidate> candidates;
         try {
-            candidates = buildCandidates(entry, bot);
+            candidates = buildCandidates(entry, bot, mapId -> true);
         } catch (RuntimeException e) {
             log.warn("Grind debug failed for {}", bot.getName(), e);
             BotManager.getInstance().botReply(entry, "grind debug blew up, check the log");
@@ -709,13 +712,20 @@ final class BotGrindAdvisor {
         return name != null && !name.isEmpty() ? name : ("mob " + mobId);
     }
 
+    /** Map names are static WZ data, but loadPlaceName walks String.wz on every call (behind a
+     *  synchronized provider) and a pass asks for thousands — cache forever. */
+    private static final java.util.concurrent.ConcurrentHashMap<Integer, String> mapNameCache =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
     private static String mapName(int mapId) {
-        try {
-            String name = MapFactory.loadPlaceName(mapId);
-            return name != null ? name : "";
-        } catch (RuntimeException e) {
-            return "";
-        }
+        return mapNameCache.computeIfAbsent(mapId, id -> {
+            try {
+                String name = MapFactory.loadPlaceName(id);
+                return name != null ? name : "";
+            } catch (RuntimeException e) {
+                return "";
+            }
+        });
     }
 
     private static String itemName(ItemInformationProvider ii, int itemId) {

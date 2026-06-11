@@ -1956,16 +1956,18 @@ public class BotManager {
     // -------------------------------------------------------------------------
 
     private void tick(BotEntry entry, int ownerCharId, int botCharId) {
-        long startedAt = BotPerformanceMonitor.enabled() ? System.nanoTime() : 0L;
+        long startedAt = System.nanoTime();
         try {
             tickCore(entry, ownerCharId, botCharId);
             resetBotTickFailures(entry);
         } catch (Throwable t) {
             handleBotTickFailure(entry, ownerCharId, botCharId, t);
         } finally {
-            if (startedAt != 0L) {
-                BotPerformanceMonitor.record("tick-total", System.nanoTime() - startedAt);
+            long elapsedNs = System.nanoTime() - startedAt;
+            if (BotPerformanceMonitor.enabled()) {
+                BotPerformanceMonitor.record("tick-total", elapsedNs);
             }
+            BotPerformanceMonitor.noteTickStall(entry, elapsedNs);
         }
     }
 

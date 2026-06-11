@@ -28,7 +28,14 @@ final class BotNavigationManager {
     // immediately re-entering a portal (e.g. bouncing back through the return portal). Gates ONLY
     // portal execution — movement, attacks and every other action continue unaffected.
     private static final long PORTAL_USE_COOLDOWN_MS = 250L;
-    private static final long SLOW_PATHFIND_WARN_NS = 50_000_000L;
+    // Terminal warns are for the absolute worst searches only — the perf monitor already
+    // aggregates everything else. Rate-limited so one degenerate map can't flood the console.
+    private static final long SLOW_PATHFIND_WARN_NS = 250_000_000L;
+    private static final long SLOW_PATHFIND_WARN_COOLDOWN_MS = 10_000L;
+    private static final java.util.concurrent.atomic.AtomicLong slowPathfindNextWarnAtMs =
+            new java.util.concurrent.atomic.AtomicLong();
+    private static final java.util.concurrent.atomic.AtomicInteger slowPathfindSuppressed =
+            new java.util.concurrent.atomic.AtomicInteger();
 
     /** Throttle warmup notifications per (ownerId -> mapId -> lastNotifyMs). */
     private static final Map<Integer, Map<Integer, Long>> WARMUP_NOTIFIED = new ConcurrentHashMap<>();
@@ -1011,12 +1018,20 @@ final class BotNavigationManager {
         if (profile.elapsedNs() < SLOW_PATHFIND_WARN_NS) {
             return;
         }
+        long now = System.currentTimeMillis();
+        long next = slowPathfindNextWarnAtMs.get();
+        if (now < next || !slowPathfindNextWarnAtMs.compareAndSet(next, now + SLOW_PATHFIND_WARN_COOLDOWN_MS)) {
+            slowPathfindSuppressed.incrementAndGet();
+            return;
+        }
+        int suppressed = slowPathfindSuppressed.getAndSet(0);
         int regionCount = graph != null && graph.regions != null ? graph.regions.size() : -1;
         int outgoingFromStart = graph != null ? graph.getOutgoing(startRegionId).size() : -1;
         String caller = pathfindCaller == null || pathfindCaller.isBlank() ? "default" : pathfindCaller;
         int bestGoalCost = profile.bestGoalCost() == Integer.MAX_VALUE ? -1 : profile.bestGoalCost();
         log.warn(
-                "Slow bot pathfind: caller={} took {} ms map={} startRegion={} targetRegion={} regions={} startOut={} startPos=({}, {}) targetPos=({}, {}) expanded={} stale={} edgeChecks={} usableEdges={} relaxations={} openPeak={} bestGoalCost={} resultEdges={}",
+                "Slow bot pathfind (suppressedSinceLast=" + suppressed
+                        + "): caller={} took {} ms map={} startRegion={} targetRegion={} regions={} startOut={} startPos=({}, {}) targetPos=({}, {}) expanded={} stale={} edgeChecks={} usableEdges={} relaxations={} openPeak={} bestGoalCost={} resultEdges={}",
                 caller,
                 String.format("%.1f", profile.elapsedNs() / 1_000_000.0),
                 map != null ? map.getId() : -1,

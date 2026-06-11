@@ -142,6 +142,47 @@ public final class BotPerformanceMonitor {
         }
     }
 
+    // ---- always-on worst-stall watch (independent of the opt-in report above) ----
+
+    /** A single bot tick taking this long is a real stutter worth a terminal line even with
+     *  monitoring off. Everything milder belongs to the opt-in aggregated report. */
+    static final double STALL_WARN_MS = 250.0;
+    private static final long STALL_WARN_COOLDOWN_MS = 30_000L;
+    private static final java.util.concurrent.atomic.AtomicLong stallNextWarnAtMs =
+            new java.util.concurrent.atomic.AtomicLong();
+    private static final java.util.concurrent.atomic.AtomicInteger stallSuppressed =
+            new java.util.concurrent.atomic.AtomicInteger();
+    private static final java.util.concurrent.atomic.AtomicLong stallSuppressedWorstNs =
+            new java.util.concurrent.atomic.AtomicLong();
+
+    /** Always-on: logs the absolute worst tick stalls, rate-limited to one line per
+     *  {@link #STALL_WARN_COOLDOWN_MS} (suppressed stalls are counted into the next line). */
+    static void noteTickStall(BotEntry entry, long elapsedNs) {
+        if (elapsedNs < (long) (STALL_WARN_MS * 1_000_000.0)) {
+            return;
+        }
+        long now = System.currentTimeMillis();
+        long next = stallNextWarnAtMs.get();
+        if (now < next || !stallNextWarnAtMs.compareAndSet(next, now + STALL_WARN_COOLDOWN_MS)) {
+            stallSuppressed.incrementAndGet();
+            stallSuppressedWorstNs.accumulateAndGet(elapsedNs, Math::max);
+            return;
+        }
+        int suppressed = stallSuppressed.getAndSet(0);
+        long suppressedWorst = stallSuppressedWorstNs.getAndSet(0);
+        String botName = entry != null && entry.bot != null ? entry.bot.getName() : "?";
+        int mapId = entry != null && entry.bot != null ? entry.bot.getMapId() : -1;
+        if (suppressed > 0) {
+            log.warn("Bot tick stall: {} on map {} took {} ms ({} more stalls >= {} ms in the last {}s, worst {} ms)",
+                    botName, mapId, formatMs(elapsedNs / 1_000_000.0), suppressed,
+                    formatMs(STALL_WARN_MS), STALL_WARN_COOLDOWN_MS / 1000,
+                    formatMs(suppressedWorst / 1_000_000.0));
+        } else {
+            log.warn("Bot tick stall: {} on map {} took {} ms",
+                    botName, mapId, formatMs(elapsedNs / 1_000_000.0));
+        }
+    }
+
     static void record(String section, long elapsedNs) {
         if (!enabled || elapsedNs < 0) {
             return;
