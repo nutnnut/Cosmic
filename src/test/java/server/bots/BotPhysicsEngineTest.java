@@ -562,6 +562,31 @@ class BotPhysicsEngineTest {
                 "snow brake " + snowBrake + " vs normal " + normalBrake);
     }
 
+    @Test
+    void shouldLoadElNathSlipperinessFromWzAndSlide() {
+        MapleMap elNath = BotNavigationMapLoader.loadMapGeometry(211000000);
+        assertEquals(0.2f, elNath.getFootholdSpeed(), 0.001f);
+
+        // End-to-end on the real map: one tick of acceleration reaches a fraction of the
+        // speed it reaches on a normal map.
+        Foothold fh = elNath.getFootholds().getAllFootholds().stream()
+                .filter(f -> !f.isWall() && f.getY1() == f.getY2() && Math.abs(f.getX2() - f.getX1()) > 80)
+                .findFirst().orElseThrow();
+        Point start = new Point((f1(fh.getX1(), fh.getX2())), fh.getY1());
+        BotPhysicsEngine.GroundTravelState state =
+                new BotPhysicsEngine.GroundTravelState(start.x, 0.0, 0.0);
+        BotPhysicsEngine.GroundStepResult step =
+                BotPhysicsEngine.simulateGroundMotion(elNath, start, fh, 1, state, BotMovementProfile.base());
+        double snowSpeed = Math.abs(step.state().hspeed());
+        double normalSpeed = hspeedAfterTicks(flatGroundMap(0f), 1, 1, 0.0);
+        assertTrue(snowSpeed < normalSpeed * 0.5,
+                "el nath accel " + snowSpeed + " vs normal " + normalSpeed);
+    }
+
+    private static int f1(int x1, int x2) {
+        return Math.min(x1, x2) + 20;
+    }
+
     private static MapleMap flatGroundMap(float fs) {
         MapleMap map = new MapleMap(211000000, 0, 0, 211000000, 1.0f);
         server.maps.FootholdTree tree = new server.maps.FootholdTree(
