@@ -136,7 +136,7 @@ class CombatFormulaProviderTest {
         when(bot.getTotalWatk()).thenReturn(100);
         when(bot.calculateMaxBaseDamage(100)).thenReturn(1_000);
         when(bot.calculateMinBaseDamage(100, 0.6d)).thenReturn(500);
-        when(effect.getDamage()).thenReturn(260);
+        when(effect.getDamagePercent()).thenReturn(260);
         mockWeapon(bot, 1432000);
 
         Skill masterySkill = mock(Skill.class);
@@ -191,7 +191,7 @@ class CombatFormulaProviderTest {
         StatEffect effect = mock(StatEffect.class);
         when(bot.getTotalWatk()).thenReturn(90);
         when(bot.getTotalLuk()).thenReturn(200);
-        when(effect.getDamage()).thenReturn(150);
+        when(effect.getDamagePercent()).thenReturn(150);
 
         CombatFormulaProvider.DamageProfile profile =
                 provider.resolveDamageProfile(bot, constants.skills.Rogue.LUCKY_SEVEN, effect, false);
@@ -209,7 +209,7 @@ class CombatFormulaProviderTest {
         when(bot.getTotalWatk()).thenReturn(120);
         when(bot.getTotalStr()).thenReturn(100);
         when(bot.getTotalDex()).thenReturn(50);
-        when(effect.getDamage()).thenReturn(240);
+        when(effect.getDamagePercent()).thenReturn(240);
         mockWeapon(bot, 1432000);
 
         Skill masterySkill = mock(Skill.class);
@@ -236,7 +236,7 @@ class CombatFormulaProviderTest {
         when(bot.getTotalWatk()).thenReturn(100);
         when(bot.getTotalStr()).thenReturn(100);
         when(bot.getTotalDex()).thenReturn(50);
-        when(effect.getDamage()).thenReturn(100);
+        when(effect.getDamagePercent()).thenReturn(100);
         mockWeapon(bot, 1432000);
 
         Skill masterySkill = mock(Skill.class);
@@ -267,7 +267,7 @@ class CombatFormulaProviderTest {
         when(bot.getTotalWatk()).thenReturn(100);
         when(bot.getTotalStr()).thenReturn(100);
         when(bot.getTotalDex()).thenReturn(50);
-        when(effect.getDamage()).thenReturn(100);
+        when(effect.getDamagePercent()).thenReturn(100);
         mockWeapon(bot, 1442000);
 
         Skill masterySkill = mock(Skill.class);
@@ -298,7 +298,7 @@ class CombatFormulaProviderTest {
         when(bot.getTotalWatk()).thenReturn(100);
         when(bot.getTotalStr()).thenReturn(100);
         when(bot.getTotalDex()).thenReturn(50);
-        when(effect.getDamage()).thenReturn(100);
+        when(effect.getDamagePercent()).thenReturn(100);
         mockWeapon(bot, 1432000);
 
         Skill masterySkill = mock(Skill.class);
