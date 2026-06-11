@@ -587,6 +587,27 @@ class BotPhysicsEngineTest {
         return Math.min(x1, x2) + 20;
     }
 
+    @Test
+    void shouldRefuseDownJumpWhenTheNextFloorIsTooFarBelow() {
+        // Platform gap 150px: legal down-jump. Gap 860px (Orbis tower rim): refused, the
+        // client only down-jumps when a landing exists within a bounded probe below — most
+        // such ledges carry NO forbidFallDown flag.
+        assertTrue(BotPhysicsEngine.simulateDownJumpLanding(
+                twoFloorMap(150), new Point(0, -150)) != null);
+        assertTrue(BotPhysicsEngine.simulateDownJumpLanding(
+                twoFloorMap(860), new Point(0, -860)) == null);
+    }
+
+    private static MapleMap twoFloorMap(int gapPx) {
+        MapleMap map = new MapleMap(200000000, 0, 0, 200000000, 1.0f);
+        server.maps.FootholdTree tree = new server.maps.FootholdTree(
+                new Point(-2000, -2000), new Point(2000, 2000));
+        tree.insert(new Foothold(new Point(-500, -gapPx), new Point(500, -gapPx), 1));
+        tree.insert(new Foothold(new Point(-500, 0), new Point(500, 0), 2));
+        map.setFootholds(tree);
+        return map;
+    }
+
     private static MapleMap flatGroundMap(float fs) {
         MapleMap map = new MapleMap(211000000, 0, 0, 211000000, 1.0f);
         server.maps.FootholdTree tree = new server.maps.FootholdTree(

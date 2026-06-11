@@ -1480,11 +1480,22 @@ final class BotPhysicsEngine {
         return simulatePostLandingGroundTicks(map, landing, Integer.compare(stepX, 0), profile, postLandingTicks);
     }
 
+    // The client only allows a down-jump when a landing foothold exists within a bounded probe
+    // below the player (CUserLocal::TryDoingFallDown bails when the probe finds nothing) — most
+    // "can't fall here" platforms carry NO forbidFallDown flag (e.g. Orbis tower rims, 860px
+    // above the next floor). 300px cleanly separates legitimate platform gaps (~90-150px) from
+    // forbidden ledges; the exact client probe constant is pending disasm extraction.
+    static final int DOWN_JUMP_MAX_DROP_PX = 300;
+
     static JumpLanding simulateDownJumpLanding(MapleMap map, Point from) {
         if (!canStartDownJump(map, from)) {
             return null;
         }
-        return simulateLanding(map, from, -downJumpForcePerTick(), 0, cfg.DOWN_JUMP_GRACE_MS);
+        JumpLanding landing = simulateLanding(map, from, -downJumpForcePerTick(), 0, cfg.DOWN_JUMP_GRACE_MS);
+        if (landing == null || landing.point().y - from.y > DOWN_JUMP_MAX_DROP_PX) {
+            return null;
+        }
+        return landing;
     }
 
     static JumpLanding simulateFallLanding(MapleMap map, Point from, int stepX) {

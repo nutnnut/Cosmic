@@ -33,7 +33,9 @@ final class BotNavigationGraphProvider {
     //     change on maps with stacked platforms) — caches must rebuild.
     // 48: WZ info/fs reinterpreted as slipperiness (was a bogus ground-speed scale): walk
     //     step on fs maps jumps back to full speed, runways stretch by 1/fs.
-    private static final int GRAPH_VERSION = 48;
+    // 49: down-jumps capped at DOWN_JUMP_MAX_DROP_PX (client probes a bounded range below;
+    //     Orbis-tower-style 860px down-jump edges must disappear).
+    private static final int GRAPH_VERSION = 49;
     private static final int ENDPOINT_ANCHOR_SPACING_PX = 10;
     private static final int DOWN_JUMP_PRELAUNCH_WINDOW_PX = 20;
     private static final int SAME_SOLID_NEST_GAP_PX = 8;

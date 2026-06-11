@@ -200,7 +200,8 @@ final class BotFallbackMovementManager {
         }
         MapleMap map = entry.bot.getMap();
         if (!shouldConsiderFallbackDrop(entry, map, botPos, targetPos)
-                || !BotPhysicsEngine.canStartDownJump(map, botPos)) {
+                // Full landing sim, not just the flag: enforces the bounded-drop rule too.
+                || BotPhysicsEngine.simulateDownJumpLanding(map, botPos) == null) {
             return false;
         }
         return Math.abs(targetPos.x - botPos.x) <= Math.max(BotMovementManager.cfg.FOLLOW_DIST,
