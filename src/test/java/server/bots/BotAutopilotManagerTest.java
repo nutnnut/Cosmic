@@ -473,6 +473,60 @@ class BotAutopilotManagerTest {
     }
 
     @Test
+    void shouldPullDecisionForwardWhenUpgradeEquipsOnAutopilot() {
+        Fixture f = fixture(HUNTING_GROUND);
+        f.entry().autopilotMapId = HUNTING_GROUND;
+        f.entry().autopilotNextDecisionAtMs = System.currentTimeMillis() + 10 * 60_000L;
+
+        BotAutopilotManager.noteGearUpgraded(f.entry());
+
+        long expectedAtMost = System.currentTimeMillis() + BotAutopilotManager.UPGRADE_REDECIDE_DELAY_MS;
+        assertTrue(f.entry().autopilotNextDecisionAtMs <= expectedAtMost,
+                "decision should be pulled forward to ~now + " + BotAutopilotManager.UPGRADE_REDECIDE_DELAY_MS);
+        assertTrue(f.entry().autopilotNextDecisionAtMs > System.currentTimeMillis(),
+                "decision should still be in the future, not immediate");
+    }
+
+    @Test
+    void shouldNeverPushDecisionBackOnUpgrade() {
+        Fixture f = fixture(HUNTING_GROUND);
+        f.entry().autopilotMapId = HUNTING_GROUND;
+        long soon = System.currentTimeMillis() + 1_000L;
+        f.entry().autopilotNextDecisionAtMs = soon;
+
+        BotAutopilotManager.noteGearUpgraded(f.entry());
+
+        assertEquals(soon, f.entry().autopilotNextDecisionAtMs);
+    }
+
+    @Test
+    void shouldIgnoreUpgradeWhenNotAutopilotingOrFarmOrdered() {
+        // Not on autopilot at all: nothing to re-decide.
+        Fixture idle = fixture(HUNTING_GROUND);
+        long far = System.currentTimeMillis() + 10 * 60_000L;
+        idle.entry().autopilotNextDecisionAtMs = far;
+        BotAutopilotManager.noteGearUpgraded(idle.entry());
+        assertEquals(far, idle.entry().autopilotNextDecisionAtMs);
+
+        // Owner-ordered "farm <item>": the objective is pinned, the roll changes nothing.
+        Fixture farming = fixture(HUNTING_GROUND);
+        farming.entry().autopilotMapId = HUNTING_GROUND;
+        farming.entry().autopilotFarmItemId = 1402000;
+        farming.entry().autopilotNextDecisionAtMs = far;
+        BotAutopilotManager.noteGearUpgraded(farming.entry());
+        assertEquals(far, farming.entry().autopilotNextDecisionAtMs);
+        assertEquals(1402000, farming.entry().autopilotFarmItemId, "farm objective must survive");
+
+        // Party autopilot: re-decides are leader-driven on the group clock.
+        Fixture party = fixture(HUNTING_GROUND);
+        party.entry().autopilotMapId = HUNTING_GROUND;
+        party.entry().autopilotParty = true;
+        party.entry().autopilotNextDecisionAtMs = far;
+        BotAutopilotManager.noteGearUpgraded(party.entry());
+        assertEquals(far, party.entry().autopilotNextDecisionAtMs);
+    }
+
+    @Test
     void shouldAttributePartyGearGoalsToTheirBeneficiary() {
         Fixture leader = fixture(TOWN);
         Fixture buddy = fixture(TOWN);

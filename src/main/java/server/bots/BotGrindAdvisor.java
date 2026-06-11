@@ -4,7 +4,6 @@ import client.Character;
 import client.inventory.Equip;
 import client.inventory.InventoryType;
 import client.inventory.Item;
-import config.YamlConfig;
 import constants.game.GameConstants;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -36,10 +35,13 @@ import java.util.concurrent.ThreadLocalRandom;
  * <p>Candidate = (mob, map): every mob in the {@link BotSpawnIndex} the bot can actually damage,
  * at its densest spawn sites. Kill time uses the combat SSOT ({@code estimateBestSkillHitDamage},
  * physical fallback) — the same model as the scroll farming-cost anchor. Gear prospects = equip
- * drops ({@code drop_data}) that this bot can wear and that beat what it currently has in that
- * slot, scored as the <em>expected</em> roll: catalog stats (vanilla roll is symmetric, so its
- * mean is the catalog value) plus the godly-roll mixture's expected bonus on stats the item
- * already has. The planner balances exp/h vs gear progression dynamically — see its javadoc.
+ * drops ({@code drop_data}) that this bot can wear, valued as the EXPECTED IMPROVEMENT over the
+ * worn item in that slot: Monte Carlo over the real drop-roll distribution (the same
+ * {@code ii.randomizeStats} call the map drop path uses — vanilla spread plus the godly mixture),
+ * {@code E[max(0, score(roll) - score(worn))]}. A below-average worn roll keeps re-farming the
+ * same item moderately valuable; a near-godly worn roll drives it to ~zero; an empty slot is
+ * worth the full mean — so stay-or-leave emerges from the planner's gear-first shortlist plus
+ * the travel penalty, with no drop counters or stay timers anywhere.
  *
  * <p>Skipped on purpose (documented, not silent): towns, instanced/event fields (mapId &ge;
  * 900000000), sites with fewer than {@link #MIN_SPAWN_POINTS} spawn points, bosses, friendlies,
@@ -58,6 +60,8 @@ final class BotGrindAdvisor {
     private static final int INSTANCED_MAPID_FLOOR = 900000000;
     /** Ignore "upgrades" below this offense-score gain — rounding noise, not progression. */
     private static final double MIN_GEAR_GAIN_SCORE = 0.5;
+    /** Monte Carlo drop rolls per item per pass (~microseconds each; runs on DECIDE_POOL). */
+    private static final int ROLL_SAMPLES = 32;
 
     /** Lazily-loaded equip drops per mob: mobId → list of {itemId, chance}. */
     private static volatile Map<Integer, List<int[]>> equipDropsByMob;
@@ -154,6 +158,7 @@ final class BotGrindAdvisor {
 
         double totalWornOffense = totalWornOffense(bot, ii);
         Map<Short, Double> wornScoreBySlot = new HashMap<>();
+        Map<Integer, double[]> rollScoreCache = new HashMap<>(); // per pass: same item drops from many mobs
 
         List<MobCandidate> candidates = new ArrayList<>();
         for (Map.Entry<Integer, List<BotSpawnIndex.SpawnSite>> e : index.byMob().entrySet()) {
@@ -177,7 +182,8 @@ final class BotGrindAdvisor {
                 continue; // can't meaningfully damage it
             }
 
-            List<GearProspect> gear = gearProspects(bot, ii, mobId, wornScoreBySlot, totalWornOffense);
+            List<GearProspect> gear = gearProspects(bot, ii, mobId, wornScoreBySlot, rollScoreCache,
+                    totalWornOffense);
             int exp = stats.getExp() * bot.getExpRate();
             addSiteCandidates(candidates, index, mi, e.getValue(), mobId, stats.getLevel(), exp,
                     killSeconds, gear, mapId -> true);
@@ -307,9 +313,11 @@ final class BotGrindAdvisor {
         return Math.max(ATTACK_CYCLE_SECONDS, Math.max(1, mob.getMaxHp()) / dps);
     }
 
-    /** Wearable equip drops of this mob that beat the bot's current item in that slot. */
+    /** Wearable equip drops of this mob, valued as expected improvement over the worn item. */
     private static List<GearProspect> gearProspects(Character bot, ItemInformationProvider ii, int mobId,
-                                                    Map<Short, Double> wornScoreBySlot, double totalWornOffense) {
+                                                    Map<Short, Double> wornScoreBySlot,
+                                                    Map<Integer, double[]> rollScoreCache,
+                                                    double totalWornOffense) {
         List<int[]> drops = equipDropsByMob().get(mobId);
         if (drops == null) {
             return List.of();
@@ -317,8 +325,7 @@ final class BotGrindAdvisor {
         List<GearProspect> out = new ArrayList<>(2);
         for (int[] drop : drops) {
             int itemId = drop[0];
-            Map<String, Integer> st = ii.getEquipStats(itemId);
-            if (st == null) {
+            if (ii.getEquipStats(itemId) == null) {
                 continue;
             }
             Short slot = BotScrollManager.primarySlot(ii, itemId);
@@ -334,12 +341,13 @@ final class BotGrindAdvisor {
             if (!(catalog instanceof Equip eq) || !BotScrollManager.wearable(bot, ii, eq)) {
                 continue;
             }
-            double expectedScore = expectedDropScore(bot, ii, itemId, st);
             double wornScore = wornScoreBySlot.computeIfAbsent(slot, s -> {
                 Equip worn = BotScrollManager.wornInSlot(bot, ii, s);
                 return worn != null ? BotScrollManager.offenseValue(bot, worn) : 0.0;
             });
-            double gain = expectedScore - wornScore;
+            double[] samples = rollScoreCache.computeIfAbsent(itemId,
+                    id -> rollScores.sample(bot, id, ROLL_SAMPLES));
+            double gain = expectedImprovement(samples, wornScore);
             if (gain < MIN_GEAR_GAIN_SCORE) {
                 continue;
             }
@@ -351,31 +359,42 @@ final class BotGrindAdvisor {
         return out;
     }
 
+    /** Offense scores of {@code n} fresh drop rolls of an item for this bot; test seam
+     *  (ItemInformationProvider cannot load in unit tests). */
+    @FunctionalInterface
+    interface RollScoreSampler {
+        double[] sample(Character bot, int itemId, int n);
+    }
+
+    static RollScoreSampler rollScores = BotGrindAdvisor::sampleRollScores;
+
+    /** SSOT roll: the exact {@code randomizeStats(getEquipById(id))} call the map drop path
+     *  uses (godly check included), scored with the same offense SSOT as worn gear. */
+    private static double[] sampleRollScores(Character bot, int itemId, int n) {
+        ItemInformationProvider ii = ItemInformationProvider.getInstance();
+        double[] out = new double[n];
+        for (int i = 0; i < n; i++) {
+            out[i] = BotScrollManager.offenseValue(bot,
+                    ii.randomizeStats((Equip) ii.getEquipById(itemId)));
+        }
+        return out;
+    }
+
     /**
-     * Expected offense score of a fresh drop: the vanilla roll is symmetric around catalog stats
-     * (mean = catalog), and with probability GODLY_STATS_DROP_CHANCE each already-present stat gains
-     * Uniform{0..maxBonus} (mean maxBonus/2). The presence-weight trick reuses the job-weighted
-     * scoring SSOT: offenseValueFromStats over a 0/1 presence map = the summed weights of present
-     * offense stats.
+     * {@code E[max(0, roll - current)]} over the sampled roll scores: the value of farming
+     * another copy. Monotonically shrinks as the current roll improves (a near-godly worn copy
+     * makes almost every reroll worthless); an empty slot ({@code current = 0}) is worth the
+     * full sample mean.
      */
-    private static double expectedDropScore(Character bot, ItemInformationProvider ii,
-                                            int itemId, Map<String, Integer> st) {
-        double base = BotScrollManager.offenseValueFromStats(bot, st);
-        if (!YamlConfig.config.server.GODLY_STATS_ENABLED) {
-            return base;
+    static double expectedImprovement(double[] sampleScores, double currentScore) {
+        if (sampleScores == null || sampleScores.length == 0) {
+            return 0.0;
         }
-        Map<String, Integer> presence = new HashMap<>();
-        for (Map.Entry<String, Integer> e : st.entrySet()) {
-            if (e.getValue() != null && e.getValue() > 0) {
-                presence.put(e.getKey(), 1);
-            }
+        double sum = 0.0;
+        for (double s : sampleScores) {
+            sum += Math.max(0.0, s - currentScore);
         }
-        double presentWeights = BotScrollManager.offenseValueFromStats(bot, presence);
-        int reqLevel = st.getOrDefault("reqLevel", 0);
-        int maxBonus = Math.max(Math.round((float) (reqLevel * YamlConfig.config.server.GODLY_STATS_BONUS_SCALING)),
-                YamlConfig.config.server.GODLY_STATS_MIN_BONUS);
-        double pGodly = YamlConfig.config.server.GODLY_STATS_DROP_CHANCE / 100.0;
-        return base + pGodly * (maxBonus / 2.0) * presentWeights;
+        return sum / sampleScores.length;
     }
 
     private static double totalWornOffense(Character bot, ItemInformationProvider ii) {

@@ -100,13 +100,14 @@ class BotEquipManager {
      * ring stat contribution rarely unlocks armor). Cash and {@code pendingOffer} excluded.
      * Called on mode change (follow / stop / grind).
      */
-    static void autoEquip(Character bot, Character owner, Item pendingOffer) {
-        autoEquip(bot, owner, pendingOffer, false);
+    static boolean autoEquip(Character bot, Character owner, Item pendingOffer) {
+        return autoEquip(bot, owner, pendingOffer, false);
     }
 
-    static void autoEquip(Character bot, Character owner, Item pendingOffer, boolean force) {
+    /** Returns true when the pass actually moved gear (an upgrade got equipped). */
+    static boolean autoEquip(Character bot, Character owner, Item pendingOffer, boolean force) {
         if (!shouldRunAutoEquip(bot, System.currentTimeMillis(), force)) {
-            return;
+            return false;
         }
 
         ItemInformationProvider ii = ItemInformationProvider.getInstance();
@@ -161,10 +162,11 @@ class BotEquipManager {
             }
         }
 
+        boolean changed = false;
         if (bestPicks != null) {
 //            log.info("Bot {} autoequip: {}", bot.getName(),
 //                    describeEquipPlan(ii, bestWeapon, bestScore, bestPicks, bestCapHit));
-            applyEquipPlan(bot, ii, eqdInv, currentBySlot, bestPicks, bestWeapon, dpSlots);
+            changed = applyEquipPlan(bot, ii, eqdInv, currentBySlot, bestPicks, bestWeapon, dpSlots);
             // Sweep currently-equipped items whose reqs aren't met against the bot's now-final
             // stats. This catches gear left equipped via prior trade-debug or stat changes that
             // would otherwise stick because applyEquipPlan only emits moves into occupied slots.
@@ -182,6 +184,7 @@ class BotEquipManager {
                 // Don't let a chat error block the equip pass.
             }
         }
+        return changed;
     }
 
     static boolean shouldRunAutoEquip(Character bot, long nowMs, boolean force) {
@@ -1140,7 +1143,8 @@ class BotEquipManager {
      * item (and 2H↔shield / overall↔pants auto-unequips). Does NOT proactively unequip
      * gear when target is empty — that would downgrade without a replacement.
      */
-    private static void applyEquipPlan(Character bot, ItemInformationProvider ii, Inventory eqdInv,
+    /** Returns true when any move was issued (the worn set actually changed). */
+    private static boolean applyEquipPlan(Character bot, ItemInformationProvider ii, Inventory eqdInv,
                                         Map<Short, Equip> currentBySlot, Map<Short, Equip> picks,
                                         Equip targetWeapon, List<Short> dpSlots) {
         // Order: weapon first (handles 2H↔1H eviction), overall before pants, then others.
@@ -1153,6 +1157,7 @@ class BotEquipManager {
         }
         Map<Short, Equip> full = new HashMap<>(picks);
         full.put((short) -11, targetWeapon);
+        boolean moved = false;
         for (Short slot : order) {
             Equip target = full.get(slot);
             Equip current = currentBySlot.get(slot);
@@ -1162,7 +1167,9 @@ class BotEquipManager {
             if (pos <= 0) continue; // already in an EQUIPPED slot — skip to avoid swap loops
             InventoryManipulator.handleItemMove(bot.getClient(), InventoryType.EQUIP,
                     pos, slot, (short) 1);
+            moved = true;
         }
+        return moved;
     }
 
     /**

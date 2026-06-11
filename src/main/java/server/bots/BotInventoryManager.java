@@ -179,7 +179,10 @@ class BotInventoryManager {
             if (pickedItem != null && pickedItemId > 0 && hasItem(bot, pickedItem)) {
                 InventoryType pickedType = ItemConstants.getInventoryType(pickedItemId);
                 if (pickedType == InventoryType.EQUIP) {
-                    BotEquipManager.autoEquip(bot, entry.owner, entry.pendingLootOfferItem);
+                    if (BotEquipManager.autoEquip(bot, entry.owner, entry.pendingLootOfferItem)) {
+                        // A looted roll just got worn — re-ask stay-or-leave soon (autopilot).
+                        BotAutopilotManager.noteGearUpgraded(entry);
+                    }
                     if (hasItem(bot, pickedItem)) {
                         BotOfferManager.scheduleLootOfferPrompt(entry, bot, pickedItem, 5_000L);
                     }

@@ -34,6 +34,7 @@ final class BotAutopilotManager {
     private static final long DECISION_JITTER_MS = 6 * 60_000L; // de-syncs many bots' re-decides
     private static final long ERRAND_COOLDOWN_MS = 5 * 60_000L; // min spacing between resupply trips
     private static final long OWNER_SUPPLY_GRACE_MS = 20_000L;
+    static final long UPGRADE_REDECIDE_DELAY_MS = 25_000L; // re-ask stay-or-leave soon after a roll lands
 
     private static final List<String> NO_SPOT_REPLIES = List.of(
             "can't find anywhere worth grinding that i can walk to, staying put",
@@ -353,6 +354,24 @@ final class BotAutopilotManager {
         // No explicit scroll use here: scroll-to-town is a world-graph edge now, so the
         // travel tick takes it whenever it beats walking (BotTravelManager consumable hops).
         return true;
+    }
+
+    /**
+     * The bot just equipped a looted upgrade mid-autopilot: the roll landed, so the expected
+     * improvement of staying here collapsed (or didn't) RIGHT NOW — pull the next decision
+     * forward instead of waiting out the regular interval. Only ever moves the timer earlier.
+     * Skipped for owner-ordered "farm &lt;item&gt;" (the objective is pinned; a re-decide only
+     * re-picks the site, which the roll doesn't affect) and for party autopilot (re-decides
+     * are leader-driven on a group clock — pulling one member's timer is future work).
+     */
+    static void noteGearUpgraded(BotEntry entry) {
+        if (entry == null || !isActive(entry) || entry.autopilotParty || entry.autopilotFarmItemId != 0) {
+            return;
+        }
+        long at = System.currentTimeMillis() + UPGRADE_REDECIDE_DELAY_MS;
+        if (entry.autopilotNextDecisionAtMs > at) {
+            entry.autopilotNextDecisionAtMs = at;
+        }
     }
 
     private static void maybeRedecide(BotEntry entry, Character bot) {
