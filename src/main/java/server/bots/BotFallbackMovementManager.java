@@ -199,9 +199,15 @@ final class BotFallbackMovementManager {
             return false;
         }
         MapleMap map = entry.bot.getMap();
-        if (!shouldConsiderFallbackDrop(entry, map, botPos, targetPos)
-                // Full landing sim, not just the flag: enforces the bounded-drop rule too.
-                || BotPhysicsEngine.simulateDownJumpLanding(map, botPos) == null) {
+        if (!shouldConsiderFallbackDrop(entry, map, botPos, targetPos)) {
+            return false;
+        }
+        // Ground maps need the full landing sim (bounded-drop rule included); in swim maps
+        // the bot drops into open water — no landing foothold exists or is required.
+        boolean canDrop = map != null && map.isSwim()
+                ? BotPhysicsEngine.canStartDownJump(map, botPos)
+                : BotPhysicsEngine.simulateDownJumpLanding(map, botPos) != null;
+        if (!canDrop) {
             return false;
         }
         return Math.abs(targetPos.x - botPos.x) <= Math.max(BotMovementManager.cfg.FOLLOW_DIST,
