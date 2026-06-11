@@ -78,4 +78,57 @@ class BotGrindAdvisorTest {
         assertEquals(0.0, BotGrindAdvisor.scrollExpectedGain(0.6, 0.0, true), 1e-9,
                 "no offense value for this class (e.g. matk scroll on a bowman)");
     }
+
+    // ---- multi-mob maps: spawn-share blend (time on one mob is time not on another) ----
+
+    private static BotGrindAdvisor.MobProfile profile(int mobId, String name, int exp,
+                                                      double killSeconds,
+                                                      BotGrindPlanner.GearProspect... drops) {
+        return new BotGrindAdvisor.MobProfile(mobId, name, 10, exp, killSeconds,
+                java.util.List.of(drops));
+    }
+
+    @Test
+    void shouldBlendExpAndKillTimeBySpawnShare() {
+        // 3 spawn points of a 100-exp/2s mob mixed with 1 point of a 20-exp/6s mob:
+        // exp = 0.75*100 + 0.25*20 = 80, kill = 0.75*2 + 0.25*6 = 3s — in between, not the best.
+        var blend = BotGrindAdvisor.blendCandidate(100, "test map", java.util.Map.of(
+                profile(1, "good", 100, 2.0), 3,
+                profile(2, "bad", 20, 6.0), 1));
+
+        assertEquals(80, blend.exp());
+        assertEquals(3.0, blend.killSeconds(), 1e-9);
+        assertEquals(4, blend.spawnPoints());
+        assertEquals("good", blend.mobName(), "labeled by the dominant mob");
+    }
+
+    @Test
+    void shouldDiluteAndMergeDropChancesBySpawnShare() {
+        // Item 77 drops from both mobs: 0.75*0.10 + 0.25*0.20 = 0.125 per generic kill.
+        // Item 88 only from the minority mob: 0.25*0.40 = 0.10.
+        var g1 = new BotGrindPlanner.GearProspect(77, "shield", 0.10, 5.0, 0.1);
+        var g2 = new BotGrindPlanner.GearProspect(77, "shield", 0.20, 5.0, 0.1);
+        var g3 = new BotGrindPlanner.GearProspect(88, "scroll", 0.40, 6.0, 0.12);
+        var blend = BotGrindAdvisor.blendCandidate(100, "test map", java.util.Map.of(
+                profile(1, "common", 50, 2.0, g1), 3,
+                profile(2, "rare", 50, 2.0, g2, g3), 1));
+
+        assertEquals(2, blend.gearDrops().size());
+        for (var g : blend.gearDrops()) {
+            if (g.itemId() == 77) {
+                assertEquals(0.125, g.chancePerKill(), 1e-9, "shared drop sums diluted chances");
+                assertEquals(5.0, g.scoreGain(), 1e-9, "gain is per item, not per mob");
+            } else {
+                assertEquals(0.10, g.chancePerKill(), 1e-9, "minority-mob drop diluted by share");
+            }
+        }
+    }
+
+    @Test
+    void shouldBreakDominantMobTiesByExp() {
+        var blend = BotGrindAdvisor.blendCandidate(100, "test map", java.util.Map.of(
+                profile(1, "weak", 10, 2.0), 2,
+                profile(2, "juicy", 50, 2.0), 2));
+        assertEquals("juicy", blend.mobName());
+    }
 }

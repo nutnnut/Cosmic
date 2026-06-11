@@ -25,8 +25,12 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.ThreadLocalRandom;
 
 /**
@@ -34,8 +38,10 @@ import java.util.concurrent.ThreadLocalRandom;
  * state and world data, then explains the pick in chat. Decision + reasoning only: the bot does NOT
  * travel anywhere (bots are owner-tethered companions; travel is a later slice).
  *
- * <p>Candidate = (mob, map): every mob in the {@link BotSpawnIndex} the bot can actually damage,
- * at its densest spawn sites. Kill time uses the combat SSOT ({@code estimateBestSkillHitDamage},
+ * <p>Candidate = one MAP: every grindable mob on it blended by spawn share (time killing one mob
+ * is time not killing another, so exp, kill time and drop chances are all spawn-share weighted —
+ * see {@link #blendCandidate}), labeled with the dominant mob. Kill time uses the combat SSOT
+ * ({@code estimateBestSkillHitDamage},
  * physical fallback) — the same model as the scroll farming-cost anchor. Gear prospects = equip
  * drops ({@code drop_data}) that this bot can wear, valued as the EXPECTED IMPROVEMENT over the
  * worn item in that slot: Monte Carlo over the real drop-roll distribution (the same
@@ -53,9 +59,9 @@ import java.util.concurrent.ThreadLocalRandom;
  * self-scrolling command.
  *
  * <p>Skipped on purpose (documented, not silent): towns, instanced/event fields (mapId &ge;
- * 900000000), sites with fewer than {@link #MIN_SPAWN_POINTS} spawn points, bosses, friendlies,
- * 0-exp props, and {@code drop_data_global} (it adds the same items to every mob, washing out
- * map differentiation).
+ * 900000000), maps with fewer than {@link #MIN_SPAWN_POINTS} grindable spawn points, bosses,
+ * friendlies, 0-exp props, and {@code drop_data_global} (it adds the same items to every mob,
+ * washing out map differentiation).
  */
 final class BotGrindAdvisor {
 
@@ -65,7 +71,6 @@ final class BotGrindAdvisor {
     private static final double ATTACK_CYCLE_SECONDS = 0.72;
     private static final double DROP_CHANCE_DENOMINATOR = 1_000_000.0;
     private static final int MIN_SPAWN_POINTS = 3;
-    private static final int MAX_SITES_PER_MOB = 2;
     private static final int INSTANCED_MAPID_FLOOR = 900000000;
     /** Ignore "upgrades" below this offense-score gain — rounding noise, not progression. */
     private static final double MIN_GEAR_GAIN_SCORE = 0.5;
@@ -169,69 +174,120 @@ final class BotGrindAdvisor {
         Map<Short, Double> wornScoreBySlot = new HashMap<>();
         Map<Integer, double[]> rollScoreCache = new HashMap<>(); // per pass: same item drops from many mobs
         Map<Integer, Double> scrollGainCache = new HashMap<>();
+        Map<Integer, Optional<MobProfile>> profiles = new HashMap<>();
 
         List<MobCandidate> candidates = new ArrayList<>();
-        for (Map.Entry<Integer, List<BotSpawnIndex.SpawnSite>> e : index.byMob().entrySet()) {
-            int mobId = e.getKey();
-            Monster mob;
-            try {
-                mob = LifeFactory.getMonster(mobId);
-            } catch (RuntimeException ex) {
+        for (BotSpawnIndex.MapSpawns map : index.byMap().values()) {
+            if (map.town() || map.mapId() >= INSTANCED_MAPID_FLOOR) {
                 continue;
             }
-            if (mob == null || mob.getStats() == null) {
+            Map<MobProfile, Integer> pointsByMob = new HashMap<>();
+            for (Map.Entry<Integer, Integer> e : map.mobCounts().entrySet()) {
+                MobProfile p = profiles.computeIfAbsent(e.getKey(),
+                        id -> Optional.ofNullable(profileFor(entry, bot, ii, mi, id, true,
+                                wornScoreBySlot, rollScoreCache, scrollGainCache, totalWornOffense)))
+                        .orElse(null);
+                if (p != null && p.exp() > 0) { // 0-exp props aren't grinding
+                    pointsByMob.put(p, e.getValue());
+                }
+            }
+            if (totalPoints(pointsByMob) < MIN_SPAWN_POINTS) {
                 continue;
             }
-            var stats = mob.getStats();
-            if (stats.isBoss() || stats.isFriendly() || stats.getExp() <= 0) {
-                continue;
-            }
-
-            double killSeconds = killSeconds(entry, bot, mob);
-            if (killSeconds <= 0) {
-                continue; // can't meaningfully damage it
-            }
-
-            List<GearProspect> gear = gearProspects(bot, ii, mobId, wornScoreBySlot, rollScoreCache,
-                    scrollGainCache, totalWornOffense);
-            int exp = stats.getExp() * bot.getExpRate();
-            addSiteCandidates(candidates, index, mi, e.getValue(), mobId, stats.getLevel(), exp,
-                    killSeconds, gear, mapId -> true);
+            candidates.add(blendCandidate(map.mapId(), mapName(map.mapId()), pointsByMob));
         }
         return candidates;
     }
 
-    /** Shared site filter: top-N densest, populated, non-town, non-instanced, allowed maps. */
-    private static void addSiteCandidates(List<MobCandidate> out, BotSpawnIndex.Index index,
-                                          MonsterInformationProvider mi,
-                                          List<BotSpawnIndex.SpawnSite> sites,
-                                          int mobId, int mobLevel, int exp, double killSeconds,
-                                          List<GearProspect> gear,
-                                          java.util.function.IntPredicate mapAllowed) {
-        int sitesUsed = 0;
-        for (BotSpawnIndex.SpawnSite site : sites) {
-            if (sitesUsed >= MAX_SITES_PER_MOB) {
-                break;
-            }
-            if (site.spawnPoints() < MIN_SPAWN_POINTS || site.mapId() >= INSTANCED_MAPID_FLOOR
-                    || !mapAllowed.test(site.mapId())) {
-                continue;
-            }
-            BotSpawnIndex.MapSpawns map = index.byMap().get(site.mapId());
-            if (map == null || map.town()) {
-                continue;
-            }
-            out.add(new MobCandidate(
-                    mobId, mobName(mi, mobId), mobLevel, exp, killSeconds,
-                    site.mapId(), mapName(site.mapId()), site.spawnPoints(), gear));
-            sitesUsed++;
+    /** A mob's bot-specific grind numbers, computed once per pass. Exp is rate-multiplied;
+     *  prospect chances are per kill OF THIS MOB (the map blend dilutes them by spawn share). */
+    record MobProfile(int mobId, String mobName, int level, int exp, double killSeconds,
+                      List<GearProspect> prospects) {}
+
+    /** Null = not grindable for this bot: boss/friendly, unresolvable, or the bot can't
+     *  meaningfully damage it (such mobs don't dilute a map — the bot won't engage them). */
+    private static MobProfile profileFor(BotEntry entry, Character bot, ItemInformationProvider ii,
+                                         MonsterInformationProvider mi, int mobId, boolean withProspects,
+                                         Map<Short, Double> wornScoreBySlot,
+                                         Map<Integer, double[]> rollScoreCache,
+                                         Map<Integer, Double> scrollGainCache,
+                                         double totalWornOffense) {
+        Monster mob;
+        try {
+            mob = LifeFactory.getMonster(mobId);
+        } catch (RuntimeException ex) {
+            return null;
         }
+        if (mob == null || mob.getStats() == null) {
+            return null;
+        }
+        var stats = mob.getStats();
+        if (stats.isBoss() || stats.isFriendly()) {
+            return null;
+        }
+        double killSeconds = killSeconds(entry, bot, mob);
+        if (killSeconds <= 0) {
+            return null;
+        }
+        List<GearProspect> gear = withProspects
+                ? gearProspects(bot, ii, mobId, wornScoreBySlot, rollScoreCache, scrollGainCache,
+                        totalWornOffense)
+                : List.of();
+        return new MobProfile(mobId, mobName(mi, mobId), stats.getLevel(),
+                stats.getExp() * bot.getExpRate(), killSeconds, gear);
     }
 
     /**
-     * "farm &lt;item&gt;": candidates are every allowed site of every mob that drops the item,
-     * handed to {@link BotGrindPlanner#planFarmBest} which scores purely by expected items/hour.
-     * Null when nothing the bot can reach (and damage) drops it.
+     * Spawn-share blend: the bot kills what it encounters, so time on one mob is time not on
+     * another. A map's kill cycle and exp are each mob's numbers weighted by its share of the
+     * map's spawn points (a great-exp mob mixed with a poor one lands in between), and every
+     * drop chance dilutes by its dropper's share (summed when several mobs drop the same item).
+     * The candidate is labeled with the dominant mob (most spawn points; exp breaks ties).
+     */
+    static MobCandidate blendCandidate(int mapId, String mapName, Map<MobProfile, Integer> pointsByMob) {
+        int totalPoints = totalPoints(pointsByMob);
+        double killSeconds = 0.0;
+        double exp = 0.0;
+        MobProfile face = null;
+        int facePoints = -1;
+        Map<Integer, GearProspect> gearByItem = new LinkedHashMap<>();
+        for (Map.Entry<MobProfile, Integer> e : pointsByMob.entrySet()) {
+            MobProfile p = e.getKey();
+            double share = e.getValue() / (double) totalPoints;
+            killSeconds += share * p.killSeconds();
+            exp += share * p.exp();
+            for (GearProspect g : p.prospects()) {
+                GearProspect diluted = new GearProspect(g.itemId(), g.itemName(),
+                        g.chancePerKill() * share, g.scoreGain(), g.dpsGainFraction());
+                gearByItem.merge(g.itemId(), diluted, (a, b) -> new GearProspect(a.itemId(),
+                        a.itemName(), a.chancePerKill() + b.chancePerKill(), a.scoreGain(),
+                        a.dpsGainFraction()));
+            }
+            if (e.getValue() > facePoints
+                    || (e.getValue() == facePoints && p.exp() > face.exp())) {
+                face = p;
+                facePoints = e.getValue();
+            }
+        }
+        return new MobCandidate(face.mobId(), face.mobName(), face.level(),
+                (int) Math.round(exp), killSeconds, mapId, mapName, totalPoints,
+                List.copyOf(gearByItem.values()));
+    }
+
+    private static int totalPoints(Map<MobProfile, Integer> pointsByMob) {
+        int total = 0;
+        for (int pts : pointsByMob.values()) {
+            total += pts;
+        }
+        return total;
+    }
+
+    /**
+     * "farm &lt;item&gt;": candidates are every allowed map where a dropper spawns, with the
+     * same spawn-share blend as grinding — mobs that don't drop the item still take kill time,
+     * so they dilute the map's items/hour. Handed to {@link BotGrindPlanner#planFarmBest} which
+     * scores purely by expected items/hour. Null when nothing the bot can reach (and damage)
+     * drops it.
      */
     static Recommendation recommendFarmItem(BotEntry entry, Character bot, int itemId,
                                             java.util.function.IntPredicate mapAllowed) {
@@ -252,32 +308,61 @@ final class BotGrindAdvisor {
         BotSpawnIndex.Index index = BotSpawnIndex.get();
         String name = itemName(ii, itemId);
 
+        Map<Integer, Optional<MobProfile>> profiles = new HashMap<>();
+        Set<Integer> dropperMaps = new LinkedHashSet<>();
+        for (int mobId : droppers.keySet()) {
+            for (BotSpawnIndex.SpawnSite site : BotSpawnIndex.spawnSites(mobId)) {
+                dropperMaps.add(site.mapId());
+            }
+        }
+
         List<MobCandidate> candidates = new ArrayList<>();
-        for (Map.Entry<Integer, Integer> dropper : droppers.entrySet()) {
-            int mobId = dropper.getKey();
-            Monster mob;
-            try {
-                mob = LifeFactory.getMonster(mobId);
-            } catch (RuntimeException ex) {
+        for (int mapId : dropperMaps) {
+            BotSpawnIndex.MapSpawns map = index.byMap().get(mapId);
+            if (map == null || map.town() || mapId >= INSTANCED_MAPID_FLOOR
+                    || !mapAllowed.test(mapId)) {
                 continue;
             }
-            if (mob == null || mob.getStats() == null) {
+            Map<MobProfile, Integer> pointsByMob = new HashMap<>();
+            for (Map.Entry<Integer, Integer> e : map.mobCounts().entrySet()) {
+                MobProfile p = profiles.computeIfAbsent(e.getKey(),
+                        id -> Optional.ofNullable(profileFor(entry, bot, ii, mi, id, false,
+                                null, null, null, 0.0)))
+                        .orElse(null);
+                // Grindable mobs dilute; 0-exp droppers (prop-like sources) still count.
+                if (p != null && (p.exp() > 0 || droppers.containsKey(p.mobId()))) {
+                    pointsByMob.put(p, e.getValue());
+                }
+            }
+            int totalPoints = totalPoints(pointsByMob);
+            if (totalPoints < MIN_SPAWN_POINTS) {
                 continue;
             }
-            var stats = mob.getStats();
-            if (stats.isBoss() || stats.isFriendly()) {
+            // The map's item rate: each dropper's per-kill chance diluted by its spawn share.
+            double chancePerKill = 0.0;
+            MobProfile face = null;
+            double faceRate = 0.0;
+            for (Map.Entry<MobProfile, Integer> e : pointsByMob.entrySet()) {
+                Integer chance = droppers.get(e.getKey().mobId());
+                if (chance == null) {
+                    continue;
+                }
+                double share = e.getValue() / (double) totalPoints;
+                double rate = share * Math.min(1.0,
+                        chance * bot.getDropRate() / DROP_CHANCE_DENOMINATOR);
+                chancePerKill += rate;
+                if (rate > faceRate) {
+                    faceRate = rate;
+                    face = e.getKey();
+                }
+            }
+            if (face == null || chancePerKill <= 0) {
                 continue;
             }
-            double killSeconds = killSeconds(entry, bot, mob);
-            if (killSeconds <= 0) {
-                continue;
-            }
-            double chancePerKill = Math.min(1.0,
-                    dropper.getValue() * bot.getDropRate() / DROP_CHANCE_DENOMINATOR);
-            List<GearProspect> objective = List.of(new GearProspect(itemId, name, chancePerKill, 0, 0));
-            int exp = stats.getExp() * bot.getExpRate();
-            addSiteCandidates(candidates, index, mi, BotSpawnIndex.spawnSites(mobId),
-                    mobId, stats.getLevel(), exp, killSeconds, objective, mapAllowed);
+            MobCandidate blend = blendCandidate(mapId, mapName(mapId), pointsByMob);
+            candidates.add(new MobCandidate(face.mobId(), face.mobName(), face.level(),
+                    blend.exp(), blend.killSeconds(), mapId, blend.mapName(), totalPoints,
+                    List.of(new GearProspect(itemId, name, chancePerKill, 0, 0))));
         }
         return BotGrindPlanner.planFarmBest(candidates, mapScoreWeight, ThreadLocalRandom.current());
     }
