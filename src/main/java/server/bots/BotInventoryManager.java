@@ -1656,7 +1656,7 @@ class BotInventoryManager {
     // The valuables shelf is bounded: good-roll equips kept for future trading are ranked by
     // trade value and only the best KEEP_VALUABLE_EQUIP_SLOTS stay; the overflow sells like
     // any junk. Without the cap every above-base roll accumulates forever.
-    static final int KEEP_VALUABLE_EQUIP_SLOTS = 8;
+    static final int KEEP_VALUABLE_EQUIP_SLOTS = 24;
 
     /** Kept-for-value equips beyond the shelf cap, weakest trade value first. */
     static List<Item> valuableEquipOverflow(ItemInformationProvider ii, List<Equip> kept) {
@@ -1670,15 +1670,15 @@ class BotInventoryManager {
     }
 
     /**
-     * Bot-agnostic trade value of a kept roll: how far it beats its clean WZ base. Attack is
-     * what buyers pay for — watk and matk weigh 5 each (each is the offense stat of its
-     * archetype), main stats 1. Null ii (tests) scores raw values against base 0.
+     * Bot-agnostic trade value of a kept roll: how far it beats its clean WZ base. Watk weighs
+     * 5 (what buyers pay for); matk is worth a stat point like everywhere else in the offense
+     * SSOT (user-tuned: +1 INT ≈ +1 MATK). Null ii (tests) scores raw values against base 0.
      */
     static double tradeValueScore(ItemInformationProvider ii, Equip equip) {
         Map<String, Integer> stats = ii != null ? ii.getEquipStats(equip.getItemId()) : null;
         double score = 0.0;
         score += 5.0 * aboveBase(equip.getWatk(), stats, "PAD");
-        score += 5.0 * aboveBase(equip.getMatk(), stats, "MAD");
+        score += aboveBase(equip.getMatk(), stats, "MAD");
         score += aboveBase(equip.getStr(), stats, "STR");
         score += aboveBase(equip.getDex(), stats, "DEX");
         score += aboveBase(equip.getInt(), stats, "INT");
