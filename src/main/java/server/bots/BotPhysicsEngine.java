@@ -1481,10 +1481,14 @@ final class BotPhysicsEngine {
     }
 
     // The client only allows a down-jump when a landing foothold exists within a bounded probe
-    // below the player (CUserLocal::TryDoingFallDown bails when the probe finds nothing) — most
-    // "can't fall here" platforms carry NO forbidFallDown flag (e.g. Orbis tower rims, 860px
-    // above the next floor). 300px cleanly separates legitimate platform gaps (~90-150px) from
-    // forbidden ledges; the exact client probe constant is pending disasm extraction.
+    // below the player — most "can't fall here" platforms carry NO forbidFallDown flag (e.g.
+    // Orbis tower rims, 860px above the next floor).
+    // CONFIRMED against Angel.idb: CUserLocal::FallDown @ 0x0094c4f8 is the gate. At +0x160
+    // (0x0094c658) it does `add [probeY], 0x12c` (= player Y + 300) then GetFootholdUnderneath/
+    // GetFootholdAbove (CWvsPhysicalSpace2D @ 0xa45585 / 0xa4549d) bracketing that point, and
+    // bails if the only foothold found is the current one (±5px). So the real probe distance is
+    // exactly 300px. (NB: the 0x1e/×0.8 probe near 0x0094e6fd belongs to TryDoingTeleport, not
+    // the tiny TryDoingFallDown @ 0x0094e692 which only sets the fall-request flag.)
     static final int DOWN_JUMP_MAX_DROP_PX = 300;
 
     static JumpLanding simulateDownJumpLanding(MapleMap map, Point from) {
