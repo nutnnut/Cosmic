@@ -74,9 +74,11 @@ final class BotAutopilotManager {
     };
 
     /** Ferries need the owner's green light ("sail away") while the owner is around; with the
-     *  owner absent/offline nobody is waiting, so the bot may sail on its own judgment. */
+     *  owner absent/offline nobody is waiting, so the bot may sail on its own judgment.
+     *  Self-owned bots (@botme) have no human owner at all — same rule. */
     static boolean ferryAllowed(BotEntry entry) {
-        return entry.autopilotFerryApproved || entry.owner == null || !entry.owner.isLoggedinWorld();
+        return entry.autopilotFerryApproved || entry.owner == null || entry.owner == entry.bot
+                || !entry.owner.isLoggedinWorld();
     }
 
     /** What the bot can spend on travel right now: scrolls if carried, taxis per meso,
@@ -168,6 +170,9 @@ final class BotAutopilotManager {
         entry.autopilotFerryApproved = false;
         entry.autopilotErrandMapId = -1;
         entry.autopilotReturningFromErrand = false;
+        entry.autopilotTransitFollow = false;
+        entry.autopilotWaitingForStragglers = false;
+        entry.autopilotNextStragglerCheckAtMs = 0L;
         entry.autopilotDecisionInFlight = false;
         // autopilotNextErrandAtMs deliberately survives: it rate-limits errands, not the mode.
         // autopilotOwnerSupplyGraceUntilMs also survives: player trade grace is supply state,
@@ -276,6 +281,11 @@ final class BotAutopilotManager {
         }
         int destination = entry.autopilotErrandMapId != -1 ? entry.autopilotErrandMapId : entry.autopilotMapId;
         if (bot.getMapId() == destination) {
+            if (entry.autopilotTransitFollow) {
+                // Arrived with the group: swap the follow pipeline back out for grind combat.
+                entry.autopilotTransitFollow = false;
+                BotManager.getInstance().resumeAutopilotGrind(entry);
+            }
             if (entry.autopilotErrandMapId != -1) {
                 if (entry.shopVisitPending) {
                     return false; // shopping; the visit flow owns the tick
@@ -297,6 +307,12 @@ final class BotAutopilotManager {
         }
         if (entry.shopVisitPending) {
             return false; // resupply detour en route; travel resumes once it's done
+        }
+        if (entry.autopilotParty && entry.autopilotErrandMapId == -1) {
+            Boolean cohesion = tickPartyCohesion(entry, bot);
+            if (cohesion != null) {
+                return cohesion;
+            }
         }
         if (BotTravelManager.tickTravel(entry, bot, destination, MAX_TRAVEL_HOPS, runAiTick,
                 ferryAllowed(entry))) {
@@ -443,6 +459,12 @@ final class BotAutopilotManager {
         }
         if (recentDeath) {
             return objective + " at " + destination + " - at " + currentMap + ", i died and omw back";
+        }
+        if (entry.autopilotTransitFollow) {
+            return objective + " at " + destination + " - at " + currentMap + ", moving with the party";
+        }
+        if (entry.autopilotWaitingForStragglers) {
+            return objective + " at " + destination + " - at " + currentMap + ", waiting for the party to catch up";
         }
         return "im at " + currentMap + ", heading to " + destination + " to " + objective;
     }
@@ -606,6 +628,146 @@ final class BotAutopilotManager {
 
     // ---- party internals ----
 
+    // Cohesion: followers ride the regular follow pipeline behind the leader (formation
+    // offsets, legal portal-follow, warp catch-up) instead of traveling independently, and
+    // the leader holds a map when somebody falls this many portal hops behind.
+    static final int STRAGGLER_WAIT_HOPS = 2;
+    private static final long STRAGGLER_CHECK_INTERVAL_MS = 3_000L;
+    private static final List<String> WAIT_REPLIES = List.of(
+            "waiting up for the others",
+            "hold on, letting the others catch up",
+            "ill hold here a bit for the group");
+
+    // Test seams: member enumeration touches the live registry/party; hop distance the world graph.
+    @FunctionalInterface
+    interface PartyMembersLookup {
+        List<BotEntry> members(BotEntry entry);
+    }
+
+    static PartyMembersLookup partyMembers = BotAutopilotManager::defaultPartyMembers;
+
+    @FunctionalInterface
+    interface HopDistance {
+        int hops(int fromMapId, int toMapId);
+    }
+
+    static HopDistance hopDistance = BotAutopilotManager::walkingHops;
+
+    /**
+     * Active party-autopilot members, leader first. The game party is the source of truth
+     * when present (a @botme group spans owners); bots without a game party fall back to
+     * the owner's bot list, the pre-party behavior.
+     */
+    private static List<BotEntry> defaultPartyMembers(BotEntry entry) {
+        List<BotEntry> members = new ArrayList<>();
+        for (BotEntry e : BotManager.getInstance().partyBotEntries(entry.bot)) {
+            if (e.autopilotParty && isActive(e) && e.bot.getMap() != null) {
+                members.add(e);
+            }
+        }
+        if (!members.isEmpty()) {
+            return members;
+        }
+        Character owner = entry.owner;
+        if (owner == null) {
+            return List.of();
+        }
+        for (BotEntry e : BotManager.getInstance().getBotEntries(owner.getId())) {
+            if (e.autopilotParty && isActive(e) && e.bot != null && e.bot.getMap() != null) {
+                members.add(e);
+            }
+        }
+        return members;
+    }
+
+    private static int walkingHops(int fromMapId, int toMapId) {
+        if (fromMapId == toMapId) {
+            return 0;
+        }
+        List<Integer> route = BotWorldGraph.route(fromMapId, toMapId, STRAGGLER_WAIT_HOPS + 1,
+                new BotWorldGraph.RouteOptions(false, 0, false));
+        return route == null ? Integer.MAX_VALUE : route.size();
+    }
+
+    /**
+     * One in-transit tick of party cohesion. Returns the tick() result to use, or null when
+     * this bot is the leader with the group in tow — it travels normally this tick.
+     */
+    private static Boolean tickPartyCohesion(BotEntry entry, Character bot) {
+        List<BotEntry> members = partyMembers.members(entry);
+        if (members.size() < 2) {
+            exitTransitFollow(entry); // group dissolved — travel on alone
+            return null;
+        }
+        BotEntry leader = members.get(0);
+        if (leader == entry) {
+            exitTransitFollow(entry); // just promoted mid-transit: stop following, lead
+            if (waitingForStragglers(entry, bot, members)) {
+                return false; // hold this map (grind flow runs) until the group closes up
+            }
+            return null;
+        }
+        if (entry.owner == null) {
+            // Owner offline strips `following` every tick and the follow anchor can't resolve,
+            // so the follow pipeline is dead — travel independently until the owner returns.
+            exitTransitFollow(entry);
+            return null;
+        }
+        return enterTransitFollow(entry, leader);
+    }
+
+    /**
+     * Flip a follower into transit-follow behind the leader. Returns true exactly on the
+     * transition tick: the tick's follow anchor was resolved before autopilot ran, so acting
+     * on it now would chase the stale anchor — consume the tick and let the next one follow.
+     */
+    private static boolean enterTransitFollow(BotEntry entry, BotEntry leader) {
+        int leaderId = leader.bot.getId();
+        if (entry.autopilotTransitFollow && entry.following && entry.followTargetId == leaderId) {
+            return false; // already in formation — the follow pipeline owns the rest of the tick
+        }
+        entry.autopilotTransitFollow = true;
+        entry.grinding = false;
+        entry.grindTarget = null;
+        entry.grindLootTarget = null;
+        entry.followTargetId = leaderId;
+        entry.following = true;
+        BotMovementManager.clearNavigationState(entry);
+        return true;
+    }
+
+    private static void exitTransitFollow(BotEntry entry) {
+        if (entry.autopilotTransitFollow) {
+            entry.autopilotTransitFollow = false;
+            BotManager.getInstance().resumeAutopilotGrind(entry);
+        }
+    }
+
+    /** Leader-side hold: true while any member is more than {@link #STRAGGLER_WAIT_HOPS}
+     *  portal hops behind. Rate-limited; the cached verdict rides between checks. */
+    private static boolean waitingForStragglers(BotEntry entry, Character bot, List<BotEntry> members) {
+        long now = System.currentTimeMillis();
+        if (now < entry.autopilotNextStragglerCheckAtMs) {
+            return entry.autopilotWaitingForStragglers;
+        }
+        entry.autopilotNextStragglerCheckAtMs = now + STRAGGLER_CHECK_INTERVAL_MS;
+        boolean waiting = false;
+        for (BotEntry member : members) {
+            if (member == entry || member.bot == null || member.bot.getMap() == null) {
+                continue;
+            }
+            if (hopDistance.hops(member.bot.getMapId(), bot.getMapId()) > STRAGGLER_WAIT_HOPS) {
+                waiting = true;
+                break;
+            }
+        }
+        if (waiting && !entry.autopilotWaitingForStragglers) {
+            reply.accept(entry, BotManager.randomReply(WAIT_REPLIES));
+        }
+        entry.autopilotWaitingForStragglers = waiting;
+        return waiting;
+    }
+
     private static PartyPlan decideParty(List<BotEntry> members) {
         try {
             return partyDecider.decide(members);
@@ -645,16 +807,7 @@ final class BotAutopilotManager {
 
     /** Leader-only group re-decide (off-thread); members just wait for the leader's next call. */
     private static void redecideParty(BotEntry entry, Character bot) {
-        Character owner = entry.owner;
-        if (owner == null) {
-            return;
-        }
-        List<BotEntry> members = new ArrayList<>();
-        for (BotEntry e : BotManager.getInstance().getBotEntries(owner.getId())) {
-            if (e.autopilotParty && isActive(e) && e.bot != null && e.bot.getMap() != null) {
-                members.add(e);
-            }
-        }
+        List<BotEntry> members = partyMembers.members(entry);
         if (members.isEmpty() || members.get(0) != entry) {
             return;
         }

@@ -33,6 +33,8 @@ import client.command.commands.gm0.GachaCommand;
 import client.command.commands.gm0.GmCommand;
 import client.command.commands.gm0.HelpCommand;
 import client.command.commands.gm0.JoinEventCommand;
+import client.command.commands.gm0.BotMeCommand;
+import client.command.commands.gm0.BotPartyCommand;
 import client.command.commands.gm0.LeaveEventCommand;
 import client.command.commands.gm0.MapOwnerClaimCommand;
 import client.command.commands.gm0.OnlineCommand;
@@ -383,6 +385,8 @@ public class CommandsExecutor {
         addCommand("mylawn", MapOwnerClaimCommand.class);
         addCommand("registerbot", RegisterBotCommand.class);
         addCommand("spawnbot", SpawnBotCommand.class);
+        addCommand("botme", BotMeCommand.class);
+        addCommand("botparty", BotPartyCommand.class);
         addCommand("takebotowner", 3, TakeBotOwnerCommand.class);
         addCommand("bosshp", BossHpCommand.class);
         addCommand("mobhp", MobHpCommand.class);

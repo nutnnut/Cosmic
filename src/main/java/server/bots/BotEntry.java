@@ -194,6 +194,13 @@ public class BotEntry {
     long autopilotOwnerSupplyGraceUntilMs = 0L;
     boolean autopilotReturningFromErrand = false;
     long autopilotLastDeathAtMs = 0L;
+    // Party autopilot cohesion: while in transit a follower rides the regular follow pipeline
+    // behind the leader bot (formation offsets, legal portal-follow, warp catch-up for free)
+    // instead of traveling independently; grind mode is restored on arrival. The leader's
+    // straggler check is rate-limited and its last verdict cached between checks.
+    boolean autopilotTransitFollow = false;
+    long autopilotNextStragglerCheckAtMs = 0L;
+    boolean autopilotWaitingForStragglers = false;
     // True while an async advisor pass for this entry is running (re-decides only) — stops
     // the tick from stacking decisions while one is still computing.
     volatile boolean autopilotDecisionInFlight = false;

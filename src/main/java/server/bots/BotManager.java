@@ -3,6 +3,7 @@ package server.bots;
 import client.BotClient;
 import config.YamlConfig;
 import client.Character;
+import client.Client;
 import client.Disease;
 import client.QuestStatus;
 import client.inventory.InventoryType;
@@ -381,6 +382,119 @@ public class BotManager {
         return null;
     }
 
+    // -------------------------------------------------------------------------
+    // @botme / @botparty: the player logs out and their character keeps playing
+    // as a self-owned bot (owner == the bot itself). Logging back in on the
+    // character takes it over again (Character.newClient -> cleanupBotRuntimeState).
+    // -------------------------------------------------------------------------
+
+    private static final long TAKEOVER_POLL_MS = 700L;
+    private static final int TAKEOVER_MAX_POLLS = 10;
+
+    /**
+     * Disconnect the client and respawn its character as a self-owned autopilot bot.
+     * Returns an error message to show the player, or null when the takeover is underway.
+     * {@code requireBotParty} (the @botparty form) refuses unless every other online
+     * party member is already a bot.
+     */
+    public String takeOverAsBot(Client c, boolean requireBotParty) {
+        Character player = c.getPlayer();
+        if (player == null || c instanceof BotClient || player.getMap() == null) {
+            return "can't do that right now.";
+        }
+        if (requireBotParty && !inPartyOfBots(player)) {
+            return "@botparty needs a party where everyone else is a bot. Use @botme to go solo.";
+        }
+        int charId = player.getId();
+        int world = c.getWorld();
+        int channel = c.getChannel();
+        player.yellowMessage("Switching out - this character keeps playing as a bot. Log back in anytime to take over.");
+        after(randMs(600, 900), () -> {
+            c.disconnect(false, false);
+            pollBotTakeover(charId, world, channel, 0);
+        });
+        return null;
+    }
+
+    /** True when the player is partied with at least one bot and no other online humans. */
+    private static boolean inPartyOfBots(Character player) {
+        if (player.getParty() == null) {
+            return false;
+        }
+        boolean sawBot = false;
+        for (Character member : player.getPartyMembersOnline()) {
+            if (member == null || member.getId() == player.getId()) {
+                continue;
+            }
+            if (member.getClient() instanceof BotClient) {
+                sawBot = true;
+            } else {
+                return false; // another human in the party
+            }
+        }
+        return sawBot;
+    }
+
+    /** Wait for the disconnect to land (char saved + removed from the world), then reload as a bot. */
+    private void pollBotTakeover(int charId, int world, int channel, int attempt) {
+        after(TAKEOVER_POLL_MS, () -> {
+            Character lingering = Server.getInstance().getWorld(world).getPlayerStorage().getCharacterById(charId);
+            if (lingering != null) {
+                if (attempt < TAKEOVER_MAX_POLLS) {
+                    pollBotTakeover(charId, world, channel, attempt + 1);
+                } else {
+                    log.warn("botme: character {} never left the world after disconnect, takeover aborted", charId);
+                }
+                return;
+            }
+            try {
+                Character botChar = loadOfflineBot(charId, world, channel);
+                BotEntry entry = registerSpawnedBot(charId, botChar, botChar); // self-owned
+                markBotPartyOnline(botChar);
+                startTakeoverAutopilot(entry, botChar);
+            } catch (SQLException e) {
+                log.warn("botme: failed to reload character {} as a bot", charId, e);
+            }
+        });
+    }
+
+    /** Mark the reloaded bot's party slot online with a live character reference. */
+    private static void markBotPartyOnline(Character botChar) {
+        Party party = botChar.getParty();
+        if (party == null) {
+            return;
+        }
+        PartyCharacter pchar = new PartyCharacter(botChar);
+        pchar.setChannel(botChar.getClient().getChannel());
+        pchar.setMapId(botChar.getMapId());
+        botChar.getWorldServer().updateParty(party.getId(), PartyOperation.LOG_ONOFF, pchar);
+        botChar.updatePartyMemberHP();
+    }
+
+    private void startTakeoverAutopilot(BotEntry entry, Character botChar) {
+        List<BotEntry> partyBots = partyBotEntries(botChar);
+        boolean partyOfBots = partyBots.size() >= 2 && onlinePartyMembersAllBots(botChar);
+        botSay(botChar, randomReply(List.of(
+                "taking it from here", "autopilot time", "ok, playing on my own now")));
+        if (partyOfBots) {
+            BotAutopilotManager.startParty(botChar, partyBots);
+        } else {
+            BotAutopilotManager.start(entry, botChar);
+        }
+    }
+
+    private static boolean onlinePartyMembersAllBots(Character botChar) {
+        if (botChar.getParty() == null) {
+            return false;
+        }
+        for (Character member : botChar.getPartyMembersOnline()) {
+            if (member != null && !(member.getClient() instanceof BotClient)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     public Character loadOfflineBot(int charId, int world, int channel) throws SQLException {
         BotClient botClient = new BotClient(world, channel);
         Character botChar = Character.loadCharFromDB(charId, botClient, true);
@@ -642,14 +756,42 @@ public class BotManager {
     }
 
     public Character getActiveOwnerByBotCharId(int botCharId) {
+        BotEntry entry = getEntryByBotCharId(botCharId);
+        return entry != null ? entry.owner : null;
+    }
+
+    BotEntry getEntryByBotCharId(int botCharId) {
         for (List<BotEntry> entries : bots.values()) {
             for (BotEntry entry : entries) {
                 if (entry.bot.getId() == botCharId) {
-                    return entry.owner;
+                    return entry;
                 }
             }
         }
         return null;
+    }
+
+    /**
+     * Registered bot entries for every online bot in {@code anyMember}'s game party, in
+     * party-member order (deterministic across members). Empty when not in a party. The
+     * game party is the source of truth for party autopilot: @botme bots own themselves,
+     * so the per-owner registry can't enumerate a mixed group.
+     */
+    List<BotEntry> partyBotEntries(Character anyMember) {
+        if (anyMember == null || anyMember.getParty() == null) {
+            return List.of();
+        }
+        List<BotEntry> out = new ArrayList<>();
+        for (Character member : anyMember.getPartyMembersOnline()) {
+            if (member == null || !(member.getClient() instanceof BotClient)) {
+                continue;
+            }
+            BotEntry entry = getEntryByBotCharId(member.getId());
+            if (entry != null) {
+                out.add(entry);
+            }
+        }
+        return out;
     }
 
     public void requestBotPotionCheckSoon(Character bot) {
@@ -3125,6 +3267,18 @@ public class BotManager {
         // Owner-issued grind/sentry/patrol replaces autopilot. BotAutopilotManager.start
         // relies on this ordering: it calls issueGrind first, then sets its destination.
         BotAutopilotManager.clear(entry);
+        enterActiveModeCore(entry);
+    }
+
+    /**
+     * Re-enter grind combat WITHOUT clearing autopilot state: used when a party-autopilot
+     * follower arrives at the group destination and swaps from transit-follow back to grind.
+     */
+    void resumeAutopilotGrind(BotEntry entry) {
+        enterActiveModeCore(entry);
+    }
+
+    private void enterActiveModeCore(BotEntry entry) {
         entry.followTargetId = 0;
         entry.following = false;
         entry.moveTarget = null;

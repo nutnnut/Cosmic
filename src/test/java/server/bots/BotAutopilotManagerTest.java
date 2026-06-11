@@ -73,6 +73,8 @@ class BotAutopilotManagerTest {
         private final BotAutopilotManager.FarmAdvisor previousFarmAdvisor = BotAutopilotManager.farmAdvisor;
         private final java.util.function.BiConsumer<BotEntry, String> previousReply = BotAutopilotManager.reply;
         private final BotAutopilotManager.DecisionRunner previousRunner = BotAutopilotManager.decisionRunner;
+        private final BotAutopilotManager.PartyMembersLookup previousPartyMembers = BotAutopilotManager.partyMembers;
+        private final BotAutopilotManager.HopDistance previousHopDistance = BotAutopilotManager.hopDistance;
 
         Seams(Recommendation recommendation) {
             this(recommendation, recommendation);
@@ -97,6 +99,8 @@ class BotAutopilotManagerTest {
             BotAutopilotManager.farmAdvisor = previousFarmAdvisor;
             BotAutopilotManager.reply = previousReply;
             BotAutopilotManager.decisionRunner = previousRunner;
+            BotAutopilotManager.partyMembers = previousPartyMembers;
+            BotAutopilotManager.hopDistance = previousHopDistance;
         }
     }
 
@@ -250,6 +254,86 @@ class BotAutopilotManagerTest {
             // One announcement (leader's), not one per member.
             assertEquals(1, seams.replies.size());
             assertTrue(seams.replies.get(0).startsWith("party plan:"), seams.replies.get(0));
+        }
+    }
+
+    @Test
+    void shouldFollowLeaderInFormationWhileTravelingWithParty() {
+        Fixture leader = fixture(104000000, onlineOwner());
+        Fixture follower = fixture(TOWN, onlineOwner());
+        when(leader.bot().getId()).thenReturn(7001);
+        for (Fixture f : List.of(leader, follower)) {
+            f.entry().autopilotMapId = HUNTING_GROUND;
+            f.entry().autopilotParty = true;
+            f.entry().autopilotNextDecisionAtMs = Long.MAX_VALUE;
+            f.entry().grinding = true;
+        }
+
+        try (Seams seams = new Seams(null)) {
+            BotAutopilotManager.partyMembers = entry -> List.of(leader.entry(), follower.entry());
+
+            // Transition tick is consumed: the follow anchor was resolved before autopilot ran.
+            assertTrue(BotAutopilotManager.tick(follower.entry(), follower.bot(), true));
+            assertTrue(follower.entry().autopilotTransitFollow);
+            assertTrue(follower.entry().following);
+            assertEquals(7001, follower.entry().followTargetId);
+            assertFalse(follower.entry().grinding);
+
+            // Already in formation: yield the tick to the regular follow pipeline.
+            assertFalse(BotAutopilotManager.tick(follower.entry(), follower.bot(), true));
+            assertTrue(follower.entry().following);
+        }
+    }
+
+    @Test
+    void shouldRestoreGrindWhenTransitFollowerArrivesAtDestination() {
+        Fixture follower = fixture(HUNTING_GROUND, onlineOwner());
+        follower.entry().autopilotMapId = HUNTING_GROUND;
+        follower.entry().autopilotParty = true;
+        follower.entry().autopilotNextDecisionAtMs = Long.MAX_VALUE;
+        follower.entry().autopilotArrivalAnnounced = true;
+        follower.entry().autopilotTransitFollow = true;
+        follower.entry().following = true;
+        follower.entry().followTargetId = 7001;
+
+        try (Seams seams = new Seams(null)) {
+            assertFalse(BotAutopilotManager.tick(follower.entry(), follower.bot(), true));
+            assertFalse(follower.entry().autopilotTransitFollow);
+            assertFalse(follower.entry().following);
+            assertEquals(0, follower.entry().followTargetId);
+            assertTrue(follower.entry().grinding);
+        }
+    }
+
+    @Test
+    void shouldHoldTheMapWhileAMemberIsFarBehindThenTravelOnceCaughtUp() {
+        Fixture leader = fixture(104000000, onlineOwner());
+        Fixture follower = fixture(TOWN, onlineOwner());
+        for (Fixture f : List.of(leader, follower)) {
+            f.entry().autopilotMapId = HUNTING_GROUND;
+            f.entry().autopilotParty = true;
+            f.entry().autopilotNextDecisionAtMs = Long.MAX_VALUE;
+            f.entry().grinding = true;
+        }
+
+        try (Seams seams = new Seams(null);
+             MockedStatic<BotTravelManager> travel = mockStatic(BotTravelManager.class)) {
+            travel.when(() -> BotTravelManager.tickTravel(any(), any(), anyInt(), anyInt(), anyBoolean(), anyBoolean()))
+                    .thenReturn(true);
+            BotAutopilotManager.partyMembers = entry -> List.of(leader.entry(), follower.entry());
+            BotAutopilotManager.hopDistance = (from, to) -> BotAutopilotManager.STRAGGLER_WAIT_HOPS + 1;
+
+            // Straggler too far: travel is skipped, the tick falls through to grinding here.
+            assertFalse(BotAutopilotManager.tick(leader.entry(), leader.bot(), true));
+            assertTrue(leader.entry().autopilotWaitingForStragglers);
+            assertEquals(1, seams.replies.size()); // announced once, on the state edge
+
+            // Caught up: next check clears the hold and travel resumes.
+            leader.entry().autopilotNextStragglerCheckAtMs = 0L;
+            BotAutopilotManager.hopDistance = (from, to) -> 1;
+            assertTrue(BotAutopilotManager.tick(leader.entry(), leader.bot(), true));
+            assertFalse(leader.entry().autopilotWaitingForStragglers);
+            assertEquals(1, seams.replies.size());
         }
     }
 
