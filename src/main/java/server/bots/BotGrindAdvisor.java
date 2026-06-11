@@ -49,7 +49,11 @@ import java.util.concurrent.ThreadLocalRandom;
  * {@code E[max(0, score(roll) - score(worn))]}. A below-average worn roll keeps re-farming the
  * same item moderately valuable; a near-godly worn roll drives it to ~zero; an empty slot is
  * worth the full mean — so stay-or-leave emerges from the planner's gear-first shortlist plus
- * the travel penalty, with no drop counters or stay timers anywhere.
+ * the travel penalty, with no drop counters or stay timers anywhere. Both sides of the
+ * comparison score {@link BotScrollManager#potentialValue} (offense + discounted scroll
+ * headroom on remaining upgrade slots), so a maxed-out worn item can lose to a weaker drop
+ * that still scrolls higher — with the per-slot value priced from the scroll catalog per
+ * equip type, not flat.
  *
  * <p>Equip SCROLL drops are gear prospects too (gear progression isn't only new items): one
  * scroll is worth {@code effective success x stat value} through the same offense SSOT (att
@@ -458,7 +462,9 @@ final class BotGrindAdvisor {
         }
         double wornScore = wornScoreBySlot.computeIfAbsent(slot, s -> {
             Equip worn = BotScrollManager.wornInSlot(bot, ii, s);
-            return worn != null ? BotScrollManager.offenseValue(bot, worn) : 0.0;
+            // potentialValue, not raw offense: a worn item's remaining upgrade slots count for
+            // it, and a maxed-out one gets no headroom — see sampleRollScores for the drop side.
+            return worn != null ? BotScrollManager.potentialValue(bot, ii, worn) : 0.0;
         });
         double[] samples = rollScoreCache.computeIfAbsent(itemId,
                 id -> rollScores.sample(bot, id, ROLL_SAMPLES));
@@ -523,13 +529,18 @@ final class BotGrindAdvisor {
     static RollScoreSampler rollScores = BotGrindAdvisor::sampleRollScores;
 
     /** SSOT roll: the exact {@code randomizeStats(getEquipById(id))} call the map drop path
-     *  uses (godly check included), scored with the same offense SSOT as worn gear. */
+     *  uses (godly check included), scored with the same offense SSOT as worn gear PLUS scroll
+     *  headroom — a fresh drop carries its full upgrade slots, so it can out-value a stronger
+     *  but maxed-out worn item when its type scrolls well (gloves price att scrolls; most
+     *  pieces only stat scrolls). */
     private static double[] sampleRollScores(Character bot, int itemId, int n) {
         ItemInformationProvider ii = ItemInformationProvider.getInstance();
+        double evPerSlot = BotScrollManager.bestScrollEvPerSlot(bot, ii, itemId);
         double[] out = new double[n];
         for (int i = 0; i < n; i++) {
-            out[i] = BotScrollManager.offenseValue(bot,
-                    ii.randomizeStats((Equip) ii.getEquipById(itemId)));
+            Equip rolled = ii.randomizeStats((Equip) ii.getEquipById(itemId));
+            out[i] = BotScrollManager.offenseValue(bot, rolled)
+                    + BotScrollManager.scrollHeadroom(rolled.getUpgradeSlots(), evPerSlot);
         }
         return out;
     }

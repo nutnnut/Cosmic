@@ -79,6 +79,34 @@ class BotGrindAdvisorTest {
                 "no offense value for this class (e.g. matk scroll on a bowman)");
     }
 
+    // ---- scroll headroom: open upgrade slots count, priced by equip type ----
+
+    @Test
+    void shouldLetOpenSlotsBeatAMaxedOutStrongerItem() {
+        // Worn glove: offense 20 but maxed out -> potential 20. Fresh glove roll: offense 12
+        // with 5 open slots; gloves scroll att (EV 6.0/slot): 12 + 0.5*5*6.0 = 27 -> wins.
+        double worn = 20.0 + BotScrollManager.scrollHeadroom(0, 6.0);
+        double drop = 12.0 + BotScrollManager.scrollHeadroom(5, 6.0);
+        assertTrue(drop > worn, "weaker-but-scrollable must out-value maxed-out stronger");
+    }
+
+    @Test
+    void shouldScaleSlotValueByEquipType() {
+        // Same 8-offense gap on a piece whose best scroll is a stat scroll (EV 1.2/slot):
+        // 12 + 0.5*5*1.2 = 15 < 20 -> slots alone don't justify re-gearing weak-scrolling types.
+        double worn = 20.0 + BotScrollManager.scrollHeadroom(0, 1.2);
+        double drop = 12.0 + BotScrollManager.scrollHeadroom(5, 1.2);
+        assertTrue(worn > drop, "slot bonus must not be flat across equip types");
+    }
+
+    @Test
+    void shouldDiscountHeadroomAndGuardEdges() {
+        assertEquals(15.0, BotScrollManager.scrollHeadroom(5, 6.0), 1e-9, "0.5 x slots x EV");
+        assertEquals(0.0, BotScrollManager.scrollHeadroom(0, 6.0), 1e-9);
+        assertEquals(0.0, BotScrollManager.scrollHeadroom(-1, 6.0), 1e-9);
+        assertEquals(0.0, BotScrollManager.scrollHeadroom(5, 0.0), 1e-9);
+    }
+
     // ---- multi-mob maps: spawn-share blend (time on one mob is time not on another) ----
 
     private static BotGrindAdvisor.MobProfile profile(int mobId, String name, int exp,

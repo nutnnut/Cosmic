@@ -18,6 +18,7 @@ import server.life.LifeFactory;
 import server.life.Monster;
 import tools.DatabaseConnection;
 import tools.PacketCreator;
+import tools.Pair;
 
 import java.sql.Connection;
 import java.sql.PreparedStatement;
@@ -25,9 +26,11 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.function.DoubleUnaryOperator;
 
 /**
@@ -717,6 +720,88 @@ final class BotScrollManager {
         return ATT_WEIGHT * att
                 + MAIN_STAT_WEIGHT * st.getOrDefault(statKey(ms[0]), 0)
                 + SECONDARY_STAT_WEIGHT * st.getOrDefault(statKey(ms[1]), 0);
+    }
+
+    // ---- Scroll headroom: what an open upgrade slot is worth (used by grind planning) ----
+
+    /** Fraction of the best per-slot scroll EV counted as an open slot's value. Below 1 on
+     *  purpose: scrolls still have to be obtained and survive their success roll over time,
+     *  so headroom should tilt close calls (a slotted-but-weaker drop can beat a maxed-out
+     *  better one) without sending bots to re-farm gear every few levels for marginal
+     *  slot count alone. */
+    static final double SCROLL_HEADROOM_FRACTION = 0.5;
+
+    /** Usable catalog scrolls per equip category ((equipId/10000)%100), filtered by the same
+     *  rules {@link #buildOptions} applies to owned scrolls: no meta scrolls (clean slate /
+     *  modifier / white), no boom risk, positive success. Built once from the item catalog. */
+    private static volatile Map<Integer, List<Integer>> scrollsByCategory;
+
+    private static Map<Integer, List<Integer>> scrollsByCategory(ItemInformationProvider ii) {
+        Map<Integer, List<Integer>> cached = scrollsByCategory;
+        if (cached != null) {
+            return cached;
+        }
+        Map<Integer, List<Integer>> m = new HashMap<>();
+        for (Pair<Integer, String> item : ii.getAllItems()) {
+            int sid = item.getLeft();
+            if (sid / 10000 != SCROLL_ITEM_PREFIX) {
+                continue;
+            }
+            if (ItemConstants.isCleanSlate(sid) || ItemConstants.isModifierScroll(sid) || sid == ItemId.WHITE_SCROLL) {
+                continue;
+            }
+            Map<String, Integer> st = ii.getEquipStats(sid);
+            if (st == null || st.getOrDefault("success", 0) <= 0 || st.getOrDefault("cursed", 0) > 0) {
+                continue;
+            }
+            List<Integer> reqs = ii.getScrollReqs(sid);
+            if (reqs != null && !reqs.isEmpty()) {
+                Set<Integer> cats = new HashSet<>();
+                for (int equipId : reqs) {
+                    cats.add((equipId / 10000) % 100);
+                }
+                for (int cat : cats) {
+                    m.computeIfAbsent(cat, k -> new ArrayList<>()).add(sid);
+                }
+            } else {
+                m.computeIfAbsent((sid / 100) % 100, k -> new ArrayList<>()).add(sid);
+            }
+        }
+        scrollsByCategory = m;
+        return m;
+    }
+
+    /** Best expected offense gain ONE upgrade slot can yield on this equip, from the full
+     *  scroll catalog through the self-scrolling rules ({@link #applicable}, effective success,
+     *  boom/meta skipped). Equip-type based by construction: glove slots price att scrolls,
+     *  most other pieces only stat scrolls; 0 when no usable scroll exists for the type. */
+    static double bestScrollEvPerSlot(Character bot, ItemInformationProvider ii, int equipId) {
+        double best = 0.0;
+        for (int sid : scrollsByCategory(ii).getOrDefault((equipId / 10000) % 100, List.of())) {
+            if (!applicable(ii, sid, equipId)) {
+                continue;
+            }
+            Map<String, Integer> st = ii.getEquipStats(sid);
+            if (st == null) {
+                continue;
+            }
+            double ev = effectiveSuccessPct(st.getOrDefault("success", 0)) / 100.0
+                    * offenseValueFromStats(bot, st);
+            best = Math.max(best, ev);
+        }
+        return best;
+    }
+
+    /** An equip's worth INCLUDING its remaining upgrade slots — what drop-vs-worn comparisons
+     *  should use, so a maxed-out item can lose to a weaker one that still scrolls higher. */
+    static double potentialValue(Character bot, ItemInformationProvider ii, Equip eq) {
+        return offenseValue(bot, eq)
+                + scrollHeadroom(eq.getUpgradeSlots(), bestScrollEvPerSlot(bot, ii, eq.getItemId()));
+    }
+
+    /** Pure headroom core: discounted value of open upgrade slots at a per-slot scroll EV. */
+    static double scrollHeadroom(int upgradeSlots, double bestEvPerSlot) {
+        return SCROLL_HEADROOM_FRACTION * Math.max(0, upgradeSlots) * Math.max(0.0, bestEvPerSlot);
     }
 
     // ---- Reproduction-cost valuation inputs (v1: shopitems prices + stubbed clean-base cost) ----

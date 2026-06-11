@@ -111,6 +111,20 @@ scoreGain = E[ max(0, score(rolled drop) &minus; score(worn)) ]
 <p>This is the emergent stay-or-leave condition: no drop counters, no timers — the spot's value
 falls as the bot's roll improves, until somewhere else (travel-discounted) beats it.
 Gains below <b>0.5</b> score are dropped as rounding noise.</p>
+<p>Both sides of the comparison also count <b>scroll headroom</b> — remaining upgrade slots are
+future stats:</p>
+<div class="formula">
+potentialValue(equip) = score(equip) + 0.5 &middot; remainingSlots &middot; bestScrollEvPerSlot(type)<br>
+bestScrollEvPerSlot(type) = max over catalog scrolls applicable to the type of
+(effectiveSuccess &middot; score(scroll stats))
+</div>
+<p>The per-slot value is priced from the real scroll catalog through the self-scrolling rules
+(applicability, effective success, boom/meta scrolls excluded), so it is <b>equip-type based,
+never flat</b>: glove slots are worth att scrolls (~6.0 each at 60% +2 ATT), while pieces that
+only take stat scrolls get ~1.2 per slot. A fresh drop ships with full slots, so a weaker glove
+that still scrolls can out-value a stronger but maxed-out worn one — while the 0.5 discount
+(scrolls must still be obtained and survive their rolls) keeps bots from re-farming
+weak-scrolling pieces every few levels for slot count alone.</p>
 
 <h3>3b. Scroll drops — success-weighted stat value</h3>
 <p>Equip scrolls (item 2040000&ndash;2049999) are gear progression too. One scroll is worth its
@@ -194,6 +208,7 @@ itemsPerHour(map) = chancePerKill(item, blended) &middot; killsPerHour(map) &mid
 <tr><td><code>ATT_WEIGHT / MAIN / SECONDARY</code></td><td>5.0 / 1.0 / 0.3</td><td>Offense score weights (MATK = ATT for mages only)</td></tr>
 <tr><td><code>ROLL_SAMPLES</code></td><td>32</td><td>Monte Carlo drop rolls per equip per pass</td></tr>
 <tr><td><code>MIN_GEAR_GAIN_SCORE</code></td><td>0.5</td><td>Smaller expected gains are noise, not progression</td></tr>
+<tr><td><code>SCROLL_HEADROOM_FRACTION</code></td><td>0.5</td><td>Discount on open-slot value (slots &times; best catalog scroll EV for the type)</td></tr>
 <tr><td><code>ATTAINABILITY_HORIZON_HOURS</code></td><td>2.0</td><td>"Can I realistically get it" window</td></tr>
 <tr><td><code>MEANINGFUL_GEAR_DESIRE</code></td><td>0.02</td><td>Attainable ~2% DPS gain anywhere &rarr; gear-first mode</td></tr>
 <tr><td><code>GEAR_POOL_FRACTION</code></td><td>0.7</td><td>Gear shortlist: within 70% of best gear-value/h</td></tr>
