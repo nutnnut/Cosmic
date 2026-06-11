@@ -202,7 +202,8 @@ final class BotGrindAdvisor {
             if (totalPoints(pointsByMob) < MIN_SPAWN_POINTS) {
                 continue;
             }
-            candidates.add(blendCandidate(map.mapId(), mapName(map.mapId()), pointsByMob));
+            candidates.add(blendCandidate(map.mapId(), mapName(map.mapId()), map.areaPx(),
+                    pointsByMob));
         }
         return candidates;
     }
@@ -252,7 +253,8 @@ final class BotGrindAdvisor {
      * drop chance dilutes by its dropper's share (summed when several mobs drop the same item).
      * The candidate is labeled with the dominant mob (most spawn points; exp breaks ties).
      */
-    static MobCandidate blendCandidate(int mapId, String mapName, Map<MobProfile, Integer> pointsByMob) {
+    static MobCandidate blendCandidate(int mapId, String mapName, int mapAreaPx,
+                                       Map<MobProfile, Integer> pointsByMob) {
         int totalPoints = totalPoints(pointsByMob);
         double killSeconds = 0.0;
         double exp = 0.0;
@@ -278,7 +280,7 @@ final class BotGrindAdvisor {
             }
         }
         return new MobCandidate(face.mobId(), face.mobName(), face.level(),
-                (int) Math.round(exp), killSeconds, mapId, mapName, totalPoints,
+                (int) Math.round(exp), killSeconds, mapId, mapName, totalPoints, mapAreaPx,
                 List.copyOf(gearByItem.values()));
     }
 
@@ -367,10 +369,10 @@ final class BotGrindAdvisor {
             if (face == null || chancePerKill <= 0) {
                 continue;
             }
-            MobCandidate blend = blendCandidate(mapId, mapName(mapId), pointsByMob);
+            MobCandidate blend = blendCandidate(mapId, mapName(mapId), map.areaPx(), pointsByMob);
             candidates.add(new MobCandidate(face.mobId(), face.mobName(), face.level(),
                     blend.exp(), blend.killSeconds(), mapId, blend.mapName(), totalPoints,
-                    List.of(new GearProspect(itemId, name, chancePerKill, 0, 0))));
+                    map.areaPx(), List.of(new GearProspect(itemId, name, chancePerKill, 0, 0))));
         }
         return BotGrindPlanner.planFarmBest(candidates, mapScoreWeight, ThreadLocalRandom.current());
     }

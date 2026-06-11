@@ -77,11 +77,21 @@ killSeconds = max(0.72, mobHP / dps)
 <i>both</i> its exp/h and its drops/h — so "hard but rewarding" vs "easy but mediocre" is a fair
 fight in the same units. If <code>perAttack &le; 0</code> the mob is unkillable for this bot and
 drops out of the map blend.</p>
-<p>Seek overhead (walking between spawns) scales inversely with the map's grindable density:</p>
+<p>Seek overhead (walking between spawns) scales with real <b>density</b> — the field each
+spawn has to itself, from the map's playable area (VR bounds, miniMap fallback):</p>
 <div class="formula">
-seekSeconds = clamp(3.0 &middot; 8 / spawnPoints, 0.5, 15)<br>
-killsPerHour = 3600 / (killSeconds + seekSeconds)
+areaPerSpawn = mapAreaPx / spawnPoints<br>
+seekSeconds = clamp(3.0 &middot; areaPerSpawn / 250,000 px&sup2;, 0.5, 15)
+&nbsp;<span class="muted">// no area data: clamp(3.0 &middot; 8 / spawnPoints, ...)</span><br><br>
+demand = 3600 / (killSeconds + seekSeconds)<br>
+supply = spawnPoints &middot; 3600 / 10s &nbsp;<span class="muted">// server respawn cycle refills at most spawnPoints per 10s</span><br>
+killsPerHour = min(demand, supply)
 </div>
+<p>The supply cap is what makes a small packed map great solo but poor for a party: members
+share the spawn points (see &sect;7), so each one's refill rate drops to
+<code>spawnPoints/N &middot; 360/h</code> — on a 4-spawn map a 4-member party caps at ~360
+kills/h each no matter how dense it feels, while a roomier 12-spawn map keeps feeding
+everyone. Solo, the same small map wins on near-zero seek time.</p>
 <div class="note"><b>Not modeled (yet):</b> death risk. A mob that out-damages the bot still
 looks attractive if it's technically killable. Touch damage, accuracy floors and potion burn are
 outside the model; in practice the level gap rarely lets that matter because unkillable = excluded.</div>
@@ -90,11 +100,14 @@ outside the model; in practice the level gap rarely lets that matter because unk
 <p>Every item value flows through one job-weighted offense score
 (<code>BotScrollManager.offenseValue</code>):</p>
 <div class="formula">
-score = 5.0 &middot; att + 1.0 &middot; mainStat + 0.3 &middot; secondaryStat<br>
-<span class="muted">att = WATK (MATK for mages — MATK is worth 0 to everyone else)</span>
+score = 5.0 &middot; WATK + 1.0 &middot; mainStat + 0.3 &middot; secondaryStat
+&nbsp;<span class="muted">// physical classes</span><br>
+score = 1.0 &middot; MATK + 1.0 &middot; INT + 0.3 &middot; LUK
+&nbsp;<span class="muted">// mages — MATK is deliberately a stat point, not a watk point</span>
 </div>
-<p>One point of attack is worth five points of main stat; the wrong class's stats are worth
-nothing. This single scale is what lets gear, scrolls and exp compete.</p>
+<p>One point of weapon attack is worth five points of main stat; MATK is worth one point even
+to mages and zero to everyone else; the wrong class's stats are worth nothing. This single
+scale is what lets gear, scrolls and exp compete.</p>
 
 <h3>3a. Equip drops — expected improvement over the worn roll</h3>
 <p>Drop stats are randomized (vanilla spread plus the rare "godly" uplift), so a drop's value is
@@ -155,8 +168,8 @@ scoreGain = effectiveSuccess &middot; score(scroll stats)
 </div>
 <p>No tiering anywhere — the "good scrolls" fall out by arithmetic: a 60% +2 ATT glove scroll is
 worth 0.6&middot;10 = <b>6.0</b>, beating a safe 100% +1 ATT (5.0) and a 10% +5 ATT long shot
-(2.5). ATT scrolls dominate stat scrolls 5:1 per point, and a MATK scroll is worth 0 to a
-non-mage. Gates: the bot must <b>wear</b> something the scroll applies to with an open upgrade
+(2.5). ATT scrolls dominate stat scrolls 5:1 per point; a MATK scroll counts like a stat
+scroll for mages and is worth 0 to everyone else. Gates: the bot must <b>wear</b> something the scroll applies to with an open upgrade
 slot, and boom-risk (<code>cursed</code>) plus meta scrolls (clean slate / modifier / white) are
 worth 0 — self-scrolling v1 refuses to use those, so farming them buys nothing.</p>
 <p class="muted">Valuation only: actually applying scrolls stays behind the owner-confirmed
@@ -204,7 +217,8 @@ gear-comparable spots. With nothing worth farming, the bot reverts to a pure exp
 <h2>7. Party planning: the whole party's gain, one map</h2>
 <p>The party picks <b>one</b> map by summing what every member gets out of it:</p>
 <div class="formula">
-spawnPoints &rarr; spawnPoints / partySize &nbsp;<span class="muted">// members compete for spawns</span><br>
+spawnPoints &rarr; spawnPoints / partySize &nbsp;<span class="muted">// members compete for spawns:
+seek rises (same area, fewer free mobs) and the respawn supply cap drops per member</span><br>
 memberScore(map) = gearLens&#770; + 0.25 &middot; expLens&#770; &nbsp;<span class="muted">// each lens normalized to that member's best; pure exp if the member has no attainable gear</span><br>
 partyScore(map) = &Sigma;<sub>members</sub> max over the member's mobs on that map<br>
 pick = weighted draw among maps within 85% of the best partyScore
@@ -225,7 +239,7 @@ itemsPerHour(map) = chancePerKill(item, blended) &middot; killsPerHour(map) &mid
 <h2>9. Constants at a glance</h2>
 <table>
 <tr><th>Constant</th><th>Value</th><th>Meaning</th></tr>
-<tr><td><code>ATT_WEIGHT / MAIN / SECONDARY</code></td><td>5.0 / 1.0 / 0.3</td><td>Offense score weights (MATK = ATT for mages only)</td></tr>
+<tr><td><code>ATT_WEIGHT / MATK / MAIN / SECONDARY</code></td><td>5.0 / 1.0 / 1.0 / 0.3</td><td>Offense score weights (MATK counts like a stat, mages only)</td></tr>
 <tr><td><code>ROLL_SAMPLES</code></td><td>32</td><td>Monte Carlo drop rolls per equip per pass</td></tr>
 <tr><td><code>MIN_GEAR_GAIN_SCORE</code></td><td>0.5</td><td>Smaller expected gains are noise, not progression</td></tr>
 <tr><td><code>SCROLL_HEADROOM_FRACTION</code></td><td>0.5</td><td>Discount on open-slot value (slots &times; best catalog scroll EV for the type)</td></tr>
@@ -236,7 +250,8 @@ itemsPerHour(map) = chancePerKill(item, blended) &middot; killsPerHour(map) &mid
 <tr><td><code>NEAR_BEST_FRACTION</code></td><td>0.85</td><td>Weighted-random draw band (anti-clogging)</td></tr>
 <tr><td><code>EXP_TIEBREAK_WEIGHT</code></td><td>0.25</td><td>Party lens: exp next to gear</td></tr>
 <tr><td><code>ATTACK_CYCLE_SECONDS</code></td><td>0.72</td><td>Damage-per-attack &rarr; DPS anchor</td></tr>
-<tr><td><code>SEEK_BASE / TYPICAL_SPAWNS</code></td><td>3.0s @ 8</td><td>Seek overhead, clamped 0.5&ndash;15s</td></tr>
+<tr><td><code>SEEK_BASE / TYPICAL_AREA_PER_SPAWN</code></td><td>3.0s @ 250k px&sup2;</td><td>Seek overhead from map density, clamped 0.5&ndash;15s</td></tr>
+<tr><td><code>RESPAWN_PERIOD_SECONDS</code></td><td>10</td><td>Supply cap: a map refills &le; spawnPoints kills per cycle</td></tr>
 <tr><td><code>MIN_SPAWN_POINTS</code></td><td>3</td><td>Below this a map isn't a grind spot</td></tr>
 <tr><td><code>PORTAL / SCROLL / TAXI hop</code></td><td>25s / 5s / 30s</td><td>Travel edge costs (flat)</td></tr>
 <tr><td><code>MIN_SCORE_WEIGHT</code></td><td>0.25</td><td>Travel discount floor (1h+ away)</td></tr>

@@ -8,7 +8,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /**
  * The advisor's gear-prospect value is the expected improvement over the worn roll,
  * {@code E[max(0, roll - current)]} over Monte Carlo samples of the real drop-roll
- * distribution (the sampler itself is a seam — {@link BotGrindAdvisor#rollScores} — because
+ * distribution (the sampler itself is a seam - {@link BotGrindAdvisor#rollScores} - because
  * ItemInformationProvider cannot load in unit tests; these tests inject fixed sample sets).
  */
 class BotGrindAdvisorTest {
@@ -54,7 +54,7 @@ class BotGrindAdvisorTest {
     @Test
     void shouldValueScrollsByExpectedGain() {
         // Offense-SSOT units (att weight 5.0): 60% +2 att = 6.0 EV beats both the safe
-        // 100% +1 att (5.0) and the 10% +5 att jackpot (2.5) — "good" mid scrolls win
+        // 100% +1 att (5.0) and the 10% +5 att jackpot (2.5) - "good" mid scrolls win
         // on expectation alone.
         double midOdds = BotGrindAdvisor.scrollExpectedGain(0.6, 10.0, true);
         double safe = BotGrindAdvisor.scrollExpectedGain(1.0, 5.0, true);
@@ -151,8 +151,8 @@ class BotGrindAdvisorTest {
     @Test
     void shouldBlendExpAndKillTimeBySpawnShare() {
         // 3 spawn points of a 100-exp/2s mob mixed with 1 point of a 20-exp/6s mob:
-        // exp = 0.75*100 + 0.25*20 = 80, kill = 0.75*2 + 0.25*6 = 3s — in between, not the best.
-        var blend = BotGrindAdvisor.blendCandidate(100, "test map", java.util.Map.of(
+        // exp = 0.75*100 + 0.25*20 = 80, kill = 0.75*2 + 0.25*6 = 3s - in between, not the best.
+        var blend = BotGrindAdvisor.blendCandidate(100, "test map", 0, java.util.Map.of(
                 profile(1, "good", 100, 2.0), 3,
                 profile(2, "bad", 20, 6.0), 1));
 
@@ -169,7 +169,7 @@ class BotGrindAdvisorTest {
         var g1 = new BotGrindPlanner.GearProspect(77, "shield", 0.10, 5.0, 0.1);
         var g2 = new BotGrindPlanner.GearProspect(77, "shield", 0.20, 5.0, 0.1);
         var g3 = new BotGrindPlanner.GearProspect(88, "scroll", 0.40, 6.0, 0.12);
-        var blend = BotGrindAdvisor.blendCandidate(100, "test map", java.util.Map.of(
+        var blend = BotGrindAdvisor.blendCandidate(100, "test map", 0, java.util.Map.of(
                 profile(1, "common", 50, 2.0, g1), 3,
                 profile(2, "rare", 50, 2.0, g2, g3), 1));
 
@@ -186,7 +186,7 @@ class BotGrindAdvisorTest {
 
     @Test
     void shouldBreakDominantMobTiesByExp() {
-        var blend = BotGrindAdvisor.blendCandidate(100, "test map", java.util.Map.of(
+        var blend = BotGrindAdvisor.blendCandidate(100, "test map", 0, java.util.Map.of(
                 profile(1, "weak", 10, 2.0), 2,
                 profile(2, "juicy", 50, 2.0), 2));
         assertEquals("juicy", blend.mobName());

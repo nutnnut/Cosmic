@@ -50,6 +50,8 @@ import java.util.function.DoubleUnaryOperator;
 final class BotScrollManager {
 
     private static final double ATT_WEIGHT = 5.0;
+    /** MATK is deliberately valued like a stat point, NOT like watk — even for mages. */
+    private static final double MATK_WEIGHT = 1.0;
     private static final double MAIN_STAT_WEIGHT = 1.0;
     private static final double SECONDARY_STAT_WEIGHT = 0.3;
 
@@ -729,8 +731,8 @@ final class BotScrollManager {
     static double offenseValue(Character bot, Equip eq) {
         boolean[] mage = new boolean[1];
         char[] ms = mainSecondary(jobId(bot), mage);
-        int att = mage[0] ? eq.getMatk() : eq.getWatk();
-        return ATT_WEIGHT * att
+        double att = mage[0] ? MATK_WEIGHT * eq.getMatk() : ATT_WEIGHT * eq.getWatk();
+        return att
                 + MAIN_STAT_WEIGHT * statOfEquip(eq, ms[0])
                 + SECONDARY_STAT_WEIGHT * statOfEquip(eq, ms[1]);
     }
@@ -738,8 +740,9 @@ final class BotScrollManager {
     static double offenseValueFromStats(Character bot, Map<String, Integer> st) {
         boolean[] mage = new boolean[1];
         char[] ms = mainSecondary(jobId(bot), mage);
-        int att = mage[0] ? st.getOrDefault("MAD", 0) : st.getOrDefault("PAD", 0);
-        return ATT_WEIGHT * att
+        double att = mage[0] ? MATK_WEIGHT * st.getOrDefault("MAD", 0)
+                : ATT_WEIGHT * st.getOrDefault("PAD", 0);
+        return att
                 + MAIN_STAT_WEIGHT * st.getOrDefault(statKey(ms[0]), 0)
                 + SECONDARY_STAT_WEIGHT * st.getOrDefault(statKey(ms[1]), 0);
     }

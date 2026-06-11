@@ -22,6 +22,51 @@ class BotGrindPlannerTest {
                 mapId, "map" + mapId, spawnPoints, drops);
     }
 
+    // ---- density (map area) and respawn supply ----
+
+    @Test
+    void shouldSeekByAreaDensityNotJustSpawnCount() {
+        // Same 8 spawns: typical density = 3s seek; four times the field = twice the per-spawn
+        // area = double the walk; no area data falls back to spawn count alone (old anchor).
+        assertEquals(3.0, BotGrindPlanner.seekSeconds(2_000_000, 8), 1e-9);
+        assertEquals(6.0, BotGrindPlanner.seekSeconds(4_000_000, 8), 1e-9);
+        assertEquals(3.0, BotGrindPlanner.seekSeconds(0, 8), 1e-9);
+    }
+
+    @Test
+    void shouldCapKillsAtTheRespawnSupply() {
+        // 2 spawn points refill at most 720 kills/h (10s respawn cycle), however fast the
+        // bot clears the tiny packed map.
+        MobCandidate tiny = new MobCandidate(1, "mob1", 30, 100, 0.5, 10, "map10",
+                2, 100_000, List.of());
+        assertEquals(720.0, BotGrindPlanner.killsPerHour(tiny), 1e-9);
+    }
+
+    @Test
+    void shouldPreferRoomierMapForAPartyButDenserMapSolo() {
+        // Small packed map vs a bigger, slightly sparser one with 3x the spawns.
+        MobCandidate smallDense = new MobCandidate(1, "mob1", 30, 100, 2.0, 10, "map10",
+                4, 200_000, List.of());
+        MobCandidate bigRoomy = new MobCandidate(2, "mob2", 30, 100, 2.0, 20, "map20",
+                12, 1_200_000, List.of());
+
+        // Solo: the packed small map grinds faster (short seek, supply never binds).
+        for (int seed = 0; seed < 20; seed++) {
+            Recommendation solo = BotGrindPlanner.planBest(
+                    List.of(smallDense, bigRoomy), new Random(seed));
+            assertEquals(10, solo.pick().mapId(), "solo must take the dense small map");
+        }
+
+        // Party of 4: members share the spawns - the small map starves on respawn supply
+        // (1 shared point = 360 kills/h each) while the roomy one still feeds everyone.
+        List<List<MobCandidate>> perMember = java.util.Collections.nCopies(
+                4, List.of(smallDense, bigRoomy));
+        for (int seed = 0; seed < 20; seed++) {
+            BotGrindPlanner.PartyPlan plan = BotGrindPlanner.planPartyBest(perMember, new Random(seed));
+            assertEquals(20, plan.mapId(), "a party must move to the roomier map");
+        }
+    }
+
     @Test
     void shouldPickBestExpWhenNoUpgradeExists() {
         MobCandidate slowRich = mob(1, 100, 8.0, 10, 8, List.of());   // 100 exp, slow kill
@@ -109,7 +154,7 @@ class BotGrindPlannerTest {
 
         assertNotNull(rec);
         assertEquals(20, rec.pick().mapId());
-        assertTrue(BotGrindPlanner.seekSeconds(1) > BotGrindPlanner.seekSeconds(12));
+        assertTrue(BotGrindPlanner.seekSeconds(0, 1) > BotGrindPlanner.seekSeconds(0, 12));
     }
 
     @Test

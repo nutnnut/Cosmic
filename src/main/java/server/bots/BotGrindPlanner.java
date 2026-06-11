@@ -33,12 +33,18 @@ import java.util.function.IntToDoubleFunction;
  */
 final class BotGrindPlanner {
 
-    /** Seek seconds at TYPICAL_SPAWN_POINTS, scaled inversely with spawn density (clamped). Matches
-     *  the farming-cost anchor (3s overhead) on a typically-populated map. */
+    /** Seek seconds on a typically-dense map, scaled with the map area each spawn has to
+     *  itself (clamped). Matches the farming-cost anchor (3s overhead) at typical density. */
     static final double SEEK_BASE_SECONDS = 3.0;
     static final double TYPICAL_SPAWN_POINTS = 8.0;
+    /** px&sup2; of field per spawn point on a comfortably-dense map (~3000x650 / 8). */
+    static final double TYPICAL_AREA_PER_SPAWN = 250_000.0;
     static final double SEEK_MIN_SECONDS = 0.5;
     static final double SEEK_MAX_SECONDS = 15.0;
+    /** Server respawn cadence (config RESPAWN_INTERVAL = 10s): a map can't sustain more than
+     *  spawnPoints kills per cycle, however fast the killing — the supply cap that makes
+     *  small/sparse maps poor for parties. */
+    static final double RESPAWN_PERIOD_SECONDS = 10.0;
 
     /** A best attainable upgrade of this DPS fraction (or more) makes gear the dominant need. */
     static final double GEAR_DOMINANT_DPS_GAIN = 0.30;
@@ -65,10 +71,19 @@ final class BotGrindPlanner {
     record GearProspect(int itemId, String itemName, double chancePerKill,
                         double scoreGain, double dpsGainFraction) {}
 
-    /** One (mob, map) grind option. killSeconds is the bot-specific time to kill one mob. */
+    /** One map's grind option (mob mix blended by the advisor). killSeconds is the bot-specific
+     *  time to kill one mob; mapAreaPx is the playable field size (0 = unknown, density falls
+     *  back to spawn count alone). */
     record MobCandidate(int mobId, String mobName, int mobLevel, int exp, double killSeconds,
-                        int mapId, String mapName, int spawnPoints,
-                        List<GearProspect> gearDrops) {}
+                        int mapId, String mapName, int spawnPoints, int mapAreaPx,
+                        List<GearProspect> gearDrops) {
+        /** Area-less convenience (tests, legacy callers): density from spawn count only. */
+        MobCandidate(int mobId, String mobName, int mobLevel, int exp, double killSeconds,
+                     int mapId, String mapName, int spawnPoints, List<GearProspect> gearDrops) {
+            this(mobId, mobName, mobLevel, exp, killSeconds, mapId, mapName, spawnPoints, 0,
+                    gearDrops);
+        }
+    }
 
     /** The chosen option plus the numbers that justify it (for the chat reply). {@code score}
      *  is the pick's selection-lens value (travel-weighted gear-value/h when gear-first,
@@ -78,14 +93,24 @@ final class BotGrindPlanner {
                           boolean gearFocused, double needGear,
                           GearProspect wantedGear, double wantedGearPerHour, double score) {}
 
-    /** Seek overhead per kill: sparse maps cost walking time, dense maps barely any. */
-    static double seekSeconds(int spawnPoints) {
-        double seek = SEEK_BASE_SECONDS * (TYPICAL_SPAWN_POINTS / Math.max(1, spawnPoints));
-        return Math.clamp(seek, SEEK_MIN_SECONDS, SEEK_MAX_SECONDS);
+    /** Seek overhead per kill, from real DENSITY when the map's area is known: the field each
+     *  spawn has to itself relative to a comfortable map. A big sparse map costs walking time;
+     *  a small packed one barely any. Without area data, falls back to spawn count alone. */
+    static double seekSeconds(int mapAreaPx, int spawnPoints) {
+        double sparseness = mapAreaPx > 0
+                ? (mapAreaPx / (double) Math.max(1, spawnPoints)) / TYPICAL_AREA_PER_SPAWN
+                : TYPICAL_SPAWN_POINTS / Math.max(1, spawnPoints);
+        return Math.clamp(SEEK_BASE_SECONDS * sparseness, SEEK_MIN_SECONDS, SEEK_MAX_SECONDS);
     }
 
+    /** Kill rate = what the bot can do, capped by what the map can SUPPLY: respawn refills at
+     *  most spawnPoints per cycle, so a small map starves a fast killer — and a party (whose
+     *  members share the spawn points, see {@link #withSpawnShare}) even more so. */
     static double killsPerHour(MobCandidate c) {
-        return 3600.0 / (Math.max(0.1, c.killSeconds()) + seekSeconds(c.spawnPoints()));
+        double demand = 3600.0
+                / (Math.max(0.1, c.killSeconds()) + seekSeconds(c.mapAreaPx(), c.spawnPoints()));
+        double supply = c.spawnPoints() * 3600.0 / RESPAWN_PERIOD_SECONDS;
+        return Math.min(demand, supply);
     }
 
     /** How much the bot should want this prospect: DPS gain discounted by whether the drop is
@@ -366,9 +391,11 @@ final class BotGrindPlanner {
                 score[picked]);
     }
 
+    /** A party member's view of a map: the spawn points are shared N ways (raising seek time —
+     *  same area, fewer free mobs — and cutting the respawn supply cap), the area is not. */
     private static MobCandidate withSpawnShare(MobCandidate c, int partySize) {
         int shared = Math.max(1, c.spawnPoints() / partySize);
         return new MobCandidate(c.mobId(), c.mobName(), c.mobLevel(), c.exp(), c.killSeconds(),
-                c.mapId(), c.mapName(), shared, c.gearDrops());
+                c.mapId(), c.mapName(), shared, c.mapAreaPx(), c.gearDrops());
     }
 }

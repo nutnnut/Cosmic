@@ -39,12 +39,13 @@ import java.util.concurrent.atomic.AtomicInteger;
 final class BotSpawnIndex {
 
     private static final Logger log = LoggerFactory.getLogger(BotSpawnIndex.class);
-    private static final int INDEX_VERSION = 1;
+    private static final int INDEX_VERSION = 2;
     private static final Path CACHE_FILE =
             Path.of("cache", "bot-spawn", "v" + INDEX_VERSION, "spawn-index.tsv");
 
-    /** One field's spawns: total spawn points per mob id ({@code hide}-flagged life excluded). */
-    record MapSpawns(int mapId, boolean town, Map<Integer, Integer> mobCounts) {
+    /** One field's spawns: total spawn points per mob id ({@code hide}-flagged life excluded),
+     *  plus the playable area in px&sup2; (VR bounds, miniMap fallback; 0 = unknown). */
+    record MapSpawns(int mapId, boolean town, int areaPx, Map<Integer, Integer> mobCounts) {
         int totalSpawnPoints() {
             int total = 0;
             for (int c : mobCounts.values()) {
@@ -163,16 +164,21 @@ final class BotSpawnIndex {
         Data info = mapData.getChildByPath("info");
         boolean town = info != null && DataTool.getInt("town", info, 0) == 1;
         String link = info != null ? DataTool.getString("link", info, "") : "";
+        Data original = mapData;
         if (!link.isEmpty()) {
             try {
                 int linkId = Integer.parseInt(link);
                 mapData = mapSource.getData(mapImgPath(linkId / 100000000, linkId));
                 if (mapData == null) {
-                    return new MapSpawns(mapId, town, Map.of());
+                    return new MapSpawns(mapId, town, playableArea(original), Map.of());
                 }
             } catch (NumberFormatException ignored) {
                 // malformed link — read the map as-is
             }
+        }
+        int areaPx = playableArea(original);
+        if (areaPx <= 0) {
+            areaPx = playableArea(mapData);
         }
         Map<Integer, Integer> mobCounts = new HashMap<>();
         Data life = mapData.getChildByPath("life");
@@ -195,7 +201,28 @@ final class BotSpawnIndex {
                 }
             }
         }
-        return new MapSpawns(mapId, town, Map.copyOf(mobCounts));
+        return new MapSpawns(mapId, town, areaPx, Map.copyOf(mobCounts));
+    }
+
+    /** Playable field size in px&sup2;: VR bounds when baked, miniMap canvas as the fallback —
+     *  the same precedence MapFactory uses for map boundings. 0 when neither exists. */
+    private static int playableArea(Data mapData) {
+        Data info = mapData.getChildByPath("info");
+        if (info != null) {
+            int top = DataTool.getInt("VRTop", info, 0);
+            int bottom = DataTool.getInt("VRBottom", info, 0);
+            int left = DataTool.getInt("VRLeft", info, 0);
+            int right = DataTool.getInt("VRRight", info, 0);
+            if (bottom != top && right != left) {
+                return Math.max(0, right - left) * Math.max(0, bottom - top);
+            }
+        }
+        Data miniMap = mapData.getChildByPath("miniMap");
+        if (miniMap != null) {
+            return Math.max(0, DataTool.getInt("width", miniMap, 0))
+                    * Math.max(0, DataTool.getInt("height", miniMap, 0));
+        }
+        return 0;
     }
 
     private static String mapImgPath(int area, int mapId) {
@@ -217,7 +244,7 @@ final class BotSpawnIndex {
         return new Index(Collections.unmodifiableMap(byMap), Collections.unmodifiableMap(byMob));
     }
 
-    // ---- disk cache: one row per map: mapId \t town(0/1) \t mobId:count,mobId:count ----
+    // ---- disk cache: one row per map: mapId \t town(0/1) \t areaPx \t mobId:count,... ----
 
     private static Index loadCache() {
         if (!Files.isRegularFile(CACHE_FILE)) {
@@ -232,15 +259,16 @@ final class BotSpawnIndex {
                 String[] cols = line.split("\t", -1);
                 int mapId = Integer.parseInt(cols[0]);
                 boolean town = "1".equals(cols[1]);
+                int areaPx = Integer.parseInt(cols[2]);
                 Map<Integer, Integer> mobCounts = new HashMap<>();
-                if (cols.length > 2 && !cols[2].isEmpty()) {
-                    for (String pair : cols[2].split(",")) {
+                if (cols.length > 3 && !cols[3].isEmpty()) {
+                    for (String pair : cols[3].split(",")) {
                         int sep = pair.indexOf(':');
                         mobCounts.put(Integer.parseInt(pair.substring(0, sep)),
                                 Integer.parseInt(pair.substring(sep + 1)));
                     }
                 }
-                byMap.put(mapId, new MapSpawns(mapId, town, Map.copyOf(mobCounts)));
+                byMap.put(mapId, new MapSpawns(mapId, town, areaPx, Map.copyOf(mobCounts)));
             }
             return byMap.isEmpty() ? null : withMobIndex(byMap);
         } catch (IOException | RuntimeException e) {
@@ -254,7 +282,8 @@ final class BotSpawnIndex {
             Files.createDirectories(CACHE_FILE.getParent());
             StringBuilder sb = new StringBuilder(1 << 20);
             for (MapSpawns map : built.byMap().values()) {
-                sb.append(map.mapId()).append('\t').append(map.town() ? 1 : 0).append('\t');
+                sb.append(map.mapId()).append('\t').append(map.town() ? 1 : 0)
+                        .append('\t').append(map.areaPx()).append('\t');
                 boolean first = true;
                 for (Map.Entry<Integer, Integer> e : map.mobCounts().entrySet()) {
                     if (!first) {
