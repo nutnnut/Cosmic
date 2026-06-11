@@ -1842,6 +1842,79 @@ class BotCombatManagerTest {
         }
     }
 
+    @Test
+    void shouldUseWeakDegenerateProfileForCloseRouteWithRangedWeapon() {
+        Character bot = mock(Character.class);
+        when(bot.getTotalWatk()).thenReturn(150);
+        when(bot.getTotalDex()).thenReturn(100);
+        when(bot.getTotalStr()).thenReturn(50);
+
+        try (MockedStatic<BotAttackExecutionProvider> attackExecution =
+                     Mockito.mockStatic(BotAttackExecutionProvider.class, Mockito.CALLS_REAL_METHODS)) {
+            attackExecution.when(() -> BotAttackExecutionProvider.getEquippedWeaponType(bot))
+                    .thenReturn(WeaponType.BOW);
+
+            server.combat.CombatFormulaProvider.DamageProfile degenerate =
+                    BotCombatManager.resolveAttackDamageProfile(bot, 0, 0,
+                            BotCombatManager.AttackRoute.CLOSE, null);
+
+            // Degenerate bow swing: MAX = (100*3.4 + 50) * 150 / 150 = 390,
+            // MIN = (100*3.4*0.09 + 50) * 150 / 150 = 80.6 -> 81. No crit ever.
+            assertEquals(81, degenerate.minDamage());
+            assertEquals(390, degenerate.maxDamage());
+            assertTrue(degenerate.noCrit());
+        }
+    }
+
+    @Test
+    void shouldKeepNormalCritableProfileForRangedRouteWithRangedWeapon() {
+        Character bot = mock(Character.class);
+        when(bot.getTotalWatk()).thenReturn(150);
+        Inventory equipped = mock(Inventory.class);
+        when(bot.getInventory(InventoryType.EQUIPPED)).thenReturn(equipped);
+
+        try (MockedStatic<BotAttackExecutionProvider> attackExecution =
+                     Mockito.mockStatic(BotAttackExecutionProvider.class, Mockito.CALLS_REAL_METHODS)) {
+            attackExecution.when(() -> BotAttackExecutionProvider.getEquippedWeaponType(bot))
+                    .thenReturn(WeaponType.BOW);
+
+            server.combat.CombatFormulaProvider.DamageProfile ranged =
+                    BotCombatManager.resolveAttackDamageProfile(bot, 0, 0,
+                            BotCombatManager.AttackRoute.RANGED, null);
+
+            assertFalse(ranged.noCrit());
+        }
+    }
+
+    @Test
+    void shouldApplyPowerKnockbackSkillDamageOnTopOfDegenerateBase() {
+        Character bot = mock(Character.class);
+        when(bot.getTotalWatk()).thenReturn(150);
+        when(bot.getTotalDex()).thenReturn(100);
+        when(bot.getTotalStr()).thenReturn(50);
+        Skill pkb = mock(Skill.class);
+        StatEffect effect = mock(StatEffect.class);
+        when(effect.getDamagePercent()).thenReturn(130);
+        when(pkb.getEffect(1)).thenReturn(effect);
+
+        try (MockedStatic<SkillFactory> skillFactory = Mockito.mockStatic(SkillFactory.class);
+             MockedStatic<BotAttackExecutionProvider> attackExecution =
+                     Mockito.mockStatic(BotAttackExecutionProvider.class, Mockito.CALLS_REAL_METHODS)) {
+            skillFactory.when(() -> SkillFactory.getSkill(Hunter.POWER_KNOCKBACK)).thenReturn(pkb);
+            attackExecution.when(() -> BotAttackExecutionProvider.getEquippedWeaponType(bot))
+                    .thenReturn(WeaponType.BOW);
+
+            server.combat.CombatFormulaProvider.DamageProfile profile =
+                    BotCombatManager.resolveAttackDamageProfile(bot, Hunter.POWER_KNOCKBACK, 1,
+                            BotCombatManager.AttackRoute.CLOSE, null);
+
+            // Degenerate base 81-390 (see degenerate bow test) * 130% skill damage
+            assertEquals(105, profile.minDamage());
+            assertEquals(507, profile.maxDamage());
+            assertTrue(profile.noCrit());
+        }
+    }
+
     private static Skill skillWithAnchoredAoe(int skillId, int attackCount, int mobCount, int damage) {
         Skill skill = skillWithAttack(skillId, attackCount, mobCount, damage);
         StatEffect effect = skill.getEffect(1);

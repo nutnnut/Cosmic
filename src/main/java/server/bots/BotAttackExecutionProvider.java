@@ -609,7 +609,7 @@ final class BotAttackExecutionProvider {
         };
     }
 
-    private static boolean isDegenerateCapableRangedWeapon(WeaponType weaponType) {
+    static boolean isDegenerateCapableRangedWeapon(WeaponType weaponType) {
         return weaponType == WeaponType.BOW
                 || weaponType == WeaponType.CROSSBOW
                 || weaponType == WeaponType.CLAW

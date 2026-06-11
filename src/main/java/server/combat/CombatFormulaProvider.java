@@ -56,7 +56,11 @@ import java.util.Set;
 import java.util.concurrent.ThreadLocalRandom;
 
 public final class CombatFormulaProvider {
-    public record DamageProfile(int minDamage, int maxDamage, boolean magicAttack, boolean alwaysHit) {
+    public record DamageProfile(int minDamage, int maxDamage, boolean magicAttack, boolean alwaysHit,
+                                boolean noCrit) {
+        public DamageProfile(int minDamage, int maxDamage, boolean magicAttack, boolean alwaysHit) {
+            this(minDamage, maxDamage, magicAttack, alwaysHit, false);
+        }
     }
 
     /**
@@ -301,7 +305,7 @@ public final class CombatFormulaProvider {
         int[] adjustedDamage = applyMonsterDefense(bot, monster, modMin, modMax, damageProfile.magicAttack());
         boolean shadowPartner = hits > 1 && bot.getBuffEffect(BuffStat.SHADOWPARTNER) != null;
         if (!damageProfile.magicAttack()) {
-            CritProfile crit = resolveCritProfile(bot);
+            CritProfile crit = damageProfile.noCrit() ? CritProfile.NONE : resolveCritProfile(bot);
             double hitChance = calculateMobHitChance(bot, monster, false);
             if (skillId == Buccaneer.BARRAGE || skillId == ThunderBreaker.BARRAGE) {
                 return rollBarrageDamageLines(hits, adjustedDamage, hitChance, crit, normalizedHitDelay);
@@ -353,7 +357,7 @@ public final class CombatFormulaProvider {
             return hitChance * averageDamage(adjustedDamage[0], adjustedDamage[1]) * normalizedHits;
         }
 
-        CritProfile crit = resolveCritProfile(bot);
+        CritProfile crit = damageProfile.noCrit() ? CritProfile.NONE : resolveCritProfile(bot);
         if (skillId == Buccaneer.BARRAGE || skillId == ThunderBreaker.BARRAGE) {
             double total = 0.0d;
             for (int j = 0; j < normalizedHits; j++) {
@@ -657,6 +661,64 @@ public final class CombatFormulaProvider {
         }
         return new CritDamageResult(damageLines, critIndices);
     }
+
+    /**
+     * Degenerate melee swing with a ranged weapon: bow/crossbow swing (including Power Knockback
+     * 3101003/3201003, which the client casts as a melee swing), claw punch, and gun bash.
+     *
+     * <p>Client truth (CalcDamage::PDamage, Angel.idb @0x0078DF87 — verified by disasm): before the
+     * normal per-weapon-type formula dispatch, the non-shoot paths compute
+     * <pre>
+     *   bow/crossbow: (rand(DEX, m) * 3.4 + STR) * WAtk / 150   (PKB skill IDs branch here too)
+     *   claw:         (rand(LUK, m) + STR + DEX) * WAtk / 150
+     *   gun:          (rand(DEX, m) + STR)       * WAtk / 200
+     * </pre>
+     * where the mastery factor m = (5 * masteryLevel + 10) * 0.009 with masteryLevel = 0 (weapon
+     * mastery never applies to mismatched attack types) = 0.09 — i.e. "Mastery is 0.1 at all
+     * levels" per docs/formulas/dmg_formula_ayumilove.txt (Power Knock Back / Claw punching).
+     * Crit passives (Critical Shot / Critical Throw) do not apply either, hence {@code noCrit}.
+     * A skill damage% (Power Knockback) still composes on top per the doc's order of operations.
+     */
+    public DamageProfile resolveDegenerateDamageProfile(Character bot, WeaponType weaponType, StatEffect effect) {
+        int watk = Math.max(0, bot.getTotalWatk());
+        double maxBase;
+        double minBase;
+        switch (weaponType) {
+            case BOW, CROSSBOW -> {
+                maxBase = (bot.getTotalDex() * 3.4d + bot.getTotalStr()) * watk / 150.0d;
+                minBase = (bot.getTotalDex() * 3.4d * DEGENERATE_MASTERY_FACTOR + bot.getTotalStr()) * watk / 150.0d;
+            }
+            case CLAW -> {
+                maxBase = (bot.getTotalLuk() + bot.getTotalStr() + bot.getTotalDex()) * watk / 150.0d;
+                minBase = (bot.getTotalLuk() * DEGENERATE_MASTERY_FACTOR + bot.getTotalStr() + bot.getTotalDex()) * watk / 150.0d;
+            }
+            case GUN -> {
+                maxBase = (bot.getTotalDex() + bot.getTotalStr()) * watk / 200.0d;
+                minBase = (bot.getTotalDex() * DEGENERATE_MASTERY_FACTOR + bot.getTotalStr()) * watk / 200.0d;
+            }
+            default -> {
+                return resolveDamageProfile(bot, 0, effect, false);
+            }
+        }
+
+        long maxDamage = (long) Math.ceil(maxBase);
+        long minDamage = Math.max(1L, Math.round(minBase));
+        if (effect != null) {
+            int skillDamage = effect.getDamagePercent();
+            if (skillDamage > 0) {
+                maxDamage = maxDamage * skillDamage / 100L;
+                minDamage = minDamage * skillDamage / 100L;
+            }
+        }
+
+        int normalizedMaxDamage = clampDamage(maxDamage);
+        int normalizedMinDamage = Math.min(normalizedMaxDamage, clampDamage(minDamage));
+        return new DamageProfile(normalizedMinDamage, normalizedMaxDamage, false, false, true);
+    }
+
+    // (5 * masteryLevel + 10) * 0.009 with masteryLevel = 0 — the client's fixed 10% mastery
+    // (x 0.9) for attacks the weapon mastery skill doesn't cover.
+    private static final double DEGENERATE_MASTERY_FACTOR = 0.09d;
 
     private DamageProfile resolvePhysicalDamageProfile(Character bot, int skillId, StatEffect effect,
                                                        WeaponType physicalWeaponTypeOverride) {

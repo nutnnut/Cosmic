@@ -1048,8 +1048,8 @@ class BotCombatManager {
             }
             AttackRoute route = BotAttackExecutionProvider.determineSkillRoute(bot, skillId);
             int lines = Math.max(1, effectiveHitCount(effect) * shadowPartnerHitMultiplier(bot, route));
-            CombatFormulaProvider.DamageProfile profile = CombatFormulaProvider.getInstance()
-                    .resolveDamageProfile(bot, skillId, skillLevel, route == AttackRoute.MAGIC, weaponType);
+            CombatFormulaProvider.DamageProfile profile =
+                    resolveAttackDamageProfile(bot, skillId, skillLevel, route, weaponType);
             double dmg = CombatFormulaProvider.getInstance().estimateExpectedDamage(bot, mob, lines, skillId, profile);
             if (dmg > best) {
                 best = dmg;
@@ -1143,10 +1143,26 @@ class BotCombatManager {
                              boolean minimumKillsFullHpTargets) {
     }
 
+    // Close-range attacks with a ranged weapon equipped — bow/crossbow swing (including Power
+    // Knockback, forced CLOSE), claw punch, gun bash — are "degenerate" on the client and use
+    // the weak mismatched-weapon formula: fixed 10% mastery, no crit passives. Everything else
+    // keeps the normal weapon/skill formula.
+    static CombatFormulaProvider.DamageProfile resolveAttackDamageProfile(
+            Character bot, int skillId, int skillLevel, AttackRoute route, WeaponType damageWeaponType) {
+        WeaponType equippedWeaponType = BotAttackExecutionProvider.getEquippedWeaponType(bot);
+        if (route == AttackRoute.CLOSE
+                && BotAttackExecutionProvider.isDegenerateCapableRangedWeapon(equippedWeaponType)) {
+            Skill skill = skillId != 0 ? SkillFactory.getSkill(skillId) : null;
+            StatEffect effect = skill != null && skillLevel > 0 ? skill.getEffect(skillLevel) : null;
+            return CombatFormulaProvider.getInstance().resolveDegenerateDamageProfile(bot, equippedWeaponType, effect);
+        }
+        return CombatFormulaProvider.getInstance().resolveDamageProfile(
+                bot, skillId, skillLevel, route == AttackRoute.MAGIC, damageWeaponType);
+    }
+
     private static PlanScore scoreAttackPlan(Character bot, AttackPlan attackPlan) {
-        CombatFormulaProvider.DamageProfile damageProfile = CombatFormulaProvider.getInstance().resolveDamageProfile(
-                bot, attackPlan.skillId, attackPlan.skillLevel,
-                attackPlan.route == AttackRoute.MAGIC, attackPlan.damageWeaponType);
+        CombatFormulaProvider.DamageProfile damageProfile = resolveAttackDamageProfile(
+                bot, attackPlan.skillId, attackPlan.skillLevel, attackPlan.route, attackPlan.damageWeaponType);
         double usefulDamage = 0.0d;
         double rawDamage = 0.0d;
         boolean minimumKillsFullHpTargets = !attackPlan.targets.isEmpty();
@@ -1256,9 +1272,8 @@ class BotCombatManager {
         attack.direction = attackPlan.direction; // Historical server name: packet byte 2.
         attack.rangedirection = attackPlan.rangedDirection; // Extra ranged byte after speed.
         attack.ranged = attackPlan.route == AttackRoute.RANGED;
-        CombatFormulaProvider.DamageProfile damageProfile = CombatFormulaProvider.getInstance().resolveDamageProfile(
-                bot, attackPlan.skillId, attackPlan.skillLevel,
-                attackPlan.route == AttackRoute.MAGIC, attackPlan.damageWeaponType);
+        CombatFormulaProvider.DamageProfile damageProfile = resolveAttackDamageProfile(
+                bot, attackPlan.skillId, attackPlan.skillLevel, attackPlan.route, attackPlan.damageWeaponType);
         attack.magic = damageProfile.magicAttack();
         attack.targets = new HashMap<>();
 

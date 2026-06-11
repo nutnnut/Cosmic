@@ -362,6 +362,105 @@ class CombatFormulaProviderTest {
         assertTrue(profile.alwaysHit());
     }
 
+    // --- Degenerate (mismatched-weapon) swing formulas ---
+    // Client truth: CalcDamage::PDamage (Angel.idb @0x0078DF87) + dmg_formula_ayumilove.txt
+    // (Power Knock Back / Claw punching). Fixed 10% mastery, weak divisor, no crit.
+
+    @Test
+    void shouldUseWeakSwingFormulaForDegenerateBowAndCrossbowAttack() {
+        Character bot = mockDamageBot();
+        when(bot.getTotalWatk()).thenReturn(100);
+        when(bot.getTotalDex()).thenReturn(100);
+        when(bot.getTotalStr()).thenReturn(40);
+
+        for (WeaponType weaponType : List.of(WeaponType.BOW, WeaponType.CROSSBOW)) {
+            CombatFormulaProvider.DamageProfile profile =
+                    provider.resolveDegenerateDamageProfile(bot, weaponType, null);
+
+            // MAX = (100*3.4 + 40) * 100 / 150 = 253.33 -> ceil 254
+            // MIN = (100*3.4*0.09 + 40) * 100 / 150 = 47.07 -> round 47
+            assertEquals(47, profile.minDamage());
+            assertEquals(254, profile.maxDamage());
+            assertTrue(profile.noCrit());
+            assertFalse(profile.magicAttack());
+        }
+    }
+
+    @Test
+    void shouldUseWeakPunchFormulaForDegenerateClawAttack() {
+        Character bot = mockDamageBot();
+        when(bot.getTotalWatk()).thenReturn(75);
+        when(bot.getTotalLuk()).thenReturn(120);
+        when(bot.getTotalStr()).thenReturn(30);
+        when(bot.getTotalDex()).thenReturn(60);
+
+        CombatFormulaProvider.DamageProfile profile =
+                provider.resolveDegenerateDamageProfile(bot, WeaponType.CLAW, null);
+
+        // MAX = (120 + 30 + 60) * 75 / 150 = 105
+        // MIN = (120*0.09 + 30 + 60) * 75 / 150 = 50.4 -> round 50
+        assertEquals(50, profile.minDamage());
+        assertEquals(105, profile.maxDamage());
+        assertTrue(profile.noCrit());
+    }
+
+    @Test
+    void shouldUseWeakBashFormulaForDegenerateGunAttack() {
+        Character bot = mockDamageBot();
+        when(bot.getTotalWatk()).thenReturn(100);
+        when(bot.getTotalDex()).thenReturn(100);
+        when(bot.getTotalStr()).thenReturn(40);
+
+        CombatFormulaProvider.DamageProfile profile =
+                provider.resolveDegenerateDamageProfile(bot, WeaponType.GUN, null);
+
+        // MAX = (100 + 40) * 100 / 200 = 70
+        // MIN = (100*0.09 + 40) * 100 / 200 = 24.5 -> round 25
+        assertEquals(25, profile.minDamage());
+        assertEquals(70, profile.maxDamage());
+        assertTrue(profile.noCrit());
+    }
+
+    @Test
+    void shouldComposeSkillDamagePercentOnTopOfDegenerateBase() {
+        // Power Knockback: weak degenerate base, skill damage% on top (order of operations step 5)
+        Character bot = mockDamageBot();
+        StatEffect effect = mock(StatEffect.class);
+        when(bot.getTotalWatk()).thenReturn(100);
+        when(bot.getTotalDex()).thenReturn(100);
+        when(bot.getTotalStr()).thenReturn(40);
+        when(effect.getDamagePercent()).thenReturn(130);
+
+        CombatFormulaProvider.DamageProfile profile =
+                provider.resolveDegenerateDamageProfile(bot, WeaponType.BOW, effect);
+
+        // base 47-254 (see bow test) * 130% -> 61-330
+        assertEquals(61, profile.minDamage());
+        assertEquals(330, profile.maxDamage());
+        assertTrue(profile.noCrit());
+    }
+
+    @Test
+    void shouldNotApplyCritBonusesToNoCritDamageProfiles() {
+        Character bot = mockDamageBot();
+        when(bot.getLevel()).thenReturn(50);
+        when(bot.getAllBuffs()).thenReturn(List.of());
+        // Sharp Eyes: 100% crit chance, +100% crit damage -> critable lines deal 2x
+        when(bot.getBuffedValue(BuffStat.SHARP_EYES)).thenReturn((100 << 8) | 100);
+        server.life.Monster monster = mock(server.life.Monster.class);
+        when(monster.getLevel()).thenReturn(10);
+        when(monster.getAvoidability()).thenReturn(0);
+        when(monster.getWdef()).thenReturn(0);
+
+        CombatFormulaProvider.DamageProfile critable =
+                new CombatFormulaProvider.DamageProfile(100, 100, false, false, false);
+        CombatFormulaProvider.DamageProfile noCrit =
+                new CombatFormulaProvider.DamageProfile(100, 100, false, false, true);
+
+        assertEquals(200.0, provider.estimateExpectedDamage(bot, monster, 1, 0, critable), 1e-9);
+        assertEquals(100.0, provider.estimateExpectedDamage(bot, monster, 1, 0, noCrit), 1e-9);
+    }
+
     // --- Critical hit profile tests ---
 
     @Test
