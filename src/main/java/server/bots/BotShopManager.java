@@ -196,9 +196,16 @@ final class BotShopManager {
         entry.shopVisitPending = true;
         entry.shopNpcPos = match.npcPos;
         entry.shopTargetPos = pickShopApproachPoint(match.npcPos, entry, bot);
+        entry.shopTargetGraphChecked = approachGraphReady(entry, bot);
         entry.shopApproachDelayMs = (int) BotManager.randMs(0, SHOP_APPROACH_DELAY_MAX_MS);
         entry.shopVisitStartedAtMs = System.currentTimeMillis();
         entry.shopSequenceStartedAtMs = 0L;
+    }
+
+    private static boolean approachGraphReady(BotEntry entry, Character bot) {
+        BotMovementProfile profile = entry.movementProfile != null
+                ? entry.movementProfile : BotMovementProfile.fromCharacter(bot);
+        return BotNavigationGraphProvider.peekBestGraph(bot.getMap(), profile) != null;
     }
 
     static boolean tickShopVisit(BotEntry entry, Character bot) {
@@ -233,6 +240,12 @@ final class BotShopManager {
         if (entry.shopApproachDelayMs > 0) {
             entry.shopApproachDelayMs = BotMovementManager.tickDown(entry.shopApproachDelayMs);
             return false;
+        }
+        if (!entry.shopSequenceActive && !entry.shopTargetGraphChecked && approachGraphReady(entry, bot)) {
+            // The original pick raced the map-change graph warmup and couldn't filter for
+            // reachability — re-pick now that pathability is known.
+            entry.shopTargetPos = pickShopApproachPoint(entry.shopNpcPos, entry, bot);
+            entry.shopTargetGraphChecked = true;
         }
 
         Point botPos = bot.getPosition();
@@ -917,6 +930,7 @@ final class BotShopManager {
         entry.shopVisitStartedAtMs = 0L;
         entry.shopSequenceStartedAtMs = 0L;
         entry.shopSellTrashPending = false;
+        entry.shopTargetGraphChecked = false;
         entry.shopStuckCheckPos = null;
         entry.shopStuckCheckAtMs = 0L;
     }

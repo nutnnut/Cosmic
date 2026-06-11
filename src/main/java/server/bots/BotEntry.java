@@ -149,6 +149,10 @@ public class BotEntry {
     long shopVisitStartedAtMs = 0L;
     long shopSequenceStartedAtMs = 0L;
     boolean shopSellTrashPending = false;
+    // True once the shop approach point was picked WITH a nav graph (reachability-filtered).
+    // Shop visits trigger on map change, racing the async graph warmup — an unvalidated pick
+    // is re-done as soon as a graph is available.
+    boolean shopTargetGraphChecked = false;
     // bumped whenever a new player directive resets scripted state (follow/stop/move/farm/patrol/grind);
     // background batches (Maker crafting / disassembly) capture it and self-interrupt when it changes
     volatile int activityEpoch = 0;
@@ -373,6 +377,10 @@ public class BotEntry {
 
     // Cached movement state shared across ticks
     Point navTargetPos = null;
+    // The graph instance the committed nav state was planned against. Planning may run on a
+    // closest-profile fallback while the exact graph builds; when the served instance changes,
+    // committed edges (windows, launch steps) are stale and must be dropped.
+    BotNavigationGraph navGraph = null;
     BotNavigationGraph.Edge navEdge = null;
     BotNavigationGraph.Edge navJumpLaunchEdge = null;
     int navJumpLaunchX = Integer.MIN_VALUE;

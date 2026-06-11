@@ -859,12 +859,13 @@ class BotMovementManager {
         if (dx == 0) {
             return 0;
         }
+        // Full walk step always: intent-based, like holding the arrow key through a jump.
+        // Graph jump edges are calibrated at ±walkStep of their OWN profile, so this matches
+        // the simulated arc as long as planning and execution share a graph — which
+        // resolveTarget's navGraph identity check now guarantees (a stale cross-profile edge,
+        // e.g. stepX=-6 executed at walkStep 9, used to overfly its landing forever).
         int walkStep = BotPhysicsEngine.walkStep(map, profile);
-        // Nav edges encode the exact launch step their arc was simulated with — it can be
-        // slower than full walk speed, and collapsing it to ±walkStep overflies the landing
-        // (observed: edge stepX=-6 launched at -9, missing the platform every time).
-        // Direction-only callers pass whole position deltas and still get the full step.
-        return Integer.signum(dx) * Math.min(Math.abs(dx), walkStep);
+        return dx > 0 ? walkStep : -walkStep;
     }
 
     static void broadcastMovement(BotEntry entry) {

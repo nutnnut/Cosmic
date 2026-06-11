@@ -12,10 +12,11 @@ import static org.mockito.Mockito.when;
 
 class BotMovementProfileTest {
     @Test
-    void shouldBucketStatsDownToNearestFivePointStep() {
+    void shouldBucketStatsToTheNearestFivePointStep() {
         BotMovementProfile profile = new BotMovementProfile(109, 117);
 
-        assertEquals(105, profile.totalSpeedStat());
+        // Nearest bucket, not floor: 109 -> 110, 117 -> 115.
+        assertEquals(110, profile.totalSpeedStat());
         assertEquals(115, profile.totalJumpStat());
     }
 

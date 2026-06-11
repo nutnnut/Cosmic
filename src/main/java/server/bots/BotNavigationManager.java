@@ -119,6 +119,15 @@ final class BotNavigationManager {
                 entry.lastNavDecision = "graph-fallback-profile";
             }
             entry.graphWarmupFallback = false;
+            if (entry.navGraph != graph) {
+                // Served graph swapped (exact-profile build finished, or a different closest
+                // fallback won): committed edges were calibrated against the old instance —
+                // their windows and launch steps don't transfer. Drop and replan right now.
+                if (entry.navGraph != null) {
+                    BotMovementManager.clearNavigationState(entry);
+                }
+                entry.navGraph = graph;
+            }
             Point botPos = bot.getPosition();
             int startRegionId = resolveCurrentRegionId(graph, entry, bot.getMap(), botPos);
             int targetRegionId = resolveTargetRegionId(graph, entry, bot.getMap(), rawTargetPos);

@@ -992,7 +992,7 @@ class BotMovementManagerTest {
         entry.movementProfile = BotMovementProfile.base();
 
         BotMovementProfile targetProfile = BotMovementProfile.fromCharacter(bot);
-        assertEquals(new BotMovementProfile(105, 105), targetProfile);
+        assertEquals(new BotMovementProfile(110, 105), targetProfile);
         entry.navEdge = new BotNavigationGraph.Edge(
                 1, 2, BotNavigationGraph.EdgeType.JUMP,
                 new Point(20, 100), new Point(80, 40),

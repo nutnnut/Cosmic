@@ -50,7 +50,9 @@ record BotMovementProfile(int totalSpeedStat, int totalJumpStat) implements Seri
         if (clamped < STAT_BUCKET_SIZE) {
             return clamped;
         }
-        return clamped - Math.floorMod(clamped, STAT_BUCKET_SIZE);
+        // Nearest bucket, not floor: a 144% bot plays on the 145 graph — halves the
+        // worst-case drift between real stats and the physics/graph profile.
+        return (int) (Math.round(clamped / (double) STAT_BUCKET_SIZE) * STAT_BUCKET_SIZE);
     }
 
     double speedMultiplier() {
