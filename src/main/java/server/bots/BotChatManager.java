@@ -150,6 +150,18 @@ public class BotChatManager {
             + "|\\bwhat.?s\\s+(your|ur)\\s+(?:move\\s*speed|movespeed|speed|jump)\\b"
             + "|\\bhow\\s+fast\\s+(are|r)\\s+(you|u)\\b",
             Pattern.CASE_INSENSITIVE);
+    private static final Pattern LOCATION_STATUS_PATTERN = Pattern.compile(
+            "^\\s*(?:"
+            + "where\\s+(?:are|r)\\s+(?:you|u|ya)"
+            + "|where\\s+(?:are|r)?\\s*(?:you|u|ya)\\s+at"
+            + "|where\\s*(?:r|are)?\\s*u"
+            + "|where\\s+you\\s+at"
+            + "|(?:what|which)\\s+map\\s+(?:are|r)\\s+(?:you|u|ya)\\s+(?:in|on|at)"
+            + "|(?:what|which)\\s+map\\s+(?:are|r)\\s+(?:you|u|ya)"
+            + "|(?:what\\s+are\\s+you|what\\s+r\\s+u|what\\s+you)\\s+doing"
+            + "|(?:location|loc|where)\\s*\\??"
+            + ")\\s*[?!.,]*\\s*$",
+            Pattern.CASE_INSENSITIVE);
 
     private static final Pattern BUILD_PATTERN = Pattern.compile(
             INFO_PFX + "(build|ap|sp)\\b"
@@ -783,6 +795,11 @@ public class BotChatManager {
 
         if (matchesWholeCommand(HELP_PATTERN, message)) {
             BotManager.after(BotManager.randMs(500, 700), () -> reportHelp(entry));
+            return;
+        }
+        if (isLocationStatusQuery(message)) {
+            BotManager.after(BotManager.randMs(500, 700), () ->
+                    BotManager.getInstance().botReply(entry, BotAutopilotManager.statusReport(entry, entry.bot)));
             return;
         }
         if (NEED_HP_POT_PATTERN.matcher(message).find()) {
@@ -1603,6 +1620,10 @@ public class BotChatManager {
         return matchesWholeCommand(MOVEMENT_STATS_PATTERN, message);
     }
 
+    static boolean isLocationStatusQuery(String message) {
+        return message != null && LOCATION_STATUS_PATTERN.matcher(message).matches();
+    }
+
     static List<String> buildMovementStatsReport(Character bot) {
         if (bot == null) {
             return List.of("cant read my movement stats rn");
@@ -1720,7 +1741,7 @@ public class BotChatManager {
     }
 
     private static void reportHelp(BotEntry entry) {
-        queueBotReply(entry, "commands: follow, stop, move here, fidget, grind, stats, speed, skills, inventory, mesos, exp, slots, scrolls, pots, debug stats, crit, respec, respec ap");
+        queueBotReply(entry, "commands: follow, stop, move here, fidget, grind, where are you, stats, speed, skills, inventory, mesos, exp, slots, scrolls, pots, debug stats, crit, respec, respec ap");
         queueBotReply(entry, "support: skill buffs on/off (= support on/off), heals on/off, buff on/off, buff cheap/max, proactive offers on/off, buff debug, skill buff debug");
         queueBotReply(entry, "gear: ask 'any upgrades?' or say 'trade recommended gear'");
         queueBotReply(entry, "supplies: need hp pot, need mp pot, need pot, need ammo");

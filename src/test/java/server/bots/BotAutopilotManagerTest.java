@@ -317,6 +317,60 @@ class BotAutopilotManagerTest {
     }
 
     @Test
+    void shouldReportAutopilotStatusOnDestination() {
+        Fixture f = fixture(HUNTING_GROUND);
+        when(f.bot().getHp()).thenReturn(50);
+        when(f.bot().getMap().getMapName()).thenReturn("Henesys Hunting Ground I");
+        f.entry().autopilotMapId = HUNTING_GROUND;
+        f.entry().autopilotDestinationName = "Henesys Hunting Ground I";
+        f.entry().autopilotObjectiveSummary = "farm Pan Lid from Orange Mushroom";
+
+        String report = BotAutopilotManager.statusReport(f.entry(), f.bot());
+
+        assertEquals("farming Pan Lid from Orange Mushroom at Henesys Hunting Ground I", report);
+    }
+
+    @Test
+    void shouldReportAutopilotResupplyDetour() {
+        Fixture f = fixture(TOWN);
+        when(f.bot().getHp()).thenReturn(50);
+        when(f.bot().getMap().getMapName()).thenReturn("Henesys");
+        f.entry().autopilotMapId = HUNTING_GROUND;
+        f.entry().autopilotDestinationName = "Henesys Hunting Ground I";
+        f.entry().autopilotObjectiveSummary = "grind Orange Mushroom";
+        f.entry().autopilotErrandMapId = TOWN;
+
+        String report = BotAutopilotManager.statusReport(f.entry(), f.bot());
+
+        assertTrue(report.contains("grinding Orange Mushroom at Henesys Hunting Ground I"), report);
+        assertTrue(report.contains("going back to town to resupply"), report);
+    }
+
+    @Test
+    void shouldReportRecentAutopilotDeathReturn() {
+        Fixture f = fixture(TOWN);
+        when(f.bot().getHp()).thenReturn(50);
+        when(f.bot().getMap().getMapName()).thenReturn("Henesys");
+        f.entry().autopilotMapId = HUNTING_GROUND;
+        f.entry().autopilotDestinationName = "Henesys Hunting Ground I";
+        f.entry().autopilotObjectiveSummary = "grind Orange Mushroom";
+        f.entry().autopilotLastDeathAtMs = System.currentTimeMillis();
+
+        String report = BotAutopilotManager.statusReport(f.entry(), f.bot());
+
+        assertTrue(report.contains("i died and omw back"), report);
+    }
+
+    @Test
+    void shouldReportNonAutopilotActivity() {
+        Fixture f = fixture(TOWN);
+        when(f.bot().getMap().getMapName()).thenReturn("Henesys");
+        f.entry().following = true;
+
+        assertEquals("im at Henesys, following you", BotAutopilotManager.statusReport(f.entry(), f.bot()));
+    }
+
+    @Test
     void shouldWaitForOwnerSupplyGraceBeforeStartingResupplyErrand() {
         Fixture f = fixture(HUNTING_GROUND);
         f.entry().autopilotMapId = HUNTING_GROUND;

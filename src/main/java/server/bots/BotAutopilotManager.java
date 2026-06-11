@@ -4,6 +4,7 @@ import client.Character;
 import server.bots.BotGrindPlanner.MobCandidate;
 import server.bots.BotGrindPlanner.PartyPlan;
 import server.bots.BotGrindPlanner.Recommendation;
+import server.maps.MapleMap;
 
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -35,6 +36,7 @@ final class BotAutopilotManager {
     private static final long ERRAND_COOLDOWN_MS = 5 * 60_000L; // min spacing between resupply trips
     private static final long OWNER_SUPPLY_GRACE_MS = 20_000L;
     static final long UPGRADE_REDECIDE_DELAY_MS = 25_000L; // re-ask stay-or-leave soon after a roll lands
+    private static final long DEATH_STATUS_WINDOW_MS = 5 * 60_000L;
 
     private static final List<String> NO_SPOT_REPLIES = List.of(
             "can't find anywhere worth grinding that i can walk to, staying put",
@@ -348,6 +350,94 @@ final class BotAutopilotManager {
         // No explicit scroll use here: scroll-to-town is a world-graph edge now, so the
         // travel tick takes it whenever it beats walking (BotTravelManager consumable hops).
         return true;
+    }
+
+    static String statusReport(BotEntry entry, Character bot) {
+        String currentMap = currentMapName(bot);
+        if (entry == null || bot == null) {
+            return "not sure where i am rn";
+        }
+        if (!isActive(entry)) {
+            String activity = nonAutopilotActivity(entry);
+            return activity.isEmpty()
+                    ? "im at " + currentMap + ", idle rn"
+                    : "im at " + currentMap + ", " + activity;
+        }
+
+        String destination = entry.autopilotDestinationName == null || entry.autopilotDestinationName.isBlank()
+                ? ("map " + entry.autopilotMapId)
+                : entry.autopilotDestinationName;
+        String objective = presentObjective(entry.autopilotObjectiveSummary);
+        boolean onDestination = bot.getMapId() == entry.autopilotMapId;
+        boolean dead = bot.getHp() <= 0 || entry.deadUntil > System.currentTimeMillis();
+        boolean recentDeath = entry.autopilotLastDeathAtMs > 0
+                && System.currentTimeMillis() - entry.autopilotLastDeathAtMs <= DEATH_STATUS_WINDOW_MS;
+
+        if (dead) {
+            return "im at " + currentMap + ", i died, respawning soon then heading back to "
+                    + destination + " to " + objective;
+        }
+        if (onDestination) {
+            return objective + " at " + currentMap;
+        }
+        if (entry.shopVisitPending) {
+            return objective + " at " + destination + " - at " + currentMap + ", restocking at the shop";
+        }
+        if (entry.autopilotErrandMapId != -1) {
+            return objective + " at " + destination + " - at " + currentMap + ", going back to town to resupply";
+        }
+        if (entry.autopilotReturningFromErrand) {
+            return objective + " at " + destination + " - at " + currentMap + ", resupplied and omw back";
+        }
+        if (recentDeath) {
+            return objective + " at " + destination + " - at " + currentMap + ", i died and omw back";
+        }
+        return "im at " + currentMap + ", heading to " + destination + " to " + objective;
+    }
+
+    private static String currentMapName(Character bot) {
+        if (bot == null) {
+            return "unknown map";
+        }
+        MapleMap map = bot.getMap();
+        if (map != null && map.getMapName() != null && !map.getMapName().isBlank()) {
+            return map.getMapName();
+        }
+        return "map " + bot.getMapId();
+    }
+
+    private static String presentObjective(String summary) {
+        if (summary == null || summary.isBlank()) {
+            return "grinding";
+        }
+        String normalized = summary.trim();
+        String lower = normalized.toLowerCase(java.util.Locale.ROOT);
+        if (lower.startsWith("farm ")) {
+            return "farming " + normalized.substring(5);
+        }
+        if (lower.startsWith("grind ")) {
+            return "grinding " + normalized.substring(6);
+        }
+        return normalized;
+    }
+
+    private static String nonAutopilotActivity(BotEntry entry) {
+        if (entry.following) {
+            return "following you";
+        }
+        if (entry.patrolRegionId >= 0) {
+            return "patrolling here";
+        }
+        if (entry.farmAnchor != null) {
+            return "farming this spot";
+        }
+        if (entry.grinding) {
+            return "grinding here";
+        }
+        if (entry.moveTarget != null) {
+            return "moving";
+        }
+        return "";
     }
 
     /**

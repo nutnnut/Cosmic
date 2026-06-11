@@ -188,6 +188,21 @@ class BotChatManagerTest {
     }
 
     @Test
+    void shouldMatchLocationStatusQueriesNaturally() {
+        assertTrue(BotChatManager.isLocationStatusQuery("where are you"));
+        assertTrue(BotChatManager.isLocationStatusQuery("where ru?"));
+        assertTrue(BotChatManager.isLocationStatusQuery("where r u"));
+        assertTrue(BotChatManager.isLocationStatusQuery("where u at"));
+        assertTrue(BotChatManager.isLocationStatusQuery("what map are you in?"));
+        assertTrue(BotChatManager.isLocationStatusQuery("what are you doing"));
+        assertTrue(BotChatManager.isLocationStatusQuery("loc?"));
+
+        assertFalse(BotChatManager.isLocationStatusQuery("where were you lol"));
+        assertFalse(BotChatManager.isLocationStatusQuery("how are you"));
+        assertFalse(BotChatManager.isLocationStatusQuery("go grind somewhere"));
+    }
+
+    @Test
     void shouldTriggerGreetingFidgetHalfTheTimeWhileFollowing() {
         BotEntry entry = new BotEntry(null, null, null);
         entry.following = true;

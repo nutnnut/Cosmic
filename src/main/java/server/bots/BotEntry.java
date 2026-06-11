@@ -193,6 +193,7 @@ public class BotEntry {
     long autopilotNextErrandAtMs = 0L;
     long autopilotOwnerSupplyGraceUntilMs = 0L;
     boolean autopilotReturningFromErrand = false;
+    long autopilotLastDeathAtMs = 0L;
     // True while an async advisor pass for this entry is running (re-decides only) — stops
     // the tick from stacking decisions while one is still computing.
     volatile boolean autopilotDecisionInFlight = false;

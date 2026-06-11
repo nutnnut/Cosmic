@@ -4016,6 +4016,9 @@ public class BotManager {
 
     private void respawnBot(BotEntry entry, Character bot, Character owner) {
         entry.deadUntil = 0;
+        if (BotAutopilotManager.isActive(entry)) {
+            entry.autopilotLastDeathAtMs = System.currentTimeMillis();
+        }
 
         // Inside a PQ/event instance a town respawn can't re-enter the run — keep the
         // legacy warp-to-owner there so the party isn't down a member for the whole PQ.
