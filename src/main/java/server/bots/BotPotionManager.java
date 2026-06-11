@@ -183,21 +183,44 @@ final class BotPotionManager {
     /** Pair of best autopot picks for the HP and MP slots over the bot's recovery pots. */
     record AutopotChoice(int hpItemId, PotionRanking hpRank, int mpItemId, PotionRanking mpRank) {}
 
-    /** Shared selection used by both keybind setup and the debug report. */
-    static AutopotChoice computeAutopotChoice(Character bot) {
+    private record PotionInventorySnapshot(int hpCount, int mpCount, AutopotChoice autopotChoice) {
+        int[] counts() {
+            return new int[]{hpCount, mpCount};
+        }
+    }
+
+    private static PotionInventorySnapshot scanPotionInventory(Character bot) {
         long startedAt = BotPerformanceMonitor.start();
+        int hp = 0;
+        int mp = 0;
         int hpItemId = -1;
         int mpItemId = -1;
         PotionRanking bestHp = null;
         PotionRanking bestMp = null;
+
         for (Item item : bot.getInventory(InventoryType.USE).list()) {
             if (item.getQuantity() <= 0) {
                 continue;
             }
             StatEffect effect = BotInventoryManager.itemEffect(item.getItemId());
-            if (effect == null || effect.getStatups().isEmpty() == false) {
+            if (effect == null || !effect.getStatups().isEmpty()) {
                 continue;
             }
+
+            boolean healsHp = effect.getHp() > 0 || effect.getHpRate() > 0;
+            boolean healsMp = effect.getMp() > 0 || effect.getMpRate() > 0;
+            if (!healsHp && !healsMp) {
+                continue;
+            }
+
+            int quantity = item.getQuantity();
+            if (healsHp) {
+                hp += quantity;
+            }
+            if (healsMp) {
+                mp += quantity;
+            }
+
             PotionRanking hpRank = classifyForSlot(effect, true);
             if (hpRank != null && hpRank.betterThan(bestHp)) {
                 bestHp = hpRank;
@@ -209,13 +232,21 @@ final class BotPotionManager {
                 mpItemId = item.getItemId();
             }
         }
+
         BotPerformanceMonitor.recordSince("potion-recovery-scan", startedAt);
-        return new AutopotChoice(hpItemId, bestHp, mpItemId, bestMp);
+        return new PotionInventorySnapshot(hp, mp, new AutopotChoice(hpItemId, bestHp, mpItemId, bestMp));
+    }
+
+    /** Shared selection used by both keybind setup and the debug report. */
+    static AutopotChoice computeAutopotChoice(Character bot) {
+        return scanPotionInventory(bot).autopotChoice();
     }
 
     static void setupAutopotForBot(Character bot) {
-        AutopotChoice choice = computeAutopotChoice(bot);
+        setupAutopotForBot(bot, computeAutopotChoice(bot));
+    }
 
+    private static void setupAutopotForBot(Character bot, AutopotChoice choice) {
         if (choice.hpItemId() > 0) {
             bot.changeKeybinding(91, new KeyBinding(7, choice.hpItemId()));
             bot.setAutopotHpAlert(BotManager.cfg.AUTOPOT_HP_THRESH);
@@ -235,8 +266,9 @@ final class BotPotionManager {
 
     /** Owner-facing diagnostic: counts vs. selected items for each slot. */
     static String autopotDebugReport(Character bot) {
-        int[] cnt = countPotions(bot);
-        AutopotChoice choice = computeAutopotChoice(bot);
+        PotionInventorySnapshot snapshot = scanPotionInventory(bot);
+        int[] cnt = snapshot.counts();
+        AutopotChoice choice = snapshot.autopotChoice();
         ItemInformationProvider iip = ItemInformationProvider.getInstance();
         return "pots: " + cnt[0] + " hp / " + cnt[1] + " mp"
                 + " | hp slot: " + describeChoice(iip, choice.hpItemId(), choice.hpRank())
@@ -285,7 +317,8 @@ final class BotPotionManager {
         entry.potCheckTimerMs = BotMovementManager.delayAfterCurrentTick(BotManager.cfg.POT_CHECK_INTERVAL_MS);
 
         long startedAt = BotPerformanceMonitor.start();
-        setupAutopotForBot(bot);
+        PotionInventorySnapshot potions = scanPotionInventory(bot);
+        setupAutopotForBot(bot, potions.autopotChoice());
         BotPerformanceMonitor.recordSince("potion-autopot", startedAt);
 
         startedAt = BotPerformanceMonitor.start();
@@ -300,7 +333,7 @@ final class BotPotionManager {
         BotPerformanceMonitor.recordSince("potion-ammo-share", startedAt);
 
         startedAt = BotPerformanceMonitor.start();
-        int[] pots = countPotions(bot);
+        int[] pots = potions.counts();
         BotPerformanceMonitor.recordSince("potion-count", startedAt);
 
         startedAt = BotPerformanceMonitor.start();

@@ -1957,6 +1957,7 @@ public class BotManager {
 
     private void tick(BotEntry entry, int ownerCharId, int botCharId) {
         long startedAt = System.nanoTime();
+        BotPerformanceMonitor.beginTickTrace();
         try {
             tickCore(entry, ownerCharId, botCharId);
             resetBotTickFailures(entry);
@@ -1968,6 +1969,7 @@ public class BotManager {
                 BotPerformanceMonitor.record("tick-total", elapsedNs);
             }
             BotPerformanceMonitor.noteTickStall(entry, elapsedNs);
+            BotPerformanceMonitor.endTickTrace();
         }
     }
 
@@ -2083,9 +2085,12 @@ public class BotManager {
         clearFollowActionMoveWindowIfSettled(entry, botPos, targetSnapshot);
 
         // These run in all modes (idle, follow, grind)
+        long tCommonTrace = BotPerformanceMonitor.startStallPhase();
         if (runCommonTickSystems(entry, bot, owner, runAiTick)) {
+            BotPerformanceMonitor.recordStallPhase("tick-common-systems", tCommonTrace);
             return;
         }
+        BotPerformanceMonitor.recordStallPhase("tick-common-systems", tCommonTrace);
 
         // Trade window open: keep physics consistent (gravity / swim / idle stance) but
         // do not issue any movement input — no follow, grind, attack, teleport, or shop visit.
@@ -2156,9 +2161,12 @@ public class BotManager {
 
         // Autopilot: owner-ordered independent play. Consumes the tick while walking a
         // travel hop toward its chosen grind map; on site it lets the grind flow run.
+        long tAutopilotTrace = BotPerformanceMonitor.startStallPhase();
         if (BotAutopilotManager.tick(entry, bot, runAiTick)) {
+            BotPerformanceMonitor.recordStallPhase("tick-autopilot", tAutopilotTrace);
             return;
         }
+        BotPerformanceMonitor.recordStallPhase("tick-autopilot", tAutopilotTrace);
 
         // Map change and teleport checks only apply when following a live anchor.
         // Shop visits are intentional same-map detours and must not be pulled back
@@ -2262,7 +2270,9 @@ public class BotManager {
         if (entry.grinding) {
             LocalOpportunityAttackResult grindResult;
             if (!perf) {
+                long tGrindTrace = BotPerformanceMonitor.startStallPhase();
                 grindResult = tickGrindMode(entry, bot, botPos, targetPos, runAiTick);
+                BotPerformanceMonitor.recordStallPhase("tick-grind-dispatch", tGrindTrace);
             } else {
                 long tGrindDispatch = System.nanoTime();
                 try {
@@ -2278,7 +2288,9 @@ public class BotManager {
         }
 
         if (!perf) {
+            long tStepTrace = BotPerformanceMonitor.startStallPhase();
             stepMovementCore(entry, targetPos, runAiTick);
+            BotPerformanceMonitor.recordStallPhase("step-movement-core", tStepTrace);
         } else {
             long tStepTail = System.nanoTime();
             try { stepMovementCore(entry, targetPos, runAiTick); }
@@ -3461,7 +3473,9 @@ public class BotManager {
             if (perf) BotPerformanceMonitor.record("common-passive-loot", System.nanoTime() - t);
         }
         if (perf) t = System.nanoTime();
+        long tPotionTrace = BotPerformanceMonitor.startStallPhase();
         BotPotionManager.tickPotionCheck(entry, bot);
+        BotPerformanceMonitor.recordStallPhase("common-potion-check", tPotionTrace);
         if (perf) BotPerformanceMonitor.record("common-potion-check", System.nanoTime() - t);
         if (perf) t = System.nanoTime();
         BotPotionManager.tickPassiveRecovery(entry, bot);

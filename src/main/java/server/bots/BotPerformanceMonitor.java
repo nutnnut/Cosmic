@@ -130,15 +130,17 @@ public final class BotPerformanceMonitor {
         return next;
     }
 
-    /** Returns a start timestamp suitable for {@link #recordSince}, or 0 if monitoring is disabled. */
+    /** Returns a start timestamp suitable for {@link #recordSince}, or 0 if no tracing is active. */
     static long start() {
-        return enabled ? System.nanoTime() : 0L;
+        return enabled || STALL_PHASE_TRACE.get().active ? System.nanoTime() : 0L;
     }
 
     /** Records elapsed time since the matching {@link #start} call. No-op when start returned 0. */
     static void recordSince(String section, long startedAtNs) {
         if (startedAtNs != 0L) {
-            record(section, System.nanoTime() - startedAtNs);
+            long elapsedNs = System.nanoTime() - startedAtNs;
+            recordStallPhaseElapsed(section, elapsedNs);
+            record(section, elapsedNs);
         }
     }
 
@@ -154,6 +156,61 @@ public final class BotPerformanceMonitor {
             new java.util.concurrent.atomic.AtomicInteger();
     private static final java.util.concurrent.atomic.AtomicLong stallSuppressedWorstNs =
             new java.util.concurrent.atomic.AtomicLong();
+    private static final int MAX_STALL_PHASES = 16;
+    private static final long STALL_PHASE_RECORD_MIN_NS = 1_000_000L;
+
+    private static final class StallPhaseTrace {
+        final String[] sections = new String[MAX_STALL_PHASES];
+        final long[] elapsedNs = new long[MAX_STALL_PHASES];
+        int count = 0;
+        boolean active = false;
+    }
+
+    private static final ThreadLocal<StallPhaseTrace> STALL_PHASE_TRACE =
+            ThreadLocal.withInitial(StallPhaseTrace::new);
+
+    /** Starts the cheap always-on per-tick trace used only when a stall warning fires. */
+    static void beginTickTrace() {
+        StallPhaseTrace trace = STALL_PHASE_TRACE.get();
+        trace.count = 0;
+        trace.active = true;
+    }
+
+    static long startStallPhase() {
+        return STALL_PHASE_TRACE.get().active ? System.nanoTime() : 0L;
+    }
+
+    static void recordStallPhase(String section, long startedAtNs) {
+        if (startedAtNs == 0L) {
+            return;
+        }
+        recordStallPhaseElapsed(section, System.nanoTime() - startedAtNs);
+    }
+
+    static void recordStallPhaseElapsed(String section, long elapsedNs) {
+        if (elapsedNs < STALL_PHASE_RECORD_MIN_NS) {
+            return;
+        }
+        StallPhaseTrace trace = STALL_PHASE_TRACE.get();
+        if (!trace.active) {
+            return;
+        }
+        int slot = trace.count;
+        if (slot < MAX_STALL_PHASES) {
+            trace.count++;
+        } else {
+            slot = smallestPhaseSlot(trace);
+            if (slot < 0 || elapsedNs <= trace.elapsedNs[slot]) {
+                return;
+            }
+        }
+        trace.sections[slot] = section;
+        trace.elapsedNs[slot] = elapsedNs;
+    }
+
+    static void endTickTrace() {
+        STALL_PHASE_TRACE.get().active = false;
+    }
 
     /** Always-on: logs the absolute worst tick stalls, rate-limited to one line per
      *  {@link #STALL_WARN_COOLDOWN_MS} (suppressed stalls are counted into the next line). */
@@ -173,14 +230,52 @@ public final class BotPerformanceMonitor {
         String botName = entry != null && entry.bot != null ? entry.bot.getName() : "?";
         int mapId = entry != null && entry.bot != null ? entry.bot.getMapId() : -1;
         if (suppressed > 0) {
-            log.warn("Bot tick stall: {} on map {} took {} ms ({} more stalls >= {} ms in the last {}s, worst {} ms)",
-                    botName, mapId, formatMs(elapsedNs / 1_000_000.0), suppressed,
+            log.warn("Bot tick stall: {} on map {} took {} ms{} ({} more stalls >= {} ms in the last {}s, worst {} ms)",
+                    botName, mapId, formatMs(elapsedNs / 1_000_000.0),
+                    formatStallPhases(), suppressed,
                     formatMs(STALL_WARN_MS), STALL_WARN_COOLDOWN_MS / 1000,
                     formatMs(suppressedWorst / 1_000_000.0));
         } else {
-            log.warn("Bot tick stall: {} on map {} took {} ms",
-                    botName, mapId, formatMs(elapsedNs / 1_000_000.0));
+            log.warn("Bot tick stall: {} on map {} took {} ms{}",
+                    botName, mapId, formatMs(elapsedNs / 1_000_000.0), formatStallPhases());
         }
+    }
+
+    private static int smallestPhaseSlot(StallPhaseTrace trace) {
+        int smallest = -1;
+        long smallestNs = Long.MAX_VALUE;
+        for (int i = 0; i < trace.count; i++) {
+            if (trace.elapsedNs[i] < smallestNs) {
+                smallestNs = trace.elapsedNs[i];
+                smallest = i;
+            }
+        }
+        return smallest;
+    }
+
+    private static String formatStallPhases() {
+        StallPhaseTrace trace = STALL_PHASE_TRACE.get();
+        if (trace.count <= 0) {
+            return "";
+        }
+        List<Integer> order = new ArrayList<>(trace.count);
+        for (int i = 0; i < trace.count; i++) {
+            order.add(i);
+        }
+        order.sort(Comparator.comparingLong((Integer i) -> trace.elapsedNs[i]).reversed());
+        StringBuilder sb = new StringBuilder(" phases=");
+        int limit = Math.min(5, order.size());
+        for (int i = 0; i < limit; i++) {
+            if (i > 0) {
+                sb.append(",");
+            }
+            int idx = order.get(i);
+            sb.append(trace.sections[idx])
+                    .append("=")
+                    .append(formatMs(trace.elapsedNs[idx] / 1_000_000.0))
+                    .append("ms");
+        }
+        return sb.toString();
     }
 
     static void record(String section, long elapsedNs) {
