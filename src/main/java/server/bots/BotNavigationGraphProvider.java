@@ -29,7 +29,9 @@ import java.util.concurrent.Executors;
 final class BotNavigationGraphProvider {
     private static final Logger log = LoggerFactory.getLogger(BotNavigationGraphProvider.class);
 
-    private static final int GRAPH_VERSION = 46;
+    // 47: forbidFallDown footholds stay solid during down-jump grace (landing predictions
+    //     change on maps with stacked platforms) — caches must rebuild.
+    private static final int GRAPH_VERSION = 47;
     private static final int ENDPOINT_ANCHOR_SPACING_PX = 10;
     private static final int DOWN_JUMP_PRELAUNCH_WINDOW_PX = 20;
     private static final int SAME_SOLID_NEST_GAP_PX = 8;

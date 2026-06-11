@@ -1269,7 +1269,7 @@ final class BotPhysicsEngine {
             collideWithAirCeiling(entry, bot, collision.point());
             return AirborneStepResult.CEILING;
         }
-        if (collision.type() == AirCollisionType.LAND && canLand(entry)) {
+        if (collision.type() == AirCollisionType.LAND && (canLand(entry) || forbidFallDownLanding(collision))) {
             landOnGround(entry, bot, collision.point(), collision.foothold(),
                     nextPos.x - previousPos.x, nextPos.y - previousPos.y);
             return AirborneStepResult.LANDED;
@@ -1451,6 +1451,12 @@ final class BotPhysicsEngine {
     static boolean canStartDownJump(MapleMap map, Point from) {
         Foothold foothold = findGroundFoothold(map, from);
         return foothold != null && !foothold.isForbidFallDown();
+    }
+
+    /** forbidFallDown footholds are never pass-through — they stay solid even inside a
+     *  down-jump grace window (matches the client; the grace only skips normal platforms). */
+    private static boolean forbidFallDownLanding(AirCollision collision) {
+        return collision.foothold() != null && collision.foothold().isForbidFallDown();
     }
 
     static JumpLanding simulateJumpLanding(MapleMap map, Point from, int stepX) {
@@ -2146,7 +2152,8 @@ final class BotPhysicsEngine {
                 previousIntY = collision.point().y;
                 continue;
             }
-            if (collision.type() == AirCollisionType.LAND && remainingLandingGraceMs == 0L) {
+            if (collision.type() == AirCollisionType.LAND
+                    && (remainingLandingGraceMs == 0L || forbidFallDownLanding(collision))) {
                 return null;
             }
 
@@ -2223,7 +2230,8 @@ final class BotPhysicsEngine {
                 previousIntY = collision.point().y;
                 continue;
             }
-            if (collision.type() == AirCollisionType.LAND && remainingLandingGraceMs == 0L) {
+            if (collision.type() == AirCollisionType.LAND
+                    && (remainingLandingGraceMs == 0L || forbidFallDownLanding(collision))) {
                 return new JumpLanding(collision.point(), collision.foothold(),
                         nextPoint.x - previousPoint.x, nextPoint.y - previousPoint.y, tick + 1);
             }

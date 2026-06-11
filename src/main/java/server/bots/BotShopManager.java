@@ -42,6 +42,9 @@ final class BotShopManager {
 
     private static final int SHOP_MANHATTAN_RADIUS = 200;
     private static final int SHOP_ARRIVE_DIST = 100;
+    // Close-enough fallback when the walk can't land next to the keeper (fenced booths):
+    // matches the cab-NPC interaction radius in BotTravelManager.
+    private static final int SHOP_FALLBACK_DIST = 500;
     private static final int SHOP_NPC_SEARCH_DIST = 601;
     private static final int SHOP_APPROACH_DELAY_MAX_MS = 5001;
     private static final int SHOP_STEP_DELAY_MIN_MS = 2000;
@@ -210,6 +213,13 @@ final class BotShopManager {
         if (entry.shopVisitStartedAtMs > 0
                 && !entry.shopSequenceActive
                 && now - entry.shopVisitStartedAtMs > SHOP_VISIT_TIMEOUT_MS) {
+            // Some shopkeepers sit in fenced booths the approach walk can't enter (e.g. the
+            // Ellinia grocer) — if the bot got close, shop from where it stands instead of
+            // giving up within sight of the counter.
+            if (manhattan(bot.getPosition(), entry.shopNpcPos) <= SHOP_FALLBACK_DIST) {
+                startShopSequence(entry, bot);
+                return true;
+            }
             BotManager.getInstance().botSay(bot, "couldn't reach shop in time");
             clearShopState(entry);
             return false;
@@ -233,16 +243,20 @@ final class BotShopManager {
                 && isStuckNearNpc(entry, botPos, now);
         if (reachedApproach || stuckAtNpc) {
             if (!entry.shopSequenceActive) {
-                entry.shopSequenceActive = true;
-                entry.shopSequenceStartedAtMs = System.currentTimeMillis();
-                BotManager.getInstance().botSay(bot, BotManager.randomReply(SHOPPING_MSGS));
-                Point npcPos = entry.shopNpcPos;
-                scheduleShopStep(entry, () -> executePurchases(entry, bot, npcPos));
+                startShopSequence(entry, bot);
             }
             return true;
         }
 
         return true;
+    }
+
+    private static void startShopSequence(BotEntry entry, Character bot) {
+        entry.shopSequenceActive = true;
+        entry.shopSequenceStartedAtMs = System.currentTimeMillis();
+        BotManager.getInstance().botSay(bot, BotManager.randomReply(SHOPPING_MSGS));
+        Point npcPos = entry.shopNpcPos;
+        scheduleShopStep(entry, () -> executePurchases(entry, bot, npcPos));
     }
 
     private static boolean isStuckNearNpc(BotEntry entry, Point botPos, long now) {
@@ -263,7 +277,7 @@ final class BotShopManager {
         if (now - entry.shopStuckCheckAtMs < SHOP_STUCK_FALLBACK_MS) {
             return false;
         }
-        return manhattan(botPos, entry.shopNpcPos) <= SHOP_ARRIVE_DIST;
+        return manhattan(botPos, entry.shopNpcPos) <= SHOP_FALLBACK_DIST;
     }
 
     private static int manhattan(Point a, Point b) {
@@ -871,11 +885,12 @@ final class BotShopManager {
             return false;
         }
         // Accept proximity to the approach point OR the NPC itself: the sequence can start
-        // via the stuck-at-NPC fallback, where the bot is near the NPC but not the approach point.
+        // via the stuck-at-NPC / timeout fallbacks, where the bot is near the keeper but
+        // can't physically reach the approach point (fenced booths) — hence the wide radius.
         Point pos = bot.getPosition();
         Point approach = entry.shopTargetPos != null ? entry.shopTargetPos : npcPos;
-        boolean atShop = manhattan(pos, approach) <= SHOP_ARRIVE_DIST
-                || manhattan(pos, npcPos) <= SHOP_ARRIVE_DIST;
+        boolean atShop = manhattan(pos, approach) <= SHOP_FALLBACK_DIST
+                || manhattan(pos, npcPos) <= SHOP_FALLBACK_DIST;
         return atShop && findNpcNear(bot, npcPos) != null;
     }
 

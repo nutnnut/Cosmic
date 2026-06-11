@@ -860,7 +860,11 @@ class BotMovementManager {
             return 0;
         }
         int walkStep = BotPhysicsEngine.walkStep(map, profile);
-        return dx > 0 ? walkStep : -walkStep;
+        // Nav edges encode the exact launch step their arc was simulated with — it can be
+        // slower than full walk speed, and collapsing it to ±walkStep overflies the landing
+        // (observed: edge stepX=-6 launched at -9, missing the platform every time).
+        // Direction-only callers pass whole position deltas and still get the full step.
+        return Integer.signum(dx) * Math.min(Math.abs(dx), walkStep);
     }
 
     static void broadcastMovement(BotEntry entry) {
