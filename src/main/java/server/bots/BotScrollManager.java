@@ -520,14 +520,36 @@ final class BotScrollManager {
 
     /** Non-mutating "can this bot equip it" check (job/level/stat reqs + weapon-type compatibility). */
     static boolean wearable(Character bot, ItemInformationProvider ii, Equip e) {
+        return levelsUntilWearable(bot, ii, e, 0) == 0;
+    }
+
+    /**
+     * How long until the bot can wear this equip: 0 = now, n &gt; 0 = only the LEVEL requirement
+     * is pending and within {@code maxLevelsAhead}, -1 = not foreseeable. Stat/job/fame/weapon
+     * requirements must be met with TODAY'S stats — deliberately never projected, because AP
+     * builds park the secondary stat at a fixed target (see BotBuildManager), so a low-secondary
+     * build never grows into secondary-gated gear and guessing otherwise would chase
+     * impossible upgrades. (Primary stat far outruns own-job gear requirements anyway.)
+     */
+    static int levelsUntilWearable(Character bot, ItemInformationProvider ii, Equip e, int maxLevelsAhead) {
         int id = e.getItemId();
         Short slot = primarySlot(ii, id);
         if (slot != null && slot == (short) -11
                 && !BotEquipManager.isWeaponCompatible(bot, ii.getWeaponType(id))) {
-            return false;
+            return -1;
         }
-        return ii.meetsEquipRequirements(e, bot.getJob(), bot.getLevel(),
-                bot.getTotalStr(), bot.getTotalDex(), bot.getTotalInt(), bot.getTotalLuk(), bot.getFame());
+        if (ii.meetsEquipRequirements(e, bot.getJob(), bot.getLevel(),
+                bot.getTotalStr(), bot.getTotalDex(), bot.getTotalInt(), bot.getTotalLuk(), bot.getFame())) {
+            return 0;
+        }
+        int gap = ii.getEquipLevelReq(id) - bot.getLevel();
+        if (gap <= 0 || gap > maxLevelsAhead) {
+            return -1;
+        }
+        // Re-check at the required level: passes iff level was the only blocker.
+        return ii.meetsEquipRequirements(e, bot.getJob(), bot.getLevel() + gap,
+                bot.getTotalStr(), bot.getTotalDex(), bot.getTotalInt(), bot.getTotalLuk(), bot.getFame())
+                ? gap : -1;
     }
 
     /** Canonical equipment slot for an item id (works for unworn bag items too); null if not equippable. */

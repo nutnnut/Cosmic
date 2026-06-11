@@ -126,6 +126,26 @@ that still scrolls can out-value a stronger but maxed-out worn one — while the
 (scrolls must still be obtained and survive their rolls) keeps bots from re-farming
 weak-scrolling pieces every few levels for slot count alone.</p>
 
+<h3>3c. Owned-but-benched gear and level-gated drops</h3>
+<p>The bar a drop must beat is the best the bot already <b>owns</b> for the slot — worn or
+bagged — and not-yet-wearable items count on both sides, decayed by the wait:</p>
+<div class="formula">
+value(item wearable in g levels) = 0.9<sup>g</sup> &middot; potentialValue(item)
+&nbsp;<span class="muted">// horizon 10 levels</span><br>
+bar(slot) = max over owned items of that value &nbsp;&middot;&nbsp;
+gain(drop) = E[ max(0, 0.9<sup>g</sup> &middot; roll &minus; bar) ]
+</div>
+<p>Worked example — worn 10, bagged 30 wearable in 5 levels (bar = max(10, 0.59&middot;30) = 17.7):
+a wear-now 20 drop keeps <i>interim</i> value (+2.3 — it serves until the 30 comes online);
+a 25 drop also 5 levels out is worth 0 (same wait as the owned 30, worse item); without the
+bagged 30 that same future 25 would be a real discounted upgrade over the worn 10.</p>
+<div class="note"><b>Requirements are never projected.</b> An item counts as "wearable in g
+levels" only when <i>level</i> is its sole unmet requirement with today's stats; an unmet
+stat/job requirement means never. Bot AP builds park the secondary stat at a fixed target
+(rest into primary), so a low-DEX warrior genuinely never grows into DEX-gated gear — and the
+primary stat outruns own-job gear requirements anyway, so projecting only level loses almost
+nothing while never chasing impossible upgrades.</div>
+
 <h3>3b. Scroll drops — success-weighted stat value</h3>
 <p>Equip scrolls (item 2040000&ndash;2049999) are gear progression too. One scroll is worth its
 plain expectation:</p>
@@ -209,6 +229,7 @@ itemsPerHour(map) = chancePerKill(item, blended) &middot; killsPerHour(map) &mid
 <tr><td><code>ROLL_SAMPLES</code></td><td>32</td><td>Monte Carlo drop rolls per equip per pass</td></tr>
 <tr><td><code>MIN_GEAR_GAIN_SCORE</code></td><td>0.5</td><td>Smaller expected gains are noise, not progression</td></tr>
 <tr><td><code>SCROLL_HEADROOM_FRACTION</code></td><td>0.5</td><td>Discount on open-slot value (slots &times; best catalog scroll EV for the type)</td></tr>
+<tr><td><code>GEAR_LEVEL_HORIZON / LEVEL_WAIT_DECAY</code></td><td>10 / 0.9</td><td>Level-gated gear counts up to 10 levels ahead at 0.9<sup>levels</sup> value</td></tr>
 <tr><td><code>ATTAINABILITY_HORIZON_HOURS</code></td><td>2.0</td><td>"Can I realistically get it" window</td></tr>
 <tr><td><code>MEANINGFUL_GEAR_DESIRE</code></td><td>0.02</td><td>Attainable ~2% DPS gain anywhere &rarr; gear-first mode</td></tr>
 <tr><td><code>GEAR_POOL_FRACTION</code></td><td>0.7</td><td>Gear shortlist: within 70% of best gear-value/h</td></tr>

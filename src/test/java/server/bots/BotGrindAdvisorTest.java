@@ -79,6 +79,38 @@ class BotGrindAdvisorTest {
                 "no offense value for this class (e.g. matk scroll on a bowman)");
     }
 
+    // ---- owned-but-not-worn gear and level-gated drops ----
+
+    @Test
+    void shouldDecayValueByLevelsUntilWearable() {
+        assertEquals(1.0, BotGrindAdvisor.levelDiscount(0), 1e-9, "wearable now = full value");
+        assertEquals(Math.pow(0.9, 5), BotGrindAdvisor.levelDiscount(5), 1e-9);
+        assertTrue(BotGrindAdvisor.levelDiscount(5) > BotGrindAdvisor.levelDiscount(10),
+                "longer wait must be worth less");
+    }
+
+    @Test
+    void shouldCompareDropsAgainstTheBestOwnedCopyTimeConsistently() {
+        // Worn item scores 10; a bagged 30 wearable in 5 levels sets the bar at
+        // max(10, 0.9^5 * 30) ~ 17.7 - owning a better copy raises the bar even benched.
+        double bar = Math.max(10.0, BotGrindAdvisor.levelDiscount(5) * 30.0);
+
+        // A wear-now 20 drop keeps interim value: it serves until the 30 comes online.
+        double now20 = BotGrindAdvisor.expectedImprovement(
+                new double[]{20.0}, BotGrindAdvisor.levelDiscount(0), bar);
+        assertTrue(now20 > 0, "wear-now drop must keep interim value vs a benched better item");
+
+        // A 25 drop also 5 levels out is dominated by the owned 30: same wait, worse item.
+        double later25 = BotGrindAdvisor.expectedImprovement(
+                new double[]{25.0}, BotGrindAdvisor.levelDiscount(5), bar);
+        assertEquals(0.0, later25, 1e-9, "owned better copy with the same wait must win");
+
+        // Without the bagged 30, the same future 25 is a real (discounted) upgrade over 10.
+        double later25NoBag = BotGrindAdvisor.expectedImprovement(
+                new double[]{25.0}, BotGrindAdvisor.levelDiscount(5), 10.0);
+        assertTrue(later25NoBag > 0);
+    }
+
     // ---- scroll headroom: open upgrade slots count, priced by equip type ----
 
     @Test

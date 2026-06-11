@@ -78,6 +78,10 @@ final class BotGrindAdvisor {
     private static final int INSTANCED_MAPID_FLOOR = 900000000;
     /** Ignore "upgrades" below this offense-score gain — rounding noise, not progression. */
     private static final double MIN_GEAR_GAIN_SCORE = 0.5;
+    /** Level-gated gear (drop or bagged) still counts this many levels ahead, decayed per
+     *  level to go — wearable-now beats wearable-later, smoothly. */
+    private static final int GEAR_LEVEL_HORIZON = 10;
+    private static final double LEVEL_WAIT_DECAY = 0.9;
     /** Monte Carlo drop rolls per item per pass (~microseconds each; runs on DECIDE_POOL). */
     private static final int ROLL_SAMPLES = 32;
 
@@ -440,7 +444,8 @@ final class BotGrindAdvisor {
         return out;
     }
 
-    /** Expected improvement of one more drop roll of this equip over what's worn in its slot. */
+    /** Expected improvement of one more drop roll of this equip over the best the bot already
+     *  OWNS for the slot (worn or bagged), both sides discounted by how long until wearable. */
     private static double equipGain(Character bot, ItemInformationProvider ii, int itemId,
                                     Map<Short, Double> wornScoreBySlot,
                                     Map<Integer, double[]> rollScoreCache) {
@@ -457,18 +462,55 @@ final class BotGrindAdvisor {
         } catch (RuntimeException ex) {
             return 0.0;
         }
-        if (!(catalog instanceof Equip eq) || !BotScrollManager.wearable(bot, ii, eq)) {
+        if (!(catalog instanceof Equip eq)) {
             return 0.0;
         }
-        double wornScore = wornScoreBySlot.computeIfAbsent(slot, s -> {
-            Equip worn = BotScrollManager.wornInSlot(bot, ii, s);
-            // potentialValue, not raw offense: a worn item's remaining upgrade slots count for
-            // it, and a maxed-out one gets no headroom — see sampleRollScores for the drop side.
-            return worn != null ? BotScrollManager.potentialValue(bot, ii, worn) : 0.0;
-        });
+        int levelsToGo = BotScrollManager.levelsUntilWearable(bot, ii, eq, GEAR_LEVEL_HORIZON);
+        if (levelsToGo < 0) {
+            return 0.0; // unmet stat/job requirement is never grown into (low-secondary builds)
+        }
+        double ownedScore = wornScoreBySlot.computeIfAbsent(slot,
+                s -> bestOwnedScore(bot, ii, s));
         double[] samples = rollScoreCache.computeIfAbsent(itemId,
                 id -> rollScores.sample(bot, id, ROLL_SAMPLES));
-        return expectedImprovement(samples, wornScore);
+        return expectedImprovement(samples, levelDiscount(levelsToGo), ownedScore);
+    }
+
+    /** Value of waiting: a thing usable in {@code levelsToGo} levels is worth a decayed
+     *  fraction of itself today (1.0 when wearable now). */
+    static double levelDiscount(int levelsToGo) {
+        return Math.pow(LEVEL_WAIT_DECAY, Math.max(0, levelsToGo));
+    }
+
+    /**
+     * The bar a new drop must beat: the best of the WORN item and every BAGGED equip for the
+     * slot, each at {@link BotScrollManager#potentialValue} discounted by how long until the
+     * bot can wear it. Owning a better copy — even one benched for a few levels — makes
+     * farming a weaker one pointless; a wear-now drop keeps interim value against a bagged
+     * future item exactly as big as the discounted gap.
+     */
+    private static double bestOwnedScore(Character bot, ItemInformationProvider ii, short slot) {
+        double best = 0.0;
+        Equip worn = BotScrollManager.wornInSlot(bot, ii, slot);
+        if (worn != null) {
+            best = BotScrollManager.potentialValue(bot, ii, worn);
+        }
+        for (Item it : bot.getInventory(InventoryType.EQUIP).list()) {
+            if (!(it instanceof Equip e) || ii.isCash(e.getItemId())) {
+                continue;
+            }
+            Short s = BotScrollManager.primarySlot(ii, e.getItemId());
+            if (s == null || s != slot) {
+                continue;
+            }
+            int levelsToGo = BotScrollManager.levelsUntilWearable(bot, ii, e, GEAR_LEVEL_HORIZON);
+            if (levelsToGo < 0) {
+                continue;
+            }
+            best = Math.max(best,
+                    levelDiscount(levelsToGo) * BotScrollManager.potentialValue(bot, ii, e));
+        }
+        return best;
     }
 
     /** One looted scroll's expected offense gain for THIS bot; test seam (the real lookup
@@ -552,12 +594,19 @@ final class BotGrindAdvisor {
      * full sample mean.
      */
     static double expectedImprovement(double[] sampleScores, double currentScore) {
+        return expectedImprovement(sampleScores, 1.0, currentScore);
+    }
+
+    /** Like {@link #expectedImprovement(double[], double)} with each sample scaled first —
+     *  the level discount of a not-yet-wearable drop applies to the ROLL, not the improvement,
+     *  so a future drop competes symmetrically against future bagged items in the baseline. */
+    static double expectedImprovement(double[] sampleScores, double sampleScale, double currentScore) {
         if (sampleScores == null || sampleScores.length == 0) {
             return 0.0;
         }
         double sum = 0.0;
         for (double s : sampleScores) {
-            sum += Math.max(0.0, s - currentScore);
+            sum += Math.max(0.0, s * sampleScale - currentScore);
         }
         return sum / sampleScores.length;
     }
