@@ -157,6 +157,43 @@ class BotInventoryManagerTest {
     }
 
     @Test
+    void shouldSellValuableEquipOverflowWeakestFirstBeyondTheShelfCap() {
+        java.util.List<Equip> kept = new java.util.ArrayList<>();
+        // Scores 1..10 via STR (1 point each above null-ii base 0).
+        for (int i = 1; i <= BotInventoryManager.KEEP_VALUABLE_EQUIP_SLOTS + 2; i++) {
+            Equip equip = mock(Equip.class);
+            when(equip.getItemId()).thenReturn(1040000 + i);
+            when(equip.getStr()).thenReturn((short) i);
+            kept.add(equip);
+        }
+
+        var overflow = BotInventoryManager.valuableEquipOverflow(null, kept);
+
+        // 10 kept, cap 8: the two weakest rolls (STR 1 and 2) overflow and sell.
+        assertEquals(2, overflow.size());
+        assertTrue(overflow.contains(kept.get(0)));
+        assertTrue(overflow.contains(kept.get(1)));
+
+        // At or below the cap nothing is forced out.
+        assertTrue(BotInventoryManager.valuableEquipOverflow(
+                null, kept.subList(2, kept.size())).isEmpty());
+    }
+
+    @Test
+    void shouldRankAttackAboveStatPointsInTradeValue() {
+        Equip attGlove = mock(Equip.class);
+        when(attGlove.getItemId()).thenReturn(1082002);
+        when(attGlove.getWatk()).thenReturn((short) 2);
+        Equip statHat = mock(Equip.class);
+        when(statHat.getItemId()).thenReturn(1002001);
+        when(statHat.getDex()).thenReturn((short) 8);
+
+        // +2 watk (10) beats +8 of a main stat (8): attack is what buyers pay for.
+        assertTrue(BotInventoryManager.tradeValueScore(null, attGlove)
+                > BotInventoryManager.tradeValueScore(null, statHat));
+    }
+
+    @Test
     void shouldCollectOnlySellableOffWeaponNonRechargeableAmmoAsTrashUse() {
         Character bot = mock(Character.class);
         Inventory use = new Inventory(bot, InventoryType.USE, (byte) 24);

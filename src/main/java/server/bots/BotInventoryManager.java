@@ -1639,12 +1639,56 @@ class BotInventoryManager {
 
         ItemInformationProvider ii = ItemInformationProvider.getInstance();
         List<Item> result = new ArrayList<>(trash.size());
+        List<Equip> keptValuables = new ArrayList<>();
         for (Item item : trash) {
-            if (item instanceof Equip equip && !shouldKeepForSellTrash(ii, equip)) {
-                result.add(item);
+            if (item instanceof Equip equip) {
+                if (shouldKeepForSellTrash(ii, equip)) {
+                    keptValuables.add(equip);
+                } else {
+                    result.add(item);
+                }
             }
         }
+        result.addAll(valuableEquipOverflow(ii, keptValuables));
         return result;
+    }
+
+    // The valuables shelf is bounded: good-roll equips kept for future trading are ranked by
+    // trade value and only the best KEEP_VALUABLE_EQUIP_SLOTS stay; the overflow sells like
+    // any junk. Without the cap every above-base roll accumulates forever.
+    static final int KEEP_VALUABLE_EQUIP_SLOTS = 8;
+
+    /** Kept-for-value equips beyond the shelf cap, weakest trade value first. */
+    static List<Item> valuableEquipOverflow(ItemInformationProvider ii, List<Equip> kept) {
+        if (kept.size() <= KEEP_VALUABLE_EQUIP_SLOTS) {
+            return List.of();
+        }
+        List<Equip> ranked = new ArrayList<>(kept);
+        ranked.sort(Comparator.comparingDouble((Equip e) -> tradeValueScore(ii, e)).reversed()
+                .thenComparingInt(Item::getItemId));
+        return new ArrayList<>(ranked.subList(KEEP_VALUABLE_EQUIP_SLOTS, ranked.size()));
+    }
+
+    /**
+     * Bot-agnostic trade value of a kept roll: how far it beats its clean WZ base. Attack is
+     * what buyers pay for — watk and matk weigh 5 each (each is the offense stat of its
+     * archetype), main stats 1. Null ii (tests) scores raw values against base 0.
+     */
+    static double tradeValueScore(ItemInformationProvider ii, Equip equip) {
+        Map<String, Integer> stats = ii != null ? ii.getEquipStats(equip.getItemId()) : null;
+        double score = 0.0;
+        score += 5.0 * aboveBase(equip.getWatk(), stats, "PAD");
+        score += 5.0 * aboveBase(equip.getMatk(), stats, "MAD");
+        score += aboveBase(equip.getStr(), stats, "STR");
+        score += aboveBase(equip.getDex(), stats, "DEX");
+        score += aboveBase(equip.getInt(), stats, "INT");
+        score += aboveBase(equip.getLuk(), stats, "LUK");
+        return score;
+    }
+
+    private static int aboveBase(int value, Map<String, Integer> stats, String key) {
+        int base = stats != null ? stats.getOrDefault(key, 0) : 0;
+        return Math.max(0, value - base);
     }
 
     // ETC items consumed by skills (itemCon) — never trash, even though NPCs pay for them.
