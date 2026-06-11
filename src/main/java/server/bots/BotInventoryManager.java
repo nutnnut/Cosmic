@@ -30,6 +30,7 @@ import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ThreadLocalRandom;
@@ -43,6 +44,7 @@ class BotInventoryManager {
     private static final int MANUAL_TRADE_TIMEOUT_MS = 60_000;
     private static final int TRADE_WINDOW_ITEM_LIMIT = 9;
     private static final String RESERVED_EQUIPS_CATEGORY_PREFIX = "equips:reserved:";
+    private static final Map<Integer, Optional<StatEffect>> itemEffectCache = new ConcurrentHashMap<>();
     private record PreparedTradeItems(List<Item> items, String errorMessage) {}
     private record EquipTradeGroups(List<Item> normal,
                                     List<Item> reservedForOther,
@@ -1228,8 +1230,17 @@ class BotInventoryManager {
     }
 
     static StatEffect itemEffect(int itemId) {
-        try { return ItemInformationProvider.getInstance().getItemEffect(itemId); }
-        catch (Exception e) { return null; }
+        Optional<StatEffect> cached = itemEffectCache.get(itemId);
+        if (cached != null) {
+            return cached.orElse(null);
+        }
+        try {
+            StatEffect effect = ItemInformationProvider.getInstance().getItemEffect(itemId);
+            itemEffectCache.putIfAbsent(itemId, Optional.ofNullable(effect));
+            return effect;
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     static boolean isRecoveryPotion(int itemId) {
