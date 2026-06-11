@@ -196,6 +196,7 @@ class BotMovementManager {
         entry.navEdge = null;
         entry.navJumpLaunchEdge = null;
         entry.navJumpLaunchX = Integer.MIN_VALUE;
+        entry.navJumpLaunchDelaySteps = Integer.MIN_VALUE;
         entry.navTargetRegionId = -1;
         entry.navPreciseTarget = false;
     }

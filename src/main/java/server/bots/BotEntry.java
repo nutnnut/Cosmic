@@ -384,6 +384,10 @@ public class BotEntry {
     BotNavigationGraph.Edge navEdge = null;
     BotNavigationGraph.Edge navJumpLaunchEdge = null;
     int navJumpLaunchX = Integer.MIN_VALUE;
+    // Launch variation: extra walk-steps to carry past the selected launch X before firing
+    // (rolled once per approach; MIN_VALUE = not rolled yet). Keeps repeated attempts from
+    // launching at the identical spot when an arc is borderline.
+    int navJumpLaunchDelaySteps = Integer.MIN_VALUE;
     int navTargetRegionId = -1;
     boolean navPreciseTarget = false;
     boolean graphWarmupFallback = false;

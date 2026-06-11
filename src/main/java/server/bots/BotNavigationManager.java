@@ -458,10 +458,56 @@ final class BotNavigationManager {
             return null;
         }
 
+        if (deepenJumpLaunchOneStep(graph, entry, bot.getMap(), edge)) {
+            entry.lastEdgeBlockReason = "jump-delay";
+            return null; // steering follows the bumped launch X — walk a step deeper first
+        }
         entry.lastEdgeBlockReason = null;
         setEdgeExecutionTarget(entry, edge);
         BotMovementManager.initiateJump(entry, bot, edge.launchStepX);
+        // One-shot launch point: a missed arc re-rolls a fresh spot (and a fresh deepen count)
+        // on the next approach instead of repeating the identical failure forever.
+        entry.navJumpLaunchEdge = null;
+        entry.navJumpLaunchX = Integer.MIN_VALUE;
+        entry.navJumpLaunchDelaySteps = Integer.MIN_VALUE;
         return new NavigationDirective(rawTargetPos, true);
+    }
+
+    /**
+     * Launch variation: instead of always firing the instant the bot reaches its selected
+     * launch X, sometimes carry 0-2 more walk steps into the window first (rolled once per
+     * approach). A borderline arc — e.g. real speed sitting between graph buckets — that
+     * misses from one spot is unlikely to also miss a step or two deeper, and the variation
+     * reads more human than frame-perfect launches.
+     */
+    private static boolean deepenJumpLaunchOneStep(BotNavigationGraph graph,
+                                                   BotEntry entry,
+                                                   MapleMap map,
+                                                   BotNavigationGraph.Edge edge) {
+        if (entry.navJumpLaunchX == Integer.MIN_VALUE) {
+            return false; // rope-anchored launches have no window to walk around in
+        }
+        int dir = Integer.signum(edge.launchStepX);
+        if (dir == 0) {
+            return false; // vertical jump: no launch direction to deepen along
+        }
+        if (entry.navJumpLaunchDelaySteps == Integer.MIN_VALUE) {
+            entry.navJumpLaunchDelaySteps = ThreadLocalRandom.current().nextInt(3);
+        }
+        if (entry.navJumpLaunchDelaySteps <= 0) {
+            return false;
+        }
+        int deeperX = entry.navJumpLaunchX + dir * BotPhysicsEngine.walkStep(map, entry.movementProfile);
+        BotNavigationGraph.Region fromRegion = graph.getRegion(edge.fromRegionId);
+        if (!edge.containsLaunchX(deeperX)
+                || fromRegion == null || fromRegion.isRopeRegion
+                || deeperX < fromRegion.minX || deeperX > fromRegion.maxX) {
+            entry.navJumpLaunchDelaySteps = 0; // no legal room deeper — fire from here
+            return false;
+        }
+        entry.navJumpLaunchDelaySteps--;
+        entry.navJumpLaunchX = deeperX;
+        return true;
     }
 
     private static NavigationDirective tryExecuteDrop(BotNavigationGraph graph,
