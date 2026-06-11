@@ -21,14 +21,15 @@ import java.util.concurrent.ThreadLocalRandom;
 /**
  * Handles the bot Maker batch commands: "make monster crystals" (convert monster-leftover
  * etc stacks) and "disassemble trash" (break down trash equips). Both run through the shared
- * {@link MakerProcessor} player path, one operation per {@link #STEP_INTERVAL_MS} ms, and
+ * {@link MakerProcessor} player path, one operation per roughly {@link #STEP_INTERVAL_MIN_MS} ms, and
  * self-interrupt when the player issues a new directive (follow/stop/move/...): see
  * {@link BotEntry#activityEpoch}.
  */
 final class BotMakerManager {
     private static final ItemInformationProvider ii = ItemInformationProvider.getInstance();
     private static final int LEFTOVERS_PER_CRYSTAL = 100;   // Maker type-3 recipe req count
-    private static final long STEP_INTERVAL_MS = 5000L;     // 5 seconds per operation
+    private static final long STEP_INTERVAL_MIN_MS = 5000L; // 5 seconds per operation, plus humanlike jitter
+    private static final int STEP_INTERVAL_JITTER_MAX_MS = 500;
     private static final int LONG_BATCH_THRESHOLD = 10;     // "will take a while" past this many ops
     private static final int NO_MORE = Integer.MIN_VALUE;   // batch step sentinel: nothing left to do
     private static final Set<Integer> ACTIVE = ConcurrentHashMap.newKeySet();
@@ -194,7 +195,11 @@ final class BotMakerManager {
             return;
         }
 
-        BotManager.after(STEP_INTERVAL_MS, () -> runStep(entry, step, noun, epoch, done + 1));
+        BotManager.after(nextStepDelayMs(), () -> runStep(entry, step, noun, epoch, done + 1));
+    }
+
+    private static long nextStepDelayMs() {
+        return STEP_INTERVAL_MIN_MS + BotManager.randMs(0, STEP_INTERVAL_JITTER_MAX_MS + 1);
     }
 
     private static String abortReason(short status, String noun, int done) {
