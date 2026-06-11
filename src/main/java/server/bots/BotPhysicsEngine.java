@@ -294,16 +294,16 @@ final class BotPhysicsEngine {
             return null;
         }
 
-        Foothold exact = map.getFootholds().findBelow(position);
-        Foothold offset = map.getFootholds().findBelow(new Point(position.x, position.y - cfg.MAX_SLOPE_UP));
+        Foothold exact = findBelowIndexed(map, position);
+        Foothold offset = findBelowIndexed(map, new Point(position.x, position.y - cfg.MAX_SLOPE_UP));
         if (exact == null) return offset;
         if (offset == null) return exact;
 
         // On sloped footholds, integer truncation of the interpolated Y can make the foothold's
         // computed Y fall 1px above the player's stored position, causing findBelow to skip it
         // and return a distant platform instead. Mirror findGroundPoint: pick the closer result.
-        Point exactGround = map.getPointBelow(position);
-        Point offsetGround = map.getPointBelow(new Point(position.x, position.y - cfg.MAX_SLOPE_UP));
+        Point exactGround = pointBelowIndexed(map, position);
+        Point offsetGround = pointBelowIndexed(map, new Point(position.x, position.y - cfg.MAX_SLOPE_UP));
         if (exactGround == null) return offset;
         if (offsetGround == null) return exact;
         return Math.abs(offsetGround.y - position.y) < Math.abs(exactGround.y - position.y) ? offset : exact;
@@ -314,8 +314,8 @@ final class BotPhysicsEngine {
             return null;
         }
 
-        Point exactGround = map.getPointBelow(position);
-        Point offsetGround = map.getPointBelow(new Point(position.x, position.y - cfg.MAX_SLOPE_UP));
+        Point exactGround = pointBelowIndexed(map, position);
+        Point offsetGround = pointBelowIndexed(map, new Point(position.x, position.y - cfg.MAX_SLOPE_UP));
         if (exactGround == null) {
             return offsetGround;
         }
@@ -577,7 +577,7 @@ final class BotPhysicsEngine {
             lostGround = snappedPoint == null || snappedPoint.y > baseY + cfg.MAX_SNAP_DROP;
             snappedFoothold = snappedPoint == null || map.getFootholds() == null
                     ? null
-                    : map.getFootholds().findBelow(new Point(nextX, snappedPoint.y + 1));
+                    : findBelowIndexed(map, new Point(nextX, snappedPoint.y + 1));
         }
 
         return new GroundStepPreview(baseY, snappedPoint, snappedFoothold, lostGround, false);
@@ -1630,7 +1630,7 @@ final class BotPhysicsEngine {
         }
 
         int probeY = Math.min(candidateY, rope.topY()) - 3;
-        Point ground = map.getPointBelow(new Point(rope.x(), probeY));
+        Point ground = pointBelowIndexed(map, new Point(rope.x(), probeY));
         if (ground == null) {
             return null;
         }
@@ -1818,16 +1818,8 @@ final class BotPhysicsEngine {
             return AirCollision.none();
         }
 
-        java.util.Set<Integer> collidableFromBelow = getCollidableFromBelowIds(map);
-        if (collidableFromBelow.isEmpty()) {
-            return AirCollision.none();
-        }
-
         AirCollision best = AirCollision.none();
-        for (Foothold foothold : map.getFootholds().getAllFootholds()) {
-            if (foothold.isWall() || !collidableFromBelow.contains(foothold.getId())) {
-                continue;
-            }
+        for (Foothold foothold : collisionIndex(map).collidableFromBelow()) {
             AirCollision collision = ceilingCollision(foothold, previousPos, nextPos);
             if (collision.type() == AirCollisionType.CEILING && collision.progress() < best.progress()) {
                 best = collision;
@@ -1855,12 +1847,8 @@ final class BotPhysicsEngine {
             return AirCollision.none();
         }
 
-        java.util.Set<Integer> collidableWalls = getCollidableWallIds(map);
         AirCollision best = mapSideBoundaryCollision(map, previousPos, nextPos);
-        for (Foothold foothold : map.getFootholds().getAllFootholds()) {
-            if (!foothold.isWall() || !collidableWalls.contains(foothold.getId())) {
-                continue;
-            }
+        for (Foothold foothold : collisionIndex(map).collidableWalls()) {
             AirCollision collision = wallCollision(foothold, previousPos, nextPos, allowWalkableGroundEndpoint);
             if (collision.type() == AirCollisionType.WALL && collision.progress() < best.progress()) {
                 best = collision;
@@ -1933,35 +1921,182 @@ final class BotPhysicsEngine {
     }
 
     /**
-     * Returns the collidable wall set from the nav graph if available, otherwise computes it
-     * directly from the foothold tree.  This avoids a circular dependency when the nav graph
-     * is still being built.
+     * Pre-filtered collision footholds per foothold tree. The airborne collision checks run
+     * every physics tick of every simulation; before this index they recomputed the full
+     * wall/from-below classification over ALL footholds per tick whenever the nav graph
+     * wasn't cached yet — which is exactly the case DURING graph building, making graphgen
+     * ~50x slower than the math itself (Ellinia: 107s). Keyed by tree identity (weak), so
+     * per-id synthetic test maps and instanced map copies can never poison each other.
      */
-    private static java.util.Set<Integer> getCollidableWallIds(MapleMap map) {
-        java.util.Set<Integer> cached = BotNavigationGraphProvider.getCachedCollidableWallIds(map.getId());
-        if (cached != null) {
-            return cached;
+    private static final int GROUND_BUCKET_SHIFT = 6; // 64px columns
+    private static final Foothold[] NO_FOOTHOLDS = new Foothold[0];
+
+    private record FootholdCollisionIndex(java.util.List<Foothold> collidableWalls,
+                                          java.util.List<Foothold> collidableFromBelow,
+                                          int bucketMinX,
+                                          Foothold[][] groundBuckets) {
+        Foothold[] groundBucketAt(int x) {
+            int b = (x - bucketMinX) >> GROUND_BUCKET_SHIFT;
+            return b < 0 || b >= groundBuckets.length ? NO_FOOTHOLDS : groundBuckets[b];
         }
-        java.util.List<Foothold> all = map.getFootholds().getAllFootholds();
-        java.util.Map<Integer, Foothold> byId = new java.util.HashMap<>(all.size());
-        for (Foothold fh : all) {
-            byId.put(fh.getId(), fh);
-        }
-        java.util.Set<Integer> result = new java.util.HashSet<>();
-        for (Foothold fh : all) {
-            if (Foothold.isCollidableWall(fh, byId)) {
-                result.add(fh.getId());
-            }
-        }
-        return result;
     }
 
-    private static java.util.Set<Integer> getCollidableFromBelowIds(MapleMap map) {
-        java.util.Set<Integer> cached = BotNavigationGraphProvider.getCachedCollidableFromBelowIds(map.getId());
-        if (cached != null) {
-            return cached;
+    private static final java.util.Map<server.maps.FootholdTree, FootholdCollisionIndex> COLLISION_INDEX =
+            java.util.Collections.synchronizedMap(new java.util.WeakHashMap<>());
+
+    // Sentinel for trees that can't be indexed (Mockito tree/map stubs in tests return null
+    // foothold lists) — callers fall back to the original tree/map query so stubbed seams keep
+    // working exactly as before.
+    private static final FootholdCollisionIndex UNINDEXABLE = new FootholdCollisionIndex(
+            java.util.List.of(), java.util.List.of(), 0, new Foothold[0][]);
+
+    private static FootholdCollisionIndex collisionIndex(MapleMap map) {
+        server.maps.FootholdTree tree = map != null ? map.getFootholds() : null;
+        if (tree == null) {
+            return UNINDEXABLE;
         }
-        return BotNavigationGraphProvider.computeCollidableFromBelowIds(map);
+        // The UNINDEXABLE verdict is cached too: getAllFootholds() rebuilds the whole list on
+        // every call (recursive collect), so it must never run outside this computeIfAbsent.
+        return COLLISION_INDEX.computeIfAbsent(tree, t -> {
+            java.util.List<Foothold> all = t.getAllFootholds();
+            if (all == null) {
+                return UNINDEXABLE;
+            }
+            java.util.Map<Integer, Foothold> byId = new java.util.HashMap<>(all.size());
+            for (Foothold fh : all) {
+                byId.put(fh.getId(), fh);
+            }
+            java.util.Set<Integer> fromBelowIds = BotNavigationGraphProvider.classifyCollidableFromBelowFootholds(byId);
+            java.util.List<Foothold> walls = new java.util.ArrayList<>();
+            java.util.List<Foothold> ground = new java.util.ArrayList<>();
+            java.util.List<Foothold> fromBelow = new java.util.ArrayList<>();
+            int minX = Integer.MAX_VALUE;
+            int maxX = Integer.MIN_VALUE;
+            for (Foothold fh : all) {
+                if (fh.isWall()) {
+                    if (Foothold.isCollidableWall(fh, byId)) {
+                        walls.add(fh);
+                    }
+                    continue;
+                }
+                ground.add(fh);
+                minX = Math.min(minX, Math.min(fh.getX1(), fh.getX2()));
+                maxX = Math.max(maxX, Math.max(fh.getX1(), fh.getX2()));
+                if (fromBelowIds.contains(fh.getId())) {
+                    fromBelow.add(fh);
+                }
+            }
+
+            Foothold[][] buckets;
+            if (ground.isEmpty()) {
+                buckets = new Foothold[0][];
+                minX = 0;
+            } else {
+                int bucketCount = ((maxX - minX) >> GROUND_BUCKET_SHIFT) + 1;
+                java.util.List<java.util.List<Foothold>> building = new java.util.ArrayList<>(bucketCount);
+                for (int i = 0; i < bucketCount; i++) {
+                    building.add(null);
+                }
+                for (Foothold fh : ground) {
+                    int lo = (Math.min(fh.getX1(), fh.getX2()) - minX) >> GROUND_BUCKET_SHIFT;
+                    int hi = (Math.max(fh.getX1(), fh.getX2()) - minX) >> GROUND_BUCKET_SHIFT;
+                    for (int b = lo; b <= hi; b++) {
+                        java.util.List<Foothold> bucket = building.get(b);
+                        if (bucket == null) {
+                            bucket = new java.util.ArrayList<>(4);
+                            building.set(b, bucket);
+                        }
+                        bucket.add(fh);
+                    }
+                }
+                buckets = new Foothold[bucketCount][];
+                for (int i = 0; i < bucketCount; i++) {
+                    java.util.List<Foothold> bucket = building.get(i);
+                    if (bucket == null) {
+                        buckets[i] = NO_FOOTHOLDS;
+                        continue;
+                    }
+                    Foothold[] sorted = bucket.toArray(NO_FOOTHOLDS);
+                    // Stable insertion sort with the tree's own comparator. Foothold.compareTo is a
+                    // NON-TRANSITIVE partial order — TimSort (List.sort/Collections.sort on 32+
+                    // elements) throws "comparison method violates its general contract" on it.
+                    // The tree's findBelow only ever sorted tiny per-query lists, which land in
+                    // TimSort's exception-free binary-insertion path; mirror that here per bucket.
+                    insertionSort(sorted);
+                    buckets[i] = sorted;
+                }
+            }
+            return new FootholdCollisionIndex(java.util.List.copyOf(walls), java.util.List.copyOf(fromBelow),
+                    minX, buckets);
+        });
+    }
+
+    private static void insertionSort(Foothold[] footholds) {
+        for (int i = 1; i < footholds.length; i++) {
+            Foothold key = footholds[i];
+            int j = i - 1;
+            while (j >= 0 && footholds[j].compareTo(key) > 0) {
+                footholds[j + 1] = footholds[j];
+                j--;
+            }
+            footholds[j + 1] = key;
+        }
+    }
+
+    /**
+     * Bot-side drop-in for {@code FootholdTree.findBelow}: identical selection math (including
+     * the original's trig-flavored slope interpolation and int truncation) over a per-column
+     * bucket instead of a tree walk with per-query allocation and sorting. Graphgen and the
+     * airborne integrator issue tens of millions of these probes on big maps.
+     */
+    static Foothold findBelowIndexed(MapleMap map, Point p) {
+        if (map == null || map.getFootholds() == null) {
+            return null;
+        }
+        FootholdCollisionIndex index = collisionIndex(map);
+        if (index == UNINDEXABLE) {
+            return map.getFootholds().findBelow(p); // stubbed tree — original query path
+        }
+        for (Foothold fh : index.groundBucketAt(p.x)) {
+            if (fh.getX1() <= p.x && fh.getX2() >= p.x) {
+                if (fh.getY1() != fh.getY2()) {
+                    if (slopeYAt(fh, p.x) >= p.y) {
+                        return fh;
+                    }
+                } else if (fh.getY1() >= p.y) {
+                    return fh;
+                }
+            }
+        }
+        return null;
+    }
+
+    /** Bot-side drop-in for {@code MapleMap.getPointBelow} (calcPointBelow), same math. */
+    static Point pointBelowIndexed(MapleMap map, Point initial) {
+        if (map == null) {
+            return null;
+        }
+        if (map.getFootholds() == null || collisionIndex(map) == UNINDEXABLE) {
+            return map.getPointBelow(initial); // stubbed map/tree — original query path
+        }
+        Foothold fh = findBelowIndexed(map, initial);
+        if (fh == null) {
+            return null;
+        }
+        int dropY = fh.getY1() != fh.getY2() ? slopeYAt(fh, initial.x) : fh.getY1();
+        return new Point(initial.x, dropY);
+    }
+
+    // Verbatim port of the foothold tree's slope interpolation — the trig chain reduces to
+    // linear interpolation but is kept as-is so int truncation matches to the pixel.
+    private static int slopeYAt(Foothold fh, int x) {
+        double s1 = Math.abs(fh.getY2() - fh.getY1());
+        double s2 = Math.abs(fh.getX2() - fh.getX1());
+        double s4 = Math.abs(x - fh.getX1());
+        double alpha = Math.atan(s2 / s1);
+        double beta = Math.atan(s1 / s2);
+        double s5 = Math.cos(alpha) * (s4 / Math.cos(beta));
+        return fh.getY2() < fh.getY1() ? fh.getY1() - (int) s5 : fh.getY1() + (int) s5;
     }
 
     private static AirCollision landingAtX(MapleMap map,
@@ -1993,7 +2128,7 @@ final class BotPhysicsEngine {
                                                 int probeY,
                                                 boolean requireTangentFloor) {
         Point probe = new Point(x, probeY);
-        Point floor = map.getPointBelow(probe);
+        Point floor = pointBelowIndexed(map, probe);
         if (floor == null) {
             return AirCollision.none();
         }
@@ -2007,7 +2142,7 @@ final class BotPhysicsEngine {
             return AirCollision.none();
         }
 
-        Foothold foothold = map.getFootholds().findBelow(probe);
+        Foothold foothold = findBelowIndexed(map, probe);
         if (foothold == null) {
             return AirCollision.none();
         }

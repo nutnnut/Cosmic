@@ -35,7 +35,9 @@ final class BotNavigationGraphProvider {
     //     step on fs maps jumps back to full speed, runways stretch by 1/fs.
     // 49: down-jumps capped at DOWN_JUMP_MAX_DROP_PX (client probes a bounded range below;
     //     Orbis-tower-style 860px down-jump edges must disappear).
-    private static final int GRAPH_VERSION = 49;
+    // 50: indexed ground lookups (findBelowIndexed) - tie-breaks between overlapping footholds
+    //     can differ from the tree's traversal order (Ellinia: 2 of 5151 edges).
+    private static final int GRAPH_VERSION = 50;
     private static final int ENDPOINT_ANCHOR_SPACING_PX = 10;
     private static final int DOWN_JUMP_PRELAUNCH_WINDOW_PX = 20;
     private static final int SAME_SOLID_NEST_GAP_PX = 8;
@@ -701,7 +703,7 @@ final class BotNavigationGraphProvider {
         COLLIDABLE_FROM_BELOW_IDS_BY_MAP_ID.put(graph.mapId, new HashSet<>(graph.collidableFromBelowIds));
     }
 
-    private static Set<Integer> classifyCollidableFromBelowFootholds(Map<Integer, Foothold> footholdsById) {
+    static Set<Integer> classifyCollidableFromBelowFootholds(Map<Integer, Foothold> footholdsById) {
         List<ClassifiedLoop> loops = classifyClosedLoops(buildClosedLoops(footholdsById));
         if (loops.isEmpty()) {
             return Set.of();
@@ -1730,7 +1732,7 @@ final class BotNavigationGraphProvider {
                                           Map<Integer, List<BotNavigationGraph.Edge>> outgoing,
                                           Set<String> edgeKeys) {
         Point probe = new Point(rope.x(), rope.topY() - 3);
-        Point landPoint = map.getPointBelow(probe);
+        Point landPoint = BotPhysicsEngine.pointBelowIndexed(map, probe);
         if (landPoint == null || landPoint.y > rope.topY() + BotPhysicsEngine.climbStepPerTick() + 2) {
             return;
         }
@@ -1911,7 +1913,7 @@ final class BotNavigationGraphProvider {
             return -1;
         }
 
-        Foothold foothold = map.getFootholds().findBelow(point);
+        Foothold foothold = BotPhysicsEngine.findBelowIndexed(map, point);
         if (foothold == null) {
             return -1;
         }
