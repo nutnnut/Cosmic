@@ -388,8 +388,6 @@ public class BotManager {
     // character takes it over again (Character.newClient -> cleanupBotRuntimeState).
     // -------------------------------------------------------------------------
 
-    private static final long TAKEOVER_POLL_MS = 700L;
-    private static final int TAKEOVER_MAX_POLLS = 10;
 
     /**
      * Disconnect the client and respawn its character as a self-owned autopilot bot.
@@ -405,15 +403,37 @@ public class BotManager {
         if (requireBotParty && !inPartyOfBots(player)) {
             return "@botparty needs a party where everyone else is a bot. Use @botme to go solo.";
         }
-        int charId = player.getId();
-        int world = c.getWorld();
-        int channel = c.getChannel();
+        if (player.getTrade() != null) {
+            return "finish or cancel your trade first.";
+        }
         player.yellowMessage("Switching out - this character keeps playing as a bot. Log back in anytime to take over.");
-        after(randMs(600, 900), () -> {
-            c.disconnect(false, false);
-            pollBotTakeover(charId, world, channel, 0);
-        });
+        after(randMs(600, 900), () -> swapToBotInPlace(c, player));
         return null;
+    }
+
+    /**
+     * Seamless takeover: attach a BotClient to the LIVE character and sever it from the real
+     * socket BEFORE disconnecting, so the char never leaves the map — observers see no
+     * despawn/respawn, position and buffs stay intact, and the bot announces its plan right
+     * away. {@link Client}'s disconnect skips all character-side cleanup when the client has
+     * no player, but still logs the ACCOUNT out and closes the session — so the player can
+     * log back in anytime (the normal reclaim path swaps the client back via
+     * Character.newClient).
+     */
+    private void swapToBotInPlace(Client c, Character player) {
+        if (c.getPlayer() != player || player.getMap() == null) {
+            return; // player logged out / moved on during the grace delay
+        }
+        BotClient botClient = new BotClient(c.getWorld(), c.getChannel());
+        botClient.setPlayer(player);
+        botClient.setAccID(player.getAccountID());
+        botClient.setAccountName(c.getAccountName());
+        player.setClient(botClient);
+        c.setPlayer(null);
+        c.disconnect(false, false);
+
+        BotEntry entry = registerSpawnedBot(player.getId(), player, player); // self-owned
+        startTakeoverAutopilot(entry, player);
     }
 
     /** True when the player is partied with at least one bot and no other online humans. */
@@ -433,42 +453,6 @@ public class BotManager {
             }
         }
         return sawBot;
-    }
-
-    /** Wait for the disconnect to land (char saved + removed from the world), then reload as a bot. */
-    private void pollBotTakeover(int charId, int world, int channel, int attempt) {
-        after(TAKEOVER_POLL_MS, () -> {
-            Character lingering = Server.getInstance().getWorld(world).getPlayerStorage().getCharacterById(charId);
-            if (lingering != null) {
-                if (attempt < TAKEOVER_MAX_POLLS) {
-                    pollBotTakeover(charId, world, channel, attempt + 1);
-                } else {
-                    log.warn("botme: character {} never left the world after disconnect, takeover aborted", charId);
-                }
-                return;
-            }
-            try {
-                Character botChar = loadOfflineBot(charId, world, channel);
-                BotEntry entry = registerSpawnedBot(charId, botChar, botChar); // self-owned
-                markBotPartyOnline(botChar);
-                startTakeoverAutopilot(entry, botChar);
-            } catch (SQLException e) {
-                log.warn("botme: failed to reload character {} as a bot", charId, e);
-            }
-        });
-    }
-
-    /** Mark the reloaded bot's party slot online with a live character reference. */
-    private static void markBotPartyOnline(Character botChar) {
-        Party party = botChar.getParty();
-        if (party == null) {
-            return;
-        }
-        PartyCharacter pchar = new PartyCharacter(botChar);
-        pchar.setChannel(botChar.getClient().getChannel());
-        pchar.setMapId(botChar.getMapId());
-        botChar.getWorldServer().updateParty(party.getId(), PartyOperation.LOG_ONOFF, pchar);
-        botChar.updatePartyMemberHP();
     }
 
     private void startTakeoverAutopilot(BotEntry entry, Character botChar) {
