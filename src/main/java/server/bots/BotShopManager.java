@@ -1,9 +1,12 @@
 package server.bots;
 
 import client.Character;
+import client.inventory.Equip;
 import client.inventory.InventoryType;
 import client.inventory.Item;
 import client.inventory.WeaponType;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import constants.game.GameConstants;
 import constants.inventory.ItemConstants;
 import server.ItemInformationProvider;
@@ -27,6 +30,7 @@ import java.util.concurrent.ThreadLocalRandom;
 import java.util.function.IntUnaryOperator;
 
 final class BotShopManager {
+    private static final Logger log = LoggerFactory.getLogger(BotShopManager.class);
 
     // Test seam: ItemInformationProvider's WZ/DB static initializer can't run in unit tests,
     // so projectile attack / slot-max lookups go through overridable hooks (see BotShopManagerTest).
@@ -529,9 +533,29 @@ final class BotShopManager {
         if (item.getInventoryType() != InventoryType.EQUIP) {
             soldUseEtc.add(soldQuantity + " " + resolveItemName(item.getItemId(), "item"));
         }
+        logSoldItem(bot, item, soldQuantity);
         int nextSoldCount = soldCount + 1;
         scheduleShopStep(entry, SELL_TRASH_STEP_DELAY_MS,
                 () -> runSellTrashStep(entry, bot, npcPos, nextSoldCount, soldUseEtc, failedItems, plan, bought, firstShortfall));
+    }
+
+    /** Audit trail for every NPC sale a bot makes — equips include their above-base trade
+     *  score so a concerning sale (a good roll liquidated) is findable in the server log. */
+    private static void logSoldItem(Character bot, Item item, short quantity) {
+        String name = resolveItemName(item.getItemId(), "item");
+        if (item instanceof Equip equip) {
+            double score;
+            try {
+                score = BotInventoryManager.tradeValueScore(ItemInformationProvider.getInstance(), equip);
+            } catch (Throwable t) {
+                score = -1; // unit tests / WZ unavailable
+            }
+            log.info("bot-sell: {} sold equip {} (id {}, tradeScore {})",
+                    bot.getName(), name, item.getItemId(), String.format("%.1f", score));
+        } else {
+            log.info("bot-sell: {} sold {}x {} (id {})",
+                    bot.getName(), quantity, name, item.getItemId());
+        }
     }
 
     // One or more ASCII chat lines listing the USE/ETC items sold, e.g. "unloaded: 12 Squid Ink, 3 Blue Potion".

@@ -180,6 +180,30 @@ class BotInventoryManagerTest {
     }
 
     @Test
+    void shouldNeverSellEquipsAboveTheHardValueGateEvenOnOverflow() {
+        // A mule holding a bag of genuine valuables: every kept equip is one att-scroll above
+        // base (+5 watk = score 25, the gate). The shelf cap alone would force 6 out — the
+        // absolute gate keeps them all; bag pressure is the lesser evil.
+        java.util.List<Equip> kept = new java.util.ArrayList<>();
+        for (int i = 0; i < BotInventoryManager.KEEP_VALUABLE_EQUIP_SLOTS + 6; i++) {
+            Equip equip = mock(Equip.class);
+            when(equip.getItemId()).thenReturn(1082000 + i);
+            when(equip.getWatk()).thenReturn((short) 5);
+            kept.add(equip);
+        }
+        assertTrue(BotInventoryManager.valuableEquipOverflow(null, kept).isEmpty());
+
+        // Sub-gate rolls beyond the cap still sell like before.
+        for (int i = 0; i < 3; i++) {
+            Equip weak = mock(Equip.class);
+            when(weak.getItemId()).thenReturn(1090000 + i);
+            when(weak.getStr()).thenReturn((short) 2);
+            kept.add(weak);
+        }
+        assertEquals(3, BotInventoryManager.valuableEquipOverflow(null, kept).size());
+    }
+
+    @Test
     void shouldRankAttackAboveStatPointsInTradeValue() {
         Equip attGlove = mock(Equip.class);
         when(attGlove.getItemId()).thenReturn(1082002);

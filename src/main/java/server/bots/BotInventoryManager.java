@@ -1658,7 +1658,14 @@ class BotInventoryManager {
     // any junk. Without the cap every above-base roll accumulates forever.
     static final int KEEP_VALUABLE_EQUIP_SLOTS = 24;
 
-    /** Kept-for-value equips beyond the shelf cap, weakest trade value first. */
+    // Absolute keep gate ON TOP of the bounded shelf: an equip this far above its clean base
+    // (one good att-scroll pass, or +25 raw stat points) is never auto-sold even when the
+    // shelf overflows — a mule spawned holding a bag of genuine valuables must not liquidate
+    // them just because there are more than the shelf holds. Bag pressure is the lesser evil.
+    static final double NEVER_SELL_TRADE_SCORE = 25.0;
+
+    /** Kept-for-value equips beyond the shelf cap, weakest trade value first — except equips
+     *  at or above {@link #NEVER_SELL_TRADE_SCORE}, which never sell regardless of overflow. */
     static List<Item> valuableEquipOverflow(ItemInformationProvider ii, List<Equip> kept) {
         if (kept.size() <= KEEP_VALUABLE_EQUIP_SLOTS) {
             return List.of();
@@ -1666,7 +1673,13 @@ class BotInventoryManager {
         List<Equip> ranked = new ArrayList<>(kept);
         ranked.sort(Comparator.comparingDouble((Equip e) -> tradeValueScore(ii, e)).reversed()
                 .thenComparingInt(Item::getItemId));
-        return new ArrayList<>(ranked.subList(KEEP_VALUABLE_EQUIP_SLOTS, ranked.size()));
+        List<Item> overflow = new ArrayList<>();
+        for (Equip e : ranked.subList(KEEP_VALUABLE_EQUIP_SLOTS, ranked.size())) {
+            if (tradeValueScore(ii, e) < NEVER_SELL_TRADE_SCORE) {
+                overflow.add(e);
+            }
+        }
+        return overflow;
     }
 
     /**
