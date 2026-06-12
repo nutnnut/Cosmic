@@ -2,6 +2,7 @@ package server.bots;
 
 import client.BotClient;
 import client.Character;
+import client.Client;
 import client.Job;
 import client.inventory.Equip;
 import client.inventory.Inventory;
@@ -1882,10 +1883,118 @@ class BotInventoryManager {
         result.addAll(collectSellTrashUseItems(bot));
         result.addAll(collectSellTrashEtcItems(bot));
         // The "farm <item>" objective is the whole point of the trip — never sell it.
-        if (entry.autopilotFarmItemId != 0) {
+        // entry == null = @autosell debug preview on a real player's character (no bot state).
+        if (entry != null && entry.autopilotFarmItemId != 0) {
             result.removeIf(item -> item.getItemId() == entry.autopilotFarmItemId);
         }
         return result;
+    }
+
+    // @autosell (admin debug): run the UNCHANGED bot sell-trash pipeline against a real
+    // player's character. Preview lists what would sell, grouped by inventory type; confirm
+    // sells everything instantly at NPC prices — same removeFromSlot + gainMeso effect as
+    // Shop.sell, minus the shop session and humanlike step delays (debug tool, not bot play).
+    static List<String> autoSellPreviewLines(Character chr) {
+        ItemInformationProvider ii = ItemInformationProvider.getInstance();
+        List<Item> items = collectSellTrashItems(null, chr);
+        if (items.isEmpty()) {
+            return List.of("autosell: nothing the bot pipeline would sell");
+        }
+        List<String> lines = new ArrayList<>();
+        for (InventoryType type : List.of(InventoryType.EQUIP, InventoryType.USE, InventoryType.ETC)) {
+            List<String> descs = items.stream()
+                    .filter(item -> item.getInventoryType() == type)
+                    .map(item -> describeAutoSellItem(ii, item))
+                    .toList();
+            if (!descs.isEmpty()) {
+                appendWrappedListLines(lines, autoSellTypeLabel(type) + ": ", descs);
+            }
+        }
+        lines.add("autosell: " + items.size() + " item" + (items.size() != 1 ? "s" : "")
+                + " - @autosell confirm sells them now");
+        return lines;
+    }
+
+    static List<String> autoSellExecute(Client c) {
+        Character chr = c.getPlayer();
+        ItemInformationProvider ii = ItemInformationProvider.getInstance();
+        List<Item> items = collectSellTrashItems(null, chr);
+        int sold = 0;
+        long mesoGained = 0;
+        for (Item item : items) {
+            if (!hasItem(chr, item)) {
+                continue;
+            }
+            short quantity = sellTrashQuantity(item);
+            if (quantity <= 0) {
+                continue;
+            }
+            InventoryManipulator.removeFromSlot(c, item.getInventoryType(), (byte) item.getPosition(),
+                    quantity, false);
+            int price = ii.getPrice(item.getItemId(), quantity);
+            if (price > 0) {
+                chr.gainMeso(price, false);
+                mesoGained += price;
+            }
+            sold++;
+        }
+        return List.of("autosell: sold " + sold + " item" + (sold != 1 ? "s" : "")
+                + " for " + mesoGained + " meso");
+    }
+
+    private static String autoSellTypeLabel(InventoryType type) {
+        return switch (type) {
+            case EQUIP -> "Equip";
+            case USE -> "Use";
+            case ETC -> "Etc";
+            default -> type.name();
+        };
+    }
+
+    /** "+3str +4dex White Polyfeather Hat" for equips (deltas above clean WZ base),
+     *  "Scroll for Shield for DEF x4" for stackables (quantity = what would actually sell). */
+    static String describeAutoSellItem(ItemInformationProvider ii, Item item) {
+        String name = itemName(ii, item.getItemId());
+        if (item instanceof Equip e) {
+            Map<String, Integer> base = ii != null ? ii.getEquipStats(item.getItemId()) : null;
+            StringBuilder sb = new StringBuilder();
+            appendStatDelta(sb, aboveBase(e.getStr(), base, "STR"), "str");
+            appendStatDelta(sb, aboveBase(e.getDex(), base, "DEX"), "dex");
+            appendStatDelta(sb, aboveBase(e.getInt(), base, "INT"), "int");
+            appendStatDelta(sb, aboveBase(e.getLuk(), base, "LUK"), "luk");
+            appendStatDelta(sb, aboveBase(e.getWatk(), base, "PAD"), "watk");
+            appendStatDelta(sb, aboveBase(e.getMatk(), base, "MAD"), "matk");
+            appendStatDelta(sb, aboveBase(e.getAcc(), base, "ACC"), "acc");
+            appendStatDelta(sb, aboveBase(e.getSpeed(), base, "Speed"), "spd");
+            appendStatDelta(sb, aboveBase(e.getJump(), base, "Jump"), "jmp");
+            return sb.isEmpty() ? name : sb + name;
+        }
+        short quantity = sellTrashQuantity(item);
+        return quantity > 1 ? name + " x" + quantity : name;
+    }
+
+    private static void appendStatDelta(StringBuilder sb, int delta, String label) {
+        if (delta > 0) {
+            sb.append('+').append(delta).append(label).append(' ');
+        }
+    }
+
+    private static final int AUTO_SELL_LINE_WIDTH = 110;
+
+    private static void appendWrappedListLines(List<String> lines, String prefix, List<String> descs) {
+        StringBuilder line = new StringBuilder(prefix);
+        boolean first = true;
+        for (String desc : descs) {
+            String piece = first ? desc : ", " + desc;
+            if (!first && line.length() + piece.length() > AUTO_SELL_LINE_WIDTH) {
+                lines.add(line.toString());
+                line = new StringBuilder("  ").append(desc);
+            } else {
+                line.append(piece);
+            }
+            first = false;
+        }
+        lines.add(line.toString());
     }
 
     // Debug classification of bag equips, derived from the SAME predicates and ranking the
@@ -2031,7 +2140,7 @@ class BotInventoryManager {
     }
 
     private static String itemName(ItemInformationProvider ii, int itemId) {
-        String name = ii.getName(itemId);
+        String name = ii != null ? ii.getName(itemId) : null;
         if (name == null || name.isBlank()) {
             name = "id=" + itemId;
         }

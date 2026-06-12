@@ -199,6 +199,7 @@ import client.command.commands.gm5.SetCommand;
 import client.command.commands.gm5.ShowMoveLifeCommand;
 import client.command.commands.gm5.ShowPacketsCommand;
 import client.command.commands.gm5.ShowSessionsCommand;
+import client.command.commands.gm6.AutoSellCommand;
 import client.command.commands.gm6.ClearQuestCacheCommand;
 import client.command.commands.gm6.ClearQuestCommand;
 import client.command.commands.gm6.DCAllCommand;
@@ -578,6 +579,7 @@ public class CommandsExecutor {
         levelCommandsCursor = new Pair<>(new ArrayList<String>(), new ArrayList<String>());
 
         addCommand("setgmlevel", 6, SetGmLevelCommand.class);
+        addCommand("autosell", 6, AutoSellCommand.class);
         addCommand("warpworld", 6, WarpWorldCommand.class);
         addCommand("saveall", 6, SaveAllCommand.class);
         addCommand("dcall", 6, DCAllCommand.class);

@@ -106,6 +106,23 @@ class BotInventoryManagerTest {
     }
 
     @Test
+    void shouldDescribeAutoSellItemsWithAboveBaseDeltas() {
+        Equip equip = mock(Equip.class);
+        when(equip.getItemId()).thenReturn(1002001);
+        when(equip.getStr()).thenReturn((short) 3);
+        when(equip.getDex()).thenReturn((short) 4);
+        // null ii (tests): deltas score against base 0, names fall back to id=
+        assertEquals("+3str +4dex id=1002001", BotInventoryManager.describeAutoSellItem(null, equip));
+
+        Equip clean = mock(Equip.class);
+        when(clean.getItemId()).thenReturn(1002002);
+        assertEquals("id=1002002", BotInventoryManager.describeAutoSellItem(null, clean));
+
+        assertEquals("id=2040001 x4",
+                BotInventoryManager.describeAutoSellItem(null, Items.itemWithQuantity(2040001, 4)));
+    }
+
+    @Test
     void shouldFilterProtectedEquipsOutOfSellTrashOnly() {
         Equip sellable = mock(Equip.class);
         Equip highIntAllJob = mock(Equip.class);

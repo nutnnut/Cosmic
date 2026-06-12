@@ -389,6 +389,17 @@ public class BotManager {
     // -------------------------------------------------------------------------
 
 
+    /** @autosell (admin debug): what the bot sell-trash pipeline would unload from this
+     *  character, grouped by inventory type. The player stays connected. */
+    public List<String> autoSellPreview(Character chr) {
+        return BotInventoryManager.autoSellPreviewLines(chr);
+    }
+
+    /** @autosell confirm: instantly sells everything the preview lists at NPC prices. */
+    public List<String> autoSellConfirm(Client c) {
+        return BotInventoryManager.autoSellExecute(c);
+    }
+
     /**
      * Disconnect the client and respawn its character as a self-owned autopilot bot.
      * Returns an error message to show the player, or null when the takeover is underway.
