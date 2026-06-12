@@ -38,6 +38,13 @@ final class BotPhysicsEngine {
         public double GROUNDSLIP = 3.0;
         public double FRICTION = 0.3;
         public double SLOPEFACTOR = 0.1;
+        // Slippery ground (fs<1) is a KINETIC regime in the client: constant accel/decel,
+        // linear velocity ramps, hard cap at walkSpeed. Fitted to El Nath packet captures
+        // (logs/monitored-packets-elnath-slippery-walk-left-right-spd{100,110}.log, fit
+        // residuals <= 3.1 px/s) and consistent with client constants walkForce 140000 /
+        // mass 100 and walkDrag 80000 / mass / 2 (client halves friction when fs<1).
+        public double SLIP_WALK_ACCEL_PXSS = 1400.0;  // x fs -> px/s^2 while a direction is held
+        public double SLIP_GLIDE_DECEL_PXSS = 400.0;  // x fs -> px/s^2 while gliding (no input)
         public double AIR_STEER_ACCEL = 0.5;   // px/tick added per tick toward target
         public double AIR_STEER_MAX   = 1.5;  // cap on air-steering speed (px/tick)
 
@@ -258,11 +265,21 @@ final class BotPhysicsEngine {
      * <p>Friction model: dv/dt = hF*slip - (friction+slope)*v. Terminal v_max = hF*slip/(friction+slope).
      * Time to ~95% terminal ≈ 3/(friction+slope). We use a fixed multiple of walkStep that comfortably
      * exceeds the 95% mark for the calibrated constants without iterating.
+     *
+     * <p>Slippery ground is kinetic (see {@link #applySlipperyGroundStep}): the exact distance
+     * to top speed is v_max&sup2;/(2*accel*fs) — ~28 px at El Nath fs=0.2 — added on top of the
+     * fs=1 heuristic instead of the old 1/fs stretch (which over-reserved 180 px and starved
+     * snow maps of launch anchors).
      */
     static int launchRunwayPx(MapleMap map, BotMovementProfile profile) {
         int step = walkStep(map, profile);
-        // Slippery fields stretch time-to-terminal by 1/fs — the runway grows with it.
-        return (int) Math.max(40, Math.round(step * 6 / mapGroundSlipScale(map)));
+        double fs = mapGroundSlipScale(map, profile);
+        if (fs >= 1.0) {
+            return Math.max(40, step * 6);
+        }
+        double vmaxPxs = maxHSpeedPerClientStep(profile) / CLIENT_GROUND_STEP_S;
+        double accelDistPx = vmaxPxs * vmaxPxs / (2 * cfg.SLIP_WALK_ACCEL_PXSS * fs);
+        return (int) Math.max(40, Math.round(step * 6 + accelDistPx));
     }
 
     static int velocityFromDeltaX(double deltaX) {
@@ -1721,7 +1738,7 @@ final class BotPhysicsEngine {
 
         double physX = state.physX();
         double hspeed = state.hspeed();
-        double slipScale = mapGroundSlipScale(map);
+        double slipScale = mapGroundSlipScale(map, profile);
         for (int i = 0; i < counter.steps(); i++) {
             hspeed = applyGroundPhysicsStep(hspeed, foothold, desiredDir, profile, slipScale);
             physX += hspeed;
@@ -1746,12 +1763,32 @@ final class BotPhysicsEngine {
             return 0.0;
         }
 
+        if (slipScale < 1.0) {
+            return applySlipperyGroundStep(hspeed, desiredDir, profile, slipScale);
+        }
         double inertia = hspeed / cfg.GROUNDSLIP;
         double slope = clampedSlope(foothold);
         double drag = (cfg.FRICTION + cfg.SLOPEFACTOR * (1.0 + slope * -inertia)) * inertia;
-        // Slippery fields scale force and friction together: terminal speed is unchanged
-        // (hforce == drag there), only the approach to it slows — slow starts, long slides.
         return hspeed + (hforce - drag) * slipScale;
+    }
+
+    /**
+     * Slippery ground (fs&lt;1) is kinetic, not the force/drag model: packet captures show
+     * LINEAR velocity ramps — constant accel {@code SLIP_WALK_ACCEL_PXSS x fs} while a
+     * direction is held (hard-capped at the profile's walk speed; the cap scales with the
+     * speed stat, the accel does not) and constant decel {@code SLIP_GLIDE_DECEL_PXSS x fs}
+     * while gliding. El Nath fs=0.2: 0 to 125 px/s in ~0.45 s, ~1.6 s / ~98 px to slide out.
+     * Slope is deliberately ignored here (captures are flat ground; snow maps mostly are).
+     */
+    private static double applySlipperyGroundStep(double hspeed, int desiredDir,
+                                                  BotMovementProfile profile, double fs) {
+        if (desiredDir != 0) {
+            double dv = cfg.SLIP_WALK_ACCEL_PXSS * fs * CLIENT_GROUND_STEP_S * CLIENT_GROUND_STEP_S;
+            double cap = maxHSpeedPerClientStep(profile);
+            return Math.clamp(hspeed + desiredDir * dv, -cap, cap);
+        }
+        double dv = cfg.SLIP_GLIDE_DECEL_PXSS * fs * CLIENT_GROUND_STEP_S * CLIENT_GROUND_STEP_S;
+        return hspeed - Math.copySign(Math.min(Math.abs(hspeed), dv), hspeed);
     }
 
     private static double clampedSlope(Foothold foothold) {
@@ -1778,6 +1815,17 @@ final class BotPhysicsEngine {
     private static double mapGroundSlipScale(MapleMap map) {
         float fs = map != null ? map.getFootholdSpeed() : 0.0f;
         return fs > 0.0f && fs < 1.0f ? fs : 1.0;
+    }
+
+    /** Like {@link #mapGroundSlipScale(MapleMap)}, but snowshoes (worn-shoe WZ fs >= 1, see
+     *  BotMovementProfile) cancel the field's slipperiness — normal physics on snow. */
+    private static double mapGroundSlipScale(MapleMap map, BotMovementProfile profile) {
+        return profileOrBase(profile).snowShoes() ? 1.0 : mapGroundSlipScale(map);
+    }
+
+    /** True when this map's ground is slippery for bots WITHOUT snowshoes (fs &lt; 1). */
+    static boolean slipperyGround(MapleMap map) {
+        return mapGroundSlipScale(map) < 1.0;
     }
 
     private static double maxHForcePerClientStep(BotMovementProfile profile) {

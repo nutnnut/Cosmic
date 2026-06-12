@@ -37,7 +37,7 @@ final class BotNavigationGraphProvider {
     //     Orbis-tower-style 860px down-jump edges must disappear).
     // 50: indexed ground lookups (findBelowIndexed) - tie-breaks between overlapping footholds
     //     can differ from the tree's traversal order (Ellinia: 2 of 5151 edges).
-    private static final int GRAPH_VERSION = 50;
+    private static final int GRAPH_VERSION = 51; // 51: kinetic slippery-ground model (packet-fitted) + snowshoe profiles; runway on fs<1 maps shrank from step*6/fs to step*6 + vmax^2/(2*accel*fs)
     private static final int ENDPOINT_ANCHOR_SPACING_PX = 10;
     private static final int DOWN_JUMP_PRELAUNCH_WINDOW_PX = 20;
     private static final int SAME_SOLID_NEST_GAP_PX = 8;
@@ -63,11 +63,21 @@ final class BotNavigationGraphProvider {
         return thread;
     });
 
-    private record GraphCacheKey(int mapId, int totalSpeedStat, int totalJumpStat) {
+    private record GraphCacheKey(int mapId, int totalSpeedStat, int totalJumpStat, boolean snowShoes) {
         static GraphCacheKey from(int mapId, BotMovementProfile profile) {
             BotMovementProfile effective = profile == null ? BotMovementProfile.base() : profile;
-            return new GraphCacheKey(mapId, effective.totalSpeedStat(), effective.totalJumpStat());
+            return new GraphCacheKey(mapId, effective.totalSpeedStat(), effective.totalJumpStat(),
+                    effective.snowShoes());
         }
+    }
+
+    /** Snowshoes only change physics on slippery ground (fs &lt; 1): strip the flag everywhere
+     *  else so a snowshoe-wearing bot shares the normal map graphs instead of duplicating them. */
+    private static BotMovementProfile canonicalProfile(MapleMap map, BotMovementProfile profile) {
+        if (profile == null || !profile.snowShoes() || BotPhysicsEngine.slipperyGround(map)) {
+            return profile;
+        }
+        return new BotMovementProfile(profile.totalSpeedStat(), profile.totalJumpStat(), false);
     }
 
     static final class GraphBuildReport {
@@ -313,6 +323,7 @@ final class BotNavigationGraphProvider {
         if (map == null) {
             return null;
         }
+        movementProfile = canonicalProfile(map, movementProfile);
         GraphCacheKey key = GraphCacheKey.from(map.getId(), movementProfile);
         BotNavigationGraph cached = GRAPHS.get(key);
         if (cached != null) {
@@ -339,7 +350,7 @@ final class BotNavigationGraphProvider {
         if (map == null) {
             return null;
         }
-        return GRAPHS.get(GraphCacheKey.from(map.getId(), movementProfile));
+        return GRAPHS.get(GraphCacheKey.from(map.getId(), canonicalProfile(map, movementProfile)));
     }
 
     /** Returns the closest cached graph for this map when the exact profile graph is unavailable. */
@@ -348,7 +359,7 @@ final class BotNavigationGraphProvider {
             return null;
         }
 
-        GraphCacheKey requested = GraphCacheKey.from(map.getId(), movementProfile);
+        GraphCacheKey requested = GraphCacheKey.from(map.getId(), canonicalProfile(map, movementProfile));
         BotNavigationGraph bestGraph = null;
         int bestDistance = Integer.MAX_VALUE;
         for (Map.Entry<GraphCacheKey, BotNavigationGraph> entry : GRAPHS.entrySet()) {
@@ -357,8 +368,11 @@ final class BotNavigationGraphProvider {
                 continue;
             }
 
+            // A slip/no-slip mismatch is structurally wrong (different runway/glide physics) —
+            // dominate any speed/jump distance, but stay a usable last-resort fallback.
             int distance = Math.abs(key.totalSpeedStat() - requested.totalSpeedStat())
-                    + Math.abs(key.totalJumpStat() - requested.totalJumpStat());
+                    + Math.abs(key.totalJumpStat() - requested.totalJumpStat())
+                    + (key.snowShoes() != requested.snowShoes() ? 1_000 : 0);
             if (bestGraph == null || distance < bestDistance) {
                 bestGraph = entry.getValue();
                 bestDistance = distance;
@@ -383,6 +397,7 @@ final class BotNavigationGraphProvider {
         if (map == null) {
             return;
         }
+        movementProfile = canonicalProfile(map, movementProfile);
         GraphCacheKey key = GraphCacheKey.from(map.getId(), movementProfile);
         if (GRAPHS.containsKey(key)) {
             return;

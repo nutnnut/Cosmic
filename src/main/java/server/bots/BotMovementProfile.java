@@ -1,13 +1,18 @@
 package server.bots;
 
 import client.Character;
+import client.inventory.InventoryType;
+import client.inventory.Item;
+import server.ItemInformationProvider;
 import server.maps.FieldLimit;
 import server.maps.MapleMap;
 
 import java.io.Serial;
 import java.io.Serializable;
+import java.util.Map;
 
-record BotMovementProfile(int totalSpeedStat, int totalJumpStat) implements Serializable {
+record BotMovementProfile(int totalSpeedStat, int totalJumpStat, boolean snowShoes)
+        implements Serializable {
     // Serialized inside cached BotNavigationGraph instances; keep explicit so
     // cache compatibility is controlled by GRAPH_VERSION instead of compiler-generated UIDs.
     @Serial
@@ -26,6 +31,10 @@ record BotMovementProfile(int totalSpeedStat, int totalJumpStat) implements Seri
         totalJumpStat = Math.min(totalJumpStat, MAX_EFFECTIVE_JUMP_STAT);
     }
 
+    BotMovementProfile(int totalSpeedStat, int totalJumpStat) {
+        this(totalSpeedStat, totalJumpStat, false);
+    }
+
     static BotMovementProfile base() {
         return BASE;
     }
@@ -37,7 +46,24 @@ record BotMovementProfile(int totalSpeedStat, int totalJumpStat) implements Seri
         if (hasForcedBaseMovementStats(character)) {
             return BASE;
         }
-        return new BotMovementProfile(character.getTotalMoveSpeedStat(), character.getTotalJumpStat());
+        return new BotMovementProfile(character.getTotalMoveSpeedStat(), character.getTotalJumpStat(),
+                wearsSnowShoes(character));
+    }
+
+    /** Snowshoes carry WZ {@code info/fs} (e.g. 10) on the worn shoe and cancel field
+     *  slipperiness client-side — the wearer gets normal walk physics on snow/ice maps. */
+    private static boolean wearsSnowShoes(Character character) {
+        try {
+            Item shoe = character.getInventory(InventoryType.EQUIPPED).getItem((short) -7);
+            if (shoe == null) {
+                return false;
+            }
+            Map<String, Integer> stats =
+                    ItemInformationProvider.getInstance().getEquipStats(shoe.getItemId());
+            return stats != null && stats.getOrDefault("fs", 0) >= 1;
+        } catch (Throwable t) {
+            return false; // WZ/equip data unavailable (unit tests, partial mocks)
+        }
     }
 
     private static boolean hasForcedBaseMovementStats(Character character) {

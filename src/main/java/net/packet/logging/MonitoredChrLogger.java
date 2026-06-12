@@ -120,7 +120,7 @@ public class MonitoredChrLogger {
             return false;
         }
         return switch (op) {
-            case GENERAL_CHAT, MOVE_PLAYER, TAKE_DAMAGE, MOVE_PET, MOVE_LIFE, NPC_ACTION, FACE_EXPRESSION -> true;
+            case GENERAL_CHAT, TAKE_DAMAGE, MOVE_PET, MOVE_LIFE, NPC_ACTION, FACE_EXPRESSION -> true;
             default -> false;
         };
     }
@@ -130,7 +130,7 @@ public class MonitoredChrLogger {
             return false;
         }
         return switch (op) {
-            case MOVE_PLAYER, MOVE_SUMMON, MOVE_PET, MOVE_MONSTER, SPAWN_PLAYER -> true;
+            case MOVE_SUMMON, MOVE_PET, MOVE_MONSTER, SPAWN_PLAYER -> true;
             default -> false;
         };
     }

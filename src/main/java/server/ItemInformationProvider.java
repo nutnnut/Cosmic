@@ -572,6 +572,7 @@ public class ItemInformationProvider {
         ret.put("cash", DataTool.getInt("cash", info, 0));
         ret.put("tuc", DataTool.getInt("tuc", info, 0));
         ret.put("cursed", DataTool.getInt("cursed", info, 0));
+        ret.put("fs", DataTool.getInt("fs", info, 0)); // snowshoes: cancels field slipperiness
         ret.put("success", DataTool.getInt("success", info, 0));
         ret.put("fs", DataTool.getInt("fs", info, 0));
         equipStatsCache.put(itemId, ret);

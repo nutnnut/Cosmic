@@ -588,6 +588,47 @@ class BotPhysicsEngineTest {
     }
 
     @Test
+    void shouldMatchPacketFittedKineticCurvesOnSnow() {
+        // Fitted to logs/monitored-packets-elnath-slippery-walk-left-right-spd100.log:
+        // constant accel 280 px/s^2 (1400*fs), cap 125 px/s, constant glide decel 80 px/s^2.
+        MapleMap snow = flatGroundMap(0.2f);
+        double tickS = BotPhysicsEngine.cfg.TICK_MS / 1000.0;
+        double stepS = 0.008; // CLIENT_GROUND_STEP_MS
+
+        int accelTicks = Math.max(1, (int) Math.round(0.2 / tickS));
+        double vPxs = hspeedAfterTicks(snow, 1, accelTicks, 0.0) / stepS;
+        assertEquals(280.0 * accelTicks * tickS, vPxs, 15.0, "linear 280 px/s^2 ramp");
+
+        double topPxs = hspeedAfterTicks(snow, 1, 400, 0.0) / stepS;
+        assertEquals(125.0, topPxs, 1.0, "cap = walk speed, unchanged by fs");
+
+        int glideTicks = Math.max(1, (int) Math.round(1.0 / tickS));
+        double vAfter1s = hspeedAfterTicks(snow, 0, glideTicks, 1.0) / stepS;
+        assertEquals(125.0 - 80.0, vAfter1s, 8.0, "linear 80 px/s^2 glide");
+    }
+
+    @Test
+    void shouldNotSlipWithSnowshoes() {
+        MapleMap snow = flatGroundMap(0.2f);
+        BotMovementProfile snowshoes = new BotMovementProfile(100, 100, true);
+        double withShoes = hspeedAfterTicks(snow, snowshoes, 1, 1, 0.0);
+        double normal = hspeedAfterTicks(flatGroundMap(0f), 1, 1, 0.0);
+        assertEquals(normal, withShoes, 1e-9, "snowshoes = normal walk physics on snow");
+        assertEquals(BotPhysicsEngine.launchRunwayPx(flatGroundMap(0f), BotMovementProfile.base()),
+                BotPhysicsEngine.launchRunwayPx(snow, snowshoes),
+                "snowshoes use the normal-map launch runway");
+    }
+
+    @Test
+    void shouldReserveKineticRunwayOnSnow() {
+        int normal = BotPhysicsEngine.launchRunwayPx(flatGroundMap(0f), BotMovementProfile.base());
+        int snow = BotPhysicsEngine.launchRunwayPx(flatGroundMap(0.2f), BotMovementProfile.base());
+        assertTrue(snow > normal, "snow still reserves extra accel room");
+        assertTrue(snow <= normal + 35,
+                "kinetic vmax^2/(2*a*fs) ~ 28 px, not the old 1/fs blowup: " + snow);
+    }
+
+    @Test
     void shouldRefuseDownJumpWhenTheNextFloorIsTooFarBelow() {
         // Platform gap 150px: legal down-jump. Gap 860px (Orbis tower rim): refused, the
         // client only down-jumps when a landing exists within a bounded probe below — most
@@ -621,13 +662,18 @@ class BotPhysicsEngineTest {
     }
 
     private static double hspeedAfterTicks(MapleMap map, int desiredDir, int ticks, double initialHSpeed) {
+        return hspeedAfterTicks(map, BotMovementProfile.base(), desiredDir, ticks, initialHSpeed);
+    }
+
+    private static double hspeedAfterTicks(MapleMap map, BotMovementProfile profile, int desiredDir,
+                                           int ticks, double initialHSpeed) {
         Foothold fh = map.getFootholds().findBelow(new Point(0, 99));
         BotPhysicsEngine.GroundTravelState state =
                 new BotPhysicsEngine.GroundTravelState(0, initialHSpeed, 0.0);
         Point pos = new Point(0, 100);
         for (int i = 0; i < ticks; i++) {
             BotPhysicsEngine.GroundStepResult step =
-                    BotPhysicsEngine.simulateGroundMotion(map, pos, fh, desiredDir, state, BotMovementProfile.base());
+                    BotPhysicsEngine.simulateGroundMotion(map, pos, fh, desiredDir, state, profile);
             state = step.state();
             pos = step.point();
         }
