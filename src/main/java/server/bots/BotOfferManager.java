@@ -352,15 +352,25 @@ final class BotOfferManager {
      * other tokens use "+" since they are bonus values ("+3 str", "+3 att").
      */
     static String formatItemSpecifier(Item item, Character audience) {
+        if (item instanceof Equip && audience == null) {
+            String name = ItemInformationProvider.getInstance().getName(item.getItemId());
+            return name == null || name.isBlank() ? String.valueOf(item.getItemId()) : name;
+        }
+        int jobId = audience == null || audience.getJob() == null ? 0 : audience.getJob().getId();
+        return formatItemSpecifier(item, jobId);
+    }
+
+    /** Same specifier with the perspective job given directly — @autosell keys it on the
+     *  ITEM's class (reqJob) since the seller is mostly unloading other jobs' gear. */
+    static String formatItemSpecifier(Item item, int jobId) {
         String name = ItemInformationProvider.getInstance().getName(item.getItemId());
         if (name == null || name.isBlank()) {
             name = String.valueOf(item.getItemId());
         }
-        if (!(item instanceof Equip eq) || audience == null) {
+        if (!(item instanceof Equip eq)) {
             return name;
         }
 
-        int jobId = audience.getJob() == null ? 0 : audience.getJob().getId();
         boolean mageBranch = isMageBranch(jobId);
         boolean weapon = ItemConstants.isWeapon(item.getItemId());
         char[] order = mainSecondaryStats(jobId);

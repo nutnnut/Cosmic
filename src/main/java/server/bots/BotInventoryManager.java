@@ -1904,7 +1904,7 @@ class BotInventoryManager {
         for (InventoryType type : List.of(InventoryType.EQUIP, InventoryType.USE, InventoryType.ETC)) {
             List<String> descs = items.stream()
                     .filter(item -> item.getInventoryType() == type)
-                    .map(item -> describeAutoSellItem(ii, item))
+                    .map(item -> describeAutoSellItem(ii, chr, item))
                     .toList();
             if (!descs.isEmpty()) {
                 appendWrappedListLines(lines, autoSellTypeLabel(type) + ": ", descs);
@@ -1951,32 +1951,31 @@ class BotInventoryManager {
         };
     }
 
-    /** "+3str +4dex White Polyfeather Hat" for equips (deltas above clean WZ base),
-     *  "Scroll for Shield for DEF x4" for stackables (quantity = what would actually sell). */
-    static String describeAutoSellItem(ItemInformationProvider ii, Item item) {
-        String name = itemName(ii, item.getItemId());
-        if (item instanceof Equip e) {
-            Map<String, Integer> base = ii != null ? ii.getEquipStats(item.getItemId()) : null;
-            StringBuilder sb = new StringBuilder();
-            appendStatDelta(sb, aboveBase(e.getStr(), base, "STR"), "str");
-            appendStatDelta(sb, aboveBase(e.getDex(), base, "DEX"), "dex");
-            appendStatDelta(sb, aboveBase(e.getInt(), base, "INT"), "int");
-            appendStatDelta(sb, aboveBase(e.getLuk(), base, "LUK"), "luk");
-            appendStatDelta(sb, aboveBase(e.getWatk(), base, "PAD"), "watk");
-            appendStatDelta(sb, aboveBase(e.getMatk(), base, "MAD"), "matk");
-            appendStatDelta(sb, aboveBase(e.getAcc(), base, "ACC"), "acc");
-            appendStatDelta(sb, aboveBase(e.getSpeed(), base, "Speed"), "spd");
-            appendStatDelta(sb, aboveBase(e.getJump(), base, "Jump"), "jmp");
-            return sb.isEmpty() ? name : sb + name;
+    /** Equips use the same up-to-2-relevant-stats specifier as the bot loot-offer prompts
+     *  ("+3 str +4 dex White Polyfeather Hat", actual stats), keyed on the ITEM's class
+     *  (reqJob) since the seller is mostly unloading other jobs' gear; common gear (job 0)
+     *  falls back to the seller's own job. Stackables show the quantity that would actually
+     *  sell ("Scroll for Shield for DEF x4"). */
+    static String describeAutoSellItem(ItemInformationProvider ii, Character audience, Item item) {
+        if (item instanceof Equip) {
+            return BotOfferManager.formatItemSpecifier(item, equipPerspectiveJobId(ii, item.getItemId(), audience));
         }
+        String name = itemName(ii, item.getItemId());
         short quantity = sellTrashQuantity(item);
         return quantity > 1 ? name + " x" + quantity : name;
     }
 
-    private static void appendStatDelta(StringBuilder sb, int delta, String label) {
-        if (delta > 0) {
-            sb.append('+').append(delta).append(label).append(' ');
-        }
+    private static int equipPerspectiveJobId(ItemInformationProvider ii, int itemId, Character audience) {
+        Map<String, Integer> stats = ii != null ? ii.getEquipStats(itemId) : null;
+        int reqJobMask = stats != null ? stats.getOrDefault("reqJob", 0) : 0;
+        return switch (reqJobMask) {
+            case 1 -> 100;  // warrior
+            case 2 -> 200;  // magician
+            case 4 -> 300;  // bowman
+            case 8 -> 400;  // thief
+            case 16 -> 500; // pirate
+            default -> audience != null && audience.getJob() != null ? audience.getJob().getId() : 0;
+        };
     }
 
     private static final int AUTO_SELL_LINE_WIDTH = 110;
