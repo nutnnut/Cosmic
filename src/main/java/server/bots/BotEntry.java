@@ -72,6 +72,12 @@ public class BotEntry {
     // Mutually exclusive by state (inAir vs grounded), so one field suffices.
     int moveDir = 0;                     // -1 left, 0 none, +1 right
 
+    // Counter-strafe brake on slippery ground (set by physics each ground tick): the held
+    // direction OPPOSING the slide, 0 when not braking. Drives facing/stance so observers
+    // see the counter-strafe (walk-left stance while sliding right) instead of the
+    // velocity-derived slide direction.
+    int groundBrakeDir = 0;              // -1 left, 0 none, +1 right
+
     // Rope climbing
     boolean climbing = false;
     Rope climbRope = null;

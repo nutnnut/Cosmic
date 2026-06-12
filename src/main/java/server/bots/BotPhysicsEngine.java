@@ -668,6 +668,7 @@ final class BotPhysicsEngine {
         entry.airSteerVelX = 0.0;
         entry.fixedAirArc = false;
         entry.moveDir = 0;
+        entry.groundBrakeDir = 0;
         entry.physX = position.x;
         entry.physY = position.y;
         stopGroundMotion(entry);
@@ -864,6 +865,7 @@ final class BotPhysicsEngine {
         if (entry.moveDir != 0 && incomingDeltaX != 0.0 && entry.moveDir * incomingDeltaX < 0.0) {
             entry.hspeed = 0.0;
         }
+        entry.groundBrakeDir = 0;
         setMovementVelocity(entry, velocityFromDeltaX(tickDeltaFromGroundHSpeed(bot.getMap(), entry.hspeed, entry.movementProfile)), 0);
         syncCharacterState(entry);
 
@@ -944,6 +946,11 @@ final class BotPhysicsEngine {
             desiredDir = slipperyStopDir(map, entry.movementProfile, currentPos, foothold,
                     new GroundTravelState(entry.physX, entry.hspeed, entry.groundPhysicsCarryMs));
         }
+        // Counter-strafe: the held key opposes the slide. A real player visibly faces the
+        // held direction while sliding the other way; record it so facing/stance follow the
+        // INPUT instead of the velocity-derived slide direction.
+        boolean braking = desiredDir != 0 && entry.hspeed * desiredDir < 0.0;
+        entry.groundBrakeDir = braking ? desiredDir : 0;
         GroundStepResult step = simulateGroundMotion(map, currentPos, foothold, desiredDir,
                 new GroundTravelState(entry.physX, entry.hspeed, entry.groundPhysicsCarryMs), entry.movementProfile);
 
@@ -972,6 +979,9 @@ final class BotPhysicsEngine {
         entry.groundPhysicsCarryMs = step.state().carryMs();
         entry.downJumpPending = false;
         setMovementVelocity(entry, step.velocityX(), 0);
+        if (braking) {
+            entry.facingDir = desiredDir; // face the held key, not the slide
+        }
         syncCharacterState(entry);
         return new GroundMotion(step.stepX(), false);
     }
@@ -1479,6 +1489,11 @@ final class BotPhysicsEngine {
         if (entry.moveDir < 0) {
             return CharacterStance.WALK_LEFT_STANCE;
         }
+        if (entry.groundBrakeDir != 0) {
+            // Counter-strafe brake without walk intent (slipperyStopDir): render the held
+            // opposite key as a walk stance so observers see the counter-strafe.
+            return entry.groundBrakeDir > 0 ? CharacterStance.WALK_RIGHT_STANCE : CharacterStance.WALK_LEFT_STANCE;
+        }
         return resolveIdleGroundStance(entry);
     }
 
@@ -1723,6 +1738,7 @@ final class BotPhysicsEngine {
         // ground and air, so ground walk direction must not bleed into air steering.
         // Movement manager will set moveDir for air steering if shouldApplyAirSteering allows.
         entry.moveDir = 0;
+        entry.groundBrakeDir = 0;
         setMovementVelocity(entry, velocityFromDeltaX(airVelX), velocityFromAirStep(initialVelY));
         syncCharacterState(entry);
     }
@@ -1809,6 +1825,7 @@ final class BotPhysicsEngine {
         entry.fixedAirArc = false;
         entry.wasMovingX = false;
         entry.moveDir = 0;
+        entry.groundBrakeDir = 0;
         entry.climbUpIntent = false;
         entry.blockedRopeGrab = null;
         entry.ropeGrabCooldownMs = 0;
@@ -1971,6 +1988,59 @@ final class BotPhysicsEngine {
             s = step.state();
         }
         return 0;
+    }
+
+    /**
+     * Bang-bang approach controller for walking toward a target x on slippery ground.
+     * On normal ground (fs &gt;= 1 or snowshoes) this is a plain {@code sign(dx)} passthrough.
+     * On slippery ground it accelerates toward the target only while the projected travel
+     * of one more accelerating tick PLUS the stop-out from the resulting speed (counter-
+     * strafe brake down to the release threshold, then the residual glide) still fits
+     * inside the remaining distance; otherwise it counter-strafes against the slide, and
+     * once the slide is below one brake tick it holds (0) and creeps back in on later
+     * ticks. Re-evaluated every tick, so the bot arrives at the target able to stop
+     * instead of sliding past it and off the platform
+     * (pathlog-Preston-2026-06-12T083326: full-slide approach to the r17-&gt;r14 launch
+     * window at x=59 overran the platform's left edge and fell).
+     */
+    static int slipperyApproachDir(MapleMap map, BotMovementProfile profile, double hspeed, int dxToTarget) {
+        int towardDir = Integer.signum(dxToTarget);
+        double fs = mapGroundSlipScale(map, profile);
+        if (towardDir == 0 || fs >= 1.0) {
+            return towardDir;
+        }
+
+        double dvBrake = cfg.SLIP_WALK_ACCEL_PXSS * fs * CLIENT_GROUND_STEP_S * CLIENT_GROUND_STEP_S;
+        double dvGlide = cfg.SLIP_GLIDE_DECEL_PXSS * fs * CLIENT_GROUND_STEP_S * CLIENT_GROUND_STEP_S;
+        double cap = maxHSpeedPerClientStep(profile);
+        // ceil: a real tick integrates TICK_MS/8 client steps plus carry, so overestimating
+        // the accel tick keeps the projection conservative (brakes a step early, never late).
+        int stepsPerTick = Math.max(1, (int) Math.ceil(cfg.TICK_MS / CLIENT_GROUND_STEP_MS));
+        double brakeReleaseSpeed = dvBrake * stepsPerTick; // counterStrafeBrakeDir's release threshold
+
+        // Project in the same per-client-step quanta as applySlipperyGroundStep: one tick of
+        // accelerating toward the target, then brake to releasable, then glide out the rest.
+        double v = hspeed * towardDir; // speed component toward the target, px per client step
+        double traveled = 0.0;
+        for (int i = 0; i < stepsPerTick; i++) {
+            v = Math.min(v + dvBrake, cap);
+            traveled += v;
+        }
+        while (v > brakeReleaseSpeed) {
+            v -= dvBrake;
+            traveled += v;
+        }
+        while (v > 0.0) {
+            v -= dvGlide;
+            traveled += Math.max(v, 0.0);
+        }
+
+        if (traveled < Math.abs(dxToTarget)) {
+            return towardDir; // the post-accel stop-out still fits: keep accelerating
+        }
+        // Too hot to keep pushing: counter-strafe while the slide carries meaningful speed,
+        // else hold and let slipperyStopDir manage the residual glide.
+        return counterStrafeBrakeDir(map, profile, hspeed);
     }
 
     /** True when this map's ground is slippery for bots WITHOUT snowshoes (fs &lt; 1). */

@@ -831,7 +831,17 @@ class BotMovementManager {
             return 0;
         }
         entry.wasMovingX = true;
-        return stepX;
+        // Bang-bang approach on slippery ground: only push toward the target while the bot
+        // can still brake to a stop inside the remaining distance; otherwise counter-strafe
+        // (or coast) so the bot arrives able to stop in the window/radius instead of sliding
+        // past it (pathlog-Preston-2026-06-12T083326). Plain passthrough on fs=1 maps.
+        // Directional walk-off drops are exempt: they leave the platform with momentum on
+        // purpose, so braking short of the ledge would break the edge.
+        if (isDirectionalDropEdge(entry.navEdge)) {
+            return stepX;
+        }
+        int approachDir = BotPhysicsEngine.slipperyApproachDir(map, entry.movementProfile, entry.hspeed, targetX - botX);
+        return approachDir == Integer.signum(stepX) ? stepX : approachDir;
     }
 
     static void initiateJump(BotEntry entry, Character bot, int dx) {

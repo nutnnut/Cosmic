@@ -785,6 +785,106 @@ class BotPhysicsEngineTest {
     }
 
     @Test
+    void shouldBangBangApproachOnlyOnSlipperyGround() {
+        MapleMap snow = flatGroundMap(0.2f);
+        BotMovementProfile base = BotMovementProfile.base();
+        // fs=1 / snowshoes: plain sign(dx) passthrough regardless of speed.
+        assertEquals(1, BotPhysicsEngine.slipperyApproachDir(flatGroundMap(0f), base, 1.0, 10));
+        assertEquals(-1, BotPhysicsEngine.slipperyApproachDir(flatGroundMap(0f), base, 1.0, -10));
+        assertEquals(1, BotPhysicsEngine.slipperyApproachDir(
+                snow, new BotMovementProfile(100, 100, true), 1.0, 10));
+        // Far target: full acceleration even at top slide speed.
+        assertEquals(1, BotPhysicsEngine.slipperyApproachDir(snow, base, 1.0, 500));
+        // Brake stop-out from top speed (~35 px) no longer fits: counter-strafe.
+        assertEquals(-1, BotPhysicsEngine.slipperyApproachDir(snow, base, 1.0, 20));
+        // Sliding AWAY from the target: pushing toward it doubles as the brake.
+        assertEquals(-1, BotPhysicsEngine.slipperyApproachDir(snow, base, 1.0, -20));
+        // At the target with only residual slide: hold.
+        assertEquals(0, BotPhysicsEngine.slipperyApproachDir(snow, base, 0.05, 0));
+    }
+
+    @Test
+    void shouldStopInsideEdgeWindowInsteadOfSlidingOffOnIce() {
+        // pathlog-Preston-2026-06-12T083326 (El Nath r17): the bot approached the r17->r14
+        // launch window [58,59] at the platform's LEFT edge at full slide speed
+        // (72,69,65,60 then 54 -> off the cliff). With the bang-bang approach the bot must
+        // come to a stop at the window without ever losing ground.
+        MapleMap snow = new MapleMap(999211002, 0, 0, 999211002, 1.0f);
+        server.maps.FootholdTree tree = new server.maps.FootholdTree(
+                new Point(-3000, -2000), new Point(3000, 2000));
+        tree.insert(new Foothold(new Point(-2000, -50), new Point(-1700, -50), 1)); // edge at -2000
+        tree.insert(new Foothold(new Point(-3000, 400), new Point(3000, 400), 2)); // floor below
+        snow.setFootholds(tree);
+        snow.setFootholdSpeed(0.2f);
+
+        int targetX = -1998; // window right at the platform's left edge
+        BotMovementProfile profile = BotMovementProfile.base();
+        Foothold fh = snow.getFootholds().findBelow(new Point(-1850, -100));
+        Point pos = new Point(-1850, -50); // 148 px out, accelerates to full slide on the way
+        BotPhysicsEngine.GroundTravelState state =
+                new BotPhysicsEngine.GroundTravelState(pos.x, 0.0, 0.0);
+        for (int i = 0; i < 600; i++) {
+            // Same derivation as the live tick: approach controller supplies the walk intent,
+            // moveDir==0 falls back to the slipperyStopDir stop policy (applyGroundMotion).
+            int dir = BotPhysicsEngine.slipperyApproachDir(snow, profile, state.hspeed(), targetX - pos.x);
+            if (dir == 0) {
+                dir = BotPhysicsEngine.slipperyStopDir(snow, profile, pos, fh, state);
+            }
+            BotPhysicsEngine.GroundStepResult step =
+                    BotPhysicsEngine.simulateGroundMotion(snow, pos, fh, dir, state, profile);
+            assertFalse(step.lostGround(), "tick " + i + ": slid off the edge at x=" + step.point().x);
+            pos = step.point();
+            fh = step.foothold();
+            state = step.state();
+        }
+        assertTrue(Math.abs(pos.x - targetX) <= 3,
+                "settled at " + pos.x + " px, target " + targetX + " (brake quantization is ~3px)");
+        assertTrue(Math.abs(state.hspeed()) < 0.2, "still sliding at hspeed " + state.hspeed());
+    }
+
+    @Test
+    void shouldFaceTheHeldKeyWhileCounterStrafeBraking() {
+        // A counter-strafing player visibly walks AGAINST the slide: facing and stance must
+        // follow the held INPUT direction, not the velocity-derived slide direction.
+        MapleMap snow = flatGroundMap(0.2f);
+        Character bot = mockBot(new Point(0, 100), snow);
+        BotEntry entry = new BotEntry(bot, null, null);
+        Foothold fh = snow.getFootholds().findBelow(new Point(0, 99));
+        entry.physX = 0;
+        entry.physY = 100;
+        entry.hspeed = 1.0;   // sliding right at top speed
+        entry.facingDir = 1;
+        entry.moveDir = -1;   // approach-controller brake: opposite key held
+        BotPhysicsEngine.applyGroundMotion(entry, bot, fh);
+        assertEquals(-1, entry.facingDir, "facing follows the held key, not the slide");
+        assertEquals(-1, entry.groundBrakeDir);
+        assertEquals(CharacterStance.WALK_LEFT_STANCE, BotPhysicsEngine.resolveStance(entry));
+
+        // Stop-policy brake near a ledge (moveDir==0, slipperyStopDir): same rendering.
+        MapleMap ledge = smallPlatformSnowMap();
+        Character edgeBot = mockBot(new Point(-2000 + 30, -50), ledge);
+        BotEntry edgeEntry = new BotEntry(edgeBot, null, null);
+        Foothold small = ledge.getFootholds().findBelow(new Point(-2000 + 30, -100));
+        edgeEntry.physX = -2000 + 30;
+        edgeEntry.physY = -50;
+        edgeEntry.hspeed = 1.0; // sliding right toward the ledge
+        edgeEntry.facingDir = 1;
+        edgeEntry.moveDir = 0;
+        BotPhysicsEngine.applyGroundMotion(edgeEntry, edgeBot, small);
+        assertEquals(-1, edgeEntry.facingDir);
+        assertEquals(-1, edgeEntry.groundBrakeDir);
+        assertEquals(CharacterStance.WALK_LEFT_STANCE, BotPhysicsEngine.resolveStance(edgeEntry));
+
+        // Normal walking facing semantics unchanged: accelerating right faces right.
+        entry.moveDir = 1;
+        entry.hspeed = 0.5;
+        BotPhysicsEngine.applyGroundMotion(entry, bot, fh);
+        assertEquals(1, entry.facingDir);
+        assertEquals(0, entry.groundBrakeDir);
+        assertEquals(CharacterStance.WALK_RIGHT_STANCE, BotPhysicsEngine.resolveStance(entry));
+    }
+
+    @Test
     void shouldReserveKineticRunwayOnSnow() {
         int normal = BotPhysicsEngine.launchRunwayPx(flatGroundMap(0f), BotMovementProfile.base());
         int snow = BotPhysicsEngine.launchRunwayPx(flatGroundMap(0.2f), BotMovementProfile.base());
