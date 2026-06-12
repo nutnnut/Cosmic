@@ -33,6 +33,7 @@ import server.maps.MapleMap;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -1561,6 +1562,7 @@ class BotEquipManager {
 
         Set<Equip> keep = Collections.newSetFromMap(new IdentityHashMap<>());
         for (List<Equip> trackItems : byTrack.values()) {
+            List<Equip> survivors = new ArrayList<>();
             for (Equip candidate : trackItems) {
                 boolean dominated = false;
                 for (Equip other : trackItems) {
@@ -1570,10 +1572,31 @@ class BotEquipManager {
                         break;
                     }
                 }
-                if (!dominated) keep.add(candidate);
+                if (!dominated) survivors.add(candidate);
             }
+            keep.addAll(capSelfReserveTrack(hooks, bot, survivors));
         }
         return keep;
+    }
+
+    /**
+     * Pareto width per track is unbounded (incomparable stat mixes and the ceiling gate keep
+     * almost everything), so after dominance filtering keep only the top few survivors ranked
+     * by self-reserve ceiling. The ceiling already counts scroll upside from open upgrade
+     * slots, so high-slot scroll projects still survive. Demoted items are NOT lost: they flow
+     * into the sell-trash pipeline where good rolls are still kept on the bounded valuables
+     * shelf in BotInventoryManager.
+     */
+    static final int SELF_RESERVE_TRACK_CAP = 3;
+
+    private static List<Equip> capSelfReserveTrack(SelfReserveHooks hooks, Character bot, List<Equip> survivors) {
+        if (survivors.size() <= SELF_RESERVE_TRACK_CAP) return survivors;
+        List<Equip> ranked = new ArrayList<>(survivors);
+        ranked.sort(Comparator
+                .comparingDouble((Equip e) -> -selfReserveCeiling(hooks, bot, e))
+                .thenComparingInt(e -> -usefulStatSum(e, bot.getJob()))
+                .thenComparingInt(e -> -e.getUpgradeSlots()));
+        return ranked.subList(0, SELF_RESERVE_TRACK_CAP);
     }
 
     private static List<Equip> collectOwnedEquips(Character bot, ItemInformationProvider ii) {

@@ -684,6 +684,80 @@ class BotEquipManagerTest {
     }
 
     @Test
+    void selfReserveTrackCapKeepsOnlyTopThreeByCeiling() {
+        Character bot = mock(Character.class);
+        when(bot.getJob()).thenReturn(Job.ASSASSIN);
+
+        // Five mutually non-dominated gloves (LUK up, DEX down): Pareto keeps all five,
+        // the track cap must keep only the three with the highest offense ceiling.
+        Equip luk10 = capGlove(1082000, 10, 1, 0);
+        Equip luk8 = capGlove(1082000, 8, 2, 0);
+        Equip luk6 = capGlove(1082000, 6, 3, 0);
+        Equip luk4 = capGlove(1082000, 4, 4, 0);
+        Equip luk2 = capGlove(1082000, 2, 5, 0);
+
+        BotEquipManager.SelfReserveHooks hooks = mock(BotEquipManager.SelfReserveHooks.class);
+        for (Equip e : List.of(luk10, luk8, luk6, luk4, luk2)) {
+            stubReserveItem(hooks, Job.ASSASSIN, e, "Gv", 10, 0, 0, 0, 0, 0, 0);
+        }
+
+        Set<Equip> keep = BotEquipManager.selectOwnedItemsForSelfReserve(bot, hooks,
+                List.of(luk10, luk8, luk6, luk4, luk2));
+
+        assertEquals(BotEquipManager.SELF_RESERVE_TRACK_CAP, keep.size(),
+                "track cap should bound the Pareto front");
+        assertTrue(keep.contains(luk10));
+        assertTrue(keep.contains(luk8));
+        assertTrue(keep.contains(luk6));
+        assertFalse(keep.contains(luk4), "lowest-ceiling survivors should be demoted by the cap");
+        assertFalse(keep.contains(luk2), "lowest-ceiling survivors should be demoted by the cap");
+    }
+
+    @Test
+    void selfReserveTrackCapRanksScrollUpsideAboveFlatStats() {
+        Character bot = mock(Character.class);
+        when(bot.getJob()).thenReturn(Job.ASSASSIN);
+
+        // Slotted project glove: luk 3 + 7 open slots * 3.0 gain -> ceiling 24, beats the
+        // flat luk-4 glove (ceiling 5.2) even though its current stats are lower.
+        Equip slottedProject = capGlove(1082000, 3, 0, 7);
+        Equip flatLuk10 = capGlove(1082000, 10, 1, 0);
+        Equip flatLuk8 = capGlove(1082000, 8, 2, 0);
+        Equip flatLuk4 = capGlove(1082000, 4, 3, 0);
+
+        BotEquipManager.SelfReserveHooks hooks = mock(BotEquipManager.SelfReserveHooks.class);
+        for (Equip e : List.of(slottedProject, flatLuk10, flatLuk8, flatLuk4)) {
+            stubReserveItem(hooks, Job.ASSASSIN, e, "Gv", 10, 0, 0, 0, 0, 0, 0);
+        }
+        when(hooks.maxScrollOffenseGainPerSlot(bot, 1082000)).thenReturn(3.0);
+
+        Set<Equip> keep = BotEquipManager.selectOwnedItemsForSelfReserve(bot, hooks,
+                List.of(slottedProject, flatLuk10, flatLuk8, flatLuk4));
+
+        assertEquals(BotEquipManager.SELF_RESERVE_TRACK_CAP, keep.size());
+        assertTrue(keep.contains(slottedProject),
+                "scroll upside counts toward the ceiling, so the slotted project should survive the cap");
+        assertTrue(keep.contains(flatLuk10));
+        assertTrue(keep.contains(flatLuk8));
+        assertFalse(keep.contains(flatLuk4),
+                "slightly higher current stats should not outrank a high-ceiling scroll project");
+    }
+
+    private static Equip capGlove(int itemId, int luk, int dex, int slots) {
+        Equip e = mock(Equip.class);
+        when(e.getItemId()).thenReturn(itemId);
+        when(e.getStr()).thenReturn((short) 0);
+        when(e.getDex()).thenReturn((short) dex);
+        when(e.getInt()).thenReturn((short) 0);
+        when(e.getLuk()).thenReturn((short) luk);
+        when(e.getWatk()).thenReturn((short) 0);
+        when(e.getMatk()).thenReturn((short) 0);
+        when(e.getAcc()).thenReturn((short) 0);
+        when(e.getUpgradeSlots()).thenReturn((byte) slots);
+        return e;
+    }
+
+    @Test
     void selfReserveCurrentTotalWearableCrossbowDominatesWeakerZeroReqCrossbow() {
         Character bot = mock(Character.class);
         when(bot.getJob()).thenReturn(Job.CROSSBOWMAN);
