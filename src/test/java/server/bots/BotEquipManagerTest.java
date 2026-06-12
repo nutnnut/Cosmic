@@ -159,6 +159,84 @@ class BotEquipManagerTest {
     }
 
     @Test
+    void mageAcceptsOffTypeWeaponCarryingMatk() {
+        // Black Umbrella field case: a reqJob-0 ONE-HANDED SWORD with MAD. v83 magic damage
+        // reads total MATK only — casting ignores weapon type — so any wearable MAD weapon
+        // is a real mage weapon candidate.
+        Character mage = mock(Character.class);
+        when(mage.getJob()).thenReturn(Job.CLERIC);
+
+        Equip blackUmbrella = matkWeapon(1302026, 92);
+        assertTrue(BotEquipManager.isWeaponCompatible(mage, WeaponType.SWORD1H, blackUmbrella));
+
+        // A 0-MAD off-type weapon adds nothing for a mage and stays incompatible.
+        Equip plainSword = matkWeapon(1302000, 0);
+        assertFalse(BotEquipManager.isWeaponCompatible(mage, WeaponType.SWORD1H, plainSword));
+    }
+
+    @Test
+    void physicalClassStillRejectsOffTypeWeaponDespiteMatk() {
+        // Type tables stay strict for physical classes: attack skills and the bot combat
+        // pipeline need the right weapon type, so an off-type weapon is trade stock.
+        Character sin = mock(Character.class);
+        when(sin.getJob()).thenReturn(Job.ASSASSIN);
+
+        Equip blackUmbrella = matkWeapon(1302026, 92);
+        assertFalse(BotEquipManager.isWeaponCompatible(sin, WeaponType.SWORD1H, blackUmbrella));
+    }
+
+    @Test
+    void mageSelfReservesWearableOffTypeMatkWeapon() {
+        Character bot = mock(Character.class);
+        when(bot.getJob()).thenReturn(Job.MAGICIAN);
+
+        Equip umbrella = matkWeapon(1302026, 92);
+        BotEquipManager.SelfReserveHooks hooks = mock(BotEquipManager.SelfReserveHooks.class);
+        stubReserveItem(hooks, Job.MAGICIAN, umbrella, "Wp", 70, 0, 6, 6, 6, 6, 0);
+        when(hooks.getWeaponType(1302026)).thenReturn(WeaponType.SWORD1H);
+
+        Set<Equip> keep = BotEquipManager.selectOwnedItemsForSelfReserve(bot, hooks, List.of(umbrella));
+
+        assertTrue(keep.contains(umbrella),
+                "mage must RESV-SELF an any-job MAD sword instead of letting it fall to sell-trash");
+    }
+
+    @Test
+    void offTypeMatkWeaponTracksByHandednessAgainstMageBaseline() {
+        // 1H umbrella maps to the wand-side track: a dominating WORN 2H staff must not
+        // suppress it (1H frees the shield slot), but a 2H off-type MAD weapon competes in
+        // the staff track and IS dominated.
+        Character mage = mock(Character.class);
+        when(mage.getJob()).thenReturn(Job.MAGICIAN);
+        Inventory equipped = mock(Inventory.class);
+        when(mage.getInventory(InventoryType.EQUIPPED)).thenReturn(equipped);
+
+        Equip wornStaff = matkWeapon(1382005, 100);
+        when(equipped.list()).thenReturn(List.of(wornStaff));
+
+        Equip umbrella1H = matkWeapon(1302026, 92);
+        Equip matkPolearm2H = matkWeapon(1442999, 92);
+
+        BotEquipManager.EquipUsefulnessHooks hooks = mock(BotEquipManager.EquipUsefulnessHooks.class);
+        for (Equip e : List.of(wornStaff, umbrella1H, matkPolearm2H)) {
+            when(hooks.getEquipmentSlot(e.getItemId())).thenReturn("Wp");
+            when(hooks.meetsReqs(e, Job.MAGICIAN, Short.MAX_VALUE,
+                    Integer.MAX_VALUE / 4, Integer.MAX_VALUE / 4,
+                    Integer.MAX_VALUE / 4, Integer.MAX_VALUE / 4, 0)).thenReturn(true);
+        }
+        when(hooks.getWeaponType(1382005)).thenReturn(WeaponType.STAFF);
+        when(hooks.getWeaponType(1302026)).thenReturn(WeaponType.SWORD1H);
+        when(hooks.getWeaponType(1442999)).thenReturn(WeaponType.POLE_ARM_SWING);
+        when(hooks.isTwoHanded(1382005)).thenReturn(true);
+        when(hooks.isTwoHanded(1442999)).thenReturn(true);
+
+        assertTrue(BotEquipManager.isEquipUsefulToBot(mage, hooks, umbrella1H),
+                "1H MAD weapon rivals wands, so the stronger worn staff must not dominate it");
+        assertFalse(BotEquipManager.isEquipUsefulToBot(mage, hooks, matkPolearm2H),
+                "2H MAD weapon rivals staves and is dominated by the stronger worn staff");
+    }
+
+    @Test
     void mageUsefulGearScoreIgnoresDexAndValuesInt() {
         Equip dexOverall = mock(Equip.class);
         when(dexOverall.getDex()).thenReturn((short) 10);
@@ -1142,6 +1220,13 @@ class BotEquipManagerTest {
                 + ", bestDamage=" + (best != null ? best.score().damage() : -1));
 
         assertFalse(anyCap, "full Clawer log should optimize without hitting the Pareto cap");
+    }
+
+    private static Equip matkWeapon(int itemId, int matk) {
+        Equip e = mock(Equip.class);
+        when(e.getItemId()).thenReturn(itemId);
+        when(e.getMatk()).thenReturn((short) matk);
+        return e;
     }
 
     private static Equip mageOverall(int int_, int luk) {

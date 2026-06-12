@@ -527,11 +527,17 @@ final class BotOfferManager {
         if (!ItemConstants.isWeapon(equip.getItemId())) {
             return true;
         }
-        return isWeaponOfferCompatible(recipient, ii.getWeaponType(equip.getItemId()));
+        return isWeaponOfferCompatible(recipient, ii.getWeaponType(equip.getItemId()), equip);
     }
 
     static boolean isWeaponOfferCompatible(Character recipient, WeaponType weaponType) {
         return BotEquipManager.isWeaponCompatible(recipient, weaponType);
+    }
+
+    /** Equip-aware variant: lets a mage recipient claim off-type MATK weapons (same SSOT as
+     *  the equip/reserve pipeline — see BotEquipManager.isWeaponCompatible(bot, type, equip)). */
+    static boolean isWeaponOfferCompatible(Character recipient, WeaponType weaponType, Equip equip) {
+        return BotEquipManager.isWeaponCompatible(recipient, weaponType, equip);
     }
 
     static boolean isReservedForOtherRecipients(BotEntry entry, Character donor, Item item) {

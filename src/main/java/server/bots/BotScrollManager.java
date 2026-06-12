@@ -596,7 +596,7 @@ final class BotScrollManager {
         int id = e.getItemId();
         Short slot = primarySlot(ii, id);
         if (slot != null && slot == (short) -11
-                && !BotEquipManager.isWeaponCompatible(bot, ii.getWeaponType(id))) {
+                && !BotEquipManager.isWeaponCompatible(bot, ii.getWeaponType(id), e)) {
             return -1;
         }
         if (slot != null && slot == (short) -10) {

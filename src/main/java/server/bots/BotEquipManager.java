@@ -540,7 +540,7 @@ class BotEquipManager {
             short primary = (short) eslot.getPrimarySlot();
             if (primary == 0) continue;
             if (primary == (short) -11
-                    && !isWeaponCompatible(bot, ii.getWeaponType(equip.getItemId()))) continue;
+                    && !isWeaponCompatible(bot, ii.getWeaponType(equip.getItemId()), equip)) continue;
             if (ii.canWearEquipment(bot, equip, primary) || statOnlyBlocked(bot, ii, equip)) {
                 bySlot.computeIfAbsent(primary, k -> new ArrayList<>()).add(equip);
             }
@@ -550,7 +550,7 @@ class BotEquipManager {
             if (!(it instanceof Equip e) || ii.isCash(e.getItemId())) continue;
             short pos = e.getPosition();
             if (pos == (short) -11
-                    && !isWeaponCompatible(bot, ii.getWeaponType(e.getItemId()))) continue;
+                    && !isWeaponCompatible(bot, ii.getWeaponType(e.getItemId()), e)) continue;
             short key = isRingSlot(pos) ? (short) -12 : pos;
             List<Equip> pool = bySlot.computeIfAbsent(key, k -> new ArrayList<>());
             if (!pool.contains(e)) pool.add(e);
@@ -605,7 +605,7 @@ class BotEquipManager {
             short pslot = (short) eslot.getPrimarySlot();
             if (pslot == 0) continue;
             if (pslot == (short) -11
-                    && !isWeaponCompatible(bot, ii.getWeaponType(ex.getItemId()))) continue;
+                    && !isWeaponCompatible(bot, ii.getWeaponType(ex.getItemId()), ex)) continue;
             if (!isRecommendationCandidate(bot, ii, ex, pslot, scope)) continue;
             // Rings live in the shared -12 pool regardless of which equipped position they came from.
             short key = isRingSlot(pslot) ? (short) -12 : pslot;
@@ -703,6 +703,7 @@ class BotEquipManager {
         boolean isCash(int itemId);
         String getEquipmentSlot(int itemId);
         WeaponType getWeaponType(int itemId);
+        boolean isTwoHanded(int itemId);
         boolean meetsReqs(Equip equip, Job job, int level, int str, int dex, int int_, int luk, int fame);
 
         static EquipUsefulnessHooks from(ItemInformationProvider ii) {
@@ -710,6 +711,7 @@ class BotEquipManager {
                 @Override public boolean isCash(int itemId) { return ii.isCash(itemId); }
                 @Override public String getEquipmentSlot(int itemId) { return ii.getEquipmentSlot(itemId); }
                 @Override public WeaponType getWeaponType(int itemId) { return ii.getWeaponType(itemId); }
+                @Override public boolean isTwoHanded(int itemId) { return ii.isTwoHanded(itemId); }
                 @Override public boolean meetsReqs(Equip equip, Job job, int level, int str, int dex,
                                                    int int_, int luk, int fame) {
                     return ii.meetsEquipRequirements(equip, job, level, str, dex, int_, luk, fame);
@@ -728,6 +730,7 @@ class BotEquipManager {
                 @Override public boolean isCash(int itemId) { return ii.isCash(itemId); }
                 @Override public String getEquipmentSlot(int itemId) { return ii.getEquipmentSlot(itemId); }
                 @Override public WeaponType getWeaponType(int itemId) { return ii.getWeaponType(itemId); }
+                @Override public boolean isTwoHanded(int itemId) { return ii.isTwoHanded(itemId); }
                 @Override public boolean meetsReqs(Equip equip, Job job, int level, int str, int dex,
                                                    int int_, int luk, int fame) {
                     return ii.meetsEquipRequirements(equip, job, level, str, dex, int_, luk, fame);
@@ -1233,7 +1236,7 @@ class BotEquipManager {
             short primary = (short) eslot.getPrimarySlot();
             if (primary == 0) continue;
             if (primary == (short) -11
-                    && !isWeaponCompatible(bot, ii.getWeaponType(equip.getItemId()))) continue;
+                    && !isWeaponCompatible(bot, ii.getWeaponType(equip.getItemId()), equip)) continue;
             if (!futureOnlyBlocked(bot, ii, equip)) continue;
             short key = isRingSlot(primary) ? (short) -12 : primary;
             bySlot.computeIfAbsent(key, k -> new ArrayList<>()).add(equip);
@@ -1242,7 +1245,7 @@ class BotEquipManager {
             if (!(it instanceof Equip e) || ii.isCash(e.getItemId())) continue;
             short pos = e.getPosition();
             if (pos == (short) -11
-                    && !isWeaponCompatible(bot, ii.getWeaponType(e.getItemId()))) continue;
+                    && !isWeaponCompatible(bot, ii.getWeaponType(e.getItemId()), e)) continue;
             if (!futureOnlyBlocked(bot, ii, e)) continue;
             short key = isRingSlot(pos) ? (short) -12 : pos;
             List<Equip> pool = bySlot.computeIfAbsent(key, k -> new ArrayList<>());
@@ -1290,7 +1293,7 @@ class BotEquipManager {
             if (eslot.getPrimarySlot() == 0) continue;
             short primarySlot = (short) eslot.getPrimarySlot();
             if (primarySlot == (short) -11
-                    && !isWeaponCompatible(receiver, ii.getWeaponType(equip.getItemId()))) continue;
+                    && !isWeaponCompatible(receiver, ii.getWeaponType(equip.getItemId()), equip)) continue;
             if (!isRecommendationCandidate(receiver, ii, equip, primarySlot, scope)) continue;
             holderItems.add(equip);
         }
@@ -1345,7 +1348,7 @@ class BotEquipManager {
         short primarySlot = (short) slot.getPrimarySlot();
         if (primarySlot == 0) return null;
         if (primarySlot == (short) -11
-                && !isWeaponCompatible(receiver, ii.getWeaponType(candidate.getItemId()))) return null;
+                && !isWeaponCompatible(receiver, ii.getWeaponType(candidate.getItemId()), candidate)) return null;
         if (!isRecommendationCandidate(receiver, ii, candidate, primarySlot, scope)) return null;
 
         // Cheap dominance pre-filter for IMMEDIATE scope: if the candidate is Pareto-dominated
@@ -1516,7 +1519,7 @@ class BotEquipManager {
         if (slot == null) return false;
         String weaponTrack = null;
         if (isWeaponSlot(slot)) {
-            weaponTrack = weaponUsefulnessTrackKey(recipient, hooks.getWeaponType(item.getItemId()));
+            weaponTrack = weaponUsefulnessTrackKey(recipient, hooks, item);
             if (weaponTrack == null) return false;
         }
         EnumSet<RelevantStat> relevant = relevantStatsFor(recipient.getJob());
@@ -1527,7 +1530,7 @@ class BotEquipManager {
             if (!(it instanceof Equip e) || hooks.isCash(e.getItemId())) continue;
             if (!slot.equals(textSlotKey(hooks, e))) continue;
             if (weaponTrack != null) {
-                String equippedTrack = weaponUsefulnessTrackKey(recipient, hooks.getWeaponType(e.getItemId()));
+                String equippedTrack = weaponUsefulnessTrackKey(recipient, hooks, e);
                 if (!weaponTrack.equals(equippedTrack)) continue;
             }
             baseline.add(e);
@@ -1628,12 +1631,19 @@ class BotEquipManager {
         String slot = textSlotKey(hooks, equip);
         if (slot == null) return null;
         if (!isWeaponSlot(slot)) return slot;
-        String weaponTrack = weaponUsefulnessTrackKey(bot, hooks.getWeaponType(equip.getItemId()));
+        String weaponTrack = weaponUsefulnessTrackKey(bot, hooks, equip);
         return weaponTrack != null ? slot + ":" + weaponTrack : null;
     }
 
-    private static String weaponUsefulnessTrackKey(Character bot, WeaponType weaponType) {
-        if (!isWeaponCompatible(bot, weaponType)) return null;
+    private static String weaponUsefulnessTrackKey(Character bot, EquipUsefulnessHooks hooks, Equip equip) {
+        WeaponType weaponType = hooks.getWeaponType(equip.getItemId());
+        if (!isWeaponCompatible(bot, weaponType)) {
+            if (!isOffTypeMageMatkWeapon(bot, equip)) return null;
+            // Off-type MATK weapon on a mage: compete in the mage track matching its
+            // handedness so the 2H<->shield ensemble math stays correct — a 1H sword
+            // umbrella rivals wands (frees the shield slot), a 2H rivals staves.
+            return hooks.isTwoHanded(equip.getItemId()) ? "staff" : "wand";
+        }
         if (weaponType == null || weaponType == WeaponType.NOT_A_WEAPON) return "non-weapon";
         if (isSword(weaponType)) return "sword";
         if (isGeneralWeapon(weaponType)) return "general";
@@ -2139,11 +2149,27 @@ class BotEquipManager {
         };
     }
 
+    /**
+     * Item-aware weapon gate. v83 magic damage reads total MATK only — spell casting ignores
+     * weapon type — so for mage jobs ANY weapon carrying MATK on its roll is a real weapon
+     * candidate (job/level/stat legality stays with meetsReqs at every call site). Physical
+     * classes keep the strict type tables above: attack skills and the bot combat pipeline
+     * (AttackRoute, ammo) need the right weapon type, so an off-type WATK weapon is trade
+     * stock for them, never equipment.
+     */
+    static boolean isWeaponCompatible(Character bot, WeaponType weaponType, Equip equip) {
+        return isWeaponCompatible(bot, weaponType) || isOffTypeMageMatkWeapon(bot, equip);
+    }
+
+    private static boolean isOffTypeMageMatkWeapon(Character bot, Equip equip) {
+        return equip != null && isMageJob(bot.getJob()) && equip.getMatk() > 0;
+    }
+
     private static Equip compatibleWeaponOrNull(Character bot, ItemInformationProvider ii, Equip equip) {
         if (equip == null) {
             return null;
         }
-        return isWeaponCompatible(bot, ii.getWeaponType(equip.getItemId())) ? equip : null;
+        return isWeaponCompatible(bot, ii.getWeaponType(equip.getItemId()), equip) ? equip : null;
     }
 
     private static boolean matchesWarriorWeaponFamily(Character bot,
