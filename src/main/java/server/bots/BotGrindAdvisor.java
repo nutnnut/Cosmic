@@ -31,6 +31,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.function.IntPredicate;
 import java.util.concurrent.ThreadLocalRandom;
 
 /**
@@ -474,8 +475,7 @@ final class BotGrindAdvisor {
         if (levelsToGo < 0) {
             return 0.0; // unmet stat/job requirement is never grown into (low-secondary builds)
         }
-        double ownedScore = wornScoreBySlot.computeIfAbsent(slot,
-                s -> bestOwnedScore(bot, ii, s));
+        double ownedScore = gearBar(bot, ii, itemId, slot, wornScoreBySlot);
         double[] samples = rollScoreCache.computeIfAbsent(itemId,
                 id -> rollScores.sample(bot, id, ROLL_SAMPLES));
         return expectedImprovement(samples, levelDiscount(levelsToGo), ownedScore);
@@ -487,21 +487,80 @@ final class BotGrindAdvisor {
         return Math.pow(LEVEL_WAIT_DECAY, Math.max(0, levelsToGo));
     }
 
+    // Synthetic wornScoreBySlot cache keys for ensemble pieces (real slots are negative).
+    private static final short KEY_BEST_TOP = 105;
+    private static final short KEY_BEST_OVERALL = 106;
+    private static final short KEY_BEST_1H_WEAPON = 111;
+    private static final short KEY_BEST_2H_WEAPON = 112;
+
+    /**
+     * The score a candidate drop must beat, honoring the optimizer's cross-slot exclusivity
+     * (2H weapon ↔ shield, overall ↔ top+pants — see BotEquipManager.solveForWeapon): the bar
+     * is the best ENSEMBLE the bot already owns for the family minus the partner piece the
+     * candidate keeps. A pants drop while a strong overall is worn must beat
+     * (ensemble - best top), not an empty pants slot; a shield drop on a 2H build competes
+     * against the weapon itself (and is hard-gated by levelsUntilWearable anyway).
+     */
+    private static double gearBar(Character bot, ItemInformationProvider ii, int itemId, short slot,
+                                  Map<Short, Double> cache) {
+        switch (slot) {
+            case -5, -6 -> {
+                double top = cache.computeIfAbsent(KEY_BEST_TOP,
+                        k -> bestOwnedScore(bot, ii, (short) -5, id -> !ItemConstants.isOverall(id)));
+                double overall = cache.computeIfAbsent(KEY_BEST_OVERALL,
+                        k -> bestOwnedScore(bot, ii, (short) -5, ItemConstants::isOverall));
+                double pants = cache.computeIfAbsent((short) -6,
+                        k -> bestOwnedScore(bot, ii, (short) -6, id -> true));
+                if (slot == (short) -6) {
+                    return crossSlotBar(overall, pants, top, false);
+                }
+                return crossSlotBar(overall, top, pants, ItemConstants.isOverall(itemId));
+            }
+            case -10, -11 -> {
+                double oneH = cache.computeIfAbsent(KEY_BEST_1H_WEAPON,
+                        k -> bestOwnedScore(bot, ii, (short) -11, id -> !ii.isTwoHanded(id)));
+                double twoH = cache.computeIfAbsent(KEY_BEST_2H_WEAPON,
+                        k -> bestOwnedScore(bot, ii, (short) -11, ii::isTwoHanded));
+                double shield = cache.computeIfAbsent((short) -10,
+                        k -> bestOwnedScore(bot, ii, (short) -10, id -> true));
+                if (slot == (short) -10) {
+                    return crossSlotBar(twoH, shield, oneH, false);
+                }
+                return crossSlotBar(twoH, oneH, shield, ii.isTwoHanded(itemId));
+            }
+            default -> {
+                return cache.computeIfAbsent(slot, s -> bestOwnedScore(bot, ii, s, id -> true));
+            }
+        }
+    }
+
+    /** Pure bar math for a two-slot exclusivity family: the candidate must beat the best owned
+     *  ensemble (the combined item vs the two pieces worn together) minus the partner piece it
+     *  keeps; a combined candidate (overall, 2H weapon) displaces both, so it keeps nothing. */
+    static double crossSlotBar(double combinedBest, double pieceBest, double partnerBest,
+                               boolean candidateIsCombined) {
+        double ensemble = Math.max(combinedBest, pieceBest + partnerBest);
+        return candidateIsCombined ? ensemble : ensemble - partnerBest;
+    }
+
     /**
      * The bar a new drop must beat: the best of the WORN item and every BAGGED equip for the
-     * slot, each at {@link BotScrollManager#potentialValue} discounted by how long until the
-     * bot can wear it. Owning a better copy — even one benched for a few levels — makes
-     * farming a weaker one pointless; a wear-now drop keeps interim value against a bagged
-     * future item exactly as big as the discounted gap.
+     * slot (restricted to {@code idFilter}), each at {@link BotScrollManager#potentialValue}
+     * discounted by how long until the bot can wear it. Owning a better copy — even one
+     * benched for a few levels — makes farming a weaker one pointless; a wear-now drop keeps
+     * interim value against a bagged future item exactly as big as the discounted gap.
      */
-    private static double bestOwnedScore(Character bot, ItemInformationProvider ii, short slot) {
+    private static double bestOwnedScore(Character bot, ItemInformationProvider ii, short slot,
+                                         IntPredicate idFilter) {
         double best = 0.0;
         Equip worn = BotScrollManager.wornInSlot(bot, ii, slot);
-        if (worn != null) {
-            best = BotScrollManager.potentialValue(bot, ii, worn);
+        if (worn != null && idFilter.test(worn.getItemId())) {
+            best = BotScrollManager.potentialValue(bot, ii, worn)
+                    * (slot == (short) -11 ? weaponSpeedFactor(worn.getItemId()) : 1.0);
         }
         for (Item it : bot.getInventory(InventoryType.EQUIP).list()) {
-            if (!(it instanceof Equip e) || ii.isCash(e.getItemId())) {
+            if (!(it instanceof Equip e) || ii.isCash(e.getItemId())
+                    || !idFilter.test(e.getItemId())) {
                 continue;
             }
             Short s = BotScrollManager.primarySlot(ii, e.getItemId());
@@ -513,9 +572,24 @@ final class BotGrindAdvisor {
                 continue;
             }
             best = Math.max(best,
-                    levelDiscount(levelsToGo) * BotScrollManager.potentialValue(bot, ii, e));
+                    levelDiscount(levelsToGo) * BotScrollManager.potentialValue(bot, ii, e)
+                            * (slot == (short) -11 ? weaponSpeedFactor(e.getItemId()) : 1.0));
         }
         return best;
+    }
+
+    /**
+     * DPS normalization for weapon scoring: scales an offense score by how fast the weapon
+     * actually swings, using the same WZ animation x speed-tier cycle the equip optimizer
+     * benchmarks with ({@link BotEquipManager#weaponCycleMs}). A slow 82 spear must out-roll
+     * a fast 76 spear by the cycle ratio before it counts as an upgrade — otherwise the
+     * advisor sends the party to farm a weapon autoEquip will only bench. Reference is the
+     * advisor's own attack-cycle anchor, so a typical-speed weapon keeps its raw score;
+     * 1.0 when WZ timing is unavailable (unit tests, odd items).
+     */
+    private static double weaponSpeedFactor(int itemId) {
+        int cycleMs = BotEquipManager.weaponCycleMs(itemId);
+        return cycleMs > 0 ? ATTACK_CYCLE_SECONDS * 1000.0 / cycleMs : 1.0;
     }
 
     /** One looted scroll's expected offense gain for THIS bot; test seam (the real lookup
@@ -583,11 +657,13 @@ final class BotGrindAdvisor {
     private static double[] sampleRollScores(Character bot, int itemId, int n) {
         ItemInformationProvider ii = ItemInformationProvider.getInstance();
         double evPerSlot = BotScrollManager.bestScrollEvPerSlot(bot, ii, itemId);
+        Short slot = BotScrollManager.primarySlot(ii, itemId);
+        double speed = slot != null && slot == (short) -11 ? weaponSpeedFactor(itemId) : 1.0;
         double[] out = new double[n];
         for (int i = 0; i < n; i++) {
             Equip rolled = ii.randomizeStats((Equip) ii.getEquipById(itemId));
-            out[i] = BotScrollManager.offenseValue(bot, rolled)
-                    + BotScrollManager.scrollHeadroom(rolled.getUpgradeSlots(), evPerSlot);
+            out[i] = (BotScrollManager.offenseValue(bot, rolled)
+                    + BotScrollManager.scrollHeadroom(rolled.getUpgradeSlots(), evPerSlot)) * speed;
         }
         return out;
     }

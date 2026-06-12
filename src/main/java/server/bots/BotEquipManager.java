@@ -1931,7 +1931,7 @@ class BotEquipManager {
      * so two weapons with the same speed tier but different base animations have different DPS.
      * Returns 0 if no WZ profile is available — caller skips DPS scaling.
      */
-    private static int weaponCycleMs(int itemId) {
+    static int weaponCycleMs(int itemId) {
         try {
             BotAttackDataProvider provider = BotAttackDataProvider.getInstance();
             BotAttackDataProvider.NormalAttackProfile profile = provider.getNormalAttackProfile(itemId);

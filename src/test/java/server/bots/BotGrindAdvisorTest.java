@@ -111,6 +111,34 @@ class BotGrindAdvisorTest {
         assertTrue(later25NoBag > 0);
     }
 
+    // ---- cross-slot exclusivity bars (2H <-> shield, overall <-> top+pants) ----
+
+    @Test
+    void shouldBarPantsAgainstTheOverallEnsembleNotAnEmptySlot() {
+        // Worn overall scores 50; best owned top 10, no pants. A pants drop keeps the top,
+        // so it must beat 50 - 10 = 40 — not the empty pants slot (0).
+        assertEquals(40.0, BotGrindAdvisor.crossSlotBar(50.0, 0.0, 10.0, false), 1e-9);
+        // With no overall the bar collapses to the pieces: pants drop vs (top+pants) - top.
+        assertEquals(8.0, BotGrindAdvisor.crossSlotBar(0.0, 8.0, 10.0, false), 1e-9);
+    }
+
+    @Test
+    void shouldChargeACombinedCandidateForBothPiecesItDisplaces() {
+        // Overall drop while wearing top 10 + pants 8: must beat the SUM 18, not just the top.
+        assertEquals(18.0, BotGrindAdvisor.crossSlotBar(0.0, 10.0, 8.0, true), 1e-9);
+        // Same shape for a 2H weapon vs a worn 1H 30 + shield 12 pair.
+        assertEquals(42.0, BotGrindAdvisor.crossSlotBar(0.0, 30.0, 12.0, true), 1e-9);
+        // An owned 2H 45 stays the bar when it beats the pair.
+        assertEquals(45.0, BotGrindAdvisor.crossSlotBar(45.0, 30.0, 12.0, true), 1e-9);
+    }
+
+    @Test
+    void shouldNeverReturnANegativeBar() {
+        // ensemble >= partner always, so "ensemble - partner" stays >= the kept piece's rival.
+        assertTrue(BotGrindAdvisor.crossSlotBar(0.0, 0.0, 25.0, false) >= 0.0);
+        assertEquals(0.0, BotGrindAdvisor.crossSlotBar(0.0, 0.0, 0.0, false), 1e-9);
+    }
+
     // ---- scroll headroom: open upgrade slots count, priced by equip type ----
 
     @Test

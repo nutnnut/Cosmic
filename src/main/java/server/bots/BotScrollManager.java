@@ -540,6 +540,14 @@ final class BotScrollManager {
                 && !BotEquipManager.isWeaponCompatible(bot, ii.getWeaponType(id))) {
             return -1;
         }
+        if (slot != null && slot == (short) -10) {
+            // Shields can't join a two-handed build (the optimizer's 2H<->shield exclusivity):
+            // a bowman's weapons are ALL 2H, so a shield is never wearable for it in practice.
+            Equip weapon = wornInSlot(bot, ii, (short) -11);
+            if (weapon != null && ii.isTwoHanded(weapon.getItemId())) {
+                return -1;
+            }
+        }
         if (ii.meetsEquipRequirements(e, bot.getJob(), bot.getLevel(),
                 bot.getTotalStr(), bot.getTotalDex(), bot.getTotalInt(), bot.getTotalLuk(), bot.getFame())) {
             return 0;
