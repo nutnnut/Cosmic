@@ -305,11 +305,10 @@ final class BotScrollManager {
             double wornRivalValue = worn == null ? 0.0 : reproValueNow(pc, bot, ii, worn);
             // slotsRemaining = free upgrade slots = the DP horizon; totalSlots = catalog tuc, so
             // (totalSlots - slotsRemaining) = slots already consumed (the profit-decay exponent).
-            // hasFallbackForSlot stays false (no boom scrolls fed in v1; it only gates destroy scrolls).
             BotScrollPlanner.EquipCandidate c = new BotScrollPlanner.EquipCandidate(
                     eq.getItemId(), equipName(ii, eq.getItemId()),
                     value, eq.getUpgradeSlots(), totalSlots(ii, eq.getItemId()), wornRivalValue,
-                    betterAvailable, false, options, valueFn);
+                    betterAvailable, hasFallbackForSlot(all, slotOf, eq, slot), options, valueFn);
             candidates.add(c);
             backing.put(c, eq);
         }
@@ -699,8 +698,8 @@ final class BotScrollManager {
             }
             int success = st.getOrDefault("success", 0);
             int cursed = st.getOrDefault("cursed", 0);
-            if (success <= 0 || cursed > 0) {
-                continue; // v1: skip destroy-capable scrolls entirely
+            if (success <= 0) {
+                continue;
             }
             double gain = offenseValueFromStats(bot, st);
             if (gain <= 0) {
@@ -710,9 +709,12 @@ final class BotScrollManager {
             // SCROLL_SUCCESS_BONUS, capped at 100) so the DP odds match reality, not the catalog.
             // ScrollOption.cost = the per-apply opportunity cost (fraction of market price). The
             // reproduction value curve separately uses the FULL market price (see reproSpecs).
+            // Destroy-capable (cursed) scrolls carry their boom rate; the planner only allows
+            // them when the candidate has a fallback equip AND the EV still wins (applyScroll
+            // already handles the CURSE outcome: item removed + unequipped).
             options.add(new BotScrollPlanner.ScrollOption(sid, scrollName(ii, sid),
                     effectiveSuccessPct(success) / 100.0,
-                    0.0, gain, SCROLL_OPPORTUNITY_FRACTION * scrollPriceMeso(pc, sid)));
+                    cursed / 100.0, gain, SCROLL_OPPORTUNITY_FRACTION * scrollPriceMeso(pc, sid)));
         }
         return options;
     }
@@ -882,14 +884,30 @@ final class BotScrollManager {
     }
 
     /** Translate the owned scroll options into reproduction specs. Uses the FULL market price (an item
-     *  is worth what it costs to remake), not the discounted per-apply opportunity cost in op.cost(). */
+     *  is worth what it costs to remake), not the discounted per-apply opportunity cost in op.cost().
+     *  Boom scrolls are excluded: the reproduction DP models slot burn, not destruction, so feeding
+     *  them in would overstate the curve — they participate only in the online scroll/stop decision. */
     private static List<BotScrollValuer.ScrollSpec> reproSpecs(ProducerCombat pc, List<BotScrollPlanner.ScrollOption> options) {
         List<BotScrollValuer.ScrollSpec> specs = new ArrayList<>(options.size());
         for (BotScrollPlanner.ScrollOption op : options) {
+            if (op.boomRate() > 0.0) {
+                continue;
+            }
             specs.add(new BotScrollValuer.ScrollSpec(
                     op.successRate(), op.statGain(), scrollPriceMeso(pc, op.scrollItemId())));
         }
         return specs;
+    }
+
+    /** A boom is survivable when ANOTHER usable equip exists for the same slot (worn or bagged) —
+     *  the destroy-scroll gate the planner enforces via {@code hasFallbackForSlot}. */
+    private static boolean hasFallbackForSlot(List<Equip> all, Map<Equip, Short> slotOf, Equip eq, Short slot) {
+        for (Equip other : all) {
+            if (other != eq && slot.equals(slotOf.get(other))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**

@@ -602,8 +602,9 @@ final class BotGrindAdvisor {
     static ScrollGainLookup scrollGains = BotGrindAdvisor::scrollGain;
 
     /** Wires {@link #scrollExpectedGain} to the live catalog: skips meta scrolls (clean slate /
-     *  modifier / white) and boom-risk ones (self-scrolling v1 refuses to use those, so they're
-     *  worthless to farm), then checks the WORN gear for an applicable open-slot target. */
+     *  modifier / white) and boom-risk ones (self-scrolling only uses those with fallback gear
+     *  at use time, so their farm value is conditional — kept out conservatively), then checks
+     *  the WORN gear for an applicable open-slot target. */
     private static double scrollGain(Character bot, int scrollId) {
         if (ItemConstants.isCleanSlate(scrollId) || ItemConstants.isModifierScroll(scrollId)
                 || scrollId == ItemId.WHITE_SCROLL) {
