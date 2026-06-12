@@ -817,6 +817,10 @@ class BotMovementManagerTest {
         entry.fidgetSpamAirSteer = true;
         entry.fidgetActionBaseDelayMs = 100;
         entry.airSteerVelX = 0.0;
+        // Zero the launch momentum: under the packet-true air model a side press in the SAME
+        // direction as a full-speed launch is pinned at the walk-speed cap (no velocity
+        // change), which would make this assertion depend on the random roll's direction.
+        entry.airVelX = 0;
         entry.nextFidgetActionAtMs = 0L;
         long before = System.currentTimeMillis();
 

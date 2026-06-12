@@ -608,6 +608,77 @@ class BotPhysicsEngineTest {
     }
 
     @Test
+    void shouldHalveCarriedMomentumOnLanding() {
+        // Packet-verified landing rule (elnath-tricky-jumps-spd100v2 + 100speedjumpmovement
+        // logs): touchdown halves the horizontal velocity (125 -> 62, 26 -> 13).
+        MapleMap snow = flatGroundMap(0.2f);
+        Character bot = mockBot(new Point(0, 50), snow);
+        BotEntry entry = new BotEntry(bot, null, null);
+        entry.inAir = true;
+        entry.physX = 0;
+        entry.physY = 50;
+        entry.velY = 5f;
+        entry.airVelX = 6; // full walk step, 120 px/s
+        entry.moveDir = 0;
+
+        landAirborne(entry, bot);
+        double stepsPerTick = BotPhysicsEngine.cfg.TICK_MS / 8.0;
+        assertEquals(6 * 0.5 / stepsPerTick, entry.hspeed, 0.05,
+                "landing keeps HALF the incoming horizontal velocity");
+    }
+
+    @Test
+    void shouldZeroMomentumWhenCounterStrafingIntoLanding() {
+        // Packet-verified: landing with the OPPOSITE direction held zeroes hspeed outright
+        // (-122 -> 0 on ice) — the legal "stop dead on an icy ledge" trick.
+        MapleMap snow = flatGroundMap(0.2f);
+        Character bot = mockBot(new Point(0, 50), snow);
+        BotEntry entry = new BotEntry(bot, null, null);
+        entry.inAir = true;
+        entry.physX = 0;
+        entry.physY = 50;
+        entry.velY = 5f;
+        entry.airVelX = 6;
+        entry.moveDir = -1; // counter-strafe held through touchdown
+
+        landAirborne(entry, bot);
+        assertEquals(0.0, entry.hspeed, 1e-9, "counter-strafe landing stops dead");
+    }
+
+    private static void landAirborne(BotEntry entry, Character bot) {
+        for (int i = 0; i < 60; i++) {
+            if (BotPhysicsEngine.stepAirborne(entry, bot) == BotPhysicsEngine.AirborneStepResult.LANDED) {
+                return;
+            }
+        }
+        throw new AssertionError("bot never landed");
+    }
+
+    @Test
+    void shouldSwingAirVelocityAcrossZeroWithCounterStrafe() {
+        // Fitted air control (200 x fs px/s^2, total capped at walk speed): on a normal map a
+        // held counter-direction reverses the launch velocity entirely, unlike the old
+        // 1.5 px/tick steer-delta cap which could only trim it to +4.5.
+        MapleMap map = flatGroundMap(0f);
+        Character bot = mockBot(new Point(0, -1000), map);
+        BotEntry entry = new BotEntry(bot, null, null);
+        entry.inAir = true;
+        entry.physX = 0;
+        entry.physY = -1000;
+        entry.velY = 0f;
+        entry.airVelX = 6;
+        entry.moveDir = -1;
+
+        for (int i = 0; i < 30; i++) {
+            assertEquals(BotPhysicsEngine.AirborneStepResult.CONTINUE,
+                    BotPhysicsEngine.stepAirborne(entry, bot));
+        }
+        double totalVelX = entry.airVelX + entry.airSteerVelX;
+        assertTrue(totalVelX < -2.0, "counter-strafe should swing past zero, got " + totalVelX);
+        assertTrue(totalVelX >= -6.26, "total air speed stays capped at walk speed");
+    }
+
+    @Test
     void shouldNotSlipWithSnowshoes() {
         MapleMap snow = flatGroundMap(0.2f);
         BotMovementProfile snowshoes = new BotMovementProfile(100, 100, true);
@@ -697,7 +768,9 @@ class BotPhysicsEngineTest {
     }
 
     private static MapleMap smallPlatformSnowMap() {
-        MapleMap map = new MapleMap(211000000, 0, 0, 211000000, 1.0f);
+        // Synthetic-only map id: BotPhysicsEngine caches footholds-by-id per MAP ID, so
+        // reusing the real El Nath id (211000000) collides with tests that load the real map.
+        MapleMap map = new MapleMap(999211001, 0, 0, 999211001, 1.0f);
         server.maps.FootholdTree tree = new server.maps.FootholdTree(
                 new Point(-3000, -2000), new Point(3000, 2000));
         tree.insert(new Foothold(new Point(-2000, -50), new Point(-1910, -50), 1)); // 90px ledge
@@ -738,7 +811,8 @@ class BotPhysicsEngineTest {
     }
 
     private static MapleMap flatGroundMap(float fs) {
-        MapleMap map = new MapleMap(211000000, 0, 0, 211000000, 1.0f);
+        // Synthetic-only map id (see smallPlatformSnowMap): never reuse a real map id here.
+        MapleMap map = new MapleMap(999211000, 0, 0, 999211000, 1.0f);
         server.maps.FootholdTree tree = new server.maps.FootholdTree(
                 new Point(-20000, -2000), new Point(20000, 2000));
         tree.insert(new Foothold(new Point(-15000, 100), new Point(15000, 100), 1));
@@ -1020,7 +1094,7 @@ class BotPhysicsEngineTest {
         assertEquals(BotPhysicsEngine.AirborneStepResult.WALL, BotPhysicsEngine.stepAirborne(entry, bot));
         assertTrue(bot.getPosition().x > 50, "wall collision should place the bot on the near side, not inside the wall");
 
-        entry.airSteerVelX = -BotPhysicsEngine.cfg.AIR_STEER_MAX;
+        entry.airSteerVelX = -1.5;
         BotPhysicsEngine.stepAirborne(entry, bot);
 
         assertTrue(bot.getPosition().x > 50, "continued air steering into the wall must not cross to the far side");

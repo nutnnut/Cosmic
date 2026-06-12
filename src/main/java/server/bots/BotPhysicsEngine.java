@@ -48,8 +48,18 @@ final class BotPhysicsEngine {
         // mass 100 and walkDrag 80000 / mass / 2 (client halves friction when fs<1).
         public double SLIP_WALK_ACCEL_PXSS = 1400.0;  // x fs -> px/s^2 while a direction is held
         public double SLIP_GLIDE_DECEL_PXSS = 400.0;  // x fs -> px/s^2 while gliding (no input)
-        public double AIR_STEER_ACCEL = 0.5;   // px/tick added per tick toward target
-        public double AIR_STEER_MAX   = 1.5;  // cap on air-steering speed (px/tick)
+        // Airborne horizontal control, fitted from real-client jump captures
+        // (logs/monitored-packets-elnath-tricky-jumps-spd100v2.log, fs=0.2, and
+        // logs/monitored-packets - 100speedjumpmovement.log, fs=1.0):
+        //   - held direction accelerates vx at AIR_CONTROL_ACCEL_PXSS x map fs
+        //     (fs=1: -103 -> -79 px/s over 120 ms = exactly +200 px/s^2; fs=0.2:
+        //     +1 px/s per 29 ms element = ~40 = 200 x 0.2), capped at walk speed;
+        //   - NO air drag without input (vx constant, residual <= 7 px/s^2);
+        //   - jump launch with a direction held snaps vx to +-walkSpeed instantly
+        //     regardless of ground speed (62 -> 125 px/s within 30 ms at fs=1;
+        //     El Nath -34 -> -124 where ground accel could only reach -44);
+        //     with no input the current ground hspeed carries into the air.
+        public double AIR_CONTROL_ACCEL_PXSS = 200.0; // x fs -> px/s^2 toward held direction
 
         public float CLIMB_SPEED_PXS = 100.0f;
         public int ROPE_GRAB_X = 8;
@@ -833,6 +843,12 @@ final class BotPhysicsEngine {
         entry.groundPhysicsCarryMs = 0.0;
         entry.blockedRopeGrab = null;
         entry.hspeed = landingGroundHSpeed(bot.getMap(), foothold, incomingDeltaX, incomingDeltaY, entry.movementProfile);
+        // Counter-strafe landing (packet-verified): touching down with the OPPOSITE direction
+        // held zeroes the horizontal velocity outright (-122 -> 0 on ice, -79 -> 0 at fs=1)
+        // instead of halving it — the legal "stop dead on an icy ledge" trick.
+        if (entry.moveDir != 0 && incomingDeltaX != 0.0 && entry.moveDir * incomingDeltaX < 0.0) {
+            entry.hspeed = 0.0;
+        }
         setMovementVelocity(entry, velocityFromDeltaX(tickDeltaFromGroundHSpeed(bot.getMap(), entry.hspeed, entry.movementProfile)), 0);
         syncCharacterState(entry);
 
@@ -1256,11 +1272,30 @@ final class BotPhysicsEngine {
         return value;
     }
 
-    /** Apply air steering acceleration based on discrete steer direction. */
-    private static void applyAirSteering(BotEntry entry, int steerDir) {
+    /**
+     * Apply air steering acceleration based on discrete steer direction. Packet-true model
+     * (see {@link Config#AIR_CONTROL_ACCEL_PXSS}): constant accel of 200 x fs px/s^2 toward
+     * the held direction, no drag, TOTAL horizontal speed (launch + steer) capped at the
+     * profile walk speed — given enough airtime a counter-strafe swings vx all the way from
+     * +cap to -cap, unlike the old ad-hoc 1.5 px/tick steer-delta cap.
+     */
+    private static void applyAirSteering(BotEntry entry, MapleMap map, int steerDir) {
         if (steerDir == 0) return;
-        double accel = steerDir > 0 ? cfg.AIR_STEER_ACCEL : -cfg.AIR_STEER_ACCEL;
-        entry.airSteerVelX = Math.clamp(entry.airSteerVelX + accel, -cfg.AIR_STEER_MAX, cfg.AIR_STEER_MAX);
+        double t = tickS();
+        double fs = mapGroundSlipScale(map, entry.movementProfile);
+        double accel = steerDir * cfg.AIR_CONTROL_ACCEL_PXSS * fs * t * t;
+        // walkStep() rounds px/tick to an int, so a launch can sit a fraction ABOVE the exact
+        // cap (speed140: launch 9 vs cap 8.75) — treat the launch speed as the effective cap
+        // so steering is never frozen by the rounding.
+        double cap = Math.max(airSpeedCapPerTick(entry.movementProfile), Math.abs(entry.airVelX));
+        double oldTotal = entry.airVelX + entry.airSteerVelX;
+        double newTotal = oldTotal + accel;
+        if (Math.abs(newTotal) > cap && Math.abs(newTotal) > Math.abs(oldTotal)) {
+            // Never accelerate past the cap; an over-cap launch (knockback) may steer back
+            // toward the cap but is not clamped down to it in a single tick.
+            newTotal = Math.abs(oldTotal) >= cap ? oldTotal : Math.copySign(cap, newTotal);
+        }
+        entry.airSteerVelX = newTotal - entry.airVelX;
         // Client jump stance follows the held steering direction, not the preserved horizontal
         // launch momentum. Updating facing here makes airborne debug output line up with what the
         // client is visually trying to do, even before the net X velocity changes sign.
@@ -1304,7 +1339,7 @@ final class BotPhysicsEngine {
     static AirborneStepResult stepAirborne(BotEntry entry, Character bot) {
         // Apply air steering from intent. Movement sets moveDir=0 for committed trajectories.
         if (entry.moveDir != 0) {
-            applyAirSteering(entry, entry.moveDir);
+            applyAirSteering(entry, bot.getMap(), entry.moveDir);
         }
 
         Point previousPos = roundedAirPosition(entry);
@@ -1913,6 +1948,21 @@ final class BotPhysicsEngine {
         return maxHForcePerClientStep(profile) * cfg.GROUNDSLIP / (cfg.FRICTION + cfg.SLOPEFACTOR);
     }
 
+    /** Airborne horizontal speed cap in px/tick — the profile walk speed (packet-verified:
+     *  |vx| never exceeds walkSpeed in the air, launch snap and steering both pin to it). */
+    private static double airSpeedCapPerTick(BotMovementProfile profile) {
+        return maxHSpeedPerClientStep(profile) * Math.max(1.0, cfg.TICK_MS / CLIENT_GROUND_STEP_MS);
+    }
+
+    /**
+     * Ground momentum carried into the air when jumping with NO direction held, in air px/tick
+     * units (packet-verified: standing/no-input jumps carry the current hspeed — 0 -> 0, 3 -> 3,
+     * 9 -> 10, 29 -> 29 px/s — while a held direction snaps to +-walkSpeed instead).
+     */
+    static int carriedAirVelX(MapleMap map, BotEntry entry) {
+        return (int) Math.round(tickDeltaFromGroundHSpeed(map, entry.hspeed, entry.movementProfile));
+    }
+
     private static int maxHorizontalTravel(MapleMap map, BotMovementProfile profile, float launchSpeedPerTick) {
         int airtimeTicks = Math.max(1, (int) Math.ceil((2 * launchSpeedPerTick) / gravityPerTick()));
         return walkStep(map, profile) * airtimeTicks;
@@ -2368,6 +2418,13 @@ final class BotPhysicsEngine {
                 landingDeltaX = unitX * dot;
             }
         }
+
+        // Client landing rule (packet-verified at fs=1 AND fs=0.2 — logs/monitored-packets
+        // -elnath-tricky-jumps-spd100v2.log, "monitored-packets - 100speedjumpmovement.log"):
+        // touchdown HALVES the horizontal velocity (125 -> 62, -104 -> -52, 26 -> 13, 9 -> 4);
+        // the walk/glide regime then takes over from that seed. (Counter-strafe landings zero
+        // it outright — handled by the caller, which knows the input state.)
+        landingDeltaX *= 0.5;
 
         double maxDeltaPerTick = Math.max(1.0, walkStep(map, profile));
         landingDeltaX = Math.clamp(landingDeltaX, -maxDeltaPerTick, maxDeltaPerTick);

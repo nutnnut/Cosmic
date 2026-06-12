@@ -258,14 +258,14 @@ class BotMovementManager {
     }
 
     static void jumpOffRope(BotEntry entry, Character bot, int dx) {
-        int airVelX = resolveAirVelocityX(bot.getMap(), entry.movementProfile, dx);
+        int airVelX = resolveAirVelocityX(entry, bot.getMap(), entry.movementProfile, dx);
         BotPhysicsEngine.beginJumpOffRope(entry, bot, airVelX);
         broadcastMovement(entry);
     }
 
     static void jumpToRope(BotEntry entry, Character bot, int dx) {
         Rope sourceRope = entry.climbRope;
-        int airVelX = resolveAirVelocityX(bot.getMap(), entry.movementProfile, dx);
+        int airVelX = resolveAirVelocityX(entry, bot.getMap(), entry.movementProfile, dx);
         BotPhysicsEngine.beginRopeTransferJump(entry, bot, sourceRope, airVelX);
         broadcastMovement(entry);
     }
@@ -702,7 +702,7 @@ class BotMovementManager {
 
     private static boolean simulatedJumpLandsInCurrentRegion(BotEntry entry, Foothold currentFh, Point botPos, int stepX) {
         MapleMap map = entry.bot.getMap();
-        int airVelX = resolveAirVelocityX(map, entry.movementProfile, stepX);
+        int airVelX = resolveAirVelocityX(entry, map, entry.movementProfile, stepX);
         JumpLanding landing = simulateJumpLanding(map, botPos, airVelX, entry.movementProfile);
         if (landing == null || landing.point() == null || landing.foothold() == null) {
             return false;
@@ -826,7 +826,7 @@ class BotMovementManager {
     }
 
     static void initiateJump(BotEntry entry, Character bot, int dx) {
-        BotPhysicsEngine.beginGroundJump(entry, bot, resolveAirVelocityX(bot.getMap(), entry.movementProfile, dx));
+        BotPhysicsEngine.beginGroundJump(entry, bot, resolveAirVelocityX(entry, bot.getMap(), entry.movementProfile, dx));
         broadcastMovement(entry);
     }
 
@@ -852,15 +852,24 @@ class BotMovementManager {
     }
 
     static void initiateRopeJump(BotEntry entry, Character bot, int dx) {
-        BotPhysicsEngine.beginClimbUpJump(entry, bot, resolveAirVelocityX(bot.getMap(), entry.movementProfile, dx));
+        BotPhysicsEngine.beginClimbUpJump(entry, bot, resolveAirVelocityX(entry, bot.getMap(), entry.movementProfile, dx));
         broadcastMovement(entry);
     }
 
-    private static int resolveAirVelocityX(MapleMap map, BotMovementProfile profile, int dx) {
+    private static int resolveAirVelocityX(BotEntry entry, MapleMap map, BotMovementProfile profile, int dx) {
         if (dx == 0) {
-            return 0;
+            // No direction held at takeoff: the client carries the CURRENT ground hspeed into
+            // the air (packet-verified standing jumps 0->0, 3->3, 9->10, 29->29 px/s). Only
+            // meaningful on slippery ground where a no-input bot can still be sliding; on
+            // fs=1 maps hspeed without input is ~0, so behavior there is exactly as before.
+            return entry != null && BotPhysicsEngine.slipperyGround(map) && !entry.climbing
+                    ? BotPhysicsEngine.carriedAirVelX(map, entry)
+                    : 0;
         }
         // Full walk step always: intent-based, like holding the arrow key through a jump.
+        // This is also the packet-true client launch rule: jumping with a direction held
+        // snaps vx to +-walkSpeed instantly regardless of current ground speed (even from a
+        // slow icy start, -34 -> -124 px/s at takeoff) — see Config.AIR_CONTROL_ACCEL_PXSS.
         // Graph jump edges are calibrated at ±walkStep of their OWN profile, so this matches
         // the simulated arc as long as planning and execution share a graph — which
         // resolveTarget's navGraph identity check now guarantees (a stale cross-profile edge,

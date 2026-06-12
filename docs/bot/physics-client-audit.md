@@ -167,3 +167,40 @@ Left unchanged (packet-fitted, rule 2).
   and drag symmetrically by fs). Clamp-dominated; cosmetic on the approach curve.
 - Ground force/drag refit and swim integrator are deliberate calibrated
   abstractions, not literal client ports; flagged divergent-but-deliberate.
+
+## (6) Airborne horizontal model — packet-fitted (2026-06)
+
+Fitted from `logs/monitored-packets-elnath-tricky-jumps-spd100v2.log` (El Nath fs=0.2,
+10 arcs) and `logs/monitored-packets - 100speedjumpmovement.log` (fs=1, 16 arcs),
+parser `tmp/snowfit/airfit.py` (extends fit.py; air stances are 6/7, gravity sanity
+check median ay=2000 px/s², terminal 670 — exact).
+
+1. **Launch snap**: jump with a direction held sets vx = ±walkSpeed instantly,
+   regardless of ground speed. fs=1: `62 → 125 px/s` within a 30 ms element
+   (≥2100 px/s², vy0=-495 pins takeoff to element start); El Nath: `-34 → -124`,
+   `-50 → -124`, `-67 → -125` over 240–270 ms where ground accel (280 px/s²) could
+   only reach ~-110 and the fitted air accel (40 px/s²) only ~-45. With NO input the
+   current ground hspeed carries: `0→0, 3→3, 9→10, 29→29`.
+2. **Air control**: constant accel `200 × fs px/s²` toward the held direction,
+   total capped at walkSpeed. fs=1 counter-strafe: `-103 → -79` over 120 ms =
+   exactly +200; El Nath counter elements: `+1 px/s per 29 ms` ×3 = ~40 = 200×0.2
+   (200 fs-independent would predict +5.8/element — rejected). NOTE: map fs scales
+   AIR control too, not just ground walk.
+3. **No air drag**: neutral arcs hold vx within rounding (`29→26` over 480 ms ≈
+   -6 px/s² worst case; most elements exactly 0).
+4. **Landing halves momentum**: touchdown sets hspeed = vx/2 — `125→62`,
+   `-104→-52`, `26→13`, `9→4` (exact integer halving on both maps). With the
+   OPPOSITE direction held at touchdown it zeroes outright: `-122→0`, `-124→0`
+   (then 390 ms standing at vx=0 — no slide), `-79→0` at fs=1. This is the legal
+   "counter-strafe to stop dead on an icy ledge" trick and the reason the El Nath
+   foothold chain 171>262>264>267>277>278>279 is human-traversable.
+
+Residuals: post-landing re-acceleration on ice replays exactly under the kinetic
+model (e.g. landing→0 then `+33 px/s` after 120 ms of right input = 280×0.12 ✓,
+position +2 px ✓). Bot model updated to all four rules
+(`Config.AIR_CONTROL_ACCEL_PXSS`, `landingGroundHSpeed`, `landOnGround`,
+`resolveAirVelocityX`); GRAPH_VERSION 54.
+
+Caveat: same-direction sub-cap air accel was never observed in isolation (no arc
+starts slow with same-dir input mid-air only); assumed symmetric with the measured
+counter-strafe accel. CalcFloat disasm corroboration pending.

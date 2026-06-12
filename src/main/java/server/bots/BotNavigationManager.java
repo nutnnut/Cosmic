@@ -462,6 +462,16 @@ final class BotNavigationManager {
             entry.lastEdgeBlockReason = "jump-delay";
             return null; // steering follows the bumped launch X — walk a step deeper first
         }
+        // Vertical jumps (launchStepX=0) on slippery ground carry the residual slide into the
+        // air (packet-true no-input launch), which would drift the planned straight-up arc.
+        // Wait for the stop policy (glide / counter-strafe brake) to shed the slide first.
+        // Directional jumps never wait: the launch snaps to ±walkSpeed regardless of slide.
+        if (edge.launchStepX == 0
+                && BotPhysicsEngine.slipperyGround(bot.getMap())
+                && BotPhysicsEngine.carriedAirVelX(bot.getMap(), entry) != 0) {
+            entry.lastEdgeBlockReason = "jump-slide";
+            return null;
+        }
         entry.lastEdgeBlockReason = null;
         setEdgeExecutionTarget(entry, edge);
         BotMovementManager.initiateJump(entry, bot, edge.launchStepX);
