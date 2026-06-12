@@ -248,6 +248,58 @@ class BotInventoryManagerTest {
     }
 
     @Test
+    void shouldClassifyBagEquipsLikeTheSellPipeline() {
+        java.util.List<Item> bag = new java.util.ArrayList<>();
+        Equip reservedSelf = equipWithWatk(1102000, 31);
+        Equip reservedOther = equipWithWatk(1102001, 28);
+        Equip trash = equipWithWatk(1102002, 0);
+        bag.add(reservedSelf);
+        bag.add(reservedOther);
+        bag.add(trash);
+        java.util.List<Equip> shelf = new java.util.ArrayList<>();
+        for (int i = 0; i < BotInventoryManager.KEEP_VALUABLE_EQUIP_SLOTS; i++) {
+            Equip e = equipWithWatk(1103000 + i, 30 - i); // scores 150 down to 35, all on the shelf
+            shelf.add(e);
+            bag.add(e);
+        }
+        Equip neverSellBeyondShelf = equipWithWatk(1104000, 5); // score 25 = never-sell gate
+        Equip overflow = equipWithWatk(1104001, 1);             // score 5, beyond shelf -> sells
+        bag.add(neverSellBeyondShelf);
+        bag.add(overflow);
+
+        Set<Item> self = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+        self.add(reservedSelf);
+        Map<Item, BotInventoryManager.BagEquipClass> out =
+                BotInventoryManager.classifyBagEquips(null, bag, self, item -> item == reservedOther);
+
+        // Reservation wins over hoarding even for the highest-value items.
+        assertEquals(BotInventoryManager.BagEquipStatus.RESV_SELF, out.get(reservedSelf).status());
+        assertEquals(BotInventoryManager.BagEquipStatus.RESV_OTHER, out.get(reservedOther).status());
+        assertEquals(BotInventoryManager.BagEquipStatus.TRASH, out.get(trash).status());
+        // Shelf ranks follow trade value descending.
+        assertEquals("HOARD#1", out.get(shelf.get(0)).label());
+        assertEquals("HOARD#2", out.get(shelf.get(1)).label());
+        // At/above the never-sell gate stays HOARD even beyond the shelf cap.
+        assertEquals(BotInventoryManager.BagEquipStatus.HOARD, out.get(neverSellBeyondShelf).status());
+        assertEquals(BotInventoryManager.KEEP_VALUABLE_EQUIP_SLOTS + 1, out.get(neverSellBeyondShelf).rank());
+        // Kept-for-value but beyond the shelf and below the gate -> HLIM (matches valuableEquipOverflow).
+        assertEquals(BotInventoryManager.BagEquipStatus.HLIM, out.get(overflow).status());
+        assertEquals(BotInventoryManager.KEEP_VALUABLE_EQUIP_SLOTS + 2, out.get(overflow).rank());
+        assertEquals("HLIM#" + (BotInventoryManager.KEEP_VALUABLE_EQUIP_SLOTS + 2), out.get(overflow).label());
+        var overflowItems = BotInventoryManager.valuableEquipOverflow(null,
+                java.util.stream.Stream.concat(shelf.stream(),
+                        java.util.stream.Stream.of(neverSellBeyondShelf, overflow)).toList());
+        assertEquals(List.of(overflow), overflowItems);
+    }
+
+    private static Equip equipWithWatk(int itemId, int watk) {
+        Equip e = mock(Equip.class);
+        when(e.getItemId()).thenReturn(itemId);
+        when(e.getWatk()).thenReturn((short) watk);
+        return e;
+    }
+
+    @Test
     void shouldSellEquipScrollsWithNoJobRelevantStats() {
         Character bot = mock(Character.class);
         when(bot.getJob()).thenReturn(Job.ASSASSIN);

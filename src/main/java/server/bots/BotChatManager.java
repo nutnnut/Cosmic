@@ -380,6 +380,9 @@ public class BotChatManager {
     private static final Pattern AUTOEQUIP_DEBUG_PATTERN = Pattern.compile(
             "\\b(?:auto[\\-\\s]?equip|optimi[sz]e\\s+(?:gear|equip(?:s|ment)?))\\s+(?:debug|verbose|why|explain)\\b",
             Pattern.CASE_INSENSITIVE);
+    private static final Pattern INVENTORY_DEBUG_PATTERN = Pattern.compile(
+            "\\binv(?:entory)?[\\-\\s]?(?:debug|verbose|why|explain)\\b",
+            Pattern.CASE_INSENSITIVE);
     private static final Pattern AUTOEQUIP_PATTERN = Pattern.compile(
             "\\b(?:auto[\\-\\s]?equip|optimi[sz]e\\s+(?:gear|equip(?:s|ment)?))\\b",
             Pattern.CASE_INSENSITIVE);
@@ -977,6 +980,13 @@ public class BotChatManager {
                     BotManager.getInstance().botReply(entry, line);
                 }
             });
+            return;
+        }
+        // Same debug-before-plain rule: "inv debug" must not fall through to the plain
+        // inventory report (INVENTORY_PATTERN, matched in the info section below).
+        if (INVENTORY_DEBUG_PATTERN.matcher(message).find()) {
+            BotManager.after(BotManager.randMs(400, 600), () ->
+                    BotManager.getInstance().botReply(entry, BotInventoryManager.inventoryDebug(entry)));
             return;
         }
         if (AUTOEQUIP_PATTERN.matcher(message).find()) {

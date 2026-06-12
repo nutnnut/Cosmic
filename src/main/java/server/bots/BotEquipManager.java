@@ -48,10 +48,11 @@ import java.util.function.ToIntFunction;
 class BotEquipManager {
 
     private static final Logger log = LoggerFactory.getLogger(BotEquipManager.class);
-    private static final java.nio.file.Path EQUIP_LOG_DIR = java.nio.file.Path.of("logs", "bot-equip");
-    private static final java.time.format.DateTimeFormatter EQUIP_LOG_FILE_FMT =
+    // Shared with BotInventoryManager's invlog dump (same directory + filename idiom).
+    static final java.nio.file.Path EQUIP_LOG_DIR = java.nio.file.Path.of("logs", "bot-equip");
+    static final java.time.format.DateTimeFormatter EQUIP_LOG_FILE_FMT =
             java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HHmmss");
-    private static final java.time.format.DateTimeFormatter EQUIP_LOG_HEADER_FMT =
+    static final java.time.format.DateTimeFormatter EQUIP_LOG_HEADER_FMT =
             java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
     private static final short[] RING_SLOTS = {-12, -13, -15, -16};
     /** Hard cap on Pareto-frontier size per DP step to bound worst-case runtime. */
@@ -389,10 +390,15 @@ class BotEquipManager {
 
         sb.append("\n--- inventory (equip bag) ---\n");
         sb.append(itemHeader(true));
+        // STATUS mirrors the real sell pipeline (see BotInventoryManager.classifyBagEquips).
+        BotEntry dumpEntry = bot != null
+                ? BotManager.getInstance().getEntryByBotCharId(bot.getId()) : null;
+        Map<Item, BotInventoryManager.BagEquipClass> statuses = bot != null
+                ? BotInventoryManager.classifyBagEquips(dumpEntry, bot) : Map.of();
         for (Item it : eqpInv.list()) {
             if (it instanceof Equip e) {
-                boolean reserveSelf = shouldReserveOwnedItem(bot, ii, e);
-                appendItemRow(sb, ii, e, e.getPosition(), reserveSelf);
+                BotInventoryManager.BagEquipClass c = statuses.get(it);
+                appendItemRow(sb, ii, e, e.getPosition(), c == null ? "-" : c.label());
             }
         }
 
@@ -471,14 +477,14 @@ class BotEquipManager {
         }
     }
 
-    private static String itemHeader(boolean includeSelfReserve) {
+    private static String itemHeader(boolean includeStatus) {
         return String.format("%-3s %-30s %-7s %4s %4s %4s %4s %4s %4s %4s %4s %4s %4s %5s %5s%s   reqs%n",
                 "pos", "name", "slot", "STR", "DEX", "INT", "LUK", "WAK", "MAK", "WDF", "MDF", "ACC", "AVD", "HP", "MP",
-                includeSelfReserve ? "  SELF" : "");
+                includeStatus ? "  STATUS    " : "");
     }
 
     private static void appendItemRow(StringBuilder sb, ItemInformationProvider ii, Equip e, short pos,
-                                      Boolean selfReserve) {
+                                      String status) {
         String name = ii.getName(e.getItemId());
         if (name == null) name = "id=" + e.getItemId();
         if (name.length() > 30) name = name.substring(0, 30);
@@ -488,7 +494,7 @@ class BotEquipManager {
                 e.getStr(), e.getDex(), e.getInt(), e.getLuk(),
                 e.getWatk(), e.getMatk(), e.getWdef(), e.getMdef(),
                 e.getAcc(), e.getAvoid(), e.getHp(), e.getMp(),
-                selfReserve == null ? "" : String.format("  %-4s", selfReserve ? "Y" : "N")));
+                status == null ? "" : String.format("  %-10s", status)));
         // Reqs from WZ stat map.
         Map<String, Integer> stats = ii.getEquipStats(e.getItemId());
         if (stats != null) {

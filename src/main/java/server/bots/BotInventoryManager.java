@@ -26,8 +26,10 @@ import tools.PacketCreator;
 
 import java.awt.*;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashSet;
+import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -1664,15 +1666,23 @@ class BotInventoryManager {
     // them just because there are more than the shelf holds. Bag pressure is the lesser evil.
     static final double NEVER_SELL_TRADE_SCORE = 25.0;
 
+    /** Kept-for-value equips ranked by trade value descending (rank = index + 1). Shared by
+     *  the real sell pipeline ({@link #valuableEquipOverflow}) and the debug classifier
+     *  ({@link #classifyBagEquips}) so both always agree. */
+    static List<Equip> rankKeptValuables(ItemInformationProvider ii, List<Equip> kept) {
+        List<Equip> ranked = new ArrayList<>(kept);
+        ranked.sort(Comparator.comparingDouble((Equip e) -> tradeValueScore(ii, e)).reversed()
+                .thenComparingInt(Item::getItemId));
+        return ranked;
+    }
+
     /** Kept-for-value equips beyond the shelf cap, weakest trade value first — except equips
      *  at or above {@link #NEVER_SELL_TRADE_SCORE}, which never sell regardless of overflow. */
     static List<Item> valuableEquipOverflow(ItemInformationProvider ii, List<Equip> kept) {
         if (kept.size() <= KEEP_VALUABLE_EQUIP_SLOTS) {
             return List.of();
         }
-        List<Equip> ranked = new ArrayList<>(kept);
-        ranked.sort(Comparator.comparingDouble((Equip e) -> tradeValueScore(ii, e)).reversed()
-                .thenComparingInt(Item::getItemId));
+        List<Equip> ranked = rankKeptValuables(ii, kept);
         List<Item> overflow = new ArrayList<>();
         for (Equip e : ranked.subList(KEEP_VALUABLE_EQUIP_SLOTS, ranked.size())) {
             if (tradeValueScore(ii, e) < NEVER_SELL_TRADE_SCORE) {
@@ -1870,6 +1880,222 @@ class BotInventoryManager {
             result.removeIf(item -> item.getItemId() == entry.autopilotFarmItemId);
         }
         return result;
+    }
+
+    // Debug classification of bag equips, derived from the SAME predicates and ranking the
+    // sell pipeline uses (no parallel decision tree):
+    //   RESV-SELF  reserved for the bot's own upgrades (collectPotentialSelfUpgradeItems)
+    //   RESV-OTHER promised to other recipients (BotOfferManager)
+    //   HOARD#r    kept for value, rank r on the bounded shelf (or above the never-sell gate)
+    //   HLIM#r     kept for value but beyond the shelf and below the gate -> sells next trip
+    //   TRASH      sells next trip
+    enum BagEquipStatus { RESV_SELF, RESV_OTHER, HOARD, HLIM, TRASH }
+
+    record BagEquipClass(BagEquipStatus status, int rank) {
+        String label() {
+            return switch (status) {
+                case RESV_SELF -> "RESV-SELF";
+                case RESV_OTHER -> "RESV-OTHER";
+                case HOARD -> "HOARD#" + rank;
+                case HLIM -> "HLIM#" + rank;
+                case TRASH -> "TRASH";
+            };
+        }
+    }
+
+    static Map<Item, BagEquipClass> classifyBagEquips(BotEntry entry, Character bot) {
+        ItemInformationProvider ii = ItemInformationProvider.getInstance();
+        List<Item> all = new ArrayList<>();
+        collectFromBag(bot, all, InventoryType.EQUIP, item -> true);
+        Set<Item> selfKeep = BotEquipManager.collectPotentialSelfUpgradeItems(bot);
+        return classifyBagEquips(ii, all, selfKeep,
+                item -> entry != null && BotOfferManager.isReservedForOtherRecipients(entry, bot, item));
+    }
+
+    static Map<Item, BagEquipClass> classifyBagEquips(ItemInformationProvider ii, List<Item> bagEquips,
+                                                      Set<Item> reservedSelf, Predicate<Item> reservedOther) {
+        Map<Item, BagEquipClass> out = new IdentityHashMap<>();
+        List<Equip> kept = new ArrayList<>();
+        for (Item item : bagEquips) {
+            if (!(item instanceof Equip equip)) {
+                continue;
+            }
+            if (reservedSelf.contains(item)) {
+                out.put(item, new BagEquipClass(BagEquipStatus.RESV_SELF, 0));
+            } else if (reservedOther.test(item)) {
+                out.put(item, new BagEquipClass(BagEquipStatus.RESV_OTHER, 0));
+            } else if (shouldKeepForSellTrash(ii, equip)) {
+                kept.add(equip);
+            } else {
+                out.put(item, new BagEquipClass(BagEquipStatus.TRASH, 0));
+            }
+        }
+        List<Equip> ranked = rankKeptValuables(ii, kept);
+        for (int i = 0; i < ranked.size(); i++) {
+            Equip e = ranked.get(i);
+            int rank = i + 1;
+            boolean keeps = rank <= KEEP_VALUABLE_EQUIP_SLOTS
+                    || tradeValueScore(ii, e) >= NEVER_SELL_TRADE_SCORE;
+            out.put(e, new BagEquipClass(keeps ? BagEquipStatus.HOARD : BagEquipStatus.HLIM, rank));
+        }
+        return out;
+    }
+
+    // "inv debug" chat command: writes logs/bot-equip/invlog-<name>-<timestamp>.txt with the
+    // verdict the REAL sell pipeline would apply to every bag item. Verdicts come from the
+    // actual collect* outputs; reasons are coarse labels probed from the same predicates
+    // (no second decision tree). Built to debug USE/ETC hoarding.
+    static String inventoryDebug(BotEntry entry) {
+        Character bot = entry != null ? entry.bot : null;
+        if (bot == null) {
+            return "no bot to dump";
+        }
+        ItemInformationProvider ii = ItemInformationProvider.getInstance();
+        java.time.LocalDateTime now = java.time.LocalDateTime.now();
+        String safeName = bot.getName().replaceAll("[^a-zA-Z0-9_-]", "_");
+        String filename = "invlog-" + safeName + "-" + now.format(BotEquipManager.EQUIP_LOG_FILE_FMT) + ".txt";
+
+        StringBuilder sb = new StringBuilder(8192);
+        sb.append("=== inventory dump ===\n");
+        sb.append("time:    ").append(now.format(BotEquipManager.EQUIP_LOG_HEADER_FMT)).append('\n');
+        sb.append("bot:     ").append(bot.getName())
+          .append(" job=").append(bot.getJob())
+          .append(" lv=").append(bot.getLevel()).append('\n');
+
+        Map<Item, BagEquipClass> statuses = classifyBagEquips(entry, bot);
+        sb.append("\n--- EQUIP ---\n");
+        sb.append(String.format("%-3s %-30s %-7s %7s  %s%n", "pos", "name", "slot", "score", "STATUS"));
+        int equipCount = 0;
+        for (Item item : bot.getInventory(InventoryType.EQUIP).list()) {
+            if (!(item instanceof Equip e)) {
+                continue;
+            }
+            equipCount++;
+            BagEquipClass c = statuses.get(item);
+            String slot = ii.getEquipmentSlot(e.getItemId());
+            sb.append(String.format("%-3d %-30s %-7s %7.1f  %s%n",
+                    e.getPosition(), itemName(ii, e.getItemId()), slot == null ? "?" : slot,
+                    tradeValueScore(ii, e), c == null ? "-" : c.label()));
+        }
+
+        Set<Item> sellingUse = Collections.newSetFromMap(new IdentityHashMap<>());
+        sellingUse.addAll(collectSellTrashUseItems(bot));
+        WeaponType ownAmmoType = tradeAmmoWeaponType(bot);
+        sb.append("\n--- USE ---\n");
+        sb.append(String.format("%-30s %-6s %-5s %s%n", "name", "qty", "verd", "reason"));
+        int useSell = 0;
+        int useCount = 0;
+        for (Item item : bot.getInventory(InventoryType.USE).list()) {
+            useCount++;
+            boolean sell = sellingUse.contains(item);
+            if (sell) {
+                useSell++;
+            }
+            sb.append(String.format("%-30s x%-5d %-5s %s%n",
+                    itemName(ii, item.getItemId()), item.getQuantity(),
+                    sell ? "SELL" : "KEEP", useVerdictReason(bot, ownAmmoType, item, sell)));
+        }
+
+        Set<Item> sellingEtc = Collections.newSetFromMap(new IdentityHashMap<>());
+        sellingEtc.addAll(collectSellTrashEtcItems(bot));
+        sb.append("\n--- ETC ---\n");
+        sb.append(String.format("%-30s %-6s %-5s %s%n", "name", "qty", "verd", "reason"));
+        int etcSell = 0;
+        int etcCount = 0;
+        for (Item item : bot.getInventory(InventoryType.ETC).list()) {
+            etcCount++;
+            boolean sell = sellingEtc.contains(item);
+            if (sell) {
+                etcSell++;
+            }
+            sb.append(String.format("%-30s x%-5d %-5s %s%n",
+                    itemName(ii, item.getItemId()), item.getQuantity(),
+                    sell ? "SELL" : "KEEP", etcVerdictReason(item, sell)));
+        }
+
+        try {
+            java.nio.file.Files.createDirectories(BotEquipManager.EQUIP_LOG_DIR);
+            java.nio.file.Files.writeString(BotEquipManager.EQUIP_LOG_DIR.resolve(filename), sb.toString());
+        } catch (java.io.IOException e) {
+            log.warn("Failed to write inventory dump", e);
+            return "couldn't write the inventory dump, check server logs";
+        }
+        return String.format("inv dump: %s | equip %d, use sell %d/%d, etc sell %d/%d",
+                filename, equipCount, useSell, useCount, etcSell, etcCount);
+    }
+
+    private static String itemName(ItemInformationProvider ii, int itemId) {
+        String name = ii.getName(itemId);
+        if (name == null || name.isBlank()) {
+            name = "id=" + itemId;
+        }
+        return name.length() > 30 ? name.substring(0, 30) : name;
+    }
+
+    // Coarse reason labels probing the same predicates collectSellTrashUseItems applies.
+    private static String useVerdictReason(Character bot, WeaponType ownAmmoType, Item item, boolean sell) {
+        int id = item.getItemId();
+        WeaponType ammoType = ammoWeaponType(id);
+        if (ammoType != null) {
+            if (sell) {
+                return sellTrashQuantity(item) < item.getQuantity()
+                        ? "ammo-other-class (excess over party reserve)" : "ammo-other-class";
+            }
+            if (ammoType == ownAmmoType) {
+                return "own-ammo";
+            }
+            if (ItemConstants.isRechargeable(id)) {
+                return "rechargeable-ammo";
+            }
+            if (isRareDrop(id)) {
+                return "rare-drop";
+            }
+            if (sellTrashQuantity(item) <= 0) {
+                return "party-arrow-reserve";
+            }
+            return "no-npc-price";
+        }
+        if (ItemConstants.isEquipScroll(id)) {
+            if (sell) {
+                return "scroll-no-relevant-stat";
+            }
+            return isIrrelevantEquipScroll(bot, id) ? "scroll-junk-but-unsellable" : "scroll-relevant";
+        }
+        if (!isSafeToDrop(item)) {
+            return "quest-or-untradeable";
+        }
+        if (isRecoveryPotion(id)) {
+            return "pot";
+        }
+        if (isBuffConsumable(id)) {
+            return "buff";
+        }
+        return "uncategorized-use";
+    }
+
+    // Coarse reason labels probing the same predicates collectSellTrashEtcItems applies.
+    private static String etcVerdictReason(Item item, boolean sell) {
+        if (sell) {
+            return "sell";
+        }
+        int id = item.getItemId();
+        if (!isSafeToDrop(item)) {
+            return "quest-or-untradeable";
+        }
+        if (SKILL_CONSUMED_ETC.contains(id)) {
+            return "skill-consumed";
+        }
+        if (isMakerMaterial(id)) {
+            return "maker-material";
+        }
+        if (isRareDrop(id)) {
+            return "rare-drop";
+        }
+        if (makerCrystalFromLeftover.applyAsInt(id) != -1
+                && item.getQuantity() >= MONSTER_CRYSTAL_LEFTOVER_KEEP_QUANTITY) {
+            return "crystal-leftover-keep";
+        }
+        return "no-npc-price";
     }
 
     private static EquipTradeGroups classifyEquipTradeGroups(BotEntry entry, Character bot) {
