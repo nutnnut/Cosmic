@@ -1726,6 +1726,12 @@ class BotInventoryManager {
     }
     static SellPriceLookup sellPrice =
             (id, qty) -> ItemInformationProvider.getInstance().getPrice(id, qty);
+    @FunctionalInterface
+    interface ScrollStatsLookup {
+        Map<String, Integer> stats(int itemId);
+    }
+    static ScrollStatsLookup scrollStats =
+            id -> ItemInformationProvider.getInstance().getEquipStats(id);
     static IntUnaryOperator makerCrystalFromLeftover =
             id -> ItemInformationProvider.getInstance().getMakerCrystalFromLeftover(id);
     static IntUnaryOperator bestDropChance = BotScrollManager::bestDropChance;
@@ -1768,22 +1774,71 @@ class BotInventoryManager {
     }
 
     // Trash USE = ammo for a weapon the bot isn't using, non-rechargeable only (stars/bullets
-    // keep resale/trade value). Potions, buffs, scrolls and uncategorized USE items all stay:
-    // selling something useful costs more than the bag slot it frees.
+    // keep resale/trade value), plus equip scrolls whose effect grants nothing this job values.
+    // Potions, buffs and uncategorized USE items all stay: selling something useful costs more
+    // than the bag slot it frees.
     static List<Item> collectSellTrashUseItems(Character bot) {
         WeaponType ownAmmoType = tradeAmmoWeaponType(bot);
         List<Item> result = new ArrayList<>();
         collectFromBag(bot, result, InventoryType.USE, item -> {
             int id = item.getItemId();
             WeaponType ammoType = ammoWeaponType(id);
-            return ammoType != null
-                    && ammoType != ownAmmoType
-                    && !ItemConstants.isRechargeable(id)
-                    && !isRareDrop(id)
+            if (ammoType != null) {
+                return ammoType != ownAmmoType
+                        && !ItemConstants.isRechargeable(id)
+                        && !isRareDrop(id)
+                        && sellTrashQuantity(item) > 0
+                        && sellPrice.price(id, sellTrashQuantity(item)) > 0;
+            }
+            return isIrrelevantEquipScroll(bot, id)
                     && sellTrashQuantity(item) > 0
                     && sellPrice.price(id, sellTrashQuantity(item)) > 0;
         });
         return result;
+    }
+
+    // An equip scroll is sell-trash when its effect grants ONLY stats this job never values
+    // (hp/mp/def/avoid, acc for classes that get acc from stat scaling). Speed/jump are
+    // universally relevant for every job (movement value) and never sold. Deliberately NOT
+    // gated by isRareDrop: nearly every scroll is a rare drop, the gate would nullify this.
+    // Meta scrolls (clean slate/chaos/modifier) grant no inc stats but have special effects,
+    // so they stay. No collision with BotScrollManager's planner: it only queues scrolls with
+    // positive offense gain, which are relevant by construction.
+    private static boolean isIrrelevantEquipScroll(Character bot, int itemId) {
+        if (!ItemConstants.isEquipScroll(itemId)) {
+            return false;
+        }
+        if (ItemConstants.isCleanSlate(itemId) || ItemConstants.isChaosScroll(itemId)
+                || ItemConstants.isModifierScroll(itemId)) {
+            return false;
+        }
+        Map<String, Integer> stats = scrollStats.stats(itemId);
+        if (stats == null) {
+            return false; // unknown effect: keep
+        }
+        if (stats.getOrDefault("Speed", 0) > 0 || stats.getOrDefault("Jump", 0) > 0) {
+            return false;
+        }
+        for (BotEquipManager.RelevantStat stat : BotEquipManager.relevantStatsFor(bot.getJob())) {
+            if (stats.getOrDefault(scrollStatKey(stat), 0) > 0) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    // Scroll effects come from the same WZ read path as equips (getEquipStats: "inc"-stripped
+    // keys), so WATK/MATK live under PAD/MAD.
+    private static String scrollStatKey(BotEquipManager.RelevantStat stat) {
+        return switch (stat) {
+            case STR -> "STR";
+            case DEX -> "DEX";
+            case INT -> "INT";
+            case LUK -> "LUK";
+            case WATK -> "PAD";
+            case MATK -> "MAD";
+            case ACC -> "ACC";
+        };
     }
 
     // Trash ETC = anything an NPC pays for. Quest items/untradeables are already excluded by

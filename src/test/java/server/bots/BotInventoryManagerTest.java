@@ -248,6 +248,48 @@ class BotInventoryManagerTest {
     }
 
     @Test
+    void shouldSellEquipScrollsWithNoJobRelevantStats() {
+        Character bot = mock(Character.class);
+        when(bot.getJob()).thenReturn(Job.ASSASSIN);
+        Inventory use = new Inventory(bot, InventoryType.USE, (byte) 24);
+        use.addItem(Items.itemWithQuantity(2040001, 3));  // pure HP scroll -> sell
+        use.addItem(Items.itemWithQuantity(2040002, 2));  // pure WDEF scroll -> sell
+        use.addItem(Items.itemWithQuantity(2040041, 1));  // LUK scroll -> keep (assassin)
+        use.addItem(Items.itemWithQuantity(2043001, 1));  // ATT scroll -> keep
+        use.addItem(Items.itemWithQuantity(2040718, 1));  // speed scroll -> keep for any job
+        use.addItem(Items.itemWithQuantity(2040003, 1));  // junk scroll but NPC pays 0 -> keep
+        when(bot.getInventory(InventoryType.USE)).thenReturn(use);
+
+        Map<Integer, Map<String, Integer>> effects = Map.of(
+                2040001, Map.of("MHP", 10),
+                2040002, Map.of("PDD", 10),
+                2040041, Map.of("LUK", 2),
+                2043001, Map.of("PAD", 2),
+                2040718, Map.of("Speed", 1),
+                2040003, Map.of("MMP", 10));
+
+        BotInventoryManager.ScrollStatsLookup prevScroll = BotInventoryManager.scrollStats;
+        BotInventoryManager.scrollStats = effects::get;
+        // dropChance marks everything rare: the rare-drop keep gate must NOT apply to scrolls.
+        try (AutoCloseable seams = withSellSeams((id, qty) -> id == 2040003 ? 0 : 10, id -> -1, id -> 100);
+             MockedStatic<BotAttackExecutionProvider> attacks =
+                     mockStatic(BotAttackExecutionProvider.class)) {
+            attacks.when(() -> BotAttackExecutionProvider.getEquippedWeaponType(bot))
+                    .thenReturn(client.inventory.WeaponType.CLAW);
+
+            List<Item> trash = BotInventoryManager.collectSellTrashUseItems(bot);
+
+            assertEquals(2, trash.size());
+            assertTrue(trash.stream().anyMatch(item -> item.getItemId() == 2040001));
+            assertTrue(trash.stream().anyMatch(item -> item.getItemId() == 2040002));
+        } catch (Exception e) {
+            throw new AssertionError(e);
+        } finally {
+            BotInventoryManager.scrollStats = prevScroll;
+        }
+    }
+
+    @Test
     void shouldKeepRareAndCraftingEtcOutOfSellTrash() {
         Character bot = mock(Character.class);
         Inventory etc = new Inventory(bot, InventoryType.ETC, (byte) 24);
