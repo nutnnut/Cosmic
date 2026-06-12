@@ -887,6 +887,10 @@ public class Server {
         futures.add(initExecutor.submit(CashItemFactory::loadAllCashItems));
         futures.add(initExecutor.submit(Quest::loadAllQuests));
         futures.add(initExecutor.submit(SkillbookInformationProvider::loadAllSkillbookInformation));
+        // Must finish BEFORE the login port opens: it reads every equip's WZ img through the
+        // synchronized XMLWZFile lock - run post-online (as before) it starves every early
+        // login/bot thread off that lock for the full load (~10s freezes until done).
+        futures.add(initExecutor.submit(DressingRoom::load));
         initExecutor.shutdown();
 
         TimeZone.setDefault(TimeZone.getTimeZone(YamlConfig.config.server.TIMEZONE));
@@ -946,8 +950,6 @@ public class Server {
         online = true;
         Duration initDuration = Duration.between(beforeInit, Instant.now());
         log.info("Cosmic is now online after {} ms.", initDuration.toMillis());
-
-        DressingRoom.load();
 
         OpcodeConstants.generateOpcodeNames();
         CommandsExecutor.getInstance();
