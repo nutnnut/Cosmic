@@ -2291,7 +2291,7 @@ class BotInventoryManager {
         Map<String, Integer> stats = ii != null ? ii.getEquipStats(equip.getItemId()) : null;
         if (ItemConstants.isWeapon(equip.getItemId())) {
             Equip baseEquip = ii != null ? (Equip) ii.getEquipById(equip.getItemId()) : null;
-            if (hasProtectedSellTrashWeaponStat(stats, equip, baseEquip)) {
+            if (hasProtectedSellTrashWeaponStat(equip, baseEquip)) {
                 return true;
             }
         } else if (equip.getWatk() > 0) {
@@ -2330,23 +2330,15 @@ class BotInventoryManager {
         return value >= pureThreshold || (value >= aboveBaseThreshold && value > base);
     }
 
-    static boolean hasProtectedSellTrashWeaponStat(Map<String, Integer> stats, Equip equip, Equip baseEquip) {
+    static boolean hasProtectedSellTrashWeaponStat(Equip equip, Equip baseEquip) {
         if (equip == null || baseEquip == null) {
             return false;
         }
-        boolean mageWeapon = isMageWeapon(stats);
-        if (mageWeapon) {
-            return equip.getMatk() - baseEquip.getMatk() >= 4;
-        }
-        return equip.getWatk() - baseEquip.getWatk() >= 4;
-    }
-
-    private static boolean isMageWeapon(Map<String, Integer> stats) {
-        if (stats == null) {
-            return false;
-        }
-        int reqJob = stats.getOrDefault("reqJob", 0);
-        return reqJob == 0 ? false : (reqJob & 0x2) != 0 && (reqJob & ~0x2) == 0;
+        // Either attack axis counts: an above-base MAD roll on an any-job weapon (e.g. the
+        // reqJob-0 Black Umbrella, a 1H sword with base MAD 85) is mage trade stock even when
+        // its WATK rolled clean — don't key the protected axis on the weapon's reqJob mask.
+        return equip.getWatk() - baseEquip.getWatk() >= 4
+                || equip.getMatk() - baseEquip.getMatk() >= 4;
     }
 
     /** Score used to order own-class equips worst-to-best: 4*watk + matk + main + sec. */

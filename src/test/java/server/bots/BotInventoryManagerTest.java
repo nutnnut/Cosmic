@@ -162,8 +162,27 @@ class BotInventoryManagerTest {
         Equip pureHighDex = mock(Equip.class);
         when(pureHighDex.getDex()).thenReturn((short) 10);
         assertTrue(BotInventoryManager.hasProtectedSellTrashStat(Map.of("reqJob", 1, "DEX", 10), pureHighDex, 6, 10));
-        assertTrue(BotInventoryManager.hasProtectedSellTrashWeaponStat(Map.of("reqJob", 1), currentWarriorWeapon, baseWarriorWeapon));
-        assertTrue(BotInventoryManager.hasProtectedSellTrashWeaponStat(Map.of("reqJob", 2), currentMageWeapon, baseMageWeapon));
+        assertTrue(BotInventoryManager.hasProtectedSellTrashWeaponStat(currentWarriorWeapon, baseWarriorWeapon));
+        assertTrue(BotInventoryManager.hasProtectedSellTrashWeaponStat(currentMageWeapon, baseMageWeapon));
+    }
+
+    @Test
+    void shouldProtectAboveBaseMatkRollOnAnyJobWeapon() {
+        // Black Umbrella field case: reqJob-0 ONE-HANDED SWORD with base MAD 85 that rolled
+        // 92 (+7 over base). The protected-roll gate must read the MAD axis even though the
+        // weapon's type/reqJob mask is not mage-only — godly MAD rolls are mage trade stock.
+        Equip rolledUmbrella = mock(Equip.class);
+        when(rolledUmbrella.getWatk()).thenReturn((short) 85); // watk rolled clean (= base)
+        when(rolledUmbrella.getMatk()).thenReturn((short) 92);
+        Equip baseUmbrella = mock(Equip.class);
+        when(baseUmbrella.getWatk()).thenReturn((short) 85);
+        when(baseUmbrella.getMatk()).thenReturn((short) 85);
+
+        assertTrue(BotInventoryManager.hasProtectedSellTrashWeaponStat(rolledUmbrella, baseUmbrella),
+                "+7 MAD over WZ base must shelf-protect regardless of who holds it");
+
+        // Clean copy (both axes at base) stays unprotected -> normal sell-trash flow.
+        assertTrue(!BotInventoryManager.hasProtectedSellTrashWeaponStat(baseUmbrella, baseUmbrella));
     }
 
     @Test
