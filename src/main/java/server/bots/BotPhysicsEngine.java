@@ -14,6 +14,9 @@ import java.util.concurrent.ConcurrentHashMap;
 final class BotPhysicsEngine {
     private static final double CLIENT_GROUND_STEP_MS = 8.0;
     private static final double CLIENT_GROUND_STEP_S = CLIENT_GROUND_STEP_MS / 1000.0;
+    // Brake-to-stop sim bound for slippery landings: stop takes ~2.3/fs ticks from top
+    // speed (11 at El Nath fs=0.2); 240 covers any fs >= ~0.01 with margin.
+    private static final int POST_LANDING_BRAKE_TICK_CAP = 240;
     private static final int REGION_STITCH_GAP_PX = 2;
     private static final int SYNTHETIC_MAP_BOUND_SIZE = 1 << 18;
     // Max horizontal gap between adjacent foothold endpoints that the bot can walk across.
@@ -904,6 +907,11 @@ final class BotPhysicsEngine {
         MapleMap map = bot.getMap();
         Point currentPos = bot.getPosition();
         int desiredDir = entry.moveDir;
+        if (desiredDir == 0) {
+            // Standing intent while still sliding on slippery ground: brake by holding the
+            // opposite direction (counter-strafe), like a player stopping on a small platform.
+            desiredDir = counterStrafeBrakeDir(map, entry.movementProfile, entry.hspeed);
+        }
         GroundStepResult step = simulateGroundMotion(map, currentPos, foothold, desiredDir,
                 new GroundTravelState(entry.physX, entry.hspeed, entry.groundPhysicsCarryMs), entry.movementProfile);
 
@@ -1037,6 +1045,27 @@ final class BotPhysicsEngine {
         GroundTravelState state = new GroundTravelState(landing.point().x, landingHSpeed, 0.0);
         Point cursor = new Point(landing.point());
         Foothold currentFoothold = landing.foothold();
+        if (mapGroundSlipScale(map, profile) < 1.0) {
+            // Slippery landing: the runtime brakes by counter-strafing until stopped (see
+            // counterStrafeBrakeDir + applyGroundMotion), so validity is "can the bot land
+            // here and come to a stop" — not the held-direction stability window, which on
+            // ice would either reject every small platform (long glide) or under-reserve.
+            // Deterministic policy, so the graph gains no extra state.
+            for (int i = 0; i < POST_LANDING_BRAKE_TICK_CAP; i++) {
+                int brakeDir = counterStrafeBrakeDir(map, profile, state.hspeed());
+                if (brakeDir == 0) {
+                    return new PostLandingJump(landing, cursor, currentFoothold, false);
+                }
+                GroundStepResult step = simulateGroundMotion(map, cursor, currentFoothold, brakeDir, state, profile);
+                if (step.lostGround()) {
+                    return new PostLandingJump(landing, step.point(), step.foothold(), true);
+                }
+                cursor = step.point();
+                currentFoothold = step.foothold();
+                state = step.state();
+            }
+            return new PostLandingJump(landing, cursor, currentFoothold, true); // never stopped
+        }
         for (int i = 0; i < ticks; i++) {
             GroundStepResult step = simulateGroundMotion(map, cursor, currentFoothold, desiredDir, state, profile);
             if (step.lostGround()) {
@@ -1821,6 +1850,23 @@ final class BotPhysicsEngine {
      *  BotMovementProfile) cancel the field's slipperiness — normal physics on snow. */
     private static double mapGroundSlipScale(MapleMap map, BotMovementProfile profile) {
         return profileOrBase(profile).snowShoes() ? 1.0 : mapGroundSlipScale(map);
+    }
+
+    /**
+     * Counter-strafe braking: on slippery ground a held opposite input sheds speed at
+     * {@code SLIP_WALK_ACCEL_PXSS x fs} — 3.5x the passive glide — exactly like a player
+     * counter-strafing to stop on a small platform. Returns the brake direction while the
+     * bot slides faster than one brake tick can cancel, else 0 (the residual glide-out is
+     * under ~1 px). Always 0 on non-slippery ground or with snowshoes.
+     */
+    static int counterStrafeBrakeDir(MapleMap map, BotMovementProfile profile, double hspeed) {
+        double fs = mapGroundSlipScale(map, profile);
+        if (fs >= 1.0) {
+            return 0;
+        }
+        double brakePerTick = cfg.SLIP_WALK_ACCEL_PXSS * fs * CLIENT_GROUND_STEP_S * CLIENT_GROUND_STEP_S
+                * Math.max(1.0, cfg.TICK_MS / CLIENT_GROUND_STEP_MS);
+        return Math.abs(hspeed) > brakePerTick ? (hspeed > 0 ? -1 : 1) : 0;
     }
 
     /** True when this map's ground is slippery for bots WITHOUT snowshoes (fs &lt; 1). */

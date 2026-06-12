@@ -620,6 +620,76 @@ class BotPhysicsEngineTest {
     }
 
     @Test
+    void shouldCounterStrafeBrakeOnlyWhileSlidingOnSlipperyGround() {
+        MapleMap snow = flatGroundMap(0.2f);
+        BotMovementProfile base = BotMovementProfile.base();
+        // Sliding right at top speed -> brake left; mirrored for left.
+        assertEquals(-1, BotPhysicsEngine.counterStrafeBrakeDir(snow, base, 1.0));
+        assertEquals(1, BotPhysicsEngine.counterStrafeBrakeDir(snow, base, -1.0));
+        // Released once one brake tick can cancel the residual; never on normal ground
+        // or with snowshoes (normal physics stops on its own).
+        assertEquals(0, BotPhysicsEngine.counterStrafeBrakeDir(snow, base, 0.01));
+        assertEquals(0, BotPhysicsEngine.counterStrafeBrakeDir(flatGroundMap(0f), base, 1.0));
+        assertEquals(0, BotPhysicsEngine.counterStrafeBrakeDir(
+                snow, new BotMovementProfile(100, 100, true), 1.0));
+    }
+
+    @Test
+    void shouldStopMuchShorterWhenBrakingThanGliding() {
+        // Braking sheds 1400*fs px/s^2 vs the 400*fs glide: from top speed the braked stop
+        // distance (~28 px at fs=0.2) is well under half the glide-out (~98 px).
+        MapleMap snow = flatGroundMap(0.2f);
+        double glide = slideOutDistance(snow, false);
+        double braked = slideOutDistance(snow, true);
+        assertTrue(braked > 0 && braked < glide * 0.45,
+                "braked " + braked + " px vs glide " + glide + " px");
+    }
+
+    private static double slideOutDistance(MapleMap map, boolean brake) {
+        Foothold fh = map.getFootholds().findBelow(new Point(0, 99));
+        BotPhysicsEngine.GroundTravelState state = new BotPhysicsEngine.GroundTravelState(0, 1.0, 0.0);
+        Point pos = new Point(0, 100);
+        for (int i = 0; i < 400 && Math.abs(state.hspeed()) > 1e-9; i++) {
+            int dir = brake
+                    ? BotPhysicsEngine.counterStrafeBrakeDir(map, BotMovementProfile.base(), state.hspeed())
+                    : 0;
+            if (brake && dir == 0 && Math.abs(state.hspeed()) < 0.1) {
+                break; // brake released; residual glide-out is sub-pixel
+            }
+            BotPhysicsEngine.GroundStepResult step = BotPhysicsEngine.simulateGroundMotion(
+                    map, pos, fh, dir, state, BotMovementProfile.base());
+            state = step.state();
+            pos = step.point();
+        }
+        return Math.abs(pos.x);
+    }
+
+    @Test
+    void shouldValidateSlipperyLandingsAsBrakeToStop() {
+        // 90px platform, landing 30px from its left edge moving right at full speed:
+        // a glide-out (~98px) would slide off; the braked stop (~28px) holds.
+        MapleMap snow = smallPlatformSnowMap();
+        Foothold platform = snow.getFootholds().findBelow(new Point(-2000 + 30, -100));
+        BotPhysicsEngine.JumpLanding landing = new BotPhysicsEngine.JumpLanding(
+                new Point(-2000 + 30, -50), platform, 5.0, 8.0);
+        BotPhysicsEngine.PostLandingJump result = BotPhysicsEngine.simulatePostLandingGroundTicks(
+                snow, landing, 1, BotMovementProfile.base(), 3);
+        assertTrue(result != null && !result.lostGround(),
+                "counter-strafe braking keeps the landing on the platform");
+    }
+
+    private static MapleMap smallPlatformSnowMap() {
+        MapleMap map = new MapleMap(211000000, 0, 0, 211000000, 1.0f);
+        server.maps.FootholdTree tree = new server.maps.FootholdTree(
+                new Point(-3000, -2000), new Point(3000, 2000));
+        tree.insert(new Foothold(new Point(-2000, -50), new Point(-1910, -50), 1)); // 90px ledge
+        tree.insert(new Foothold(new Point(-3000, 400), new Point(3000, 400), 2)); // floor below
+        map.setFootholds(tree);
+        map.setFootholdSpeed(0.2f);
+        return map;
+    }
+
+    @Test
     void shouldReserveKineticRunwayOnSnow() {
         int normal = BotPhysicsEngine.launchRunwayPx(flatGroundMap(0f), BotMovementProfile.base());
         int snow = BotPhysicsEngine.launchRunwayPx(flatGroundMap(0.2f), BotMovementProfile.base());
