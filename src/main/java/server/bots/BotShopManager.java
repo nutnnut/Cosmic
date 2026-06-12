@@ -55,7 +55,9 @@ final class BotShopManager {
     private static final int SHOP_STEP_DELAY_MAX_MS = 4001;
     private static final int SELL_TRASH_STEP_DELAY_MS = 500;
     private static final long SHOP_VISIT_TIMEOUT_MS = 30_000L;
-    private static final long SHOP_SEQUENCE_TIMEOUT_MS = 45_000L;
+    // Idle gate, not a total cap: every executed shop step refreshes shopSequenceStartedAtMs,
+    // so long multi-item hauls keep going — only a sequence whose next step never fires aborts.
+    private static final long SHOP_SEQUENCE_IDLE_TIMEOUT_MS = 45_000L;
     private static final long SHOP_STUCK_FALLBACK_MS = 1000L;
     private static final int SHOP_STUCK_MOVE_TOLERANCE_PX = 2;
     private static final int POT_TRIGGER_THRESHOLD = 4; // 80% of target (5) for early trigger
@@ -237,7 +239,7 @@ final class BotShopManager {
         }
         if (entry.shopSequenceActive
                 && entry.shopSequenceStartedAtMs > 0
-                && now - entry.shopSequenceStartedAtMs > SHOP_SEQUENCE_TIMEOUT_MS) {
+                && now - entry.shopSequenceStartedAtMs > SHOP_SEQUENCE_IDLE_TIMEOUT_MS) {
             abortShop(entry, bot, "took too long at the shop, giving up");
             return false;
         }
@@ -971,6 +973,9 @@ final class BotShopManager {
         BotManager.after(delayMs, () -> {
             if (!entry.shopVisitPending) {
                 return;
+            }
+            if (entry.shopSequenceActive) {
+                entry.shopSequenceStartedAtMs = System.currentTimeMillis();
             }
             try {
                 step.run();
