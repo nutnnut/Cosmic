@@ -65,6 +65,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import provider.DressingRoom;
 import server.CashShop.CashItemFactory;
+import server.EquipStatsDiskCache;
+import server.ItemInformationProvider;
 import server.SkillbookInformationProvider;
 import server.ThreadManager;
 import server.TimerManager;
@@ -890,7 +892,14 @@ public class Server {
         // Must finish BEFORE the login port opens: it reads every equip's WZ img through the
         // synchronized XMLWZFile lock - run post-online (as before) it starves every early
         // login/bot thread off that lock for the full load (~10s freezes until done).
-        futures.add(initExecutor.submit(DressingRoom::load));
+        // The disk cache skips the ~66s WZ parse on every boot after the first.
+        futures.add(initExecutor.submit(() -> {
+            boolean primed = EquipStatsDiskCache.preload(ItemInformationProvider.getInstance());
+            DressingRoom.load();
+            if (!primed) {
+                EquipStatsDiskCache.dump(ItemInformationProvider.getInstance());
+            }
+        }));
         initExecutor.shutdown();
 
         TimeZone.setDefault(TimeZone.getTimeZone(YamlConfig.config.server.TIMEZONE));
