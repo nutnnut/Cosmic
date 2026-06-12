@@ -307,6 +307,7 @@ class BotInventoryManagerTest {
         use.addItem(Items.itemWithQuantity(2040001, 3));  // pure HP scroll -> sell
         use.addItem(Items.itemWithQuantity(2040002, 2));  // pure WDEF scroll -> sell
         use.addItem(Items.itemWithQuantity(2040041, 1));  // LUK scroll -> keep (assassin)
+        use.addItem(Items.itemWithQuantity(2040045, 1));  // INT scroll -> keep even off-job (trade good)
         use.addItem(Items.itemWithQuantity(2043001, 1));  // ATT scroll -> keep
         use.addItem(Items.itemWithQuantity(2040718, 1));  // speed scroll -> keep for any job
         use.addItem(Items.itemWithQuantity(2040003, 1));  // junk scroll but NPC pays 0 -> keep
@@ -316,6 +317,7 @@ class BotInventoryManagerTest {
                 2040001, Map.of("MHP", 10),
                 2040002, Map.of("PDD", 10),
                 2040041, Map.of("LUK", 2),
+                2040045, Map.of("INT", 2),
                 2043001, Map.of("PAD", 2),
                 2040718, Map.of("Speed", 1),
                 2040003, Map.of("MMP", 10));

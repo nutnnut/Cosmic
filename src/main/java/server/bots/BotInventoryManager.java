@@ -1807,13 +1807,17 @@ class BotInventoryManager {
         return result;
     }
 
-    // An equip scroll is sell-trash when its effect grants ONLY stats this job never values
-    // (hp/mp/def/avoid, acc for classes that get acc from stat scaling). Speed/jump are
-    // universally relevant for every job (movement value) and never sold. Deliberately NOT
-    // gated by isRareDrop: nearly every scroll is a rare drop, the gate would nullify this.
-    // Meta scrolls (clean slate/chaos/modifier) grant no inc stats but have special effects,
-    // so they stay. No collision with BotScrollManager's planner: it only queues scrolls with
-    // positive offense gain, which are relevant by construction.
+    // An equip scroll is sell-trash only when its effect grants nothing of trade value:
+    // main stats (STR/DEX/INT/LUK), att/matt and speed/jump are kept for EVERY job (user: a
+    // warrior keeps INT scrolls - stat scrolls are prime trade goods); only acc is judged
+    // against the bot's own job. What's left to sell: pure hp/mp/def/avoid (and acc-only for
+    // classes that never value acc). Deliberately NOT gated by isRareDrop: nearly every
+    // scroll is a rare drop, the gate would nullify this. Meta scrolls (clean slate/chaos/
+    // modifier) grant no inc stats but have special effects, so they stay. No collision with
+    // BotScrollManager's planner: it only queues scrolls with positive offense gain.
+    private static final List<String> UNIVERSALLY_KEPT_SCROLL_STAT_KEYS =
+            List.of("STR", "DEX", "INT", "LUK", "PAD", "MAD", "Speed", "Jump");
+
     private static boolean isIrrelevantEquipScroll(Character bot, int itemId) {
         if (!ItemConstants.isEquipScroll(itemId)) {
             return false;
@@ -1826,8 +1830,10 @@ class BotInventoryManager {
         if (stats == null) {
             return false; // unknown effect: keep
         }
-        if (stats.getOrDefault("Speed", 0) > 0 || stats.getOrDefault("Jump", 0) > 0) {
-            return false;
+        for (String key : UNIVERSALLY_KEPT_SCROLL_STAT_KEYS) {
+            if (stats.getOrDefault(key, 0) > 0) {
+                return false;
+            }
         }
         for (BotEquipManager.RelevantStat stat : BotEquipManager.relevantStatsFor(bot.getJob())) {
             if (stats.getOrDefault(scrollStatKey(stat), 0) > 0) {
