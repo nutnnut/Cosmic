@@ -908,9 +908,10 @@ final class BotPhysicsEngine {
         Point currentPos = bot.getPosition();
         int desiredDir = entry.moveDir;
         if (desiredDir == 0) {
-            // Standing intent while still sliding on slippery ground: brake by holding the
-            // opposite direction (counter-strafe), like a player stopping on a small platform.
-            desiredDir = counterStrafeBrakeDir(map, entry.movementProfile, entry.hspeed);
+            // Standing intent while still sliding on slippery ground: glide like a player,
+            // counter-strafe brake only when the slide would carry the bot off the platform.
+            desiredDir = slipperyStopDir(map, entry.movementProfile, currentPos, foothold,
+                    new GroundTravelState(entry.physX, entry.hspeed, entry.groundPhysicsCarryMs));
         }
         GroundStepResult step = simulateGroundMotion(map, currentPos, foothold, desiredDir,
                 new GroundTravelState(entry.physX, entry.hspeed, entry.groundPhysicsCarryMs), entry.movementProfile);
@@ -1046,17 +1047,18 @@ final class BotPhysicsEngine {
         Point cursor = new Point(landing.point());
         Foothold currentFoothold = landing.foothold();
         if (mapGroundSlipScale(map, profile) < 1.0) {
-            // Slippery landing: the runtime brakes by counter-strafing until stopped (see
-            // counterStrafeBrakeDir + applyGroundMotion), so validity is "can the bot land
-            // here and come to a stop" — not the held-direction stability window, which on
-            // ice would either reject every small platform (long glide) or under-reserve.
-            // Deterministic policy, so the graph gains no extra state.
+            // Slippery landing: stop-policy parity with the live tick (slipperyStopDir) —
+            // glide when the glide-out stays on ground, counter-strafe brake when it would
+            // slide off. Validity is "can the bot land here and come to a stop"; the policy
+            // is deterministic, so the graph gains no extra state.
             for (int i = 0; i < POST_LANDING_BRAKE_TICK_CAP; i++) {
-                int brakeDir = counterStrafeBrakeDir(map, profile, state.hspeed());
-                if (brakeDir == 0) {
+                int dir = slipperyStopDir(map, profile, cursor, currentFoothold, state);
+                if (dir == 0) {
+                    // Stopped/sub-residual, or the glide-out was projected to stay on
+                    // ground — either way this landing is stable.
                     return new PostLandingJump(landing, cursor, currentFoothold, false);
                 }
-                GroundStepResult step = simulateGroundMotion(map, cursor, currentFoothold, brakeDir, state, profile);
+                GroundStepResult step = simulateGroundMotion(map, cursor, currentFoothold, dir, state, profile);
                 if (step.lostGround()) {
                     return new PostLandingJump(landing, step.point(), step.foothold(), true);
                 }
@@ -1867,6 +1869,35 @@ final class BotPhysicsEngine {
         double brakePerTick = cfg.SLIP_WALK_ACCEL_PXSS * fs * CLIENT_GROUND_STEP_S * CLIENT_GROUND_STEP_S
                 * Math.max(1.0, cfg.TICK_MS / CLIENT_GROUND_STEP_MS);
         return Math.abs(hspeed) > brakePerTick ? (hspeed > 0 ? -1 : 1) : 0;
+    }
+
+    /**
+     * Stop policy while a bot intends to stand on slippery ground: GLIDE (the packet-true
+     * 80*fs px/s^2 — what real players look like when they let go) unless the projected
+     * input-free glide-out would slide off the ground, in which case counter-strafe brake —
+     * a player saving themselves near an edge. Projection reuses the live ground sim so
+     * ledge/wall semantics stay identical; re-evaluated every tick, so a brake releases the
+     * moment the remaining slide is safe.
+     */
+    static int slipperyStopDir(MapleMap map, BotMovementProfile profile, Point position,
+                               Foothold foothold, GroundTravelState state) {
+        int brakeDir = counterStrafeBrakeDir(map, profile, state.hspeed());
+        if (brakeDir == 0) {
+            return 0;
+        }
+        GroundTravelState s = state;
+        Point cursor = position;
+        Foothold fh = foothold;
+        for (int i = 0; i < POST_LANDING_BRAKE_TICK_CAP && Math.abs(s.hspeed()) > 0.0; i++) {
+            GroundStepResult step = simulateGroundMotion(map, cursor, fh, 0, s, profile);
+            if (step.lostGround()) {
+                return brakeDir;
+            }
+            cursor = step.point();
+            fh = step.foothold();
+            s = step.state();
+        }
+        return 0;
     }
 
     /** True when this map's ground is slippery for bots WITHOUT snowshoes (fs &lt; 1). */

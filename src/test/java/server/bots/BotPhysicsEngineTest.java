@@ -635,6 +635,24 @@ class BotPhysicsEngineTest {
     }
 
     @Test
+    void shouldGlideMidPlatformAndBrakeOnlyNearTheEdge() {
+        // Players let go and glide on ice — bots must too. Mid-platform at full speed the
+        // glide-out (~98 px) stays on the 30000px ground: no brake. On a 90px ledge the
+        // glide would slide off: brake engages.
+        MapleMap bigSnow = flatGroundMap(0.2f);
+        Foothold big = bigSnow.getFootholds().findBelow(new Point(0, 99));
+        assertEquals(0, BotPhysicsEngine.slipperyStopDir(bigSnow, BotMovementProfile.base(),
+                new Point(0, 100), big, new BotPhysicsEngine.GroundTravelState(0, 1.0, 0.0)),
+                "safe glide-out -> no brake");
+
+        MapleMap ledge = smallPlatformSnowMap();
+        Foothold small = ledge.getFootholds().findBelow(new Point(-2000 + 30, -100));
+        assertEquals(-1, BotPhysicsEngine.slipperyStopDir(ledge, BotMovementProfile.base(),
+                new Point(-2000 + 30, -50), small, new BotPhysicsEngine.GroundTravelState(-2000 + 30, 1.0, 0.0)),
+                "glide-out crosses the ledge -> counter-strafe brake");
+    }
+
+    @Test
     void shouldStopMuchShorterWhenBrakingThanGliding() {
         // Braking sheds 1400*fs px/s^2 vs the 400*fs glide: from top speed the braked stop
         // distance (~28 px at fs=0.2) is well under half the glide-out (~98 px).

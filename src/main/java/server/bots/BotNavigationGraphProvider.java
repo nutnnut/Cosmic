@@ -37,7 +37,7 @@ final class BotNavigationGraphProvider {
     //     Orbis-tower-style 860px down-jump edges must disappear).
     // 50: indexed ground lookups (findBelowIndexed) - tie-breaks between overlapping footholds
     //     can differ from the tree's traversal order (Ellinia: 2 of 5151 edges).
-    private static final int GRAPH_VERSION = 52; // 51: kinetic slippery-ground model (packet-fitted) + snowshoe profiles; 52: slippery landings validate as counter-strafe brake-to-stop
+    private static final int GRAPH_VERSION = 53; // 51: kinetic slippery model + snowshoes; 52: brake-to-stop landings; 53: glide-unless-edge stop policy (slipperyStopDir)
     private static final int ENDPOINT_ANCHOR_SPACING_PX = 10;
     private static final int DOWN_JUMP_PRELAUNCH_WINDOW_PX = 20;
     private static final int SAME_SOLID_NEST_GAP_PX = 8;
