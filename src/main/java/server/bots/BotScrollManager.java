@@ -74,11 +74,11 @@ final class BotScrollManager {
     /** Effort→meso anchor: how much a second of the bot's farming is worth. The single tunable knob
      *  here (economy-design §9); a future ledger can replace it with the bot's real meso/sec. */
     private static final double FARM_MESO_PER_SECOND = 1_000.0;
-    /** Flat per-kill travel/respawn-wait overhead — placeholder for the real mob-commonness term
-     *  (spawns/map, #maps, respawn) until the Map-WZ spawn-density cache lands. */
+    /** FALLBACK per-kill travel/respawn-wait overhead — used only when the spawn index has no
+     *  data for the dropper; otherwise {@link #seekOverheadSeconds} supplies real density. */
     private static final double FARM_SEEK_OVERHEAD_SECONDS = 3.0;
-    /** Producer attack period used as the time-to-kill floor. A coarse constant for now; per-weapon
-     *  animation timing (BotEquipManager.weaponCycleMs) is the refinement. */
+    /** FALLBACK producer attack period (time-to-kill floor) — used only when the bot has no
+     *  weapon or WZ timing is unavailable; otherwise {@link #producerAttackCycleSeconds}. */
     private static final double FARM_ATTACK_CYCLE_SECONDS = 0.72;
     /** drop_data chance is out of this denominator (values above it ⇒ guaranteed drop). */
     private static final double DROP_CHANCE_DENOMINATOR = 1_000_000.0;
@@ -924,7 +924,49 @@ final class BotScrollManager {
     private record ProducerCombat(BotEntry entry, Character bot, double attackCycleSeconds) {}
 
     private static ProducerCombat resolveProducerCombat(BotEntry entry, Character bot) {
-        return new ProducerCombat(entry, bot, FARM_ATTACK_CYCLE_SECONDS);
+        return new ProducerCombat(entry, bot, producerAttackCycleSeconds(bot));
+    }
+
+    /** The producer's REAL attack period from its worn weapon's WZ animation x speed tier —
+     *  the same number the equip optimizer and grind advisor benchmark with
+     *  ({@link BotEquipManager#weaponCycleMs}). Falls back to the flat anchor when the bot
+     *  has no weapon or WZ timing is unavailable (unit tests). */
+    private static double producerAttackCycleSeconds(Character bot) {
+        try {
+            Item weapon = bot.getInventory(InventoryType.EQUIPPED).getItem((short) -11);
+            if (weapon != null) {
+                int cycleMs = BotEquipManager.weaponCycleMs(weapon.getItemId());
+                if (cycleMs > 0) {
+                    return cycleMs / 1000.0;
+                }
+            }
+        } catch (RuntimeException e) {
+            // mocked/partial Character — fall through to the flat anchor
+        }
+        return FARM_ATTACK_CYCLE_SECONDS;
+    }
+
+    /** Per-kill seek overhead from the dropper's REAL spawn density: its best (densest) farmable
+     *  map via the spawn index, scored with the grind planner's seek model — replaces the flat
+     *  placeholder whenever spawn data exists for the mob. */
+    private static double seekOverheadSeconds(int mobId) {
+        double best = Double.NaN;
+        try {
+            BotSpawnIndex.Index index = BotSpawnIndex.get();
+            for (BotSpawnIndex.SpawnSite site : BotSpawnIndex.spawnSites(mobId)) {
+                BotSpawnIndex.MapSpawns map = index.byMap().get(site.mapId());
+                if (map == null || map.town()) {
+                    continue;
+                }
+                double seek = BotGrindPlanner.seekSeconds(map.areaPx(), site.spawnPoints());
+                if (Double.isNaN(best) || seek < best) {
+                    best = seek;
+                }
+            }
+        } catch (RuntimeException e) {
+            // spawn index unavailable (unit tests) — keep the flat placeholder
+        }
+        return Double.isNaN(best) ? FARM_SEEK_OVERHEAD_SECONDS : best;
     }
 
     /**
@@ -954,7 +996,7 @@ final class BotScrollManager {
         double dps = perAttack / pc.attackCycleSeconds();
         BotFarmingCostModel.FarmInput in = new BotFarmingCostModel.FarmInput(
                 dropper[1] / DROP_CHANCE_DENOMINATOR, mobHp, dps,
-                pc.attackCycleSeconds(), FARM_SEEK_OVERHEAD_SECONDS, FARM_MESO_PER_SECOND);
+                pc.attackCycleSeconds(), seekOverheadSeconds(dropper[0]), FARM_MESO_PER_SECOND);
         return BotFarmingCostModel.rarityMeso(in);
     }
 
