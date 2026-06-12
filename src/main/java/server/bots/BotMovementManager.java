@@ -199,6 +199,7 @@ class BotMovementManager {
         entry.navJumpLaunchDelaySteps = Integer.MIN_VALUE;
         entry.navTargetRegionId = -1;
         entry.navPreciseTarget = false;
+        entry.navBlockedPosTicks = 0;
     }
 
     static void tickClimbing(BotEntry entry, Point targetPos, boolean runAiTick) {

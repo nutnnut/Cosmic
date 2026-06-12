@@ -398,6 +398,13 @@ public class BotEntry {
     int navJumpLaunchDelaySteps = Integer.MIN_VALUE;
     int navTargetRegionId = -1;
     boolean navPreciseTarget = false;
+    // Stale-edge give-up: consecutive ticks spent parked against a committed edge's position
+    // gate ("*-pos" block reason) without any movement. BotNavigationManager drops the edge
+    // and replans once the count passes the jittered threshold (rolled per park spot).
+    int navBlockedPosTicks = 0;
+    int navBlockedPosGiveUpTicks = 0;
+    int navBlockedPosX = Integer.MIN_VALUE;
+    int navBlockedPosY = Integer.MIN_VALUE;
     boolean graphWarmupFallback = false;
     int observedOwnerStepX = 0;
     int observedOwnerStepY = 0;

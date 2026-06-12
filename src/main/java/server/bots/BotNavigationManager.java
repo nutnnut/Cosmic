@@ -24,6 +24,16 @@ final class BotNavigationManager {
     private static final int JUMP_READY_X_TOLERANCE = 10;
     private static final int EDGE_READY_X_TOLERANCE = 14;
     private static final int NO_MOVEMENT_WALK_TOLERANCE = 4;
+    // Stale-edge give-up: after this many consecutive no-movement ticks blocked on a
+    // committed edge's position gate ("*-pos"), drop the edge and replan from the live
+    // position (6-10 ticks = 300-500ms, jittered per park spot).
+    private static final int BLOCKED_POS_GIVE_UP_MIN_TICKS = 6;
+    private static final int BLOCKED_POS_GIVE_UP_JITTER_TICKS = 4;
+    // Steering anchor inside a launch window: aim a few px inside the nearest window edge
+    // (window center when narrower than two insets) instead of the exact boundary pixel.
+    // The executable region is the WHOLE window; steering at the boundary pixel parks bots
+    // 1-2px outside it whenever arrival tolerances round against them.
+    private static final int LAUNCH_WINDOW_STEER_INSET_PX = 4;
     // After a bot takes a portal, suppress further portal usage for this long. Prevents a bot from
     // immediately re-entering a portal (e.g. bouncing back through the return portal). Gates ONLY
     // portal execution — movement, attacks and every other action continue unaffected.
@@ -133,6 +143,18 @@ final class BotNavigationManager {
             int targetRegionId = resolveTargetRegionId(graph, entry, bot.getMap(), rawTargetPos);
             Point pathTargetPos = adjustPathTarget(entry, graph, targetRegionId, rawTargetPos);
 
+            // Stale-edge give-up: a committed edge whose position gate (jump-pos/drop-pos/
+            // climb-pos) has rejected the bot for several consecutive ticks WITHOUT the bot
+            // moving is parked, not approaching — e.g. a window recorded a few px away from
+            // where the bot actually stands (pathlog-Leroy-2026-06-12T141517: stale DROP
+            // window [1245,1285], bot at 1287, while a fresh plan's window contained the
+            // bot the whole time). Drop the edge and replan from the live position.
+            if (runAiTick && entry.navEdge != null
+                    && entry.navBlockedPosTicks > 0
+                    && entry.navBlockedPosTicks >= entry.navBlockedPosGiveUpTicks) {
+                clearNavigation(entry);
+            }
+
             BotNavigationGraph.Edge edge = reuseCommittedEdge(graph, entry, startRegionId, targetRegionId);
             boolean edgeReused = (edge != null);
             if (edgeReused) {
@@ -177,6 +199,7 @@ final class BotNavigationManager {
             NavigationDirective executionDirective = tryExecuteEdge(graph, entry, bot, botPos, rawTargetPos, edge, runAiTick);
             if (executionDirective != null) {
                 entry.lastNavDecision = "exec";
+                entry.navBlockedPosTicks = 0;
                 if (entry.pathLogger != null) {
                     entry.pathLogger.record(entry, captureTargetSnapshot(entry, rawTargetPos), startRegionId, true, runAiTick);
                 }
@@ -184,6 +207,7 @@ final class BotNavigationManager {
             }
 
             entry.lastNavDecision = edgeReused ? "reuse" : "new";
+            trackBlockedPositionGate(entry, botPos, edgeReused);
             entry.navPreciseTarget = shouldUsePreciseTarget(graph, entry, botPos, edge);
             entry.navTargetPos = selectWaypoint(entry, graph, botPos, edge);
             if (entry.pathLogger != null) {
@@ -230,6 +254,33 @@ final class BotNavigationManager {
 
     private static void clearNavigation(BotEntry entry) {
         BotMovementManager.clearNavigationState(entry);
+    }
+
+    /**
+     * Counts consecutive ticks spent parked against a committed edge's position gate
+     * (block reason "*-pos") without any actual movement. resolveTarget gives the edge up
+     * and replans once the count passes a jittered threshold (~300-500ms). Any position
+     * change restarts the count, so a slow legal approach (e.g. slippery-ground pulse
+     * creep) is never interrupted while it is making progress.
+     */
+    private static void trackBlockedPositionGate(BotEntry entry, Point botPos, boolean edgeReused) {
+        boolean blockedPos = edgeReused
+                && entry.lastEdgeBlockReason != null
+                && entry.lastEdgeBlockReason.endsWith("-pos");
+        if (!blockedPos) {
+            entry.navBlockedPosTicks = 0;
+            return;
+        }
+        if (entry.navBlockedPosTicks == 0
+                || botPos.x != entry.navBlockedPosX
+                || botPos.y != entry.navBlockedPosY) {
+            entry.navBlockedPosTicks = 0;
+            entry.navBlockedPosGiveUpTicks = BLOCKED_POS_GIVE_UP_MIN_TICKS
+                    + ThreadLocalRandom.current().nextInt(BLOCKED_POS_GIVE_UP_JITTER_TICKS + 1);
+            entry.navBlockedPosX = botPos.x;
+            entry.navBlockedPosY = botPos.y;
+        }
+        entry.navBlockedPosTicks++;
     }
 
     private static BotManager.TargetSnapshot captureTargetSnapshot(BotEntry entry, Point rawTargetPos) {
@@ -537,9 +588,11 @@ final class BotNavigationManager {
         }
 
         if (!canExecuteDropFromCurrentPosition(graph, bot.getMap(), botPos, edge)) {
+            entry.lastEdgeBlockReason = "drop-pos";
             return null;
         }
 
+        entry.lastEdgeBlockReason = null;
         setEdgeExecutionTarget(entry, edge);
         BotPhysicsEngine.queueDownJump(entry, bot);
         BotMovementManager.broadcastMovement(entry);
@@ -764,7 +817,18 @@ final class BotNavigationManager {
             int ropeX = entry.climbRope != null ? entry.climbRope.x() : edge.startPoint.x;
             return new Point(ropeX, edge.endPoint.y);
         }
+        if (edge.launchStepX != 0 && edge.launchMaxX > edge.launchMinX) {
+            // Grounded rope-jump entry: the gate accepts the whole launch window, so steer
+            // to the nearest in-window x (inset), not the authored startPoint pixel.
+            return new Point(steerXWithinLaunchWindow(edge, botPos.x), edge.startPoint.y);
+        }
         return new Point(edge.startPoint);
+    }
+
+    /** Nearest in-window steering x, inset from the window boundary (center when narrow). */
+    static int steerXWithinLaunchWindow(BotNavigationGraph.Edge edge, int botX) {
+        int inset = Math.min((edge.launchMaxX - edge.launchMinX) / 2, LAUNCH_WINDOW_STEER_INSET_PX);
+        return Math.clamp(botX, edge.launchMinX + inset, edge.launchMaxX - inset);
     }
 
     private static BotNavigationGraph resolveActiveGraph(MapleMap map, BotMovementProfile movementProfile) {
@@ -785,7 +849,7 @@ final class BotNavigationManager {
             }
             int targetX = edge.containsLaunchX(botPos.x)
                     ? botPos.x
-                    : botPos.x < edge.launchMinX ? edge.launchMinX : edge.launchMaxX;
+                    : steerXWithinLaunchWindow(edge, botPos.x);
             return fromRegion.pointAt(targetX);
         }
 

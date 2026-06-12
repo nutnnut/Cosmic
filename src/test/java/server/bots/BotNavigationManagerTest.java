@@ -356,6 +356,61 @@ class BotNavigationManagerTest {
     }
 
     @Test
+    void shouldGiveUpEdgeBlockedByPositionGateAndReplanFromLivePosition() {
+        // pathlog-Leroy-2026-06-12T141517: a committed DROP edge whose stale window ended
+        // 2px short of the bot was reused (blocked: *-pos) for 21s while every fresh A*
+        // plan's window contained the bot. The position-gate give-up must drop the edge
+        // after a few hundred ms and let the replan execute from where the bot stands.
+        MapleMap map = new MapleMap(910000033, 0, 0, 910000033, 1.0f);
+        FootholdTree footholds = new FootholdTree(new Point(-2000, -2000), new Point(2000, 2000));
+        footholds.insert(new Foothold(new Point(0, 0), new Point(300, 0), 1));
+        footholds.insert(new Foothold(new Point(0, 120), new Point(300, 120), 2));
+        map.setFootholds(footholds);
+        BotNavigationGraph graph = BotNavigationGraphProvider.rebuildGraph(map);
+
+        Point botPos = new Point(250, 0);
+        Point target = new Point(250, 120);
+        int startRegionId = graph.findRegionId(map, botPos);
+        int targetRegionId = graph.findRegionId(map, target);
+        assertNotEquals(startRegionId, targetRegionId, "fixture needs distinct upper/lower regions");
+
+        // Stale committed edge: same region pair as the live plan (so the per-tick ground
+        // refresh retains it) but a launch window the bot is 2px OUTSIDE of.
+        BotNavigationGraph.Edge staleEdge = new BotNavigationGraph.Edge(
+                startRegionId, targetRegionId, BotNavigationGraph.EdgeType.DROP,
+                new Point(200, 0), new Point(200, 120),
+                150, 248, 0, 0, 0, 0, 0, 400);
+
+        Character bot = mockBot(botPos, map);
+        BotEntry entry = new BotEntry(bot, null, null);
+        entry.movementProfile = BotMovementProfile.base();
+        entry.following = true;
+        entry.navEdge = staleEdge;
+        entry.navTargetRegionId = targetRegionId;
+
+        // The retention window: for the first few AI ticks the stale edge must be kept
+        // (anti-thrash), only blocked: the bot never moves, so the give-up counter runs.
+        for (int tick = 0; tick < 6; tick++) {
+            BotNavigationManager.resolveTarget(entry, target, true);
+            assertEquals("reuse", entry.lastNavDecision, "tick " + tick + " should still reuse the committed edge");
+            assertEquals(staleEdge.startPoint, entry.navEdge.startPoint,
+                    "tick " + tick + " should not yet give up the committed edge");
+            assertEquals("drop-pos", entry.lastEdgeBlockReason);
+        }
+
+        // Within the jittered give-up budget (6-10 blocked ticks) the edge is dropped, the
+        // fresh plan's window contains the bot, and the drop executes immediately.
+        int extraTicks = 0;
+        while (!"exec".equals(entry.lastNavDecision) && extraTicks < 8) {
+            BotNavigationManager.resolveTarget(entry, target, true);
+            extraTicks++;
+        }
+        assertEquals("exec", entry.lastNavDecision,
+                "blocked-position reuse must give up and replan within the jittered tick budget");
+        assertTrue(entry.downJumpPending, "replanned drop edge should execute from the bot's live position");
+    }
+
+    @Test
     void shouldDropStaleCommittedGroundEdgeWhenLiveTargetRegionDiffersFromEdgeDestination() {
         MapleMap map = mock(MapleMap.class);
         BotNavigationGraph.Region source = new BotNavigationGraph.Region(

@@ -246,6 +246,43 @@ class BotMovementSimulationLabTest {
                 "bot should land in the destination region after walking off the ledge");
     }
 
+    @Test
+    void shouldRecoverFromStaleElNathDropEdgeWindowJustOutsideBot() {
+        // pathlog-Leroy-2026-06-12T141517: El Nath ice (fs=0.2). The bot parked 2px OUTSIDE
+        // a stale committed DROP window and reused it (blocked) for 21s, while every fresh
+        // A* plan's window already contained the bot. With window-inset steering plus the
+        // blocked-position give-up, the bot must traverse to the lower region in seconds.
+        MapleMap map = BotNavigationMapLoader.loadMapGeometry(211000000);
+        BotNavigationGraph graph = BotNavigationGraphProvider.rebuildGraph(map);
+        int fromRegionId = graph.findRegionId(map, new Point(1287, 34));
+        int toRegionId = graph.findRegionId(map, new Point(1285, 94));
+        BotNavigationGraph.Edge liveEdge = graph.getOutgoing(fromRegionId).stream()
+                .filter(edge -> edge.type == BotNavigationGraph.EdgeType.DROP)
+                .filter(edge -> edge.toRegionId == toRegionId && edge.launchStepX == 0)
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("expected a straight DROP edge between the log regions"));
+
+        // Bot stands inside the live plan's window (log: x=1287) but 2px outside the stale one.
+        int botX = Math.clamp(1287, liveEdge.launchMinX, liveEdge.launchMaxX);
+        BotNavigationGraph.Edge staleEdge = new BotNavigationGraph.Edge(
+                fromRegionId, toRegionId, BotNavigationGraph.EdgeType.DROP,
+                new Point(botX - 22, liveEdge.startPoint.y), new Point(botX - 22, liveEdge.endPoint.y),
+                botX - 42, botX - 2, 0, 0, 0, 0, 0, liveEdge.cost);
+
+        BotMovementSimulationLab lab = BotMovementSimulationLab.fromMap(map);
+        BotNavigationGraph.Region fromRegion = graph.getRegion(fromRegionId);
+        lab.spawnBot("LEROY", 80, map, fromRegion.pointAt(botX));
+        lab.setMoveTarget("LEROY", new Point(1242, 94), true);
+        lab.setNavState("LEROY", staleEdge, toRegionId, true);
+        lab.setAiAccumulator("LEROY", 50);
+
+        lab.step(60); // 3s budget vs the 21s field freeze
+
+        assertEquals(toRegionId, graph.findRegionId(map, lab.position("LEROY")),
+                "bot must traverse to the lower region instead of parking outside the stale window\n"
+                        + String.join("\n", lab.formatRecentTrace("LEROY", 12)));
+    }
+
     private static MapleMap createFlatMap(int mapId, int x1, int x2, int y) {
         MapleMap map = new MapleMap(mapId, 0, 0, mapId, 1.0f);
         server.maps.FootholdTree footholds = new server.maps.FootholdTree(
