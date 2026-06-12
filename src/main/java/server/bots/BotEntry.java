@@ -284,6 +284,8 @@ public class BotEntry {
     boolean selfScrollEnabled = false;
     Item pendingScrollEquip = null;
     Item pendingScrollScroll = null;
+    // Next armed auto-scan time (0 = schedule on the next tick); declines push it out.
+    volatile long nextSelfScrollScanAtMs = 0L;
 
     // Bot-initiated trade retry: when a pot-share / ammo-share / loot-offer is blocked
     // because the sender or recipient is already in a trade, the attempt is stored here

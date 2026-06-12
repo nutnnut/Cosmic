@@ -133,6 +133,8 @@ final class BotScrollManager {
             BotManager.after(BotManager.randMs(500, 700), () -> executeConfirmed(entry, bot));
         } else {
             cancelPending(entry);
+            // Don't re-pitch the same idea on the next scan; "scroll now" overrides anytime.
+            entry.nextSelfScrollScanAtMs = System.currentTimeMillis() + AUTO_SCAN_DECLINED_BACKOFF_MS;
             BotManager.after(BotManager.randMs(400, 600),
                     () -> BotManager.getInstance().botReply(entry, "ok, ill hold off"));
         }
@@ -172,7 +174,65 @@ final class BotScrollManager {
         }
         // Confirm-each-item chaining: when armed, look for the next worthwhile play after a beat.
         if (entry.selfScrollEnabled && result != null) {
-            BotManager.after(BotManager.randMs(2500, 3500), () -> requestScrollPass(entry, bot));
+            if (entry.owner == bot) {
+                // Self-owned (takeover): no owner to re-confirm — the auto-scan follows up fast
+                // so a success can snowball without spamming the map every few seconds.
+                entry.nextSelfScrollScanAtMs = System.currentTimeMillis()
+                        + BotManager.randMs(AUTO_SCAN_CHAIN_MIN_MS, AUTO_SCAN_CHAIN_MAX_MS);
+            } else {
+                BotManager.after(BotManager.randMs(2500, 3500), () -> requestScrollPass(entry, bot));
+            }
+        }
+    }
+
+    // ---- Armed periodic rescan ----
+    /** Jittered cadence for the armed auto-scan. */
+    private static final int AUTO_SCAN_MIN_MS = 90_000;
+    private static final int AUTO_SCAN_MAX_MS = 180_000;
+    /** A declined proposal backs the next look off — the owner can always say "scroll now". */
+    private static final int AUTO_SCAN_DECLINED_BACKOFF_MS = 900_000;
+    /** Quick follow-up after a self-confirmed scroll (snowball-the-winner pacing). */
+    private static final int AUTO_SCAN_CHAIN_MIN_MS = 8_000;
+    private static final int AUTO_SCAN_CHAIN_MAX_MS = 15_000;
+
+    /**
+     * Armed bots look for a worthwhile play on their own instead of only chaining after a
+     * confirmed one. Self-owned bots (@botme takeover: owner == bot) are their own owner and
+     * confirm themselves after a short beat; companions raise the normal owner proposal and
+     * wait. Quiet when nothing qualifies — chat replies stay reserved for explicit asks.
+     */
+    static void tickAutoScroll(BotEntry entry, Character bot, long nowMs) {
+        if (!entry.selfScrollEnabled || bot == null) {
+            return;
+        }
+        if (entry.nextSelfScrollScanAtMs == 0L) { // just armed/loaded: schedule, don't fire now
+            entry.nextSelfScrollScanAtMs = nowMs + BotManager.randMs(AUTO_SCAN_MIN_MS, AUTO_SCAN_MAX_MS);
+            return;
+        }
+        if (nowMs < entry.nextSelfScrollScanAtMs
+                || entry.pendingAction != null || entry.pendingTradeCategory != null) {
+            return;
+        }
+        entry.nextSelfScrollScanAtMs = nowMs + BotManager.randMs(AUTO_SCAN_MIN_MS, AUTO_SCAN_MAX_MS);
+
+        Resolved resolved = buildBestPlan(entry, bot, ItemInformationProvider.getInstance());
+        if (resolved == null) {
+            return;
+        }
+        Equip equip = resolved.equip();
+        Item scroll = findScroll(bot, resolved.plan().scroll().scrollItemId());
+        if (equip == null || scroll == null) {
+            return;
+        }
+        entry.pendingScrollEquip = equip;
+        entry.pendingScrollScroll = scroll;
+        if (entry.owner == bot) {
+            BotManager.getInstance().botSay(bot, resolved.plan().proposal() + " ... going for it");
+            BotManager.after(BotManager.randMs(1500, 2500), () -> executeConfirmed(entry, bot));
+        } else {
+            entry.pendingAction = "scroll_confirm";
+            BotManager.getInstance().botReply(entry, resolved.plan().proposal()
+                    + String.format(" (worth ~%,.0f meso to me)", resolved.plan().expectedValue()));
         }
     }
 

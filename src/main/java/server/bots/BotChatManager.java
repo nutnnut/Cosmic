@@ -907,6 +907,7 @@ public class BotChatManager {
             BotManager.after(BotManager.randMs(500, 700), () -> {
                 entry.selfScrollEnabled = false;
                 BotScrollManager.cancelPending(entry);
+                BotPrefsStore.saveSelfScroll(entry.bot.getId(), false);
                 BotManager.getInstance().botReply(entry, "ok, ill stop scrolling my gear");
             });
             return;
@@ -918,6 +919,8 @@ public class BotChatManager {
         if (SELF_SCROLL_ON_PATTERN.matcher(message).find()) {
             BotManager.after(BotManager.randMs(500, 700), () -> {
                 entry.selfScrollEnabled = true;
+                entry.nextSelfScrollScanAtMs = 0L; // restart the auto-scan cadence
+                BotPrefsStore.saveSelfScroll(entry.bot.getId(), true);
                 BotManager.getInstance().botReply(entry, "ok! ill scroll my gear, ill ask before each one");
                 BotManager.after(BotManager.randMs(700, 1000), () -> BotScrollManager.requestScrollPass(entry, entry.bot));
             });

@@ -568,6 +568,7 @@ public class BotManager {
         BotEntry entry = new BotEntry(bot, owner, task);
         ref[0] = entry;
         entry.movementProfile = BotMovementProfile.fromCharacter(bot);
+        entry.selfScrollEnabled = BotPrefsStore.loadSelfScroll(bot.getId());
         BotNavigationGraphProvider.warmGraphAsync(bot.getMap(), entry.movementProfile);
         entries.add(entry);
         FormationState fs = ownerFormations.getOrDefault(ownerCharId, FormationState.defaultStagger());
@@ -2170,6 +2171,8 @@ public class BotManager {
         if (handleDeadTick(entry, bot, owner)) {
             return;
         }
+
+        BotScrollManager.tickAutoScroll(entry, bot, nowMs);
 
         if (owner == null && !BotAutopilotManager.isActive(entry)) {
             entry.following = false;
