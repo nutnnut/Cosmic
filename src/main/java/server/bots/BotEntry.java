@@ -68,7 +68,7 @@ public class BotEntry {
     // Maps to the same left/right key hold used by the real client for both
     // ground walking and air steering. Physics reads this in the active mode:
     //   - Ground: applyGroundMotion() integrates through force/friction model
-    //   - Airborne: stepAirborne() applies air steering accel (gated by fixedAirArc)
+    //   - Airborne: stepAirborne() applies air steering / no-input drag (gated by fixedAirArc)
     // Mutually exclusive by state (inAir vs grounded), so one field suffices.
     int moveDir = 0;                     // -1 left, 0 none, +1 right
 

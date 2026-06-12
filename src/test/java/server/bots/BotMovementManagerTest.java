@@ -811,7 +811,10 @@ class BotMovementManagerTest {
         entry.nextFidgetActionAtMs = 0L;
 
         assertTrue(BotFidgetManager.tryHandleTick(entry, new Point(110, 100), true));
-        assertEquals(0.0, entry.airSteerVelX,
+        // No key held on a non-spam fidget hop: the only allowed airSteerVelX change is the
+        // CalcFloat no-input drag (1 x fs px/s^2 = 0.0025 px/tick per tick) — a random
+        // steering press would move it by ~0.5 px/tick.
+        assertEquals(0.0, entry.airSteerVelX, 0.005,
                 "non-spam jump fidgets should not reroll random air steering every airborne tick");
 
         entry.fidgetSpamAirSteer = true;

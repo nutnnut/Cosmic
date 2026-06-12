@@ -40,7 +40,11 @@ final class BotNavigationGraphProvider {
     // 54: client-true landings — touchdown halves carried momentum (packet fit), so slippery
     //     post-landing brake sims stop in ~1/4 the distance and previously-rejected icy hop
     //     edges (El Nath 267->277->278->279) become stable.
-    private static final int GRAPH_VERSION = 54; // 51: kinetic slippery model + snowshoes; 52: brake-to-stop landings; 53: glide-unless-edge stop policy (slipperyStopDir)
+    // 55: disasm-true air control (CVecCtrl::CalcFloat @ 0x9b2c3c) — input only nudges vx
+    //     inside an 8.93 x fs px/s band (no walkSpeed air cap; counter-strafe pins at the
+    //     band edge) and no-input flight drags 1 x fs (100 x fs at terminal fall). Committed
+    //     arcs still fly the launch key held, so constant-stepX arc sims stay exact.
+    private static final int GRAPH_VERSION = 55; // 51: kinetic slippery model + snowshoes; 52: brake-to-stop landings; 53: glide-unless-edge stop policy (slipperyStopDir)
     private static final int ENDPOINT_ANCHOR_SPACING_PX = 10;
     private static final int DOWN_JUMP_PRELAUNCH_WINDOW_PX = 20;
     private static final int SAME_SOLID_NEST_GAP_PX = 8;
@@ -1093,8 +1097,10 @@ final class BotNavigationGraphProvider {
      * (so a directional hop needs no runway and loses nothing to a slow icy start or a
      * halved post-landing slide), and a no-input jump carries the current hspeed (bounded by
      * ±walkSpeed, and the executor brakes vertical jumps to ~0 first — "jump-slide" gate).
-     * The simulated constant-stepX ballistic arc is exact: air has no drag, and a held
-     * direction keeps vx pinned at the ±walkSpeed cap it launched with.
+     * The simulated constant-stepX ballistic arc is exact because the arc flies with the
+     * launch direction key HELD (CVecCtrl::CalcFloat @ 0x9b2c3c): held input is a no-op above
+     * the 8.93 x fs px/s input band — it neither accelerates nor clamps a walkSpeed launch —
+     * and the no-input drag only applies when no key is held, so vx stays constant.
      */
     private static void addJumpEdges(BotNavigationGraph.Region from,
                                      MapleMap map,

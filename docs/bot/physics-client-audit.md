@@ -181,13 +181,26 @@ check median ay=2000 px/s², terminal 670 — exact).
    `-50 → -124`, `-67 → -125` over 240–270 ms where ground accel (280 px/s²) could
    only reach ~-110 and the fitted air accel (40 px/s²) only ~-45. With NO input the
    current ground hspeed carries: `0→0, 3→3, 9→10, 29→29`.
-2. **Air control**: constant accel `200 × fs px/s²` toward the held direction,
-   total capped at walkSpeed. fs=1 counter-strafe: `-103 → -79` over 120 ms =
-   exactly +200; El Nath counter elements: `+1 px/s per 29 ms` ×3 = ~40 = 200×0.2
-   (200 fs-independent would predict +5.8/element — rejected). NOTE: map fs scales
-   AIR control too, not just ground walk.
-3. **No air drag**: neutral arcs hold vx within rounding (`29→26` over 480 ms ≈
-   -6 px/s² worst case; most elements exactly 0).
+2. **Air control — CONFIRMED in disassembly** (`CVecCtrl::CalcFloat @ 0x9b2c3c`,
+   Angel.idb). Input held calls `ApplyForce(vx, force=input*2*D2, M=100,
+   vmax_air, dt)` with `D2 = fs×10000` and
+   `vmax_air = (walkSpeed125/walkForce140000)×D2 = 8.93×fs px/s`: accel
+   `200 × fs px/s²` toward the input, applied ONLY while the velocity component
+   in the input direction is below `8.93×fs px/s`; hard clamp to that band edge
+   on overshoot; NO-OP (no accel, no clamp) when already moving faster in the
+   input direction. So a counter-strafe decelerates at 200×fs straight through
+   zero and pins at 8.93×fs in the new direction; same-direction input adds
+   ~nothing once moving. There is NO walkSpeed cap in the air — the observed
+   ≤125 px/s is the ground cap carried in by the launch snap. Packet fits agree:
+   fs=1 counter-strafe `-103 → -79` over 120 ms = exactly +200; El Nath counter
+   elements `+1 px/s per 29 ms` ×3 = ~40 = 200×0.2 (200 fs-independent would
+   predict +5.8/element — rejected); no sampled arc shows same-direction gain
+   beyond the band. NOTE: map fs scales AIR control too, not just ground walk.
+3. **No-input drag** (same disasm): vx decays toward 0 at `1 × fs px/s²`
+   normally, switching to `100 × fs px/s²` while falling AT terminal velocity
+   (vy = fallSpeed 670); zero-cross clamped. Consistent with the packets'
+   near-constant neutral arcs (`29→26` over 480 ms ≈ -6 px/s² worst case —
+   mostly pre-terminal, where 1×fs is invisible at packet resolution).
 4. **Landing halves momentum**: touchdown sets hspeed = vx/2 — `125→62`,
    `-104→-52`, `26→13`, `9→4` (exact integer halving on both maps). With the
    OPPOSITE direction held at touchdown it zeroes outright: `-122→0`, `-124→0`
@@ -198,9 +211,14 @@ check median ay=2000 px/s², terminal 670 — exact).
 Residuals: post-landing re-acceleration on ice replays exactly under the kinetic
 model (e.g. landing→0 then `+33 px/s` after 120 ms of right input = 280×0.12 ✓,
 position +2 px ✓). Bot model updated to all four rules
-(`Config.AIR_CONTROL_ACCEL_PXSS`, `landingGroundHSpeed`, `landOnGround`,
-`resolveAirVelocityX`); GRAPH_VERSION 54.
+(`Config.AIR_CONTROL_ACCEL_PXSS` + `AIR_INPUT_BAND_DIVISOR` + `AIR_DRAG_PXSS` /
+`AIR_DRAG_TERMINAL_PXSS`, `landingGroundHSpeed`, `landOnGround`,
+`resolveAirVelocityX`); GRAPH_VERSION 55.
 
-Caveat: same-direction sub-cap air accel was never observed in isolation (no arc
-starts slow with same-dir input mid-air only); assumed symmetric with the measured
-counter-strafe accel. CalcFloat disasm corroboration pending.
+The earlier symmetry caveat is RESOLVED by the CalcFloat disasm: same-direction
+air accel is NOT symmetric with the counter-strafe — it exists only inside the
+8.93×fs band (ApplyForce no-op beyond it). The previously fitted ">=333 px/s²
+with input" samples were contaminated with ground frames; the disasm caps air
+accel at 200×fs. Committed nav arcs remain exact under the corrected model: the
+launch key held for the whole flight is a no-op above the band and suppresses
+drag, so the graph's constant-stepX arc simulation is unchanged.

@@ -656,9 +656,10 @@ class BotPhysicsEngineTest {
 
     @Test
     void shouldSwingAirVelocityAcrossZeroWithCounterStrafe() {
-        // Fitted air control (200 x fs px/s^2, total capped at walk speed): on a normal map a
-        // held counter-direction reverses the launch velocity entirely, unlike the old
-        // 1.5 px/tick steer-delta cap which could only trim it to +4.5.
+        // Disasm-true air control (CVecCtrl::CalcFloat @ 0x9b2c3c): a held counter-direction
+        // decelerates at 200 x fs px/s^2 straight through zero, then PINS at the input band
+        // (walkSpeed/14 = 8.93 px/s at fs=1) in the new direction — mid-air input can never
+        // rebuild walk speed (the old symmetric model swung all the way to -walkSpeed).
         MapleMap map = flatGroundMap(0f);
         Character bot = mockBot(new Point(0, -1000), map);
         BotEntry entry = new BotEntry(bot, null, null);
@@ -674,8 +675,11 @@ class BotPhysicsEngineTest {
                     BotPhysicsEngine.stepAirborne(entry, bot));
         }
         double totalVelX = entry.airVelX + entry.airSteerVelX;
-        assertTrue(totalVelX < -2.0, "counter-strafe should swing past zero, got " + totalVelX);
-        assertTrue(totalVelX >= -6.26, "total air speed stays capped at walk speed");
+        assertTrue(totalVelX < 0.0, "counter-strafe should swing past zero, got " + totalVelX);
+        // band = walkSpeed ~6.25 px/tick / 14 = 0.4464 px/tick (= 8.93 px/s);
+        // tolerance covers HFORCE 16.667 making the engine walk speed 6.250125 px/tick.
+        assertEquals(-6.25 / 14.0, totalVelX, 1e-4,
+                "counter-strafe pins at the CalcFloat input band, not -walkSpeed");
     }
 
     @Test

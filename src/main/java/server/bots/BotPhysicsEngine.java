@@ -48,18 +48,33 @@ final class BotPhysicsEngine {
         // mass 100 and walkDrag 80000 / mass / 2 (client halves friction when fs<1).
         public double SLIP_WALK_ACCEL_PXSS = 1400.0;  // x fs -> px/s^2 while a direction is held
         public double SLIP_GLIDE_DECEL_PXSS = 400.0;  // x fs -> px/s^2 while gliding (no input)
-        // Airborne horizontal control, fitted from real-client jump captures
-        // (logs/monitored-packets-elnath-tricky-jumps-spd100v2.log, fs=0.2, and
-        // logs/monitored-packets - 100speedjumpmovement.log, fs=1.0):
-        //   - held direction accelerates vx at AIR_CONTROL_ACCEL_PXSS x map fs
-        //     (fs=1: -103 -> -79 px/s over 120 ms = exactly +200 px/s^2; fs=0.2:
-        //     +1 px/s per 29 ms element = ~40 = 200 x 0.2), capped at walk speed;
-        //   - NO air drag without input (vx constant, residual <= 7 px/s^2);
+        // Airborne horizontal control — CONFIRMED in disassembly (Angel.idb,
+        // CVecCtrl::CalcFloat @ 0x9b2c3c) and packet-fitted (logs/monitored-packets-
+        // elnath-tricky-jumps-spd100v2.log fs=0.2; logs/monitored-packets -
+        // 100speedjumpmovement.log fs=1.0):
+        //   - input held: ApplyForce(force=input*2*fs*10000, mass=100,
+        //     vmax=(walkSpeed125/walkForce140000)*fs*10000 = 8.93 x fs px/s) =>
+        //     accel 200 x fs px/s^2 toward the input, applied ONLY while the
+        //     velocity component in the input direction is below 8.93 x fs px/s;
+        //     hard clamp to that band edge on overshoot; NO-OP (no accel, no
+        //     clamp) when already moving faster in the input direction. A
+        //     counter-strafe therefore decelerates at 200 x fs straight through
+        //     zero and pins at 8.93 x fs in the new direction (fs=1 packets:
+        //     -103 -> -79 px/s over 120 ms = exactly +200 px/s^2); same-direction
+        //     input adds ~nothing once moving. There is NO walkSpeed cap in the
+        //     air — the observed <= 125 px/s is the ground cap carried in by the
+        //     launch snap.
+        //   - no input: drag toward 0 of 1 x fs px/s^2, switching to
+        //     100 x fs px/s^2 while falling AT terminal velocity (vy = fallSpeed
+        //     670); zero-cross clamped.
         //   - jump launch with a direction held snaps vx to +-walkSpeed instantly
         //     regardless of ground speed (62 -> 125 px/s within 30 ms at fs=1;
         //     El Nath -34 -> -124 where ground accel could only reach -44);
         //     with no input the current ground hspeed carries into the air.
-        public double AIR_CONTROL_ACCEL_PXSS = 200.0; // x fs -> px/s^2 toward held direction
+        public double AIR_CONTROL_ACCEL_PXSS = 200.0;  // x fs -> px/s^2 toward held input
+        public double AIR_INPUT_BAND_DIVISOR = 14.0;   // band = walkSpeed/14 x fs = 8.93 x fs px/s (walkSpeed/walkForce*10000)
+        public double AIR_DRAG_PXSS = 1.0;             // x fs -> px/s^2 toward 0, no input
+        public double AIR_DRAG_TERMINAL_PXSS = 100.0;  // x fs -> px/s^2 toward 0, no input at terminal fall
 
         public float CLIMB_SPEED_PXS = 100.0f;
         public int ROPE_GRAB_X = 8;
@@ -1273,33 +1288,49 @@ final class BotPhysicsEngine {
     }
 
     /**
-     * Apply air steering acceleration based on discrete steer direction. Packet-true model
-     * (see {@link Config#AIR_CONTROL_ACCEL_PXSS}): constant accel of 200 x fs px/s^2 toward
-     * the held direction, no drag, TOTAL horizontal speed (launch + steer) capped at the
-     * profile walk speed — given enough airtime a counter-strafe swings vx all the way from
-     * +cap to -cap, unlike the old ad-hoc 1.5 px/tick steer-delta cap.
+     * Apply air steering from discrete input direction. Disasm-true model (CVecCtrl::CalcFloat
+     * @ 0x9b2c3c, see {@link Config#AIR_CONTROL_ACCEL_PXSS}): accel 200 x fs px/s^2 toward the
+     * input, applied ONLY while the velocity component in the input direction is below the
+     * input band (walkSpeed/14 x fs = 8.93 x fs px/s); hard clamp to the band edge on
+     * overshoot; no-op (no accel, no clamp) when already moving faster in the input direction.
+     * A counter-strafe decelerates straight through zero and pins at the band edge in the new
+     * direction — mid-air input can never rebuild walk speed.
      */
     private static void applyAirSteering(BotEntry entry, MapleMap map, int steerDir) {
         if (steerDir == 0) return;
         double t = tickS();
         double fs = mapGroundSlipScale(map, entry.movementProfile);
-        double accel = steerDir * cfg.AIR_CONTROL_ACCEL_PXSS * fs * t * t;
-        // walkStep() rounds px/tick to an int, so a launch can sit a fraction ABOVE the exact
-        // cap (speed140: launch 9 vs cap 8.75) — treat the launch speed as the effective cap
-        // so steering is never frozen by the rounding.
-        double cap = Math.max(airSpeedCapPerTick(entry.movementProfile), Math.abs(entry.airVelX));
-        double oldTotal = entry.airVelX + entry.airSteerVelX;
-        double newTotal = oldTotal + accel;
-        if (Math.abs(newTotal) > cap && Math.abs(newTotal) > Math.abs(oldTotal)) {
-            // Never accelerate past the cap; an over-cap launch (knockback) may steer back
-            // toward the cap but is not clamped down to it in a single tick.
-            newTotal = Math.abs(oldTotal) >= cap ? oldTotal : Math.copySign(cap, newTotal);
+        double band = walkSpeedPerTick(entry.movementProfile) * fs / cfg.AIR_INPUT_BAND_DIVISOR;
+        double total = entry.airVelX + entry.airSteerVelX;
+        double inDir = total * steerDir; // velocity component along the input direction
+        if (inDir < band) {
+            inDir = Math.min(band, inDir + cfg.AIR_CONTROL_ACCEL_PXSS * fs * t * t);
+            entry.airSteerVelX = inDir * steerDir - entry.airVelX;
         }
-        entry.airSteerVelX = newTotal - entry.airVelX;
+        // else: ApplyForce no-op — neither accelerates nor clamps an over-band velocity
+        // in the input direction (an over-cap knockback launch keeps its speed too).
         // Client jump stance follows the held steering direction, not the preserved horizontal
         // launch momentum. Updating facing here makes airborne debug output line up with what the
         // client is visually trying to do, even before the net X velocity changes sign.
         entry.facingDir = steerDir > 0 ? 1 : -1;
+    }
+
+    /**
+     * No-input airborne drag (CalcFloat @ 0x9b2c3c): vx decays toward 0 at 1 x fs px/s^2,
+     * switching to 100 x fs px/s^2 while falling AT terminal velocity; clamped at zero-cross.
+     * NOT applied to committed nav arcs (fixedAirArc): those model the launch direction key
+     * held for the whole flight — held input suppresses drag and is a no-op above the input
+     * band, keeping vx constant exactly like the graph's constant-stepX arc simulation.
+     */
+    private static void applyAirDrag(BotEntry entry, MapleMap map) {
+        double total = entry.airVelX + entry.airSteerVelX;
+        if (total == 0.0) return;
+        double t = tickS();
+        double fs = mapGroundSlipScale(map, entry.movementProfile);
+        boolean terminalFall = entry.velY >= maxFallPerTick();
+        double drag = (terminalFall ? cfg.AIR_DRAG_TERMINAL_PXSS : cfg.AIR_DRAG_PXSS) * fs * t * t;
+        double next = total > 0.0 ? Math.max(0.0, total - drag) : Math.min(0.0, total + drag);
+        entry.airSteerVelX = next - entry.airVelX;
     }
 
     private static Point advanceAirbornePosition(BotEntry entry, Character bot) {
@@ -1330,16 +1361,23 @@ final class BotPhysicsEngine {
 
   /**
      * Intent-driven airborne integrator. Reads {@link BotEntry#moveDir} for horizontal
-     * air steering (-1/0/+1). Movement layer gates steering for committed nav trajectories
-     * (fixedAirArc, JUMP/DROP edges) by setting moveDir=0.
+     * air steering (-1/0/+1). Movement layer holds the LAUNCH key for committed nav
+     * trajectories (fixedAirArc, JUMP/DROP edges) — a no-op above the input band that
+     * keeps vx constant — and leaves moveDir=0 for free no-input flight, which gets
+     * the CalcFloat drag instead.
      *
-     * One physics step: apply air steering from intent, advance position, resolve collision, apply result.
+     * One physics step: apply air steering/drag from intent, advance position, resolve collision, apply result.
      * All collision outcome methods are private — movement must not call them directly.
      */
     static AirborneStepResult stepAirborne(BotEntry entry, Character bot) {
-        // Apply air steering from intent. Movement sets moveDir=0 for committed trajectories.
+        // Apply air steering from intent. Movement holds the launch key for committed
+        // trajectories (input no-op above the band — vx constant); free flight with no
+        // input gets the CalcFloat drag instead. fixedAirArc additionally guards direct
+        // stepAirborne callers that bypass the movement layer's key-hold emulation.
         if (entry.moveDir != 0) {
             applyAirSteering(entry, bot.getMap(), entry.moveDir);
+        } else if (!entry.fixedAirArc) {
+            applyAirDrag(entry, bot.getMap());
         }
 
         Point previousPos = roundedAirPosition(entry);
@@ -1948,9 +1986,10 @@ final class BotPhysicsEngine {
         return maxHForcePerClientStep(profile) * cfg.GROUNDSLIP / (cfg.FRICTION + cfg.SLOPEFACTOR);
     }
 
-    /** Airborne horizontal speed cap in px/tick — the profile walk speed (packet-verified:
-     *  |vx| never exceeds walkSpeed in the air, launch snap and steering both pin to it). */
-    private static double airSpeedCapPerTick(BotMovementProfile profile) {
+    /** Profile walk speed in px/tick. There is NO walkSpeed cap in the air (CalcFloat
+     *  @ 0x9b2c3c) — the observed |vx| <= walkSpeed is the ground cap carried in by the
+     *  launch snap. Used to derive the airborne input band (walkSpeed/14 x fs). */
+    private static double walkSpeedPerTick(BotMovementProfile profile) {
         return maxHSpeedPerClientStep(profile) * Math.max(1.0, cfg.TICK_MS / CLIENT_GROUND_STEP_MS);
     }
 

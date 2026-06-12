@@ -328,13 +328,22 @@ class BotMovementManager {
                 return;
             }
 
-            // Set air steering intent. Gated by shouldApplyAirSteering to preserve
-            // fixed ballistic path for committed nav jumps/drops.
-            // If fidget manager already set moveDir (non-zero), preserve it.
-            if (entry.moveDir == 0 && targetPos != null && shouldApplyAirSteering(entry)) {
-                int dx = targetPos.x - botPos.x;
-                entry.moveDir = Math.abs(dx) > BotPhysicsEngine.cfg.SWIM_ARRIVAL_RADIUS_PX
-                        ? Integer.signum(dx) : 0;
+            // Set air steering intent. If fidget manager already set moveDir (non-zero),
+            // preserve it. Committed nav trajectories (fixedAirArc, JUMP/DROP/CLIMB-launch
+            // edges) instead fly with the LAUNCH key held — like the real player performing
+            // the hop: held input is a CalcFloat no-op above the 8.93 x fs px/s input band
+            // (keeps vx constant, matching the graph's constant-stepX arc sim) and suppresses
+            // the no-input air drag that free flight gets.
+            if (entry.moveDir == 0) {
+                if (shouldApplyAirSteering(entry)) {
+                    if (targetPos != null) {
+                        int dx = targetPos.x - botPos.x;
+                        entry.moveDir = Math.abs(dx) > BotPhysicsEngine.cfg.SWIM_ARRIVAL_RADIUS_PX
+                                ? Integer.signum(dx) : 0;
+                    }
+                } else {
+                    entry.moveDir = Integer.signum(entry.airVelX);
+                }
             }
 
             BotPhysicsEngine.AirborneStepResult result = BotPhysicsEngine.stepAirborne(entry, bot);
