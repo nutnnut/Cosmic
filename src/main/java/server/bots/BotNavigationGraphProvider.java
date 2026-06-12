@@ -37,7 +37,10 @@ final class BotNavigationGraphProvider {
     //     Orbis-tower-style 860px down-jump edges must disappear).
     // 50: indexed ground lookups (findBelowIndexed) - tie-breaks between overlapping footholds
     //     can differ from the tree's traversal order (Ellinia: 2 of 5151 edges).
-    private static final int GRAPH_VERSION = 53; // 51: kinetic slippery model + snowshoes; 52: brake-to-stop landings; 53: glide-unless-edge stop policy (slipperyStopDir)
+    // 54: client-true landings — touchdown halves carried momentum (packet fit), so slippery
+    //     post-landing brake sims stop in ~1/4 the distance and previously-rejected icy hop
+    //     edges (El Nath 267->277->278->279) become stable.
+    private static final int GRAPH_VERSION = 54; // 51: kinetic slippery model + snowshoes; 52: brake-to-stop landings; 53: glide-unless-edge stop policy (slipperyStopDir)
     private static final int ENDPOINT_ANCHOR_SPACING_PX = 10;
     private static final int DOWN_JUMP_PRELAUNCH_WINDOW_PX = 20;
     private static final int SAME_SOLID_NEST_GAP_PX = 8;
@@ -1082,6 +1085,17 @@ final class BotNavigationGraphProvider {
                 edgeKeys);
     }
 
+    /**
+     * Jump-edge launch state: the three launchStepX classes {-walkStep, 0, +walkStep} are
+     * COMPLETE even on slippery ground — no extra launch-speed classes or momentum chaining
+     * state are needed. Packet-verified client physics (see Config.AIR_CONTROL_ACCEL_PXSS):
+     * a jump with a direction held snaps to ±walkSpeed at takeoff regardless of ground speed
+     * (so a directional hop needs no runway and loses nothing to a slow icy start or a
+     * halved post-landing slide), and a no-input jump carries the current hspeed (bounded by
+     * ±walkSpeed, and the executor brakes vertical jumps to ~0 first — "jump-slide" gate).
+     * The simulated constant-stepX ballistic arc is exact: air has no drag, and a held
+     * direction keeps vx pinned at the ±walkSpeed cap it launched with.
+     */
     private static void addJumpEdges(BotNavigationGraph.Region from,
                                      MapleMap map,
                                      Map<Integer, BotNavigationGraph.Region> regionsById,

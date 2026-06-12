@@ -41,6 +41,8 @@ class BotNavigationGraphProviderTest {
     private static final Supplier<MapleMap> mushroomShrineS = lazyMap(800000000);
     private static final Supplier<MapleMap> swamp1S = lazyMap(107000000);
     private static final Supplier<BotNavigationGraph> swamp1GraphS = lazyGraph(swamp1S);
+    private static final Supplier<MapleMap> elNathS = lazyMap(211000000);
+    private static final Supplier<BotNavigationGraph> elNathGraphS = lazyGraph(elNathS);
 
     private static MapleMap henesys() { return henesysS.get(); }
     private static BotNavigationGraph henesysGraph() { return henesysGraphS.get(); }
@@ -54,6 +56,8 @@ class BotNavigationGraphProviderTest {
     private static MapleMap mushroomShrine() { return mushroomShrineS.get(); }
     private static MapleMap swamp1() { return swamp1S.get(); }
     private static BotNavigationGraph swamp1Graph() { return swamp1GraphS.get(); }
+    private static MapleMap elNath() { return elNathS.get(); }
+    private static BotNavigationGraph elNathGraph() { return elNathGraphS.get(); }
 
     private static Supplier<MapleMap> lazyMap(int mapId) {
         return memoize(() -> BotNavigationMapLoader.loadMapGeometry(mapId));
@@ -103,6 +107,44 @@ class BotNavigationGraphProviderTest {
         assertTrue(edge.containsLaunchX(start.x));
         assertEquals(targetRegionId, edge.toRegionId);
         assertJumpEdgeLandsInRegion(henesysGraph(), henesys(), edge, targetRegionId);
+    }
+
+    /**
+     * Benchmark from real-client packet captures (user-performed trick jumps at speed100/
+     * jump100, no snowshoes — logs/monitored-packets-elnath-tricky-jumps-spd100v2.log):
+     * the El Nath icy foothold chain 171 > 262 > 264 > 267 > 277 > 278 > 279 is traversable
+     * with consecutive JUMP edges. The three leftward icy hops only become stable with the
+     * packet-true landing rule (touchdown halves carried momentum, so the post-landing brake
+     * stops on the narrow ledges) and need no runway: a directional jump launch snaps to
+     * ±walkSpeed regardless of ground speed.
+     */
+    @Test
+    void shouldChainElNathTrickyJumpFootholdsWithConsecutiveJumpEdges() {
+        int[] chain = {171, 262, 264, 267, 277, 278, 279};
+        for (int i = 0; i + 1 < chain.length; i++) {
+            int fromRegionId = elNathGraph().regionIdByFootholdId.getOrDefault(chain[i], -1);
+            int toRegionId = elNathGraph().regionIdByFootholdId.getOrDefault(chain[i + 1], -1);
+            assertTrue(fromRegionId >= 0 && toRegionId >= 0,
+                    "chain footholds must be in the graph: " + chain[i] + " -> " + chain[i + 1]);
+            boolean hasJump = elNathGraph().getOutgoing(fromRegionId).stream()
+                    .anyMatch(e -> e.toRegionId == toRegionId
+                            && e.type == BotNavigationGraph.EdgeType.JUMP);
+            assertTrue(hasJump, "missing JUMP edge for icy hop fh" + chain[i] + " -> fh" + chain[i + 1]);
+        }
+    }
+
+    /** Same capture session: foothold 258 (x 351..366, y -28) is reachable from BELOW by
+     *  jumping (user-verified in the real client at speed100/jump100, no snowshoes). */
+    @Test
+    void shouldReachElNathFoothold258FromBelowByJumping() {
+        int targetRegionId = elNathGraph().regionIdByFootholdId.getOrDefault(258, -1);
+        assertTrue(targetRegionId >= 0, "foothold 258 must be in the graph");
+        boolean reachableFromBelow = elNathGraph().regionsById.values().stream()
+                .flatMap(region -> elNathGraph().getOutgoing(region.id).stream())
+                .anyMatch(e -> e.toRegionId == targetRegionId
+                        && e.type == BotNavigationGraph.EdgeType.JUMP
+                        && e.startPoint.y > -28);
+        assertTrue(reachableFromBelow, "foothold 258 must have a JUMP edge launched from below it");
     }
 
     @Test
