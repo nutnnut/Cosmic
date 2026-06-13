@@ -214,6 +214,12 @@ public class BotEntry {
     boolean autopilotTransitFollow = false;
     long autopilotNextStragglerCheckAtMs = 0L;
     boolean autopilotWaitingForStragglers = false;
+    // While the LEADER waits for stragglers DURING TRANSIT it loiters at the next-hop portal
+    // (opportunity-attacking nearby mobs) instead of grind-wandering the whole map, so the
+    // group reassembles there and hops together. null/-1 = not anchored; the mapId guard
+    // self-clears it the moment the leader changes maps (e.g. on arrival).
+    java.awt.Point autopilotWaitAnchor = null;
+    int autopilotWaitAnchorMapId = -1;
     // True while an async advisor pass for this entry is running (re-decides only) — stops
     // the tick from stacking decisions while one is still computing.
     volatile boolean autopilotDecisionInFlight = false;

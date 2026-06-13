@@ -436,4 +436,51 @@ class BotTravelManagerTest {
         assertTrue(entry.moveTargetPrecise);
         assertEquals(-1, entry.followTravelTargetMapId);
     }
+
+    @Test
+    void nextHopPortalPositionReturnsDirectPortalPos() {
+        Portal toHenesys = portal(1, HENESYS, Portal.MAP_PORTAL, null, Portal.OPEN, new Point(300, 0));
+        Fixture f = fixture(HUNTING_GROUND, HENESYS, new Point(0, 0), List.of(toHenesys));
+
+        try (ConsumableSeams seams = new ConsumableSeams()) {
+            Point pos = BotTravelManager.nextHopPortalPosition(f.entry(), f.bot(), HENESYS, 4);
+            assertEquals(new Point(300, 0), pos);
+        }
+    }
+
+    @Test
+    void nextHopPortalPositionReturnsFirstHopPortalOfMultiHopRoute() {
+        int startMap = 999999;
+        Portal toHunting = portal(1, HUNTING_GROUND, Portal.MAP_PORTAL, null, Portal.OPEN, new Point(400, 0));
+        Fixture f = fixture(startMap, HENESYS, new Point(0, 0), List.of(toHunting));
+
+        try (ConsumableSeams seams = new ConsumableSeams();
+             RouteStub route = new RouteStub((from, to, maxHops, options) ->
+                     from == startMap && to == HENESYS ? List.of(HUNTING_GROUND, HENESYS) : null)) {
+            Point pos = BotTravelManager.nextHopPortalPosition(f.entry(), f.bot(), HENESYS, 4);
+            assertEquals(new Point(400, 0), pos); // stand at the hop portal, not the final destination
+        }
+    }
+
+    @Test
+    void nextHopPortalPositionReturnsNullWhenNextHopIsNotAWalkablePortal() {
+        // Route's next hop has no live walkable portal (only a scripted one) — nothing to stand at.
+        Portal scripted = portal(1, HUNTING_GROUND, Portal.MAP_PORTAL, "enter_gate", Portal.OPEN, new Point(50, 0));
+        Fixture f = fixture(999999, HENESYS, new Point(0, 0), List.of(scripted));
+
+        try (ConsumableSeams seams = new ConsumableSeams();
+             RouteStub route = new RouteStub((from, to, maxHops, options) -> List.of(HUNTING_GROUND, HENESYS))) {
+            assertNull(BotTravelManager.nextHopPortalPosition(f.entry(), f.bot(), HENESYS, 4));
+        }
+    }
+
+    @Test
+    void nextHopPortalPositionReturnsNullWhenNoRoute() {
+        Fixture f = fixture(999999, HENESYS, new Point(0, 0), List.of());
+
+        try (ConsumableSeams seams = new ConsumableSeams();
+             RouteStub route = new RouteStub((from, to, maxHops, options) -> null)) {
+            assertNull(BotTravelManager.nextHopPortalPosition(f.entry(), f.bot(), HENESYS, 4));
+        }
+    }
 }

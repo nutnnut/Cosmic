@@ -187,6 +187,8 @@ final class BotAutopilotManager {
         entry.autopilotTransitFollow = false;
         entry.autopilotWaitingForStragglers = false;
         entry.autopilotNextStragglerCheckAtMs = 0L;
+        entry.autopilotWaitAnchor = null;
+        entry.autopilotWaitAnchorMapId = -1;
         entry.autopilotDecisionInFlight = false;
         BotQuestManager.clearQuestErrand(entry); // a canceled autopilot abandons any quest detour
         BotGachaponManager.clearGachaErrand(entry); // ...and any gachapon trip
@@ -313,6 +315,9 @@ final class BotAutopilotManager {
                 entry.autopilotTransitFollow = false;
                 BotManager.getInstance().resumeAutopilotGrind(entry);
             }
+            // A leader that arrived while portal-anchored (waiting) left grinding off — restore
+            // it so the on-site grind flow runs. The wait anchor self-clears on the map change.
+            clearWaitAnchor(entry);
             if (entry.autopilotErrandMapId != -1) {
                 if (entry.shopVisitPending) {
                     return false; // shopping; the visit flow owns the tick
@@ -499,7 +504,9 @@ final class BotAutopilotManager {
             return objective + " at " + destination + " - at " + currentMap + ", moving with the party";
         }
         if (entry.autopilotWaitingForStragglers) {
-            return objective + " at " + destination + " - at " + currentMap + ", waiting for the party to catch up";
+            String where = entry.autopilotWaitAnchor != null ? " at the portal" : "";
+            return objective + " at " + destination + " - at " + currentMap
+                    + ", waiting" + where + " for the party to catch up";
         }
         return "im at " + currentMap + ", heading to " + destination + " to " + objective + reasonSuffix(entry);
     }
@@ -738,14 +745,17 @@ final class BotAutopilotManager {
         List<BotEntry> members = partyMembers.members(entry);
         if (members.size() < 2) {
             exitTransitFollow(entry); // group dissolved — travel on alone
+            clearWaitAnchor(entry);  // ...and drop any portal hold, restoring grind/travel
             return null;
         }
         BotEntry leader = members.get(0);
         if (leader == entry) {
             exitTransitFollow(entry); // just promoted mid-transit: stop following, lead
             if (waitingForStragglers(entry, bot, members)) {
-                return false; // hold this map (grind flow runs) until the group closes up
+                anchorWaitAtNextHopPortal(entry, bot); // loiter at the portal, not the whole map
+                return false; // hold this map (grind/loiter flow runs) until the group closes up
             }
+            clearWaitAnchor(entry); // caught up — resume travel and enter the portal together
             return null;
         }
         if (entry.owner == null) {
@@ -755,6 +765,35 @@ final class BotAutopilotManager {
             return null;
         }
         return enterTransitFollow(entry, leader);
+    }
+
+    /**
+     * Leader is holding for stragglers IN TRANSIT: stand at the next-hop portal (combat keeps
+     * opportunity-firing there via BotManager's loiter dispatch) instead of grind-wandering off,
+     * so the group reassembles at the portal and hops together once everyone closes up. When the
+     * next hop isn't a plain walkable portal (consumable/taxi/ferry leg, or no route/portal — and
+     * on the destination map there is none), there's nothing to stand next to: fall back to the
+     * plain "hold this map and grind" wait. grinding is turned off while anchored so the grind
+     * seek can't pull the leader away and the same-map teleport-recovery guard stays disengaged.
+     */
+    private static void anchorWaitAtNextHopPortal(BotEntry entry, Character bot) {
+        Point portalPos = BotTravelManager.nextHopPortalPosition(entry, bot, entry.autopilotMapId, MAX_TRAVEL_HOPS);
+        if (portalPos == null) {
+            clearWaitAnchor(entry); // arrived, or hop is non-walkable — plain hold + grind
+            return;
+        }
+        entry.autopilotWaitAnchor = portalPos;
+        entry.autopilotWaitAnchorMapId = bot.getMapId();
+        entry.grinding = false;
+    }
+
+    /** Release the portal-anchored hold and restore the grind/travel flow. */
+    private static void clearWaitAnchor(BotEntry entry) {
+        if (entry.autopilotWaitAnchor != null) {
+            entry.autopilotWaitAnchor = null;
+            entry.autopilotWaitAnchorMapId = -1;
+            entry.grinding = true; // travel resumes from grinding=true (BotManager.issueGrind baseline)
+        }
     }
 
     /**

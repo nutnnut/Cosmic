@@ -13,6 +13,7 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
@@ -358,6 +359,78 @@ class BotAutopilotManagerTest {
             assertTrue(BotAutopilotManager.tick(leader.entry(), leader.bot(), true));
             assertFalse(leader.entry().autopilotWaitingForStragglers);
             assertEquals(1, seams.replies.size());
+        }
+    }
+
+    @Test
+    void leaderPortalAnchorsWhileWaitingInTransitAndDoesNotEnterThePortal() {
+        // Leader still in transit (current map != destination) with a member 2+ hops behind.
+        Fixture leader = fixture(104000000, onlineOwner());
+        Fixture follower = fixture(TOWN, onlineOwner());
+        for (Fixture f : List.of(leader, follower)) {
+            f.entry().autopilotMapId = HUNTING_GROUND;
+            f.entry().autopilotParty = true;
+            f.entry().autopilotNextDecisionAtMs = Long.MAX_VALUE;
+            f.entry().grinding = true;
+        }
+
+        try (Seams seams = new Seams(null);
+             MockedStatic<BotTravelManager> travel = mockStatic(BotTravelManager.class)) {
+            // The leader resolves a next-hop portal to stand at; tickTravel (the enter path) is
+            // mocked to fail the test if it's ever called while waiting.
+            travel.when(() -> BotTravelManager.nextHopPortalPosition(any(), any(), anyInt(), anyInt()))
+                    .thenReturn(new Point(500, 100));
+            BotAutopilotManager.partyMembers = entry -> List.of(leader.entry(), follower.entry());
+            BotAutopilotManager.hopDistance = (from, to) -> 2; // 2 > threshold(1): hold
+
+            assertFalse(BotAutopilotManager.tick(leader.entry(), leader.bot(), true));
+            assertTrue(leader.entry().autopilotWaitingForStragglers);
+            // Portal-anchored, not grind-wandering: anchor pinned, grinding off, NEVER entered.
+            assertEquals(new Point(500, 100), leader.entry().autopilotWaitAnchor);
+            assertEquals(104000000, leader.entry().autopilotWaitAnchorMapId);
+            assertFalse(leader.entry().grinding);
+            travel.verify(() -> BotTravelManager.tickTravel(any(), any(), anyInt(), anyInt(), anyBoolean(), anyBoolean()),
+                    org.mockito.Mockito.never());
+
+            // Caught up: the hold releases, the anchor clears, grinding is restored, and travel
+            // (the enter path) is allowed to run again.
+            travel.when(() -> BotTravelManager.tickTravel(any(), any(), anyInt(), anyInt(), anyBoolean(), anyBoolean()))
+                    .thenReturn(true);
+            leader.entry().autopilotNextStragglerCheckAtMs = 0L;
+            BotAutopilotManager.hopDistance = (from, to) -> 1;
+            assertTrue(BotAutopilotManager.tick(leader.entry(), leader.bot(), true));
+            assertFalse(leader.entry().autopilotWaitingForStragglers);
+            assertNull(leader.entry().autopilotWaitAnchor);
+            assertEquals(-1, leader.entry().autopilotWaitAnchorMapId);
+            assertTrue(leader.entry().grinding);
+        }
+    }
+
+    @Test
+    void leaderHoldsMapWithoutAnchorWhenNoNextHopPortal() {
+        // No walkable next-hop portal (consumable/taxi leg): fall back to plain "hold + grind".
+        Fixture leader = fixture(104000000, onlineOwner());
+        Fixture follower = fixture(TOWN, onlineOwner());
+        for (Fixture f : List.of(leader, follower)) {
+            f.entry().autopilotMapId = HUNTING_GROUND;
+            f.entry().autopilotParty = true;
+            f.entry().autopilotNextDecisionAtMs = Long.MAX_VALUE;
+            f.entry().grinding = true;
+        }
+
+        try (Seams seams = new Seams(null);
+             MockedStatic<BotTravelManager> travel = mockStatic(BotTravelManager.class)) {
+            travel.when(() -> BotTravelManager.nextHopPortalPosition(any(), any(), anyInt(), anyInt()))
+                    .thenReturn(null);
+            travel.when(() -> BotTravelManager.tickTravel(any(), any(), anyInt(), anyInt(), anyBoolean(), anyBoolean()))
+                    .thenReturn(true);
+            BotAutopilotManager.partyMembers = entry -> List.of(leader.entry(), follower.entry());
+            BotAutopilotManager.hopDistance = (from, to) -> 2;
+
+            assertFalse(BotAutopilotManager.tick(leader.entry(), leader.bot(), true));
+            assertTrue(leader.entry().autopilotWaitingForStragglers);
+            assertNull(leader.entry().autopilotWaitAnchor); // nothing to stand at
+            assertTrue(leader.entry().grinding);            // plain hold keeps grinding
         }
     }
 

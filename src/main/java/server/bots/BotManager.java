@@ -2602,6 +2602,19 @@ public class BotManager {
             return;
         }
 
+        // Party-cohesion portal-anchored wait: the leader is holding in transit for stragglers,
+        // loitering at the next-hop portal (opportunity-attacking, not chasing) so the group
+        // reassembles there. The mapId guard self-clears the anchor once the leader changes
+        // maps. tickPartyCohesion sets/clears autopilotWaitAnchor; combat keeps firing here.
+        if (entry.autopilotWaitAnchor != null) {
+            if (entry.autopilotWaitAnchorMapId == bot.getMapId()) {
+                loiterAtAnchor(entry, bot, botPos, new Point(entry.autopilotWaitAnchor), runAiTick);
+                return;
+            }
+            entry.autopilotWaitAnchor = null; // moved on (e.g. arrived) — drop the stale pin
+            entry.autopilotWaitAnchorMapId = -1;
+        }
+
         // Grind mode: navigate toward nearest monster, attack when in range
         if (entry.grinding) {
             LocalOpportunityAttackResult grindResult;
@@ -2961,8 +2974,16 @@ public class BotManager {
             tickIdleEntry(entry, bot);
             return;
         }
+        loiterAtAnchor(entry, bot, botPos, new Point(entry.farmAnchor), runAiTick);
+    }
 
-        Point anchor = new Point(entry.farmAnchor);
+    /**
+     * Hold a fixed spot and opportunity-attack: fire at any mob already in attack range
+     * (no chasing — {@code false, false}), otherwise walk back toward {@code anchor} and idle
+     * within 8px of it. Shared by the "farm this spot" command (BotEntry.farmAnchor) and the
+     * party-cohesion portal-anchored wait, so both loiter identically without a target re-impl.
+     */
+    void loiterAtAnchor(BotEntry entry, Character bot, Point botPos, Point anchor, boolean runAiTick) {
         if (runAiTick) {
             LocalOpportunityAttackResult attackResult = tryLocalOpportunityAttack(
                     entry, bot, botPos, anchor, anchor, false, false);

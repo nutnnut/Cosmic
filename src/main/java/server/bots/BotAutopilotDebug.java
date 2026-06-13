@@ -99,12 +99,14 @@ final class BotAutopilotDebug {
 
     private static void appendComposition(StringBuilder sb, ItemInformationProvider ii, List<BotEntry> members) {
         sb.append("--- a. PARTY COMPOSITION ---\n");
+        BotEntry leader = members.isEmpty() ? null : members.get(0);
         for (BotEntry m : members) {
             Character c = m.bot;
             sb.append(String.format("%s  job=%s  lv%d  STR=%d DEX=%d INT=%d LUK=%d%n",
                     safeName(c), jobName(c), c.getLevel(),
                     c.getTotalStr(), c.getTotalDex(), c.getTotalInt(), c.getTotalLuk()));
             sb.append(String.format("    map: %d %s%n", c.getMapId(), mapNameOf(c)));
+            appendCohesion(sb, leader, m);
             Equip weapon = wornInSlot(c, ii, WEAPON_SLOT);
             if (weapon == null) {
                 sb.append("    weapon: (none)\n");
@@ -121,6 +123,40 @@ final class BotAutopilotDebug {
             appendCheapSlot(sb, c, ii, (short) -5, "top/overall");
             sb.append('\n');
         }
+    }
+
+    /** Party-cohesion straggler/anchor diagnostics: who is holding the group up (hops + same-map
+     *  px behind the leader) and whether the leader is portal-anchored while waiting. */
+    private static void appendCohesion(StringBuilder sb, BotEntry leader, BotEntry m) {
+        if (leader == null || leader.bot == null || m.bot == null) {
+            return;
+        }
+        if (m == leader) {
+            String wait;
+            if (m.autopilotWaitAnchor != null) {
+                wait = String.format("WAITING - portal-anchored at (%d,%d) on map %d",
+                        m.autopilotWaitAnchor.x, m.autopilotWaitAnchor.y, m.autopilotWaitAnchorMapId);
+            } else if (m.autopilotWaitingForStragglers) {
+                wait = "WAITING - holding this map (no next-hop portal to anchor)";
+            } else {
+                wait = "not waiting";
+            }
+            sb.append(String.format("    LEADER cohesion: %s%n", wait));
+            return;
+        }
+        int hops = BotAutopilotManager.hopDistance.hops(m.bot.getMapId(), leader.bot.getMapId());
+        String hopStr = hops == Integer.MAX_VALUE ? "unreachable" : Integer.toString(hops);
+        StringBuilder line = new StringBuilder(String.format(
+                "    cohesion: %s hops behind leader (wait when > %d)",
+                hopStr, BotManager.cfg.STRAGGLER_WAIT_HOPS));
+        if (m.bot.getMapId() == leader.bot.getMapId()
+                && m.bot.getPosition() != null && leader.bot.getPosition() != null) {
+            int px = Math.abs(m.bot.getPosition().x - leader.bot.getPosition().x)
+                    + Math.abs(m.bot.getPosition().y - leader.bot.getPosition().y);
+            line.append(String.format(", same-map %dpx (wait > %d, resume <= %d)", px,
+                    BotManager.cfg.SAME_MAP_STRAGGLER_PX, BotManager.cfg.SAME_MAP_STRAGGLER_RESUME_PX));
+        }
+        sb.append(line).append('\n');
     }
 
     private static void appendCheapSlot(StringBuilder sb, Character c, ItemInformationProvider ii,

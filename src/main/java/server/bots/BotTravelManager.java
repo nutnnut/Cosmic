@@ -352,6 +352,36 @@ final class BotTravelManager {
      * are skipped because their scripts can gate on quests/items and silently no-op or warp
      * somewhere else entirely.
      */
+    /**
+     * The position of the walkable portal this map's next hop toward {@code targetMapId} would
+     * enter — the same portal {@link #tickTravel} resolves, minus any walking or entering. Used
+     * by party cohesion to loiter the holding leader AT that portal instead of grind-wandering
+     * the whole map, so the group reassembles there and hops together. Returns null when the
+     * next hop isn't a plain walkable portal (consumable scroll / taxi / ferry, or no route /
+     * no live portal) — the caller then just holds the map and grinds normally.
+     */
+    static Point nextHopPortalPosition(BotEntry entry, Character bot, int targetMapId, int maxHops) {
+        MapleMap map = bot.getMap();
+        if (map == null) {
+            return null;
+        }
+        Point botPos = bot.getPosition();
+        Portal portal = findAdjacentPortal(map.getPortals(), targetMapId, botPos);
+        if (portal == null) {
+            BotWorldGraph.RouteOptions options = new BotWorldGraph.RouteOptions(
+                    returnScrollCount.applyAsInt(bot) > 0, bot.getMeso(), false);
+            List<Integer> route = routeLookup.route(bot.getMapId(), targetMapId, maxHops, options);
+            if (route == null || route.isEmpty()) {
+                return null;
+            }
+            portal = findAdjacentPortal(map.getPortals(), route.get(0), botPos);
+            if (portal == null) {
+                return null; // next hop is a scroll/taxi/ferry leg — nothing to stand next to
+            }
+        }
+        return portal.getPosition();
+    }
+
     static Portal findAdjacentPortal(Collection<Portal> portals, int targetMapId, Point fromPos) {
         Portal best = null;
         int bestDist = Integer.MAX_VALUE;
