@@ -194,8 +194,14 @@ final class BotGachaponManager {
         double seconds(int fromMapId, int toMapId);
     }
     static TravelSeconds travelSeconds = (from, to) -> {
-        java.util.Map<Integer, Double> flood =
-                BotTravelCost.floodSeconds(from, BotAutopilotManager.MAX_TRAVEL_HOPS, null, null);
+        if (from == to) {
+            return 0.0;
+        }
+        // floodSeconds always computes ferrySeconds(transportationTime) up front, so a non-null
+        // transportationTime is required even with PORTALS_ONLY (no ferry hop is taken). Mirrors
+        // BotQuestManager's errand seam; passing null,null NPE'd on the bot tick (Bowgurl@200010000).
+        java.util.Map<Integer, Double> flood = BotTravelCost.floodSeconds(from,
+                BotAutopilotManager.MAX_TRAVEL_HOPS, BotWorldGraph.RouteOptions.PORTALS_ONLY, ms -> ms);
         Double one = flood.get(to);
         return one == null ? 99_999.0 : 2.0 * one;
     };
