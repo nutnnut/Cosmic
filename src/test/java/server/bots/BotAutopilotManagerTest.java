@@ -77,6 +77,7 @@ class BotAutopilotManagerTest {
         private final BotAutopilotManager.DecisionRunner previousRunner = BotAutopilotManager.decisionRunner;
         private final BotAutopilotManager.PartyMembersLookup previousPartyMembers = BotAutopilotManager.partyMembers;
         private final BotAutopilotManager.HopDistance previousHopDistance = BotAutopilotManager.hopDistance;
+        private final BotAutopilotManager.SupplyLevel previousSupplyLevel = BotAutopilotManager.supplyLevel;
 
         Seams(Recommendation recommendation) {
             this(recommendation, recommendation);
@@ -92,6 +93,9 @@ class BotAutopilotManagerTest {
             BotAutopilotManager.farmAdvisor = (entry, bot, itemId, fromMapId, maxHops, withFerry) -> null;
             BotAutopilotManager.reply = (entry, text) -> replies.add(text);
             BotAutopilotManager.decisionRunner = (compute, apply) -> apply.accept(compute.get());
+            // Default: well-stocked, so the pre-travel resupply gate never trips for the
+            // travel/formation/portal-wait tests. The pre-travel test overrides this.
+            BotAutopilotManager.supplyLevel = bot -> false;
         }
 
         @Override
@@ -103,6 +107,7 @@ class BotAutopilotManagerTest {
             BotAutopilotManager.decisionRunner = previousRunner;
             BotAutopilotManager.partyMembers = previousPartyMembers;
             BotAutopilotManager.hopDistance = previousHopDistance;
+            BotAutopilotManager.supplyLevel = previousSupplyLevel;
         }
     }
 
@@ -615,6 +620,58 @@ class BotAutopilotManagerTest {
 
             assertTrue(BotAutopilotManager.tick(follower.entry(), follower.bot(), true));
             assertFalse(follower.entry().autopilotTransitFollow); // not chasing the absent leader
+            travel.verify(() -> BotTravelManager.tickTravel(any(), any(),
+                    org.mockito.ArgumentMatchers.eq(HUNTING_GROUND), anyInt(), anyBoolean(), anyBoolean()));
+        }
+    }
+
+    @Test
+    void shouldResupplyBeforeDepartingWhenSuppliesAlreadyLowOffDestination() {
+        // Off the grind map with supplies already below threshold: restock FIRST (town errand),
+        // don't travel out and bounce back. Adequate supplies -> travel straight to the grind map.
+        Fixture f = fixture(104010000); // mid-route, distinct from both the town and the grind map
+        f.entry().autopilotMapId = HUNTING_GROUND;
+        f.entry().autopilotNextDecisionAtMs = Long.MAX_VALUE;
+        f.entry().grinding = true;
+        MapleMap town = mock(MapleMap.class);
+        when(town.getId()).thenReturn(TOWN);
+        when(f.bot().getMap().getReturnMap()).thenReturn(town);
+
+        try (Seams seams = new Seams(null);
+             MockedStatic<BotTravelManager> travel = mockStatic(BotTravelManager.class)) {
+            travel.when(() -> BotTravelManager.tickTravel(any(), any(), anyInt(), anyInt(), anyBoolean(), anyBoolean()))
+                    .thenReturn(true);
+            BotAutopilotManager.supplyLevel = bot -> true; // low on supplies
+
+            assertTrue(BotAutopilotManager.tick(f.entry(), f.bot(), true));
+            assertEquals(TOWN, f.entry().autopilotErrandMapId); // errand triggered pre-travel
+            travel.verify(() -> BotTravelManager.tickTravel(any(), any(),
+                    org.mockito.ArgumentMatchers.eq(TOWN), anyInt(), anyBoolean(), anyBoolean()));
+
+            // Returning from the errand must NOT re-trigger the pre-travel gate (loop guard).
+            f.entry().autopilotErrandMapId = -1;
+            f.entry().autopilotReturningFromErrand = true;
+            assertTrue(BotAutopilotManager.tick(f.entry(), f.bot(), true));
+            assertEquals(-1, f.entry().autopilotErrandMapId);
+            travel.verify(() -> BotTravelManager.tickTravel(any(), any(),
+                    org.mockito.ArgumentMatchers.eq(HUNTING_GROUND), anyInt(), anyBoolean(), anyBoolean()));
+        }
+    }
+
+    @Test
+    void shouldTravelStraightToGrindMapWhenSuppliesAdequate() {
+        Fixture f = fixture(TOWN);
+        f.entry().autopilotMapId = HUNTING_GROUND;
+        f.entry().autopilotNextDecisionAtMs = Long.MAX_VALUE;
+        f.entry().grinding = true;
+
+        try (Seams seams = new Seams(null);
+             MockedStatic<BotTravelManager> travel = mockStatic(BotTravelManager.class)) {
+            travel.when(() -> BotTravelManager.tickTravel(any(), any(), anyInt(), anyInt(), anyBoolean(), anyBoolean()))
+                    .thenReturn(true);
+            // supplyLevel defaults to false (adequate) in Seams: no errand, straight travel.
+            assertTrue(BotAutopilotManager.tick(f.entry(), f.bot(), true));
+            assertEquals(-1, f.entry().autopilotErrandMapId);
             travel.verify(() -> BotTravelManager.tickTravel(any(), any(),
                     org.mockito.ArgumentMatchers.eq(HUNTING_GROUND), anyInt(), anyBoolean(), anyBoolean()));
         }

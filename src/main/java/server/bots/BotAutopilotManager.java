@@ -340,6 +340,19 @@ final class BotAutopilotManager {
         if (entry.shopVisitPending) {
             return false; // resupply detour en route; travel resumes once it's done
         }
+        // Pre-travel resupply: about to depart for a grind map we're not on yet, but supplies are
+        // already below the reactive errand's threshold — restock FIRST instead of traveling out,
+        // bouncing straight back to town, then traveling again. requestResupplyErrand picks the
+        // town and sets autopilotErrandMapId, which flips this tick's destination + skips cohesion
+        // (line below) so the bot peels off independently. The !returningFromErrand guard breaks
+        // the loop: after restocking, the return trip must not re-trigger the pre-travel errand.
+        if (entry.autopilotErrandMapId == -1 && !entry.autopilotReturningFromErrand
+                && supplyLevel.lowOnSupplies(bot)) {
+            requestResupplyErrand(entry, bot);
+            if (entry.autopilotErrandMapId != -1) {
+                destination = entry.autopilotErrandMapId; // head to town this tick, not the grind map
+            }
+        }
         if (entry.autopilotParty && entry.autopilotErrandMapId == -1) {
             Boolean cohesion = tickPartyCohesion(entry, bot);
             if (cohesion != null) {
@@ -699,6 +712,28 @@ final class BotAutopilotManager {
     }
 
     static HopDistance hopDistance = BotAutopilotManager::walkingHops;
+
+    /** Seam over the reactive low-supply predicate so the pre-travel gate stays WZ/DB-free in
+     *  tests. Default reads the same HP/MP pot counts vs {@code POT_STOP} the grind-stop hook
+     *  uses (BotPotionManager) — reuse, not duplication. */
+    @FunctionalInterface
+    interface SupplyLevel {
+        boolean lowOnSupplies(Character bot);
+    }
+
+    static SupplyLevel supplyLevel = BotAutopilotManager::defaultLowOnSupplies;
+
+    /** True when HP or MP pots are below {@code POT_STOP} — the same threshold the reactive
+     *  resupply errand triggers on (BotPotionManager.tickPotionCheck). Exception-safe: partial
+     *  character mocks break countPotions, so a failure reads as "not low" and lets travel run. */
+    private static boolean defaultLowOnSupplies(Character bot) {
+        try {
+            int[] pots = BotPotionManager.countPotions(bot);
+            return pots[0] < BotManager.cfg.POT_STOP || pots[1] < BotManager.cfg.POT_STOP;
+        } catch (RuntimeException ignored) {
+            return false;
+        }
+    }
 
     /**
      * Active party-autopilot members, leader first. The game party is the source of truth
