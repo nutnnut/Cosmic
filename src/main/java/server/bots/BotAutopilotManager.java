@@ -7,6 +7,7 @@ import server.bots.BotGrindPlanner.PartyPlan;
 import server.bots.BotGrindPlanner.Recommendation;
 import server.maps.MapleMap;
 
+import java.awt.Point;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -669,8 +670,8 @@ final class BotAutopilotManager {
 
     // Cohesion: followers ride the regular follow pipeline behind the leader (formation
     // offsets, legal portal-follow, warp catch-up) instead of traveling independently, and
-    // the leader holds a map when somebody falls this many portal hops behind.
-    static final int STRAGGLER_WAIT_HOPS = 2;
+    // the leader holds when somebody falls behind. The straggler thresholds (portal hops and
+    // same-map px, with hysteresis) live in BotManager.Config so they're tunable at runtime.
     private static final long STRAGGLER_CHECK_INTERVAL_MS = 3_000L;
     private static final List<String> WAIT_REPLIES = List.of(
             "waiting up for the others",
@@ -723,7 +724,8 @@ final class BotAutopilotManager {
         if (fromMapId == toMapId) {
             return 0;
         }
-        List<Integer> route = BotWorldGraph.route(fromMapId, toMapId, STRAGGLER_WAIT_HOPS + 1,
+        List<Integer> route = BotWorldGraph.route(fromMapId, toMapId,
+                BotManager.cfg.STRAGGLER_WAIT_HOPS + 1,
                 new BotWorldGraph.RouteOptions(false, 0, false));
         return route == null ? Integer.MAX_VALUE : route.size();
     }
@@ -782,29 +784,52 @@ final class BotAutopilotManager {
         }
     }
 
-    /** Leader-side hold: true while any member is more than {@link #STRAGGLER_WAIT_HOPS}
-     *  portal hops behind. Rate-limited; the cached verdict rides between checks. */
-    private static boolean waitingForStragglers(BotEntry entry, Character bot, List<BotEntry> members) {
+    /** Leader-side hold: true while any member is more than {@code STRAGGLER_WAIT_HOPS}
+     *  portal hops behind, OR on the same map but farther than the same-map px band. The
+     *  same-map band has hysteresis: a fresh wait triggers past {@code SAME_MAP_STRAGGLER_PX}
+     *  but only releases once everyone is back within the tighter {@code RESUME_PX}, so the
+     *  leader doesn't stop-start flap at the boundary. Rate-limited; the cached verdict rides
+     *  between checks. */
+    static boolean waitingForStragglers(BotEntry entry, Character bot, List<BotEntry> members) {
         long now = System.currentTimeMillis();
         if (now < entry.autopilotNextStragglerCheckAtMs) {
             return entry.autopilotWaitingForStragglers;
         }
         entry.autopilotNextStragglerCheckAtMs = now + STRAGGLER_CHECK_INTERVAL_MS;
+        // Hysteresis: while already holding, members must close to the tighter resume band
+        // before the leader releases; otherwise a member hovering near the edge would make the
+        // leader flap. Read the OLD aggregate verdict before overwriting it.
+        boolean wasWaiting = entry.autopilotWaitingForStragglers;
+        int sameMapBand = wasWaiting
+                ? BotManager.cfg.SAME_MAP_STRAGGLER_RESUME_PX
+                : BotManager.cfg.SAME_MAP_STRAGGLER_PX;
+        Point leaderPos = bot.getPosition();
         boolean waiting = false;
         for (BotEntry member : members) {
             if (member == entry || member.bot == null || member.bot.getMap() == null) {
                 continue;
             }
-            if (hopDistance.hops(member.bot.getMapId(), bot.getMapId()) > STRAGGLER_WAIT_HOPS) {
+            if (hopDistance.hops(member.bot.getMapId(), bot.getMapId()) > BotManager.cfg.STRAGGLER_WAIT_HOPS) {
                 waiting = true;
                 break;
             }
+            if (member.bot.getMapId() == bot.getMapId() && leaderPos != null) {
+                Point memberPos = member.bot.getPosition();
+                if (memberPos != null && manhattan(leaderPos, memberPos) > sameMapBand) {
+                    waiting = true;
+                    break;
+                }
+            }
         }
-        if (waiting && !entry.autopilotWaitingForStragglers) {
+        if (waiting && !wasWaiting) {
             reply.accept(entry, BotManager.randomReply(WAIT_REPLIES));
         }
         entry.autopilotWaitingForStragglers = waiting;
         return waiting;
+    }
+
+    private static int manhattan(Point a, Point b) {
+        return Math.abs(a.x - b.x) + Math.abs(a.y - b.y);
     }
 
     private static PartyPlan decideParty(List<BotEntry> members) {

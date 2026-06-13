@@ -93,6 +93,16 @@ public class BotManager {
         // but still get pulled back to a same-map party anchor if they fall far out of bounds.
         public int GRIND_PARTY_TELEPORT_DIST_MULTIPLIER = 2;
 
+        // Party-autopilot cohesion (BotAutopilotManager): the leader holds and waits for
+        // stragglers instead of racing ahead. Hops>this many portals behind triggers a wait
+        // (1 = wait once someone is 2+ maps back; tolerates one map of in-transit spread).
+        // On the SAME map a member farther than SAME_MAP_STRAGGLER_PX also counts; the wait
+        // releases only once they close to within SAME_MAP_STRAGGLER_RESUME_PX (hysteresis,
+        // so the leader doesn't stop-start flap at the boundary).
+        public int STRAGGLER_WAIT_HOPS = 1;
+        public int SAME_MAP_STRAGGLER_PX = 700;
+        public int SAME_MAP_STRAGGLER_RESUME_PX = 350;
+
         // Grind loot convenience: loot competes with mob navigation only when
         // lootDistSq < mobDistSq * ratio. 0.09 ≈ loot within 30% of mob distance.
         public float GRIND_LOOT_CONVENIENCE_RATIO = 0.09f;

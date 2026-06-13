@@ -7,6 +7,7 @@ import server.bots.BotGrindPlanner.MobCandidate;
 import server.bots.BotGrindPlanner.Recommendation;
 import server.maps.MapleMap;
 
+import java.awt.Point;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -344,7 +345,7 @@ class BotAutopilotManagerTest {
             travel.when(() -> BotTravelManager.tickTravel(any(), any(), anyInt(), anyInt(), anyBoolean(), anyBoolean()))
                     .thenReturn(true);
             BotAutopilotManager.partyMembers = entry -> List.of(leader.entry(), follower.entry());
-            BotAutopilotManager.hopDistance = (from, to) -> BotAutopilotManager.STRAGGLER_WAIT_HOPS + 1;
+            BotAutopilotManager.hopDistance = (from, to) -> BotManager.cfg.STRAGGLER_WAIT_HOPS + 1;
 
             // Straggler too far: travel is skipped, the tick falls through to grinding here.
             assertFalse(BotAutopilotManager.tick(leader.entry(), leader.bot(), true));
@@ -358,6 +359,81 @@ class BotAutopilotManagerTest {
             assertFalse(leader.entry().autopilotWaitingForStragglers);
             assertEquals(1, seams.replies.size());
         }
+    }
+
+    @Test
+    void shouldWaitWhenAMemberIsTwoMapsBehindButNotOneMap() {
+        Fixture leader = fixture(104000000, onlineOwner());
+        Fixture follower = fixture(TOWN, onlineOwner());
+        for (Fixture f : List.of(leader, follower)) {
+            f.entry().autopilotMapId = HUNTING_GROUND;
+            f.entry().autopilotParty = true;
+            f.entry().autopilotNextDecisionAtMs = Long.MAX_VALUE;
+            f.entry().grinding = true;
+        }
+
+        try (Seams seams = new Seams(null);
+             MockedStatic<BotTravelManager> travel = mockStatic(BotTravelManager.class)) {
+            travel.when(() -> BotTravelManager.tickTravel(any(), any(), anyInt(), anyInt(), anyBoolean(), anyBoolean()))
+                    .thenReturn(true);
+            BotAutopilotManager.partyMembers = entry -> List.of(leader.entry(), follower.entry());
+
+            // One map behind (1 hop): within tolerance, threshold is 1 so 1 > 1 is false. No wait.
+            BotAutopilotManager.hopDistance = (from, to) -> 1;
+            assertTrue(BotAutopilotManager.tick(leader.entry(), leader.bot(), true));
+            assertFalse(leader.entry().autopilotWaitingForStragglers);
+
+            // Two maps behind (2 hops): 2 > 1, the leader holds.
+            leader.entry().autopilotNextStragglerCheckAtMs = 0L;
+            BotAutopilotManager.hopDistance = (from, to) -> 2;
+            assertFalse(BotAutopilotManager.tick(leader.entry(), leader.bot(), true));
+            assertTrue(leader.entry().autopilotWaitingForStragglers);
+        }
+    }
+
+    @Test
+    void shouldWaitForSameMapStragglerPastTheBandAndReleaseWithinHysteresis() {
+        // Leader already on the destination map (no next-hop portal) so the same-map gap is the
+        // only thing that can trigger a wait, and the existing arrived "hold + grind" applies.
+        Fixture leader = fixture(HUNTING_GROUND, onlineOwner());
+        Fixture follower = fixture(HUNTING_GROUND, onlineOwner());
+        when(leader.bot().getPosition()).thenReturn(new Point(0, 0));
+        for (Fixture f : List.of(leader, follower)) {
+            f.entry().autopilotMapId = HUNTING_GROUND;
+            f.entry().autopilotParty = true;
+            f.entry().autopilotNextDecisionAtMs = Long.MAX_VALUE;
+            f.entry().grinding = true;
+        }
+
+        try (Seams seams = new Seams(null)) {
+            BotAutopilotManager.partyMembers = entry -> List.of(leader.entry(), follower.entry());
+            BotAutopilotManager.hopDistance = (from, to) -> 0; // same map, no hops apart
+
+            // Past SAME_MAP_STRAGGLER_PX (700): the leader waits.
+            when(follower.bot().getPosition()).thenReturn(new Point(900, 0));
+            assertTrue(waitingForStragglers(leader));
+            assertTrue(leader.entry().autopilotWaitingForStragglers);
+
+            // Inside the trigger band but still outside the tighter resume band (350..700):
+            // hysteresis keeps the hold while already waiting.
+            leader.entry().autopilotNextStragglerCheckAtMs = 0L;
+            when(follower.bot().getPosition()).thenReturn(new Point(500, 0));
+            assertTrue(waitingForStragglers(leader));
+            assertTrue(leader.entry().autopilotWaitingForStragglers);
+
+            // Within the resume band (<=350): release.
+            leader.entry().autopilotNextStragglerCheckAtMs = 0L;
+            when(follower.bot().getPosition()).thenReturn(new Point(300, 0));
+            assertFalse(waitingForStragglers(leader));
+            assertFalse(leader.entry().autopilotWaitingForStragglers);
+        }
+    }
+
+    /** Drives the package-private straggler check directly (the on-destination leader path
+     *  returns before tickPartyCohesion, so exercise the wait predicate in isolation). */
+    private static boolean waitingForStragglers(Fixture leader) {
+        return BotAutopilotManager.waitingForStragglers(
+                leader.entry(), leader.bot(), BotAutopilotManager.partyMembers.members(leader.entry()));
     }
 
     @Test
