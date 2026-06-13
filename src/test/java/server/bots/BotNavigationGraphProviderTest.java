@@ -751,6 +751,29 @@ class BotNavigationGraphProviderTest {
                         + directRegionId + " must be discovered");
     }
 
+    // Regression: a stuck-follower report (pathlog-Leroy/Preston, Orbis station 200000000) showed
+    // bots stranded on lower ledges with "no path found" up to the party on the main platform.
+    // Those regions must stay connected; this pins the route both ways.
+    @Test
+    void shouldConnectOrbisStationLowerLedgesToUpperPlatform() {
+        MapleMap map = BotNavigationMapLoader.loadMapGeometry(200000000);
+        BotNavigationGraph graph = BotNavigationGraphProvider.rebuildGraph(map);
+        Point upper = new Point(3280, -397);   // leader on the main platform
+        Point leroy = new Point(3443, 143);    // stranded follower (live region 80)
+        Point preston = new Point(2657, -145); // stranded follower (live region 56)
+
+        int upperR = graph.findRegionId(map, upper);
+        int leroyR = graph.findRegionId(map, leroy);
+        int prestonR = graph.findRegionId(map, preston);
+        assertTrue(upperR > 0 && leroyR > 0 && prestonR > 0,
+                "regions must resolve: upper=" + upperR + " leroy=" + leroyR + " preston=" + prestonR);
+
+        assertTrue(leroyR == upperR || !findPath(graph, map, leroy, upper).isEmpty(),
+                "Leroy's lower ledge must have a route up to the leader platform");
+        assertTrue(prestonR == upperR || !findPath(graph, map, preston, upper).isEmpty(),
+                "Preston's lower ledge must have a route up to the leader platform");
+    }
+
     private static List<BotNavigationGraph.Edge> findPath(BotNavigationGraph graph,
                                                           MapleMap map,
                                                           Point start,

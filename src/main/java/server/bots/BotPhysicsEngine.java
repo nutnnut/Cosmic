@@ -1633,26 +1633,17 @@ final class BotPhysicsEngine {
         return simulatePostLandingGroundTicks(map, landing, Integer.compare(stepX, 0), profile, postLandingTicks);
     }
 
-    // The client only allows a down-jump when a landing foothold exists within a bounded probe
-    // below the player — most "can't fall here" platforms carry NO forbidFallDown flag (e.g.
-    // Orbis tower rims, 860px above the next floor).
-    // CONFIRMED against Angel.idb: CUserLocal::FallDown @ 0x0094c4f8 is the gate. At +0x160
-    // (0x0094c658) it does `add [probeY], 0x12c` (= player Y + 300) then GetFootholdUnderneath/
-    // GetFootholdAbove (CWvsPhysicalSpace2D @ 0xa45585 / 0xa4549d) bracketing that point, and
-    // bails if the only foothold found is the current one (±5px). So the real probe distance is
-    // exactly 300px. (NB: the 0x1e/×0.8 probe near 0x0094e6fd belongs to TryDoingTeleport, not
-    // the tiny TryDoingFallDown @ 0x0094e692 which only sets the fall-request flag.)
-    static final int DOWN_JUMP_MAX_DROP_PX = 300;
-
+    // A down-jump falls through the platform and keeps falling until it lands — NO drop-distance
+    // cap. An earlier 300px cap (attributed to a CUserLocal::FallDown probe) was empirically wrong:
+    // it refused down-jumps players can perform in-game (e.g. descending the Orbis station tower)
+    // and stranded bots on islanded platforms. The exact client eligibility rule is still unknown
+    // (it's neither a 300px probe nor purely the forbidFallDown flag) — until it's pinned, generate
+    // the edge wherever a real landing exists below and let execution abandon any that prove illegal.
     static JumpLanding simulateDownJumpLanding(MapleMap map, Point from) {
         if (!canStartDownJump(map, from)) {
             return null;
         }
-        JumpLanding landing = simulateLanding(map, from, -downJumpForcePerTick(), 0, cfg.DOWN_JUMP_GRACE_MS);
-        if (landing == null || landing.point().y - from.y > DOWN_JUMP_MAX_DROP_PX) {
-            return null;
-        }
-        return landing;
+        return simulateLanding(map, from, -downJumpForcePerTick(), 0, cfg.DOWN_JUMP_GRACE_MS);
     }
 
     static JumpLanding simulateFallLanding(MapleMap map, Point from, int stepX) {
