@@ -264,6 +264,7 @@ final class BotPathLogger {
                 .append("  transitFollow=").append(entry.autopilotTransitFollow).append("\n");
         sb.append("Errands:    questMap=").append(entry.questErrandMapId)
                 .append("  gachaMap=").append(entry.gachaErrandMapId).append("\n");
+        appendCohesionState(sb, entry);
         if (entry.debugCommanderId > 0) {
             sb.append("AdminBind:  commanderId=").append(entry.debugCommanderId)
                     .append("  untilMs=").append(entry.debugCommanderUntilMs).append("\n");
@@ -271,6 +272,94 @@ final class BotPathLogger {
         boolean isStuck = entry.stuckMs >= 500 || computeStuck(botPos.x, botPos.y);
         sb.append("Stuck:      ").append(isStuck ? "YES (" + entry.stuckMs + "ms) ***" : "no").append("\n");
         sb.append("\n");
+    }
+
+    /**
+     * Party-cohesion diagnostics: why an autopilot-party bot is holding instead of advancing.
+     * Read-only mirror of {@link BotAutopilotManager#waitingForStragglers} — it recomputes each
+     * member's hop/px gap from the leader's vantage WITHOUT mutating the cached verdict or sending
+     * chat, and flags the member(s) that trip the hold. The cohesion leader is the first member
+     * not off on a resupply errand; only that leader anchors at a portal and waits.
+     */
+    private void appendCohesionState(StringBuilder sb, BotEntry entry) {
+        if (!BotAutopilotManager.isActive(entry) || !entry.autopilotParty) {
+            return;
+        }
+        List<BotEntry> members;
+        try {
+            members = BotAutopilotManager.partyMembers.members(entry);
+        } catch (RuntimeException e) {
+            sb.append("Cohesion:   <members lookup failed: ").append(e).append(">\n");
+            return;
+        }
+        BotEntry leader = BotAutopilotManager.effectiveCohesionLeader(members);
+        boolean isLeader = leader == entry;
+        String leaderName = leader == null ? "none(all resupplying)"
+                : leader.bot != null ? leader.bot.getName() : "?";
+        sb.append("Cohesion:   leader=").append(leaderName)
+                .append(isLeader ? " (THIS BOT)" : "")
+                .append("  members=").append(members.size())
+                .append("  waitingForStragglers=").append(entry.autopilotWaitingForStragglers)
+                .append("\n");
+        sb.append("Cohesion cfg: waitHops=").append(BotManager.cfg.STRAGGLER_WAIT_HOPS)
+                .append("  sameMapPx=").append(BotManager.cfg.SAME_MAP_STRAGGLER_PX)
+                .append("  resumePx=").append(BotManager.cfg.SAME_MAP_STRAGGLER_RESUME_PX)
+                .append("  nextCheckInMs=")
+                .append(Math.max(0L, entry.autopilotNextStragglerCheckAtMs - System.currentTimeMillis()))
+                .append("\n");
+        if (entry.autopilotWaitAnchor != null) {
+            sb.append("Wait anchor: (").append(entry.autopilotWaitAnchor.x).append(",")
+                    .append(entry.autopilotWaitAnchor.y).append(")  map=")
+                    .append(entry.autopilotWaitAnchorMapId).append("  [holding at next-hop portal]\n");
+        }
+        // The hold is computed from the LEADER's position/map; show the breakdown from there even
+        // when a follower captured the log. While already waiting, the resume band is the tighter
+        // hysteresis value (the same value waitingForStragglers uses on a holding tick).
+        Point leaderPos = leader != null && leader.bot != null ? leader.bot.getPosition() : null;
+        int leaderMap = leader != null && leader.bot != null ? leader.bot.getMapId() : -1;
+        int band = entry.autopilotWaitingForStragglers
+                ? BotManager.cfg.SAME_MAP_STRAGGLER_RESUME_PX
+                : BotManager.cfg.SAME_MAP_STRAGGLER_PX;
+        for (BotEntry m : members) {
+            if (m.bot == null) {
+                sb.append("  - <null bot> \n");
+                continue;
+            }
+            String name = m.bot.getName();
+            if (m == leader) {
+                sb.append("  - ").append(name).append("  [leader, map=").append(leaderMap).append("]\n");
+                continue;
+            }
+            if (m.autopilotErrandMapId != -1) {
+                sb.append("  - ").append(name).append("  resupplying(errandMap=")
+                        .append(m.autopilotErrandMapId).append(") - excluded\n");
+                continue;
+            }
+            if (m.bot.getMap() == null) {
+                sb.append("  - ").append(name).append("  <no map> - skipped\n");
+                continue;
+            }
+            int memberMap = m.bot.getMapId();
+            String detail;
+            if (memberMap != leaderMap) {
+                int hops = -1;
+                try {
+                    hops = BotAutopilotManager.hopDistance.hops(memberMap, leaderMap);
+                } catch (RuntimeException ignored) {
+                    // best-effort; an unmapped pair just shows hops=-1
+                }
+                boolean straggler = hops < 0 || hops > BotManager.cfg.STRAGGLER_WAIT_HOPS;
+                detail = "map=" + memberMap + " hops=" + hops + (straggler ? "  *STRAGGLER(hops)*" : "");
+            } else {
+                Point mp = m.bot.getPosition();
+                int gap = leaderPos != null && mp != null
+                        ? Math.abs(leaderPos.x - mp.x) + Math.abs(leaderPos.y - mp.y) : -1;
+                boolean straggler = gap < 0 || gap > band;
+                detail = "sameMap gap=" + gap + "px (band=" + band + ")"
+                        + (straggler ? "  *STRAGGLER(px)*" : "");
+            }
+            sb.append("  - ").append(name).append("  ").append(detail).append("\n");
+        }
     }
 
     private void appendMovementGraphState(StringBuilder sb, BotEntry entry, GraphSnapshot graphSnapshot) {
