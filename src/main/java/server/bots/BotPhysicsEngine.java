@@ -985,19 +985,19 @@ final class BotPhysicsEngine {
         entry.hspeed = step.state().hspeed();
         entry.groundPhysicsCarryMs = step.state().carryMs();
         entry.downJumpPending = false;
-        // A real player cannot turn around without moving: facing and the visible
-        // counter-strafe walk stance only change on ticks with actual displacement, so a
-        // stationary bot dithering its input (sub-pixel pulses at a tight launch window)
-        // never moonwalks/flip-flops in place (user-observed during the Leroy freeze).
-        // setMovementVelocity also derives facing from velocity sign - restore over it.
+        // Ground facing follows the effective held key ONLY, and only on ticks with actual
+        // displacement: a player cannot turn in place without moving (no stationary
+        // moonwalk/flip-flop from a dithering controller), and with no key held the LAST
+        // pressed direction persists - a slide never turns the character into the slide.
+        // setMovementVelocity derives facing from velocity sign - override it here.
         int preMoveFacing = entry.facingDir;
         boolean movedThisTick = position.x != currentPos.x;
         setMovementVelocity(entry, step.velocityX(), 0);
         entry.groundBrakeDir = braking && movedThisTick ? desiredDir : 0;
-        if (!movedThisTick) {
+        if (movedThisTick && desiredDir != 0) {
+            entry.facingDir = desiredDir; // the held (or stop-policy emulated) key
+        } else {
             entry.facingDir = preMoveFacing;
-        } else if (braking) {
-            entry.facingDir = desiredDir; // face the held key, not the slide
         }
         syncCharacterState(entry);
         return new GroundMotion(step.stepX(), false);

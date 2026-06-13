@@ -905,6 +905,24 @@ class BotPhysicsEngineTest {
     }
 
     @Test
+    void shouldKeepFacingLastPressedKeyWhileGlidingWithNoInput() {
+        // Key released mid-slide: facing stays on the LAST pressed key, the glide never
+        // turns the character into the slide direction.
+        MapleMap snow = flatGroundMap(0.2f);
+        Character bot = mockBot(new Point(0, 100), snow);
+        BotEntry entry = new BotEntry(bot, null, null);
+        Foothold fh = snow.getFootholds().findBelow(new Point(0, 99));
+        entry.physX = 0;
+        entry.physY = 100;
+        entry.hspeed = 1.0;   // sliding right at top speed, mid-platform (glide, no brake)
+        entry.facingDir = -1; // last pressed key was left
+        entry.moveDir = 0;    // no key held
+        BotPhysicsEngine.applyGroundMotion(entry, bot, fh);
+        assertTrue(bot.getPosition().x > 0, "fixture: the glide tick must actually move");
+        assertEquals(-1, entry.facingDir, "facing stays on the last pressed key during glide");
+    }
+
+    @Test
     void shouldReserveKineticRunwayOnSnow() {
         int normal = BotPhysicsEngine.launchRunwayPx(flatGroundMap(0f), BotMovementProfile.base());
         int snow = BotPhysicsEngine.launchRunwayPx(flatGroundMap(0.2f), BotMovementProfile.base());
