@@ -251,6 +251,26 @@ class BotQuestManagerTest {
     }
 
     @Test
+    void autoSuggestSilentWhenNotGrinding() {
+        // Baseline 0 (standing in town with the owner, not killing anything) => no suggestion,
+        // even if a quest would otherwise score well.
+        Character bot = mock(Character.class);
+        server.maps.MapleMap map = mock(server.maps.MapleMap.class);
+        server.life.NPC npc = mock(server.life.NPC.class);
+        when(bot.getMap()).thenReturn(map);
+        when(map.getNPCById(2005)).thenReturn(npc);
+        BotEntry e = supervisedEntry(bot, 104040000);
+        BotQuestManager.mapMobs = mapId -> Map.of(100100, 10);
+        BotQuestManager.hopCount = (from, to) -> 1;
+        stubScoringSeams(0.0 /*not grinding*/, 50, 10.0);
+        BotQuestManager.gate = new SingleStartableGate(1019);
+
+        BotQuestManager.maybeAutoSuggest(e, bot);
+
+        assertTrue(replies.isEmpty(), "a non-grinding (town) bot must not auto-suggest");
+    }
+
+    @Test
     void autoSuggestDoesNotRepeatTrackedId() {
         BotQuestIndex.QuestMeta q1019 = BotQuestIndex.get().byId().get(1019);
         org.junit.jupiter.api.Assertions.assertNotNull(q1019);

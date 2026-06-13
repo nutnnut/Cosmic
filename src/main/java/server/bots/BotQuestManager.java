@@ -728,6 +728,12 @@ final class BotQuestManager {
         if (mapId == entry.lastQuestSuggestMapId) {
             return; // already considered this map (per-map rate limit)
         }
+        // Only suggest while genuinely grinding: a baseline of ~0 (standing in a town with the
+        // owner) would floor the scorer's denominator and make every quest look great. Auto-suggest
+        // is for "you're already killing these mobs, this quest piggybacks" - not town idling.
+        if (grindExpBaseline.expPerMinute(entry, bot) <= 0.0) {
+            return;
+        }
         purgeStaleSuggestions(entry, now);
 
         BotQuestIndex.QuestMeta pick = pickAutoSuggest(entry, bot, mapId, now);
