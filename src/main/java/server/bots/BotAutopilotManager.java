@@ -175,6 +175,7 @@ final class BotAutopilotManager {
         entry.autopilotWaitingForStragglers = false;
         entry.autopilotNextStragglerCheckAtMs = 0L;
         entry.autopilotDecisionInFlight = false;
+        BotQuestManager.clearQuestErrand(entry); // a canceled autopilot abandons any quest detour
         // autopilotNextErrandAtMs deliberately survives: it rate-limits errands, not the mode.
         // autopilotOwnerSupplyGraceUntilMs also survives: player trade grace is supply state,
         // not a combat-mode destination.
@@ -279,6 +280,12 @@ final class BotAutopilotManager {
     static boolean tick(BotEntry entry, Character bot, boolean runAiTick) {
         if (!isActive(entry) || bot.getMap() == null) {
             return false;
+        }
+        // Quest piggyback errand takes precedence over the grind destination: detour to a quest NPC
+        // to start/turn in a mob quest, then resume grinding. Its own state, not autopilotErrandMapId
+        // (which is hardwired to the shop visit). Consumes the tick while traveling/walking to the NPC.
+        if (entry.questErrandMapId != -1 && BotQuestManager.tickErrand(entry, bot, runAiTick)) {
+            return true;
         }
         int destination = entry.autopilotErrandMapId != -1 ? entry.autopilotErrandMapId : entry.autopilotMapId;
         if (bot.getMapId() == destination) {

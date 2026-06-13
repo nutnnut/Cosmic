@@ -77,6 +77,12 @@ public class BotManager {
         // Follow stagger: each bot is offset this many px from the owner (index-based, alternating left/right)
         public int FOLLOW_STAGGER = 60;
 
+        // Quest piggyback (BotQuestManager). AUTO_QUESTS: run autoStart+autoComplete quests on the
+        // tick (no travel). QUEST_PIGGYBACK: while autopiloting, detour to start/turn-in mob quests
+        // whose kills overlap the current grind. Kill switches - both default on.
+        public boolean AUTO_QUESTS = true;
+        public boolean QUEST_PIGGYBACK = true;
+
         // Owner inactivity (offline or dead) before bot scrolls/warps to nearest town and idles.
         public long OWNER_INACTIVE_TOWN_RETURN_MS = 5L * 60_000L;
         // Hard stop for explicitly-ordered autopilot bots playing on while the owner is
@@ -3765,6 +3771,9 @@ public class BotManager {
             BotChatManager.tickAfkCheck(entry, owner);
         }
         if (perf) BotPerformanceMonitor.record("common-afk-check", System.nanoTime() - t);
+        if (perf) t = System.nanoTime();
+        BotQuestManager.tickScan(entry, bot);
+        if (perf) BotPerformanceMonitor.record("common-quest-scan", System.nanoTime() - t);
         if (perf) t = System.nanoTime();
         BotInventoryManager.tickTrade(entry, bot);
         if (perf) BotPerformanceMonitor.record("common-trade", System.nanoTime() - t);

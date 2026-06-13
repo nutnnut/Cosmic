@@ -218,6 +218,18 @@ public class BotEntry {
     // the tick from stacking decisions while one is still computing.
     volatile boolean autopilotDecisionInFlight = false;
 
+    // Quest piggyback errand (BotQuestManager): while grinding/autopiloting, detour to a quest
+    // NPC to start or turn in a mob quest whose kills overlap what the bot already farms here.
+    // questErrandMapId = -1 when no errand. Phase: START walks to the start NPC and calls
+    // quest.start; TURNIN walks to the end NPC and calls quest.complete. nextQuestScanAtMs gates
+    // the (cheap, jittered) scan. Reset alongside the autopilot errand state in clearQuestErrand().
+    int questErrandMapId = -1;
+    int questErrandNpcId = 0;
+    int questErrandQuestId = 0;
+    BotQuestManager.Phase questErrandPhase = BotQuestManager.Phase.NONE;
+    int questErrandReturnMapId = -1;     // grind map to resume after the errand
+    long nextQuestScanAtMs = 0L;
+
     // Frozen-air watchdog (BotManager.doStuckDetection): airborne position must change every
     // tick (free fall); a bot wall-pinned at a map edge with no foothold below freezes here.
     int airStuckTicks = 0;
