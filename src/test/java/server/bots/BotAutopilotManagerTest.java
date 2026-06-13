@@ -78,6 +78,7 @@ class BotAutopilotManagerTest {
         private final BotAutopilotManager.PartyMembersLookup previousPartyMembers = BotAutopilotManager.partyMembers;
         private final BotAutopilotManager.HopDistance previousHopDistance = BotAutopilotManager.hopDistance;
         private final BotAutopilotManager.SupplyLevel previousSupplyLevel = BotAutopilotManager.supplyLevel;
+        private final BotAutopilotManager.BagFull previousBagFull = BotAutopilotManager.bagFull;
 
         Seams(Recommendation recommendation) {
             this(recommendation, recommendation);
@@ -96,6 +97,8 @@ class BotAutopilotManagerTest {
             // Default: well-stocked, so the pre-travel resupply gate never trips for the
             // travel/formation/portal-wait tests. The pre-travel test overrides this.
             BotAutopilotManager.supplyLevel = bot -> false;
+            // Default: bag has room, so the bag-full pre-travel gate never trips either.
+            BotAutopilotManager.bagFull = (entry, bot) -> false;
         }
 
         @Override
@@ -108,6 +111,7 @@ class BotAutopilotManagerTest {
             BotAutopilotManager.partyMembers = previousPartyMembers;
             BotAutopilotManager.hopDistance = previousHopDistance;
             BotAutopilotManager.supplyLevel = previousSupplyLevel;
+            BotAutopilotManager.bagFull = previousBagFull;
         }
     }
 
@@ -655,6 +659,32 @@ class BotAutopilotManagerTest {
             assertEquals(-1, f.entry().autopilotErrandMapId);
             travel.verify(() -> BotTravelManager.tickTravel(any(), any(),
                     org.mockito.ArgumentMatchers.eq(HUNTING_GROUND), anyInt(), anyBoolean(), anyBoolean()));
+        }
+    }
+
+    @Test
+    void shouldResupplyBeforeDepartingWhenBagIsFullEvenWithAdequateSupplies() {
+        // Supplies are fine, but the bag is full enough to need a junk dump: still divert to town
+        // FIRST (sell trash there) instead of traveling out to grind with no room for loot.
+        Fixture f = fixture(104010000);
+        f.entry().autopilotMapId = HUNTING_GROUND;
+        f.entry().autopilotNextDecisionAtMs = Long.MAX_VALUE;
+        f.entry().grinding = true;
+        MapleMap town = mock(MapleMap.class);
+        when(town.getId()).thenReturn(TOWN);
+        when(f.bot().getMap().getReturnMap()).thenReturn(town);
+
+        try (Seams seams = new Seams(null);
+             MockedStatic<BotTravelManager> travel = mockStatic(BotTravelManager.class)) {
+            travel.when(() -> BotTravelManager.tickTravel(any(), any(), anyInt(), anyInt(), anyBoolean(), anyBoolean()))
+                    .thenReturn(true);
+            BotAutopilotManager.supplyLevel = bot -> false; // well-stocked on pots/ammo
+            BotAutopilotManager.bagFull = (entry, bot) -> true; // ...but the bag is full of trash
+
+            assertTrue(BotAutopilotManager.tick(f.entry(), f.bot(), true));
+            assertEquals(TOWN, f.entry().autopilotErrandMapId); // bag-full triggered the town errand
+            travel.verify(() -> BotTravelManager.tickTravel(any(), any(),
+                    org.mockito.ArgumentMatchers.eq(TOWN), anyInt(), anyBoolean(), anyBoolean()));
         }
     }
 

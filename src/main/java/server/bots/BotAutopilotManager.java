@@ -341,13 +341,14 @@ final class BotAutopilotManager {
             return false; // resupply detour en route; travel resumes once it's done
         }
         // Pre-travel resupply: about to depart for a grind map we're not on yet, but supplies are
-        // already below the reactive errand's threshold — restock FIRST instead of traveling out,
-        // bouncing straight back to town, then traveling again. requestResupplyErrand picks the
-        // town and sets autopilotErrandMapId, which flips this tick's destination + skips cohesion
-        // (line below) so the bot peels off independently. The !returningFromErrand guard breaks
-        // the loop: after restocking, the return trip must not re-trigger the pre-travel errand.
+        // already below the reactive errand's threshold OR the bag is full enough to need a junk
+        // dump — restock/unload FIRST instead of traveling out, bouncing straight back to town,
+        // then traveling again. requestResupplyErrand picks the town and sets autopilotErrandMapId,
+        // which flips this tick's destination + skips cohesion (line below) so the bot peels off
+        // independently. The !returningFromErrand guard breaks the loop: after restocking, the
+        // return trip must not re-trigger the pre-travel errand.
         if (entry.autopilotErrandMapId == -1 && !entry.autopilotReturningFromErrand
-                && supplyLevel.lowOnSupplies(bot)) {
+                && (supplyLevel.lowOnSupplies(bot) || bagFull.bagFull(entry, bot))) {
             requestResupplyErrand(entry, bot);
             if (entry.autopilotErrandMapId != -1) {
                 destination = entry.autopilotErrandMapId; // head to town this tick, not the grind map
@@ -734,6 +735,17 @@ final class BotAutopilotManager {
             return false;
         }
     }
+
+    /** Seam over the bag-full predicate so the pre-travel gate can divert to town to unload junk
+     *  without coupling to inventory/WZ in tests. Default reuses the same cramped-tab-with-sellable
+     *  check the reactive grind-stop trigger uses (BotShopManager.shouldAutoSellTrash) — reuse, not
+     *  duplication. A full bag only routes to town when selling could actually free slots. */
+    @FunctionalInterface
+    interface BagFull {
+        boolean bagFull(BotEntry entry, Character bot);
+    }
+
+    static BagFull bagFull = BotShopManager::shouldAutoSellTrash;
 
     /**
      * Active party-autopilot members, leader first. The game party is the source of truth

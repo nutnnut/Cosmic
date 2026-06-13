@@ -393,11 +393,10 @@ final class BotShopManager {
             return;
         }
         if (index >= sequence.actions().size()) {
-            if (sequence.entry().shopSellTrashPending) {
-                startSellTrashSequence(sequence);
-            } else {
-                finishPurchaseSequence(sequence, true);
-            }
+            // SSOT: every shop visit ends by unloading trash, no matter what brought the bot here
+            // (resupply pots/ammo, manual sell command, cramped auto-sell). startSellTrashSequence
+            // no-ops cleanly and keeps the existing buy-report messaging when nothing is sellable.
+            startSellTrashSequence(sequence);
             return;
         }
 
@@ -448,11 +447,20 @@ final class BotShopManager {
     }
 
     private static void startSellTrashSequence(PurchaseSequence sequence) {
+        // Selling is now the tail of EVERY visit, so distinguish an explicit sell goal (cramped
+        // auto-sell or a "sell trash" command set shopSellTrashPending) from an incidental resupply
+        // visit. Only the explicit goal announces "no junk worth selling"; an incidental visit with
+        // nothing to sell just finishes its normal buy report (identical to the old non-sell path).
+        boolean explicitSell = sequence.entry().shopSellTrashPending;
         List<Item> items = BotInventoryManager.collectSellTrashItems(sequence.entry(), sequence.bot());
         if (items.isEmpty()) {
             sequence.entry().shopSellTrashPending = false;
-            BotManager.getInstance().botSay(sequence.bot(), "no junk worth selling");
-            finishPurchaseSequence(sequence, false);
+            if (explicitSell) {
+                BotManager.getInstance().botSay(sequence.bot(), "no junk worth selling");
+                finishPurchaseSequence(sequence, false);
+            } else {
+                finishPurchaseSequence(sequence, true);
+            }
             return;
         }
 

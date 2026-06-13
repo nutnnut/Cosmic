@@ -268,6 +268,57 @@ class BotShopManagerTest {
         verify(shop).sell(any(), eq(InventoryType.USE), eq(slot), eq((short) 2_000));
     }
 
+    @Test
+    void shouldSellTrashAtEndOfAnyShopVisitEvenWhenNotFlaggedForSelling() throws Exception {
+        // SSOT: a plain resupply visit (shopSellTrashPending = false) must still unload trash once
+        // the purchase actions are done, as long as there is sellable junk. Drive runPurchaseStep
+        // to its terminal index and verify it schedules the sell step (500ms cadence).
+        Character bot = mock(Character.class);
+        MapleMap map = mock(MapleMap.class);
+        BotEntry entry = new BotEntry(bot, null, null);
+        Point npcPos = new Point(20, 0);
+        NPC npc = shopNpc(npcPos);
+        Shop shop = mock(Shop.class);
+
+        entry.shopVisitPending = true;
+        entry.shopSequenceActive = true;
+        entry.shopSellTrashPending = false; // incidental visit, not an explicit sell request
+        when(bot.getMap()).thenReturn(map);
+        when(bot.getPosition()).thenReturn(new Point(20, 0));
+        when(map.getMapObjectsInRange(any(Point.class), anyDouble(), any())).thenReturn(List.of(npc));
+
+        Class<?> buyReport = Class.forName("server.bots.BotShopManager$BuyReport");
+        Class<?> purchaseSequence = Class.forName("server.bots.BotShopManager$PurchaseSequence");
+        var seqCtor = purchaseSequence.getDeclaredConstructor(
+                BotEntry.class, Character.class, Point.class, List.class, List.class, buyReport);
+        seqCtor.setAccessible(true);
+        Object sequence = seqCtor.newInstance(
+                entry, bot, npcPos, List.of(), new ArrayList<String>(), null);
+
+        Method runPurchaseStep = BotShopManager.class.getDeclaredMethod(
+                "runPurchaseStep", purchaseSequence, int.class);
+        runPurchaseStep.setAccessible(true);
+
+        try (MockedStatic<ShopFactory> shops = mockStatic(ShopFactory.class);
+             MockedStatic<BotInventoryManager> inventories = mockStatic(BotInventoryManager.class);
+             MockedStatic<BotManager> managers =
+                     mockStatic(BotManager.class, org.mockito.Mockito.CALLS_REAL_METHODS)) {
+            ShopFactory factory = mock(ShopFactory.class);
+            shops.when(ShopFactory::getInstance).thenReturn(factory);
+            when(factory.getShopForNPC(npc.getId())).thenReturn(shop);
+            inventories.when(() -> BotInventoryManager.collectSellTrashItems(entry, bot))
+                    .thenReturn(List.of(mock(Item.class)));
+            managers.when(() -> BotManager.after(anyLong(), any(Runnable.class))).thenReturn(null);
+
+            runPurchaseStep.invoke(null, sequence, 0); // index 0 >= 0 actions -> terminal sell tail
+
+            // Scheduling the 500ms sell step (SELL_TRASH_STEP_DELAY_MS) proves the sell tail ran
+            // despite shopSellTrashPending = false. The old gated code would have finished the
+            // purchase here instead, never touching the sell path.
+            managers.verify(() -> BotManager.after(eq(500L), any(Runnable.class)));
+        }
+    }
+
     private static Character clawBotWithStars(int... quantities) {
         int[] ids = new int[quantities.length];
         for (int i = 0; i < ids.length; i++) {
