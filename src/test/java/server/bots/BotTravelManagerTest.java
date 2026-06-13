@@ -385,6 +385,44 @@ class BotTravelManagerTest {
     }
 
     @Test
+    void pickRandomCrossMapPortalFiltersIneligibleAndReturnsRealTarget() {
+        Portal good = portal(4, HENESYS, 0, "", true, new Point(40, 0));
+        List<Portal> portals = List.of(
+                portal(0, HENESYS, 0, "", false, new Point(0, 0)),                 // closed
+                portal(1, HENESYS, Portal.DOOR_PORTAL, "", true, new Point(10, 0)),// door
+                portal(2, HENESYS, 0, "MD00", true, new Point(20, 0)),             // scripted
+                portal(3, HUNTING_GROUND, 0, "", true, new Point(30, 0)),          // self-loop (current map)
+                good);                                                              // the only eligible portal
+
+        Portal picked = BotTravelManager.pickRandomCrossMapPortal(portals, HUNTING_GROUND, new java.util.Random(1));
+        assertSame(good, picked);
+    }
+
+    @Test
+    void pickRandomCrossMapPortalReturnsNullWhenNoneEligible() {
+        List<Portal> portals = List.of(
+                portal(0, HUNTING_GROUND, 0, "", true, new Point(0, 0)),    // self-loop (current map)
+                portal(1, HENESYS, 0, "MD00", true, new Point(10, 0)));     // scripted
+        assertNull(BotTravelManager.pickRandomCrossMapPortal(portals, HUNTING_GROUND, new java.util.Random(7)));
+    }
+
+    @Test
+    void pickRandomCrossMapPortalIsNotBiasedToFirst() {
+        // Three eligible portals, distinct nearest distances; verify selection isn't pinned to
+        // the first/nearest portal across many draws (the "no fixed first-portal bias" rule).
+        List<Portal> portals = List.of(
+                portal(0, HENESYS, 0, "", true, new Point(0, 0)),     // nearest to (0,0)
+                portal(1, HENESYS, 0, "", true, new Point(500, 0)),
+                portal(2, HENESYS, 0, "", true, new Point(900, 0)));
+        java.util.Set<Integer> seen = new java.util.HashSet<>();
+        java.util.Random rng = new java.util.Random(42);
+        for (int i = 0; i < 60; i++) {
+            seen.add(BotTravelManager.pickRandomCrossMapPortal(portals, HUNTING_GROUND, rng).getId());
+        }
+        assertTrue(seen.size() >= 2, "expected the random pick to span multiple portals, saw " + seen);
+    }
+
+    @Test
     void shouldNotClobberPlayerIssuedMoveTargetOnClear() {
         BotEntry entry = new BotEntry(mock(Character.class), null, null);
         Point playerTarget = new Point(123, 45);

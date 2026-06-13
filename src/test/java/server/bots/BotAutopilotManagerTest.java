@@ -176,6 +176,29 @@ class BotAutopilotManagerTest {
     }
 
     @Test
+    void shouldWanderToRandomPortalWhenStrandedOffDestination() {
+        Fixture f = fixture(TOWN);
+        f.entry().autopilotMapId = HUNTING_GROUND; // destination is elsewhere -> off-site
+        f.entry().autopilotNextDecisionAtMs = Long.MAX_VALUE;
+        f.entry().grinding = true;
+
+        try (Seams seams = new Seams(null);
+             MockedStatic<BotTravelManager> travel = mockStatic(BotTravelManager.class)) {
+            // No legal travel progress (route gone / hop failed).
+            travel.when(() -> BotTravelManager.tickTravel(any(), any(), anyInt(), anyInt(), anyBoolean(), anyBoolean()))
+                    .thenReturn(false);
+            travel.when(() -> BotTravelManager.tickWanderToRandomPortal(any(), any(), anyBoolean()))
+                    .thenReturn(true);
+
+            // Stranded: tick consumes the tick by wandering to a portal instead of yielding to
+            // the grind flow (which would let the owner-anchor fallback fire).
+            assertTrue(BotAutopilotManager.tick(f.entry(), f.bot(), true));
+            travel.verify(() -> BotTravelManager.tickWanderToRandomPortal(f.entry(), f.bot(), true));
+            assertTrue(BotAutopilotManager.isActive(f.entry()));
+        }
+    }
+
+    @Test
     void shouldAnnounceArrivalOnceBeforeGrindingOnSite() {
         Fixture f = fixture(TOWN);
 

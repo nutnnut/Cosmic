@@ -327,6 +327,14 @@ final class BotAutopilotManager {
             entry.autopilotReturningFromErrand = false;
         }
         maybeRedecide(entry, bot);
+        // Stranded off the destination map with no route: rather than anchor to the owner,
+        // wander to a random legal cross-map portal and take it, then re-plan from there
+        // (BotTravelManager.tickWanderToRandomPortal). Only when truly off-site — on the
+        // grind map an empty target is just "mobs cleared", which the normal grind-wander
+        // handles. No usable portal here -> fall through and grind whatever is around.
+        if (BotTravelManager.tickWanderToRandomPortal(entry, bot, runAiTick)) {
+            return true;
+        }
         return false;
     }
 

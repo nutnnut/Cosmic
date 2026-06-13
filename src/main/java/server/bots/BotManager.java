@@ -1459,6 +1459,24 @@ public class BotManager {
         return BotCommandParser.resolveTargetedBotByName(foreign, message);
     }
 
+    /** True when the bot plays independently of its owner: autopilot is running, or it is a
+     *  self-owned (@botme) bot whose owner is itself. Such bots must never anchor to the owner. */
+    static boolean isAutopilotActive(BotEntry entry) {
+        return BotAutopilotManager.isActive(entry)
+                || (entry != null && entry.owner != null && entry.owner == entry.bot);
+    }
+
+    /** Whether an emergency may legally fall back to walking to the owner: only when the bot is
+     *  not playing independently, has a real owner that is not itself, and that owner is online
+     *  in this world (so its position is live, not a stale logged-off snapshot). */
+    static boolean canWalkToOwner(BotEntry entry) {
+        if (entry == null || isAutopilotActive(entry)) {
+            return false;
+        }
+        Character owner = entry.owner;
+        return owner != null && owner != entry.bot && owner.isLoggedinWorld();
+    }
+
     Character resolveFollowAnchor(BotEntry entry, Character owner) {
         // While an admin debug binding is fresh, the bot follows the admin around for debugging.
         Character commander = resolveDebugCommander(entry);
@@ -1552,6 +1570,12 @@ public class BotManager {
         } else if (entry.following) {
             primaryTargetPos = followTargetPos;
             primaryTargetSource = "follow-target";
+        } else if (isAutopilotActive(entry)) {
+            // Safety net: an autopilot / self-owned bot must never anchor to its owner. The
+            // off-site stranded case is handled earlier by the portal wander; reaching here
+            // means hold position (own spot) rather than walk toward the owner.
+            primaryTargetPos = fallbackPos;
+            primaryTargetSource = "autopilot-hold";
         } else {
             primaryTargetPos = rawOwnerPos;
             primaryTargetSource = "owner-raw";

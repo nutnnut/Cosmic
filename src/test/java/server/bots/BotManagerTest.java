@@ -771,6 +771,35 @@ class BotManagerTest {
     }
 
     @Test
+    void shouldHoldPositionNotAnchorToOwnerWhenAutopilotActiveWithNoTarget() {
+        Character bot = mockMovingBot(new Point(100, 100), createEmptyTestMap(910000134));
+        Character owner = mockMovingBot(new Point(900, 100), bot.getMap());
+        BotEntry entry = new BotEntry(bot, owner, null);
+        entry.grinding = false;
+        entry.following = false;
+        entry.autopilotMapId = 910000134; // autopilot active
+
+        BotManager.TargetSnapshot snapshot = BotManager.getInstance().captureTargetSnapshot(entry);
+
+        // Must NOT fall through to the owner (x=900); holds at its own spot instead.
+        assertEquals("autopilot-hold", snapshot.primaryTargetSource());
+        assertEquals(new Point(100, 100), snapshot.primaryTargetPos());
+    }
+
+    @Test
+    void shouldHoldPositionForSelfOwnedBotWithNoTarget() {
+        Character bot = mockMovingBot(new Point(100, 100), createEmptyTestMap(910000135));
+        BotEntry entry = new BotEntry(bot, bot, null); // self-owned (@botme): owner == bot
+        entry.grinding = false;
+        entry.following = false;
+
+        BotManager.TargetSnapshot snapshot = BotManager.getInstance().captureTargetSnapshot(entry);
+
+        assertEquals("autopilot-hold", snapshot.primaryTargetSource());
+        assertEquals(new Point(100, 100), snapshot.primaryTargetPos());
+    }
+
+    @Test
     void shouldIgnoreCachedGrindLootInsidePassiveLootRadiusWhenNoMobTarget() {
         Character bot = mockMovingBot(new Point(100, 100), createEmptyTestMap(910000034));
         BotEntry entry = new BotEntry(bot, mock(Character.class), null);

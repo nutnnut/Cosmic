@@ -5,6 +5,7 @@ import server.maps.MapleMap;
 import server.maps.Portal;
 
 import java.awt.*;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 
@@ -368,6 +369,59 @@ final class BotTravelManager {
             }
         }
         return best;
+    }
+
+    /**
+     * Pick a random open, unscripted, non-door portal that leads to a real other map — the same
+     * legality filters {@link #findAdjacentPortal} uses, minus the fixed target and nearest bias.
+     * Returns null when the map has no such portal. Random (not nearest) so a stranded autopilot
+     * bot doesn't get pinned to the same dead-end portal every time; the {@code rng} seam lets
+     * tests assert the choice isn't biased to the first/nearest portal.
+     */
+    static Portal pickRandomCrossMapPortal(Collection<Portal> portals, int currentMapId, java.util.Random rng) {
+        List<Portal> eligible = new ArrayList<>();
+        for (Portal portal : portals) {
+            int target = portal.getTargetMapId();
+            if (target <= 0
+                    || target == currentMapId
+                    || !portal.getPortalStatus()
+                    || portal.getType() == Portal.DOOR_PORTAL
+                    || (portal.getScriptName() != null && !portal.getScriptName().isEmpty())) {
+                continue;
+            }
+            eligible.add(portal);
+        }
+        if (eligible.isEmpty()) {
+            return null;
+        }
+        return eligible.get(rng.nextInt(eligible.size()));
+    }
+
+    private static final java.util.Random WANDER_RNG = new java.util.Random();
+
+    /**
+     * Stranded-autopilot fallback: no legal travel progress and not on the destination map, so
+     * walk to a random legal cross-map portal and take it — autopilot re-plans from wherever it
+     * lands. Pins the chosen portal in {@code followTravelPortalId} so the bot commits to one
+     * portal instead of re-jittering every tick. Returns false (caller keeps grinding here) when
+     * the map has no usable cross-map portal at all.
+     */
+    static boolean tickWanderToRandomPortal(BotEntry entry, Character bot, boolean runAiTick) {
+        MapleMap map = bot.getMap();
+        if (map == null) {
+            return false;
+        }
+        long now = System.currentTimeMillis();
+        Portal portal = entry.followTravelPortalId > 0 ? map.getPortal(entry.followTravelPortalId) : null;
+        if (portal == null || !portal.getPortalStatus() || portal.getTargetMapId() == bot.getMapId()) {
+            portal = pickRandomCrossMapPortal(map.getPortals(), bot.getMapId(), WANDER_RNG);
+            if (portal == null) {
+                entry.followTravelPortalId = -1;
+                return false;
+            }
+            entry.followTravelPortalId = portal.getId();
+        }
+        return walkToPortalAndEnter(entry, bot, portal, now, runAiTick);
     }
 
     static void clear(BotEntry entry) {
