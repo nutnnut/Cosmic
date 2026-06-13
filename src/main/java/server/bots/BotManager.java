@@ -912,6 +912,22 @@ public class BotManager {
         return null;
     }
 
+    /** Any spawned bot by name across ALL owners - for GM debug tooling (e.g. !botnav pathlog on
+     *  ownerless / independent bots), not the ownership-scoped command paths. Null if none. */
+    BotEntry findSpawnedBotByName(String botName) {
+        if (botName == null) {
+            return null;
+        }
+        for (List<BotEntry> entries : bots.values()) {
+            for (BotEntry entry : entries) {
+                if (entry.bot != null && entry.bot.getName().equalsIgnoreCase(botName)) {
+                    return entry;
+                }
+            }
+        }
+        return null;
+    }
+
     public void syncPartyBotsQuestStart(Character source, Quest quest, int npc) {
         if (quest == null) {
             return;

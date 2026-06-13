@@ -172,7 +172,12 @@ public final class BotNavigationDebugOverlay {
         }
         BotEntry entry = botManager.getBotEntry(viewer.getId(), botName);
         if (entry == null) {
-            return new BotSelection(null, "No owned bot named '" + botName + "' found.");
+            // !botnav is GM-gated (gm3), so an admin may debug ANY spawned bot by name - including
+            // ownerless / independent bots they do not own.
+            entry = botManager.findSpawnedBotByName(botName);
+        }
+        if (entry == null) {
+            return new BotSelection(null, "No spawned bot named '" + botName + "' found.");
         }
         return new BotSelection(entry, null);
     }
