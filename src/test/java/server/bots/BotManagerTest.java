@@ -844,7 +844,12 @@ class BotManagerTest {
         Character admin = mock(Character.class);
         when(admin.getId()).thenReturn(506);
         doReturn(admin).when(map).getCharacterById(506);
+        // A debug binding alone still leaves a self-owned bot anchorless (no follow hijack).
         BotManager.bindDebugCommander(entry, admin);
+        assertNull(BotManager.getInstance().resolveFollowAnchor(entry, bot));
+
+        // Only an explicit admin follow command anchors it to the admin.
+        entry.debugCommanderFollow = true;
         assertEquals(admin, BotManager.getInstance().resolveFollowAnchor(entry, bot));
     }
 
@@ -1715,8 +1720,13 @@ class BotManagerTest {
         // Unbound: anchor is the owner.
         assertEquals(owner, BotManager.getInstance().resolveFollowAnchor(entry, owner));
 
-        // Bound: anchor is the admin commander (resolved on the bot's map).
+        // Bound by a non-follow interaction (e.g. a status question): the bot still anchors to its
+        // owner/leader, NOT the admin - a debug binding alone must not transfer follow dependency.
         BotManager.bindDebugCommander(entry, admin);
+        assertEquals(owner, BotManager.getInstance().resolveFollowAnchor(entry, owner));
+
+        // Only an explicit admin follow command (debugCommanderFollow) redirects the anchor.
+        entry.debugCommanderFollow = true;
         assertEquals(admin, BotManager.getInstance().resolveFollowAnchor(entry, owner));
 
         // Expired binding falls back to the owner (stale id can't null the anchor).

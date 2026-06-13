@@ -1128,6 +1128,11 @@ public class BotManager {
                 bindDebugCommander(foreign, owner);
                 foreign.replyChannel = channel;
                 if (foreignMatch.commandText() != null) {
+                    // Only an explicit follow command transfers the follow dependency to the admin;
+                    // every other interaction (e.g. "where ru") just replies, leaving the bot's task.
+                    if (BotChatManager.isFollowCommand(foreignMatch.commandText())) {
+                        foreign.debugCommanderFollow = true;
+                    }
                     BotChatManager.handleChat(foreign, foreignMatch.commandText());
                 }
                 return;
@@ -1450,6 +1455,7 @@ public class BotManager {
         if (entry != null) {
             entry.debugCommanderId = 0;
             entry.debugCommanderUntilMs = 0L;
+            entry.debugCommanderFollow = false;
         }
     }
 
@@ -1512,9 +1518,10 @@ public class BotManager {
     }
 
     Character resolveFollowAnchor(BotEntry entry, Character owner) {
-        // While an admin debug binding is fresh, the bot follows the admin around for debugging.
+        // Follow the admin ONLY when they issued an explicit follow command - a debug binding from a
+        // mere status interaction must not transfer the bot's follow dependency off its leader.
         Character commander = resolveDebugCommander(entry);
-        if (commander != null) {
+        if (commander != null && entry.debugCommanderFollow) {
             return commander;
         }
         if (owner == null) {

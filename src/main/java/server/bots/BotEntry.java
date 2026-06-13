@@ -283,6 +283,10 @@ public class BotEntry {
     // the BotEntry object is discarded. 0 / 0L = unbound.
     volatile int debugCommanderId = 0;
     volatile long debugCommanderUntilMs = 0L;
+    // True only after the admin issued an explicit FOLLOW command: a debug binding alone (set by
+    // any admin interaction, e.g. a status question) redirects replies/trade to the admin but must
+    // NOT hijack the bot's existing follow anchor - it keeps following its leader and just replies.
+    volatile boolean debugCommanderFollow = false;
 
     // Most recent command the owner issued that handleChat actually matched.
     // Used by SituationBuilder to give the LLM context like "owner told you to
