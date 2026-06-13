@@ -386,6 +386,12 @@ public class BotChatManager {
     private static final Pattern QUESTS_PATTERN = Pattern.compile(
             "^\\s*(?:(?:what|which)\\s+)?quests?(?:\\s+(?:status|progress|active|list))?\\s*[?!.]*\\s*$",
             Pattern.CASE_INSENSITIVE);
+    // "recommend quest", "quest rec", "best quest", "suggest quest" — the owner-asked SUGGEST-ONLY
+    // surface (supervised bots never wander off questing; they only recommend when asked).
+    private static final Pattern RECOMMEND_QUEST_PATTERN = Pattern.compile(
+            "\\b(?:recommend(?:ed)?\\s+(?:a\\s+|me\\s+a\\s+)?quests?|quest\\s+rec(?:ommendations?)?"
+            + "|best\\s+quests?|suggest\\s+(?:a\\s+)?quests?|which\\s+quest\\s+should)\\b",
+            Pattern.CASE_INSENSITIVE);
     private static final Pattern AUTOEQUIP_PATTERN = Pattern.compile(
             "\\b(?:auto[\\-\\s]?equip|optimi[sz]e\\s+(?:gear|equip(?:s|ment)?))\\b",
             Pattern.CASE_INSENSITIVE);
@@ -997,6 +1003,10 @@ public class BotChatManager {
                 BotEquipManager.autoEquip(entry.bot, entry.owner, entry.pendingLootOfferItem, true);
                 BotManager.getInstance().botReply(entry, "ok, gear optimized");
             });
+            return;
+        }
+        if (isRecommendQuestCommand(message)) {
+            reportRecommendedQuests(entry, entry.bot);
             return;
         }
         if (QUESTS_PATTERN.matcher(message).matches()) {
@@ -1807,6 +1817,10 @@ public class BotChatManager {
         return matchesWholeCommand(GRIND_PATTERN, message);
     }
 
+    static boolean isRecommendQuestCommand(String message) {
+        return message != null && RECOMMEND_QUEST_PATTERN.matcher(message).find();
+    }
+
     static boolean isAutopilotCommand(String message) {
         return message != null && AUTOPILOT_PATTERN.matcher(message).matches();
     }
@@ -2029,6 +2043,34 @@ public class BotChatManager {
             queueBotReply(entry, "no better gear for you rn");
         }
         entry.nextGearSuggestionAt = System.currentTimeMillis() + 60_000L;
+    }
+
+    /** "recommend quest": rank the top startable quests for the bot's current situation and
+     *  report them. Heavy (per-quest canStart + world-graph hops), so it runs on the grind
+     *  decision pool — never the bot tick thread. SUGGEST-ONLY: it never moves the bot. */
+    private static void reportRecommendedQuests(BotEntry entry, Character bot) {
+        if (bot == null) {
+            queueBotReply(entry, "can't think of any quests rn");
+            return;
+        }
+        BotGrindAdvisor.DECIDE_POOL.execute(() -> {
+            List<BotQuestManager.Recommendation> recs;
+            try {
+                recs = BotQuestManager.recommendQuests(entry, bot, 3);
+            } catch (RuntimeException e) {
+                BotManager.getInstance().botReply(entry, "hmm, couldn't pull up quests rn");
+                return;
+            }
+            if (recs.isEmpty()) {
+                BotManager.getInstance().botReply(entry, "no quests worth doing from here rn");
+                return;
+            }
+            for (int i = 0; i < recs.size(); i++) {
+                String line = BotQuestManager.describeRecommendation(recs.get(i));
+                BotManager.after(BotManager.randMs(400, 700) + i * 900L,
+                        () -> BotManager.getInstance().botReply(entry, line));
+            }
+        });
     }
 
     private static void maybeSuggestRecommendedGear(BotEntry entry, Character bot) {

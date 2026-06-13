@@ -217,6 +217,44 @@ final class BotGrindAdvisor {
     record MobProfile(int mobId, String mobName, int level, int exp, double killSeconds,
                       List<GearProspect> prospects) {}
 
+    /**
+     * The bot's blended grind exp-per-minute on the map it is currently standing on — the
+     * baseline the quest advisor ({@link BotQuestScorer}) measures a quest against. CHEAP on
+     * purpose: it profiles ONLY the current map's mobs and ONLY their exp + kill time
+     * (no gear prospects, no {@code drop_data} DB hit), so it is safe to call on the bot tick
+     * thread (the auto-suggest path). Returns base (un-rated) exp/min — the same raw units
+     * {@code BotQuestManager.mobExp} reports, so the rate cancels in the value/cost ratio.
+     * 0 when the current map has no grindable mobs (a town, an event field, or unknown).
+     */
+    static double currentMapExpPerMinute(BotEntry entry, Character bot) {
+        if (bot == null || bot.getMap() == null) {
+            return 0.0;
+        }
+        int mapId = bot.getMapId();
+        BotSpawnIndex.MapSpawns map = BotSpawnIndex.get().byMap().get(mapId);
+        if (map == null || map.town() || mapId >= INSTANCED_MAPID_FLOOR) {
+            return 0.0;
+        }
+        ItemInformationProvider ii = ItemInformationProvider.getInstance();
+        MonsterInformationProvider mi = MonsterInformationProvider.getInstance();
+        Map<MobProfile, Integer> pointsByMob = new HashMap<>();
+        for (Map.Entry<Integer, Integer> e : map.mobCounts().entrySet()) {
+            // withProspects=false: no gear-drop valuation, no DB — just exp + kill time.
+            MobProfile p = profileFor(entry, bot, ii, mi, e.getKey(), false, null, null, null, 0.0);
+            if (p != null && p.exp() > 0) {
+                pointsByMob.put(p, e.getValue());
+            }
+        }
+        if (totalPoints(pointsByMob) < MIN_SPAWN_POINTS) {
+            return 0.0;
+        }
+        MobCandidate blend = blendCandidate(mapId, "", map.areaPx(), pointsByMob);
+        // exp() here is rate-multiplied (profileFor applies bot.getExpRate()); divide it back out
+        // so the baseline is in BASE exp units, matching BotQuestManager.mobExp (un-rated).
+        double rate = Math.max(1.0, bot.getExpRate());
+        return blend.exp() * BotGrindPlanner.killsPerHour(blend) / 60.0 / rate;
+    }
+
     /** Null = not grindable for this bot: boss/friendly, unresolvable, or the bot can't
      *  meaningfully damage it (such mobs don't dilute a map — the bot won't engage them). */
     private static MobProfile profileFor(BotEntry entry, Character bot, ItemInformationProvider ii,

@@ -65,6 +65,19 @@ class BotChatManagerTest {
     }
 
     @Test
+    void shouldMatchRecommendQuestPhrasings() {
+        assertTrue(BotChatManager.isRecommendQuestCommand("recommend quest"));
+        assertTrue(BotChatManager.isRecommendQuestCommand("can you recommend a quest?"));
+        assertTrue(BotChatManager.isRecommendQuestCommand("quest rec"));
+        assertTrue(BotChatManager.isRecommendQuestCommand("best quest"));
+        assertTrue(BotChatManager.isRecommendQuestCommand("suggest quest"));
+        assertTrue(BotChatManager.isRecommendQuestCommand("which quest should i do"));
+        // plain "quests" status must NOT be read as a recommend
+        assertFalse(BotChatManager.isRecommendQuestCommand("quests"));
+        assertFalse(BotChatManager.isRecommendQuestCommand("what quests"));
+    }
+
+    @Test
     void shouldOnlyMatchMovementModeCommandsAsWholeCommands() {
         assertTrue(BotChatManager.isMoveHereCommand("here"));
         assertTrue(BotChatManager.isMoveHereCommand("move here!"));

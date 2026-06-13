@@ -231,6 +231,15 @@ public class BotEntry {
     long questErrandStartedAtMs = 0L;    // abort the errand if it can't reach the NPC in time
     long nextQuestScanAtMs = 0L;
 
+    // Supervised-mode quest AUTO-SUGGEST (Feature A): when the owner is online and the bot is at
+    // their side, the bot occasionally SUGGESTS a standout nearby quest in chat (it never wanders
+    // off to do it - that's autopilot's job). nextQuestSuggestAtMs is the multi-minute cooldown;
+    // lastSuggestMapId rate-limits to one suggestion per map; suggestedQuestExpiry tracks ids
+    // already suggested (or declined) with an expiry so the same quest isn't nagged repeatedly.
+    long nextQuestSuggestAtMs = 0L;
+    int lastQuestSuggestMapId = -1;
+    final java.util.Map<Integer, Long> suggestedQuestExpiry = new java.util.HashMap<>();
+
     // Frozen-air watchdog (BotManager.doStuckDetection): airborne position must change every
     // tick (free fall); a bot wall-pinned at a map edge with no foothold below freezes here.
     int airStuckTicks = 0;

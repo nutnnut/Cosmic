@@ -84,6 +84,8 @@ final class BotQuestManager {
         void start(Character bot, int questId, int npc);
         void complete(Character bot, int questId, int npc);
         boolean isStarted(Character bot, int questId);
+        /** True when the bot has already COMPLETED this quest (Feature B stale-item check). */
+        boolean isCompleted(Character bot, int questId);
         /** Quest progress: required mob id -> current kills (0 when not started). */
         Map<Integer, Integer> currentProgress(Character bot, int questId);
     }
@@ -105,6 +107,9 @@ final class BotQuestManager {
         }
         @Override public boolean isStarted(Character bot, int questId) {
             return bot.getQuest(Quest.getInstance(questId)).getStatus() == QuestStatus.Status.STARTED;
+        }
+        @Override public boolean isCompleted(Character bot, int questId) {
+            return bot.getQuest(Quest.getInstance(questId)).getStatus() == QuestStatus.Status.COMPLETED;
         }
         @Override public Map<Integer, Integer> currentProgress(Character bot, int questId) {
             QuestStatus qs = bot.getQuest(Quest.getInstance(questId));
@@ -144,6 +149,71 @@ final class BotQuestManager {
         }
         List<Integer> route = BotWorldGraph.route(from, to, MAX_ERRAND_HOPS);
         return route == null || route.isEmpty() ? Integer.MAX_VALUE : route.size() - 1;
+    };
+
+    /** The bot's grind exp/min on its current map — the baseline the scorer measures a quest
+     *  against. CHEAP / current-map only: this runs on the bot tick thread (auto-suggest path),
+     *  so it must NOT trigger the heavy world-wide {@link BotGrindAdvisor} pass. Seam over
+     *  {@link BotGrindAdvisor#currentMapExpPerMinute}. */
+    interface GrindExpBaseline {
+        double expPerMinute(BotEntry entry, Character bot);
+    }
+
+    static GrindExpBaseline grindExpBaseline = BotGrindAdvisor::currentMapExpPerMinute;
+
+    /** Per-mob base exp; seam over {@link server.life.LifeFactory} (un-rated, the same raw exp
+     *  units {@link BotGrindAdvisor#currentMapExpPerMinute} blends, so the rate cancels in the
+     *  scorer's value/cost ratio). */
+    static BotQuestScorer.MobExp mobExp = mobId -> {
+        try {
+            server.life.Monster mob = server.life.LifeFactory.getMonster(mobId);
+            return mob == null || mob.getStats() == null ? 0 : mob.getStats().getExp();
+        } catch (RuntimeException e) {
+            return 0;
+        }
+    };
+
+    /** Round-trip travel seconds between two maps; seam over {@link BotTravelCost}. A one-way
+     *  flood is doubled for the return leg. Large finite fallback when unreachable. */
+    interface TravelSeconds {
+        double seconds(int fromMapId, int toMapId);
+    }
+
+    static TravelSeconds travelSeconds = (from, to) -> {
+        if (from == to) {
+            return 0.0;
+        }
+        Map<Integer, Double> flood = BotTravelCost.floodSeconds(from, MAX_ERRAND_HOPS,
+                BotWorldGraph.RouteOptions.PORTALS_ONLY, ms -> ms);
+        Double oneWay = flood.get(to);
+        return oneWay == null ? BotTravelCost.HORIZON_SECONDS : oneWay * 2.0;
+    };
+
+    /** NPC display name from id; seam over {@link server.life.LifeFactory}. Cached forever
+     *  (static WZ data; the provider is synchronized and a recommend pass asks for several). */
+    interface NameLookup {
+        String name(int id);
+    }
+
+    private static final java.util.concurrent.ConcurrentHashMap<Integer, String> npcNameCache =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
+    static NameLookup npcName = npcId -> npcNameCache.computeIfAbsent(npcId, id -> {
+        try {
+            String n = server.life.LifeFactory.getNPC(id).getName();
+            return n == null || n.isEmpty() ? ("npc " + id) : n;
+        } catch (RuntimeException e) {
+            return "npc " + id;
+        }
+    });
+
+    static NameLookup mapName = mapId -> {
+        try {
+            String n = server.maps.MapFactory.loadPlaceName(mapId);
+            return n == null || n.isEmpty() ? ("map " + mapId) : n;
+        } catch (RuntimeException e) {
+            return "map " + mapId;
+        }
     };
 
     // ---- auto quests (#2 in the build) -------------------------------------------------------
@@ -186,7 +256,14 @@ final class BotQuestManager {
 
         tickAutoQuests(entry, bot);
 
-        if (!BotManager.cfg.QUEST_PIGGYBACK || !BotAutopilotManager.isActive(entry)) {
+        if (!BotManager.cfg.QUEST_PIGGYBACK) {
+            return;
+        }
+        if (!BotAutopilotManager.isActive(entry)) {
+            // Supervised (owner online, bot at their side): never wander off questing - only
+            // SUGGEST a standout nearby quest, occasionally and rate-limited. This is the
+            // supervised counterpart to autopilot's piggyback (which does quests itself).
+            maybeAutoSuggest(entry, bot);
             return;
         }
         if (entry.questErrandMapId != -1) {
@@ -199,7 +276,7 @@ final class BotQuestManager {
             return;
         }
         // Otherwise look for a worthwhile new quest to start.
-        BotQuestIndex.QuestMeta start = pickStartable(bot);
+        BotQuestIndex.QuestMeta start = pickStartable(entry, bot);
         if (start != null) {
             beginErrand(entry, bot, start, Phase.START, start.startNpc());
         }
@@ -230,14 +307,14 @@ final class BotQuestManager {
 
     /** Best startable mob quest whose kills overlap the current grind map and that clears the
      *  worthwhile bar. Null when nothing here is worth a detour. */
-    private static BotQuestIndex.QuestMeta pickStartable(Character bot) {
+    private static BotQuestIndex.QuestMeta pickStartable(BotEntry entry, Character bot) {
         int mapId = bot.getMapId();
         Map<Integer, Integer> here = mapMobs.mobsOn(mapId);
         if (here.isEmpty()) {
             return null;
         }
         BotQuestIndex.QuestMeta best = null;
-        int bestExp = -1;
+        double bestScore = -1;
         for (BotQuestIndex.QuestMeta q : BotQuestIndex.get().byId().values()) {
             if (gate.isStarted(bot, q.id())) {
                 continue;
@@ -253,11 +330,13 @@ final class BotQuestManager {
             // Reachability: the NPC's map must be on the current map or a few hops away. resolveNpcMap
             // finds where the NPC actually is (current map or its return-map town).
             int npcMap = resolveNpcMap(bot, q.startNpc());
-            if (npcMap == -1 || !worthwhile(mapId, npcMap, q, bot.getLevel())) {
+            if (npcMap == -1 || !worthwhile(entry, mapId, npcMap, q, bot)) {
                 continue;
             }
-            if (q.rewardExp() > bestExp) {
-                bestExp = q.rewardExp();
+            // Rank by the slice-2 score (autopilot benefits from the upgraded model), not raw exp.
+            double score = scoreQuest(entry, bot, mapId, npcMap, q);
+            if (score > bestScore) {
+                bestScore = score;
                 best = q;
             }
         }
@@ -273,15 +352,93 @@ final class BotQuestManager {
         return false;
     }
 
-    /** Rough worthwhile test (visible constants; slice 2 does real scoring): the quest NPC's map is
-     *  within {@link #MAX_ERRAND_HOPS} of the grind map, and the reward exp clears a level-scaled
-     *  floor so a once-good quest stops being worth a town trip as the bot out-levels it. */
-    static boolean worthwhile(int grindMapId, int npcMapId, BotQuestIndex.QuestMeta q, int botLevel) {
+    /** Slice-2 worthwhile test: the NPC's map is within {@link #MAX_ERRAND_HOPS}, and the
+     *  {@link BotQuestScorer} value/cost score (reward exp + overlapping-mob exp vs travel + off-map
+     *  kill time, against the bot's grind baseline) clears {@link BotQuestScorer#RECOMMEND_MIN_SCORE}.
+     *  Drives the autopilot piggyback pick — autopilot benefits from the same upgraded scoring. */
+    static boolean worthwhile(BotEntry entry, int grindMapId, int npcMapId,
+                              BotQuestIndex.QuestMeta q, Character bot) {
         if (hopCount.hops(grindMapId, npcMapId) > MAX_ERRAND_HOPS) {
             return false;
         }
-        return q.rewardExp() >= (long) botLevel * REWARD_EXP_FLOOR_PER_LEVEL;
+        return scoreQuest(entry, bot, grindMapId, npcMapId, q) >= BotQuestScorer.RECOMMEND_MIN_SCORE;
     }
+
+    /** The shared slice-2 advisor score for a quest: how much better than grinding it is, in
+     *  multiples of the bot's current-map exp/min baseline. Used by the recommend command, the
+     *  auto-suggest gate, and the autopilot piggyback pick — one model everywhere. Pure once the
+     *  seams ({@link #mobExp}/{@link #travelSeconds}/{@link #grindExpBaseline}/{@link #mapMobs})
+     *  are resolved, so the math is unit-tested directly in {@link BotQuestScorer}. */
+    static double scoreQuest(BotEntry entry, Character bot, int grindMapId, int npcMapId,
+                             BotQuestIndex.QuestMeta q) {
+        // Overlap = required mobs the bot already kills on its current grind map (free exp).
+        java.util.Set<Integer> here = mapMobs.mobsOn(grindMapId).keySet();
+        java.util.Set<Integer> overlap = new java.util.HashSet<>();
+        for (int mobId : q.mobs().keySet()) {
+            if (here.contains(mobId)) {
+                overlap.add(mobId);
+            }
+        }
+        // One blended kill time for the bot's current grind (proxy for non-overlap mob kill cost).
+        double killSecondsPerMob = grindKillSeconds(entry, bot);
+        // Round trip: grind map -> NPC map -> back. resolveNpcMap already found npcMapId.
+        double travel = travelSeconds.seconds(grindMapId, npcMapId);
+        double baseline = grindExpBaseline.expPerMinute(entry, bot);
+        double uniqueBonus = uniqueRewardExpEquivalent(bot, q);
+        return BotQuestScorer.score(q.mobs(), q.rewardExp(), uniqueBonus, overlap, mobExp,
+                killSecondsPerMob, travel, baseline);
+    }
+
+    /** Blended kill-seconds proxy for off-grind-map mob kills: a quest mob the bot doesn't farm
+     *  here still costs roughly what one of its current mobs costs to kill. Derived from the
+     *  baseline (exp/min) and a typical mob exp would be circular, so use a flat estimate that the
+     *  scorer treats as cost — kept simple and visible. */
+    static double grindKillSeconds(BotEntry entry, Character bot) {
+        return DEFAULT_OFFMAP_KILL_SECONDS;
+    }
+
+    /** Seconds assumed to kill one off-grind-map required quest mob (pure cost). Deliberately a
+     *  visible constant; non-overlapping kill quests are rare among piggyback candidates. */
+    static final double DEFAULT_OFFMAP_KILL_SECONDS = 4.0;
+
+    /** Exp-equivalent of a quest's unique equip reward, valued through the equip-value SSOT
+     *  ({@link BotScrollManager#offenseValue}). Seam so tests stay WZ-free. 0 when no equip
+     *  reward or it is worthless to this bot. */
+    static java.util.function.ToDoubleBiFunction<Character, BotQuestIndex.QuestMeta>
+            uniqueRewardValue = BotQuestManager::computeUniqueRewardValue;
+
+    static double uniqueRewardExpEquivalent(Character bot, BotQuestIndex.QuestMeta q) {
+        return uniqueRewardValue.applyAsDouble(bot, q);
+    }
+
+    /** Production unique-reward valuation: take the best offense value among the quest's equip
+     *  rewards (a fresh roll), scaled to exp-equivalent by {@link #UNIQUE_REWARD_EXP_PER_OFFENSE}.
+     *  Equip rewards are rare among the indexed mob quests, so this is usually 0. */
+    private static double computeUniqueRewardValue(Character bot, BotQuestIndex.QuestMeta q) {
+        if (q.rewardItems().isEmpty()) {
+            return 0.0;
+        }
+        server.ItemInformationProvider ii = server.ItemInformationProvider.getInstance();
+        double best = 0.0;
+        for (int itemId : q.rewardItems()) {
+            if (!constants.inventory.ItemConstants.isEquipment(itemId)) {
+                continue;
+            }
+            try {
+                client.inventory.Item it = ii.getEquipById(itemId);
+                if (it instanceof client.inventory.Equip eq) {
+                    best = Math.max(best, BotScrollManager.offenseValue(bot, eq));
+                }
+            } catch (RuntimeException ignored) {
+                // unresolvable reward — value it at 0 (conservative).
+            }
+        }
+        return best * UNIQUE_REWARD_EXP_PER_OFFENSE;
+    }
+
+    /** Exp-equivalent weight of one point of equip offense value for a unique quest reward. A
+     *  visible knob: a strong reward equip should feel worth a few minutes of grind. */
+    static final double UNIQUE_REWARD_EXP_PER_OFFENSE = 50.0;
 
     // ---- errand state + travel/interaction tick (#4) -----------------------------------------
 
@@ -409,6 +566,218 @@ final class BotQuestManager {
         entry.questErrandPhase = Phase.NONE;
         entry.questErrandReturnMapId = -1;
         entry.questErrandStartedAtMs = 0L;
+    }
+
+    // ---- quest recommendations (Feature A) ---------------------------------------------------
+
+    /** Mob display name from id; seam over {@link server.life.MonsterInformationProvider} so the
+     *  recommend objective lines ("kill 50 Zombie Mushroom") stay WZ-free in tests. */
+    static NameLookup mobName = mobId -> {
+        try {
+            String n = server.life.MonsterInformationProvider.getInstance().getMobNameFromId(mobId);
+            return n == null || n.isEmpty() ? ("mob " + mobId) : n;
+        } catch (RuntimeException e) {
+            return "mob " + mobId;
+        }
+    };
+
+    /** One ranked recommendation: the quest, its score, and the resolved NPC map (for the line). */
+    record Recommendation(BotQuestIndex.QuestMeta quest, double score, int startNpcMap) {}
+
+    /**
+     * "recommend quest": the top startable quests for the bot's CURRENT situation, ranked by the
+     * slice-2 score. SENSITIVE — the owner asked, so the bar is low ({@link
+     * BotQuestScorer#RECOMMEND_MIN_SCORE}); anything net-positive over grinding is shown. Returns
+     * up to {@code limit} {@link Recommendation}s, best first. Does NOT touch the bot or move it;
+     * the caller renders the lines and replies. Heavy enough (per-quest canStart) to run
+     * off-thread — the chat handler dispatches it on a pool, like grind advice.
+     */
+    static List<Recommendation> recommendQuests(BotEntry entry, Character bot, int limit) {
+        if (bot == null) {
+            return List.of();
+        }
+        int grindMap = bot.getMapId();
+        List<Recommendation> out = new java.util.ArrayList<>();
+        for (BotQuestIndex.QuestMeta q : BotQuestIndex.get().byId().values()) {
+            if (gate.isStarted(bot, q.id()) || gate.isCompleted(bot, q.id())) {
+                continue;
+            }
+            if (!gate.canStart(bot, q.id(), q.startNpc())) {
+                continue;
+            }
+            int npcMap = resolveStartNpcMap(bot, q.startNpc());
+            if (npcMap == -1 || hopCount.hops(grindMap, npcMap) > MAX_ERRAND_HOPS) {
+                continue;
+            }
+            double score = scoreQuest(entry, bot, grindMap, npcMap, q);
+            if (score >= BotQuestScorer.RECOMMEND_MIN_SCORE) {
+                out.add(new Recommendation(q, score, npcMap));
+            }
+        }
+        out.sort((a, b) -> Double.compare(b.score(), a.score()));
+        return out.size() > limit ? out.subList(0, limit) : out;
+    }
+
+    /** Render one recommendation as a single ASCII chat line:
+     *  "<name> @ <start NPC> in <map>: <objective> -> <reward>". */
+    static String describeRecommendation(Recommendation rec) {
+        BotQuestIndex.QuestMeta q = rec.quest();
+        StringBuilder sb = new StringBuilder();
+        sb.append("q").append(q.id())
+          .append(" @ ").append(npcName.name(q.startNpc()))
+          .append(" in ").append(mapName.name(rec.startNpcMap()))
+          .append(": ").append(objectiveSummary(q))
+          .append(" -> ").append(rewardSummary(q));
+        return sb.toString();
+    }
+
+    /** "kill 50 Zombie Mushroom, 20 Stump" — the required-mob turn-in objective, ASCII. */
+    static String objectiveSummary(BotQuestIndex.QuestMeta q) {
+        StringBuilder sb = new StringBuilder("kill ");
+        boolean first = true;
+        for (Map.Entry<Integer, Integer> need : q.mobs().entrySet()) {
+            if (!first) {
+                sb.append(", ");
+            }
+            sb.append(need.getValue()).append(" ").append(mobName.name(need.getKey()));
+            first = false;
+        }
+        return sb.toString();
+    }
+
+    /** "<exp> exp" plus a unique item note when the quest awards one. */
+    static String rewardSummary(BotQuestIndex.QuestMeta q) {
+        StringBuilder sb = new StringBuilder();
+        sb.append(q.rewardExp()).append(" exp");
+        if (!q.rewardItems().isEmpty()) {
+            sb.append(" + ").append(itemName(q.rewardItems().get(0)));
+        }
+        return sb.toString();
+    }
+
+    /** Item display name; seam over {@link server.ItemInformationProvider}. */
+    static NameLookup itemNameLookup = itemId -> {
+        try {
+            String n = server.ItemInformationProvider.getInstance().getName(itemId);
+            return n == null || n.isEmpty() ? ("item " + itemId) : n;
+        } catch (RuntimeException e) {
+            return "item " + itemId;
+        }
+    };
+
+    private static String itemName(int itemId) {
+        return itemNameLookup.name(itemId);
+    }
+
+    /** Where the start NPC actually is. Unlike the errand's {@link #resolveNpcMap} (which only
+     *  checks the bot's current map + its return-map town), recommend may surface cross-region
+     *  quests, so this also consults the index's NPC->map table when available. */
+    private static int resolveStartNpcMap(Character bot, int npcId) {
+        int local = resolveNpcMap(bot, npcId);
+        if (local != -1) {
+            return local;
+        }
+        return npcMapLookup.mapOf(npcId);
+    }
+
+    /** NPC id -> home map id; seam over the world's NPC placement. Production currently returns -1
+     *  (no global NPC->map index yet), so recommend falls back to {@link #resolveNpcMap}'s
+     *  current-map + return-map-town check — which covers the common low-level kill quest whose
+     *  start NPC sits in the adjacent town. Tests stub it for cross-region cases. */
+    interface NpcMapLookup {
+        int mapOf(int npcId);
+    }
+
+    static NpcMapLookup npcMapLookup = npcId -> -1;
+
+    // ---- auto-suggest (Feature A, supervised only) -------------------------------------------
+
+    /** Multi-minute cooldown between unprompted quest suggestions (per bot). */
+    static final long AUTO_SUGGEST_COOLDOWN_MS = 5L * 60_000L;
+    /** How long a suggested (or implicitly declined) quest id stays suppressed before it could be
+     *  surfaced again. The owner ignored it once; don't nag. */
+    static final long SUGGESTED_QUEST_TTL_MS = 30L * 60_000L;
+
+    /** True when the bot is in SUPERVISED mode: owner online and the bot is following them (not
+     *  off on autopilot). Mirrors the owner-perks rule - a supervised bot stays at the owner's
+     *  side, so it only suggests quests, never runs off to do them. */
+    static boolean isSupervised(BotEntry entry) {
+        return entry != null
+                && !BotAutopilotManager.isActive(entry)
+                && entry.owner != null
+                && entry.owner.isLoggedinWorld()
+                && entry.isFollowing();
+    }
+
+    /**
+     * Unprompted, LOW-frequency quest suggestion for a supervised bot: fire at most once per
+     * {@link #AUTO_SUGGEST_COOLDOWN_MS}, at most once per map, and ONLY when a quest is clearly
+     * worth it ({@link BotQuestScorer#AUTO_SUGGEST_MIN_SCORE} multiple of the grind baseline) AND
+     * close by ({@link BotQuestScorer#AUTO_SUGGEST_MAX_HOPS} hops). Never repeats a suggested or
+     * stale-tracked id. One ASCII line through the rate-limited reply path.
+     */
+    static void maybeAutoSuggest(BotEntry entry, Character bot) {
+        if (bot == null || !isSupervised(entry)) {
+            return;
+        }
+        long now = System.currentTimeMillis();
+        if (now < entry.nextQuestSuggestAtMs) {
+            return;
+        }
+        int mapId = bot.getMapId();
+        if (mapId == entry.lastQuestSuggestMapId) {
+            return; // already considered this map (per-map rate limit)
+        }
+        purgeStaleSuggestions(entry, now);
+
+        BotQuestIndex.QuestMeta pick = pickAutoSuggest(entry, bot, mapId, now);
+        if (pick == null) {
+            // Mark the map as considered so we don't re-scan it every cadence; the cooldown still
+            // governs cross-map suggestions.
+            entry.lastQuestSuggestMapId = mapId;
+            return;
+        }
+        entry.suggestedQuestExpiry.put(pick.id(), now + SUGGESTED_QUEST_TTL_MS);
+        entry.lastQuestSuggestMapId = mapId;
+        entry.nextQuestSuggestAtMs = now + AUTO_SUGGEST_COOLDOWN_MS;
+
+        int npcMap = resolveStartNpcMap(bot, pick.startNpc());
+        reply.accept(entry, "btw there's a good quest nearby: "
+                + describeRecommendation(new Recommendation(pick, 0, npcMap)));
+    }
+
+    /** Best quest that clears the HIGH auto-suggest bar (strong score multiple, <=2 hops) and is
+     *  not already suggested/stale. Null when nothing stands out. */
+    private static BotQuestIndex.QuestMeta pickAutoSuggest(BotEntry entry, Character bot,
+                                                           int grindMap, long now) {
+        BotQuestIndex.QuestMeta best = null;
+        double bestScore = BotQuestScorer.AUTO_SUGGEST_MIN_SCORE;
+        for (BotQuestIndex.QuestMeta q : BotQuestIndex.get().byId().values()) {
+            Long expiry = entry.suggestedQuestExpiry.get(q.id());
+            if (expiry != null && expiry > now) {
+                continue; // already suggested / declined and still suppressed
+            }
+            if (gate.isStarted(bot, q.id()) || gate.isCompleted(bot, q.id())) {
+                continue;
+            }
+            if (!gate.canStart(bot, q.id(), q.startNpc())) {
+                continue;
+            }
+            int npcMap = resolveStartNpcMap(bot, q.startNpc());
+            if (npcMap == -1 || hopCount.hops(grindMap, npcMap) > BotQuestScorer.AUTO_SUGGEST_MAX_HOPS) {
+                continue;
+            }
+            double score = scoreQuest(entry, bot, grindMap, npcMap, q);
+            if (score > bestScore) {
+                bestScore = score;
+                best = q;
+            }
+        }
+        return best;
+    }
+
+    private static void purgeStaleSuggestions(BotEntry entry, long now) {
+        entry.suggestedQuestExpiry.entrySet().removeIf(e -> e.getValue() <= now);
     }
 
     // ---- chat status (#5) --------------------------------------------------------------------
