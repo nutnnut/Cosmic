@@ -59,6 +59,9 @@ public class BotManager {
         // Passive loot
         public int   LOOT_RADIUS         = 100;   // px; pickup items within this box radius
         public int   INV_FULL_WARN_CD_MS = 10_000;
+        // Legacy convenience from the supervised-bots era: NX cards a bot loots get picked up
+        // by the owner instead. Off by default - independent bots keep their own loot.
+        public boolean REDIRECT_NX_CARDS_TO_OWNER = false;
 
         // Potion management
         public int   POT_LOW_WARN          = 100;   // warn on grind start below this count

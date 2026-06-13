@@ -175,7 +175,8 @@ class BotInventoryManager {
 
             Item pickedItem = drop.getItem();
             int pickedItemId = drop.getItemId();
-            if (ItemId.isNxCard(pickedItemId) && entry.owner != null && entry.owner.getMap() == bot.getMap()) {
+            if (BotManager.cfg.REDIRECT_NX_CARDS_TO_OWNER && ItemId.isNxCard(pickedItemId)
+                    && entry.owner != null && entry.owner != bot && entry.owner.getMap() == bot.getMap()) {
                 entry.owner.pickupItem(drop);
             } else {
                 bot.pickupItem(drop);
