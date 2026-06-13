@@ -383,6 +383,9 @@ public class BotChatManager {
     private static final Pattern INVENTORY_DEBUG_PATTERN = Pattern.compile(
             "\\binv(?:entory)?[\\-\\s]?(?:debug|verbose|why|explain)\\b",
             Pattern.CASE_INSENSITIVE);
+    private static final Pattern QUESTS_PATTERN = Pattern.compile(
+            "^\\s*(?:(?:what|which)\\s+)?quests?(?:\\s+(?:status|progress|active|list))?\\s*[?!.]*\\s*$",
+            Pattern.CASE_INSENSITIVE);
     private static final Pattern AUTOEQUIP_PATTERN = Pattern.compile(
             "\\b(?:auto[\\-\\s]?equip|optimi[sz]e\\s+(?:gear|equip(?:s|ment)?))\\b",
             Pattern.CASE_INSENSITIVE);
@@ -994,6 +997,11 @@ public class BotChatManager {
                 BotEquipManager.autoEquip(entry.bot, entry.owner, entry.pendingLootOfferItem, true);
                 BotManager.getInstance().botReply(entry, "ok, gear optimized");
             });
+            return;
+        }
+        if (QUESTS_PATTERN.matcher(message).matches()) {
+            BotManager.after(BotManager.randMs(400, 600), () ->
+                    BotManager.getInstance().botReply(entry, BotQuestManager.questStatus(entry.bot)));
             return;
         }
 
