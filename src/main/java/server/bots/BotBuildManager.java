@@ -320,7 +320,12 @@ class BotBuildManager {
         }
 
         if (lvl == 8 || lvl == 10 || lvl == 30 || lvl == 70 || lvl == 120) {
-            BotManager.getInstance().issueFollowOwner(entry);
+            // Job-advancement milestone: pull the bot back to the owner so it's handy for the
+            // advance prompt - but not when it is playing independently (autopilot / self-owned),
+            // where issueFollowOwner would clear autopilot and clobber its objective.
+            if (!BotManager.isAutopilotActive(entry)) {
+                BotManager.getInstance().issueFollowOwner(entry);
+            }
             BotChatManager.checkBotStatus(entry, bot);
         }
 

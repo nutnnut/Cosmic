@@ -800,6 +800,55 @@ class BotManagerTest {
     }
 
     @Test
+    void canWalkToOwnerOnlyWhenNotIndependentAndOwnerOnlineAndDistinct() {
+        Character bot = mock(Character.class);
+        Character owner = mock(Character.class);
+        when(owner.isLoggedinWorld()).thenReturn(true);
+
+        // Normal follow bot with an online distinct owner: may walk to owner.
+        BotEntry follow = new BotEntry(bot, owner, null);
+        assertTrue(BotManager.canWalkToOwner(follow));
+        assertFalse(BotManager.isAutopilotActive(follow));
+
+        // Autopilot active: never.
+        BotEntry autopilot = new BotEntry(bot, owner, null);
+        autopilot.autopilotMapId = 100000000;
+        assertTrue(BotManager.isAutopilotActive(autopilot));
+        assertFalse(BotManager.canWalkToOwner(autopilot));
+
+        // Offline owner (stale position): never.
+        Character offlineOwner = mock(Character.class);
+        when(offlineOwner.isLoggedinWorld()).thenReturn(false);
+        assertFalse(BotManager.canWalkToOwner(new BotEntry(bot, offlineOwner, null)));
+
+        // Self-owned (owner == bot): independent, never walks to "owner".
+        BotEntry self = new BotEntry(bot, bot, null);
+        assertTrue(BotManager.isAutopilotActive(self));
+        assertFalse(BotManager.canWalkToOwner(self));
+
+        // No owner: never.
+        assertFalse(BotManager.canWalkToOwner(new BotEntry(bot, null, null)));
+    }
+
+    @Test
+    void selfOwnedBotResolvesNoFollowAnchor() {
+        MapleMap map = spy(createEmptyTestMap(910000301));
+        Character bot = mock(Character.class);
+        when(bot.getMap()).thenReturn(map);
+        when(bot.getId()).thenReturn(88);
+        BotEntry entry = new BotEntry(bot, bot, null); // owner == bot
+
+        // Commander check still wins first when bound; otherwise self-owned => no anchor.
+        assertNull(BotManager.getInstance().resolveFollowAnchor(entry, bot));
+
+        Character admin = mock(Character.class);
+        when(admin.getId()).thenReturn(506);
+        doReturn(admin).when(map).getCharacterById(506);
+        BotManager.bindDebugCommander(entry, admin);
+        assertEquals(admin, BotManager.getInstance().resolveFollowAnchor(entry, bot));
+    }
+
+    @Test
     void shouldIgnoreCachedGrindLootInsidePassiveLootRadiusWhenNoMobTarget() {
         Character bot = mockMovingBot(new Point(100, 100), createEmptyTestMap(910000034));
         BotEntry entry = new BotEntry(bot, mock(Character.class), null);

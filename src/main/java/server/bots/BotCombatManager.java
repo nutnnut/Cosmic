@@ -2646,7 +2646,9 @@ class BotCombatManager {
                         BotManager.getInstance().botSay(bot, BotManager.randomReply(MP_POTS_OUT_MSGS));
                         return;
                     }
-                    BotManager.getInstance().issueFollowOwner(entry);
+                    if (BotManager.canWalkToOwner(entry)) {
+                        BotManager.getInstance().issueFollowOwner(entry);
+                    }
                     BotManager.getInstance().botSay(bot, BotManager.randomReply(MP_POTS_OUT_MSGS));
                 }
             }
@@ -2678,7 +2680,9 @@ class BotCombatManager {
                 if (BotAutopilotManager.requestResupplyErrand(entry, bot)) {
                     return;
                 }
-                BotManager.getInstance().issueFollowOwner(entry);
+                if (BotManager.canWalkToOwner(entry)) {
+                    BotManager.getInstance().issueFollowOwner(entry);
+                }
                 BotManager.getInstance().botSay(bot, BotManager.randomReply(AMMO_OUT_MSGS));
             }
         }

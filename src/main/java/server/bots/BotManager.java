@@ -1486,6 +1486,11 @@ public class BotManager {
         if (owner == null) {
             return null;
         }
+        // Self-owned (@botme) bot: anchoring to itself makes the formation offset oscillate the
+        // bot around its own position. No anchor — the commander check above still wins when set.
+        if (owner == entry.bot) {
+            return null;
+        }
 
         int targetId = entry.followTargetId;
         if (targetId <= 0 || targetId == owner.getId() || targetId == entry.bot.getId()) {
@@ -2392,7 +2397,7 @@ public class BotManager {
                 BotNavigationGraphProvider.warmGraphAsync(bot.getMap(), entry.movementProfile);
                 BotMovementManager.broadcastMovement(entry);
                 if (BotPqHooks.requiresGrind(entry, bot)) { issueGrind(entry); }
-                else if (BotPqHooks.requiresFollow(entry, bot)) { issueFollowOwner(entry); }
+                else if (BotPqHooks.requiresFollow(entry, bot) && entry.owner != bot) { issueFollowOwner(entry); }
                 else { entry.kpq.stage5Claimed = false; } // left KPQ — reset for next run
                 BotShopManager.onMapChange(entry, bot);
                 BotChatManager.checkBotStatus(entry, bot);
@@ -2408,7 +2413,7 @@ public class BotManager {
                     BotNavigationGraphProvider.warmGraphAsync(bot.getMap(), entry.movementProfile);
                     BotMovementManager.broadcastMovement(entry);
                     if (BotPqHooks.requiresGrind(entry, bot)) { issueGrind(entry); }
-                    else if (BotPqHooks.requiresFollow(entry, bot)) { issueFollowOwner(entry); }
+                    else if (BotPqHooks.requiresFollow(entry, bot) && entry.owner != bot) { issueFollowOwner(entry); }
                     else { entry.kpq.stage5Claimed = false; } // left KPQ — reset for next run
                     BotShopManager.onMapChange(entry, bot);
                     BotChatManager.checkBotStatus(entry, bot);
