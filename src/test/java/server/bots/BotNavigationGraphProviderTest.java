@@ -412,7 +412,11 @@ class BotNavigationGraphProviderTest {
     }
 
     @Test
-    void shouldCapStraightDownJumpLaunchWindowAroundSeedAnchor() {
+    void shouldExpandStraightDownJumpWindowAcrossFullDroppableSpan() {
+        // A straight down-jump has no horizontal launch precision, so its window must span the
+        // whole contiguous part of the source region that drops into the same target - not a
+        // +/-20px cap that fragmented one droppable platform into many partial edges
+        // (El Nath r54->r56, pathlog-Leroy-2026-06-12T141517).
         MapleMap map = createEmptyTestMap(910000212);
         server.maps.FootholdTree footholds = new server.maps.FootholdTree(new Point(-2000, -2000), new Point(2000, 2000));
         footholds.insert(new Foothold(new Point(0, 0), new Point(300, 0), 1));
@@ -423,8 +427,13 @@ class BotNavigationGraphProviderTest {
         BotNavigationGraph.Edge dropEdge = findFirstStraightDropEdge(graph);
 
         assertNotNull(dropEdge, "fixture should produce a straight down-jump edge");
-        assertTrue(dropEdge.launchMaxX - dropEdge.launchMinX <= 40,
-                "straight down-jump launch windows should be capped to the graphgen prelaunch span (2 * DOWN_JUMP_PRELAUNCH_WINDOW_PX)");
+        assertTrue(dropEdge.launchMaxX - dropEdge.launchMinX > 40,
+                "straight down-jump window must cover the full droppable span, not the old +/-20 cap; got "
+                        + (dropEdge.launchMaxX - dropEdge.launchMinX));
+        // The 300px platform drops entirely onto the platform below: window should span most of it.
+        assertTrue(dropEdge.launchMaxX - dropEdge.launchMinX >= 200,
+                "window should cover nearly the whole 300px droppable platform; got [" + dropEdge.launchMinX
+                        + ".." + dropEdge.launchMaxX + "]");
     }
 
     @Test

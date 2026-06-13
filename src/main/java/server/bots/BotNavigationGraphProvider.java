@@ -44,9 +44,8 @@ final class BotNavigationGraphProvider {
     //     inside an 8.93 x fs px/s band (no walkSpeed air cap; counter-strafe pins at the
     //     band edge) and no-input flight drags 1 x fs (100 x fs at terminal fall). Committed
     //     arcs still fly the launch key held, so constant-stepX arc sims stay exact.
-    private static final int GRAPH_VERSION = 55; // 51: kinetic slippery model + snowshoes; 52: brake-to-stop landings; 53: glide-unless-edge stop policy (slipperyStopDir)
+    private static final int GRAPH_VERSION = 56; // 51: kinetic slippery model + snowshoes; 52: brake-to-stop landings; 53: glide-unless-edge stop policy (slipperyStopDir); 56: uncap straight-drop launch windows (full droppable span, no +/-20 fragmentation)
     private static final int ENDPOINT_ANCHOR_SPACING_PX = 10;
-    private static final int DOWN_JUMP_PRELAUNCH_WINDOW_PX = 20;
     private static final int SAME_SOLID_NEST_GAP_PX = 8;
     private static final int ROPE_ANCHOR_INTERVAL_PX = 30;
     private static final int JUMP_POST_LANDING_STABILITY_TICKS = 3;
@@ -1366,9 +1365,13 @@ final class BotNavigationGraphProvider {
                                             int targetRegionId,
                                             boolean searchLeft,
                                             BotMovementProfile movementProfile) {
-        int limitX = searchLeft
-                ? Math.max(from.minX, startX - DOWN_JUMP_PRELAUNCH_WINDOW_PX)
-                : Math.min(from.maxX, startX + DOWN_JUMP_PRELAUNCH_WINDOW_PX);
+        // A straight down-jump has NO horizontal launch precision (you press down+jump and fall
+        // in place), so the window is the whole contiguous span of the source region that drops
+        // into the same target - bounded only by the region edges, exactly like findJumpBoundary.
+        // Capping it at +/-20px fragmented one droppable platform into many partial 40px edges
+        // whose union didn't even cover the platform, stranding bots just outside a chosen edge
+        // (El Nath r54->r56, pathlog-Leroy-2026-06-12T141517: 14 edges, none covering x=1287).
+        int limitX = searchLeft ? from.minX : from.maxX;
         int validX = startX;
         int invalidX = startX;
         int step = 1;
