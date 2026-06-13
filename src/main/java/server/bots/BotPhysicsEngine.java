@@ -1598,8 +1598,12 @@ final class BotPhysicsEngine {
         }
 
         int jumpReach = (int) Math.ceil(calculateMaxJumpHeight(profile));
+        // The bot can grab the rope anywhere down to its climbable bottom; if that hangs below the
+        // launch ledge it keeps drifting sideways through the descent, so the horizontal reach must
+        // count that extra airtime (otherwise mid-rope grabs from an adjacent ledge are missed).
+        int dropToRopeBottom = Math.max(0, rope.bottomY() - from.y);
         return rope.bottomY() >= from.y - jumpReach
-                && dx <= maxJumpHorizontalTravel(map, profile);
+                && dx <= maxHorizontalTravelWithDrop(map, profile, jumpForcePerTick(profile), dropToRopeBottom);
     }
 
     static boolean canStartDownJump(MapleMap map, Point from) {
@@ -2095,6 +2099,22 @@ final class BotPhysicsEngine {
 
     private static int maxHorizontalTravel(MapleMap map, BotMovementProfile profile, float launchSpeedPerTick) {
         int airtimeTicks = Math.max(1, (int) Math.ceil((2 * launchSpeedPerTick) / gravityPerTick()));
+        return walkStep(map, profile) * airtimeTicks;
+    }
+
+    // Horizontal reach of a jump that is allowed to keep falling `dropPx` BELOW its launch height
+    // before the move ends — e.g. grabbing a rope whose climbable span hangs below the ledge.
+    // maxHorizontalTravel only counts the arc back to launch height; a rope that extends lower lets
+    // the bot drift sideways through the entire descent, reaching meaningfully farther (this is the
+    // common "stand by a ladder, jump and catch it" maneuver). Reduces to maxHorizontalTravel at
+    // dropPx == 0.
+    private static int maxHorizontalTravelWithDrop(MapleMap map, BotMovementProfile profile,
+                                                   float launchSpeedPerTick, int dropPx) {
+        float g = gravityPerTick();
+        float tUp = launchSpeedPerTick / g;
+        float apex = launchSpeedPerTick * launchSpeedPerTick / (2f * g);
+        float tDown = (float) Math.sqrt(2f * (apex + Math.max(0, dropPx)) / g);
+        int airtimeTicks = Math.max(1, (int) Math.ceil(tUp + tDown));
         return walkStep(map, profile) * airtimeTicks;
     }
 

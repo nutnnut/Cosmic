@@ -774,6 +774,33 @@ class BotNavigationGraphProviderTest {
                 "Preston's lower ledge must have a route up to the leader platform");
     }
 
+    // Regression (long-standing, not from the graphgen rewrite): the x=2739 ladder in Orbis station
+    // hangs from y=-334 down to y=18, so the ledge at y=-145 next to it (r56, where a follower stood
+    // beside the ladder) must get a jump-grab CLIMB edge onto it. The grab was missing because the
+    // reach model only counted the jump arc back to launch height; a rope that extends below the
+    // ledge lets the bot drift through the descent and catch it ~96px out (vs the 81px gap here).
+    @Test
+    void shouldJumpGrabOrbisLadderMidwayFromAdjacentLedge() {
+        MapleMap map = BotNavigationMapLoader.loadMapGeometry(200000000);
+        BotNavigationGraph graph = BotNavigationGraphProvider.rebuildGraph(map);
+        int ledge = graph.findRegionId(map, new Point(2657, -145)); // platform beside the x=2739 ladder
+        assertTrue(ledge > 0, "ledge region must resolve");
+
+        int ropeRegion = -1;
+        for (BotNavigationGraph.Region region : graph.regionsById.values()) {
+            if (region.isRopeRegion && region.minX == 2739) {
+                ropeRegion = region.id;
+                break;
+            }
+        }
+        assertTrue(ropeRegion > 0, "x=2739 ladder region must exist");
+
+        int target = ropeRegion;
+        boolean grab = graph.getOutgoing(ledge).stream()
+                .anyMatch(e -> e.toRegionId == target && e.type == BotNavigationGraph.EdgeType.CLIMB);
+        assertTrue(grab, "the ledge beside the x=2739 ladder must have a jump-grab CLIMB edge onto it");
+    }
+
     private static List<BotNavigationGraph.Edge> findPath(BotNavigationGraph graph,
                                                           MapleMap map,
                                                           Point start,
