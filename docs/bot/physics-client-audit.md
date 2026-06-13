@@ -11,7 +11,7 @@ Date: 2026-06-12. Bot HEAD at audit start: 48bcab404.
 
 | Subsystem | Verdict |
 |-----------|---------|
-| Down-jump probe distance (300px) | **matches — confirmed exact (0x12c)** |
+| Down-jump probe distance (300px) | ~~confirmed~~ **RETRACTED — empirically wrong, cap removed (see §b)** |
 | `fs` slipperiness model (scale force + friction, top speed unchanged) | **matches — confirmed in CalcWalk** (one minor nuance, reported) |
 | Core constants (walkSpeed/gravity/jump/fall) | **matches** (= Physics.img) |
 | Ground force/drag refit (HFORCE/GROUNDSLIP/FRICTION/SLOPEFACTOR) | **divergent-but-deliberate** (abstracted refit, correct emergent behavior) |
@@ -103,7 +103,23 @@ the whole `(force−drag)` delta by `fs` symmetrically. Because top speed is
 clamp-limited, this only perturbs the approach curve slightly — not worth a
 behavior-risky change.
 
-## (b) Down-jump probe distance — CONFIRMED 300px (exact)
+## (b) Down-jump probe distance — ~~CONFIRMED 300px~~ **RETRACTED (empirically wrong)**
+
+> **CORRECTION (2026-06-13).** The 300px cap below was **wrong in practice** and has
+> been **removed from the code** (`DOWN_JUMP_MAX_DROP_PX` deleted; `simulateDownJumpLanding`
+> no longer caps drop distance; GRAPH_VERSION 56→57). The owner verified in-client that a
+> player **can** down-jump drops the capped bot refused — e.g. descending the Orbis station
+> tower (200000000), a ~780px straight-down drop the cap deleted, which islanded the arrival
+> platform and stranded follower bots (bisected to `48bcab404`; regression test
+> `BotNavigationGraphProviderTest#shouldConnectOrbisStationLowerLedgesToUpperPlatform`).
+>
+> So the `0x12c` (300) value read out of `CUserLocal::FallDown` is **not** the down-jump
+> drop-distance limit it was read as. The true eligibility rule is **still unknown** — it is
+> neither a 300px probe nor purely the `forbidFallDown` flag (do not re-cap on either without
+> in-client + disasm proof). Current policy: generate a down-jump edge wherever a real landing
+> exists below (any distance); `canStartDownJump` still refuses a `forbidFallDown` source
+> foothold; execution abandons any edge that proves unwalkable. **Do not reinstate the 300px
+> cap.** The original disasm reading is preserved below for the record only.
 
 The down-jump gate is **`CUserLocal::FallDown` @ 0x94c4f8** (NOT the 65-byte
 `TryDoingFallDown` @ 0x94e692, which only sets the fall-request flag).
@@ -114,8 +130,8 @@ that probe point, and rejects the down-jump if the only foothold found is the
 current one (±5px, 0x94c6b0-0x94c6d2). So the real probe distance is **exactly
 300px**.
 
-**Verdict:** bot `DOWN_JUMP_MAX_DROP_PX = 300` is **exactly the client constant**
-(0x12c). No value change. Comment updated to cite the evidence.
+**Verdict (RETRACTED — see correction box above):** the `0x12c` read was taken as a
+down-jump drop cap and is empirically wrong; `DOWN_JUMP_MAX_DROP_PX` has been deleted.
 
 Correction to a prior-attempt misattribution: the "min 0x1e (30) / ×0.8 (type 2)"
 probe lives in `CUserLocal::TryDoingTeleport` (the earlier dump of
@@ -134,7 +150,7 @@ search, not the down-jump.
 | flySpeed | 200 px/s | (no fly path) | n/a |
 | walkForce / walkDrag | 140000 / 80000 | abstracted (see below) | deliberate refit |
 | maxFriction / minFriction | 2.0 / 0.05 | (folded into refit) | deliberate refit |
-| down-jump probe | 300px (0x12c) | `DOWN_JUMP_MAX_DROP_PX = 300` | matches (exact) |
+| down-jump probe | ~~300px (0x12c)~~ | **cap removed** (was `DOWN_JUMP_MAX_DROP_PX`) | **RETRACTED — empirically wrong, see §b** |
 | down-jump kick | not in Physics.img | `JUMP_DOWN_PXS = 196` (measured) | deliberate (packet-measured) |
 | dt unit | ms × 0.001 (var step) | per-step `CLIENT_GROUND_STEP_MS = 8` | deliberate (fixed-step approximation) |
 
