@@ -1037,8 +1037,23 @@ final class BotNavigationManager {
                     boolean enteredThroughExit = current.state.viaPortal
                             && current.state.point.equals(edge.startPoint);
                     int edgeCost = isPortal && enteredThroughExit ? (int) PORTAL_USE_COOLDOWN_MS : edge.cost;
-                    int tentativeCost = current.cost + intraRegionTravelCost(graph, current.state.regionId, current.state.point, edge.startPoint) + edgeCost;
-                    SearchState nextState = new SearchState(edge.toRegionId, edge.endPoint, isPortal);
+                    // A straight DROP (launchStepX==0) falls in place: it executes from the nearest
+                    // in-window x to the bot (selectDropWaypoint) and lands at that same x, NOT from/at
+                    // the authored window-midpoint start/end points. Cost the approach to that nearest
+                    // in-window x AND land the next state there, so A* matches execution across the whole
+                    // window. Otherwise a wide drop window inflates BOTH the approach (to the midpoint
+                    // startPoint) and the downstream goal-walk (from the midpoint landing), which can
+                    // lose a strictly-cheaper direct drop to a rope detour. Scoped to DROP+stepX==0
+                    // only: directional drops and JUMPs keep their authored start/end geometry.
+                    boolean straightDrop = edge.type == BotNavigationGraph.EdgeType.DROP && edge.launchStepX == 0;
+                    Point approachPoint = straightDrop
+                            ? edge.pointAtNearestLaunchX(current.state.point.x)
+                            : edge.startPoint;
+                    Point landingPoint = straightDrop
+                            ? new Point(approachPoint.x, edge.endPoint.y)
+                            : edge.endPoint;
+                    int tentativeCost = current.cost + intraRegionTravelCost(graph, current.state.regionId, current.state.point, approachPoint) + edgeCost;
+                    SearchState nextState = new SearchState(edge.toRegionId, landingPoint, isPortal);
                     if (tentativeCost >= gScore.getOrDefault(nextState, Integer.MAX_VALUE)) {
                         continue;
                     }

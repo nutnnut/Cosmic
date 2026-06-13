@@ -266,6 +266,11 @@ final class BotNavigationGraph implements Serializable {
         boolean containsLaunchX(int x, int tolerance) {
             return x >= launchMinX - tolerance && x <= launchMaxX + tolerance;
         }
+
+        /** Launch point at the in-window x nearest to {@code x} (the x execution would actually fire from). */
+        Point pointAtNearestLaunchX(int x) {
+            return new Point(Math.clamp(x, launchMinX, launchMaxX), startPoint.y);
+        }
     }
 
     final int mapId;
