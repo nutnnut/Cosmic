@@ -973,7 +973,15 @@ final class BotPhysicsEngine {
         entry.airVelX = 0;
         entry.airSteerVelX = 0.0;
         entry.fixedAirArc = false;
-        entry.physX = position.x;
+        // Slippery ground keeps the fractional x (position stays the rounded broadcast
+        // pixel). One 50ms input pulse from rest moves well under a pixel; truncating
+        // physX to the int position every tick discarded that progress and made tight
+        // launch windows unreachable from rest (pathlog-Leroy-2026-06-12T140609: parked
+        // 2-3px short of a 2px jump window forever on fs=0.2). Normal ground keeps the
+        // int snap - bit-exact with prior behavior.
+        entry.physX = mapGroundSlipScale(map, entry.movementProfile) < 1.0
+                ? step.state().physX()
+                : position.x;
         entry.physY = position.y;
         entry.hspeed = step.state().hspeed();
         entry.groundPhysicsCarryMs = step.state().carryMs();
@@ -2004,6 +2012,19 @@ final class BotPhysicsEngine {
      * window at x=59 overran the platform's left edge and fell).
      */
     static int slipperyApproachDir(MapleMap map, BotMovementProfile profile, double hspeed, int dxToTarget) {
+        return slipperyApproachDir(map, profile, hspeed, dxToTarget, 0);
+    }
+
+    /**
+     * {@code overshootSlackPx}: extra distance past the target that still counts as arrival
+     * instead of overshoot — callers steering into a launch WINDOW pass the room between the
+     * target pixel and the window's far edge. Without it the smallest legal 50ms pulse from
+     * rest (~1.6px at fs=0.2) can exceed the remaining 1-2px to the target pixel and the
+     * controller refuses to accelerate at all, parking the bot just outside a tight window
+     * forever (pathlog-Leroy-2026-06-12T140609).
+     */
+    static int slipperyApproachDir(MapleMap map, BotMovementProfile profile, double hspeed, int dxToTarget,
+                                   int overshootSlackPx) {
         int towardDir = Integer.signum(dxToTarget);
         double fs = mapGroundSlipScale(map, profile);
         if (towardDir == 0 || fs >= 1.0) {
@@ -2035,7 +2056,7 @@ final class BotPhysicsEngine {
             traveled += Math.max(v, 0.0);
         }
 
-        if (traveled < Math.abs(dxToTarget)) {
+        if (traveled < Math.abs(dxToTarget) + Math.max(0, overshootSlackPx)) {
             return towardDir; // the post-accel stop-out still fits: keep accelerating
         }
         // Too hot to keep pushing: counter-strafe while the slide carries meaningful speed,

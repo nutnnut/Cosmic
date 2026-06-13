@@ -841,8 +841,38 @@ class BotMovementManager {
         if (isDirectionalDropEdge(entry.navEdge)) {
             return stepX;
         }
-        int approachDir = BotPhysicsEngine.slipperyApproachDir(map, entry.movementProfile, entry.hspeed, targetX - botX);
+        int approachDir = BotPhysicsEngine.slipperyApproachDir(map, entry.movementProfile, entry.hspeed,
+                targetX - botX, launchWindowOvershootSlackPx(entry, botX, targetX));
         return approachDir == Integer.signum(stepX) ? stepX : approachDir;
+    }
+
+    /**
+     * Extra overshoot allowance (px) past the steering target before the slippery approach
+     * controller must brake. Anywhere inside a committed edge's launch window is executable,
+     * so a pulse projected to land between the target and the window's far edge is arrival,
+     * not overshoot. Without it a tight window (2px on El Nath fs=0.2) can be unreachable
+     * from rest: the smallest legal 50ms pulse travels farther than the distance to the
+     * target pixel and the controller refuses to accelerate at all
+     * (pathlog-Leroy-2026-06-12T140609).
+     */
+    private static int launchWindowOvershootSlackPx(BotEntry entry, int botX, int targetX) {
+        BotNavigationGraph.Edge edge = entry.navEdge;
+        if (edge == null) {
+            return 0;
+        }
+        boolean windowed = edge.type == BotNavigationGraph.EdgeType.JUMP
+                || (edge.type == BotNavigationGraph.EdgeType.DROP && edge.launchStepX == 0);
+        if (!windowed || !edge.containsLaunchX(targetX)) {
+            return 0;
+        }
+        int dir = Integer.signum(targetX - botX);
+        if (dir == 0) {
+            return 0;
+        }
+        int slack = dir > 0 ? edge.launchMaxX - targetX : targetX - edge.launchMinX;
+        // JUMP execution additionally requires |x - launchX| <= walkStep around the selected
+        // launch point — never allow sliding deeper into a wide window than that gate accepts.
+        return Math.clamp(slack, 0, BotPhysicsEngine.walkStep(entry.bot.getMap(), entry.movementProfile));
     }
 
     static void initiateJump(BotEntry entry, Character bot, int dx) {

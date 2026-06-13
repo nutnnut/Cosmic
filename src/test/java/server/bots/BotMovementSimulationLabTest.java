@@ -283,6 +283,41 @@ class BotMovementSimulationLabTest {
                         + String.join("\n", lab.formatRecentTrace("LEROY", 12)));
     }
 
+    @Test
+    void shouldCreepIntoTightSlipperyJumpLaunchWindowFromRest() {
+        // pathlog-Leroy-2026-06-12T140609: El Nath ice (fs=0.2), JUMP edge (72,-409)->(192,-97)
+        // with a genuine 2px launch window [72,73]; the bot rested 2-3px short and froze for
+        // 16.7s. Legal pulse-creep (50ms accel pulses + glide-out with fractional ground physX
+        // preserved, window-aware overshoot slack) must enter the window and fire the jump.
+        MapleMap map = BotNavigationMapLoader.loadMapGeometry(211000000);
+        BotNavigationGraph graph = BotNavigationGraphProvider.rebuildGraph(map);
+        int fromRegionId = graph.findRegionId(map, new Point(70, -409));
+        BotNavigationGraph.Edge jumpEdge = graph.getOutgoing(fromRegionId).stream()
+                .filter(edge -> edge.type == BotNavigationGraph.EdgeType.JUMP)
+                .filter(edge -> edge.endPoint.equals(new Point(192, -97)))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("expected the log's JUMP edge to (192,-97)"));
+        assertTrue(jumpEdge.launchMaxX - jumpEdge.launchMinX <= 4,
+                "fixture expects the log's tight launch window (was [72,73], width 2)");
+
+        BotMovementSimulationLab lab = BotMovementSimulationLab.fromMap(map);
+        Point start = graph.getRegion(fromRegionId).pointAt(jumpEdge.launchMinX - 2);
+        BotEntry entry = lab.spawnBot("LEROY", 81, map, start);
+        lab.setMoveTarget("LEROY", new Point(443, -97), true);
+        lab.setNavState("LEROY", jumpEdge, graph.findRegionId(map, new Point(443, -97)), true);
+        lab.setAiAccumulator("LEROY", 50);
+
+        boolean launched = false;
+        for (int tick = 0; tick < 60 && !launched; tick++) { // 3s budget vs 16.7s field freeze
+            lab.step(1);
+            launched = entry.inAir;
+        }
+
+        assertTrue(launched,
+                "bot must creep into the tight launch window and jump instead of parking outside it\n"
+                        + String.join("\n", lab.formatRecentTrace("LEROY", 12)));
+    }
+
     private static MapleMap createFlatMap(int mapId, int x1, int x2, int y) {
         MapleMap map = new MapleMap(mapId, 0, 0, mapId, 1.0f);
         server.maps.FootholdTree footholds = new server.maps.FootholdTree(
