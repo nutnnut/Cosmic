@@ -950,7 +950,6 @@ final class BotPhysicsEngine {
         // held direction while sliding the other way; record it so facing/stance follow the
         // INPUT instead of the velocity-derived slide direction.
         boolean braking = desiredDir != 0 && entry.hspeed * desiredDir < 0.0;
-        entry.groundBrakeDir = braking ? desiredDir : 0;
         GroundStepResult step = simulateGroundMotion(map, currentPos, foothold, desiredDir,
                 new GroundTravelState(entry.physX, entry.hspeed, entry.groundPhysicsCarryMs), entry.movementProfile);
 
@@ -986,8 +985,18 @@ final class BotPhysicsEngine {
         entry.hspeed = step.state().hspeed();
         entry.groundPhysicsCarryMs = step.state().carryMs();
         entry.downJumpPending = false;
+        // A real player cannot turn around without moving: facing and the visible
+        // counter-strafe walk stance only change on ticks with actual displacement, so a
+        // stationary bot dithering its input (sub-pixel pulses at a tight launch window)
+        // never moonwalks/flip-flops in place (user-observed during the Leroy freeze).
+        // setMovementVelocity also derives facing from velocity sign - restore over it.
+        int preMoveFacing = entry.facingDir;
+        boolean movedThisTick = position.x != currentPos.x;
         setMovementVelocity(entry, step.velocityX(), 0);
-        if (braking) {
+        entry.groundBrakeDir = braking && movedThisTick ? desiredDir : 0;
+        if (!movedThisTick) {
+            entry.facingDir = preMoveFacing;
+        } else if (braking) {
             entry.facingDir = desiredDir; // face the held key, not the slide
         }
         syncCharacterState(entry);

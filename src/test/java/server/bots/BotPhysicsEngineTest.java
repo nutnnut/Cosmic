@@ -885,6 +885,26 @@ class BotPhysicsEngineTest {
     }
 
     @Test
+    void shouldNotFlipFacingWithoutActualMovement() {
+        // No facing change without at least one tick of real displacement (user realism
+        // rule): a bot dithering its input at rest - sub-pixel pulses toward a tight launch
+        // window - must not broadcast a stationary moonwalk/flip-flop to watchers.
+        MapleMap snow = flatGroundMap(0.2f);
+        Character bot = mockBot(new Point(0, 100), snow);
+        BotEntry entry = new BotEntry(bot, null, null);
+        Foothold fh = snow.getFootholds().findBelow(new Point(0, 99));
+        entry.physX = 0;
+        entry.physY = 100;
+        entry.hspeed = -0.02; // residual sub-pixel slide left
+        entry.facingDir = -1;
+        entry.moveDir = 1;    // counter-input held, but the tick moves less than a pixel
+        BotPhysicsEngine.applyGroundMotion(entry, bot, fh);
+        assertEquals(0, bot.getPosition().x, "fixture: the tick must not move a whole pixel");
+        assertEquals(-1, entry.facingDir, "no facing flip without actual movement");
+        assertEquals(0, entry.groundBrakeDir, "no counter-strafe walk stance while stationary");
+    }
+
+    @Test
     void shouldReserveKineticRunwayOnSnow() {
         int normal = BotPhysicsEngine.launchRunwayPx(flatGroundMap(0f), BotMovementProfile.base());
         int snow = BotPhysicsEngine.launchRunwayPx(flatGroundMap(0.2f), BotMovementProfile.base());
