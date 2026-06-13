@@ -161,6 +161,13 @@ final class BotQuestManager {
 
     static GrindExpBaseline grindExpBaseline = BotGrindAdvisor::currentMapExpPerMinute;
 
+    /** Best grind rate the bot could ACHIEVE (base exp/min), the opportunity-cost baseline when it
+     *  is asked off its grind map (in town/transit) where {@link #grindExpBaseline} reads 0 -
+     *  otherwise leaving to quest looks free and trivial quests score huge. HEAVY (full grind pass);
+     *  used only by the off-thread "recommend quest" path, never the bot tick. Seam over
+     *  {@link BotGrindAdvisor#bestGrindExpPerMinute}. */
+    static GrindExpBaseline bestGrindExpBaseline = BotGrindAdvisor::bestGrindExpPerMinute;
+
     /** Per-mob base exp; seam over {@link server.life.LifeFactory} (un-rated, the same raw exp
      *  units {@link BotGrindAdvisor#currentMapExpPerMinute} blends, so the rate cancels in the
      *  scorer's value/cost ratio). */
@@ -371,6 +378,15 @@ final class BotQuestManager {
      *  are resolved, so the math is unit-tested directly in {@link BotQuestScorer}. */
     static double scoreQuest(BotEntry entry, Character bot, int grindMapId, int npcMapId,
                              BotQuestIndex.QuestMeta q) {
+        return scoreQuest(entry, bot, grindMapId, npcMapId, q, grindExpBaseline.expPerMinute(entry, bot));
+    }
+
+    /** As {@link #scoreQuest(BotEntry, Character, int, int, BotQuestIndex.QuestMeta)} but with an
+     *  explicit opportunity-cost baseline (base exp/min) - lets the off-thread recommend path pass
+     *  a best-achievable-grind fallback when the current map reads 0 (bot in town/transit), so a
+     *  trivial reward is not scored against a near-zero cost. */
+    static double scoreQuest(BotEntry entry, Character bot, int grindMapId, int npcMapId,
+                             BotQuestIndex.QuestMeta q, double baseline) {
         // Overlap = required mobs the bot already kills on its current grind map (free exp).
         java.util.Set<Integer> here = mapMobs.mobsOn(grindMapId).keySet();
         java.util.Set<Integer> overlap = new java.util.HashSet<>();
@@ -383,7 +399,6 @@ final class BotQuestManager {
         double killSecondsPerMob = grindKillSeconds(entry, bot);
         // Round trip: grind map -> NPC map -> back. resolveNpcMap already found npcMapId.
         double travel = travelSeconds.seconds(grindMapId, npcMapId);
-        double baseline = grindExpBaseline.expPerMinute(entry, bot);
         double uniqueBonus = uniqueRewardExpEquivalent(bot, q);
         return BotQuestScorer.score(q.mobs(), q.rewardExp(), uniqueBonus, overlap, mobExp,
                 killSecondsPerMob, travel, baseline);
@@ -597,6 +612,13 @@ final class BotQuestManager {
             return List.of();
         }
         int grindMap = bot.getMapId();
+        // Opportunity-cost baseline: the bot's current-map grind rate, or - when asked off its grind
+        // map (town/transit, rate reads 0) - its best ACHIEVABLE grind rate, so a trivial-exp quest
+        // is not measured against a near-zero cost and spuriously recommended (lv64 30-pig/1300exp).
+        double baseline = grindExpBaseline.expPerMinute(entry, bot);
+        if (baseline <= 0.0) {
+            baseline = bestGrindExpBaseline.expPerMinute(entry, bot);
+        }
         List<Recommendation> out = new java.util.ArrayList<>();
         for (BotQuestIndex.QuestMeta q : BotQuestIndex.get().byId().values()) {
             if (gate.isStarted(bot, q.id()) || gate.isCompleted(bot, q.id())) {
@@ -609,7 +631,7 @@ final class BotQuestManager {
             if (npcMap == -1 || hopCount.hops(grindMap, npcMap) > MAX_ERRAND_HOPS) {
                 continue;
             }
-            double score = scoreQuest(entry, bot, grindMap, npcMap, q);
+            double score = scoreQuest(entry, bot, grindMap, npcMap, q, baseline);
             if (score >= BotQuestScorer.RECOMMEND_MIN_SCORE) {
                 out.add(new Recommendation(q, score, npcMap));
             }

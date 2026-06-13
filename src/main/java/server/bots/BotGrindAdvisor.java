@@ -255,6 +255,28 @@ final class BotGrindAdvisor {
         return blend.exp() * BotGrindPlanner.killsPerHour(blend) / 60.0 / rate;
     }
 
+    /**
+     * The best grind rate ACHIEVABLE by this bot, in base exp/min — the opportunity-cost baseline
+     * for quest scoring when the bot is asked off its grind map (in town / in transit), where
+     * {@link #currentMapExpPerMinute} reads 0 and would otherwise make leaving to quest look free.
+     * Reuses the full grind decision ({@link #recommend}) so it is level-appropriate by
+     * construction. Heavier than the current-map read (evaluates candidate maps); call off-thread.
+     * 0 when the bot has no grindable candidate at all.
+     */
+    static double bestGrindExpPerMinute(BotEntry entry, Character bot) {
+        if (bot == null) {
+            return 0.0;
+        }
+        BotGrindPlanner.Recommendation rec = recommend(entry, bot);
+        if (rec == null) {
+            return 0.0;
+        }
+        // expPerHour is rate-multiplied (BotGrindPlanner: candidate.exp() carries bot.getExpRate());
+        // divide it back out for base exp/min, matching currentMapExpPerMinute / mobExp units.
+        double rate = Math.max(1.0, bot.getExpRate());
+        return rec.expPerHour() / 60.0 / rate;
+    }
+
     /** Null = not grindable for this bot: boss/friendly, unresolvable, or the bot can't
      *  meaningfully damage it (such mobs don't dilute a map — the bot won't engage them). */
     private static MobProfile profileFor(BotEntry entry, Character bot, ItemInformationProvider ii,

@@ -25,6 +25,7 @@ class BotQuestManagerTest {
     private final BotQuestManager.HopCount prevHops = BotQuestManager.hopCount;
     private final BotQuestManager.MapMobsLookup prevMobs = BotQuestManager.mapMobs;
     private final BotQuestManager.GrindExpBaseline prevBaseline = BotQuestManager.grindExpBaseline;
+    private final BotQuestManager.GrindExpBaseline prevBestBaseline = BotQuestManager.bestGrindExpBaseline;
     private final BotQuestScorer.MobExp prevMobExp = BotQuestManager.mobExp;
     private final BotQuestManager.TravelSeconds prevTravel = BotQuestManager.travelSeconds;
     private final java.util.function.ToDoubleBiFunction<Character, BotQuestIndex.QuestMeta>
@@ -50,6 +51,7 @@ class BotQuestManagerTest {
         BotQuestManager.hopCount = prevHops;
         BotQuestManager.mapMobs = prevMobs;
         BotQuestManager.grindExpBaseline = prevBaseline;
+        BotQuestManager.bestGrindExpBaseline = prevBestBaseline;
         BotQuestManager.mobExp = prevMobExp;
         BotQuestManager.travelSeconds = prevTravel;
         BotQuestManager.uniqueRewardValue = prevUnique;
@@ -318,6 +320,31 @@ class BotQuestManagerTest {
         for (int i = 1; i < recs.size(); i++) {
             assertTrue(recs.get(i - 1).score() >= recs.get(i).score(), "must be ranked by score");
         }
+    }
+
+    @Test
+    void recommendUsesBestGrindFallbackWhenAskedOffGrindMap() {
+        // Asked in town: current-map rate is 0, so the opportunity cost would floor to ~nothing and
+        // a trivial quest (1019: 10 snails -> 30 exp) would score huge and be recommended. The
+        // best-achievable-grind fallback supplies a realistic lv64 baseline, so it is rejected.
+        Character bot = mock(Character.class);
+        server.maps.MapleMap map = mock(server.maps.MapleMap.class);
+        server.life.NPC npc = mock(server.life.NPC.class);
+        when(bot.getMap()).thenReturn(map);
+        when(bot.getMapId()).thenReturn(104000000); // a town: no grind rate
+        when(map.getNPCById(2005)).thenReturn(npc);
+
+        BotQuestManager.mapMobs = mapId -> Map.of();   // in town, nothing overlaps
+        BotQuestManager.hopCount = (from, to) -> 1;
+        stubScoringSeams(0.0, 30, 60.0);               // current baseline 0, 60s trip
+        BotQuestManager.bestGrindExpBaseline = (e, b) -> 40_000.0; // realistic lv64 grind exp/min
+        BotQuestManager.gate = new SingleStartableGate(1019);
+
+        BotEntry e = new BotEntry(bot, null, null);
+        List<BotQuestManager.Recommendation> recs = BotQuestManager.recommendQuests(e, bot, 3);
+
+        assertTrue(recs.isEmpty(),
+                "a 30-exp quest must not be recommended against a real grind baseline; got " + recs);
     }
 
     @Test
