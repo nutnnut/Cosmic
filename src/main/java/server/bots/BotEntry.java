@@ -228,6 +228,7 @@ public class BotEntry {
     int questErrandQuestId = 0;
     BotQuestManager.Phase questErrandPhase = BotQuestManager.Phase.NONE;
     int questErrandReturnMapId = -1;     // grind map to resume after the errand
+    long questErrandStartedAtMs = 0L;    // abort the errand if it can't reach the NPC in time
     long nextQuestScanAtMs = 0L;
 
     // Frozen-air watchdog (BotManager.doStuckDetection): airborne position must change every

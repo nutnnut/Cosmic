@@ -55,6 +55,10 @@ final class BotQuestManager {
     private static final long SCAN_MIN_MS = 30_000L;
     private static final long SCAN_MAX_MS = 60_000L;
 
+    // Give up on an errand that can't reach its NPC within this long (travel hop cap covers most
+    // unreachability; this catches mid-travel disruptions so the errand state can't wedge forever).
+    static final long ERRAND_TIMEOUT_MS = 90_000L;
+
     // Worthwhile bar (deliberately rough — slice 2 adds the real advisor scoring). A piggyback
     // quest is worth a detour when the NPC's map is within a few world-graph hops of the grind map
     // and the reward exp clears a small floor scaled to the bot's level (so a 30-exp reward stops
@@ -293,6 +297,7 @@ final class BotQuestManager {
             clearQuestErrand(entry);
             return;
         }
+        entry.questErrandStartedAtMs = System.currentTimeMillis();
         reply.accept(entry,
                 phase == Phase.START ? "gonna grab a quest real quick" : "lemme turn in this quest");
     }
@@ -319,6 +324,13 @@ final class BotQuestManager {
      */
     static boolean tickErrand(BotEntry entry, Character bot, boolean runAiTick) {
         if (entry.questErrandMapId == -1) {
+            return false;
+        }
+        // Abort an errand that can't reach the NPC in time (portal closed, death-respawn elsewhere,
+        // route gone). Without this the "one errand at a time" scan guard would block all future
+        // piggyback for this bot forever. Mirrors autopilot's unreachable-errand giveup.
+        if (System.currentTimeMillis() - entry.questErrandStartedAtMs > ERRAND_TIMEOUT_MS) {
+            finishErrand(entry, bot, "couldn't get to that quest, dropping it");
             return false;
         }
         if (bot.getMapId() != entry.questErrandMapId) {
@@ -396,6 +408,7 @@ final class BotQuestManager {
         entry.questErrandQuestId = 0;
         entry.questErrandPhase = Phase.NONE;
         entry.questErrandReturnMapId = -1;
+        entry.questErrandStartedAtMs = 0L;
     }
 
     // ---- chat status (#5) --------------------------------------------------------------------

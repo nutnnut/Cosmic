@@ -23,6 +23,7 @@ class BotQuestManagerTest {
 
     private final BotQuestManager.QuestGate prevGate = BotQuestManager.gate;
     private final BotQuestManager.HopCount prevHops = BotQuestManager.hopCount;
+    private final BotQuestManager.MapMobsLookup prevMobs = BotQuestManager.mapMobs;
     private final java.util.function.BiConsumer<BotEntry, String> prevReply = BotQuestManager.reply;
     private final List<String> replies = new ArrayList<>();
 
@@ -30,6 +31,7 @@ class BotQuestManagerTest {
     void restore() {
         BotQuestManager.gate = prevGate;
         BotQuestManager.hopCount = prevHops;
+        BotQuestManager.mapMobs = prevMobs;
         BotQuestManager.reply = prevReply;
     }
 
@@ -155,6 +157,99 @@ class BotQuestManagerTest {
             BotManager.cfg.AUTO_QUESTS = prevAuto;
             BotManager.cfg.QUEST_PIGGYBACK = prevPiggy;
         }
+    }
+
+    // ---- piggyback trigger: mob overlap under active autopilot queues a START errand ----
+
+    @Test
+    void piggybackQueuesStartErrandWhenMobsOverlap() {
+        boolean prevAuto = BotManager.cfg.AUTO_QUESTS;
+        boolean prevPiggy = BotManager.cfg.QUEST_PIGGYBACK;
+        BotManager.cfg.AUTO_QUESTS = false; // isolate the piggyback path (skip WZ auto loop)
+        BotManager.cfg.QUEST_PIGGYBACK = true;
+        try {
+            // A real indexed quest to target: 1019 needs Green Snail (100100) and starts at NPC 2005.
+            BotQuestIndex.QuestMeta q1019 = BotQuestIndex.get().byId().get(1019);
+            org.junit.jupiter.api.Assertions.assertNotNull(q1019, "index must contain 1019");
+
+            Character bot = mock(Character.class);
+            server.maps.MapleMap map = mock(server.maps.MapleMap.class);
+            server.life.NPC npc = mock(server.life.NPC.class);
+            when(bot.getMap()).thenReturn(map);
+            when(bot.getMapId()).thenReturn(104040000); // Henesys Hunting Ground (Green Snail spawns)
+            when(bot.getLevel()).thenReturn(5);
+            when(map.getNPCById(2005)).thenReturn(npc);  // start NPC is on this map
+            BotQuestManager.reply = (e, s) -> replies.add(s);
+
+            BotQuestManager.mapMobs = mapId -> Map.of(100100, 10); // bot is killing Green Snail here
+            BotQuestManager.hopCount = (from, to) -> 0;            // NPC on the grind map
+            RecordingGate g = new RecordingGate();
+            g.canStart = true;
+            g.started = false;
+            BotQuestManager.gate = g;
+
+            BotEntry e = new BotEntry(bot, null, null);
+            e.autopilotMapId = 104040000; // active autopilot => independent, may errand
+            e.nextQuestScanAtMs = 0L;
+
+            BotQuestManager.tickScan(e, bot);
+
+            assertEquals(104040000, e.questErrandMapId, "overlap + worthwhile must queue a START errand");
+            assertEquals(BotQuestManager.Phase.START, e.questErrandPhase);
+            assertEquals(2005, e.questErrandNpcId);
+        } finally {
+            BotManager.cfg.AUTO_QUESTS = prevAuto;
+            BotManager.cfg.QUEST_PIGGYBACK = prevPiggy;
+            BotQuestManager.mapMobs = prevMobs;
+        }
+    }
+
+    // ---- errand arrival: within radius of the NPC, start is called and the errand clears ----
+
+    @Test
+    void errandArrivalStartsQuestAndClears() {
+        Character bot = mock(Character.class);
+        server.maps.MapleMap map = mock(server.maps.MapleMap.class);
+        server.life.NPC npc = mock(server.life.NPC.class);
+        when(bot.getMap()).thenReturn(map);
+        when(bot.getMapId()).thenReturn(104040000);
+        when(bot.getPosition()).thenReturn(new java.awt.Point(100, 200));
+        when(npc.getPosition()).thenReturn(new java.awt.Point(120, 200)); // within 500px
+        when(map.getNPCById(2005)).thenReturn(npc);
+        BotQuestManager.reply = (e, s) -> replies.add(s);
+
+        RecordingGate g = new RecordingGate();
+        g.canStart = true;
+        BotQuestManager.gate = g;
+
+        BotEntry e = new BotEntry(bot, null, null);
+        e.questErrandMapId = 104040000;
+        e.questErrandNpcId = 2005;
+        e.questErrandQuestId = 1019;
+        e.questErrandPhase = BotQuestManager.Phase.START;
+        e.questErrandStartedAtMs = System.currentTimeMillis();
+
+        boolean consumed = BotQuestManager.tickErrand(e, bot, false);
+
+        assertFalse(consumed, "arrival tick is not consumed - grind resumes");
+        assertEquals(List.of(1019), g.startsCalled, "start must be called at the NPC");
+        assertEquals(-1, e.questErrandMapId, "errand clears after starting");
+    }
+
+    @Test
+    void errandTimesOutAndClears() {
+        Character bot = mock(Character.class);
+        BotQuestManager.reply = (e, s) -> replies.add(s);
+        BotEntry e = new BotEntry(bot, null, null);
+        e.questErrandMapId = 999999999; // unreachable
+        e.questErrandNpcId = 2005;
+        e.questErrandPhase = BotQuestManager.Phase.START;
+        e.questErrandStartedAtMs = System.currentTimeMillis() - BotQuestManager.ERRAND_TIMEOUT_MS - 1;
+
+        boolean consumed = BotQuestManager.tickErrand(e, bot, false);
+
+        assertFalse(consumed);
+        assertEquals(-1, e.questErrandMapId, "a stale errand must clear so future piggyback isn't wedged");
     }
 
     // ---- inventory-space precheck for item rewards ----
