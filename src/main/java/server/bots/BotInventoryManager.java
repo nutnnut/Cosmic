@@ -1246,6 +1246,10 @@ class BotInventoryManager {
             itemEffectCache.putIfAbsent(itemId, Optional.ofNullable(effect));
             return effect;
         } catch (Exception e) {
+            // Cache the failure too: getItemEffect parses WZ before throwing, so a single bad USE
+            // item (re-scanned every potion check, no slot moves) otherwise re-paid that parse
+            // forever - the ~300ms recurring potion-recovery-scan stall (Bowgurl @ Orbis).
+            itemEffectCache.putIfAbsent(itemId, Optional.empty());
             return null;
         }
     }

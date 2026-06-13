@@ -250,6 +250,24 @@ final class BotPathLogger {
         }
         sb.append("\n");
         sb.append("Mode:       ").append(entry.following ? "follow" : entry.grinding ? "grind" : "idle").append("\n");
+        // Autopilot / ownership / admin-binding state - so a self-owned (@botme/@botparty) bot that
+        // grind-wanders in a town, or one redirected by an admin debug-command, is diagnosable.
+        String ownerDesc = entry.owner == null ? "none(offline)"
+                : entry.owner == entry.bot ? "self(@botme/@botparty)"
+                : entry.owner.getName();
+        sb.append("Owner:      ").append(ownerDesc)
+                .append("  followTargetId=").append(entry.followTargetId).append("\n");
+        sb.append("Autopilot:  ").append(BotAutopilotManager.isActive(entry) ? "ACTIVE" : "off")
+                .append(entry.autopilotParty ? " party" : "")
+                .append("  destMap=").append(entry.autopilotMapId)
+                .append(entry.autopilotFarmItemId != 0 ? "  farmItem=" + entry.autopilotFarmItemId : "")
+                .append("  transitFollow=").append(entry.autopilotTransitFollow).append("\n");
+        sb.append("Errands:    questMap=").append(entry.questErrandMapId)
+                .append("  gachaMap=").append(entry.gachaErrandMapId).append("\n");
+        if (entry.debugCommanderId > 0) {
+            sb.append("AdminBind:  commanderId=").append(entry.debugCommanderId)
+                    .append("  untilMs=").append(entry.debugCommanderUntilMs).append("\n");
+        }
         boolean isStuck = entry.stuckMs >= 500 || computeStuck(botPos.x, botPos.y);
         sb.append("Stuck:      ").append(isStuck ? "YES (" + entry.stuckMs + "ms) ***" : "no").append("\n");
         sb.append("\n");
