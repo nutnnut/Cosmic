@@ -71,4 +71,28 @@ class BotQuestIndexTest {
         var q = meta(100, 200, Map.of(), false, List.of("npc"));
         assertFalse(BotQuestIndex.qualifies(q));
     }
+
+    /**
+     * Smoke test over the real Quest.wz tree (no DB needed) — exercises parseQuestMeta, which the
+     * synthetic tests above can't. Ground truth verified by parsing QuestInfo.img directly: 65
+     * quests have autoStart==1 AND (autoComplete==1 OR autoPreComplete==1) — the exact set
+     * Quest.isAutoStart()/isAutoComplete() flag. (The original scout's "29" was a miscount.)
+     * Quest 1019 completes at NPC 12100 by killing Green Snail (100100) x10, start NPC 2005.
+     */
+    @org.junit.jupiter.api.Test
+    void shouldBuildRealIndexFromWz() {
+        BotQuestIndex.Index index = BotQuestIndex.get();
+
+        assertTrue(index.byId().size() > 50,
+                "expected dozens of runnable mob quests, got " + index.byId().size());
+
+        org.junit.jupiter.api.Assertions.assertEquals(65, index.autoBoth().size(),
+                "QuestInfo.img ground truth: 65 quests are both autoStart and autoComplete");
+
+        BotQuestIndex.QuestMeta q1019 = index.byId().get(1019);
+        org.junit.jupiter.api.Assertions.assertNotNull(q1019, "1019 is a mob-only turn-in, must qualify");
+        org.junit.jupiter.api.Assertions.assertEquals(2005, q1019.startNpc());
+        org.junit.jupiter.api.Assertions.assertEquals(12100, q1019.endNpc());
+        org.junit.jupiter.api.Assertions.assertEquals(10, q1019.mobs().get(100100));
+    }
 }

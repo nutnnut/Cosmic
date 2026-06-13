@@ -140,6 +140,7 @@ final class BotQuestIndex {
             DataProvider quest = DataProviderFactory.getDataProvider(WZFiles.QUEST);
             Data checkRoot = quest.getData("Check.img");
             Data actRoot = quest.getData("Act.img");
+            Data infoRoot = quest.getData("QuestInfo.img");
             if (checkRoot == null) {
                 return new Index(Map.of(), List.of());
             }
@@ -151,12 +152,25 @@ final class BotQuestIndex {
                     continue;
                 }
                 QuestMeta meta = parseQuestMeta(id, questNode,
-                        actRoot != null ? actRoot.getChildByPath(questNode.getName()) : null);
-                if (meta.autoStart() && meta.autoComplete()) {
-                    autoBoth.add(id);
-                }
+                        actRoot != null ? actRoot.getChildByPath(questNode.getName()) : null,
+                        infoRoot != null ? infoRoot.getChildByPath(questNode.getName()) : null);
                 if (qualifies(meta)) {
                     byId.put(id, meta);
+                }
+            }
+            // The auto-both set iterates QuestInfo.img — the SAME set Quest.loadAllQuests() walks
+            // (auto quests need no NPC/Check node, so Check.img would miss the ones without reqs).
+            if (infoRoot != null) {
+                for (Data infoNode : infoRoot.getChildren()) {
+                    int id;
+                    try {
+                        id = Integer.parseInt(infoNode.getName());
+                    } catch (NumberFormatException e) {
+                        continue;
+                    }
+                    if (isAutoBoth(infoNode)) {
+                        autoBoth.add(id);
+                    }
                 }
             }
         } catch (RuntimeException e) {
@@ -165,8 +179,12 @@ final class BotQuestIndex {
         return new Index(byId, autoBoth);
     }
 
-    /** Read one quest's Check.img node (and matching Act.img node) into a {@link QuestMeta}. */
-    static QuestMeta parseQuestMeta(int id, Data checkNode, Data actNode) {
+    /** Read one quest's Check.img node (plus matching Act.img / QuestInfo.img nodes) into a
+     *  {@link QuestMeta}. {@code autoStart}/{@code autoComplete} read the SAME QuestInfo.img keys
+     *  the real {@link server.quest.Quest} parser uses for {@code isAutoStart()}/{@code isAutoComplete()}
+     *  (autoComplete OR autoPreComplete) — kept in sync with that SSOT, just without mutating the
+     *  shared Quest cache from this off-thread build. */
+    static QuestMeta parseQuestMeta(int id, Data checkNode, Data actNode, Data infoNode) {
         Data start = checkNode.getChildByPath("0");
         Data complete = checkNode.getChildByPath("1");
 
@@ -194,8 +212,12 @@ final class BotQuestIndex {
             }
         }
 
-        boolean autoStart = start != null && DataTool.getInt("normalAutoStart", start, 0) != 0;
-        boolean autoComplete = complete != null && complete.getChildByPath("normalAutoStart") != null;
+        // SSOT: Quest.isAutoStart()/isAutoComplete() read these QuestInfo.img keys (the latter is
+        // autoComplete OR autoPreComplete). Not the Check.img normalAutoStart requirement node.
+        boolean autoStart = infoNode != null && DataTool.getInt("autoStart", infoNode, 0) == 1;
+        boolean autoComplete = infoNode != null
+                && (DataTool.getInt("autoComplete", infoNode, 0) == 1
+                    || DataTool.getInt("autoPreComplete", infoNode, 0) == 1);
 
         int rewardExp = 0;
         List<Integer> rewardItems = new ArrayList<>();
@@ -217,6 +239,16 @@ final class BotQuestIndex {
 
         return new QuestMeta(id, startNpc, endNpc, lvmin, mobs, rewardExp, rewardItems,
                 autoStart, autoComplete, scripted, completeKeys);
+    }
+
+    /** Mirrors {@code Quest.isAutoStart() && Quest.isAutoComplete()} read straight off a
+     *  QuestInfo.img node: {@code autoStart==1} AND ({@code autoComplete==1} OR
+     *  {@code autoPreComplete==1}). These quests advance with no NPC at all. */
+    static boolean isAutoBoth(Data infoNode) {
+        boolean autoStart = DataTool.getInt("autoStart", infoNode, 0) == 1;
+        boolean autoComplete = DataTool.getInt("autoComplete", infoNode, 0) == 1
+                || DataTool.getInt("autoPreComplete", infoNode, 0) == 1;
+        return autoStart && autoComplete;
     }
 
     private static boolean hasScriptMarker(Data node) {
