@@ -106,6 +106,7 @@ import client.command.commands.gm3.BanCommand;
 import client.command.commands.gm3.BotCfgCommand;
 import client.command.commands.gm3.BotLlmCommand;
 import client.command.commands.gm3.BotNavCommand;
+import client.command.commands.gm3.BotStatusCommand;
 import client.command.commands.gm3.BotPerfDebugCommand;
 import client.command.commands.gm3.ChatCommand;
 import client.command.commands.gm3.CheckDmgCommand;
@@ -466,6 +467,7 @@ public class CommandsExecutor {
         addCommand("botcfg", 3, BotCfgCommand.class);
         addCommand("botllm", 3, BotLlmCommand.class);
         addCommand("botnav", 3, BotNavCommand.class);
+        addCommand("botstatus", 3, BotStatusCommand.class);
         addCommand("botperfdebug", 3, BotPerfDebugCommand.class);
         addCommand("airshow", 3, AirshowCommand.class);
         addCommand("regennav", 3, RegenNavCommand.class);

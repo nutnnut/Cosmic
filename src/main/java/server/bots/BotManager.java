@@ -795,6 +795,26 @@ public class BotManager {
      * game party is the source of truth for party autopilot: @botme bots own themselves,
      * so the per-owner registry can't enumerate a mixed group.
      */
+    /** Admin debug: one status line per spawned bot on {@code mapId} (any owner, including
+     *  ownerless/independent), using the same first-person status the bot answers "where are you"
+     *  with - for a private system-message listing, sorted by name. */
+    public List<String> mapBotStatusLines(int mapId) {
+        List<String> lines = new ArrayList<>();
+        for (List<BotEntry> entries : bots.values()) {
+            for (BotEntry entry : entries) {
+                Character bot = entry.bot;
+                if (bot == null || bot.getMapId() != mapId) {
+                    continue;
+                }
+                String job = bot.getJob() == null ? "?" : bot.getJob().toString();
+                lines.add(bot.getName() + " [" + job + " lv" + bot.getLevel() + "]: "
+                        + BotAutopilotManager.statusReport(entry, bot));
+            }
+        }
+        lines.sort(String.CASE_INSENSITIVE_ORDER);
+        return lines;
+    }
+
     List<BotEntry> partyBotEntries(Character anyMember) {
         if (anyMember == null || anyMember.getParty() == null) {
             return List.of();
