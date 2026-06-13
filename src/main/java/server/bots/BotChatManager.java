@@ -481,6 +481,11 @@ public class BotChatManager {
             Pattern.CASE_INSENSITIVE);
     private static final Pattern GRIND_DEBUG_PATTERN = Pattern.compile(
             "^\\s*(?:grind\\s+debug|debug\\s+grind)\\s*[?!.,]*\\s*$", Pattern.CASE_INSENSITIVE);
+    // Party-autopilot decision dump: full per-member gear/score breakdown to a report file.
+    private static final Pattern AUTOPILOT_DEBUG_PATTERN = Pattern.compile(
+            "^\\s*(?:autopilot\\s+debug|ap\\s+debug|party\\s+debug|debug\\s+(?:autopilot|party)"
+                    + "|autopilot\\s+why|why\\s+(?:autopilot|party))\\s*[?!.,]*\\s*$",
+            Pattern.CASE_INSENSITIVE);
     // Autopilot: independent play on owner's order. Distinct from plain "go grind" (this map).
     private static final Pattern AUTOPILOT_PATTERN = Pattern.compile(
             "^\\s*(?:(?:go\\s+)?(?:grind|train|farm|level|play|hunt)\\s+"
@@ -1181,6 +1186,12 @@ public class BotChatManager {
             return;
         }
 
+        if (AUTOPILOT_DEBUG_PATTERN.matcher(message).matches()) {
+            BotManager.after(BotManager.randMs(300, 500), () ->
+                    BotAutopilotDebug.exportPartyDecision(entry, entry.bot));
+            return;
+        }
+
         if (MAKE_CRYSTALS_COMMAND_PATTERN.matcher(message).matches()) {
             BotManager.after(BotManager.randMs(500, 700), () ->
                     BotMakerManager.handleMakeCrystals(entry));
@@ -1827,6 +1838,10 @@ public class BotChatManager {
 
     static boolean isPartyAutopilotCommand(String message) {
         return message != null && PARTY_AUTOPILOT_PATTERN.matcher(message).matches();
+    }
+
+    static boolean isAutopilotDebugCommand(String message) {
+        return message != null && AUTOPILOT_DEBUG_PATTERN.matcher(message).matches();
     }
 
     static boolean isSailAwayCommand(String message) {

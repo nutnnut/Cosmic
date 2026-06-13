@@ -68,6 +68,31 @@ class BotGrindPlannerTest {
     }
 
     @Test
+    void debugScoringPlanMatchesProductionPlan() {
+        // The autopilot-debug dump renders scorePartyBest's intermediate; its plan MUST be the
+        // same one planPartyBest hands production. Identical RNG seed -> identical draws.
+        MobCandidate aCheap = mob(1, 100, 2.0, 10, 8, List.of());
+        MobCandidate aRich = mob(2, 300, 2.0, 20, 8, List.of());
+        MobCandidate bCheap = mob(3, 90, 2.0, 10, 8, List.of());
+        MobCandidate bRich = mob(4, 280, 2.0, 20, 8, List.of());
+        List<List<MobCandidate>> perMember = List.of(
+                List.of(aCheap, aRich), List.of(bCheap, bRich));
+
+        for (int seed = 0; seed < 20; seed++) {
+            BotGrindPlanner.PartyPlan prod = BotGrindPlanner.planPartyBest(perMember, new Random(seed));
+            BotGrindPlanner.PartyScoring dbg = BotGrindPlanner.scorePartyBest(
+                    perMember, java.util.Collections.nCopies(2, (java.util.function.IntToDoubleFunction) m -> 1.0),
+                    new Random(seed));
+            assertNotNull(dbg);
+            assertEquals(prod.mapId(), dbg.plan().mapId(), "debug pick must equal production pick");
+            assertEquals(prod.mapId(), dbg.pickedMapId());
+            // scoreByMap is populated and the chosen map is the argmax (single dominant map here).
+            assertEquals(20, dbg.pickedMapId(), "the richer map dominates beyond the near-best band");
+            assertTrue(dbg.scoreByMap().get(20) > dbg.scoreByMap().get(10));
+        }
+    }
+
+    @Test
     void shouldPickBestExpWhenNoUpgradeExists() {
         MobCandidate slowRich = mob(1, 100, 8.0, 10, 8, List.of());   // 100 exp, slow kill
         MobCandidate fastModest = mob(2, 60, 2.0, 20, 8, List.of());  // better exp/h

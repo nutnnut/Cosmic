@@ -105,9 +105,16 @@ final class BotAutopilotManager {
         PartyPlan decide(List<BotEntry> members);
     }
 
-    static PartyDecider partyDecider = members -> {
-        // The shared map must be walkable for EVERY member (they can start scattered), and
-        // each member pays its own travel penalty from wherever it stands.
+    /**
+     * The shared inputs to a party decision: the common reachable map set (walkable for EVERY
+     * member — they can start scattered), each member's own travel-time penalty from wherever it
+     * stands, and each member's candidate pool restricted to those maps. Assembled ONCE here so
+     * the real decider and the autopilot-debug dump feed the planner the SAME numbers.
+     */
+    record PartyInputs(Set<Integer> allowed, List<IntToDoubleFunction> weights,
+                       List<List<MobCandidate>> perMember) {}
+
+    static PartyInputs partyInputs(List<BotEntry> members) {
         Set<Integer> common = null;
         List<IntToDoubleFunction> weights = new ArrayList<>(members.size());
         for (BotEntry member : members) {
@@ -126,7 +133,12 @@ final class BotAutopilotManager {
         for (BotEntry member : members) {
             perMember.add(BotGrindAdvisor.candidatesFor(member, member.bot, allowed::contains));
         }
-        return BotGrindPlanner.planPartyBest(perMember, weights, ThreadLocalRandom.current());
+        return new PartyInputs(allowed, weights, perMember);
+    }
+
+    static PartyDecider partyDecider = members -> {
+        PartyInputs in = partyInputs(members);
+        return BotGrindPlanner.planPartyBest(in.perMember(), in.weights(), ThreadLocalRandom.current());
     };
 
     static BiConsumer<BotEntry, String> reply =

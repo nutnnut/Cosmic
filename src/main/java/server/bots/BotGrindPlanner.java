@@ -281,6 +281,24 @@ final class BotGrindPlanner {
      */
     static PartyPlan planPartyBest(List<List<MobCandidate>> perMember,
                                    List<IntToDoubleFunction> mapScoreWeights, Random rng) {
+        PartyScoring scoring = scorePartyBest(perMember, mapScoreWeights, rng);
+        return scoring == null ? null : scoring.plan();
+    }
+
+    /**
+     * The full intermediate of {@link #planPartyBest}: the competition-adjusted candidates, each
+     * member's per-candidate {@link #partyScores} value, the summed-best-per-map score, the chosen
+     * map and the resulting plan. The "autopilot debug" report renders this so a mis-valuation
+     * (a weapon prospect losing to a stat-scroll cape) is visible at a glance; production planning
+     * just takes {@link #plan()}. {@code memberScores.get(m)} is parallel to {@code adjusted.get(m)}.
+     */
+    record PartyScoring(List<List<MobCandidate>> adjusted, List<double[]> memberScores,
+                        Map<Integer, Double> scoreByMap, int pickedMapId, PartyPlan plan) {}
+
+    /** Shared core for {@link #planPartyBest} and the autopilot-debug dump: identical numbers,
+     *  one implementation. Null when no member has any positive-scoring candidate. */
+    static PartyScoring scorePartyBest(List<List<MobCandidate>> perMember,
+                                       List<IntToDoubleFunction> mapScoreWeights, Random rng) {
         if (perMember == null || perMember.isEmpty()) {
             return null;
         }
@@ -295,13 +313,16 @@ final class BotGrindPlanner {
         }
 
         // Sum each member's best score per map.
+        List<double[]> memberScores = new ArrayList<>(partySize);
         Map<Integer, Double> scoreByMap = new HashMap<>();
         for (int m = 0; m < adjusted.size(); m++) {
             List<MobCandidate> candidates = adjusted.get(m);
             if (candidates.isEmpty()) {
+                memberScores.add(new double[0]);
                 continue;
             }
             double[] score = partyScores(candidates, mapScoreWeights.get(m));
+            memberScores.add(score);
             Map<Integer, Double> bestByMap = new HashMap<>();
             for (int i = 0; i < candidates.size(); i++) {
                 bestByMap.merge(candidates.get(i).mapId(), score[i], Math::max);
@@ -336,7 +357,8 @@ final class BotGrindPlanner {
             }
             recs.add(planBest(onMap, mapScoreWeights.get(m), rng));
         }
-        return new PartyPlan(pickedMapId, recs);
+        return new PartyScoring(adjusted, memberScores, scoreByMap, pickedMapId,
+                new PartyPlan(pickedMapId, recs));
     }
 
     /** One comparable number per candidate for the party sum, gear-first like solo planning:

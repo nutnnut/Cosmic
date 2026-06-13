@@ -832,11 +832,17 @@ final class BotGrindAdvisor {
     }
 
     private static String writeReport(Character bot, String report) {
+        return writeReport(bot, "grind-debug-", report);
+    }
+
+    /** Shared bot-debug report sink: {@code logs/bot-grind/<prefix><botName>.txt}. The prefix
+     *  ("grind-debug-" / "ap-debug-") names the report; null on I/O failure. */
+    static String writeReport(Character bot, String prefix, String report) {
         try {
             String safe = bot.getName() == null ? "bot" : bot.getName().replaceAll("[^A-Za-z0-9_]", "");
             java.nio.file.Path dir = java.nio.file.Path.of("logs", "bot-grind");
             java.nio.file.Files.createDirectories(dir);
-            java.nio.file.Path p = dir.resolve("grind-debug-" + safe + ".txt").toAbsolutePath();
+            java.nio.file.Path p = dir.resolve(prefix + safe + ".txt").toAbsolutePath();
             java.nio.file.Files.writeString(p, report);
             return p.toString();
         } catch (java.io.IOException e) {

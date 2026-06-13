@@ -135,6 +135,20 @@ class BotChatManagerTest {
     }
 
     @Test
+    void shouldMatchAutopilotDebugPhrasings() {
+        assertTrue(BotChatManager.isAutopilotDebugCommand("autopilot debug"));
+        assertTrue(BotChatManager.isAutopilotDebugCommand("ap debug"));
+        assertTrue(BotChatManager.isAutopilotDebugCommand("party debug"));
+        assertTrue(BotChatManager.isAutopilotDebugCommand("autopilot why"));
+        assertTrue(BotChatManager.isAutopilotDebugCommand("debug party"));
+        assertTrue(BotChatManager.isAutopilotDebugCommand("AUTOPILOT DEBUG?"));
+        // must not collide with the action commands or plain grind debug
+        assertFalse(BotChatManager.isAutopilotDebugCommand("autopilot"));
+        assertFalse(BotChatManager.isAutopilotDebugCommand("go grind together"));
+        assertFalse(BotChatManager.isAutopilotDebugCommand("grind debug"));
+    }
+
+    @Test
     void shouldParseNamedItemGiveRequests() {
         assertEquals("name:flaming feather", BotChatManager.matchChoiceCategory("give me flaming feather"));
         assertEquals("name:flaming feather", BotChatManager.matchChoiceCategory("give flaming feather"));
