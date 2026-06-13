@@ -161,7 +161,10 @@ class BotInventoryManager {
                 continue;
             }
 
-            if (drop.getMeso() <= 0 && drop.getItemId() > 0) {
+            // NX cards consume on pickup (credit account NX, never enter the bag - Character.pickupItem),
+            // so a full ETC inventory must not block them; the player path bypasses the space check
+            // for NX cards too. Without this, a bot with a full ETC bag silently loses NX income.
+            if (drop.getMeso() <= 0 && drop.getItemId() > 0 && !ItemId.isNxCard(drop.getItemId())) {
                 InventoryType type = ItemConstants.getInventoryType(drop.getItemId());
                 Inventory inventory = bot.getInventory(type);
                 if (inventory != null && inventory.isFull()) {
