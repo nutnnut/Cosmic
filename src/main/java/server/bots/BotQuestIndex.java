@@ -54,7 +54,9 @@ import java.util.Map;
 final class BotQuestIndex {
 
     private static final Logger log = LoggerFactory.getLogger(BotQuestIndex.class);
-    private static final int INDEX_VERSION = 1;
+    // v2: adds the item-req reverse map (Feature B quest-item hygiene). Bumped so a warm v1 cache
+    // (which lacks the ITEMREQ rows) is rebuilt rather than loaded with an empty reverse map.
+    private static final int INDEX_VERSION = 2;
     private static final Path CACHE_FILE =
             Path.of("cache", "bot-quest", "v" + INDEX_VERSION, "quest-index.tsv");
     private static final Path SCRIPT_DIR = Path.of("scripts", "quest");
@@ -70,7 +72,23 @@ final class BotQuestIndex {
                      boolean autoStart, boolean autoComplete, boolean scripted,
                      List<String> completeReqKeys) {}
 
-    record Index(Map<Integer, QuestMeta> byId, List<Integer> autoBoth) {}
+    /** One quest that REQUIRES an item (to start at Check.img node 0, or to complete at node 1).
+     *  {@code lvmin}/{@code lvmax} are that quest's level window (0 = absent). Drives the Feature B
+     *  stale-quest-item check: an item is stale only when EVERY quest using it is done-or-past for
+     *  the bot. */
+    record QuestItemReq(int questId, int lvmin, int lvmax) {}
+
+    /** {@code itemReqs}: item id -> the quests that require it (start or complete). Built over ALL
+     *  quests (NOT just the runnable mob quests in {@code byId}, which by construction have no item
+     *  reqs at all). */
+    record Index(Map<Integer, QuestMeta> byId, List<Integer> autoBoth,
+                 Map<Integer, List<QuestItemReq>> itemReqs) {}
+
+    /** The quests that require {@code itemId} (start or complete reqs). Empty when no indexed quest
+     *  uses it — such items are out of Feature B's scope (left to the existing sell pipeline). */
+    static List<QuestItemReq> questsRequiringItem(int itemId) {
+        return get().itemReqs().getOrDefault(itemId, List.of());
+    }
 
     private static volatile Index index;
 
@@ -136,13 +154,14 @@ final class BotQuestIndex {
     private static Index build() {
         Map<Integer, QuestMeta> byId = new LinkedHashMap<>();
         List<Integer> autoBoth = new ArrayList<>();
+        Map<Integer, List<QuestItemReq>> itemReqs = new LinkedHashMap<>();
         try {
             DataProvider quest = DataProviderFactory.getDataProvider(WZFiles.QUEST);
             Data checkRoot = quest.getData("Check.img");
             Data actRoot = quest.getData("Act.img");
             Data infoRoot = quest.getData("QuestInfo.img");
             if (checkRoot == null) {
-                return new Index(Map.of(), List.of());
+                return new Index(Map.of(), List.of(), Map.of());
             }
             for (Data questNode : checkRoot.getChildren()) {
                 int id;
@@ -157,6 +176,9 @@ final class BotQuestIndex {
                 if (qualifies(meta)) {
                     byId.put(id, meta);
                 }
+                // Feature B: index this quest's REQUIRED items (start node 0 + complete node 1)
+                // across ALL quests — the runnable mob quests in byId have none by construction.
+                indexItemReqs(id, questNode, itemReqs);
             }
             // The auto-both set iterates QuestInfo.img — the SAME set Quest.loadAllQuests() walks
             // (auto quests need no NPC/Check node, so Check.img would miss the ones without reqs).
@@ -176,7 +198,50 @@ final class BotQuestIndex {
         } catch (RuntimeException e) {
             log.warn("Bot quest index build failed", e);
         }
-        return new Index(byId, autoBoth);
+        return new Index(byId, autoBoth, itemReqs);
+    }
+
+    /** Add this quest to the item-req reverse map for every item it requires to START (Check.img
+     *  node 0 {@code item}) or to COMPLETE (node 1 {@code item}). Captures the quest's level
+     *  window ({@code lvmin} from node 0, {@code lvmax} from node 0 or 1) for the stale-item
+     *  outlevel rule. A positive {@code count} req is what consumes the item; we union start +
+     *  complete so an item needed at either gate counts. */
+    static void indexItemReqs(int questId, Data checkNode, Map<Integer, List<QuestItemReq>> out) {
+        Data start = checkNode.getChildByPath("0");
+        Data complete = checkNode.getChildByPath("1");
+        int lvmin = start != null ? DataTool.getInt("lvmin", start, 0) : 0;
+        int lvmax = start != null ? DataTool.getInt("lvmax", start, 0) : 0;
+        if (lvmax <= 0 && complete != null) {
+            lvmax = DataTool.getInt("lvmax", complete, 0);
+        }
+        java.util.Set<Integer> items = new java.util.LinkedHashSet<>();
+        collectReqItemIds(start, items);
+        collectReqItemIds(complete, items);
+        if (items.isEmpty()) {
+            return;
+        }
+        QuestItemReq req = new QuestItemReq(questId, lvmin, lvmax);
+        for (int itemId : items) {
+            out.computeIfAbsent(itemId, k -> new ArrayList<>()).add(req);
+        }
+    }
+
+    /** Required item ids under a Check.img node's {@code item} child (id + positive count). */
+    private static void collectReqItemIds(Data node, java.util.Set<Integer> out) {
+        if (node == null) {
+            return;
+        }
+        Data itemNode = node.getChildByPath("item");
+        if (itemNode == null) {
+            return;
+        }
+        for (Data it : itemNode.getChildren()) {
+            int itemId = DataTool.getInt("id", it, 0);
+            int count = DataTool.getInt("count", it, 0);
+            if (itemId > 0 && count > 0) {
+                out.add(itemId);
+            }
+        }
     }
 
     /** Read one quest's Check.img node (plus matching Act.img / QuestInfo.img nodes) into a
@@ -264,6 +329,7 @@ final class BotQuestIndex {
         }
         Map<Integer, QuestMeta> byId = new LinkedHashMap<>();
         List<Integer> autoBoth = new ArrayList<>();
+        Map<Integer, List<QuestItemReq>> itemReqs = new LinkedHashMap<>();
         try {
             for (String line : Files.readAllLines(CACHE_FILE, StandardCharsets.UTF_8)) {
                 if (line.isBlank()) {
@@ -277,6 +343,10 @@ final class BotQuestIndex {
                     }
                     continue;
                 }
+                if (line.startsWith("ITEMREQ\t")) {
+                    parseItemReqRow(line, itemReqs);
+                    continue;
+                }
                 QuestMeta meta = parseRow(line);
                 if (meta != null) {
                     byId.put(meta.id(), meta);
@@ -286,7 +356,27 @@ final class BotQuestIndex {
             log.warn("Bot quest index: cache read failed, rebuilding", e);
             return null;
         }
-        return new Index(byId, autoBoth);
+        return new Index(byId, autoBoth, itemReqs);
+    }
+
+    /** Row: {@code ITEMREQ \t <itemId> \t questId:lvmin:lvmax,...} */
+    private static void parseItemReqRow(String line, Map<Integer, List<QuestItemReq>> out) {
+        String[] f = line.split("\t", -1);
+        if (f.length < 3) {
+            return;
+        }
+        int itemId = Integer.parseInt(f[1]);
+        List<QuestItemReq> reqs = new ArrayList<>();
+        if (!f[2].isBlank()) {
+            for (String triple : f[2].split(",")) {
+                String[] t = triple.split(":");
+                reqs.add(new QuestItemReq(Integer.parseInt(t[0]),
+                        Integer.parseInt(t[1]), Integer.parseInt(t[2])));
+            }
+        }
+        if (!reqs.isEmpty()) {
+            out.put(itemId, reqs);
+        }
     }
 
     /** Row: id \t startNpc \t endNpc \t lvmin \t rewardExp \t mob:count,... \t item,... */
@@ -351,6 +441,18 @@ final class BotQuestIndex {
                 first = false;
             }
             sb.append('\n');
+            for (Map.Entry<Integer, List<QuestItemReq>> e : idx.itemReqs().entrySet()) {
+                sb.append("ITEMREQ\t").append(e.getKey()).append('\t');
+                boolean firstReq = true;
+                for (QuestItemReq r : e.getValue()) {
+                    if (!firstReq) {
+                        sb.append(',');
+                    }
+                    sb.append(r.questId()).append(':').append(r.lvmin()).append(':').append(r.lvmax());
+                    firstReq = false;
+                }
+                sb.append('\n');
+            }
             Files.writeString(CACHE_FILE, sb.toString(), StandardCharsets.UTF_8);
         } catch (IOException e) {
             log.warn("Bot quest index: cache write failed", e);

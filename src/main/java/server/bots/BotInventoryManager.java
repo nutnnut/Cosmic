@@ -1261,10 +1261,23 @@ class BotInventoryManager {
 
     private static void collectFromBag(Character bot, List<Item> result,
                                        InventoryType type, Predicate<Item> filter) {
+        collectFromBag(bot, result, type, filter, false);
+    }
+
+    /** {@code botAwareSafety}: when true, a STALE quest item for this bot passes the safe-to-drop
+     *  gate (Feature B) so it can be sold as clutter; the downstream {@code filter} (rare-drop,
+     *  maker-material, sellPrice>0, ...) still decides. When false, ALL quest items are excluded
+     *  (the strict EQUIP-safe behaviour). */
+    private static void collectFromBag(Character bot, List<Item> result, InventoryType type,
+                                       Predicate<Item> filter, boolean botAwareSafety) {
         Inventory inv = bot.getInventory(type);
         for (short slot = 1; slot <= inv.getSlotLimit(); slot++) {
             Item item = inv.getItem(slot);
-            if (item != null && isSafeToDrop(item) && filter.test(item)) result.add(item);
+            if (item == null) {
+                continue;
+            }
+            boolean safe = botAwareSafety ? isSafeToDrop(bot, item) : isSafeToDrop(item);
+            if (safe && filter.test(item)) result.add(item);
         }
     }
 
@@ -1794,6 +1807,8 @@ class BotInventoryManager {
     static List<Item> collectSellTrashUseItems(Character bot) {
         WeaponType ownAmmoType = tradeAmmoWeaponType(bot);
         List<Item> result = new ArrayList<>();
+        // botAwareSafety: a stale USE quest item (BotQuestIndex says the bot has finished or far
+        // outleveled every quest needing it) is allowed past the quest-item exclusion so it can sell.
         collectFromBag(bot, result, InventoryType.USE, item -> {
             int id = item.getItemId();
             WeaponType ammoType = ammoWeaponType(id);
@@ -1804,10 +1819,18 @@ class BotInventoryManager {
                         && sellTrashQuantity(item) > 0
                         && sellPrice.price(id, sellTrashQuantity(item)) > 0;
             }
+            // A stale quest USE item (finished/outleveled quests) is pure clutter - sell if an NPC
+            // pays for it. Rare drops stay (a stale quest item that's also a rare drop has other
+            // value - default KEEP, see report).
+            if (isStaleQuestItem(bot, id)) {
+                return !isRareDrop(id)
+                        && item.getQuantity() > 0
+                        && sellPrice.price(id, item.getQuantity()) > 0;
+            }
             return isIrrelevantEquipScroll(bot, id)
                     && sellTrashQuantity(item) > 0
                     && sellPrice.price(id, sellTrashQuantity(item)) > 0;
-        });
+        }, true);
         return result;
     }
 
@@ -1866,6 +1889,10 @@ class BotInventoryManager {
     // rare drops, and crystal leftovers that can become Maker monster crystals.
     static List<Item> collectSellTrashEtcItems(Character bot) {
         List<Item> result = new ArrayList<>();
+        // botAwareSafety: stale ETC quest items pass the quest-item exclusion; the keeps below
+        // (skill-consumed, maker material, rare drop, crystal leftovers) still protect anything
+        // with other value, so only pure quest clutter with a positive NPC price is collected.
+        // NOTE: many ETC quest items have NPC price 0, so they stay unsold here (see report).
         collectFromBag(bot, result, InventoryType.ETC, item -> {
             int id = item.getItemId();
             if (SKILL_CONSUMED_ETC.contains(id) || isMakerMaterial(id) || isRareDrop(id)) {
@@ -1876,7 +1903,7 @@ class BotInventoryManager {
                 return false;
             }
             return sellPrice.price(id, item.getQuantity()) > 0;
-        });
+        }, true);
         return result;
     }
 
@@ -2127,7 +2154,7 @@ class BotInventoryManager {
             }
             sb.append(String.format("%-30s x%-5d %-5s %s%n",
                     itemName(ii, item.getItemId()), item.getQuantity(),
-                    sell ? "SELL" : "KEEP", etcVerdictReason(item, sell)));
+                    sell ? "SELL" : "KEEP", etcVerdictReason(bot, item, sell)));
         }
 
         try {
@@ -2178,8 +2205,11 @@ class BotInventoryManager {
             }
             return isIrrelevantEquipScroll(bot, id) ? "scroll-junk-but-unsellable" : "scroll-relevant";
         }
-        if (!isSafeToDrop(item)) {
-            return "quest-or-untradeable";
+        if (sell && isStaleQuestItem(bot, id)) {
+            return "quest-stale";
+        }
+        if (!isSafeToDrop(bot, item)) {
+            return isStaleQuestItem(bot, id) ? "quest-stale-but-unsellable" : "quest-or-untradeable";
         }
         if (isRecoveryPotion(id)) {
             return "pot";
@@ -2191,13 +2221,13 @@ class BotInventoryManager {
     }
 
     // Coarse reason labels probing the same predicates collectSellTrashEtcItems applies.
-    private static String etcVerdictReason(Item item, boolean sell) {
-        if (sell) {
-            return "sell";
-        }
+    private static String etcVerdictReason(Character bot, Item item, boolean sell) {
         int id = item.getItemId();
-        if (!isSafeToDrop(item)) {
-            return "quest-or-untradeable";
+        if (sell) {
+            return isStaleQuestItem(bot, id) ? "quest-stale" : "sell";
+        }
+        if (!isSafeToDrop(bot, item)) {
+            return isStaleQuestItem(bot, id) ? "quest-stale-but-unsellable" : "quest-or-untradeable";
         }
         if (SKILL_CONSUMED_ETC.contains(id)) {
             return "skill-consumed";
@@ -2390,6 +2420,96 @@ class BotInventoryManager {
         if (untradeable.test(item) && !YamlConfig.config.server.UNTRADEABLE_ITEMS_TRADEABLE) return false;
         if (questItem.test(item.getItemId())) return false;
         return true;
+    }
+
+    /** Bot-aware safe-to-drop: like {@link #isSafeToDrop(Item)}, but a quest item that is STALE for
+     *  THIS bot ({@link #isStaleQuestItem}) is allowed through — the base predicate excludes ALL
+     *  quest items forever, which clogs ETC/USE with items the bot can never use again. Only the
+     *  USE/ETC sell-trash collectors call this overload; the EQUIP path keeps the strict
+     *  {@link #isSafeToDrop(Item)} so it never touches quest gear. Untradeables are still excluded. */
+    static boolean isSafeToDrop(Character bot, Item item) {
+        if (untradeable.test(item) && !YamlConfig.config.server.UNTRADEABLE_ITEMS_TRADEABLE) return false;
+        if (questItem.test(item.getItemId()) && !isStaleQuestItem(bot, item.getItemId())) return false;
+        return true;
+    }
+
+    // ---- stale quest items (Feature B) -------------------------------------------------------
+
+    /** Severely-outleveled margin: a quest is "way past" the bot when the bot's level is at least
+     *  the quest's level cap plus this. Wide on purpose - false negatives (keep) are fine, false
+     *  positives (sell a needed item) are not. */
+    static final int STALE_OUTLEVEL_MARGIN = 30;
+
+    /** Quest status for the stale check, behind a seam so tests don't need WZ. Reuses the same
+     *  {@link BotQuestManager#gate} SSOT the quest loop drives (started/completed reads). */
+    interface QuestStatusLookup {
+        boolean isStarted(Character bot, int questId);
+        boolean isCompleted(Character bot, int questId);
+    }
+
+    static QuestStatusLookup questStatus = new QuestStatusLookup() {
+        @Override public boolean isStarted(Character bot, int questId) {
+            return BotQuestManager.gate.isStarted(bot, questId);
+        }
+        @Override public boolean isCompleted(Character bot, int questId) {
+            return BotQuestManager.gate.isCompleted(bot, questId);
+        }
+    };
+
+    /** Item -> quests that require it (start or complete); seam over {@link BotQuestIndex}. */
+    @FunctionalInterface
+    interface QuestReqsLookup {
+        List<BotQuestIndex.QuestItemReq> reqs(int itemId);
+    }
+
+    static QuestReqsLookup questReqsLookup = BotQuestIndex::questsRequiringItem;
+
+    /**
+     * Is {@code itemId} a quest item this bot no longer needs - so it can be sold as clutter
+     * instead of being kept forever? CONSERVATIVE: true only when it IS a quest item AND every
+     * indexed quest that requires it is, for this bot, either COMPLETED or severely outleveled
+     * (and none is currently STARTED). Any of:
+     * <ul>
+     *   <li>not a quest item, or used by NO indexed quest -> NOT stale (out of scope);</li>
+     *   <li>ANY using-quest is STARTED -> NOT stale (it's needed right now);</li>
+     *   <li>any using-quest is still doable (not completed, not severely past) -> NOT stale.</li>
+     * </ul>
+     * "Severely outleveled" needs a real level cap ({@code > 0}); a quest with no level info is
+     * undeterminable and treated as still-doable (kept). The permanently-unstartable-prereq branch
+     * is deliberately NOT implemented - {@code canStart} fails for under-level bots that will grow
+     * into the quest, so it is too false-positive-prone (see report).
+     */
+    static boolean isStaleQuestItem(Character bot, int itemId) {
+        if (bot == null || !questItem.test(itemId)) {
+            return false;
+        }
+        List<BotQuestIndex.QuestItemReq> reqs = questReqsLookup.reqs(itemId);
+        if (reqs.isEmpty()) {
+            return false; // used by no indexed quest -> not our scope
+        }
+        // Absolute override: an item needed by a quest the bot has STARTED is never stale.
+        for (BotQuestIndex.QuestItemReq r : reqs) {
+            if (questStatus.isStarted(bot, r.questId())) {
+                return false;
+            }
+        }
+        // Stale only if EVERY using-quest is done-or-past for this bot.
+        for (BotQuestIndex.QuestItemReq r : reqs) {
+            if (!isQuestDoneOrPast(bot, r)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** A single using-quest is "done or past" for the bot: COMPLETED, or severely outleveled with
+     *  a known level cap. Undeterminable (no level cap) counts as still-doable (kept). */
+    private static boolean isQuestDoneOrPast(Character bot, BotQuestIndex.QuestItemReq r) {
+        if (questStatus.isCompleted(bot, r.questId())) {
+            return true;
+        }
+        int cap = Math.max(r.lvmax(), r.lvmin());
+        return cap > 0 && bot.getLevel() >= cap + STALE_OUTLEVEL_MARGIN;
     }
 
     // Test seams (see sellPrice et al.): both lookups go through ItemInformationProvider.

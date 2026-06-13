@@ -94,5 +94,10 @@ class BotQuestIndexTest {
         org.junit.jupiter.api.Assertions.assertEquals(2005, q1019.startNpc());
         org.junit.jupiter.api.Assertions.assertEquals(12100, q1019.endNpc());
         org.junit.jupiter.api.Assertions.assertEquals(10, q1019.mobs().get(100100));
+
+        // Feature B: the item-req reverse map must be populated (guards the cache-version trap -
+        // a warm v1 cache lacking ITEMREQ rows would leave this empty and stale-selling inert).
+        assertTrue(index.itemReqs().size() > 50,
+                "expected many quest item requirements indexed, got " + index.itemReqs().size());
     }
 }

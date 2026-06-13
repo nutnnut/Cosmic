@@ -372,6 +372,176 @@ class BotInventoryManagerTest {
         }
     }
 
+    // ---- Feature B: stale quest items become sellable -----------------------------------------
+
+    /** Swap the Feature B seams (quest-item predicate, item->quest reverse map, quest status).
+     *  Restored on close. */
+    private static AutoCloseable withQuestSeams(IntPredicate isQuestItem,
+            BotInventoryManager.QuestReqsLookup reqs, BotInventoryManager.QuestStatusLookup status) {
+        IntPredicate prevQuest = BotInventoryManager.questItem;
+        BotInventoryManager.QuestReqsLookup prevReqs = BotInventoryManager.questReqsLookup;
+        BotInventoryManager.QuestStatusLookup prevStatus = BotInventoryManager.questStatus;
+        BotInventoryManager.questItem = isQuestItem;
+        BotInventoryManager.questReqsLookup = reqs;
+        BotInventoryManager.questStatus = status;
+        return () -> {
+            BotInventoryManager.questItem = prevQuest;
+            BotInventoryManager.questReqsLookup = prevReqs;
+            BotInventoryManager.questStatus = prevStatus;
+        };
+    }
+
+    private static BotInventoryManager.QuestStatusLookup status(
+            Set<Integer> started, Set<Integer> completed) {
+        return new BotInventoryManager.QuestStatusLookup() {
+            @Override public boolean isStarted(Character bot, int questId) { return started.contains(questId); }
+            @Override public boolean isCompleted(Character bot, int questId) { return completed.contains(questId); }
+        };
+    }
+
+    private static BotInventoryManager.QuestReqsLookup reqs(int itemId,
+            BotQuestIndex.QuestItemReq... rs) {
+        return id -> id == itemId ? List.of(rs) : List.of();
+    }
+
+    @Test
+    void staleWhenOnlyUsingQuestIsCompleted() throws Exception {
+        Character bot = mock(Character.class);
+        when(bot.getLevel()).thenReturn(50);
+        // item 4032000 used only by quest 5000 (lv 20-30), which the bot has COMPLETED.
+        try (AutoCloseable s = withQuestSeams(id -> id == 4032000,
+                reqs(4032000, new BotQuestIndex.QuestItemReq(5000, 20, 30)),
+                status(Set.of(), Set.of(5000)))) {
+            assertTrue(BotInventoryManager.isStaleQuestItem(bot, 4032000));
+        }
+    }
+
+    @Test
+    void notStaleWhenAnyUsingQuestIsStarted() throws Exception {
+        Character bot = mock(Character.class);
+        when(bot.getLevel()).thenReturn(99);
+        // two quests use it; one is STARTED -> never stale even though the other is done.
+        try (AutoCloseable s = withQuestSeams(id -> id == 4032000,
+                reqs(4032000, new BotQuestIndex.QuestItemReq(5000, 20, 30),
+                        new BotQuestIndex.QuestItemReq(5001, 20, 30)),
+                status(Set.of(5001), Set.of(5000)))) {
+            org.junit.jupiter.api.Assertions.assertFalse(
+                    BotInventoryManager.isStaleQuestItem(bot, 4032000));
+        }
+    }
+
+    @Test
+    void notStaleWhenSomeUsingQuestStillDoable() throws Exception {
+        Character bot = mock(Character.class);
+        when(bot.getLevel()).thenReturn(25); // not outleveled (cap 30 + margin 30 = 60)
+        try (AutoCloseable s = withQuestSeams(id -> id == 4032000,
+                reqs(4032000, new BotQuestIndex.QuestItemReq(5000, 20, 30)),
+                status(Set.of(), Set.of()))) {
+            org.junit.jupiter.api.Assertions.assertFalse(
+                    BotInventoryManager.isStaleQuestItem(bot, 4032000));
+        }
+    }
+
+    @Test
+    void staleWhenSeverelyOutleveledAllUsingQuests() throws Exception {
+        Character bot = mock(Character.class);
+        when(bot.getLevel()).thenReturn(65); // cap 30 + margin 30 = 60 <= 65 -> way past
+        try (AutoCloseable s = withQuestSeams(id -> id == 4032000,
+                reqs(4032000, new BotQuestIndex.QuestItemReq(5000, 20, 30)),
+                status(Set.of(), Set.of()))) {
+            assertTrue(BotInventoryManager.isStaleQuestItem(bot, 4032000));
+        }
+    }
+
+    @Test
+    void notStaleWhenOutlevelButQuestHasNoLevelCap() throws Exception {
+        Character bot = mock(Character.class);
+        when(bot.getLevel()).thenReturn(200);
+        // cap 0 (no level info) -> undeterminable -> conservative KEEP.
+        try (AutoCloseable s = withQuestSeams(id -> id == 4032000,
+                reqs(4032000, new BotQuestIndex.QuestItemReq(5000, 0, 0)),
+                status(Set.of(), Set.of()))) {
+            org.junit.jupiter.api.Assertions.assertFalse(
+                    BotInventoryManager.isStaleQuestItem(bot, 4032000));
+        }
+    }
+
+    @Test
+    void notStaleWhenUnknownItem() throws Exception {
+        Character bot = mock(Character.class);
+        when(bot.getLevel()).thenReturn(99);
+        // a quest item used by NO indexed quest -> out of scope -> not stale.
+        try (AutoCloseable s = withQuestSeams(id -> id == 4032000,
+                id -> List.of(), status(Set.of(), Set.of()))) {
+            org.junit.jupiter.api.Assertions.assertFalse(
+                    BotInventoryManager.isStaleQuestItem(bot, 4032000));
+        }
+        // a non-quest item is never stale (out of scope).
+        try (AutoCloseable s = withQuestSeams(id -> false,
+                reqs(4032000, new BotQuestIndex.QuestItemReq(5000, 20, 30)),
+                status(Set.of(), Set.of(5000)))) {
+            org.junit.jupiter.api.Assertions.assertFalse(
+                    BotInventoryManager.isStaleQuestItem(bot, 1234567));
+        }
+    }
+
+    @Test
+    void sellTrashEtcIncludesStaleQuestItemAndExcludesActiveOne() throws Exception {
+        Character bot = mock(Character.class);
+        when(bot.getLevel()).thenReturn(50);
+        Inventory etc = new Inventory(bot, InventoryType.ETC, (byte) 24);
+        etc.addItem(Items.itemWithQuantity(4032000, 1)); // stale (completed quest) -> SELL
+        etc.addItem(Items.itemWithQuantity(4032001, 1)); // active (started quest) -> KEEP
+        when(bot.getInventory(InventoryType.ETC)).thenReturn(etc);
+
+        BotInventoryManager.QuestReqsLookup reqs = id -> switch (id) {
+            case 4032000 -> List.of(new BotQuestIndex.QuestItemReq(5000, 20, 30));
+            case 4032001 -> List.of(new BotQuestIndex.QuestItemReq(5001, 20, 30));
+            default -> List.of();
+        };
+        BotInventoryManager.SellPriceLookup price = (id, qty) -> 10; // both have NPC price
+        IntUnaryOperator leftover = id -> -1;
+        IntUnaryOperator dropChance = id -> 600000; // not rare
+        try (AutoCloseable sell = withSellSeams(price, leftover, dropChance);
+             AutoCloseable quest = withQuestSeams(id -> id == 4032000 || id == 4032001, reqs,
+                     status(Set.of(5001) /*4032001's quest started*/, Set.of(5000) /*4032000's done*/))) {
+            List<Item> trash = BotInventoryManager.collectSellTrashEtcItems(bot);
+            assertTrue(trash.stream().anyMatch(it -> it.getItemId() == 4032000),
+                    "a stale quest ETC item should be collected as sell-trash");
+            assertTrue(trash.stream().noneMatch(it -> it.getItemId() == 4032001),
+                    "an active-quest ETC item must NOT be sold");
+        }
+    }
+
+    @Test
+    void staleUntradeableQuestItemRespectsUntradeableConfig() throws Exception {
+        // A stale quest item flagged untradeable (info/tradeBlock=1, ~26% of quest ETC items).
+        // Whether it sells depends on the server's UNTRADEABLE_ITEMS_TRADEABLE config, the same
+        // gate the rest of the sell pipeline honours - Feature B does not override it:
+        //   config true  -> untradeable items are sellable, so a STALE one sells.
+        //   config false -> the untradeable gate holds and it stays unsold.
+        Character bot = mock(Character.class);
+        when(bot.getLevel()).thenReturn(50);
+        Inventory etc = new Inventory(bot, InventoryType.ETC, (byte) 24);
+        etc.addItem(Items.itemWithQuantity(4032000, 1)); // stale AND untradeable
+        when(bot.getInventory(InventoryType.ETC)).thenReturn(etc);
+
+        BotInventoryManager.SellPriceLookup price = (id, qty) -> 10;
+        IntUnaryOperator leftover = id -> -1;
+        IntUnaryOperator dropChance = id -> 600000;
+        boolean untradeableSellable = config.YamlConfig.config.server.UNTRADEABLE_ITEMS_TRADEABLE;
+        try (AutoCloseable sell = withSellSeams(price, leftover, dropChance);
+             AutoCloseable quest = withQuestSeams(id -> id == 4032000,
+                     reqs(4032000, new BotQuestIndex.QuestItemReq(5000, 20, 30)),
+                     status(Set.of(), Set.of(5000)))) {
+            BotInventoryManager.untradeable = item -> item.getItemId() == 4032000;
+            List<Item> trash = BotInventoryManager.collectSellTrashEtcItems(bot);
+            boolean sold = trash.stream().anyMatch(it -> it.getItemId() == 4032000);
+            assertEquals(untradeableSellable, sold,
+                    "stale untradeable item must follow the UNTRADEABLE_ITEMS_TRADEABLE config gate");
+        }
+    }
+
     @Test
     void shouldKeepRareAndCraftingEtcOutOfSellTrash() {
         Character bot = mock(Character.class);
