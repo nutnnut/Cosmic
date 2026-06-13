@@ -738,17 +738,48 @@ final class BotAutopilotManager {
     }
 
     /**
+     * The cohesion leader: the first party member NOT off on a resupply errand
+     * ({@code autopilotErrandMapId == -1}). A resupplying bot handles its own town trip
+     * independently (the line-343 gate already keeps it out of cohesion), so followers must
+     * anchor on the first member still heading to the grind map, not on the absent leader.
+     * Null when every member is resupplying.
+     */
+    static BotEntry effectiveCohesionLeader(List<BotEntry> members) {
+        for (BotEntry m : members) {
+            if (m.autopilotErrandMapId == -1) {
+                return m;
+            }
+        }
+        return null;
+    }
+
+    /** Count of members eligible for cohesion (not off resupplying). */
+    private static int cohesionMemberCount(List<BotEntry> members) {
+        int count = 0;
+        for (BotEntry m : members) {
+            if (m.autopilotErrandMapId == -1) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    /**
      * One in-transit tick of party cohesion. Returns the tick() result to use, or null when
      * this bot is the leader with the group in tow — it travels normally this tick.
      */
     private static Boolean tickPartyCohesion(BotEntry entry, Character bot) {
         List<BotEntry> members = partyMembers.members(entry);
-        if (members.size() < 2) {
+        // The cohesion leader is the first member NOT off on a resupply errand: a resupplying
+        // bot independently handles its own town trip, so followers must not chase it. With
+        // fewer than two non-resupplying members there is no group to keep together — dissolve
+        // and let each remaining member travel itself.
+        BotEntry leader = effectiveCohesionLeader(members);
+        if (leader == null || cohesionMemberCount(members) < 2) {
             exitTransitFollow(entry); // group dissolved — travel on alone
             clearWaitAnchor(entry);  // ...and drop any portal hold, restoring grind/travel
             return null;
         }
-        BotEntry leader = members.get(0);
         if (leader == entry) {
             exitTransitFollow(entry); // just promoted mid-transit: stop following, lead
             if (waitingForStragglers(entry, bot, members)) {
@@ -845,8 +876,9 @@ final class BotAutopilotManager {
         Point leaderPos = bot.getPosition();
         boolean waiting = false;
         for (BotEntry member : members) {
-            if (member == entry || member.bot == null || member.bot.getMap() == null) {
-                continue;
+            if (member == entry || member.bot == null || member.bot.getMap() == null
+                    || member.autopilotErrandMapId != -1) {
+                continue; // a resupplying member runs its own town trip; never wait on it
             }
             if (hopDistance.hops(member.bot.getMapId(), bot.getMapId()) > BotManager.cfg.STRAGGLER_WAIT_HOPS) {
                 waiting = true;

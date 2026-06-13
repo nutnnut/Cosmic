@@ -99,13 +99,25 @@ final class BotAutopilotDebug {
 
     private static void appendComposition(StringBuilder sb, ItemInformationProvider ii, List<BotEntry> members) {
         sb.append("--- a. PARTY COMPOSITION ---\n");
-        BotEntry leader = members.isEmpty() ? null : members.get(0);
+        BotEntry nominalLeader = members.isEmpty() ? null : members.get(0);
+        // Cohesion anchors on the first NON-resupplying member, not blindly members.get(0):
+        // a resupplying leader is skipped so followers route to the grind map, not to town.
+        BotEntry leader = BotAutopilotManager.effectiveCohesionLeader(members);
+        if (leader != nominalLeader) {
+            sb.append(String.format("effective cohesion leader: %s (nominal %s is resupplying)%n",
+                    leader == null ? "(none - all resupplying)" : safeName(leader.bot),
+                    nominalLeader == null ? "(none)" : safeName(nominalLeader.bot)));
+        }
         for (BotEntry m : members) {
             Character c = m.bot;
             sb.append(String.format("%s  job=%s  lv%d  STR=%d DEX=%d INT=%d LUK=%d%n",
                     safeName(c), jobName(c), c.getLevel(),
                     c.getTotalStr(), c.getTotalDex(), c.getTotalInt(), c.getTotalLuk()));
             sb.append(String.format("    map: %d %s%n", c.getMapId(), mapNameOf(c)));
+            if (m.autopilotErrandMapId != -1) {
+                sb.append(String.format("    resupply: RESUPPLYING (errand -> map %d) - excluded from cohesion/straggler%n",
+                        m.autopilotErrandMapId));
+            }
             appendCohesion(sb, leader, m);
             Equip weapon = wornInSlot(c, ii, WEAPON_SLOT);
             if (weapon == null) {
@@ -130,6 +142,9 @@ final class BotAutopilotDebug {
     private static void appendCohesion(StringBuilder sb, BotEntry leader, BotEntry m) {
         if (leader == null || leader.bot == null || m.bot == null) {
             return;
+        }
+        if (m.autopilotErrandMapId != -1) {
+            return; // resupplying: not a straggler (the resupply line above already covers it)
         }
         if (m == leader) {
             String wait;

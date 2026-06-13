@@ -510,6 +510,117 @@ class BotAutopilotManagerTest {
     }
 
     @Test
+    void shouldFollowNextNonResupplyingMemberWhenNominalLeaderIsResupplying() {
+        // 3 members: members.get(0) is off on a resupply errand, so the effective cohesion
+        // leader is members.get(1); the follower transit-follows THAT bot, not the absent one.
+        Fixture nominal = fixture(104000000, onlineOwner());
+        Fixture effective = fixture(104000000, onlineOwner());
+        Fixture follower = fixture(TOWN, onlineOwner());
+        when(nominal.bot().getId()).thenReturn(7001);
+        when(effective.bot().getId()).thenReturn(7002);
+        for (Fixture f : List.of(nominal, effective, follower)) {
+            f.entry().autopilotMapId = HUNTING_GROUND;
+            f.entry().autopilotParty = true;
+            f.entry().autopilotNextDecisionAtMs = Long.MAX_VALUE;
+            f.entry().grinding = true;
+        }
+        nominal.entry().autopilotErrandMapId = TOWN; // resupplying -> excluded as leader
+
+        try (Seams seams = new Seams(null)) {
+            BotAutopilotManager.partyMembers =
+                    entry -> List.of(nominal.entry(), effective.entry(), follower.entry());
+
+            assertTrue(BotAutopilotManager.tick(follower.entry(), follower.bot(), true));
+            assertTrue(follower.entry().autopilotTransitFollow);
+            assertEquals(7002, follower.entry().followTargetId); // members.get(1), not get(0)
+        }
+    }
+
+    @Test
+    void shouldRunIndependentlyWhenAllOtherMembersAreResupplying() {
+        // Only one non-resupplying member remains: no cohesion group, it travels itself.
+        Fixture resupplying = fixture(104000000, onlineOwner());
+        Fixture lone = fixture(TOWN, onlineOwner());
+        when(resupplying.bot().getId()).thenReturn(7001);
+        for (Fixture f : List.of(resupplying, lone)) {
+            f.entry().autopilotMapId = HUNTING_GROUND;
+            f.entry().autopilotParty = true;
+            f.entry().autopilotNextDecisionAtMs = Long.MAX_VALUE;
+            f.entry().grinding = true;
+        }
+        resupplying.entry().autopilotErrandMapId = TOWN;
+
+        try (Seams seams = new Seams(null);
+             MockedStatic<BotTravelManager> travel = mockStatic(BotTravelManager.class)) {
+            travel.when(() -> BotTravelManager.tickTravel(any(), any(), anyInt(), anyInt(), anyBoolean(), anyBoolean()))
+                    .thenReturn(true);
+            BotAutopilotManager.partyMembers = entry -> List.of(resupplying.entry(), lone.entry());
+
+            // No transit-follow: the lone member travels toward the grind map on its own.
+            assertTrue(BotAutopilotManager.tick(lone.entry(), lone.bot(), true));
+            assertFalse(lone.entry().autopilotTransitFollow);
+            travel.verify(() -> BotTravelManager.tickTravel(any(), any(),
+                    org.mockito.ArgumentMatchers.eq(HUNTING_GROUND), anyInt(), anyBoolean(), anyBoolean()));
+        }
+    }
+
+    @Test
+    void leaderDoesNotWaitForAResupplyingMember() {
+        // The straggler far behind is off resupplying: the leader must NOT hold for it.
+        Fixture leader = fixture(104000000, onlineOwner());
+        Fixture resupplying = fixture(TOWN, onlineOwner());
+        for (Fixture f : List.of(leader, resupplying)) {
+            f.entry().autopilotMapId = HUNTING_GROUND;
+            f.entry().autopilotParty = true;
+            f.entry().autopilotNextDecisionAtMs = Long.MAX_VALUE;
+            f.entry().grinding = true;
+        }
+        resupplying.entry().autopilotErrandMapId = TOWN;
+
+        try (Seams seams = new Seams(null);
+             MockedStatic<BotTravelManager> travel = mockStatic(BotTravelManager.class)) {
+            travel.when(() -> BotTravelManager.tickTravel(any(), any(), anyInt(), anyInt(), anyBoolean(), anyBoolean()))
+                    .thenReturn(true);
+            BotAutopilotManager.partyMembers = entry -> List.of(leader.entry(), resupplying.entry());
+            BotAutopilotManager.hopDistance = (from, to) -> BotManager.cfg.STRAGGLER_WAIT_HOPS + 1;
+
+            // Were the resupplying member counted, the leader would hold; instead it travels on.
+            assertTrue(BotAutopilotManager.tick(leader.entry(), leader.bot(), true));
+            assertFalse(leader.entry().autopilotWaitingForStragglers);
+        }
+    }
+
+    @Test
+    void followerOffGrindMapRoutesToGrindMapNotTownWhenLeaderIsResupplying() {
+        // members.get(0) is resupplying; a follower drifted off the grind map. With dynamic
+        // leadership it anchors on the next non-resupplying member (members.get(1)) - never the
+        // absent leader heading to town. Here that anchor IS the follower's own next-in-line, so
+        // the follower travels to the grind map itself (no transit-follow toward town).
+        Fixture resupplying = fixture(104000000, onlineOwner());
+        Fixture follower = fixture(104010000, onlineOwner()); // off the grind map, mid-route
+        when(resupplying.bot().getId()).thenReturn(7001);
+        for (Fixture f : List.of(resupplying, follower)) {
+            f.entry().autopilotMapId = HUNTING_GROUND;
+            f.entry().autopilotParty = true;
+            f.entry().autopilotNextDecisionAtMs = Long.MAX_VALUE;
+            f.entry().grinding = true;
+        }
+        resupplying.entry().autopilotErrandMapId = TOWN;
+
+        try (Seams seams = new Seams(null);
+             MockedStatic<BotTravelManager> travel = mockStatic(BotTravelManager.class)) {
+            travel.when(() -> BotTravelManager.tickTravel(any(), any(), anyInt(), anyInt(), anyBoolean(), anyBoolean()))
+                    .thenReturn(true);
+            BotAutopilotManager.partyMembers = entry -> List.of(resupplying.entry(), follower.entry());
+
+            assertTrue(BotAutopilotManager.tick(follower.entry(), follower.bot(), true));
+            assertFalse(follower.entry().autopilotTransitFollow); // not chasing the absent leader
+            travel.verify(() -> BotTravelManager.tickTravel(any(), any(),
+                    org.mockito.ArgumentMatchers.eq(HUNTING_GROUND), anyInt(), anyBoolean(), anyBoolean()));
+        }
+    }
+
+    @Test
     void shouldPinFarmObjectiveAndKeepItAcrossInstall() {
         Fixture f = fixture(TOWN);
         Recommendation farmRec = new Recommendation(
