@@ -329,6 +329,59 @@ class BotInventoryManagerTest {
     }
 
     @Test
+    void shouldCacheEquipTradeClassificationUntilBagChanges() throws Exception {
+        // The reserve check (isReservedForOtherRecipients) is the ~150ms cost. With a stable bag a
+        // re-classify must reuse the cache and NOT re-run it; a bag change must invalidate.
+        IntPredicate prevQuest = BotInventoryManager.questItem;
+        java.util.function.Predicate<Item> prevUntradeable = BotInventoryManager.untradeable;
+        BotInventoryManager.questItem = id -> false;
+        BotInventoryManager.untradeable = item -> false;
+        try {
+            Character bot = mock(Character.class);
+            Character owner = mock(Character.class);
+            BotEntry entry = new BotEntry(bot, owner, null);
+            Equip e1 = equipWithWatk(1102000, 10);
+            Equip e2 = equipWithWatk(1102001, 12);
+            Inventory inv = mock(Inventory.class);
+            when(inv.getSlotLimit()).thenReturn((byte) 24);
+            when(inv.list()).thenReturn(List.of(e1, e2));
+            when(inv.getItem((short) 1)).thenReturn(e1);
+            when(inv.getItem((short) 2)).thenReturn(e2);
+            when(bot.getInventory(InventoryType.EQUIP)).thenReturn(inv);
+
+            int[] reserveChecks = {0};
+            Method classify = method(BotInventoryManager.class,
+                    "classifyEquipTradeGroups", BotEntry.class, Character.class);
+            try (MockedStatic<BotEquipManager> equips = mockStatic(BotEquipManager.class);
+                 MockedStatic<BotOfferManager> offers = mockStatic(BotOfferManager.class)) {
+                equips.when(() -> BotEquipManager.collectPotentialSelfUpgradeItems(bot))
+                        .thenReturn(Set.of());
+                offers.when(() -> BotOfferManager.isReservedForOtherRecipients(eq(entry), eq(bot), any()))
+                        .thenAnswer(call -> {
+                            reserveChecks[0]++;
+                            return false;
+                        });
+
+                classify.invoke(null, entry, bot);
+                assertEquals(2, reserveChecks[0]); // first classify checks both items
+
+                classify.invoke(null, entry, bot);
+                assertEquals(2, reserveChecks[0]); // unchanged bag -> cache hit, no re-check
+
+                // Bag grows by one equip: signature changes -> cache miss -> full re-classify.
+                Equip e3 = equipWithWatk(1102002, 8);
+                when(inv.list()).thenReturn(List.of(e1, e2, e3));
+                when(inv.getItem((short) 3)).thenReturn(e3);
+                classify.invoke(null, entry, bot);
+                assertEquals(5, reserveChecks[0]); // 2 (cached) + 3 (recomputed)
+            }
+        } finally {
+            BotInventoryManager.questItem = prevQuest;
+            BotInventoryManager.untradeable = prevUntradeable;
+        }
+    }
+
+    @Test
     void shouldSellEquipScrollsWithNoJobRelevantStats() {
         Character bot = mock(Character.class);
         when(bot.getJob()).thenReturn(Job.ASSASSIN);

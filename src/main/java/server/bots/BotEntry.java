@@ -164,6 +164,10 @@ public class BotEntry {
     volatile int activityEpoch = 0;
     Point shopStuckCheckPos = null;
     long shopStuckCheckAtMs = 0L;
+    // Cached equip trade classification (BotInventoryManager): the reserve check is ~150ms for a
+    // full bag, so a cramped bot re-classifying every tick melts a timer thread. Volatile so a
+    // trade running on a timer thread and the bot tick read one consistent immutable holder.
+    volatile BotInventoryManager.EquipTradeGroupsCache cachedEquipTradeGroups = null;
 
     // Follow-mode cross-map travel (BotTravelManager): instead of warping straight to the
     // owner, walk to a portal in the current map that leads to the owner's map and enter it

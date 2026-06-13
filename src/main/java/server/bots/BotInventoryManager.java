@@ -49,7 +49,7 @@ class BotInventoryManager {
     private static final String RESERVED_EQUIPS_CATEGORY_PREFIX = "equips:reserved:";
     private static final Map<Integer, Optional<StatEffect>> itemEffectCache = new ConcurrentHashMap<>();
     private record PreparedTradeItems(List<Item> items, String errorMessage) {}
-    private record EquipTradeGroups(List<Item> normal,
+    record EquipTradeGroups(List<Item> normal,
                                     List<Item> reservedForOther,
                                     List<Item> reservedForSelf) {
         List<Item> itemsFor(EquipsGroup group) {
@@ -2252,7 +2252,68 @@ class BotInventoryManager {
         return "no-npc-price";
     }
 
+    /** Per-bot cache of the (expensive) equip trade classification. {@code isReservedForOtherRecipients}
+     *  runs the optimizer-reserve check for every bag equip against every party member, so a cramped
+     *  bag re-classifying each tick melts a timer thread (~150ms x N ticks). Cache the result and
+     *  reuse it until the bag changes (signature) or a short TTL lapses (teammate-gear drift, which
+     *  the bag signature can't see). Reused everywhere, including the shop sell sequence. */
+    private static final long EQUIP_TRADE_GROUPS_TTL_MS = 3_000L;
+
+    static final class EquipTradeGroupsCache {
+        private final long bagSignature;
+        private final long computedAtMs;
+        private final EquipTradeGroups groups;
+
+        EquipTradeGroupsCache(long bagSignature, long computedAtMs, EquipTradeGroups groups) {
+            this.bagSignature = bagSignature;
+            this.computedAtMs = computedAtMs;
+            this.groups = groups;
+        }
+    }
+
+    // Cheap, order-independent fingerprint of the EQUIP bag: which slots hold which items, plus a
+    // light stat fold so an in-place scroll/upgrade also invalidates. Slot positions are unique
+    // within a tab, so XOR-combining per-item hashes can't collide on a re-ordered list().
+    private static long equipBagSignature(Character bot) {
+        Inventory inv = bot != null ? bot.getInventory(InventoryType.EQUIP) : null;
+        if (inv == null) {
+            return 0L;
+        }
+        long sig = 0L;
+        int n = 0;
+        for (Item item : inv.list()) {
+            long h = ((long) item.getItemId() * 2654435761L) ^ ((long) item.getPosition() * 40503L);
+            if (item instanceof Equip e) {
+                h ^= ((long) (e.getStr() + e.getDex() * 7 + e.getInt() * 13 + e.getLuk() * 17
+                        + e.getWatk() * 23 + e.getMatk() * 29)) << 24;
+            }
+            sig ^= h;
+            n++;
+        }
+        return sig ^ ((long) n << 56);
+    }
+
     private static EquipTradeGroups classifyEquipTradeGroups(BotEntry entry, Character bot) {
+        // No entry = @autosell preview on a real player's character: always classify fresh (no bot
+        // state to cache on, and the admin wants a live answer).
+        if (entry == null || bot == null) {
+            return computeEquipTradeGroups(entry, bot);
+        }
+        long signature = equipBagSignature(bot);
+        long now = System.currentTimeMillis();
+        EquipTradeGroupsCache cached = entry.cachedEquipTradeGroups;
+        if (cached != null && cached.bagSignature == signature
+                && now - cached.computedAtMs < EQUIP_TRADE_GROUPS_TTL_MS) {
+            return cached.groups;
+        }
+        EquipTradeGroups groups = computeEquipTradeGroups(entry, bot);
+        // Single volatile swap of an immutable holder: a concurrent classify (trades run on timer
+        // threads) at worst recomputes once, never reads a torn signature/groups pair.
+        entry.cachedEquipTradeGroups = new EquipTradeGroupsCache(signature, now, groups);
+        return groups;
+    }
+
+    private static EquipTradeGroups computeEquipTradeGroups(BotEntry entry, Character bot) {
         long startedAt = profileTradeCategory("equips") ? System.nanoTime() : 0L;
         long bagScanStartedAt = startedAt != 0L ? System.nanoTime() : 0L;
         List<Item> all = new ArrayList<>();
