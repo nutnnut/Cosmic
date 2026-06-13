@@ -1282,12 +1282,14 @@ class BotInventoryManager {
     }
 
     private static Character resolveTradeRecipient(BotEntry entry, Character bot) {
+        // While an admin debug binding is fresh, command-driven trades open with the admin commander
+        // instead of the bot's real owner so the admin can give/take items for debugging.
+        Character owner = BotManager.getInstance().commanderOrOwner(entry);
         int recipientId = entry.pendingTradeRecipientId;
         if (recipientId <= 0) {
-            return entry.owner;
+            return owner;
         }
 
-        Character owner = entry.owner;
         if (owner != null && owner.getId() == recipientId) {
             return owner;
         }

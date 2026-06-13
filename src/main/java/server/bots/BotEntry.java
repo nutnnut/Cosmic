@@ -241,6 +241,15 @@ public class BotEntry {
     // pushes a fresh STAND broadcast once the timer expires.
     boolean alertResetScheduled = false;
 
+    // Transient admin-debug commander binding: when a gm6 admin name-targets this bot (even one
+    // they don't own, or an independent/self-owned bot), the bot interacts with the admin instead
+    // of its real owner for a short window. Only reply delivery, follow-anchor, trade-with-owner,
+    // and pendingAction confirmations honor this; autopilot/owner-afk/party logic ignore it. The
+    // real owner issuing any command clears it (owner wins). Cleared implicitly on despawn since
+    // the BotEntry object is discarded. 0 / 0L = unbound.
+    volatile int debugCommanderId = 0;
+    volatile long debugCommanderUntilMs = 0L;
+
     // Most recent command the owner issued that handleChat actually matched.
     // Used by SituationBuilder to give the LLM context like "owner told you to
     // farm here 3 min ago" so 'what are you doing' answers stay coherent.

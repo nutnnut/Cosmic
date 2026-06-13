@@ -29,6 +29,24 @@ final class BotCommandParser {
         return new BotTransferCommand(matcher.group(1), matcher.group(2));
     }
 
+    /** Name-only variant for admin cross-owner targeting: numeric slot tokens are owner-list
+     *  positions and must never select from a global list of other players' bots. */
+    static TargetedBotMatch resolveTargetedBotByName(List<BotEntry> entries, String message) {
+        if (entries == null || entries.isEmpty()) {
+            return new TargetedBotMatch(null, null, null);
+        }
+        TargetedBotCommand targetedCommand = parseTargetedBotCommand(message);
+        if (targetedCommand == null) {
+            return new TargetedBotMatch(null, null, null);
+        }
+        for (BotEntry entry : entries) {
+            if (entry.bot.getName().equalsIgnoreCase(targetedCommand.targetToken())) {
+                return new TargetedBotMatch(entry, targetedCommand.commandText(), null);
+            }
+        }
+        return new TargetedBotMatch(null, null, null);
+    }
+
     static TargetedBotMatch resolveTargetedBot(List<BotEntry> entries, String message) {
         if (entries == null || entries.isEmpty()) {
             return new TargetedBotMatch(null, null, null);

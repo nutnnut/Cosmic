@@ -1128,7 +1128,9 @@ public class BotChatManager {
 
         if (TRADE_INVITE_PATTERN.matcher(message).find()) {
             Character bot = entry.bot;
-            Character owner = entry.owner;
+            // Honor a fresh admin-debug binding so "<bot> trade me" from a commanding admin opens
+            // the trade with the admin instead of the real owner.
+            Character owner = BotManager.getInstance().commanderOrOwner(entry);
             if (owner != null && bot.getTrade() == null && owner.getTrade() == null
                     && entry.pendingTradeCategory == null) {
                 BotManager.after(BotManager.randMs(600, 1000), () -> {

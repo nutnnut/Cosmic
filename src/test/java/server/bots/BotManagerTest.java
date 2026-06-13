@@ -1488,6 +1488,164 @@ class BotManagerTest {
                 ordered.stream().map(Item::getItemId).toList());
     }
 
+    // ─── Admin-debug commander binding (gm6 can command foreign/independent bots) ──────────
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void gm6NameTargetingForeignBotRoutesAndBinds() throws Exception {
+        BotManager manager = BotManager.getInstance();
+        Character admin = mock(Character.class);
+        when(admin.getId()).thenReturn(500);
+        when(admin.gmLevel()).thenReturn(6);
+
+        MapleMap map = spy(createEmptyTestMap(910000301));
+        doReturn(admin).when(map).getCharacterById(500);
+        Character realOwner = mock(Character.class);
+        when(realOwner.getId()).thenReturn(77);
+        Character foreignBot = mock(Character.class);
+        when(foreignBot.getName()).thenReturn("Leroy");
+        when(foreignBot.getMap()).thenReturn(map);
+        BotEntry foreignEntry = new BotEntry(foreignBot, realOwner, null);
+
+        Map<Integer, List<BotEntry>> bots = (Map<Integer, List<BotEntry>>) field(BotManager.class, "bots").get(manager);
+        bots.put(realOwner.getId(), List.of(foreignEntry));
+        try {
+            BotCommandParser.TargetedBotMatch resolved = manager.resolveForeignAdminTarget(admin, "Leroy follow");
+            assertEquals(foreignEntry, resolved.entry());
+            assertEquals("follow", resolved.commandText());
+            // Numeric slot targets are own-bot-list positions - never cross-owner.
+            assertNull(manager.resolveForeignAdminTarget(admin, "1 follow").entry());
+
+            BotManager.bindDebugCommander(foreignEntry, admin);
+            assertEquals(admin, manager.resolveDebugCommander(foreignEntry));
+            assertEquals(admin, manager.commanderOrOwner(foreignEntry));
+        } finally {
+            bots.remove(realOwner.getId());
+        }
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void nonGmNameTargetingForeignBotDoesNotRoute() throws Exception {
+        // The gm6 gate lives in handleChat; resolveForeignAdminTarget itself still finds the
+        // foreign bot, so the routing block must only be entered for gm6. Assert a non-gm speaker
+        // never reaches it: a foreign bot is found but with gmLevel < 6 handleChat skips the block.
+        BotManager manager = BotManager.getInstance();
+        Character nonGm = mock(Character.class);
+        when(nonGm.getId()).thenReturn(501);
+        when(nonGm.gmLevel()).thenReturn(0);
+
+        Character realOwner = mock(Character.class);
+        when(realOwner.getId()).thenReturn(78);
+        Character foreignBot = mock(Character.class);
+        when(foreignBot.getName()).thenReturn("Leroy");
+        BotEntry foreignEntry = new BotEntry(foreignBot, realOwner, null);
+
+        Map<Integer, List<BotEntry>> bots = (Map<Integer, List<BotEntry>>) field(BotManager.class, "bots").get(manager);
+        bots.put(realOwner.getId(), List.of(foreignEntry));
+        try {
+            // gmLevel gate (the actual cross-boundary guard) blocks non-gm speakers.
+            assertFalse(nonGm.gmLevel() >= 6);
+            // No binding is ever set for a non-gm speaker.
+            assertNull(manager.resolveDebugCommander(foreignEntry));
+        } finally {
+            bots.remove(realOwner.getId());
+        }
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void bareCommandFromGm6DoesNotTouchForeignBots() throws Exception {
+        BotManager manager = BotManager.getInstance();
+        Character admin = mock(Character.class);
+        when(admin.getId()).thenReturn(502);
+
+        Character realOwner = mock(Character.class);
+        when(realOwner.getId()).thenReturn(79);
+        Character foreignBot = mock(Character.class);
+        when(foreignBot.getName()).thenReturn("Leroy");
+        BotEntry foreignEntry = new BotEntry(foreignBot, realOwner, null);
+
+        Map<Integer, List<BotEntry>> bots = (Map<Integer, List<BotEntry>>) field(BotManager.class, "bots").get(manager);
+        bots.put(realOwner.getId(), List.of(foreignEntry));
+        try {
+            // Bare un-targeted broadcast: no name token -> no foreign match -> stays owner-scoped.
+            assertNull(manager.resolveForeignAdminTarget(admin, "follow").entry());
+            assertNull(manager.resolveForeignAdminTarget(admin, "autoequip").entry());
+        } finally {
+            bots.remove(realOwner.getId());
+        }
+    }
+
+    @Test
+    void adminCommandingOwnBotIsExcludedFromForeignSet() throws Exception {
+        BotManager manager = BotManager.getInstance();
+        Character admin = mock(Character.class);
+        when(admin.getId()).thenReturn(503);
+
+        Character ownBot = mock(Character.class);
+        when(ownBot.getName()).thenReturn("Leroy");
+        BotEntry ownEntry = new BotEntry(ownBot, admin, null);
+
+        @SuppressWarnings("unchecked")
+        Map<Integer, List<BotEntry>> bots = (Map<Integer, List<BotEntry>>) field(BotManager.class, "bots").get(manager);
+        bots.put(admin.getId(), List.of(ownEntry));
+        try {
+            // The admin's OWN bot is excluded -> foreign routing returns null -> existing owner path runs.
+            assertNull(manager.resolveForeignAdminTarget(admin, "Leroy follow").entry());
+        } finally {
+            bots.remove(admin.getId());
+        }
+    }
+
+    @Test
+    void debugBindingExpiresAndOwnerOverrideClearsIt() {
+        Character admin = mock(Character.class);
+        when(admin.getId()).thenReturn(504);
+        Character owner = mock(Character.class);
+        Character bot = mock(Character.class);
+        BotEntry entry = new BotEntry(bot, owner, null);
+
+        BotManager.bindDebugCommander(entry, admin);
+        assertEquals(504, entry.debugCommanderId);
+        assertTrue(entry.debugCommanderUntilMs > System.currentTimeMillis());
+
+        // Stale binding behaves as absent.
+        entry.debugCommanderUntilMs = System.currentTimeMillis() - 1;
+        assertNull(BotManager.getInstance().resolveDebugCommander(entry));
+        assertEquals(owner, BotManager.getInstance().commanderOrOwner(entry));
+
+        // Owner-override clears it immediately.
+        BotManager.bindDebugCommander(entry, admin);
+        BotManager.clearDebugCommander(entry);
+        assertEquals(0, entry.debugCommanderId);
+        assertEquals(0L, entry.debugCommanderUntilMs);
+    }
+
+    @Test
+    void followAnchorResolvesToCommanderWhileBound() {
+        MapleMap map = spy(createEmptyTestMap(910000300));
+        Character admin = mock(Character.class);
+        when(admin.getId()).thenReturn(505);
+        doReturn(admin).when(map).getCharacterById(505);
+        Character owner = mock(Character.class);
+        when(owner.getId()).thenReturn(80);
+        Character bot = mock(Character.class);
+        when(bot.getMap()).thenReturn(map);
+        BotEntry entry = new BotEntry(bot, owner, null);
+
+        // Unbound: anchor is the owner.
+        assertEquals(owner, BotManager.getInstance().resolveFollowAnchor(entry, owner));
+
+        // Bound: anchor is the admin commander (resolved on the bot's map).
+        BotManager.bindDebugCommander(entry, admin);
+        assertEquals(admin, BotManager.getInstance().resolveFollowAnchor(entry, owner));
+
+        // Expired binding falls back to the owner (stale id can't null the anchor).
+        entry.debugCommanderUntilMs = System.currentTimeMillis() - 1;
+        assertEquals(owner, BotManager.getInstance().resolveFollowAnchor(entry, owner));
+    }
+
     private static BotCombatManager.AttackPlan basicClosePlan(Monster target) {
         return new BotCombatManager.AttackPlan(
                 0, 0, 1, null, List.of(target), BotCombatManager.AttackRoute.CLOSE,

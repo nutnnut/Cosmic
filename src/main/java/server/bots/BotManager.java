@@ -249,6 +249,7 @@ public class BotManager {
             if (entry == null || entry.bot == null || entry.bot.getId() == target.getId()) {
                 continue;
             }
+            clearDebugCommander(entry); // real owner commands -> owner wins
             BotChatManager.queueBotReply(entry, randomReply(List.of(
                     "ok",
                     "k",
@@ -1077,6 +1078,25 @@ public class BotManager {
             return;
         }
 
+        // ADMIN DEBUG ROUTING: a gm6 admin may name-target ANY spawned bot - including bots they
+        // don't own and independent/self-owned bots - to interact with and debug it. Only
+        // name-targeted commands cross the ownership boundary (bare broadcasts stay owner-scoped),
+        // and the admin's OWN bots are excluded here so they keep the existing owner path below.
+        // Placed before the own-bots fetch so an admin who owns zero bots can still command foreign
+        // ones.
+        if (owner.gmLevel() >= 6) {
+            BotCommandParser.TargetedBotMatch foreignMatch = resolveForeignAdminTarget(owner, message);
+            BotEntry foreign = foreignMatch.entry();
+            if (foreign != null) {
+                bindDebugCommander(foreign, owner);
+                foreign.replyChannel = channel;
+                if (foreignMatch.commandText() != null) {
+                    BotChatManager.handleChat(foreign, foreignMatch.commandText());
+                }
+                return;
+            }
+        }
+
         List<BotEntry> entries = bots.get(owner.getId());
         if (entries == null || entries.isEmpty()) return;
 
@@ -1100,6 +1120,7 @@ public class BotManager {
                 applyFollowTargetCommand(owner, List.of(targetedBot.entry()), followTargetToken);
                 return;
             }
+            clearDebugCommander(targetedBot.entry()); // real owner commands -> owner wins
             targetedBot.entry().replyChannel = channel;
             String cmd = targetedBot.commandText();
             if (server.bots.llm.BotLlmConfig.typoSuggesterEnabled) {
@@ -1157,6 +1178,7 @@ public class BotManager {
         if (BotChatManager.isGroupSupplyRequest(message)) {
             BotEntry responder = pickGroupSupplyResponder(owner, entries);
             if (responder != null) {
+                clearDebugCommander(responder); // real owner commands -> owner wins
                 responder.replyChannel = channel;
                 BotChatManager.handleChat(responder, message);
             }
@@ -1174,6 +1196,7 @@ public class BotManager {
             }
         }
         for (BotEntry entry : entries) {
+            clearDebugCommander(entry); // real owner commands -> owner wins
             entry.replyChannel = channel;
             BotChatManager.handleChat(entry, message);
         }
@@ -1368,7 +1391,77 @@ public class BotManager {
         return ownerFormations.getOrDefault(owner.getId(), FormationState.defaultStagger());
     }
 
+    // Admin-debug commander binding: a gm6 admin commanding a foreign/independent bot temporarily
+    // makes the bot interact with the admin instead of its real owner. ~5 min window, refreshed by
+    // each admin command.
+    static final long DEBUG_COMMANDER_TTL_MS = 5 * 60_000L;
+
+    private static boolean isDebugCommanderFresh(BotEntry entry) {
+        return entry != null && entry.debugCommanderId > 0
+                && System.currentTimeMillis() < entry.debugCommanderUntilMs;
+    }
+
+    static void bindDebugCommander(BotEntry entry, Character commander) {
+        if (entry == null || commander == null) {
+            return;
+        }
+        entry.debugCommanderId = commander.getId();
+        entry.debugCommanderUntilMs = System.currentTimeMillis() + DEBUG_COMMANDER_TTL_MS;
+    }
+
+    static void clearDebugCommander(BotEntry entry) {
+        if (entry != null) {
+            entry.debugCommanderId = 0;
+            entry.debugCommanderUntilMs = 0L;
+        }
+    }
+
+    /** The bound admin commander while the binding is fresh, else null. Resolves the Character via
+     *  the bot's current map (the admin name-targeted a bot they can see). */
+    Character resolveDebugCommander(BotEntry entry) {
+        if (!isDebugCommanderFresh(entry) || entry.bot == null || entry.bot.getMap() == null) {
+            return null;
+        }
+        return entry.bot.getMap().getCharacterById(entry.debugCommanderId);
+    }
+
+    /** Who command-driven interactions (trade-with-owner, follow) should target: the fresh admin
+     *  commander if bound and resolvable, else the real owner. */
+    Character commanderOrOwner(BotEntry entry) {
+        Character commander = resolveDebugCommander(entry);
+        return commander != null ? commander : entry.owner;
+    }
+
+    /**
+     * Resolve a foreign spawned bot a gm6 admin name-targeted. "Foreign" = any spawned bot whose
+     * real owner is not the speaker (includes independent/self-owned bots and autopilot bots with
+     * offline owners). Name matches only — numeric slot targets keep their own-bot-list meaning.
+     * The returned match has a null entry when the message is not name-targeted at a foreign bot
+     * (the speaker's own bots keep the existing owner path).
+     */
+    BotCommandParser.TargetedBotMatch resolveForeignAdminTarget(Character speaker, String message) {
+        if (speaker == null) {
+            return new BotCommandParser.TargetedBotMatch(null, null, null);
+        }
+        int speakerId = speaker.getId();
+        List<BotEntry> foreign = new ArrayList<>();
+        for (List<BotEntry> ownerEntries : bots.values()) {
+            for (BotEntry entry : ownerEntries) {
+                Character entryOwner = entry.owner;
+                if (entryOwner == null || entryOwner.getId() != speakerId) {
+                    foreign.add(entry);
+                }
+            }
+        }
+        return BotCommandParser.resolveTargetedBotByName(foreign, message);
+    }
+
     Character resolveFollowAnchor(BotEntry entry, Character owner) {
+        // While an admin debug binding is fresh, the bot follows the admin around for debugging.
+        Character commander = resolveDebugCommander(entry);
+        if (commander != null) {
+            return commander;
+        }
         if (owner == null) {
             return null;
         }
@@ -4299,7 +4392,8 @@ public class BotManager {
         switch (entry.replyChannel) {
             case PARTY -> botSayParty(entry.bot, text);
             case WHISPER -> {
-                Character owner = entry.owner;
+                // While an admin debug binding is fresh, whisper replies go to the commander.
+                Character owner = commanderOrOwner(entry);
                 if (owner != null && owner.getClient() != null) {
                     owner.sendPacket(PacketCreator.getWhisperReceive(
                             entry.bot.getName(),
