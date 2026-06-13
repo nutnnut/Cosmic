@@ -231,6 +231,18 @@ public class BotEntry {
     long questErrandStartedAtMs = 0L;    // abort the errand if it can't reach the NPC in time
     long nextQuestScanAtMs = 0L;
 
+    // Gachapon errand (BotGachaponManager): autopilot-only. When the bot has spare account NX (from
+    // looted NX cards), it picks the best-EV reachable gachapon town, travels to the NPC, buys
+    // tickets (abstracted cash-shop purchase) and rolls. gachaErrandMapId = -1 when no trip is
+    // active. Reset in clearGachaErrand() (called from BotAutopilotManager.clear).
+    int gachaErrandMapId = -1;
+    int gachaErrandNpcId = 0;
+    long gachaErrandStartedAtMs = 0L;    // abort the trip if it can't reach the NPC in time
+    int gachaTicketsThisTrip = 0;        // capped by GACHA_TICKETS_PER_TRIP
+    long gachaNextRollAtMs = 0L;         // humanlike pacing between rolls
+    long nextGachaScanAtMs = 0L;
+    long gachaNextRareChatAtMs = 0L;     // rate-limit the "got <rare>!" shout
+
     // Supervised-mode quest AUTO-SUGGEST (Feature A): when the owner is online and the bot is at
     // their side, the bot occasionally SUGGESTS a standout nearby quest in chat (it never wanders
     // off to do it - that's autopilot's job). nextQuestSuggestAtMs is the multi-minute cooldown;

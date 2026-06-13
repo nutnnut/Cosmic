@@ -102,6 +102,18 @@ public class BotManager {
         // so pathing failures remain visible in logs and at runtime.
         public boolean ENABLE_UNSTUCK = false;
 
+        // Gachapon (BotGachaponManager): autopilot bots spend NX earned from looted NX cards on
+        // gachapon, chasing uniques by expected value. Kill switch + the spend knobs, all visible.
+        public boolean GACHAPON_ENABLED = true;
+        // Keep at least this much account NX in reserve - bots gamble only the surplus above it.
+        public int GACHA_NX_RESERVE = 1_000;
+        // Tickets bought+rolled per trip cap (humanlike: a session at the machine, not infinite).
+        public int GACHA_TICKETS_PER_TRIP = 5;
+        // A town's net score (expected item value per roll minus ticket price and travel penalty,
+        // in NX-equivalent units) must clear this for the bot to make the trip - otherwise it hoards
+        // the NX for a better/closer pool. Positive so the pull must beat its own ticket cost.
+        public double GACHA_MIN_NET_EV = 50.0;
+
     }
 
     /** Singleton config — replace with `cfg = new Config()` after hotswapping to reset. */
@@ -3774,6 +3786,9 @@ public class BotManager {
         if (perf) t = System.nanoTime();
         BotQuestManager.tickScan(entry, bot);
         if (perf) BotPerformanceMonitor.record("common-quest-scan", System.nanoTime() - t);
+        if (perf) t = System.nanoTime();
+        BotGachaponManager.tickScan(entry, bot);
+        if (perf) BotPerformanceMonitor.record("common-gacha-scan", System.nanoTime() - t);
         if (perf) t = System.nanoTime();
         BotInventoryManager.tickTrade(entry, bot);
         if (perf) BotPerformanceMonitor.record("common-trade", System.nanoTime() - t);
