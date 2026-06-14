@@ -315,6 +315,21 @@ the nearest reachable shop that fits the need (pots→potion shop, full-bag/ammo
 `BotShopManager.findNearestShopMap`, falling back to the return town. So this confirms the "none walked"
 cause was NOT grinding=false — it was the town-only errand target.
 
+## 4d. Perf: 302ms `potion-recovery-scan` tick stall (RESOLVED)
+
+WARN: `Bot tick stall: Bowgurl ... 302ms ... potion-autopot=302ms,potion-recovery-scan=302ms`.
+**Root cause:** a freshly-spawned bot's first potion scan resolves ~all its USE-item `StatEffect`s from
+WZ inline. `BotInventoryManager.itemEffect` is a global `ConcurrentHashMap` cache, so this is a one-time
+**cold** load (89 first-resolutions), amplified by ~6 bots booting together. Steady-state is cheap (warm
+= map-get + a few field reads per item) — there is no recurring scan problem; an id-prefix pre-filter was
+rejected (heal items span 2000/2001/2002/2010/2012/2020/2022/2210-2212 — `isConsumable` is NOT a safe
+superset, would silently drop some). **Fix:** `tickPotionCheck` defers until `potionEffectsReady` warms
+the bot's USE effects off-thread, so the cold load never lands on the monitored tick (autopot setup is a
+tick or two late at spawn — harmless); the warm also populates shared potion ids for all bots. Hardened
+so a scheduler failure falls back to the old inline behavior rather than disabling autopot. Note: a unit
+microbenchmark is infeasible (ItemInformationProvider's WZ/DB init can't run in tests, per the seams);
+the empirical "before" is the 302ms production WARN, the "after" is that load moved off the tick.
+
 ## 5. Change log (this session)
 
 - 2026-06-13: Diagnosis complete. DB confirms ETC 96/96 cramped + sellable items present → detection is
