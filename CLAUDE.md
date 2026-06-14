@@ -73,8 +73,9 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 This fork's sole focus is AI companion bots. These rules govern all bot-related work.
 1. Bots must share player code, not duplicate it. Bot should play legally, before implementing any bot behavior, check if a player counterpart exists. If it does, use it. If it's not accessible, extract/refactor it rather than reimplementing.
 2. Avoid touching non-bot code unless necessary. Minimize upstream diff, make non-bot code changes only when required to expose/extract functionality for bots. Keep those changes minimal and focused.
-3. Whenever applicable and appropriate, bot should be smart, thinking dynamically, and adaptable to situations, have some humanlike behavior and some randomness factor like delay jitter. Emergent behaviors are more fun and preferred over scripted behaviors. Ex. user asked to make bot autopilot to find gear upgrades, instead of hardcoding items/locations, actual calculation are made based on location, potential stat gains, exp/hr, scrolls drops, shared party goals.
+3. Bot features should be smart, dynamical, and adaptable to situations, have humanlike behavior and some randomness factor like delay jitter. Emergent behaviors are more fun and preferred over scripted behaviors. Ex. user asked to make bot autopilot to find gear upgrades, instead of hardcoding items/locations, actual calculation are made based on location, potential stat gains, exp/hr, scrolls drops, shared party goals.
 4. Skip navigation and graphbuilding tests unless touched, those take really long and dominate tests waiting time.
 5. Whenever asked to write kb/doc as repo scope, should write directly in repo so it could be seamlessly shared across computers/git/agents, do not write to pc scope memory unless truly local scoped
 - What tools are available locally -> local memory allowed
 - Project specific documents -> write in project somewhere git will reach)
+6. Uses SSOT whenever appropriate, avoid making parallel implementation (prime example being, scoring equipments/items value)
