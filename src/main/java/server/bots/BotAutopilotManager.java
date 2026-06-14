@@ -751,10 +751,6 @@ final class BotAutopilotManager {
     // the leader holds when somebody falls behind. The straggler thresholds (portal hops and
     // same-map px, with hysteresis) live in BotManager.Config so they're tunable at runtime.
     private static final long STRAGGLER_CHECK_INTERVAL_MS = 3_000L;
-    private static final List<String> WAIT_REPLIES = List.of(
-            "waiting up for the others",
-            "hold on, letting the others catch up",
-            "ill hold here a bit for the group");
 
     // Test seams: member enumeration touches the live registry/party; hop distance the world graph.
     @FunctionalInterface
@@ -1040,9 +1036,8 @@ final class BotAutopilotManager {
                 }
             }
         }
-        if (waiting && !wasWaiting) {
-            reply.accept(entry, BotManager.randomReply(WAIT_REPLIES));
-        }
+        // The wait-for-stragglers announcement is intentionally silent: the hold is frequent
+        // during transit and the chatter was noise. The verdict still shows in the pathlog.
         entry.autopilotWaitingForStragglers = waiting;
         entry.autopilotStragglerReason = reason; // null when this recompute decided NOT to wait
         return waiting;

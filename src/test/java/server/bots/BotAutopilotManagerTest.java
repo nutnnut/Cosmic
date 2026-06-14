@@ -360,14 +360,14 @@ class BotAutopilotManagerTest {
             // Straggler too far: travel is skipped, the tick falls through to grinding here.
             assertFalse(BotAutopilotManager.tick(leader.entry(), leader.bot(), true));
             assertTrue(leader.entry().autopilotWaitingForStragglers);
-            assertEquals(1, seams.replies.size()); // announced once, on the state edge
+            assertEquals(0, seams.replies.size()); // the wait hold is silent now (no chatter)
 
             // Caught up: next check clears the hold and travel resumes.
             leader.entry().autopilotNextStragglerCheckAtMs = 0L;
             BotAutopilotManager.hopDistance = (from, to) -> 1;
             assertTrue(BotAutopilotManager.tick(leader.entry(), leader.bot(), true));
             assertFalse(leader.entry().autopilotWaitingForStragglers);
-            assertEquals(1, seams.replies.size());
+            assertEquals(0, seams.replies.size());
         }
     }
 
