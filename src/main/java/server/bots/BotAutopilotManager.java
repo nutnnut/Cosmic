@@ -842,6 +842,23 @@ final class BotAutopilotManager {
     }
 
     /**
+     * A member is AHEAD of the leader — at or closer to the grind destination — when its hop
+     * distance to the destination is strictly less than the leader's. Such a member isn't a
+     * straggler: it has already advanced where the group is headed, so the leader must not hold
+     * for it. This guards the leader-relative {@code hops(member, leader)} check, which routes
+     * BACKWARD from a member sitting at/past the destination and exceeds the hop cap -> MAX_VALUE,
+     * falsely flagging it (pathlog-Bowgurl 2026-06-14T11:25: a member parked at destMap while the
+     * leader was still in town after a resupply). Conservative under the hop cap: when both sides
+     * are farther than the cap they both read MAX, {@code MAX < MAX} is false, and the leader still
+     * waits — fail-safe, never masking a genuine straggler. The rare case of a member ahead AND
+     * beyond the cap reads as not-ahead (leader waits) but is non-regressive and transient.
+     * {@code leaderHopsToDest} is passed precomputed so the caller hoists it out of its member loop.
+     */
+    static boolean aheadOfLeaderTowardDest(int memberMapId, int destMapId, int leaderHopsToDest) {
+        return hopDistance.hops(memberMapId, destMapId) < leaderHopsToDest;
+    }
+
+    /**
      * The cohesion leader: the first party member NOT off on a resupply errand
      * ({@code autopilotErrandMapId == -1}). A resupplying bot handles its own town trip
      * independently (the line-343 gate already keeps it out of cohesion), so followers must
@@ -978,6 +995,12 @@ final class BotAutopilotManager {
                 ? BotManager.cfg.SAME_MAP_STRAGGLER_RESUME_PX
                 : BotManager.cfg.SAME_MAP_STRAGGLER_PX;
         Point leaderPos = bot.getPosition();
+        // Hoisted out of the loop (member-independent): how far the leader itself is from the grind
+        // destination, used to tell members that are AHEAD (already at/closer to dest) from ones
+        // that are BEHIND. Cohesion only runs with no errand active (tick() line ~375), so the
+        // destination is always autopilotMapId here.
+        int destMapId = entry.autopilotMapId;
+        int leaderHopsToDest = hopDistance.hops(bot.getMapId(), destMapId);
         boolean waiting = false;
         String reason = null; // captured for the pathlog: which member tripped the hold, and how
         for (BotEntry member : members) {
@@ -986,7 +1009,8 @@ final class BotAutopilotManager {
                 continue; // a resupplying member runs its own town trip; never wait on it
             }
             int memberHops = hopDistance.hops(member.bot.getMapId(), bot.getMapId());
-            if (memberHops > BotManager.cfg.STRAGGLER_WAIT_HOPS) {
+            if (memberHops > BotManager.cfg.STRAGGLER_WAIT_HOPS
+                    && !aheadOfLeaderTowardDest(member.bot.getMapId(), destMapId, leaderHopsToDest)) {
                 waiting = true;
                 reason = member.bot.getName() + " off-map (map=" + member.bot.getMapId()
                         + " hops=" + memberHops + " > " + BotManager.cfg.STRAGGLER_WAIT_HOPS + ")";

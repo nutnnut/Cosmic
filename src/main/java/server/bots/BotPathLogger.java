@@ -327,6 +327,11 @@ final class BotPathLogger {
         // hysteresis value (the same value waitingForStragglers uses on a holding tick).
         Point leaderPos = leader != null && leader.bot != null ? leader.bot.getPosition() : null;
         int leaderMap = leader != null && leader.bot != null ? leader.bot.getMapId() : -1;
+        // Mirror waitingForStragglers: a member at/closer to the grind dest than the leader is
+        // AHEAD, not behind, so it never trips the hops hold. Hoisted (member-independent).
+        int destMapId = entry.autopilotMapId;
+        int leaderHopsToDest = leaderMap < 0 ? Integer.MAX_VALUE
+                : BotAutopilotManager.hopDistance.hops(leaderMap, destMapId);
         int band = entry.autopilotWaitingForStragglers
                 ? BotManager.cfg.SAME_MAP_STRAGGLER_RESUME_PX
                 : BotManager.cfg.SAME_MAP_STRAGGLER_PX;
@@ -353,13 +358,17 @@ final class BotPathLogger {
             String detail;
             if (memberMap != leaderMap) {
                 int hops = -1;
+                boolean ahead = false;
                 try {
                     hops = BotAutopilotManager.hopDistance.hops(memberMap, leaderMap);
+                    ahead = BotAutopilotManager.aheadOfLeaderTowardDest(memberMap, destMapId, leaderHopsToDest);
                 } catch (RuntimeException ignored) {
                     // best-effort; an unmapped pair just shows hops=-1
                 }
-                boolean straggler = hops < 0 || hops > BotManager.cfg.STRAGGLER_WAIT_HOPS;
-                detail = "map=" + memberMap + " hops=" + hops + (straggler ? "  *STRAGGLER(hops)*" : "");
+                boolean straggler = !ahead && (hops < 0 || hops > BotManager.cfg.STRAGGLER_WAIT_HOPS);
+                detail = "map=" + memberMap + " hops=" + hops
+                        + (ahead ? " ahead(toDest<leader)" : "")
+                        + (straggler ? "  *STRAGGLER(hops)*" : "");
             } else {
                 Point mp = m.bot.getPosition();
                 if (leaderPos == null || mp == null) {

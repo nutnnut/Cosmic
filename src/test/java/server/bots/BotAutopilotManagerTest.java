@@ -557,6 +557,33 @@ class BotAutopilotManagerTest {
     }
 
     @Test
+    void shouldNotWaitForMemberAlreadyAtTheDestination() {
+        // Regression for pathlog-Bowgurl 2026-06-14T11:25: leader stuck in town after a resupply
+        // while a member sat AT the grind destination. hops(member -> leaderTown) routes backward
+        // and exceeds the cap -> MAX_VALUE, so the leader waited forever for a bot that had arrived.
+        // The member is AHEAD (0 hops to dest vs the leader's many), not behind, so no hold.
+        Fixture leader = fixture(TOWN, onlineOwner());
+        Fixture atDest = fixture(HUNTING_GROUND, onlineOwner());
+        for (Fixture f : List.of(leader, atDest)) {
+            f.entry().autopilotMapId = HUNTING_GROUND;
+            f.entry().autopilotParty = true;
+            f.entry().autopilotNextDecisionAtMs = Long.MAX_VALUE;
+            f.entry().grinding = true;
+        }
+
+        try (Seams seams = new Seams(null)) {
+            BotAutopilotManager.partyMembers = entry -> List.of(leader.entry(), atDest.entry());
+            // Pair-keyed: same map -> 0 hops; any cross-map pair is unreachable within the cap (MAX).
+            // memberHops = hops(dest, town) = MAX > 1 (enters the hold branch); but the ahead guard
+            // sees memberToDest=hops(dest,dest)=0 < leaderToDest=hops(town,dest)=MAX -> ahead -> no wait.
+            BotAutopilotManager.hopDistance = (from, to) -> from == to ? 0 : Integer.MAX_VALUE;
+
+            assertFalse(waitingForStragglers(leader));
+            assertFalse(leader.entry().autopilotWaitingForStragglers);
+        }
+    }
+
+    @Test
     void shouldFollowNextNonResupplyingMemberWhenNominalLeaderIsResupplying() {
         // 3 members: members.get(0) is off on a resupply errand, so the effective cohesion
         // leader is members.get(1); the follower transit-follows THAT bot, not the absent one.
