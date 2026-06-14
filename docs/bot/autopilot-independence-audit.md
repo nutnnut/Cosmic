@@ -180,8 +180,12 @@ reimplement (project rule 1).
 - **Piggyback the existing town errand** (`BotShopManager` already navigates to NPCs in town): after the
   shop sell/buy tail, if a tab is still cramped, walk to the storage NPC and deposit maker-material
   overflow (keep a small working reserve). Reuses the trip — no new cooldown/trigger.
-- **OPEN QUESTION (needs investigation):** how to resolve the storage-keeper NPC per town + its position.
-  Check `Storage`/NPC-script wiring; storage is opened via NPC script. May need a town→NPC map.
+- **RESOLVED — storage-keeper NPC ids** (scripts calling `getStorage().sendStorage(client, npcId)`):
+  `1002005 1012009 1022005 1032006 1052017 1061008 1091004 1100000 1200000 2010006 2020004 2041008
+  2050004 2060008 2070000 2080005 2090000 2093003 2100000 2110000 9030100 9120009 9201081 9270042
+  9270054` (25). A bot recognizes a storage NPC on its current map by membership in this set — same way
+  `BotShopManager` recognizes a shop via `ShopFactory.getShopForNPC`. Deposit needs only proximity to the
+  NPC + `storeItem`; no NPC dialog server-side.
 - Storage is finite (`storage.getSlots()`), so deposit by value/priority and stop when full.
 
 ### 6e. Decisions for you (gate the risky bits)

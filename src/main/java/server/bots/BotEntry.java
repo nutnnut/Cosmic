@@ -209,6 +209,7 @@ public class BotEntry {
     int autopilotErrandMapId = -1;
     long autopilotNextErrandAtMs = 0L;
     long autopilotLastErrandLogAtMs = 0L; // throttle for the "couldn't start errand" diagnostic log
+    long sellBlockLogAtMs = 0L; // throttle for the cramped-bag "why isn't it selling" diagnostic log
     long autopilotOwnerSupplyGraceUntilMs = 0L;
     boolean autopilotReturningFromErrand = false;
     long autopilotLastDeathAtMs = 0L;

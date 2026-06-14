@@ -325,6 +325,14 @@ final class BotPotionManager {
         BotCombatManager.tickAmmoCheck(entry, bot);
         BotPerformanceMonitor.recordSince("potion-ammo-check", startedAt);
 
+        // Diagnostic BEFORE the grinding/following gate: an autopilot bot with a cramped bag that
+        // never walks to a shop is the open bug, and the leading suspects (grinding=false, etc) would
+        // make the later trigger branch silent. Log the full decision state here so the next live run
+        // is conclusive. Self-throttles and self-gates on "a bag is actually cramped".
+        if (BotAutopilotManager.isActive(entry)) {
+            BotShopManager.logSellBlockIfCramped(entry, bot);
+        }
+
         if (!entry.grinding && !entry.following) {
             return;
         }

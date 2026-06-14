@@ -173,6 +173,50 @@ final class BotShopManager {
         return inv != null && inv.getNumFreeSlot() <= AUTO_SELL_FREE_SLOT_THRESHOLD;
     }
 
+    private static final long SELL_BLOCK_LOG_THROTTLE_MS = 60_000L;
+
+    /**
+     * Diagnostic for "the bag is full but the bot never sells". Emitted (throttled per bot) whenever
+     * a tab is cramped, dumping every input the auto-sell decision depends on so a single live log
+     * line is conclusive instead of leaving us to guess at unobservable runtime state. Unlike the
+     * {@code bot-errand:} log (which only fires once the trigger branch is reached), this fires even
+     * when the bot is {@code !grinding} or {@code shouldAutoSellTrash} is false — the exact cases that
+     * would otherwise be silent. Grep {@code bot-sellblock}.
+     */
+    static void logSellBlockIfCramped(BotEntry entry, Character bot) {
+        if (entry == null || bot == null) {
+            return;
+        }
+        boolean equipCramped = isCramped(bot, InventoryType.EQUIP);
+        boolean useCramped = isCramped(bot, InventoryType.USE);
+        boolean etcCramped = isCramped(bot, InventoryType.ETC);
+        if (!equipCramped && !useCramped && !etcCramped) {
+            return; // nothing cramped — no stuck bag to explain
+        }
+        long now = System.currentTimeMillis();
+        if (now < entry.sellBlockLogAtMs + SELL_BLOCK_LOG_THROTTLE_MS) {
+            return;
+        }
+        entry.sellBlockLogAtMs = now;
+        int eqTrash = -1;
+        int useTrash = -1;
+        int etcTrash = -1;
+        boolean shouldSell = false;
+        try {
+            eqTrash = BotInventoryManager.collectSellTrashEquips(entry, bot).size();
+            useTrash = BotInventoryManager.collectSellTrashUseItems(bot).size();
+            etcTrash = BotInventoryManager.collectSellTrashEtcItems(bot).size();
+            shouldSell = shouldAutoSellTrash(entry, bot);
+        } catch (RuntimeException ignored) {
+            // diagnostic must never throw into the grind tick
+        }
+        log.info("bot-sellblock: {} cramped[eq={} use={} etc={}] sellableTrash[eq={} use={} etc={}] "
+                        + "shouldSell={} grinding={} following={} autopilot={} shopPending={} errandMap={}",
+                bot.getName(), equipCramped, useCramped, etcCramped, eqTrash, useTrash, etcTrash,
+                shouldSell, entry.grinding, entry.following, BotAutopilotManager.isActive(entry),
+                entry.shopVisitPending, entry.autopilotErrandMapId);
+    }
+
     static void requestSellTrashVisit(BotEntry entry, Character bot) {
         if (entry == null || bot == null || bot.getMap() == null) {
             return;
