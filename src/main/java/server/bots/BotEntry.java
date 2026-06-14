@@ -351,6 +351,11 @@ public class BotEntry {
     Item pendingScrollScroll = null;
     // Next armed auto-scan time (0 = schedule on the next tick); declines push it out.
     volatile long nextSelfScrollScanAtMs = 0L;
+    // Autocraft (Maker): armed by command, only proposes while a real owner is online (supervised).
+    // pendingCraftPlan holds the proposal while a "craft_confirm" pendingAction is open.
+    boolean craftEnabled = false;
+    BotMakerPlanner.CraftPlan pendingCraftPlan = null;
+    volatile long nextCraftScanAtMs = 0L;
 
     // Bot-initiated trade retry: when a pot-share / ammo-share / loot-offer is blocked
     // because the sender or recipient is already in a trade, the attempt is stored here

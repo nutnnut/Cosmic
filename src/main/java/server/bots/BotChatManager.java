@@ -515,6 +515,16 @@ public class BotChatManager {
     private static final Pattern MAKER_PLAN_COMMAND_PATTERN = Pattern.compile(
             "^\\s*(?:maker?\\s*plan|craft\\s*plan|what\\s+(?:can|should)\\s+(?:i|u|you)\\s+(?:craft|make)|what\\s+to\\s+craft)\\s*[?!.,]*\\s*$",
             Pattern.CASE_INSENSITIVE);
+    // Autocraft arming (supervised only): bot proposes gear crafts + asks before each.
+    private static final Pattern AUTOCRAFT_ON_PATTERN = Pattern.compile(
+            "^\\s*(?:auto\\s*craft\\s*(?:on)?|craft\\s+(?:my\\s+)?gear|start\\s+crafting)\\s*[?!.,]*\\s*$",
+            Pattern.CASE_INSENSITIVE);
+    private static final Pattern AUTOCRAFT_OFF_PATTERN = Pattern.compile(
+            "^\\s*(?:auto\\s*craft\\s*off|stop\\s+crafting|don'?t\\s+craft)\\s*[?!.,]*\\s*$",
+            Pattern.CASE_INSENSITIVE);
+    private static final Pattern AUTOCRAFT_NOW_PATTERN = Pattern.compile(
+            "^\\s*craft\\s+(?:something\\s+)?now\\s*[?!.,]*\\s*$",
+            Pattern.CASE_INSENSITIVE);
     private static final Pattern TRADE_USE_COMMAND_PATTERN = Pattern.compile(
             "\\b" + TRADE_CMD_VERB + "\\s+" + TRANSFER_RECIPIENT + TRANSFER_OWNER + USE_WORDS + "\\b",
             Pattern.CASE_INSENSITIVE);
@@ -774,6 +784,10 @@ public class BotChatManager {
             }
             if ("scroll_confirm".equals(entry.pendingAction)) {
                 BotScrollManager.handleScrollConfirm(entry, message);
+                return;
+            }
+            if ("craft_confirm".equals(entry.pendingAction)) {
+                BotMakerManager.handleCraftConfirm(entry, message);
                 return;
             }
             if (LOGOUT_CONFIRM_PATTERN.matcher(message).find()) {
@@ -1210,6 +1224,31 @@ public class BotChatManager {
 
         if (MAKER_PLAN_COMMAND_PATTERN.matcher(message).matches()) {
             BotManager.after(BotManager.randMs(300, 500), () -> exportMakerPlan(entry));
+            return;
+        }
+
+        if (AUTOCRAFT_OFF_PATTERN.matcher(message).matches()) {
+            BotManager.after(BotManager.randMs(400, 600), () -> {
+                entry.craftEnabled = false;
+                entry.pendingCraftPlan = null;
+                if ("craft_confirm".equals(entry.pendingAction)) {
+                    entry.pendingAction = null;
+                }
+                BotManager.getInstance().botReply(entry, "ok, ill stop crafting gear");
+            });
+            return;
+        }
+        if (AUTOCRAFT_NOW_PATTERN.matcher(message).matches()) {
+            BotManager.after(BotManager.randMs(400, 600), () -> BotMakerManager.requestCraftPass(entry));
+            return;
+        }
+        if (AUTOCRAFT_ON_PATTERN.matcher(message).matches()) {
+            BotManager.after(BotManager.randMs(400, 600), () -> {
+                entry.craftEnabled = true;
+                entry.nextCraftScanAtMs = 0L; // restart the auto-scan cadence
+                BotManager.getInstance().botReply(entry, "ok! ill craft gear upgrades, ill ask before each one");
+                BotManager.after(BotManager.randMs(700, 1000), () -> BotMakerManager.requestCraftPass(entry));
+            });
             return;
         }
 

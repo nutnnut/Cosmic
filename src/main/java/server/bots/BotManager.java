@@ -2380,6 +2380,7 @@ public class BotManager {
         }
 
         BotScrollManager.tickAutoScroll(entry, bot, nowMs);
+        BotMakerManager.tickAutoCraft(entry, bot, nowMs);
 
         if (owner == null && !BotAutopilotManager.isActive(entry)) {
             entry.following = false;

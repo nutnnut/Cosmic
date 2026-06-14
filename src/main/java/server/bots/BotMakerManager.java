@@ -115,6 +115,140 @@ final class BotMakerManager {
         }
     }
 
+    // ---- Autocraft: Maker gear progression, SUPERVISED only (real owner online) + per-craft permission ----
+    private static final int CRAFT_SCAN_MIN_MS = 120_000;
+    private static final int CRAFT_SCAN_MAX_MS = 240_000;
+    private static final long CRAFT_MESO_FLOOR = 1_000_000L; // never spend the bot below this
+    private static final double CRAFT_MIN_GAIN = 5.0;        // skip trivial upgrades
+
+    /** Autocraft only runs while a REAL owner is online to approve it: not self-owned
+     *  (@botme/@botparty, owner==bot) and not offline. Mirrors {@link BotManager#canWalkToOwner}. */
+    private static boolean craftSupervised(BotEntry entry) {
+        Character owner = entry.owner;
+        return owner != null && owner != entry.bot && owner.isLoggedinWorld();
+    }
+
+    /** Armed periodic proposal: when owner-supervised and a worthwhile craft exists, ask permission.
+     *  The heavy ranking runs off the tick thread. */
+    static void tickAutoCraft(BotEntry entry, Character bot, long nowMs) {
+        if (entry == null || bot == null || !entry.craftEnabled || !craftSupervised(entry)) {
+            return;
+        }
+        if (entry.nextCraftScanAtMs == 0L) { // just armed: schedule, don't fire now
+            entry.nextCraftScanAtMs = nowMs + BotManager.randMs(CRAFT_SCAN_MIN_MS, CRAFT_SCAN_MAX_MS);
+            return;
+        }
+        if (nowMs < entry.nextCraftScanAtMs || entry.pendingAction != null
+                || entry.pendingTradeCategory != null || ACTIVE.contains(bot.getId())) {
+            return;
+        }
+        entry.nextCraftScanAtMs = nowMs + BotManager.randMs(CRAFT_SCAN_MIN_MS, CRAFT_SCAN_MAX_MS);
+        BotManager.after(BotManager.randMs(300, 600), () -> proposeCraft(entry, bot, false));
+    }
+
+    /** Command-triggered single proposal ("craft now"). */
+    static void requestCraftPass(BotEntry entry) {
+        Character bot = entry.bot;
+        if (bot == null) {
+            return;
+        }
+        if (!craftSupervised(entry)) {
+            BotManager.getInstance().botReply(entry, "i only craft when you're online to ok it");
+            return;
+        }
+        if (entry.pendingAction != null || ACTIVE.contains(bot.getId())) {
+            BotManager.getInstance().botReply(entry, "hang on, im busy");
+            return;
+        }
+        BotManager.after(BotManager.randMs(300, 600), () -> proposeCraft(entry, bot, true));
+    }
+
+    /** Rank craftable upgrades and ask permission for the best one within the meso floor.
+     *  {@code announceNone} = say so when nothing qualifies (command path), else stay quiet (auto). */
+    private static void proposeCraft(BotEntry entry, Character bot, boolean announceNone) {
+        if (entry.pendingAction != null || !craftSupervised(entry)
+                || MakerProcessor.getMakerSkillLevel(bot) < 1) {
+            return;
+        }
+        for (BotMakerPlanner.CraftPlan plan : BotMakerPlanner.rankUpgrades(bot)) {
+            if (plan.expectedGain() < CRAFT_MIN_GAIN) {
+                break; // ranked best-first; nothing better remains
+            }
+            if (bot.getMeso() - plan.mesoCost() < CRAFT_MESO_FLOOR) {
+                continue; // keep the meso floor
+            }
+            entry.pendingAction = "craft_confirm";
+            entry.pendingCraftPlan = plan;
+            BotManager.getInstance().botReply(entry, String.format(
+                    "wanna craft %s? +%.0f dps, ~%,d mesos + materials (%s) - ok?",
+                    plan.name(), plan.expectedGain(), plan.mesoCost(), plan.reagentDesc()));
+            return;
+        }
+        if (announceNone) {
+            BotManager.getInstance().botReply(entry, "nothing worth crafting for an upgrade right now");
+        }
+    }
+
+    /** Owner replied to a craft proposal (anything that isn't a clear yes cancels). */
+    static void handleCraftConfirm(BotEntry entry, String message) {
+        String m = message == null ? "" : message.trim().toLowerCase();
+        boolean yes = m.matches(".*\\b(yes|yep|yeah|yea|y|ok|okay|sure|do\\s*it|go|craft\\s*it|confirm)\\b.*");
+        BotMakerPlanner.CraftPlan plan = entry.pendingCraftPlan;
+        entry.pendingAction = null;
+        entry.pendingCraftPlan = null;
+        if (yes && plan != null) {
+            Character bot = entry.bot;
+            BotManager.after(BotManager.randMs(500, 700), () -> executeCraft(entry, bot, plan));
+        } else {
+            BotManager.after(BotManager.randMs(400, 600),
+                    () -> BotManager.getInstance().botReply(entry, "ok, skipping it"));
+        }
+    }
+
+    private static void executeCraft(BotEntry entry, Character bot, BotMakerPlanner.CraftPlan plan) {
+        if (bot == null || !bot.isLoggedin() || plan == null) {
+            return;
+        }
+        // Re-check supervision + floor at exec time: the owner may have logged off / mesos changed.
+        if (!craftSupervised(entry) || bot.getMeso() - plan.mesoCost() < CRAFT_MESO_FLOOR) {
+            BotManager.getInstance().botReply(entry, "cant craft it now (you're offline or im low on mesos)");
+            return;
+        }
+        Client c = bot.getClient();
+        if (c == null) {
+            return;
+        }
+        if (!c.tryacquireClient()) {
+            BotManager.after(BotManager.randMs(600, 900), () -> executeCraft(entry, bot, plan));
+            return;
+        }
+        short status;
+        try {
+            status = MakerProcessor.makeItem(c, plan.itemId(), plan.stimulantId() != -1,
+                    List.copyOf(plan.reagentIds().keySet()));
+        } finally {
+            c.releaseClient();
+        }
+        if (status == 0) {
+            BotManager.getInstance().botSay(bot, "crafted " + plan.name() + "!");
+            BotEquipManager.autoEquip(bot, entry.owner, null); // wear it if it beats current gear
+            if (entry.craftEnabled) { // chain: look for the next worthwhile craft (asks again)
+                BotManager.after(BotManager.randMs(2500, 3500), () -> requestCraftPass(entry));
+            }
+        } else {
+            BotManager.getInstance().botReply(entry, craftAbortReason(status));
+        }
+    }
+
+    private static String craftAbortReason(short status) {
+        return switch (status) {
+            case 2 -> "not enough mesos to craft";
+            case 3 -> "im not high enough level to craft that";
+            case -2 -> "cant put that gem on this gear";
+            default -> "craft didnt take, nvm";
+        };
+    }
+
     /** Trash equips (SSOT: {@link BotInventoryManager#collectSellTrashEquips}) that actually
      *  have a Maker disassembly recipe — others would just abort the batch. */
     private static List<Equip> collectDisassemblableTrash(BotEntry entry, Character bot) {
