@@ -433,7 +433,9 @@ class BotInventoryManager {
             startTradeMesoTransfer(category, entry, bot);
             return;
         }
-        Character owner = entry.owner;
+        // Trade with the bound admin commander when one issued the command (gm debug-inspecting a bot
+        // it doesn't own), else the real owner. commanderOrOwner is the SSOT for this resolution.
+        Character owner = BotManager.getInstance().commanderOrOwner(entry);
         if (owner == null) {
             BotManager.getInstance().botReply(entry, "can't find you to trade!");
             return;
@@ -955,7 +957,8 @@ class BotInventoryManager {
     }
 
     private static void startTradeMesoTransfer(String category, BotEntry entry, Character bot) {
-        Character owner = entry.owner;
+        // Honor the bound admin commander (gm debug) over the real owner, like startTradeTransfer.
+        Character owner = BotManager.getInstance().commanderOrOwner(entry);
         if (owner == null) {
             BotManager.getInstance().botReply(entry, "can't find you to trade!");
             return;
