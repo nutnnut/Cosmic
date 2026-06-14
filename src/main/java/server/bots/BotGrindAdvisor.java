@@ -511,10 +511,30 @@ final class BotGrindAdvisor {
     }
 
     /** Expected improvement of one more drop roll of this equip over the best the bot already
-     *  OWNS for the slot (worn or bagged), both sides discounted by how long until wearable. */
+     *  OWNS for the slot (worn or bagged), both sides discounted by how long until wearable.
+     *  Delegates to the shared {@link #expectedAcquireGain} SSOT with the drop roll sampler,
+     *  memoized per item id across the mob's drop list. */
     private static double equipGain(Character bot, ItemInformationProvider ii, int itemId,
                                     Map<Short, Double> wornScoreBySlot,
                                     Map<Integer, double[]> rollScoreCache) {
+        return expectedAcquireGain(bot, ii, itemId,
+                (b, id, n) -> rollScoreCache.computeIfAbsent(id, k -> rollScores.sample(b, k, n)),
+                ROLL_SAMPLES, wornScoreBySlot);
+    }
+
+    /**
+     * SSOT expected-acquire gain: the expected improvement of obtaining {@code itemId} — rolled by
+     * {@code sampler} ({@code sampleCount} rolls) — over the best the bot already OWNS for the slot
+     * (worn or bagged, future copies discounted by levels-until-wearable). Shared by mob-drop
+     * farming ({@link #equipGain}), Maker crafting, and gachapon so all three rank equips on ONE
+     * scale: the caller just supplies a sampler matching the acquisition source (drop / maker /
+     * gacha pull). Returns 0 for non-equips or requirements the bot can never grow into. The sampler
+     * is invoked only after the item validates, so callers may sample lazily/expensively.
+     * {@code ownedBarCache} memoizes per-slot baselines across a batch (pass a fresh map for one-off).
+     */
+    static double expectedAcquireGain(Character bot, ItemInformationProvider ii, int itemId,
+                                      RollScoreSampler sampler, int sampleCount,
+                                      Map<Short, Double> ownedBarCache) {
         if (ii.getEquipStats(itemId) == null) {
             return 0.0;
         }
@@ -535,9 +555,8 @@ final class BotGrindAdvisor {
         if (levelsToGo < 0) {
             return 0.0; // unmet stat/job requirement is never grown into (low-secondary builds)
         }
-        double ownedScore = gearBar(bot, ii, itemId, slot, wornScoreBySlot);
-        double[] samples = rollScoreCache.computeIfAbsent(itemId,
-                id -> rollScores.sample(bot, id, ROLL_SAMPLES));
+        double ownedScore = gearBar(bot, ii, itemId, slot, ownedBarCache);
+        double[] samples = sampler.sample(bot, itemId, sampleCount);
         return expectedImprovement(samples, levelDiscount(levelsToGo), ownedScore);
     }
 

@@ -188,6 +188,39 @@ reimplement (project rule 1).
   NPC + `storeItem`; no NPC dialog server-side.
 - Storage is finite (`storage.getSlots()`), so deposit by value/priority and stop when full.
 
+### 6c-bis. OWNER-APPROVED crafting spec (2026-06-13) + exact SSOT design
+
+Owner lifted the hold and specified autonomous crafting:
+- **Always** use a stimulant + fill reagent ("upgrade crystal") slots. Adding a secondary stat via a
+  crystal makes that stat eligible for the godly roll — **confirmed in code**: `randomizeGodlyStats`→
+  `getRandUpgradedStat` returns 0 when `defaultValue==0`, so only nonzero (base or reagent-added) stats
+  go godly (`ItemInformationProvider.java:1230`). Reagent stats are applied (`improveEquipStats`) BEFORE
+  the stimulant roll (`MakerProcessor.addBoostedMakerItem:428`).
+- **Do NOT hardcode** reagent/stat choice. Choose dynamically by sampling the actual Maker roll (like the
+  mob-drop random-stat EV), picking the stim+reagent combo with the best expected offense gain.
+- **1,000,000 meso floor.** Loop **until no further improvement** (cap by expected gains, NOT time).
+- Account for **owned-but-not-yet-wearable** gear as the baseline (already handled by
+  `isFutureOwnClassEquip` + `levelDiscount`).
+- **Unify with gachapon**: gachapon must value equips with the SAME expected-gain SSOT (it currently uses
+  base-stat absolute value, not improvement-over-worn — see §6 gap).
+
+**SSOT design (the keystone): one shared `expectedAcquireGain`.** Generalize `BotGrindAdvisor.equipGain`
+into a public `expectedAcquireGain(bot, ii, itemId, double[] rolledOffenseSamples, ownedBarCache)` that
+returns `expectedImprovement(samples, levelDiscount(levelsToGo), gearBar(...))`. The CALLER supplies the
+roll samples:
+- mob drops → `rollScores.sample(bot,id,n)` (`ii.randomizeStats`, the current behavior — refactor
+  `equipGain` to delegate so drops are unchanged & test-guarded).
+- Maker → a new maker-roll sampler: `getEquipById(id)` → `improveEquipStats(reagentStats)` →
+  N×`randomizeUpgradeStats(copy)` → `BotScrollManager.offenseValue`. Reflects stim+crystal+godly.
+- gachapon → its pull samples (or base) through the SAME method → improvement-over-worn, not absolute.
+
+`BotMakerPlanner` (new) then: enumerate craftable equips (`makercreatedata` req_maker_level<=makerLvl,
+req_level within wearable horizon), for each pick the best stim+reagent combo by sampled EV, rank by
+`expectedAcquireGain`, craft the top while EV>0 and meso>floor, re-evaluate (owned set grows), repeat
+until none positive. Execute via extracted `MakerProcessor.makeItem`. Reagent stat map:
+`ii.getMakerReagentStatUpgrade(id)` (DB `makerreagentdata`); slots `getMakerReagentSlots`; stim
+`getMakerStimulant`.
+
 ### 6e. Decisions for you (gate the risky bits)
 - **Autonomous crafting on/off + meso floor.** Proposed: config flag `BOT_AUTO_MAKER_CRAFT` (default
   OFF until you approve), meso floor e.g. 1,000,000, only clear upgrades, rate-limited. Spends mesos +
