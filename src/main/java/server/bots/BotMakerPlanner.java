@@ -124,8 +124,16 @@ final class BotMakerPlanner {
         return owned;
     }
 
-    /** Fill the recipe's reagent slots with the owned stat crystals worth the most offense for this job
-     *  (greedy, respecting owned quantity). Dynamic: choice follows the offense SSOT, not a fixed list. */
+    // Maker gem "type" = reagentId / 100. Types below this are WATK/MATK gems (diamonds, black
+    // crystals); the server's removeOddMakerReagents REJECTS the whole craft if one is used on a
+    // non-weapon ("only weapons should gain w.att/m.att from these"), so the planner must never
+    // propose them on armour/accessories. The client enforces the same — diamonds go on weapons only.
+    private static final int ATTACK_GEM_TYPE_CEILING = 42502;
+
+    /** Pick the recipe's reagent crystals to maximize offense for this job, mirroring the server's
+     *  {@code removeOddMakerReagents} constraints so the plan is actually craftable: WATK/MATK gems
+     *  (diamonds) only on weapons, at most one gem per type, and exactly one of each (the Maker skill
+     *  consumes one). Dynamic by offense value, not a hardcoded list. */
     private static Map<Integer, Short> chooseReagents(ItemInformationProvider ii, Character bot, int itemId,
                                                       Map<Integer, Short> ownedReagents) {
         int slots = reagentSlots(ii, itemId);
@@ -133,23 +141,26 @@ final class BotMakerPlanner {
         if (slots <= 0 || ownedReagents.isEmpty()) {
             return chosen;
         }
-        // Rank reagent types by per-unit offense value of the stat they add.
+        boolean isWeapon = ItemConstants.isWeapon(itemId);
         List<Map.Entry<Integer, Short>> ranked = new ArrayList<>(ownedReagents.entrySet());
         ranked.sort(Comparator.comparingDouble((Map.Entry<Integer, Short> e) ->
                 reagentOffenseValue(ii, bot, e.getKey())).reversed());
-        int filled = 0;
+        java.util.Set<Integer> usedTypes = new java.util.HashSet<>();
         for (Map.Entry<Integer, Short> e : ranked) {
-            if (filled >= slots) {
+            if (chosen.size() >= slots) {
                 break;
             }
-            if (reagentOffenseValue(ii, bot, e.getKey()) <= 0.0) {
+            int reagentId = e.getKey();
+            if (reagentId / 100 < ATTACK_GEM_TYPE_CEILING && !isWeapon) {
+                continue; // att/matt gem on a non-weapon -> server rejects the whole craft
+            }
+            if (!usedTypes.add(reagentId / 100)) {
+                continue; // one gem per type (server keeps only the best of repeated types)
+            }
+            if (reagentOffenseValue(ii, bot, reagentId) <= 0.0) {
                 continue; // no offense benefit for this job -> don't waste a slot/crystal
             }
-            short use = (short) Math.min(slots - filled, e.getValue());
-            if (use > 0) {
-                chosen.put(e.getKey(), use);
-                filled += use;
-            }
+            chosen.put(reagentId, (short) 1); // the Maker skill consumes exactly one of each gem
         }
         return chosen;
     }
