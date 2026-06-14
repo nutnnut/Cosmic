@@ -392,31 +392,32 @@ final class BotShopManager {
     // modest cap finds them while bounding the map-load cost of the search.
     private static final int SHOP_SEARCH_MAX_HOPS = 6;
     private static final int NO_SHOP_MAP = Integer.MIN_VALUE;
-    // Cache of "nearest reachable map with ANY shop" per source map. The world graph is static and
-    // a junk-dump can go to any shop, so this answer never changes — compute the (map-loading) flood
-    // once. The needs-a-specific-shop search (pots/ammo) is left uncached: it depends on live bag state.
+    // Cache of "nearest reachable map with a matching shop" per source map, one map per criterion.
+    // Both the world graph and shop catalogs are static, and neither criterion depends on live bag
+    // state (any shop for a sell trip; a potion-stocking shop for a supply run), so these answers
+    // never change — compute each (map-loading) flood once per (source map, criterion).
     private static final Map<Integer, Integer> nearestAnyShopMapCache = new ConcurrentHashMap<>();
+    private static final Map<Integer, Integer> nearestPotionShopMapCache = new ConcurrentHashMap<>();
 
     /**
      * The nearest reachable map (current map first, then by portal-hop distance) that has a shop the
      * bot needs, or {@code null} if none within {@link #SHOP_SEARCH_MAX_HOPS}. This is the fix for a
      * bot stranded in a town hub whose own map has no shop NPC (the shop sits one portal away): rather
      * than only ever heading to {@code getReturnMap()} ("nearest town"), the bot seeks the nearest
-     * actual shop that fits the criteria. {@code allowAnyShop=true} (a junk-dump / sell trip — any
-     * shop will do) is cached; the criteria search (pots/ammo) re-floods since it reads bag state.
+     * actual shop that fits the criteria. Both criteria — any shop (sell trip) and potion-stocking
+     * (supply run) — are bag-state-independent, so each is cached per source map.
      */
     static Integer findNearestShopMap(Character bot, boolean allowAnyShop) {
         if (bot == null || bot.getMap() == null || bot.getClient() == null) {
             return null;
         }
         int from = bot.getMapId();
-        if (allowAnyShop) {
-            Integer cached = nearestAnyShopMapCache.get(from);
-            if (cached != null) {
-                return cached == NO_SHOP_MAP ? null : cached;
-            }
-        }
         // Sell-trash trip => any shop; supply run => a potion-stocking shop (also carries ammo).
+        Map<Integer, Integer> cache = allowAnyShop ? nearestAnyShopMapCache : nearestPotionShopMapCache;
+        Integer cached = cache.get(from);
+        if (cached != null) {
+            return cached == NO_SHOP_MAP ? null : cached;
+        }
         Predicate<Shop> accept = allowAnyShop ? shop -> true : BotShopManager::shopSellsAnyPotion;
         Integer found = null;
         try {
@@ -439,9 +440,7 @@ final class BotShopManager {
         } catch (RuntimeException ex) {
             return null; // best-effort: world graph / map load unavailable -> caller falls back to return map
         }
-        if (allowAnyShop) {
-            nearestAnyShopMapCache.put(from, found == null ? NO_SHOP_MAP : found);
-        }
+        cache.put(from, found == null ? NO_SHOP_MAP : found);
         return found;
     }
 
