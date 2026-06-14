@@ -90,24 +90,19 @@ final class BotMakerPlanner {
         return out;
     }
 
-    /** Sample the Maker roll N times and score each with the offense SSOT. Mirrors
-     *  {@link MakerProcessor}'s addBoostedMakerItem: reagent stats applied first (deterministic, and
-     *  they make those stats godly-eligible), then the stimulant upgrade roll. */
+    /** Sample the Maker roll N times via the SSOT scorer ({@link BotGrindAdvisor#sampleEquipScores}),
+     *  so a craft is valued exactly like a drop (offense + scroll headroom x weapon speed) and compares
+     *  against the same owned baseline. The roll mirrors {@link MakerProcessor}'s addBoostedMakerItem:
+     *  reagent stats applied first (deterministic, and they make those stats godly-eligible), then the
+     *  stimulant upgrade roll ({@code randomizeUpgradeStats} = +0..2/+0..5 then a godly chance). */
     private static double[] sampleMakerRoll(ItemInformationProvider ii, Character bot, int itemId, int n,
                                             Map<String, Integer> reagentStats, boolean useStim) {
-        Equip base = (Equip) ii.getEquipById(itemId);
-        double[] out = new double[n];
-        for (int i = 0; i < n; i++) {
-            Equip e = (Equip) base.copy();
+        return BotGrindAdvisor.sampleEquipScores(bot, itemId, n, base -> {
             if (!reagentStats.isEmpty()) {
-                ItemInformationProvider.improveEquipStats(e, reagentStats);
+                ItemInformationProvider.improveEquipStats(base, reagentStats);
             }
-            if (useStim) {
-                e = ii.randomizeUpgradeStats(e);
-            }
-            out[i] = BotScrollManager.offenseValue(bot, e);
-        }
-        return out;
+            return useStim ? ii.randomizeUpgradeStats(base) : base;
+        });
     }
 
     private static Map<Integer, Short> ownedReagents(Character bot) {

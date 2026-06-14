@@ -729,19 +729,36 @@ final class BotGrindAdvisor {
 
     static RollScoreSampler rollScores = BotGrindAdvisor::sampleRollScores;
 
-    /** SSOT roll: the exact {@code randomizeStats(getEquipById(id))} call the map drop path
-     *  uses (godly check included), scored with the same offense SSOT as worn gear PLUS scroll
-     *  headroom — a fresh drop carries its full upgrade slots, so it can out-value a stronger
-     *  but maxed-out worn item when its type scrolls well (gloves price att scrolls; most
-     *  pieces only stat scrolls). */
+    /** How a fresh copy of an item is rolled before scoring: a plain drop roll for farming, the Maker
+     *  roll (reagents + stimulant upgrade/godly) for crafting. Lets all acquisition sources share the
+     *  same scoring wrapper below so they rank on ONE scale (vs the same {@code bestOwnedScore} bar). */
+    @FunctionalInterface
+    interface EquipRoll {
+        Equip roll(Equip base);
+    }
+
+    /** SSOT roll: the exact {@code randomizeStats(getEquipById(id))} call the map drop path uses
+     *  (godly check included). */
     private static double[] sampleRollScores(Character bot, int itemId, int n) {
+        return sampleEquipScores(bot, itemId, n,
+                base -> ItemInformationProvider.getInstance().randomizeStats(base));
+    }
+
+    /**
+     * Score {@code n} freshly-rolled copies of an item on the SSOT scale: offense PLUS scroll
+     * headroom for the rolled upgrade slots (a fresh piece carries its full slots), x the weapon-speed
+     * factor for weapons. The caller supplies the roll, so a drop and a Maker craft are valued
+     * identically except for how the stats land — and both compare against the same
+     * {@link #bestOwnedScore} baseline. Used by mob-drop farming and {@link BotMakerPlanner}.
+     */
+    static double[] sampleEquipScores(Character bot, int itemId, int n, EquipRoll roll) {
         ItemInformationProvider ii = ItemInformationProvider.getInstance();
         double evPerSlot = BotScrollManager.bestScrollEvPerSlot(bot, ii, itemId);
         Short slot = BotScrollManager.primarySlot(ii, itemId);
         double speed = slot != null && slot == (short) -11 ? weaponSpeedFactor(itemId) : 1.0;
         double[] out = new double[n];
         for (int i = 0; i < n; i++) {
-            Equip rolled = ii.randomizeStats((Equip) ii.getEquipById(itemId));
+            Equip rolled = roll.roll((Equip) ii.getEquipById(itemId));
             out[i] = (BotScrollManager.offenseValue(bot, rolled)
                     + BotScrollManager.scrollHeadroom(rolled.getUpgradeSlots(), evPerSlot)) * speed;
         }
