@@ -18,14 +18,18 @@ import server.life.NPC;
 import server.maps.Foothold;
 import server.maps.MapObject;
 import server.maps.MapObjectType;
+import server.maps.MapleMap;
 
 import java.awt.*;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.IdentityHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.function.IntUnaryOperator;
 
@@ -348,7 +352,17 @@ final class BotShopManager {
     }
 
     private static NpcShopMatch findBestShop(Character bot, boolean allowAnyShop) {
-        List<MapObject> objects = bot.getMap().getMapObjectsInRange(
+        return findBestShop(bot.getMap(), bot, allowAnyShop);
+    }
+
+    /** A shop NPC on {@code map} matching the bot's need ({@code allowAnyShop} = selling works at any
+     *  shop; otherwise the shop must stock something the bot needs — pots/ammo). Generalized over an
+     *  arbitrary map so the cross-map nearest-shop search can probe reachable towns, not just here. */
+    private static NpcShopMatch findBestShop(MapleMap map, Character bot, boolean allowAnyShop) {
+        if (map == null) {
+            return null;
+        }
+        List<MapObject> objects = map.getMapObjectsInRange(
                 new Point(0, 0), Double.POSITIVE_INFINITY,
                 Arrays.asList(MapObjectType.NPC));
 
@@ -366,6 +380,74 @@ final class BotShopManager {
             }
         }
         return null;
+    }
+
+    // How far (portal hops) the bot will look for a shop when its own map has none. Towns and their
+    // shop sub-maps (e.g. Orbis 200000000 -> department store 200000002) are 1-2 hops apart, so a
+    // modest cap finds them while bounding the map-load cost of the search.
+    private static final int SHOP_SEARCH_MAX_HOPS = 6;
+    private static final int NO_SHOP_MAP = Integer.MIN_VALUE;
+    // Cache of "nearest reachable map with ANY shop" per source map. The world graph is static and
+    // a junk-dump can go to any shop, so this answer never changes — compute the (map-loading) flood
+    // once. The needs-a-specific-shop search (pots/ammo) is left uncached: it depends on live bag state.
+    private static final Map<Integer, Integer> nearestAnyShopMapCache = new ConcurrentHashMap<>();
+
+    /**
+     * The nearest reachable map (current map first, then by portal-hop distance) that has a shop the
+     * bot needs, or {@code null} if none within {@link #SHOP_SEARCH_MAX_HOPS}. This is the fix for a
+     * bot stranded in a town hub whose own map has no shop NPC (the shop sits one portal away): rather
+     * than only ever heading to {@code getReturnMap()} ("nearest town"), the bot seeks the nearest
+     * actual shop that fits the criteria. {@code allowAnyShop=true} (a junk-dump / sell trip — any
+     * shop will do) is cached; the criteria search (pots/ammo) re-floods since it reads bag state.
+     */
+    static Integer findNearestShopMap(Character bot, boolean allowAnyShop) {
+        if (bot == null || bot.getMap() == null || bot.getClient() == null) {
+            return null;
+        }
+        int from = bot.getMapId();
+        if (allowAnyShop) {
+            Integer cached = nearestAnyShopMapCache.get(from);
+            if (cached != null) {
+                return cached == NO_SHOP_MAP ? null : cached;
+            }
+        }
+        Integer found = null;
+        try {
+            var factory = bot.getClient().getChannelServer().getMapFactory();
+            Set<Integer> seen = new HashSet<>();
+            // Nearest-first: widen the reachable radius one hop at a time and only probe maps that newly
+            // entered range, so the first shop hit is the closest. Early-return keeps map loading minimal.
+            outer:
+            for (int hops = 0; hops <= SHOP_SEARCH_MAX_HOPS; hops++) {
+                for (int mapId : BotWorldGraph.reachableWithin(from, hops)) {
+                    if (!seen.add(mapId)) {
+                        continue;
+                    }
+                    if (findBestShop(factory.getMap(mapId), bot, allowAnyShop) != null) {
+                        found = mapId;
+                        break outer;
+                    }
+                }
+            }
+        } catch (RuntimeException ex) {
+            return null; // best-effort: world graph / map load unavailable -> caller falls back to return map
+        }
+        if (allowAnyShop) {
+            nearestAnyShopMapCache.put(from, found == null ? NO_SHOP_MAP : found);
+        }
+        return found;
+    }
+
+    /** Pots low enough to need restocking. Per the errand policy this is the ONLY need that requires a
+     *  specific shop (one that stocks potions); a full bag or low ammo can be handled at any shop. */
+    static boolean potsLow(Character bot) {
+        try {
+            int[] pots = BotPotionManager.countPotions(bot);
+            int potTrigger = BotManager.cfg.POT_LOW_WARN * 5;
+            return pots[0] < potTrigger || pots[1] < potTrigger;
+        } catch (RuntimeException ex) {
+            return false; // best-effort: can't read pots -> treat as "not pot-low" (any shop is fine)
+        }
     }
 
     private static boolean shopHasAnythingNeeded(Character bot, Shop shop) {

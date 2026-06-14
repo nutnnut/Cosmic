@@ -424,12 +424,26 @@ final class BotAutopilotManager {
             logErrandBlock(entry, bot, "owner-supply-grace");
             return true; // party request just went out; give owner trade a short chance to land
         }
-        var returnMap = bot.getMap().getReturnMap();
-        if (returnMap == null || returnMap.getId() == bot.getMapId()) {
-            logErrandBlock(entry, bot, "no-distinct-return-map(" + bot.getMapId() + ")");
-            return false;
+        // Seek the nearest reachable SHOP that fits the need, not just "nearest town". A bot stranded
+        // in a town hub whose own map has no shop NPC (Orbis 200000000 -> department store 200000002,
+        // one portal away) used to bail here on "return map == self" and never sell/restock. Pots are
+        // the only need that requires a specific (potion-stocking) shop; a full bag or low ammo is fine
+        // at any shop. Falls back to the old return-map town when no shop is reachable in range.
+        int targetMapId;
+        Integer shopMapId = BotShopManager.findNearestShopMap(bot, !BotShopManager.potsLow(bot));
+        if (shopMapId != null && shopMapId != bot.getMapId()) {
+            targetMapId = shopMapId;
+        } else {
+            var returnMap = bot.getMap().getReturnMap();
+            if (returnMap == null || returnMap.getId() == bot.getMapId()) {
+                logErrandBlock(entry, bot, shopMapId != null
+                        ? "shop-on-current-map(" + bot.getMapId() + ")"
+                        : "no-reachable-shop,return-map==self(" + bot.getMapId() + ")");
+                return false;
+            }
+            targetMapId = returnMap.getId();
         }
-        entry.autopilotErrandMapId = returnMap.getId();
+        entry.autopilotErrandMapId = targetMapId;
         entry.autopilotNextErrandAtMs = now + ERRAND_COOLDOWN_MS;
         reply.accept(entry, resupplyErrandMessage(entry, bot));
         // No explicit scroll use here: scroll-to-town is a world-graph edge now, so the
