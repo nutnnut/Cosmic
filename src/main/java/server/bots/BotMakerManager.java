@@ -88,6 +88,33 @@ final class BotMakerManager {
                 });
     }
 
+    /**
+     * Autopilot bag-pressure relief: when a bag tab is cramped, run the same Maker batches a player
+     * could trigger by hand — but only the ones that actually free slots right now, and silently
+     * (no "I can't / nothing to do" chatter when there's no work). Crystal-making consumes the
+     * leftover stacks (>=100) that {@code collectSellTrashEtcItems} deliberately KEEPS (the
+     * crystal-leftover-keep gate), turning otherwise-hoarded clutter into useful Maker reagents
+     * without any town trip. Disassembly clears trash equips into crystals. Both reuse the player
+     * {@link MakerProcessor} path via the existing batch machinery; the ACTIVE guard stops overlap
+     * and a batch self-interrupts on the next player command.
+     *
+     * <p>No-op (and no message) unless the bot has the Maker skill, a tab is cramped, and that tab
+     * actually holds convertible/disassemblable items — so it is safe to call every grind tick.
+     */
+    static void autoCompactIfCramped(BotEntry entry, Character bot) {
+        if (bot == null || ACTIVE.contains(bot.getId()) || MakerProcessor.getMakerSkillLevel(bot) < 1) {
+            return;
+        }
+        if (BotShopManager.isCramped(bot, InventoryType.ETC) && !collectLeftoverQueue(bot).isEmpty()) {
+            handleMakeCrystals(entry);
+            return;
+        }
+        if (BotShopManager.isCramped(bot, InventoryType.EQUIP)
+                && !collectDisassemblableTrash(entry, bot).isEmpty()) {
+            handleDisassembleTrash(entry);
+        }
+    }
+
     /** Trash equips (SSOT: {@link BotInventoryManager#collectSellTrashEquips}) that actually
      *  have a Maker disassembly recipe — others would just abort the batch. */
     private static List<Equip> collectDisassemblableTrash(BotEntry entry, Character bot) {

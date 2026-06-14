@@ -85,17 +85,58 @@ below for your approval.
 
 ---
 
-## 4. Proposed maker-material reserve policy (slice 3) — NOT YET IMPLEMENTED
+## 4. KEY FINDING — selling maker mats is the WRONG primary fix; storage is right
 
-(Will fill in concrete numbers + rationale here before shipping. Placeholder so you can see the shape.)
+Investigated the recipe graph (DB `makercreatedata`/`makerrecipedata`, 772 craftable equips) against
+Bowgurl's actual hoard:
 
-- Reagents (powders/ores/plates/jewels/crystals): keep a per-category reserve sufficient for N crafts;
-  sell or store excess.
-- Manuals/stimulators (`413xxxx`): one-shot useful; keep a small count each, sell/store duplicates.
-- Monster crystals (`426xxxx`): maker reagent; keep a reserve, convert leftovers up to it, sell beyond.
+- **Powders `4007000-4007007`** each feed **33-125 equip recipes** at req level 43-45, maker level 1 —
+  Bowgurl (lvl 64) can craft these. Her 8 powder slots are *legitimately useful crafting stock*.
+- **Monster crystals `4260000/1/3`** feed **100+ equip recipes** each. Useful.
+- **Plates `4011000-4011005`** feed 20-43 equips each across levels 43-115. Useful (higher ones "for later").
+- **Jewels/jewel-ores `4020/4021xxx`, stat crystals `4005xxx`** feed 1-2 ETC refining recipes. Mildly useful.
+- **Only raw ores `4010xxx` and stat-crystal-ores `4004xxx` feed ZERO recipes** here — the sole genuine
+  "clutter" candidates.
+
+**Two consequences:**
+
+1. **Selling maker mats frees almost no slots.** ETC stacks (one slot regardless of quantity), so selling
+   652 of a 752-powder stack still leaves 1 occupied slot. To free a slot you must dump the *entire*
+   stack — but nearly all of Bowgurl's stacks are craft-useful, so dumping is wrong.
+   → **Slice 3 (sell maker mats) demoted to low priority**: only auto-sell mats feeding *zero* feasible
+   recipes (e.g. 4010xxx/4004xxx), and even then storage is safer. Not the bag-jam fix.
+
+2. **Storage is the correct safe fix (slice 6).** Deposit the crafting stockpile to storage → frees the
+   active ETC bag, destroys nothing, keeps materials available for crafting. Exactly the user's own
+   suggestion and the right primary remedy for a bag full of legitimately-useful mats.
+
+**Revised priority:** slice 6 (storage) = primary jam fix · slice 5 (crafting) = gives mats purpose /
+headline feature · slice 2 (cooldown) = minor trash-latency win · slice 3 (sell mats) = low, clutter-only.
 
 ---
 
+## 4b. "None of the bots walked to shop" — what I could and couldn't prove
+
+Ground truth from DB for Bowgurl (char 29): ETC **96/96 used (0 free) → genuinely cramped**; USE 89/96;
+EQUIP 38/96. Sellable mob-drops (4000xxx, price>0) present. So `shouldAutoSellTrash` **must** return true
+and `isCramped(ETC)` is true. The block is NOT in detection.
+
+The block is **downstream in the errand/walk**, dependent on runtime state I cannot read from a DB logout
+snapshot:
+- `isActive(entry)` — was the bot actually in autopilot? (in-memory only)
+- `entry.grinding` — `tickPotionCheck` returns before the bag-full branch if `!grinding` (transit-follow
+  / portal-anchor / non-autopilot set grinding=false).
+- `requestResupplyErrand` cooldown — bag-full sell shares the pot/ammo `ERRAND_COOLDOWN_MS` (5 min) and is
+  the **lowest-priority** else-if branch, so frequent pot/ammo errands keep refreshing the cooldown and
+  starve it; during cooldown it returns true but does nothing ("as if early returned").
+- `getReturnMap()` — null only on `MapId.NONE`.
+
+**Because the live flags aren't observable post-hoc, I'm shipping diagnostic logging at the decision
+point** so the next run tells us exactly which gate blocked — plus fixing the cooldown-starvation defect.
+**But:** even a perfect walk-and-sell leaves the bag jammed, because ~70/96 ETC slots are maker materials
+kept unconditionally. The storage/crafting exit is the load-bearing fix; sell-trip reliability is secondary.
+
 ## 5. Change log (this session)
 
-- 2026-06-13: Diagnosis complete (this doc). No code changes yet.
+- 2026-06-13: Diagnosis complete. DB confirms ETC 96/96 cramped + sellable items present → detection is
+  fine; block is downstream/runtime. Recipe-graph → storage/crafting (not selling) is the primary fix.

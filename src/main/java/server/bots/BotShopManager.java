@@ -168,7 +168,7 @@ final class BotShopManager {
         return etcCramped && !BotInventoryManager.collectSellTrashEtcItems(bot).isEmpty();
     }
 
-    private static boolean isCramped(Character bot, InventoryType type) {
+    static boolean isCramped(Character bot, InventoryType type) {
         var inv = bot.getInventory(type);
         return inv != null && inv.getNumFreeSlot() <= AUTO_SELL_FREE_SLOT_THRESHOLD;
     }

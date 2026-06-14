@@ -347,6 +347,12 @@ final class BotPotionManager {
         if (!entry.grinding) {
             return;
         }
+        // Autopilot bag-pressure relief that needs no town trip: turn hoarded leftover stacks into
+        // Maker crystals / disassemble trash equips right here when a tab is cramped. No-ops silently
+        // unless there's maker skill + a cramped tab + actual work, so it's cheap to attempt each tick.
+        if (BotAutopilotManager.isActive(entry)) {
+            BotMakerManager.autoCompactIfCramped(entry, bot);
+        }
         startedAt = BotPerformanceMonitor.start();
         if (pots[0] < BotManager.cfg.POT_STOP
                 && BotAutopilotManager.requestResupplyErrand(entry, bot)) {
