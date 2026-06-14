@@ -304,6 +304,17 @@ maker test. The full recipe is in §6c-ter — fast + safe to finish with you ar
 **Ready to finish** (designs in §6, reuse surfaces + 25 storage NPC ids + SSOT keystone all in place):
 slice 5 crafting (TODO 1-5), slice 6 storage deposit.
 
+## 4c. RESOLVED — "none walked" was `no-distinct-return-map` (errand sought town, not shop)
+
+The `bot-errand:` diagnostic nailed it (`cosmic-log-bot-cant-findshop.log`): every bot was stranded in
+the **Orbis hub (200000000)** — `bot-errand: ... no-distinct-return-map(200000000) (grinding=true,
+active=true)`. `findBestShop` only searched the current map, and the errand only targeted
+`getReturnMap()`; the hub map has no shop NPC (the shop is on 200000002, one portal away), so the bot
+bailed and never sold despite `shouldSell=true`. **Fixed** (commit): `requestResupplyErrand` now seeks
+the nearest reachable shop that fits the need (pots→potion shop, full-bag/ammo→any shop) via
+`BotShopManager.findNearestShopMap`, falling back to the return town. So this confirms the "none walked"
+cause was NOT grinding=false — it was the town-only errand target.
+
 ## 5. Change log (this session)
 
 - 2026-06-13: Diagnosis complete. DB confirms ETC 96/96 cramped + sellable items present → detection is
