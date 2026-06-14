@@ -6,7 +6,6 @@
 package server.bots;
 
 import client.Character;
-import client.inventory.InventoryType;
 import client.inventory.manipulator.InventoryManipulator;
 import constants.id.NpcId;
 import org.slf4j.Logger;
@@ -125,20 +124,14 @@ final class BotGachaponManager {
     interface ValueLookup {
         double value(Character bot, int itemId);
     }
-    static final int GACHA_EQUIP_ROLL_SAMPLES = 24;
-    static ValueLookup itemValue = (bot, itemId) -> {
-        ItemInformationProvider ii = ItemInformationProvider.getInstance();
-        if (constants.inventory.ItemConstants.getInventoryType(itemId) == InventoryType.EQUIP) {
-            // Value an equip pull on the SAME scale as mob drops and Maker crafts: the expected
-            // improvement over what the bot already wears (drop-rolled), via the shared SSOT -- not an
-            // absolute base-stat offense, which over-valued gear the bot can't use or already beats.
-            double upgrade = BotGrindAdvisor.expectedAcquireGain(bot, ii, itemId,
-                    BotGrindAdvisor.rollScores, GACHA_EQUIP_ROLL_SAMPLES, new java.util.HashMap<>());
-            // Even a non-upgrade pull has resale value; floor at NPC price (also covers cosmetics).
-            return Math.max(upgrade, ii.getPrice(itemId, 1));
-        }
-        return ii.getPrice(itemId, 1);
-    };
+    static ValueLookup itemValue = (bot, itemId) ->
+            // Value every pull (equip or not) by NPC resale -- the meso scale the pool EV and ticket
+            // price share. An offense-"upgrade" score (the old shared-SSOT call here) can't live on that
+            // scale, and expectedValuePerRoll AVERAGES over the whole pool, so a single upgrade item
+            // can't move the town ranking even at the right scale. Rare/cosmetic chase is handled by the
+            // per-tier value floors in expectedValuePerRoll, not here. (Reverts the equip branch of
+            // f246e4322; targeting upgrades would need a best-possible-pull EV model, not an average.)
+            ItemInformationProvider.getInstance().getPrice(itemId, 1);
 
     /** Account NX balance (NX_CREDIT) - where looted NX cards land. Seam over {@link CashShop}. */
     @FunctionalInterface

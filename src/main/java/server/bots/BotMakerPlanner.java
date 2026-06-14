@@ -8,6 +8,7 @@ import constants.inventory.ItemConstants;
 import server.ItemInformationProvider;
 import client.processor.action.MakerProcessor;
 import server.bots.BotGrindAdvisor.RollScoreSampler;
+import config.YamlConfig;
 import tools.DatabaseConnection;
 import tools.Pair;
 
@@ -136,7 +137,10 @@ final class BotMakerPlanner {
         if (slots <= 0 || ownedReagents.isEmpty()) {
             return chosen;
         }
-        boolean isWeapon = ItemConstants.isWeapon(itemId);
+        // Mirror MakerProcessor.removeOddMakerReagents EXACTLY: it OR's isWeapon with the permissive
+        // config, so under USE_MAKER_PERMISSIVE_ATKUP the server accepts att/matt gems on borderline
+        // items isWeapon() rejects. Without this the planner would skip the gem and craft sub-optimally.
+        boolean isWeapon = ItemConstants.isWeapon(itemId) || YamlConfig.config.server.USE_MAKER_PERMISSIVE_ATKUP;
         List<Map.Entry<Integer, Short>> ranked = new ArrayList<>(ownedReagents.entrySet());
         ranked.sort(Comparator.comparingDouble((Map.Entry<Integer, Short> e) ->
                 reagentOffenseValue(ii, bot, e.getKey())).reversed());

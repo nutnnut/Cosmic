@@ -447,6 +447,10 @@ final class BotAutopilotManager {
         } else {
             var returnMap = bot.getMap().getReturnMap();
             if (returnMap == null || returnMap.getId() == bot.getMapId()) {
+                // No errand to run, but ARM the cooldown anyway: findNearestShopMap above does an
+                // uncached multi-hop BFS (loads maps, scans NPCs) on the bot tick. Without this, a
+                // stranded bot (the exact case this path targets) re-floods that BFS every caller tick.
+                entry.autopilotNextErrandAtMs = now + ERRAND_COOLDOWN_MS;
                 logErrandBlock(entry, bot, shopMapId != null
                         ? "shop-on-current-map(" + bot.getMapId() + ")"
                         : "no-reachable-shop,return-map==self(" + bot.getMapId() + ")");
