@@ -6,6 +6,8 @@ import server.bots.BotGrindPlanner.MobCandidate;
 import server.bots.BotGrindPlanner.PartyPlan;
 import server.bots.BotGrindPlanner.Recommendation;
 import server.maps.MapleMap;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.awt.Point;
 import java.util.ArrayList;
@@ -30,6 +32,11 @@ import java.util.function.IntToLongFunction;
  * out the travel give-up window and retries).
  */
 final class BotAutopilotManager {
+
+    private static final Logger log = LoggerFactory.getLogger(BotAutopilotManager.class);
+    // Diagnostic: how often (per bot) to log why a wanted resupply/sell errand could not start.
+    // Throttled so a persistently-blocked bot doesn't flood the log every grind tick.
+    private static final long ERRAND_BLOCK_LOG_THROTTLE_MS = 60_000L;
 
     // Autopilot may roam farther than follow-travel: the trip is deliberate, nobody is waiting.
     static final int MAX_TRAVEL_HOPS = 8;
@@ -402,25 +409,46 @@ final class BotAutopilotManager {
      */
     static boolean requestResupplyErrand(BotEntry entry, Character bot) {
         if (!isActive(entry) || bot.getMap() == null) {
+            logErrandBlock(entry, bot, bot.getMap() == null ? "no-map" : "not-autopilot");
             return false;
         }
-        if (entry.autopilotErrandMapId != -1
-                || System.currentTimeMillis() < entry.autopilotNextErrandAtMs) {
-            return true; // already handling it / just tried — don't bounce to the owner
+        if (entry.autopilotErrandMapId != -1) {
+            return true; // already on a trip; nothing to diagnose
         }
-        if (System.currentTimeMillis() < entry.autopilotOwnerSupplyGraceUntilMs) {
+        long now = System.currentTimeMillis();
+        if (now < entry.autopilotNextErrandAtMs) {
+            logErrandBlock(entry, bot, "errand-cooldown");
+            return true; // just tried — don't bounce to the owner
+        }
+        if (now < entry.autopilotOwnerSupplyGraceUntilMs) {
+            logErrandBlock(entry, bot, "owner-supply-grace");
             return true; // party request just went out; give owner trade a short chance to land
         }
         var returnMap = bot.getMap().getReturnMap();
         if (returnMap == null || returnMap.getId() == bot.getMapId()) {
+            logErrandBlock(entry, bot, "no-distinct-return-map(" + bot.getMapId() + ")");
             return false;
         }
         entry.autopilotErrandMapId = returnMap.getId();
-        entry.autopilotNextErrandAtMs = System.currentTimeMillis() + ERRAND_COOLDOWN_MS;
+        entry.autopilotNextErrandAtMs = now + ERRAND_COOLDOWN_MS;
         reply.accept(entry, resupplyErrandMessage(entry, bot));
         // No explicit scroll use here: scroll-to-town is a world-graph edge now, so the
         // travel tick takes it whenever it beats walking (BotTravelManager consumable hops).
         return true;
+    }
+
+    /** Diagnostic for "the bag is full but the bot never walked to a shop": records, throttled per
+     *  bot, the gate that stopped a wanted resupply/sell errand from starting. Grep {@code bot-errand}
+     *  in the server log to see which condition is blocking a given bot. */
+    private static void logErrandBlock(BotEntry entry, Character bot, String reason) {
+        long now = System.currentTimeMillis();
+        if (now < entry.autopilotLastErrandLogAtMs + ERRAND_BLOCK_LOG_THROTTLE_MS) {
+            return;
+        }
+        entry.autopilotLastErrandLogAtMs = now;
+        String name = bot != null ? bot.getName() : "?";
+        log.info("bot-errand: {} wanted a town errand but couldn't start one: {} (grinding={}, active={})",
+                name, reason, entry.grinding, isActive(entry));
     }
 
     static String resupplyErrandMessage(BotEntry entry, Character bot) {

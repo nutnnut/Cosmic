@@ -208,6 +208,7 @@ public class BotEntry {
     // toward autopilotMapId. NextErrandAtMs rate-limits errands (survives clear()).
     int autopilotErrandMapId = -1;
     long autopilotNextErrandAtMs = 0L;
+    long autopilotLastErrandLogAtMs = 0L; // throttle for the "couldn't start errand" diagnostic log
     long autopilotOwnerSupplyGraceUntilMs = 0L;
     boolean autopilotReturningFromErrand = false;
     long autopilotLastDeathAtMs = 0L;
