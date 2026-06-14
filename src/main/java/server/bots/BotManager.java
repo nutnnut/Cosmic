@@ -3928,7 +3928,12 @@ public class BotManager {
 
     private boolean tickIdleEntry(BotEntry entry, Character bot) {
         if (entry.following || entry.grinding || entry.moveTarget != null
-                || entry.farmAnchor != null || entry.shopVisitPending) {
+                || entry.farmAnchor != null || entry.shopVisitPending
+                || entry.autopilotWaitAnchor != null) {
+            // A party leader holding at a next-hop portal for stragglers runs with grinding=false, so
+            // without this it looks "idle" and this fast-path would consume the tick BEFORE autopilot's
+            // tickPartyCohesion -- freezing the straggler verdict so the hold never re-evaluates or
+            // releases. Yield to autopilot; BotManager's wait-anchor loiter still parks it at the portal.
             return false;
         }
         if (isSwimMap(entry) && entry.inAir && !entry.climbing) {
