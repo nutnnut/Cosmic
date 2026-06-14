@@ -842,6 +842,29 @@ public class BotManager {
         return out;
     }
 
+    /** The bots to (re)start together when ANY one of them receives the party-autopilot command:
+     *  the live game party (which spans owners — @botparty bots each self-own), or the receiving
+     *  bot's owner's own bots when there is no game party. Deliberately does NOT filter on
+     *  {@code autopilotParty}, so a member just reset by "follow" rejoins the group instead of being
+     *  planned around — that omission was the party-desync bug. */
+    List<BotEntry> partyAutopilotCohort(BotEntry anyMember) {
+        if (anyMember == null || anyMember.bot == null) {
+            return List.of();
+        }
+        List<BotEntry> party = partyBotEntries(anyMember.bot);
+        if (!party.isEmpty()) {
+            return party;
+        }
+        Character owner = anyMember.owner;
+        if (owner != null) {
+            List<BotEntry> own = getBotEntries(owner.getId());
+            if (own != null && !own.isEmpty()) {
+                return List.copyOf(own);
+            }
+        }
+        return List.of(anyMember);
+    }
+
     public void requestBotPotionCheckSoon(Character bot) {
         if (bot == null || !(bot.getClient() instanceof BotClient)) {
             return;
@@ -1229,15 +1252,15 @@ public class BotManager {
         // Party autopilot ("go grind together"): ONE shared decision for the whole group.
         // Broadcasting would have every bot plan its own trip and scatter.
         if (BotChatManager.isPartyAutopilotCommand(message)) {
-            List<BotEntry> snapshot = List.copyOf(entries);
-            for (BotEntry e : snapshot) {
+            List<BotEntry> cohort = partyAutopilotCohort(entries.get(0));
+            for (BotEntry e : cohort) {
                 e.replyChannel = channel;
             }
             after(randMs(900, 1600), () -> {
-                for (BotEntry e : snapshot) {
+                for (BotEntry e : cohort) {
                     BotChatManager.prepareActiveModeEntry(e);
                 }
-                BotAutopilotManager.startParty(owner, snapshot);
+                BotAutopilotManager.startParty(owner, cohort);
             });
             return;
         }

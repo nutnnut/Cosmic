@@ -1058,13 +1058,17 @@ public class BotChatManager {
             return;
         }
 
-        // Targeted form ("Jason go grind together"): a party of one, routed through the party
-        // planner for consistent behavior. The broadcast form is intercepted at the owner
-        // level (BotManager.handleChat) so the whole group shares ONE decision.
+        // Party autopilot reaching a single bot (name-targeted "Jason go grind together", or a gm
+        // commanding one @botparty bot): activate/refresh the WHOLE game party together, not just
+        // this bot — otherwise the commanded bot plans a solo trip and desyncs from the group. The
+        // cohort is the live game party (spans owners), so a member just reset by "follow" rejoins.
         if (isPartyAutopilotCommand(message)) {
             BotManager.after(BotManager.randMs(900, 1600), () -> {
-                prepareActiveModeEntry(entry);
-                BotAutopilotManager.startParty(entry.owner, List.of(entry));
+                List<BotEntry> cohort = BotManager.getInstance().partyAutopilotCohort(entry);
+                for (BotEntry e : cohort) {
+                    prepareActiveModeEntry(e);
+                }
+                BotAutopilotManager.startParty(entry.owner, cohort);
             });
             return;
         }
