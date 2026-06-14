@@ -237,7 +237,14 @@ until none positive. Execute via extracted `MakerProcessor.makeItem`. Reagent st
   → `randStat`/`randOption` via `scrollOptionEquipWithChaos`; else `stat=s.substring(3)` (strip "inc"),
   `MaxHP→MHP`, `MaxMP→MMP`, skip `ReqLevel`, sum into `improveEquipStats`. Then `randomizeUpgradeStats`
   if stim. The bot's maker EV sampler = `rollMakerEquip(...)` N× → `BotScrollManager.offenseValue`,
-  modeling stim as 0.9×boosted.
+  modeling stim as 0.9 x boosted.
+  **HAZARD (verify before refactor — can break PLAYER crafting):** `addBoostedMakerItem` stat-rolls local
+  `eqp` but `addFromDrop`s local `item`. They start identical (`eqp=(Equip)item`), but the
+  `USE_ENHANCED_CRAFTING` branch reassigns `item = scrollEquipWithId(eqp,...)` and the stim line
+  reassigns `eqp = randomizeUpgradeStats(eqp)`. Whether the rolled stats reach the added item hinges on
+  those two returning the SAME object vs a copy. The extracted `rollMakerEquip` must return whatever is
+  actually added, and a player-path Maker craft test must pass before/after. This aliasing subtlety is
+  why the extraction was NOT done unsupervised at session end.
 
 - **TODO 2 — extract `MakerProcessor.makeItem`** (the equip-create branch of `makerAction`, ~71-168) for
   bot execution, as in §6b.
@@ -286,13 +293,16 @@ grep "bot-errand:"    logs/cosmic-log.log      # why a wanted town trip didn't s
   behind `grinding`. That's the "none walked" cause if you see it — tell me and I'll lift the gate.
 - No `bot-sellblock` line at all while a bag is full → the bot wasn't in autopilot when checked.
 
-**Decisions waiting on you** (see §6e): turn on autonomous crafting (`BOT_AUTO_MAKER_CRAFT`, off until you
-say) + meso floor; stimulants/upgrade-crystals yes/no; confirm storage-over-sell for useful mats.
+**Crafting: you APPROVED it** (stim+crystal always, EV-driven, 1M floor, loop-until-no-improvement, unify
+with gachapon). I built the **SSOT keystone** (`expectedAcquireGain`) but did NOT finish execution
+unsupervised because the remaining steps refactor shared PLAYER handlers (`addBoostedMakerItem`,
+`makerAction`) with a real aliasing hazard (§6c-ter TODO 1) that could break player crafting without a
+maker test. The full recipe is in §6c-ter — fast + safe to finish with you around to run a craft test.
 
-**Ready to implement on your word** (designs in §6, all reuse surfaces + the 25 storage NPC ids resolved):
-slice 6 storage deposit, slice 5 autonomous crafting. I deliberately did NOT build these unsupervised —
-they spend mesos / consume mats / refactor shared player handlers, and they sit on the same
-`isActive && grinding` gate the diagnostic is about to validate.
+**Still want your call:** storage-over-sell for useful mats (I believe yes — nothing destroyed).
+
+**Ready to finish** (designs in §6, reuse surfaces + 25 storage NPC ids + SSOT keystone all in place):
+slice 5 crafting (TODO 1-5), slice 6 storage deposit.
 
 ## 5. Change log (this session)
 
@@ -318,3 +328,9 @@ they spend mesos / consume mats / refactor shared player handlers, and they sit 
   (cache is EQUIP-only; `collectSellTrashEtcItems` is independent) — ruled out as the Bowgurl ETC cause.
 - 2026-06-13: Designs for slice 5 (crafting) + slice 6 (storage) are implementation-ready (§6); 25 storage
   NPC ids resolved. Held for owner approval (meso/mat spend, shared-handler refactor) — not built blind.
+- 2026-06-13: Owner APPROVED crafting w/ detailed spec. **Shipped SSOT keystone**
+  `BotGrindAdvisor.expectedAcquireGain` (sampler-agnostic EV-over-worn; `equipGain` delegates; 18/18
+  grind tests green) — maker, drops, and gachapon now rank equips on one scale. Mapped the full maker
+  roll + reagent stat-key handling; recorded exact remaining build (§6c-ter TODO 1-5) incl. a PLAYER-
+  crafting aliasing hazard in `addBoostedMakerItem` that must be extracted carefully + maker-tested.
+  Stopped before the shared-handler extraction (player-breaking risk without a test, unsupervised).
