@@ -83,7 +83,11 @@ class BotMovementManager {
         public int MOB_AVOID_LOOKAHEAD_STEPS = 3;
 
         public int JUMP_Y_THRESH = 30;
-        public int TELEPORT_DIST = 4000;
+        // Within-map "hopelessly far -> teleport to target" fallback. Big maps legitimately exceed
+        // smaller values during normal travel, which made bots teleport to the target when they were
+        // not actually stuck; 8000 covers the large fields. (Out-of-bounds recovery uses the tighter
+        // OOB_TELEPORT_DIST below, gated on the bot being provably outside the map's VR rect.)
+        public int TELEPORT_DIST = 8000;
         // Tighter teleport trigger when the bot has slipped outside the map's VR rectangle.
         // Long falls below VRBottom never collide with anything and otherwise wait until the
         // 4000 Manhattan threshold; this lets us recover sooner once we know the bot is OOB.
