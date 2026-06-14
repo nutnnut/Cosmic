@@ -136,7 +136,74 @@ point** so the next run tells us exactly which gate blocked — plus fixing the 
 **But:** even a perfect walk-and-sell leaves the bag jammed, because ~70/96 ETC slots are maker materials
 kept unconditionally. The storage/crafting exit is the load-bearing fix; sell-trip reliability is secondary.
 
+## 6. Implementation-ready design — Maker crafting (slice 5) & Storage (slice 6)
+
+All reuse surfaces below are confirmed by reading the code this session. Bots must reuse these, not
+reimplement (project rule 1).
+
+### 6a. Confirmed facts / data
+- Bots DO have Maker: Bowgurl has skill `1007` level 1 (`getMakerSkillLevel` = `(jobId/1000)*1e7 + 1007`).
+- Recipes live in DB: `makercreatedata(itemid, req_level, req_maker_level, req_meso, quantity)` +
+  `makerrecipedata(itemid, req_item, count)`. 772 equip recipes. Bots may query DB directly like
+  `BotScrollManager.bestDropChance` does (keeps upstream diff at zero).
+- **Validated**: at level 64 / maker 1, Bowgurl can craft 40+ equips *right now* from reagents already in
+  her bag (lvl 55-60 weapons/armor/accessories). The hoard is real crafting fuel.
+- Ores `4010xxx`→plates `4011xxx` and crystal-ores `4004xxx`→crystals `4005xxx` refine via the Maker
+  skill (user-confirmed) — so treat raw ores as useful too (refine step before equip craft).
+
+### 6b. Crafting reuse surface
+- **Recipe + cost**: `MakerItemFactory.getItemCreateEntry(toCreate, stimulantId, reagentIds)` →
+  `MakerItemCreateEntry` (reqItems, gainItems, reqLevel, reqSkillLevel, cost).
+- **Execute**: `MakerProcessor.makerAction(InPacket,Client)` is packet-driven. **Extract** a
+  `public static short makeItem(Client c, int toCreate, boolean useStimulant, Map<Integer,Short> reagents)`
+  from the `else` branch (lines ~71-168) and have `makerAction` parse the packet then call it; bots call
+  `makeItem` directly. Mirrors how `makeLeftoverCrystal`/`disassembleEquip` were already extracted.
+- **Stimulant/reagents**: `ii.getMakerStimulant(toCreate)`, `ItemConstants.isMakerReagent(id)`,
+  `getMakerReagentSlots(toCreate)`. Reagents add stats to the rolled equip (offense for weapons).
+- **Value the result**: `ItemInformationProvider.getEquipById(itemId)` → base `Equip`; compare to the
+  bot's equipped slot via the existing `BotEquipManager` optimizer valuation (same path auto-equip uses).
+  Craft only when the base result is a clear upgrade (rolls/reagents are upside).
+- **Equip it**: after craft, the existing auto-equip pass picks it up.
+
+### 6c. Crafting decision logic (`BotMakerPlanner`, new bot-only class)
+1. Query makeable equips with `req_level <= bot.level && req_maker_level <= makerSkillLevel`.
+2. Keep class/slot-relevant items (reuse `BotEquipManager.relevantStatsFor`/job-usable checks).
+3. Keep those whose base value beats the currently-equipped item (optimizer valuation).
+4. Among craftable-now (all reagents on hand + meso >= cost + keep a **meso floor**), pick the best gain.
+5. Execute via extracted `makeItem`, using a stimulant + best offense reagents when available.
+
+### 6d. Storage (slice 6) — the safe slot fix for legitimately-useful mats
+- **Store path**: `StorageProcessor.storageAction` case 5 (lines 121-193). **Extract**
+  `public static boolean storeItem(Client c, short slot, int itemId, short quantity)` and call from both
+  the handler and bots. Uses `chr.getStorage()`, `storage.isFull()/getStoreFee()/store()/sendStored()`,
+  `InventoryManipulator.removeFromSlot`, `KarmaManipulator`, `chr.gainMeso`. Level>=15 + meso fee gates.
+- **Piggyback the existing town errand** (`BotShopManager` already navigates to NPCs in town): after the
+  shop sell/buy tail, if a tab is still cramped, walk to the storage NPC and deposit maker-material
+  overflow (keep a small working reserve). Reuses the trip — no new cooldown/trigger.
+- **OPEN QUESTION (needs investigation):** how to resolve the storage-keeper NPC per town + its position.
+  Check `Storage`/NPC-script wiring; storage is opened via NPC script. May need a town→NPC map.
+- Storage is finite (`storage.getSlots()`), so deposit by value/priority and stop when full.
+
+### 6e. Decisions for you (gate the risky bits)
+- **Autonomous crafting on/off + meso floor.** Proposed: config flag `BOT_AUTO_MAKER_CRAFT` (default
+  OFF until you approve), meso floor e.g. 1,000,000, only clear upgrades, rate-limited. Spends mesos +
+  consumes mats unsupervised when ON — your call.
+- **Stimulants/upgrade-crystals**: use them on crafts (better rolls, more mat/meso spend) — yes/no?
+- **Storage vs sell for useful mats**: storage preferred (nothing destroyed); confirm.
+
 ## 5. Change log (this session)
 
 - 2026-06-13: Diagnosis complete. DB confirms ETC 96/96 cramped + sellable items present → detection is
   fine; block is downstream/runtime. Recipe-graph → storage/crafting (not selling) is the primary fix.
+- 2026-06-13: **Slice 4 shipped** (`BotMakerManager.autoCompactIfCramped`, wired in `tickPotionCheck`).
+  Autopilot bots with the Maker skill now auto-convert hoarded leftover stacks (>=100, the
+  crystal-leftover-keep gate) into Maker crystals and disassemble trash equips when a tab is cramped —
+  no town trip, reuses the player `MakerProcessor` path, silent unless there's real work. Frees the
+  leftover slots; reagent slots still need storage/crafting.
+- 2026-06-13: **Slice 2 shipped as diagnostics** (not the cooldown decouple — analysis showed the shared
+  5-min cooldown only blocks right after a pot/ammo errand, which already sold trash, so decoupling adds
+  little). Added throttled `bot-errand:` log in `requestResupplyErrand` naming the exact gate that
+  blocked a wanted town trip. **ACTION FOR YOU:** next time a bag-full bot won't sell, grep the server
+  log for `bot-errand:` — it'll say `errand-cooldown` / `no-distinct-return-map` / `owner-supply-grace` /
+  `not-autopilot`. If there's NO `bot-errand:` line at all while a bag is full, the bot wasn't `grinding`
+  or wasn't in autopilot when checked (the trigger sits behind both).
