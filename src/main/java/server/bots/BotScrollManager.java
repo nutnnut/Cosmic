@@ -126,6 +126,21 @@ final class BotScrollManager {
     /** Owner replied to a pending scroll proposal. Anything that isn't a clear "yes" cancels. */
     static void handleScrollConfirm(BotEntry entry, String message) {
         String m = message == null ? "" : message.trim().toLowerCase();
+        // "Let me see" (checked before yes/no, since "ok let me see" also matches yes): hand the gear +
+        // scroll to the owner in a trade so they can inspect/decide or scroll it themselves.
+        boolean review = m.matches(".*\\b(let\\s*me\\s*(see|look|check|do\\s*it|scroll\\s*it)|lemme\\s*(see|look)"
+                + "|show\\s*me|i(?:'?)ll\\s*(do|scroll)\\s*it|trade\\s*it(?:\\s*(?:to\\s*)?me)?)\\b.*");
+        if (review) {
+            Item equip = entry.pendingScrollEquip;
+            Item scroll = entry.pendingScrollScroll;
+            entry.pendingAction = null;
+            entry.pendingScrollEquip = null;
+            entry.pendingScrollScroll = null;
+            entry.nextSelfScrollScanAtMs = System.currentTimeMillis() + AUTO_SCAN_DECLINED_BACKOFF_MS;
+            BotManager.after(BotManager.randMs(400, 600),
+                    () -> BotInventoryManager.startScrollReviewTrade(entry, entry.bot, equip, scroll));
+            return;
+        }
         boolean yes = m.matches(".*\\b(yes|yep|yeah|yea|y|ok|okay|sure|do\\s*it|go|confirm)\\b.*");
         entry.pendingAction = null;
         if (yes) {

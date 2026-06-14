@@ -504,6 +504,52 @@ class BotInventoryManager {
         startTradeSequence("loot_offer", recipient, List.of(item), 0, true, entry, bot);
     }
 
+    /**
+     * "Let me see": put the proposed scroll-target equip + the scroll into a trade with the owner so
+     * they can decide -- decline (items return) or accept (take them and scroll it themself). A worn
+     * target is first moved to the bag with its slot registered in {@code pendingTradeRestoreSlots},
+     * so a declined trade re-equips it via the standard restore net; an accepted trade just consumes
+     * it (restore skips items the bot no longer has).
+     */
+    static void startScrollReviewTrade(BotEntry entry, Character bot, Item equip, Item scroll) {
+        if (entry == null || bot == null || !(equip instanceof Equip) || scroll == null) {
+            return;
+        }
+        Character owner = entry.owner;
+        if (owner == null || owner == bot) {
+            BotManager.getInstance().botReply(entry, "no one here to show it to");
+            return;
+        }
+        if (bot.getTrade() != null || entry.pendingTradeCategory != null || owner.getTrade() != null) {
+            BotManager.getInstance().botReply(entry, "cant open a trade rn, ask again in a bit");
+            return;
+        }
+        if (!hasItem(bot, equip) || !hasItem(bot, scroll)) {
+            BotManager.getInstance().botReply(entry, "nvm, my inventory changed");
+            return;
+        }
+        Item tradeEquip = equip;
+        if (equip.getPosition() < 0) { // worn -> pull into the bag so it can be traded
+            Inventory equipBag = bot.getInventory(InventoryType.EQUIP);
+            short src = equip.getPosition();
+            short dst = equipBag.getNextFreeSlot();
+            if (dst < 0) {
+                BotManager.getInstance().botReply(entry, "my equip bag's full, cant pull it off to show you");
+                return;
+            }
+            InventoryManipulator.handleItemMove(bot.getClient(), InventoryType.EQUIP, src, dst, (short) 1);
+            Item moved = equipBag.getItem(dst);
+            if (moved == null) {
+                BotManager.getInstance().botReply(entry, "couldnt get it ready, nvm");
+                return;
+            }
+            entry.pendingTradeRestoreSlots.put(moved, src);
+            tradeEquip = moved;
+        }
+        BotManager.getInstance().botReply(entry, "sure, take a look - here's the gear + the scroll");
+        startTradeSequence("scroll_review", owner, List.of(tradeEquip, scroll), 0, true, entry, bot);
+    }
+
     static boolean hasTransferableItems(String category, BotEntry entry, Character bot) {
         if (isMesoCategory(category)) {
             int currentMesos = bot.getMeso();
