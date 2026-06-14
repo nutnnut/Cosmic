@@ -60,6 +60,57 @@ final class BotPotionManager {
     private BotPotionManager() {
     }
 
+    // Bots whose USE-item StatEffects have been resolved into the shared itemEffect cache, and those
+    // currently being warmed. The first potion scan of a freshly spawned bot otherwise resolves ~all
+    // its USE item effects from WZ inline -- a one-time ~300ms cold load that landed on the bot tick
+    // ("potion-recovery-scan" stall WARN), amplified by several bots booting together. We move that
+    // cold load off the tick (see potionEffectsReady); steady-state stays warm (itemEffect is a shared
+    // ConcurrentHashMap, so a warm scan is just a map-get + field reads per item).
+    private static final java.util.Set<Integer> recoveryEffectsWarmed =
+            java.util.concurrent.ConcurrentHashMap.newKeySet();
+    private static final java.util.Set<Integer> recoveryEffectsWarming =
+            java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+    /**
+     * True once this bot's USE-item effects are resolved into the (shared) {@link
+     * BotInventoryManager#itemEffect} cache. The first call kicks off an off-thread warm and returns
+     * false, so the cold WZ load never runs on the bot tick; subsequent ticks proceed once warm
+     * (a couple of ticks later -- autopot setup being momentarily late at spawn is harmless). The
+     * warm also populates shared potion ids for every other bot.
+     */
+    static boolean potionEffectsReady(Character bot) {
+        if (bot == null) {
+            return true; // nothing to scan; let the caller no-op normally
+        }
+        int id = bot.getId();
+        if (recoveryEffectsWarmed.contains(id)) {
+            return true;
+        }
+        if (recoveryEffectsWarming.add(id)) { // first observer starts the warm
+            try {
+                BotManager.after(1, () -> {
+                    try {
+                        var use = bot.getInventory(InventoryType.USE);
+                        if (use != null) {
+                            for (Item item : use.list()) {
+                                BotInventoryManager.itemEffect(item.getItemId());
+                            }
+                        }
+                    } finally {
+                        recoveryEffectsWarmed.add(id);
+                        recoveryEffectsWarming.remove(id);
+                    }
+                });
+            } catch (RuntimeException ex) {
+                // Scheduling unavailable: never block autopot forever — mark ready so the next tick
+                // does a normal (possibly one-time cold) scan, i.e. the pre-fix behavior.
+                recoveryEffectsWarmed.add(id);
+                recoveryEffectsWarming.remove(id);
+            }
+        }
+        return false;
+    }
+
     /** Single source of truth: items the bot has that count as recovery pots. */
     static List<Item> recoveryPotions(Character bot) {
         long startedAt = BotPerformanceMonitor.start();
@@ -310,6 +361,9 @@ final class BotPotionManager {
     }
 
     static void tickPotionCheck(BotEntry entry, Character bot) {
+        if (!potionEffectsReady(bot)) {
+            return; // first-time USE-effect WZ load is warming off-thread; don't cold-scan on the tick
+        }
         if (entry.potCheckTimerMs > 0) {
             entry.potCheckTimerMs = BotMovementManager.tickDown(entry.potCheckTimerMs);
             return;
