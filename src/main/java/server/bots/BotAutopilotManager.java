@@ -975,9 +975,20 @@ final class BotAutopilotManager {
             }
             if (member.bot.getMapId() == bot.getMapId() && leaderPos != null) {
                 Point memberPos = member.bot.getPosition();
-                if (memberPos != null && manhattan(leaderPos, memberPos) > sameMapBand) {
-                    waiting = true;
-                    break;
+                if (memberPos != null) {
+                    // Measure against the member's FORMATION SLOT (leaderX + its follow offset), not the
+                    // leader's body. Followers rally at followBase = leaderPos.x + followOffsetX, so for a
+                    // wide party the outer slots sit farther than RESUME_PX from the leader even when
+                    // perfectly in position -- measuring to the body made the leader wait forever for
+                    // members that were already gathered (false straggler; see pathlog-Bowgurl 2026-06-14:
+                    // 6 members, waitingForStragglers stuck true at the portal). The slot reference removes
+                    // that systematic bias while still catching a member that has truly fallen behind.
+                    int expectedX = leaderPos.x + member.followOffsetX;
+                    int slotDistance = Math.abs(memberPos.x - expectedX) + Math.abs(memberPos.y - leaderPos.y);
+                    if (slotDistance > sameMapBand) {
+                        waiting = true;
+                        break;
+                    }
                 }
             }
         }
@@ -988,9 +999,6 @@ final class BotAutopilotManager {
         return waiting;
     }
 
-    private static int manhattan(Point a, Point b) {
-        return Math.abs(a.x - b.x) + Math.abs(a.y - b.y);
-    }
 
     private static PartyPlan decideParty(List<BotEntry> members) {
         try {
