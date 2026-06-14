@@ -125,13 +125,17 @@ final class BotGachaponManager {
     interface ValueLookup {
         double value(Character bot, int itemId);
     }
+    static final int GACHA_EQUIP_ROLL_SAMPLES = 24;
     static ValueLookup itemValue = (bot, itemId) -> {
         ItemInformationProvider ii = ItemInformationProvider.getInstance();
         if (constants.inventory.ItemConstants.getInventoryType(itemId) == InventoryType.EQUIP) {
-            // Offense from the item's base stats (no roll), via the same SSOT BotScrollManager uses.
-            double offense = BotScrollManager.offenseValueFromStats(bot, ii.getEquipStats(itemId));
-            // Cosmetics (0-offense capes etc.) still have trade value; fall back to NPC price.
-            return Math.max(offense, ii.getPrice(itemId, 1));
+            // Value an equip pull on the SAME scale as mob drops and Maker crafts: the expected
+            // improvement over what the bot already wears (drop-rolled), via the shared SSOT -- not an
+            // absolute base-stat offense, which over-valued gear the bot can't use or already beats.
+            double upgrade = BotGrindAdvisor.expectedAcquireGain(bot, ii, itemId,
+                    BotGrindAdvisor.rollScores, GACHA_EQUIP_ROLL_SAMPLES, new java.util.HashMap<>());
+            // Even a non-upgrade pull has resale value; floor at NPC price (also covers cosmetics).
+            return Math.max(upgrade, ii.getPrice(itemId, 1));
         }
         return ii.getPrice(itemId, 1);
     };
