@@ -357,6 +357,26 @@ loop/flag (TODO 5) + gachapon unification (TODO 4) — all owner-gated.
 - **Within-map teleport fallback 4000 -> 8000** — large fields exceeded 4000 manhattan in normal travel,
   teleporting bots to target when not stuck (OOB recovery unchanged, still gated on the VR rect).
 
+## 4g. Autocraft SHIPPED (supervised) + EV verification + gacha unified
+
+- **Stat-distribution verified.** Maker roll = base (`getEquipById`) + reagent (`improveEquipStats`) +
+  vanilla upgrade roll (`randomizeUpgradeStats`: main +0..2, def/HP/MP +0..5, only on nonzero stats) +
+  godly roll after, at `GODLY_STATS_MAKER_CHANCE`, bonus ceiling ∝ reqLevel (high ceiling, low prob).
+  `BotMakerPlanner.sampleMakerRoll` mirrors this exactly. Fixed a parity gap: the maker sampler now
+  scores via the shared `BotGrindAdvisor.sampleEquipScores` (offense + scroll headroom × weapon speed)
+  so crafts compare fairly against the headroom-inclusive owned baseline.
+- **All three sources now share one estimation.** drops, Maker, and gachapon equip valuation all route
+  through `expectedAcquireGain` + `sampleEquipScores` (gacha = drop-rolled improvement-over-worn, floored
+  at NPC resale). Previously gacha used absolute base offense.
+- **Supervised autocraft execution.** `MakerProcessor.makeItem` extracted (behavior-preserving) for bot
+  reuse. `BotMakerManager` proposes the best craftable upgrade and **asks permission per craft (like
+  scrolling)**, executes on yes, auto-equips, and chains to the next until none beats the gain floor.
+  Gated `craftSupervised` = a REAL owner online (not self-owned @botme/@botparty) + a **1,000,000 meso
+  floor** re-checked at exec time. Commands: `autocraft on`/`off`, `craft now`.
+  **QUIRK for you:** because it's supervised-only, self-owned @botme/@botparty bots (owner==bot) do NOT
+  autocraft — use `maker plan` to preview, and a companion bot with you online to actually craft.
+  Autocraft arming is session-only (not persisted across relog) — say `autocraft on` again after a relog.
+
 ## 5. Change log (this session)
 
 - 2026-06-13: Diagnosis complete. DB confirms ETC 96/96 cramped + sellable items present → detection is
