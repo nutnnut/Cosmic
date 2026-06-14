@@ -195,6 +195,34 @@ reimplement (project rule 1).
 - **Stimulants/upgrade-crystals**: use them on crafts (better rolls, more mat/meso spend) — yes/no?
 - **Storage vs sell for useful mats**: storage preferred (nothing destroyed); confirm.
 
+## 7. HANDOFF — what to do when you wake
+
+**The one thing that unblocks everything:** grep the server log after letting a cramped-bag autopilot
+bot run a minute or two:
+
+```
+grep "bot-sellblock:" logs/cosmic-log.log      # why a cramped bot isn't selling (fires even if !grinding)
+grep "bot-errand:"    logs/cosmic-log.log      # why a wanted town trip didn't start
+```
+
+`bot-sellblock` prints, per bot: which tabs are cramped, how many sellable-trash items each tab holds,
+`shouldSell`, and `grinding/following/autopilot/shopPending/errandMap`. Read it like this:
+- `shouldSell=false` while `etc` cramped + `sellableTrash[etc]=0` → bag is full of KEPT items (maker mats /
+  rare drops / no-NPC-price). Working as designed; the fix is storage/crafting (slices 5/6), not selling.
+- `shouldSell=true` but no `bot-errand:` line and `errandMap=-1` → trigger reached but errand silently
+  no-op'd; check the `bot-errand:` reason (cooldown / no-distinct-return-map / owner-supply-grace).
+- `grinding=false` while cramped → the bot's in transit-follow/portal-anchor/idle; the sell trigger sits
+  behind `grinding`. That's the "none walked" cause if you see it — tell me and I'll lift the gate.
+- No `bot-sellblock` line at all while a bag is full → the bot wasn't in autopilot when checked.
+
+**Decisions waiting on you** (see §6e): turn on autonomous crafting (`BOT_AUTO_MAKER_CRAFT`, off until you
+say) + meso floor; stimulants/upgrade-crystals yes/no; confirm storage-over-sell for useful mats.
+
+**Ready to implement on your word** (designs in §6, all reuse surfaces + the 25 storage NPC ids resolved):
+slice 6 storage deposit, slice 5 autonomous crafting. I deliberately did NOT build these unsupervised —
+they spend mesos / consume mats / refactor shared player handlers, and they sit on the same
+`isActive && grinding` gate the diagnostic is about to validate.
+
 ## 5. Change log (this session)
 
 - 2026-06-13: Diagnosis complete. DB confirms ETC 96/96 cramped + sellable items present → detection is
@@ -211,3 +239,11 @@ reimplement (project rule 1).
   log for `bot-errand:` — it'll say `errand-cooldown` / `no-distinct-return-map` / `owner-supply-grace` /
   `not-autopilot`. If there's NO `bot-errand:` line at all while a bag is full, the bot wasn't `grinding`
   or wasn't in autopilot when checked (the trigger sits behind both).
+- 2026-06-13: **Diagnostic instrument completed** (`bot-sellblock`, `BotShopManager.logSellBlockIfCramped`,
+  called in `tickPotionCheck` BEFORE the grinding gate). Closes the hole above: now an autopilot bot with
+  ANY cramped tab logs the full decision state even when `!grinding` or `shouldSell=false`. See §7 for how
+  to read it. This is the load-bearing deliverable for the "none walked" bug — next live run is conclusive.
+- 2026-06-13: Verified my recent `97e87752b` equip-trade cache commit does NOT affect the ETC sell path
+  (cache is EQUIP-only; `collectSellTrashEtcItems` is independent) — ruled out as the Bowgurl ETC cause.
+- 2026-06-13: Designs for slice 5 (crafting) + slice 6 (storage) are implementation-ready (§6); 25 storage
+  NPC ids resolved. Held for owner approval (meso/mat spend, shared-handler refactor) — not built blind.
