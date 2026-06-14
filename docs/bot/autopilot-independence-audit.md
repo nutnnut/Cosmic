@@ -340,6 +340,23 @@ before enabling execution. Try it on a bot (e.g. Bowgurl) and eyeball the list. 
 the `rollMakerEquip`/`makeItem` extractions (§6c-ter TODO 1-2, the player-craft aliasing hazard) + the
 loop/flag (TODO 5) + gachapon unification (TODO 4) — all owner-gated.
 
+## 4f. Follow-up fixes (maker reagents, scroll UX, party transit/teleport)
+
+- **Maker planner respects server reagent rules** — `removeOddMakerReagents` rejects the whole craft if
+  a WATK/MATK gem (type `id/100 < 42502`; diamonds) is used on a non-weapon (client allows diamonds on
+  weapons only). The planner now never proposes them on armour, uses one gem per type, exactly one each.
+- **"Let me see" scroll response** — owner can reply "let me see" / "show me" / "trade it" to a scroll
+  proposal; the bot puts the equip + scroll in a trade to inspect/decide (decline returns them; accept =
+  scroll it yourself). Reuses the trade machinery; worn target is unequipped with restore-on-cancel.
+- **Party transit stuck-at-portal fixes** (pathlog-Bowgurl 2026-06-14): (a) straggler distance is now
+  measured against each member's formation SLOT (`leaderX + followOffsetX`), not the leader's body, so a
+  wide party's outer slots aren't false stragglers; (b) **an active errand (quest/gacha/resupply) clears
+  a stale transit wait-anchor** — cohesion (the only anchor-clearer) is skipped while an errand runs, so a
+  full-bag leader that anchored for stragglers then fired a resupply errand was pinned at the portal by
+  `loiterAtAnchor` forever. Both green across 216 bot tests.
+- **Within-map teleport fallback 4000 -> 8000** — large fields exceeded 4000 manhattan in normal travel,
+  teleporting bots to target when not stuck (OOB recovery unchanged, still gated on the VR rect).
+
 ## 5. Change log (this session)
 
 - 2026-06-13: Diagnosis complete. DB confirms ETC 96/96 cramped + sellable items present → detection is
