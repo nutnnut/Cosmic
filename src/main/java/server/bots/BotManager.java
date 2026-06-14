@@ -2507,8 +2507,13 @@ public class BotManager {
 
         // Map change and teleport checks only apply when following a live anchor.
         // Shop visits are intentional same-map detours and must not be pulled back
-        // to the owner while walking to the NPC.
-        if (!entry.shopVisitPending && syncFollowMap(entry, bot, followAnchor, runAiTick)) {
+        // to the owner while walking to the NPC. A resupply errand is the same intent
+        // one step earlier -- the bot is traveling its own town trip (autopilotErrandMapId
+        // set), but transit-follow may have left `following` true, and syncFollowMap would
+        // then warp it straight back to the leader's grind map mid-errand (it never reaches
+        // the shop). The cohesion gate at BotAutopilotManager.tick uses the same condition.
+        if (!entry.shopVisitPending && entry.autopilotErrandMapId == -1
+                && syncFollowMap(entry, bot, followAnchor, runAiTick)) {
             return;
         }
         if (recoverGrindPartyTeleportDistance(entry, bot, followAnchor)) {
