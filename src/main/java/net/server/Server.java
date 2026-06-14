@@ -895,8 +895,21 @@ public class Server {
         // The disk cache skips the ~66s WZ parse on every boot after the first.
         futures.add(initExecutor.submit(() -> {
             boolean primed = EquipStatsDiskCache.preload(ItemInformationProvider.getInstance());
-            DressingRoom.load();
-            if (!primed) {
+            if (primed) {
+                // Steady state: getEquipStats is already warm from the disk cache, so the Dressing
+                // Room's map build is cheap and hits the cache, never the synchronized XMLWZFile lock.
+                // It's a non-core cosmetic feature -> run it on a background daemon so the login port
+                // never waits on it. It publishes its map atomically (empty until done), so the only
+                // effect is the Dressing Room being empty for the first moments online. NOT awaited.
+                Thread dressingRoomLoader = new Thread(DressingRoom::load, "dressing-room-loader");
+                dressingRoomLoader.setDaemon(true);
+                dressingRoomLoader.start();
+            } else {
+                // First boot only (no disk cache): DressingRoom.load() is ALSO what warms getEquipStats
+                // for every equip -- the cache early logins/bots need BEFORE the port opens (reading it
+                // through the WZ lock post-online starves them) and what dump() then persists. Keep it
+                // blocking this once; every later boot takes the primed branch above and starts fast.
+                DressingRoom.load();
                 EquipStatsDiskCache.dump(ItemInformationProvider.getInstance());
             }
         }));
