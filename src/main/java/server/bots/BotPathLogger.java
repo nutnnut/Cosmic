@@ -352,11 +352,20 @@ final class BotPathLogger {
                 detail = "map=" + memberMap + " hops=" + hops + (straggler ? "  *STRAGGLER(hops)*" : "");
             } else {
                 Point mp = m.bot.getPosition();
-                int gap = leaderPos != null && mp != null
-                        ? Math.abs(leaderPos.x - mp.x) + Math.abs(leaderPos.y - mp.y) : -1;
-                boolean straggler = gap < 0 || gap > band;
-                detail = "sameMap gap=" + gap + "px (band=" + band + ")"
-                        + (straggler ? "  *STRAGGLER(px)*" : "");
+                if (leaderPos == null || mp == null) {
+                    detail = "sameMap gap=? (band=" + band + ")  *STRAGGLER(px)*";
+                } else {
+                    // Mirror waitingForStragglers EXACTLY: present if near by body OR formation slot,
+                    // straggler only if far by BOTH. Show the split so the verdict is provable from the log.
+                    int bodyGap = Math.abs(leaderPos.x - mp.x) + Math.abs(leaderPos.y - mp.y);
+                    int expectedX = leaderPos.x + m.followOffsetX;
+                    int slotGap = Math.abs(mp.x - expectedX) + Math.abs(mp.y - leaderPos.y);
+                    int gap = Math.min(bodyGap, slotGap);
+                    boolean straggler = gap > band;
+                    detail = "sameMap gap=" + gap + "px (body=" + bodyGap + " slot=" + slotGap
+                            + " offsetX=" + m.followOffsetX + ") (band=" + band + ")"
+                            + (straggler ? "  *STRAGGLER(px)*" : "");
+                }
             }
             sb.append("  - ").append(name).append("  ").append(detail).append("\n");
         }

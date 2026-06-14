@@ -987,16 +987,19 @@ final class BotAutopilotManager {
             if (member.bot.getMapId() == bot.getMapId() && leaderPos != null) {
                 Point memberPos = member.bot.getPosition();
                 if (memberPos != null) {
-                    // Measure against the member's FORMATION SLOT (leaderX + its follow offset), not the
-                    // leader's body. Followers rally at followBase = leaderPos.x + followOffsetX, so for a
-                    // wide party the outer slots sit farther than RESUME_PX from the leader even when
-                    // perfectly in position -- measuring to the body made the leader wait forever for
-                    // members that were already gathered (false straggler; see pathlog-Bowgurl 2026-06-14:
-                    // 6 members, waitingForStragglers stuck true at the portal). The slot reference removes
-                    // that systematic bias while still catching a member that has truly fallen behind.
+                    // A member is "present" if it's near the group cluster by EITHER metric:
+                    //   body distance  -- it's bunched at the leader/portal landing, OR
+                    //   slot distance  -- it's settled into its spread formation slot (leaderX + offset).
+                    // Take the min. Each pure metric has a blind spot that produced a real stuck-at-portal
+                    // bug: body-only waits forever when members sit at wide formation slots; slot-only waits
+                    // forever when members bunch at the portal after a hop (their slots are spread +/-180px
+                    // so an outer-slot member standing by the leader reads ~385px from its slot). A genuine
+                    // straggler is far by BOTH (it hasn't arrived), so min never masks one. See
+                    // pathlog-Bowgurl 2026-06-14T08:09 (6 members bunched, body gaps <=205, slot-only stuck).
+                    int bodyDistance = Math.abs(memberPos.x - leaderPos.x) + Math.abs(memberPos.y - leaderPos.y);
                     int expectedX = leaderPos.x + member.followOffsetX;
                     int slotDistance = Math.abs(memberPos.x - expectedX) + Math.abs(memberPos.y - leaderPos.y);
-                    if (slotDistance > sameMapBand) {
+                    if (Math.min(bodyDistance, slotDistance) > sameMapBand) {
                         waiting = true;
                         break;
                     }

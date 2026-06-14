@@ -511,6 +511,44 @@ class BotAutopilotManagerTest {
         }
     }
 
+    @Test
+    void leaderReleasesWhenMembersBunchAtPortalEvenIfFarFromSpreadFormationSlots() {
+        // Regression for pathlog-Bowgurl 2026-06-14T08:09: after a portal hop the party bunches at
+        // the landing (small BODY gaps) but their formation slots are spread by followOffsetX, so a
+        // slot-only straggler check read the bunched members as ~far and the leader held forever.
+        // A member present by EITHER body OR slot must release the hold.
+        Fixture leader = fixture(HUNTING_GROUND, onlineOwner());
+        Fixture follower = fixture(HUNTING_GROUND, onlineOwner());
+        when(leader.bot().getPosition()).thenReturn(new Point(0, 0));
+        for (Fixture f : List.of(leader, follower)) {
+            f.entry().autopilotMapId = HUNTING_GROUND;
+            f.entry().autopilotParty = true;
+            f.entry().autopilotNextDecisionAtMs = Long.MAX_VALUE;
+            f.entry().grinding = true;
+        }
+        follower.entry().followOffsetX = 400; // wide slot, beyond the 350 resume band
+        leader.entry().autopilotWaitingForStragglers = true; // already holding -> resume band (350) applies
+
+        try (Seams seams = new Seams(null)) {
+            BotAutopilotManager.partyMembers = entry -> List.of(leader.entry(), follower.entry());
+            BotAutopilotManager.hopDistance = (from, to) -> 0; // same map
+
+            // Bunched at the leader's body: body gap 0, but slot gap 400 (> 350). Slot-only would
+            // stay stuck; min(body, slot) = 0 releases the hold.
+            when(follower.bot().getPosition()).thenReturn(new Point(0, 0));
+            leader.entry().autopilotNextStragglerCheckAtMs = 0L;
+            assertFalse(waitingForStragglers(leader));
+            assertFalse(leader.entry().autopilotWaitingForStragglers);
+
+            // A genuine straggler is far by BOTH metrics (body 800, slot 400) -> still waits.
+            leader.entry().autopilotWaitingForStragglers = true;
+            leader.entry().autopilotNextStragglerCheckAtMs = 0L;
+            when(follower.bot().getPosition()).thenReturn(new Point(800, 0));
+            assertTrue(waitingForStragglers(leader));
+            assertTrue(leader.entry().autopilotWaitingForStragglers);
+        }
+    }
+
     /** Drives the package-private straggler check directly (the on-destination leader path
      *  returns before tickPartyCohesion, so exercise the wait predicate in isolation). */
     private static boolean waitingForStragglers(Fixture leader) {
