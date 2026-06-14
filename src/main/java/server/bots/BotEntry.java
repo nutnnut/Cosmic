@@ -220,6 +220,10 @@ public class BotEntry {
     boolean autopilotTransitFollow = false;
     long autopilotNextStragglerCheckAtMs = 0L;
     boolean autopilotWaitingForStragglers = false;
+    // Why the LAST actual straggler RECOMPUTE decided to wait (tripping member + metric), or null
+    // when it last decided NOT to wait. Pathlog-only: lets a capture show what the gate truly saw at
+    // its last (<=3s-stale) check, which can disagree with a live re-mirror if members oscillate.
+    String autopilotStragglerReason = null;
     // While the LEADER waits for stragglers DURING TRANSIT it loiters at the next-hop portal
     // (opportunity-attacking nearby mobs) instead of grind-wandering the whole map, so the
     // group reassembles there and hops together. null/-1 = not anchored; the mapId guard

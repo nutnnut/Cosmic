@@ -263,8 +263,12 @@ final class BotPathLogger {
                 .append(entry.autopilotFarmItemId != 0 ? "  farmItem=" + entry.autopilotFarmItemId : "")
                 .append("  transitFollow=").append(entry.autopilotTransitFollow).append("\n");
         sb.append("Errands:    questMap=").append(entry.questErrandMapId)
-                .append("  gachaMap=").append(entry.gachaErrandMapId).append("\n");
+                .append("  gachaMap=").append(entry.gachaErrandMapId)
+                .append("  resupplyMap=").append(entry.autopilotErrandMapId)
+                .append("  returningFromErrand=").append(entry.autopilotReturningFromErrand)
+                .append("  shopVisitPending=").append(entry.shopVisitPending).append("\n");
         appendCohesionState(sb, entry);
+        appendTravelState(sb, entry);
         if (entry.debugCommanderId > 0) {
             sb.append("AdminBind:  commanderId=").append(entry.debugCommanderId)
                     .append("  untilMs=").append(entry.debugCommanderUntilMs).append("\n");
@@ -307,6 +311,12 @@ final class BotPathLogger {
                 .append("  nextCheckInMs=")
                 .append(Math.max(0L, entry.autopilotNextStragglerCheckAtMs - System.currentTimeMillis()))
                 .append("\n");
+        // The verdict the LAST real recompute reached (<=3s stale). If this says a member tripped the
+        // hold but the live per-member mirror below shows everyone present, the group is oscillating
+        // (members briefly far/off-map at the check instant) -- not a stuck flag.
+        sb.append("Last straggler verdict: ").append(entry.autopilotStragglerReason != null
+                ? "WAIT - " + entry.autopilotStragglerReason
+                : "no straggler (would release)").append("\n");
         if (entry.autopilotWaitAnchor != null) {
             sb.append("Wait anchor: (").append(entry.autopilotWaitAnchor.x).append(",")
                     .append(entry.autopilotWaitAnchor.y).append(")  map=")
@@ -368,6 +378,68 @@ final class BotPathLogger {
                 }
             }
             sb.append("  - ").append(name).append("  ").append(detail).append("\n");
+        }
+    }
+
+    /**
+     * Travel diagnostics for an autopilot bot off its destination: the world-graph route it is
+     * trying to walk (current map -> destination/resupply map), the next-hop portal it would enter,
+     * and the live follow-travel hop state incl. the give-up/random-portal-fallback window. Surfaces
+     * a bot "not taking the next portal" -- a hop it can't reach, or a give-up window bouncing it
+     * back to a prior map (which then reads as a perpetual straggler-wait at the lower map).
+     */
+    private void appendTravelState(StringBuilder sb, BotEntry entry) {
+        if (!BotAutopilotManager.isActive(entry)) {
+            return;
+        }
+        client.Character bot = entry.bot;
+        if (bot == null || bot.getMap() == null) {
+            return;
+        }
+        int dest = entry.autopilotErrandMapId != -1 ? entry.autopilotErrandMapId : entry.autopilotMapId;
+        int here = bot.getMapId();
+        if (dest <= 0 || dest == here) {
+            return; // on the destination map: travel isn't driving this tick
+        }
+        sb.append("Travel:     ").append(here).append(" -> ").append(dest);
+        try {
+            List<Integer> route = BotWorldGraph.route(here, dest, BotAutopilotManager.MAX_TRAVEL_HOPS);
+            sb.append("  route=").append(route == null ? "<none/unreachable>" : route.toString());
+        } catch (RuntimeException e) {
+            sb.append("  route=<err:").append(e).append(">");
+        }
+        sb.append("\n");
+        try {
+            java.awt.Point portal = BotTravelManager.nextHopPortalPosition(
+                    entry, bot, dest, BotAutopilotManager.MAX_TRAVEL_HOPS);
+            sb.append("            nextHopPortal=").append(portal == null
+                    ? "<none: scroll/taxi/ferry leg, or no walkable portal>"
+                    : "(" + portal.x + "," + portal.y + ")").append("\n");
+        } catch (RuntimeException e) {
+            sb.append("            nextHopPortal=<err:").append(e).append(">\n");
+        }
+        long now = System.currentTimeMillis();
+        if (entry.followTravelTargetMapId != -1) {
+            sb.append("            hop: target=").append(entry.followTravelTargetMapId)
+                    .append(" nextHop=").append(entry.followTravelNextHopMapId)
+                    .append(" portalId=").append(entry.followTravelPortalId)
+                    .append(" fromMap=").append(entry.followTravelFromMapId);
+            if (entry.followTravelTaxiNpcId != 0) {
+                sb.append(" taxiNpc=").append(entry.followTravelTaxiNpcId);
+            }
+            if (entry.followTravelFerry) {
+                sb.append(" ferry");
+            }
+            if (entry.followTravelEnteredAtMs > 0) {
+                sb.append(" enteredAgoMs=").append(now - entry.followTravelEnteredAtMs);
+            }
+            sb.append(" deadlineInMs=").append(entry.followTravelDeadlineMs - now).append("\n");
+        } else {
+            sb.append("            hop: <inactive>\n");
+        }
+        if (now < entry.followTravelGiveUpUntilMs) {
+            sb.append("            give-up window: ").append(entry.followTravelGiveUpUntilMs - now)
+                    .append("ms left (warp / random-portal fallback active)\n");
         }
     }
 

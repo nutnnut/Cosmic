@@ -979,13 +979,17 @@ final class BotAutopilotManager {
                 : BotManager.cfg.SAME_MAP_STRAGGLER_PX;
         Point leaderPos = bot.getPosition();
         boolean waiting = false;
+        String reason = null; // captured for the pathlog: which member tripped the hold, and how
         for (BotEntry member : members) {
             if (member == entry || member.bot == null || member.bot.getMap() == null
                     || member.autopilotErrandMapId != -1) {
                 continue; // a resupplying member runs its own town trip; never wait on it
             }
-            if (hopDistance.hops(member.bot.getMapId(), bot.getMapId()) > BotManager.cfg.STRAGGLER_WAIT_HOPS) {
+            int memberHops = hopDistance.hops(member.bot.getMapId(), bot.getMapId());
+            if (memberHops > BotManager.cfg.STRAGGLER_WAIT_HOPS) {
                 waiting = true;
+                reason = member.bot.getName() + " off-map (map=" + member.bot.getMapId()
+                        + " hops=" + memberHops + " > " + BotManager.cfg.STRAGGLER_WAIT_HOPS + ")";
                 break;
             }
             if (member.bot.getMapId() == bot.getMapId() && leaderPos != null) {
@@ -1005,6 +1009,8 @@ final class BotAutopilotManager {
                     int slotDistance = Math.abs(memberPos.x - expectedX) + Math.abs(memberPos.y - leaderPos.y);
                     if (Math.min(bodyDistance, slotDistance) > sameMapBand) {
                         waiting = true;
+                        reason = member.bot.getName() + " far on-map (body=" + bodyDistance
+                                + " slot=" + slotDistance + " > band=" + sameMapBand + ")";
                         break;
                     }
                 }
@@ -1014,6 +1020,7 @@ final class BotAutopilotManager {
             reply.accept(entry, BotManager.randomReply(WAIT_REPLIES));
         }
         entry.autopilotWaitingForStragglers = waiting;
+        entry.autopilotStragglerReason = reason; // null when this recompute decided NOT to wait
         return waiting;
     }
 
