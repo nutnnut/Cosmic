@@ -221,6 +221,44 @@ until none positive. Execute via extracted `MakerProcessor.makeItem`. Reagent st
 `ii.getMakerReagentStatUpgrade(id)` (DB `makerreagentdata`); slots `getMakerReagentSlots`; stim
 `getMakerStimulant`.
 
+### 6c-ter. STATUS + the exact remaining build (keystone DONE 2026-06-13)
+
+- **DONE — SSOT keystone:** `BotGrindAdvisor.expectedAcquireGain(bot, ii, itemId, RollScoreSampler
+  sampler, int sampleCount, Map<Short,Double> ownedBarCache)` (commit on `experimental`). `equipGain`
+  delegates to it (drops unchanged, 18/18 tests green). Maker + gachapon plug a sampler into this.
+
+- **TODO 1 — extract the pure Maker roll (SSOT, avoids divergence):** `MakerProcessor.addBoostedMakerItem`
+  (lines ~428-509) is pure EXCEPT the final `InventoryManipulator.addFromDrop` (507) and the 90%
+  `rollSuccessChance` gate (429). Extract `static Equip rollMakerEquip(int itemid, int stimulantid,
+  Map<Integer,Short> reagentids, boolean isGM)` = lines 433-505 returning `eqp`; leave the 90% gate +
+  addFromDrop in `addBoostedMakerItem` (which calls the new fn). Wrinkle: the `USE_ENHANCED_CRAFTING`
+  branch (443-448) reads `c.getPlayer().isGM()` and reassigns `item` via `scrollEquipWithId` — pass
+  `isGM` in; bots pass false. Reagent→stat mapping inside is the SSOT to keep: `s.substring(0,4)` "rand"
+  → `randStat`/`randOption` via `scrollOptionEquipWithChaos`; else `stat=s.substring(3)` (strip "inc"),
+  `MaxHP→MHP`, `MaxMP→MMP`, skip `ReqLevel`, sum into `improveEquipStats`. Then `randomizeUpgradeStats`
+  if stim. The bot's maker EV sampler = `rollMakerEquip(...)` N× → `BotScrollManager.offenseValue`,
+  modeling stim as 0.9×boosted.
+
+- **TODO 2 — extract `MakerProcessor.makeItem`** (the equip-create branch of `makerAction`, ~71-168) for
+  bot execution, as in §6b.
+
+- **TODO 3 — `BotMakerPlanner`:** load `makercreatedata`+`makerrecipedata` (equips, DB-direct like
+  `BotScrollManager.bestDropperByItem`). Reagent slots rule (mirror private `getMakerReagentSlots`):
+  eqpLevel<78→1, <108→2, else→3. Reagents are `425xxxx` (`ItemConstants.isMakerReagent`); pick owned
+  ones maximizing `BotScrollManager.offenseValueFromStats(bot, {strippedStat: val})` to fill slots
+  (SSOT-driven, not hardcoded). Rank via `expectedAcquireGain` with the maker sampler.
+
+- **TODO 4 — gachapon unification:** `BotGachaponManager.itemValue` (equip branch) currently uses
+  `offenseValueFromStats(base stats)` (absolute). Route equips through `expectedAcquireGain` (sampler =
+  drop-style `BotGrindAdvisor.rollScores`) so a pull is valued as improvement-over-worn on the SAME
+  scale — then `expectedValuePerRoll`/`GACHA_MIN_NET_EV` decide "worth the probability" consistently.
+  Behavior change → needs a test pass.
+
+- **TODO 5 — execution loop + wiring:** `BotMakerManager.autoCraftUpgrades` (reuse the batch machinery
+  like `autoCompactIfCramped`): while top `expectedAcquireGain` > MIN and `meso - recipeCost >= 1_000_000`,
+  craft it (stim + chosen reagents), let auto-equip pick it up, re-rank; stop when none positive (cap by
+  gains, not time). Config flag `BOT_AUTO_MAKER_CRAFT`. Owner approved ON; keep the 1M floor.
+
 ### 6e. Decisions for you (gate the risky bits)
 - **Autonomous crafting on/off + meso floor.** Proposed: config flag `BOT_AUTO_MAKER_CRAFT` (default
   OFF until you approve), meso floor e.g. 1,000,000, only clear upgrades, rate-limited. Spends mesos +
