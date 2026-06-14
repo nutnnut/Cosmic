@@ -511,6 +511,10 @@ public class BotChatManager {
     private static final Pattern DISASSEMBLE_TRASH_COMMAND_PATTERN = Pattern.compile(
             "^\\s*(?:disassemble|dismantle|scrap|break\\s*down)\\s+(?:(?:my|ur|your)\\s+)?(?:trash|junk)(?:\\s+(?:equips?|gear))?\\s*[?!.,]*\\s*$",
             Pattern.CASE_INSENSITIVE);
+    // Read-only preview of what the bot could Maker-craft for a gear upgrade (no crafting happens).
+    private static final Pattern MAKER_PLAN_COMMAND_PATTERN = Pattern.compile(
+            "^\\s*(?:maker?\\s*plan|craft\\s*plan|what\\s+(?:can|should)\\s+(?:i|u|you)\\s+(?:craft|make)|what\\s+to\\s+craft)\\s*[?!.,]*\\s*$",
+            Pattern.CASE_INSENSITIVE);
     private static final Pattern TRADE_USE_COMMAND_PATTERN = Pattern.compile(
             "\\b" + TRADE_CMD_VERB + "\\s+" + TRANSFER_RECIPIENT + TRANSFER_OWNER + USE_WORDS + "\\b",
             Pattern.CASE_INSENSITIVE);
@@ -1201,6 +1205,11 @@ public class BotChatManager {
         if (DISASSEMBLE_TRASH_COMMAND_PATTERN.matcher(message).matches()) {
             BotManager.after(BotManager.randMs(500, 700), () ->
                     BotMakerManager.handleDisassembleTrash(entry));
+            return;
+        }
+
+        if (MAKER_PLAN_COMMAND_PATTERN.matcher(message).matches()) {
+            BotManager.after(BotManager.randMs(300, 500), () -> exportMakerPlan(entry));
             return;
         }
 
@@ -2516,6 +2525,28 @@ public class BotChatManager {
     private static boolean isLatestTransferRequest(Character bot, int requestId) {
         AtomicInteger current = PENDING_TRANSFER_REQUESTS.get(bot.getId());
         return current != null && current.get() == requestId;
+    }
+
+    /** Read-only preview: the top equips the bot could Maker-craft for a gear upgrade, ranked by the
+     *  same expected-gain SSOT used for drop farming. Crafts nothing — lets the owner see the plan. */
+    private static void exportMakerPlan(BotEntry entry) {
+        Character bot = entry.bot;
+        if (bot == null) {
+            return;
+        }
+        List<BotMakerPlanner.CraftPlan> plans = BotMakerPlanner.rankUpgrades(bot);
+        if (plans.isEmpty()) {
+            BotManager.getInstance().botReply(entry,
+                    "nothing worth crafting rn (need maker skill + materials + an actual upgrade)");
+            return;
+        }
+        BotManager.getInstance().botReply(entry, "top crafts that'd upgrade me:");
+        int shown = Math.min(plans.size(), 5);
+        for (int i = 0; i < shown; i++) {
+            BotMakerPlanner.CraftPlan p = plans.get(i);
+            BotManager.getInstance().botReply(entry, String.format("%d. %s (+%.0f dps, %d mesos, %s)",
+                    i + 1, p.name(), p.expectedGain(), p.mesoCost(), p.reagentDesc()));
+        }
     }
 
     private static void handleItemQuery(BotEntry entry, String itemName) {
