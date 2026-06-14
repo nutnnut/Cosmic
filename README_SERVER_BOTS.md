@@ -4,6 +4,7 @@
 
 ## Features
 
+- bot autonomy / autopilot - send a bot or party off to travel, grind, resupply, and play on its own
 - follow, trade, loot
 - auto fight/grind, use skill, auto assign ap/sp, buffs (Only 1st jobs + select 2nd job configured/tested)
 - auto buy/resupply potions/ammo if shop available within the same map
@@ -37,6 +38,9 @@ log in on the target character and run: `@registerbot <characterName>`
 
 ### Option 2: Buddy invite shortcut
 Add bots as friends. Bots will always show up as online. Invite a bot to party or chatroom through buddy menu to spawn.
+
+### Option 3: Take over the character you're on
+`@botme` turns your current character into a bot. `@botparty` does it for a full party of your alts (everyone else in the party must be a bot) and runs party autopilot.
 
 ## Bot commands
 
@@ -80,6 +84,18 @@ jason stop - only jason will stop
 | `patrol` / `roam` / `wander`| Prioritize farming at specified platform and nearby platforms only |
 | `sentry` / `camp` / `guard mode` / `post up` / `anchor here` / `farm here` / `grind here` /  | Stand at exact position, never chase, only attacking anything in range |
 | `fidget` | Trigger a small idle/social fidget |
+
+### Autonomy (Autopilot)
+
+Send bots off to play independently - they travel across maps on their own, pick where to grind, farm, resupply when low, and keep going.
+
+| Say | Effect |
+|---|---|
+| `go grind somewhere` / `farm wherever` / `autopilot` / `go solo` | Bot plays independently - picks a map, travels there, farms and resupplies on its own |
+| `grind together` / `farm together` / `party grind` / `go together` | Whole bot party runs autopilot together |
+| `farm <item>` | Autopilot toward whatever map best drops that item |
+| `where should we grind` / `where to grind` | Bot suggests a good grind spot (weighs EXP and gear gains) |
+| `autopilot debug` / `ap debug` / `why autopilot` | Explain the current autopilot decision |
 
 ### Movement Formation
 
@@ -152,6 +168,21 @@ Follow mode behavior
 | `fame me` | Bot fames you (subject to daily & monthly limits) |
 | `fame <name>` | Bot fames the named player or bot on the map |
 
+### Quests
+
+Bots auto-run worthwhile mob quests in the background while grinding.
+
+| Say | Effect |
+|---|---|
+| `quests` / `quest status` / `quest progress` | Active quest progress summary |
+| `recommend quest` / `quest rec` / `best quest` / `suggest quest` | Suggest a worthwhile quest to start |
+
+### Maker / Crafting
+
+| Say | Effect |
+|---|---|
+| `maker plan` / `craft plan` / `what can I craft` | Preview gear upgrades the bot could craft (read-only) |
+
 ### Gear
 
 Bots auto-equip the best available gear they can use. They can also recommend gear for you, request current upgrades from you, and trade away non-reserved spare gear.
@@ -202,8 +233,13 @@ Verbs: `trade [me] <type/name>`, `give [me] <type/name>`, `drop <type/name>`, `p
 ### Debug Commands
 | Say                                       | Effect                  |
 |-------------------------------------------|-------------------------|
+| `inv debug` | Detailed inventory dump with the keep/sell classification |
+| `scroll debug` | Dump the bot's self-scrolling decision to a file |
+| `autopilot debug` / `ap debug` | Full autopilot grind-decision dump |
 | `!botperfdebug` | Toggle console spam on bot performance |
 | `!botnav`                  | Navigation debug command |
+| `@botstatus` | (GM) Private listing of every bot on the map |
+| `@autosell` | (GM) Preview/run the bot sell pipeline on your own character |
 
 ## Notes
 - Bot characters can be logged into as normal accounts (user = bot name, password = `botbot`) to manually equip or manage inventory.
