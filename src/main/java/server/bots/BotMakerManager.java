@@ -179,9 +179,11 @@ final class BotMakerManager {
             }
             entry.pendingAction = "craft_confirm";
             entry.pendingCraftPlan = plan;
-            BotManager.getInstance().botReply(entry, String.format(
+            String craftPrompt = String.format(
                     "wanna craft %s? +%.0f dps, ~%,d mesos + materials (%s) - ok?",
-                    plan.name(), plan.expectedGain(), plan.mesoCost(), plan.reagentDesc()));
+                    plan.name(), plan.expectedGain(), plan.mesoCost(), plan.reagentDesc());
+            BotManager.getInstance().botReply(entry, craftPrompt);
+            BotPrompt.showOptions(entry, craftPrompt, java.util.List.of("yes", "no"));
             return;
         }
         if (announceNone) {

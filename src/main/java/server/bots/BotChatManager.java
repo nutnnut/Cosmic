@@ -49,10 +49,17 @@ public class BotChatManager {
     static final class QueuedMessage {
         final String text;
         final boolean ownerDirected;
+        /** When non-null, a "possible responses" overlay shown to the owner as this message is sent. */
+        final java.util.List<String> overlayOptions;
 
         QueuedMessage(String text, boolean ownerDirected) {
+            this(text, ownerDirected, null);
+        }
+
+        QueuedMessage(String text, boolean ownerDirected, java.util.List<String> overlayOptions) {
             this.text = text;
             this.ownerDirected = ownerDirected;
+            this.overlayOptions = overlayOptions;
         }
     }
 
@@ -727,7 +734,9 @@ public class BotChatManager {
                         "relog? say yes to confirm",
                         "save and relog? type yes",
                         "relogging? say yes to go ahead");
-                BotManager.getInstance().botReply(entry, BotManager.randomReply(prompts));
+                String prompt = BotManager.randomReply(prompts);
+                BotManager.getInstance().botReply(entry, prompt);
+                BotPrompt.showOptions(entry, prompt, List.of("yes", "no"));
             });
             return;
         }
@@ -739,7 +748,9 @@ public class BotChatManager {
                         "log off? you sure? say yes to confirm",
                         "save and log off? say yes if you're sure",
                         "logging off? type yes to confirm");
-                BotManager.getInstance().botReply(entry, BotManager.randomReply(prompts));
+                String prompt = BotManager.randomReply(prompts);
+                BotManager.getInstance().botReply(entry, prompt);
+                BotPrompt.showOptions(entry, prompt, List.of("yes", "no"));
             });
             return;
         }
@@ -1330,11 +1341,13 @@ public class BotChatManager {
         entry.pendingAction = "owner_away";
         BotManager.getInstance().issueStop(entry);
         if (BotManager.getInstance().shouldOfferTownForAwayCommand(entry)) {
-            BotManager.getInstance().botReply(entry,
-                    "ok, want us to wait at nearest town or logout? say yes/town or logout");
+            String prompt = "ok, want us to wait at nearest town or logout? say yes/town or logout";
+            BotManager.getInstance().botReply(entry, prompt);
+            BotPrompt.showOptions(entry, prompt, List.of("town", "logout"));
         } else {
-            BotManager.getInstance().botReply(entry,
-                    "ok, want us to stay safe here or logout? say yes/stay or logout");
+            String prompt = "ok, want us to stay safe here or logout? say yes/stay or logout";
+            BotManager.getInstance().botReply(entry, prompt);
+            BotPrompt.showOptions(entry, prompt, List.of("stay", "logout"));
         }
     }
 
@@ -1401,11 +1414,30 @@ public class BotChatManager {
     }
 
     static void queueBotReply(BotEntry entry, String message) {
-        queueMessageWithEstimatedDelay(entry, message, true);
+        queueMessageWithEstimatedDelay(entry, message, true, null);
+    }
+
+    /**
+     * Owner-directed reply that also pops a "possible responses" overlay on the owner's screen when
+     * the message is actually sent. Use for discrete-choice prompts; {@code options} are the exact
+     * reply tokens the prompt's handler accepts.
+     */
+    static void queueBotReply(BotEntry entry, String message, java.util.List<String> options) {
+        queueMessageWithEstimatedDelay(entry, message, true, options);
     }
 
     static long queueBotSayWithEstimatedDelay(BotEntry entry, String message) {
-        return queueMessageWithEstimatedDelay(entry, message, false);
+        return queueMessageWithEstimatedDelay(entry, message, false, null);
+    }
+
+    /** Map-broadcast bot line that also pops a "possible responses" overlay on the owner's screen. */
+    public static void queueBotSay(BotEntry entry, String message, java.util.List<String> options) {
+        queueMessageWithEstimatedDelay(entry, message, false, options);
+    }
+
+    /** As {@link #queueBotSayWithEstimatedDelay(BotEntry, String)} but also attaches a response overlay. */
+    static long queueBotSayWithEstimatedDelay(BotEntry entry, String message, java.util.List<String> options) {
+        return queueMessageWithEstimatedDelay(entry, message, false, options);
     }
 
     static long queueBotReplyWithEstimatedDelay(BotEntry entry, String message) {
@@ -1413,12 +1445,17 @@ public class BotChatManager {
     }
 
     private static long queueMessageWithEstimatedDelay(BotEntry entry, String message, boolean ownerDirected) {
+        return queueMessageWithEstimatedDelay(entry, message, ownerDirected, null);
+    }
+
+    private static long queueMessageWithEstimatedDelay(BotEntry entry, String message, boolean ownerDirected,
+                                                       java.util.List<String> overlayOptions) {
         long estimatedDelayMs;
         synchronized (entry.msgQueue) {
             estimatedDelayMs = entry.msgSending
                     ? (long) (entry.msgQueue.size() + 1) * 5_200L
                     : 0L;
-            entry.msgQueue.add(new QueuedMessage(message, ownerDirected));
+            entry.msgQueue.add(new QueuedMessage(message, ownerDirected, overlayOptions));
             if (!entry.msgSending) {
                 entry.msgSending = true;
                 drainMsgQueue(entry);
@@ -1438,22 +1475,25 @@ public class BotChatManager {
         } else {
             BotManager.getInstance().botSay(entry, msg.text);
         }
+        if (msg.overlayOptions != null) {
+            BotPrompt.showOptions(entry, msg.text, msg.overlayOptions);
+        }
         BotManager.after(BotManager.randMs(4900, 5100), () -> drainMsgQueue(entry));
     }
 
     // Status check — called on spawn, grind start, greeting, and level-up
     static void checkBotStatus(BotEntry entry, Character bot) {
-        String jobPrompt = BotBuildManager.buildJobPrompt(entry, bot);
-        if (jobPrompt != null) queueBotReply(entry, jobPrompt);
+        BotBuildManager.JobPrompt jobPrompt = BotBuildManager.buildJobPrompt(entry, bot);
+        if (jobPrompt != null) queueBotReply(entry, jobPrompt.text(), jobPrompt.options());
         String spPrompt = BotBuildManager.buildSpVariantPrompt(entry, bot);
         if (spPrompt != null) {
-            queueBotReply(entry, spPrompt);
+            queueBotReply(entry, spPrompt, BotBuildManager.spVariantOptions());
         } else {
             BotBuildManager.autoAssignSp(entry, bot);
         }
         String apPrompt = BotBuildManager.buildApPrompt(entry, bot);
         if (apPrompt != null) {
-            queueBotReply(entry, apPrompt);
+            queueBotReply(entry, apPrompt, BotBuildManager.apBuildOptions(bot.getJob()));
         } else {
             BotBuildManager.autoAssignAp(entry, bot);
         }
@@ -2554,7 +2594,9 @@ public class BotChatManager {
             case CHOICE -> {
                 entry.pendingAction = "item_choice";
                 entry.pendingDropCategory = category;
-                BotManager.getInstance().botReply(entry, dropOrTradePrompt(category, result.count()));
+                String choicePrompt = dropOrTradePrompt(category, result.count());
+                BotManager.getInstance().botReply(entry, choicePrompt);
+                BotPrompt.showOptions(entry, choicePrompt, List.of("trade", "drop", "nvm"));
             }
         }
     }
@@ -2628,7 +2670,9 @@ public class BotChatManager {
 
         entry.pendingAction = "item_choice";
         entry.pendingDropCategory = category;
-        BotManager.getInstance().botReply(entry, dropOrTradePrompt(category, result.count()));
+        String choicePrompt = dropOrTradePrompt(category, result.count());
+        BotManager.getInstance().botReply(entry, choicePrompt);
+        BotPrompt.showOptions(entry, choicePrompt, List.of("trade", "drop", "nvm"));
     }
 
     private static TransferCommand matchTransferCommand(String message) {

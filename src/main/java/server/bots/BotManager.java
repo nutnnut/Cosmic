@@ -1563,11 +1563,33 @@ public class BotManager {
      *  not playing independently, has a real owner that is not itself, and that owner is online
      *  in this world (so its position is live, not a stale logged-off snapshot). */
     static boolean canWalkToOwner(BotEntry entry) {
-        if (entry == null || isAutopilotActive(entry)) {
-            return false;
-        }
-        Character owner = entry.owner;
+        return entry != null && !isAutopilotActive(entry) && hasOnlinePlayerOwner(entry);
+    }
+
+    /** A real, online, non-self owner the bot can anchor to. Unlike {@link #canWalkToOwner} this
+     *  does NOT exclude autopilot bots — milestone/abort callers need the raw owner-online fact to
+     *  decide follow-the-player vs go-to-town while the bot is still in autopilot. */
+    static boolean hasOnlinePlayerOwner(BotEntry entry) {
+        Character owner = entry == null ? null : entry.owner;
         return owner != null && owner != entry.bot && owner.isLoggedinWorld();
+    }
+
+    /**
+     * An autopilot bot hit a 1st/2nd-job milestone that needs an owner decision: leave the party
+     * cohort individually and wait. If a real player owner is online, follow them (handy for the
+     * decision); otherwise park safely in the nearest town via the owner-inactive SSOT. Does not
+     * advance the job. Both paths clear autopilot (clearMode), so the bot drops out of the cohort.
+     */
+    void parkAutopilotForJobDecision(BotEntry entry) {
+        if (entry == null || entry.bot == null || entry.bot.getMap() == null) {
+            return;
+        }
+        if (hasOnlinePlayerOwner(entry)) {
+            issueFollowOwner(entry);
+        } else {
+            int ownerCharId = entry.owner != null ? entry.owner.getId() : entry.bot.getId();
+            enterOwnerInactiveSafeMode(entry, entry.bot, ownerCharId, shouldTownWarpForOwnerInactive(entry));
+        }
     }
 
     Character resolveFollowAnchor(BotEntry entry, Character owner) {

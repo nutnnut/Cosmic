@@ -295,6 +295,28 @@ class BotBuildManager {
         return null;
     }
 
+    /** Response-overlay labels for the AP prompt — kept in sync with {@link #apPromptForJob}. */
+    static List<String> apBuildOptions(Job job) {
+        if (job == null) {
+            return List.of();
+        }
+        if (job.isA(Job.MAGICIAN)) {
+            return List.of("pure", "lukless", "25 luk");
+        }
+        if (job.isA(Job.BOWMAN)) {
+            return List.of("pure", "strless", "25 str");
+        }
+        if (job.isA(Job.WARRIOR) || job.isA(Job.THIEF)) {
+            return List.of("pure", "dexless", "25 dex");
+        }
+        return List.of();
+    }
+
+    /** Response-overlay labels for the Hero SP-variant prompt. */
+    static List<String> spVariantOptions() {
+        return List.of("1h", "2h");
+    }
+
     private static int currentStat(Character bot, StatType statType) {
         return switch (statType) {
             case STR -> bot.getStr();
@@ -314,15 +336,23 @@ class BotBuildManager {
         int prev = entry.lastKnownLevel;
         entry.lastKnownLevel = lvl;
         if (prev == -1) {
+            // First observation: baseline the job-prompt tracker to the bot's CURRENT tier so a bot
+            // spawned already past a milestone (e.g. a lv50 Fighter) doesn't get re-prompted or
+            // re-advanced and doesn't fire checkBotStatus on every level-up. Beginners stay at 0.
+            entry.jobPromptSent = Math.max(entry.jobPromptSent, passedMilestoneForJob(bot.getJob()));
             autoAssignSp(entry, bot);
             autoAssignAp(entry, bot);
             return;
         }
 
-        if (lvl == 8 || lvl == 10 || lvl == 30 || lvl == 70 || lvl == 120) {
-            // Job-advancement milestone: pull the bot back to the owner so it's handy for the
-            // advance prompt - but not when it is playing independently (autopilot / self-owned),
-            // where issueFollowOwner would clear autopilot and clobber its objective.
+        // Job-advancement milestone reached. Robust to a level that skips the exact milestone value:
+        // fire while the bot is at or past a milestone it hasn't been advanced/prompted through yet
+        // (jobPromptSent is the SSOT tracker, advanced by buildJobPrompt). Threshold list mirrors
+        // buildJobPrompt. Supervised bots get pulled back to the owner to be handy for the prompt;
+        // autopilot bots are handled inside checkBotStatus -> buildJobPrompt (auto-advance 3rd/4th,
+        // leave the cohort and follow/town for the 1st/2nd job choice).
+        int milestoneFloor = lvl >= 120 ? 120 : lvl >= 70 ? 70 : lvl >= 30 ? 30 : lvl >= 10 ? 10 : lvl >= 8 ? 8 : 0;
+        if (milestoneFloor > 0 && entry.jobPromptSent < milestoneFloor) {
             if (!BotManager.isAutopilotActive(entry)) {
                 BotManager.getInstance().issueFollowOwner(entry);
             }
@@ -333,8 +363,48 @@ class BotBuildManager {
         autoAssignAp(entry, bot);
     }
 
+    /** The job-advance milestone a bot of {@code job} has already passed, used to baseline
+     *  jobPromptSent so an already-advanced spawned bot isn't re-prompted. Beginner -> 0 (prompts
+     *  at 8/10); explorer 1st/2nd/3rd/4th -> 10/30/70/120; anything else -> 120 (suppress). */
+    private static int passedMilestoneForJob(Job job) {
+        if (job == null || job == Job.BEGINNER) {
+            return 0;
+        }
+        int id = job.getId();
+        if (id >= 100 && id < 600) {
+            if (id % 100 == 0) return 10; // 1st job (X00)
+            int tier = id % 10;
+            if (tier == 0) return 30;     // 2nd job (X10/X20/X30)
+            if (tier == 1) return 70;     // 3rd job
+            if (tier == 2) return 120;    // 4th job
+        }
+        return 120;
+    }
+
+    /** An autopilot bot at a 1st/2nd-job (choice) milestone leaves the cohort and waits for the
+     *  owner decision; supervised bots are unaffected. */
+    private static void parkIfAutopilot(BotEntry entry) {
+        if (BotManager.isAutopilotActive(entry)) {
+            BotManager.getInstance().parkAutopilotForJobDecision(entry);
+        }
+    }
+
+    /** Auto-advance an autopilot bot to its deterministic 3rd/4th job, after a short human-like
+     *  delay (mirrors the owner-typed advance path in BotChatManager). Reuses the job-advance SSOT
+     *  BotStarterKitManager.advanceJob (changeJob + handleJobAdvance award SP/AP); no quest. */
+    private static void scheduleAutoAdvance(BotEntry entry, Job target) {
+        BotManager.after(BotManager.randMs(900, 1100), () -> BotStarterKitManager.advanceJob(entry, target));
+    }
+
+    /**
+     * A job-advancement prompt: the chat line plus the response-overlay labels. The labels are reply
+     * tokens accepted by the advancement parser in {@code BotChatManager} (see {@code resolveAdvanceJob}),
+     * kept in sync with the prompt text here so the overlay never offers a reply the bot would reject.
+     */
+    record JobPrompt(String text, List<String> options) {}
+
     /** Returns the next job-advancement prompt, or null if none is pending. */
-    static String buildJobPrompt(BotEntry entry, Character bot) {
+    static JobPrompt buildJobPrompt(BotEntry entry, Character bot) {
         int lvl = bot.getLevel();
         Job job = bot.getJob();
         int prompted = entry.jobPromptSent;
@@ -342,70 +412,95 @@ class BotBuildManager {
         if (job == Job.BEGINNER) {
             if (lvl >= 10 && prompted < 10) {
                 entry.jobPromptSent = 10;
-                return "hey i can change jobs now!! warrior, mage, bowman, thief, or pirate?";
+                parkIfAutopilot(entry); // 1st job is a choice: autopilot bot stops + the owner still decides
+                return new JobPrompt("hey i can change jobs now!! warrior, mage, bowman, thief, or pirate?",
+                        List.of("warrior", "mage", "bowman", "thief", "pirate"));
             } else if (lvl >= 8 && prompted < 8) {
                 entry.jobPromptSent = 8;
-                return "i can become a mage already if u want, or wait til lv10 for other jobs";
+                parkIfAutopilot(entry);
+                return new JobPrompt("i can become a mage already if u want, or wait til lv10 for other jobs",
+                        List.of("mage"));
             }
             return null;
         }
 
         if (lvl >= 30 && prompted < 30) {
-            String msg = switch (job) {
-                case WARRIOR -> "lv30! 2nd job time~ fighter, page, or spearman?";
-                case MAGICIAN -> "lv30! pick 2nd job: f/p wizard, i/l wizard, or cleric?";
-                case BOWMAN -> "lv30! hunter or crossbowman?";
-                case THIEF -> "lv30! assassin or bandit?";
-                case PIRATE -> "lv30! brawler or gunslinger?";
+            JobPrompt p = switch (job) {
+                case WARRIOR -> new JobPrompt("lv30! 2nd job time~ fighter, page, or spearman?",
+                        List.of("fighter", "page", "spearman"));
+                case MAGICIAN -> new JobPrompt("lv30! pick 2nd job: f/p wizard, i/l wizard, or cleric?",
+                        List.of("fp", "il", "cleric"));
+                case BOWMAN -> new JobPrompt("lv30! hunter or crossbowman?", List.of("hunter", "crossbow"));
+                case THIEF -> new JobPrompt("lv30! assassin or bandit?", List.of("assassin", "bandit"));
+                case PIRATE -> new JobPrompt("lv30! brawler or gunslinger?", List.of("brawler", "gunslinger"));
                 default -> null;
             };
-            if (msg != null) {
+            if (p != null) {
                 entry.jobPromptSent = 30;
-                return msg;
+                parkIfAutopilot(entry); // 2nd job is a choice: autopilot bot stops + the owner still decides
+                return p;
             }
         }
 
         if (lvl >= 70 && prompted < 70) {
-            String msg = switch (job) {
-                case FIGHTER -> "lv70!! 3rd job, type 'crusader'";
-                case PAGE -> "lv70!! type 'white knight' or 'wk'";
-                case SPEARMAN -> "lv70!! type 'dragon knight' or 'dk'";
-                case FP_WIZARD -> "lv70!! type 'fp mage'";
-                case IL_WIZARD -> "lv70!! type 'il mage'";
-                case CLERIC -> "lv70!! type 'priest'";
-                case HUNTER -> "lv70!! type 'ranger'";
-                case CROSSBOWMAN -> "lv70!! type 'sniper'";
-                case ASSASSIN -> "lv70!! type 'hermit'";
-                case BANDIT -> "lv70!! type 'chief bandit' or 'cb'";
-                case BRAWLER -> "lv70!! type 'marauder'";
-                case GUNSLINGER -> "lv70!! type 'outlaw'";
+            // 3rd job is deterministic - an autopilot bot advances itself in place (no owner prompt).
+            if (BotManager.isAutopilotActive(entry)) {
+                Job target = BotStarterKitManager.thirdJobOf(job);
+                if (target != null) {
+                    entry.jobPromptSent = 70;
+                    scheduleAutoAdvance(entry, target);
+                    return null;
+                }
+            }
+            JobPrompt p = switch (job) {
+                case FIGHTER -> new JobPrompt("lv70!! 3rd job, type 'crusader'", List.of("crusader"));
+                case PAGE -> new JobPrompt("lv70!! type 'white knight' or 'wk'", List.of("white knight"));
+                case SPEARMAN -> new JobPrompt("lv70!! type 'dragon knight' or 'dk'", List.of("dragon knight"));
+                case FP_WIZARD -> new JobPrompt("lv70!! type 'fp mage'", List.of("fp mage"));
+                case IL_WIZARD -> new JobPrompt("lv70!! type 'il mage'", List.of("il mage"));
+                case CLERIC -> new JobPrompt("lv70!! type 'priest'", List.of("priest"));
+                case HUNTER -> new JobPrompt("lv70!! type 'ranger'", List.of("ranger"));
+                case CROSSBOWMAN -> new JobPrompt("lv70!! type 'sniper'", List.of("sniper"));
+                case ASSASSIN -> new JobPrompt("lv70!! type 'hermit'", List.of("hermit"));
+                case BANDIT -> new JobPrompt("lv70!! type 'chief bandit' or 'cb'", List.of("chief bandit"));
+                case BRAWLER -> new JobPrompt("lv70!! type 'marauder'", List.of("marauder"));
+                case GUNSLINGER -> new JobPrompt("lv70!! type 'outlaw'", List.of("outlaw"));
                 default -> null;
             };
-            if (msg != null) {
+            if (p != null) {
                 entry.jobPromptSent = 70;
-                return msg;
+                return p;
             }
         }
 
         if (lvl >= 120 && prompted < 120) {
-            String msg = switch (job) {
-                case CRUSADER -> "lv120!! type 'hero' for 4th job!!";
-                case WHITEKNIGHT -> "lv120!! type 'paladin'";
-                case DRAGONKNIGHT -> "lv120!! type 'dark knight' or 'drk'";
-                case FP_MAGE -> "lv120!! type 'fp archmage' or 'fp arch'";
-                case IL_MAGE -> "lv120!! type 'il archmage' or 'il arch'";
-                case PRIEST -> "lv120!! type 'bishop'";
-                case RANGER -> "lv120!! type 'bowmaster' or 'bm'";
-                case SNIPER -> "lv120!! type 'marksman' or 'mm'";
-                case HERMIT -> "lv120!! type 'night lord' or 'nl'";
-                case CHIEFBANDIT -> "lv120!! type 'shadower'";
-                case MARAUDER -> "lv120!! type 'buccaneer' or 'bucc'";
-                case OUTLAW -> "lv120!! type 'corsair'";
+            // 4th job is deterministic - an autopilot bot advances itself in place (no owner prompt).
+            if (BotManager.isAutopilotActive(entry)) {
+                Job target = BotStarterKitManager.fourthJobOf(job);
+                if (target != null) {
+                    entry.jobPromptSent = 120;
+                    scheduleAutoAdvance(entry, target);
+                    return null;
+                }
+            }
+            JobPrompt p = switch (job) {
+                case CRUSADER -> new JobPrompt("lv120!! type 'hero' for 4th job!!", List.of("hero"));
+                case WHITEKNIGHT -> new JobPrompt("lv120!! type 'paladin'", List.of("paladin"));
+                case DRAGONKNIGHT -> new JobPrompt("lv120!! type 'dark knight' or 'drk'", List.of("dark knight"));
+                case FP_MAGE -> new JobPrompt("lv120!! type 'fp archmage' or 'fp arch'", List.of("fp archmage"));
+                case IL_MAGE -> new JobPrompt("lv120!! type 'il archmage' or 'il arch'", List.of("il archmage"));
+                case PRIEST -> new JobPrompt("lv120!! type 'bishop'", List.of("bishop"));
+                case RANGER -> new JobPrompt("lv120!! type 'bowmaster' or 'bm'", List.of("bowmaster"));
+                case SNIPER -> new JobPrompt("lv120!! type 'marksman' or 'mm'", List.of("marksman"));
+                case HERMIT -> new JobPrompt("lv120!! type 'night lord' or 'nl'", List.of("night lord"));
+                case CHIEFBANDIT -> new JobPrompt("lv120!! type 'shadower'", List.of("shadower"));
+                case MARAUDER -> new JobPrompt("lv120!! type 'buccaneer' or 'bucc'", List.of("buccaneer"));
+                case OUTLAW -> new JobPrompt("lv120!! type 'corsair'", List.of("corsair"));
                 default -> null;
             };
-            if (msg != null) {
+            if (p != null) {
                 entry.jobPromptSent = 120;
-                return msg;
+                return p;
             }
         }
 

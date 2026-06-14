@@ -63,6 +63,30 @@ final class BotStarterKitManager {
         return oldJob == Job.BEGINNER && FIRST_JOB_KITS.containsKey(newJob);
     }
 
+    // Explorer job ids run base -> 1st(X00) -> 2nd(X10/X20/X30) -> 3rd(+1) -> 4th(+1) within each
+    // branch (see client.Job), so the single deterministic successor of a 2nd/3rd job is just id+1.
+    // This is the autopilot counterpart to the owner-typed alias parse in BotChatManager (3rd/4th
+    // job have no choice, unlike 1st/2nd), and is restricted to explorer ids so Cygnus/Aran/Evan
+    // (different numbering) never match.
+    private static final int EXPLORER_MIN = 100;
+    private static final int EXPLORER_MAX = 600;
+
+    /** The lone 3rd-job successor of an explorer 2nd job (e.g. FIGHTER -> CRUSADER), or null if the
+     *  given job is not an explorer 2nd job. */
+    static Job thirdJobOf(Job secondJob) {
+        int id = secondJob == null ? 0 : secondJob.getId();
+        boolean isSecond = id >= EXPLORER_MIN && id < EXPLORER_MAX && id % 100 != 0 && id % 10 == 0;
+        return isSecond ? Job.getById(id + 1) : null;
+    }
+
+    /** The lone 4th-job successor of an explorer 3rd job (e.g. CRUSADER -> HERO), or null if the
+     *  given job is not an explorer 3rd job. */
+    static Job fourthJobOf(Job thirdJob) {
+        int id = thirdJob == null ? 0 : thirdJob.getId();
+        boolean isThird = id >= EXPLORER_MIN && id < EXPLORER_MAX && id % 10 == 1;
+        return isThird ? Job.getById(id + 1) : null;
+    }
+
     private static void grantStarterKitIfEligible(Character bot, Job oldJob, Job newJob) {
         if (!isFirstJobAdvancement(oldJob, newJob)) {
             return;

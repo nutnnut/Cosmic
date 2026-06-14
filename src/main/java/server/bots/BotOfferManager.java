@@ -231,7 +231,8 @@ final class BotOfferManager {
                 "Your " + itemDesc + " would be better on me! trade it over?",
                 "I could use that " + itemDesc + " of yours ;)",
                 "that " + itemDesc + " is an upgrade for me, want to trade?");
-        BotChatManager.queueBotSay(entry, BotManager.randomReply(prompts));
+        String prompt = BotManager.randomReply(prompts);
+        BotChatManager.queueBotSay(entry, prompt, List.of("yes", "no"));
     }
 
     private static boolean offerGearItem(BotEntry entry, Character bot, Character recipient, Item item,
@@ -288,8 +289,11 @@ final class BotOfferManager {
         entry.pendingLootOfferRecipientId = recipient.getId();
         entry.pendingLootOfferExpiresAt = System.currentTimeMillis() + 30_000L;
         entry.pendingLootOfferBotRequesting = false;
-        long promptDelayMs = BotChatManager.queueBotSayWithEstimatedDelay(entry,
-                buildLootOfferPrompt(recipient, owner, item, need == GearOfferNeed.FUTURE));
+        String offerPrompt = buildLootOfferPrompt(recipient, owner, item, need == GearOfferNeed.FUTURE);
+        // The loot can be offered to a sibling bot; the hint overlay is owner-facing, so only attach it
+        // when the owner is the one being asked.
+        List<String> offerOptions = recipient.getId() == owner.getId() ? List.of("yes", "no") : null;
+        long promptDelayMs = BotChatManager.queueBotSayWithEstimatedDelay(entry, offerPrompt, offerOptions);
         scheduleBotLootOfferAutoAccept(entry, recipient, promptDelayMs);
     }
 
