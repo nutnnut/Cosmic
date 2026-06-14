@@ -32,6 +32,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.function.IntUnaryOperator;
+import java.util.function.Predicate;
 
 final class BotShopManager {
     private static final Logger log = LoggerFactory.getLogger(BotShopManager.class);
@@ -351,14 +352,18 @@ final class BotShopManager {
         return Math.abs(a.x - b.x) + Math.abs(a.y - b.y);
     }
 
+    /** On-arrival visit decision: is the shop in front of the bot worth stopping at? Sell-trash =>
+     *  any shop; otherwise it must stock something the bot actually needs right now (pots OR ammo) —
+     *  this is the granular, bag-state-aware check, distinct from the looser potion-only filter the
+     *  cross-map errand destination search uses. */
     private static NpcShopMatch findBestShop(Character bot, boolean allowAnyShop) {
-        return findBestShop(bot.getMap(), bot, allowAnyShop);
+        return findBestShop(bot.getMap(), allowAnyShop ? shop -> true : shop -> shopHasAnythingNeeded(bot, shop));
     }
 
-    /** A shop NPC on {@code map} matching the bot's need ({@code allowAnyShop} = selling works at any
-     *  shop; otherwise the shop must stock something the bot needs — pots/ammo). Generalized over an
-     *  arbitrary map so the cross-map nearest-shop search can probe reachable towns, not just here. */
-    private static NpcShopMatch findBestShop(MapleMap map, Character bot, boolean allowAnyShop) {
+    /** First shop NPC on {@code map} whose shop the {@code accept} predicate matches. Generalized
+     *  over an arbitrary map and criterion so both the on-arrival visit decision and the cross-map
+     *  nearest-shop search share one NPC scan. */
+    private static NpcShopMatch findBestShop(MapleMap map, Predicate<Shop> accept) {
         if (map == null) {
             return null;
         }
@@ -375,7 +380,7 @@ final class BotShopManager {
             if (shop == null) {
                 continue;
             }
-            if (allowAnyShop || shopHasAnythingNeeded(bot, shop)) {
+            if (accept.test(shop)) {
                 return new NpcShopMatch(npc, shop, npc.getPosition());
             }
         }
@@ -411,6 +416,8 @@ final class BotShopManager {
                 return cached == NO_SHOP_MAP ? null : cached;
             }
         }
+        // Sell-trash trip => any shop; supply run => a potion-stocking shop (also carries ammo).
+        Predicate<Shop> accept = allowAnyShop ? shop -> true : BotShopManager::shopSellsAnyPotion;
         Integer found = null;
         try {
             var factory = bot.getClient().getChannelServer().getMapFactory();
@@ -423,7 +430,7 @@ final class BotShopManager {
                     if (!seen.add(mapId)) {
                         continue;
                     }
-                    if (findBestShop(factory.getMap(mapId), bot, allowAnyShop) != null) {
+                    if (findBestShop(factory.getMap(mapId), accept) != null) {
                         found = mapId;
                         break outer;
                     }
@@ -450,6 +457,43 @@ final class BotShopManager {
         }
     }
 
+    /** True when the bot needs to BUY a consumable (HP/MP potions or ammo) — i.e. the errand is a
+     *  supply run, not a pure sell-trash / bag-dump. Drives the errand-destination shop filter: a
+     *  supply run must reach a potion-stocking shop (which also carries ammo), while a sell-only trip
+     *  uses any shop. Reuses the same low-supply predicates the shopping flow uses (SSOT); the ammo
+     *  checks are shop-independent (recharge takes no shop; fixed-ammo treats a null shop as "any").
+     *  Best-effort: a partial character mock that breaks a count reads as "doesn't need to buy", so
+     *  the bot falls back to any shop rather than stranding the errand. */
+    static boolean needsToBuySupplies(Character bot) {
+        try {
+            if (potsLow(bot)) {
+                return true;
+            }
+            WeaponType wt = BotAttackExecutionProvider.getEquippedWeaponType(bot);
+            int ammoThreshold = ammoTriggerThreshold();
+            return needsRechargeForShop(bot, wt, ammoThreshold)
+                    || needsFixedAmmoForShop(bot, null, wt, ammoThreshold);
+        } catch (RuntimeException ex) {
+            return false;
+        }
+    }
+
+    /** True if the shop sells at least one recovery potion (HP or MP) at a real price. The cross-map
+     *  errand-destination filter for a supply trip — a potion-stocking shop reliably also stocks the
+     *  other consumables, so it's a sufficient, bag-state-independent proxy for "can resupply here".
+     *  {@link BotInventoryManager#isRecoveryPotion} is the recovery-potion SSOT. */
+    private static boolean shopSellsAnyPotion(Shop shop) {
+        for (ShopItem si : shop.getItems()) {
+            if (si.getPrice() > 0 && BotInventoryManager.isRecoveryPotion(si.getItemId())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** On-arrival visit criterion: does this shop stock something the bot needs RIGHT NOW (ammo to
+     *  recharge/buy, or a potion type it's low on that the shop sells)? Bag-state-aware, unlike the
+     *  potion-only errand-destination filter. */
     private static boolean shopHasAnythingNeeded(Character bot, Shop shop) {
         WeaponType wt = BotAttackExecutionProvider.getEquippedWeaponType(bot);
         if (needsFixedAmmoForShop(bot, shop, wt, ammoTriggerThreshold())) {

@@ -441,7 +441,7 @@ final class BotAutopilotManager {
         // the only need that requires a specific (potion-stocking) shop; a full bag or low ammo is fine
         // at any shop. Falls back to the old return-map town when no shop is reachable in range.
         int targetMapId;
-        Integer shopMapId = BotShopManager.findNearestShopMap(bot, !BotShopManager.potsLow(bot));
+        Integer shopMapId = BotShopManager.findNearestShopMap(bot, !BotShopManager.needsToBuySupplies(bot));
         if (shopMapId != null && shopMapId != bot.getMapId()) {
             targetMapId = shopMapId;
         } else {
