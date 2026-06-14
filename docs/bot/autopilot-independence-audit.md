@@ -330,6 +330,16 @@ so a scheduler failure falls back to the old inline behavior rather than disabli
 microbenchmark is infeasible (ItemInformationProvider's WZ/DB init can't run in tests, per the seams);
 the empirical "before" is the 302ms production WARN, the "after" is that load moved off the tick.
 
+## 4e. Crafting brain shipped (read-only) — preview before you enable execution
+
+`BotMakerPlanner.rankUpgrades(bot)` + the `maker plan` / `what can i craft` chat command are live. They
+rank the equips the bot could craft NOW (maker level + ingredients on hand) by expected offense gain over
+current gear, via the SSOT `expectedAcquireGain` with a Maker-roll sampler (stim + best stat-crystal
+reagents + godly roll). **Nothing is crafted** — it's a preview so you can sanity-check the EV picks
+before enabling execution. Try it on a bot (e.g. Bowgurl) and eyeball the list. Remaining for execution:
+the `rollMakerEquip`/`makeItem` extractions (§6c-ter TODO 1-2, the player-craft aliasing hazard) + the
+loop/flag (TODO 5) + gachapon unification (TODO 4) — all owner-gated.
+
 ## 5. Change log (this session)
 
 - 2026-06-13: Diagnosis complete. DB confirms ETC 96/96 cramped + sellable items present → detection is
