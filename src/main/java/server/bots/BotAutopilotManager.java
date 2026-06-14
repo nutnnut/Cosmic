@@ -304,6 +304,17 @@ final class BotAutopilotManager {
         if (!isActive(entry) || bot.getMap() == null) {
             return false;
         }
+        // Any errand (quest / gachapon / resupply detour) supersedes a party transit-hold and runs
+        // independently. Each of those branches returns or skips the cohesion section below, which is
+        // the only thing that clears the wait anchor when the group regroups -- so a wait anchor pinned
+        // during transit would otherwise survive into the errand and strand the bot loitering at the
+        // old portal (BotManager.loiterAtAnchor) instead of traveling. Drop it up front. No-op when no
+        // anchor is set; clearWaitAnchor restores grinding=true.
+        if (entry.autopilotWaitAnchor != null
+                && (entry.questErrandMapId != -1 || entry.gachaErrandMapId != -1
+                    || entry.autopilotErrandMapId != -1)) {
+            clearWaitAnchor(entry);
+        }
         // Quest piggyback errand takes precedence over the grind destination: detour to a quest NPC
         // to start/turn in a mob quest, then resume grinding. Its own state, not autopilotErrandMapId
         // (which is hardwired to the shop visit). Consumes the tick while traveling/walking to the NPC.
