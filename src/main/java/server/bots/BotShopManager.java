@@ -73,6 +73,7 @@ final class BotShopManager {
     private static final int RETURN_SCROLL_TARGET_QTY = 10;
     private static final int RECHARGE_MAX_SETS = 10; // cap recharge to the best N own-type stacks
     private static final int AUTO_SELL_FREE_SLOT_THRESHOLD = 2; // bag tab "cramped" when this few slots left
+    private static final int USE_HEALTHY_FREE_SLOTS = 6; // cramped USE escalation sells down to this many free slots
 
     static class Config {
         // Debug/verify aid: after a sell-trash visit, list the USE/ETC items that were sold so
@@ -167,7 +168,8 @@ final class BotShopManager {
         if (equipCramped && !BotInventoryManager.collectSellTrashEquips(entry, bot).isEmpty()) {
             return true;
         }
-        if (useCramped && !BotInventoryManager.collectSellTrashUseItems(bot).isEmpty()) {
+        if (useCramped && (!BotInventoryManager.collectSellTrashUseItems(bot).isEmpty()
+                || BotInventoryManager.crampedUseSalesAvailable(bot))) {
             return true;
         }
         return etcCramped && !BotInventoryManager.collectSellTrashEtcItems(bot).isEmpty();
@@ -226,7 +228,9 @@ final class BotShopManager {
         if (entry == null || bot == null || bot.getMap() == null) {
             return;
         }
-        if (BotInventoryManager.collectSellTrashItems(entry, bot).isEmpty()) {
+        boolean nothingToSell = BotInventoryManager.collectSellTrashItems(entry, bot).isEmpty()
+                && !(isCramped(bot, InventoryType.USE) && BotInventoryManager.crampedUseSalesAvailable(bot));
+        if (nothingToSell) {
             BotManager.getInstance().botReply(entry, "no junk worth selling");
             return;
         }
@@ -621,7 +625,29 @@ final class BotShopManager {
         // visit. Only the explicit goal announces "no junk worth selling"; an incidental visit with
         // nothing to sell just finishes its normal buy report (identical to the old non-sell path).
         boolean explicitSell = sequence.entry().shopSellTrashPending;
-        List<Item> items = BotInventoryManager.collectSellTrashItems(sequence.entry(), sequence.bot());
+        List<Item> items = new ArrayList<>(
+                BotInventoryManager.collectSellTrashItems(sequence.entry(), sequence.bot()));
+        // Pressure-driven escalation: when the USE tab is cramped, sell the lowest value-per-slot
+        // shelf stacks (worst first) on top of the always-junk, down to a healthy free-slot margin.
+        // Junk already in the plan frees slots too, so it counts toward the margin and is excluded.
+        if (isCramped(sequence.bot(), InventoryType.USE)) {
+            var useInv = sequence.bot().getInventory(InventoryType.USE);
+            int freeNow = useInv != null ? useInv.getNumFreeSlot() : 0;
+            long junkUseSlots = items.stream()
+                    .filter(it -> it.getInventoryType() == InventoryType.USE).count();
+            int slotsToFree = USE_HEALTHY_FREE_SLOTS - (freeNow + (int) junkUseSlots);
+            if (slotsToFree > 0) {
+                Set<Item> already = Collections.newSetFromMap(new IdentityHashMap<>());
+                already.addAll(items);
+                List<Item> crampedSales = BotInventoryManager.collectCrampedUseSales(
+                        sequence.bot(), slotsToFree, already);
+                int farmItemId = sequence.entry().autopilotFarmItemId;
+                if (farmItemId != 0) {
+                    crampedSales.removeIf(it -> it.getItemId() == farmItemId);
+                }
+                items.addAll(crampedSales);
+            }
+        }
         if (items.isEmpty()) {
             sequence.entry().shopSellTrashPending = false;
             if (explicitSell) {

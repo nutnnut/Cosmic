@@ -1700,6 +1700,27 @@ public class StatEffect {
         }
     }
 
+    /** True if this consumable's effect removes at least one status ailment (antidote/eyedrop/
+     *  tonic/holy water/all-cure). Used by bot inventory classification to spot cure items. */
+    public boolean curesAnyDebuff() {
+        return (cureDebuffs != null && !cureDebuffs.isEmpty()) || isCureAllAbnormalStatus();
+    }
+
+    /** True only for a full-spectrum cure (All Cure Potion / White Elixir): either the dedicated
+     *  cure-all source, or a cureDebuffs list covering every curable ailment. Single-ailment cures
+     *  (antidote = poison only, eyedrop = darkness only, ...) return false. */
+    public boolean curesAllAbnormalStatus() {
+        if (isCureAllAbnormalStatus()) {
+            return true;
+        }
+        return cureDebuffs != null
+                && cureDebuffs.contains(Disease.POISON)
+                && cureDebuffs.contains(Disease.SEAL)
+                && cureDebuffs.contains(Disease.DARKNESS)
+                && cureDebuffs.contains(Disease.WEAKEN)
+                && cureDebuffs.contains(Disease.CURSE);
+    }
+
     public static boolean isHerosWill(int skillid) {
         switch (skillid) {
             case Hero.HEROS_WILL:

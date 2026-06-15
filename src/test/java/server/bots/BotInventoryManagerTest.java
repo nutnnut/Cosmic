@@ -8,6 +8,7 @@ import client.inventory.InventoryType;
 import client.inventory.Item;
 import org.junit.jupiter.api.Test;
 import org.mockito.MockedStatic;
+import server.StatEffect;
 import server.Trade;
 import server.maps.Foothold;
 import server.maps.MapItem;
@@ -246,34 +247,242 @@ class BotInventoryManagerTest {
                 > BotInventoryManager.tradeValueScore(null, statHat));
     }
 
+    // ---- USE value model: pressure-driven + value shelf ---------------------------------------
+
     @Test
-    void shouldCollectOnlySellableOffWeaponNonRechargeableAmmoAsTrashUse() {
+    void ammoAndPotionsAreNeverPlainTrash_onlyJunkSellsOnANormalTrip() {
         Character bot = mock(Character.class);
-        Inventory use = new Inventory(bot, InventoryType.USE, (byte) 24);
-        use.addItem(Items.itemWithQuantity(2060000, 500));  // bow arrows = own ammo -> keep
-        use.addItem(Items.itemWithQuantity(2061000, 500));  // xbow bolts = off-weapon -> trash
-        use.addItem(Items.itemWithQuantity(2061003, 4_000)); // blue arrows under reserve -> keep
-        use.addItem(Items.itemWithQuantity(2061004, 7_000)); // diamond arrows over reserve -> sell excess
-        use.addItem(Items.itemWithQuantity(2070000, 200));  // stars: rechargeable -> keep
-        use.addItem(Items.itemWithQuantity(2000000, 100));  // potion: not ammo -> keep
+        Inventory use = new Inventory(bot, InventoryType.USE, (byte) 96);
+        use.addItem(Items.itemWithQuantity(2060000, 500));  // bow arrows = own ammo -> runway
+        use.addItem(Items.itemWithQuantity(2061000, 500));  // xbow bolts = off-weapon -> shelf
+        use.addItem(Items.itemWithQuantity(2070000, 200));  // stars = off-weapon rechargeable -> shelf
+        use.addItem(Items.itemWithQuantity(2000000, 100));  // recovery potion -> runway
         when(bot.getInventory(InventoryType.USE)).thenReturn(use);
 
-        try (AutoCloseable seams = withSellSeams((id, qty) -> 10, id -> -1, id -> 0);
-             MockedStatic<BotAttackExecutionProvider> attacks =
-                     mockStatic(BotAttackExecutionProvider.class)) {
+        try (AutoCloseable seams = withUseSeams(
+                    id -> id == 2000000 ? recovery(50, 0) : null,
+                    id -> id, (id) -> 100, (id, qty) -> 10 * qty);
+             MockedStatic<BotAttackExecutionProvider> attacks = mockStatic(BotAttackExecutionProvider.class)) {
             attacks.when(() -> BotAttackExecutionProvider.getEquippedWeaponType(bot))
                     .thenReturn(client.inventory.WeaponType.BOW);
 
-            List<Item> trash = BotInventoryManager.collectSellTrashUseItems(bot);
+            // A normal sell trip sells only JUNK -> nothing here (no single cures / junk scrolls / stale quest).
+            assertTrue(BotInventoryManager.collectSellTrashUseItems(bot).isEmpty());
+            // But the bag holds shelf stacks a cramped trip could shed.
+            assertTrue(BotInventoryManager.crampedUseSalesAvailable(bot));
 
-            assertEquals(2, trash.size());
-            assertTrue(trash.stream().anyMatch(item ->
-                    item.getItemId() == 2061000 && BotInventoryManager.sellTrashQuantity(item) == 500));
-            assertTrue(trash.stream().anyMatch(item ->
-                    item.getItemId() == 2061004 && BotInventoryManager.sellTrashQuantity(item) == 2_000));
+            var classes = BotInventoryManager.classifyBagUse(bot);
+            assertEquals(BotInventoryManager.UseTier.RUNWAY, tierOf(classes, 2060000));
+            assertEquals(BotInventoryManager.UseTier.RUNWAY, tierOf(classes, 2000000));
+            assertEquals(BotInventoryManager.UseTier.SHELF, tierOf(classes, 2061000));
+            assertEquals(BotInventoryManager.UseTier.SHELF, tierOf(classes, 2070000));
         } catch (Exception e) {
             throw new AssertionError(e);
         }
+    }
+
+    @Test
+    void rechargeableAmmoValuedPerSet_duplicateSetsSellFirst() {
+        Character bot = mock(Character.class);
+        Inventory use = new Inventory(bot, InventoryType.USE, (byte) 96);
+        // Clawer's hoard, in miniature: 3 slots of the same mid star + 1 slot of a better star.
+        Item dupA = Items.itemWithQuantity(2070004, 6000);
+        Item dupB = Items.itemWithQuantity(2070004, 6000);
+        Item dupC = Items.itemWithQuantity(2070004, 6000);
+        Item best = Items.itemWithQuantity(2070005, 6000);
+        use.addItem(dupA); use.addItem(dupB); use.addItem(dupC); use.addItem(best);
+        when(bot.getInventory(InventoryType.USE)).thenReturn(use);
+
+        try (AutoCloseable seams = withUseSeams(id -> null,
+                    id -> id == 2070005 ? 50 : 40,           // 2070005 is the best tier
+                    id -> 800,                                // per-set value (quantity-independent)
+                    (id, qty) -> 5 * qty);
+             MockedStatic<BotAttackExecutionProvider> attacks = mockStatic(BotAttackExecutionProvider.class)) {
+            attacks.when(() -> BotAttackExecutionProvider.getEquippedWeaponType(bot))
+                    .thenReturn(client.inventory.WeaponType.CLAW);
+
+            var classes = BotInventoryManager.classifyBagUse(bot);
+            // One set of the best tier is the combat runway; the rest are shelf.
+            assertEquals(BotInventoryManager.UseTier.RUNWAY,
+                    classes.get(best).tier());
+            // Of the three identical mid-star sets: one carries the per-set value, two are redundant (0).
+            long zeroValueDupSets = java.util.stream.Stream.of(dupA, dupB, dupC)
+                    .filter(it -> classes.get(it).tier() == BotInventoryManager.UseTier.SHELF)
+                    .filter(it -> classes.get(it).keepValue() == 0)
+                    .count();
+            assertEquals(2, zeroValueDupSets);
+
+            // Under pressure to free 2 slots, the two redundant duplicate sets go first.
+            List<Item> sales = BotInventoryManager.collectCrampedUseSales(bot, 2, null);
+            assertEquals(2, sales.size());
+            assertTrue(sales.stream().allMatch(it -> it.getItemId() == 2070004));
+            assertTrue(sales.stream().noneMatch(it -> it == best));
+        } catch (Exception e) {
+            throw new AssertionError(e);
+        }
+    }
+
+    @Test
+    void crampedSalesSellWorstMesoPerSlotFirst_smallCheapStacksLead() {
+        Character bot = mock(Character.class);
+        Inventory use = new Inventory(bot, InventoryType.USE, (byte) 96);
+        use.addItem(Items.itemWithQuantity(2999001, 3));    // 3 x 500 = 1500 total
+        use.addItem(Items.itemWithQuantity(2999002, 700));  // 700 x 10 = 7000 total
+        when(bot.getInventory(InventoryType.USE)).thenReturn(use);
+
+        try (AutoCloseable seams = withUseSeams(id -> null, id -> 0, id -> 0,
+                    (id, qty) -> (id == 2999001 ? 500 : 10) * qty);
+             MockedStatic<BotAttackExecutionProvider> attacks = mockStatic(BotAttackExecutionProvider.class)) {
+            attacks.when(() -> BotAttackExecutionProvider.getEquippedWeaponType(bot))
+                    .thenReturn(client.inventory.WeaponType.SWORD1H);
+            // Free a single slot: the smaller-value stack (1500) sells before the bigger (7000).
+            List<Item> sales = BotInventoryManager.collectCrampedUseSales(bot, 1, null);
+            assertEquals(1, sales.size());
+            assertEquals(2999001, sales.get(0).getItemId());
+        } catch (Exception e) {
+            throw new AssertionError(e);
+        }
+    }
+
+    @Test
+    void recoveryRunwayIsProtected_surplusShelfedAndHardFloorHeld() {
+        Character bot = mock(Character.class);
+        when(bot.getLevel()).thenReturn(0); // consumableRunwaySlots -> 3
+        Inventory use = new Inventory(bot, InventoryType.USE, (byte) 96);
+        List<Item> pots = new java.util.ArrayList<>();
+        for (int i = 0; i < 5; i++) {
+            Item p = Items.itemWithQuantity(2000000 + i, 100);
+            pots.add(p);
+            use.addItem(p);
+        }
+        when(bot.getInventory(InventoryType.USE)).thenReturn(use);
+
+        try (AutoCloseable seams = withUseSeams(id -> recovery(100 - (id - 2000000), 0),
+                    id -> 0, id -> 0, (id, qty) -> 10 * qty);
+             MockedStatic<BotAttackExecutionProvider> attacks = mockStatic(BotAttackExecutionProvider.class)) {
+            attacks.when(() -> BotAttackExecutionProvider.getEquippedWeaponType(bot))
+                    .thenReturn(client.inventory.WeaponType.SWORD1H);
+
+            var classes = BotInventoryManager.classifyBagUse(bot);
+            long runway = pots.stream().filter(p -> classes.get(p).tier() == BotInventoryManager.UseTier.RUNWAY).count();
+            long shelf = pots.stream().filter(p -> classes.get(p).tier() == BotInventoryManager.UseTier.SHELF).count();
+            assertEquals(3, runway);
+            assertEquals(2, shelf);
+
+            // Even asked to free far more than exists, the runway is never sold (hard floor).
+            List<Item> sales = BotInventoryManager.collectCrampedUseSales(bot, 99, null);
+            assertEquals(2, sales.size());
+            assertTrue(sales.stream().allMatch(it ->
+                    classes.get(it).tier() == BotInventoryManager.UseTier.SHELF));
+        } catch (Exception e) {
+            throw new AssertionError(e);
+        }
+    }
+
+    @Test
+    void singleCuresAreJunk_allCureIsReserved() {
+        Character bot = mock(Character.class);
+        Inventory use = new Inventory(bot, InventoryType.USE, (byte) 96);
+        use.addItem(Items.itemWithQuantity(2000004, 5));    // antidote (single cure) -> JUNK
+        use.addItem(Items.itemWithQuantity(2050004, 30));   // all cure -> runway reserve
+        use.addItem(Items.itemWithQuantity(2050005, 30));   // 2nd all cure stack -> shelf
+        when(bot.getInventory(InventoryType.USE)).thenReturn(use);
+
+        try (AutoCloseable seams = withUseSeams(
+                    id -> id == 2000004 ? singleCure() : (id >= 2050004 ? allCure() : null),
+                    id -> 0, id -> 0, (id, qty) -> 10 * qty);
+             MockedStatic<BotAttackExecutionProvider> attacks = mockStatic(BotAttackExecutionProvider.class)) {
+            attacks.when(() -> BotAttackExecutionProvider.getEquippedWeaponType(bot))
+                    .thenReturn(client.inventory.WeaponType.SWORD1H);
+
+            List<Item> trash = BotInventoryManager.collectSellTrashUseItems(bot);
+            assertEquals(1, trash.size());
+            assertEquals(2000004, trash.get(0).getItemId());
+
+            var classes = BotInventoryManager.classifyBagUse(bot);
+            assertEquals(BotInventoryManager.UseTier.RUNWAY, tierOf(classes, 2050004));
+            assertEquals(BotInventoryManager.UseTier.SHELF, tierOf(classes, 2050005));
+        } catch (Exception e) {
+            throw new AssertionError(e);
+        }
+    }
+
+    @Test
+    void neverSellTradeGoodsAreProtectedEvenUnderPressure() {
+        Character bot = mock(Character.class);
+        Inventory use = new Inventory(bot, InventoryType.USE, (byte) 96);
+        use.addItem(Items.itemWithQuantity(2999001, 1));   // cheap shelf misc -> sellable
+        use.addItem(Items.itemWithQuantity(2999009, 1));   // pricey trade good -> protected
+        when(bot.getInventory(InventoryType.USE)).thenReturn(use);
+
+        try (AutoCloseable seams = withUseSeams(id -> null, id -> 0, id -> 0,
+                    (id, qty) -> (id == 2999009 ? 60_000 : 10) * qty);
+             MockedStatic<BotAttackExecutionProvider> attacks = mockStatic(BotAttackExecutionProvider.class)) {
+            attacks.when(() -> BotAttackExecutionProvider.getEquippedWeaponType(bot))
+                    .thenReturn(client.inventory.WeaponType.SWORD1H);
+            List<Item> sales = BotInventoryManager.collectCrampedUseSales(bot, 99, null);
+            assertEquals(1, sales.size());
+            assertEquals(2999001, sales.get(0).getItemId());
+        } catch (Exception e) {
+            throw new AssertionError(e);
+        }
+    }
+
+    private static BotInventoryManager.UseTier tierOf(
+            Map<Item, BotInventoryManager.UseClass> classes, int itemId) {
+        return classes.entrySet().stream()
+                .filter(e -> e.getKey().getItemId() == itemId)
+                .map(e -> e.getValue().tier())
+                .findFirst().orElse(null);
+    }
+
+    private static StatEffect recovery(int hp, int mp) {
+        StatEffect fx = mock(StatEffect.class);
+        when(fx.getHp()).thenReturn((short) hp);
+        when(fx.getMp()).thenReturn((short) mp);
+        doReturn(List.of()).when(fx).getStatups();
+        return fx;
+    }
+
+    private static StatEffect allCure() {
+        StatEffect fx = mock(StatEffect.class);
+        doReturn(List.of()).when(fx).getStatups();
+        when(fx.curesAnyDebuff()).thenReturn(true);
+        when(fx.curesAllAbnormalStatus()).thenReturn(true);
+        return fx;
+    }
+
+    private static StatEffect singleCure() {
+        StatEffect fx = mock(StatEffect.class);
+        doReturn(List.of()).when(fx).getStatups();
+        when(fx.curesAnyDebuff()).thenReturn(true);
+        when(fx.curesAllAbnormalStatus()).thenReturn(false);
+        return fx;
+    }
+
+    private static AutoCloseable withUseSeams(BotInventoryManager.ItemEffectLookup effect,
+            IntUnaryOperator projectileWatk, IntUnaryOperator ammoSetValue,
+            BotInventoryManager.SellPriceLookup price) {
+        BotInventoryManager.ItemEffectLookup pe = BotInventoryManager.useEffect;
+        IntUnaryOperator pp = BotInventoryManager.projectileWatk;
+        IntUnaryOperator pa = BotInventoryManager.ammoSetValue;
+        BotInventoryManager.SellPriceLookup ps = BotInventoryManager.sellPrice;
+        IntPredicate pq = BotInventoryManager.questItem;
+        java.util.function.Predicate<Item> pu = BotInventoryManager.untradeable;
+        BotInventoryManager.useEffect = effect;
+        BotInventoryManager.projectileWatk = projectileWatk;
+        BotInventoryManager.ammoSetValue = ammoSetValue;
+        BotInventoryManager.sellPrice = price;
+        BotInventoryManager.questItem = id -> false;
+        BotInventoryManager.untradeable = item -> false;
+        return () -> {
+            BotInventoryManager.useEffect = pe;
+            BotInventoryManager.projectileWatk = pp;
+            BotInventoryManager.ammoSetValue = pa;
+            BotInventoryManager.sellPrice = ps;
+            BotInventoryManager.questItem = pq;
+            BotInventoryManager.untradeable = pu;
+        };
     }
 
     @Test
@@ -406,6 +615,8 @@ class BotInventoryManagerTest {
 
         BotInventoryManager.ScrollStatsLookup prevScroll = BotInventoryManager.scrollStats;
         BotInventoryManager.scrollStats = effects::get;
+        BotInventoryManager.ItemEffectLookup prevEffect = BotInventoryManager.useEffect;
+        BotInventoryManager.useEffect = id -> null; // scrolls aren't pot/cure/buff effects
         // dropChance marks everything rare: the rare-drop keep gate must NOT apply to scrolls.
         try (AutoCloseable seams = withSellSeams((id, qty) -> id == 2040003 ? 0 : 10, id -> -1, id -> 100);
              MockedStatic<BotAttackExecutionProvider> attacks =
@@ -422,6 +633,7 @@ class BotInventoryManagerTest {
             throw new AssertionError(e);
         } finally {
             BotInventoryManager.scrollStats = prevScroll;
+            BotInventoryManager.useEffect = prevEffect;
         }
     }
 

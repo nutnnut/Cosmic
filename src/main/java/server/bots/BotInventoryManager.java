@@ -1304,14 +1304,14 @@ class BotInventoryManager {
     }
 
     static boolean isRecoveryPotion(int itemId) {
-        StatEffect fx = itemEffect(itemId);
+        StatEffect fx = useEffect.effect(itemId);
         if (fx == null) return false;
         boolean heals = fx.getHp() > 0 || fx.getMp() > 0 || fx.getHpRate() > 0 || fx.getMpRate() > 0;
         return heals && fx.getStatups().isEmpty();
     }
 
     static boolean isBuffConsumable(int itemId) {
-        StatEffect fx = itemEffect(itemId);
+        StatEffect fx = useEffect.effect(itemId);
         return fx != null && !fx.getStatups().isEmpty();
     }
 
@@ -1798,8 +1798,14 @@ class BotInventoryManager {
     // <=1% yet clean average rolls are NPC fodder — good rolls are already stat-protected
     // (shouldKeepForSellTrash) and self-useful gear is reserved (collectPotentialSelfUpgradeItems).
     private static final int RARE_DROP_KEEP_CHANCE = 10_000;
-    private static final int PARTY_ARROW_RESERVE = 5_000;
     private static final int MONSTER_CRYSTAL_LEFTOVER_KEEP_QUANTITY = 100;
+
+    // === USE value model tunables (pressure-driven + value shelf) ===
+    // A USE stack worth at least this much is a trade good and is never auto-sold, even when the
+    // bag is cramped (analog of NEVER_SELL_TRADE_SCORE for equips).
+    static int USE_NEVER_SELL_MESO = 50_000;
+    // All-cure (status insurance) reserve kept in the combat runway.
+    static int ALL_CURE_RESERVE_SLOTS = 1;
 
     // Test seams: ItemInformationProvider's WZ/DB static initializer can't run in unit tests
     // (same pattern as BotShopManager) — price/leftover/rarity/maker lookups go through these.
@@ -1809,6 +1815,20 @@ class BotInventoryManager {
     }
     static SellPriceLookup sellPrice =
             (id, qty) -> ItemInformationProvider.getInstance().getPrice(id, qty);
+    // Rechargeable ammo (throwing stars/bullets) value is quantity-INDEPENDENT: one set is a set
+    // (0 == 9999). Its per-set worth is the base whole price, not getPrice(id, qty). Used so a
+    // duplicate slot of an already-kept star tier scores ~nothing on the value shelf.
+    static IntUnaryOperator ammoSetValue =
+            id -> ItemInformationProvider.getInstance().getWholePrice(id);
+    // Projectile attack, for picking a bot's best ammo tier.
+    static IntUnaryOperator projectileWatk =
+            id -> ItemInformationProvider.getInstance().getWatkForProjectile(id);
+    // A USE item effect, cached, for the recovery/cure/buff category predicates.
+    @FunctionalInterface
+    interface ItemEffectLookup {
+        StatEffect effect(int itemId);
+    }
+    static ItemEffectLookup useEffect = BotInventoryManager::itemEffect;
     @FunctionalInterface
     interface ScrollStatsLookup {
         Map<String, Integer> stats(int itemId);
@@ -1845,49 +1865,241 @@ class BotInventoryManager {
         if (item == null || item.getQuantity() <= 0) {
             return 0;
         }
-        if (isPartyArrowReserveItem(item.getItemId())) {
-            return (short) Math.max(0, item.getQuantity() - PARTY_ARROW_RESERVE);
-        }
+        // Whole slot: a selected stack (including a redundant rechargeable ammo set, whose value is
+        // quantity-independent) is shed entirely. Ammo reserves are now decided by the runway/shelf
+        // model, not a hardcoded per-item quantity guard.
         return item.getQuantity();
     }
 
-    private static boolean isPartyArrowReserveItem(int itemId) {
-        return isInRange(itemId, 2060001, 2060004)
-                || isInRange(itemId, 2061001, 2061004);
+    // === USE consumable value model =========================================================
+    // Pressure-driven + value shelf (mirrors the equip kept-valuables shelf). Every USE stack is:
+    //   RUNWAY - combat necessity, never auto-sold: best ammo set, a recovery runway sized to the
+    //            bot, a small all-cure reserve.
+    //   JUNK   - zero trade value, always sellable: single-ailment cures (antidote/eyedrop/...),
+    //            equip scrolls this job never values, stale quest clutter.
+    //   SHELF  - everything else (extra recovery, other-class & surplus ammo, buffs, misc). Kept
+    //            for trade/use UNLESS the bag is cramped, then the lowest value-per-slot stacks
+    //            sell first. Stacks worth >= USE_NEVER_SELL_MESO are protected even under pressure.
+    // Ammo and rarer consumables carry real trade value, so they are NEVER quantity-capped; only
+    // genuine low-value overflow sells, and only under bag pressure.
+    enum UseTier { RUNWAY, JUNK, SHELF }
+
+    /** keepValue: value-per-slot used to rank the shelf (ascending = sold first). shelfRank is the
+     *  1-based ascending position (1 = sold first). reason is a coarse label for the debug dump. */
+    record UseClass(UseTier tier, double keepValue, int shelfRank, String reason) {}
+
+    private static boolean isAllCurePotion(int itemId) {
+        StatEffect fx = useEffect.effect(itemId);
+        return fx != null && fx.curesAllAbnormalStatus();
     }
 
-    // Trash USE = ammo for a weapon the bot isn't using, non-rechargeable only (stars/bullets
-    // keep resale/trade value), plus equip scrolls whose effect grants nothing this job values.
-    // Potions, buffs and uncategorized USE items all stay: selling something useful costs more
-    // than the bag slot it frees.
-    static List<Item> collectSellTrashUseItems(Character bot) {
+    // Single-ailment cures (antidote=poison, eyedrop=darkness, tonic, holy water): worthless, always
+    // sell. An all-cure potion is reserved instead (status insurance).
+    private static boolean isSingleCurePotion(int itemId) {
+        StatEffect fx = useEffect.effect(itemId);
+        return fx != null && fx.curesAnyDebuff() && !fx.curesAllAbnormalStatus();
+    }
+
+    private static boolean isUseJunk(Character bot, int itemId) {
+        return isSingleCurePotion(itemId)
+                || (ItemConstants.isEquipScroll(itemId) && isIrrelevantEquipScroll(bot, itemId))
+                || isStaleQuestItem(bot, itemId);
+    }
+
+    private static String junkReason(Character bot, int itemId) {
+        if (isSingleCurePotion(itemId)) return "cure-junk";
+        if (ItemConstants.isEquipScroll(itemId)) return "scroll-junk";
+        return "quest-stale";
+    }
+
+    // Recovery potions ranked for the runway: how much they actually restore (flat + a modest
+    // weight on percent-recovery), so the bot keeps its strongest sustain and sheds weak low-tier
+    // pots under pressure.
+    private static double recoveryHealScore(int itemId) {
+        StatEffect fx = useEffect.effect(itemId);
+        if (fx == null) return 0;
+        return fx.getHp() + fx.getMp() + (fx.getHpRate() + fx.getMpRate()) * 10.0;
+    }
+
+    // Combat runway depth in slots for consumed supplies (recovery pots, non-rechargeable arrows):
+    // a grind-session reserve, lightly level-scaled. Surplus beyond this lives on the shelf and
+    // only sells under bag pressure, so this stays modest.
+    private static int consumableRunwaySlots(Character bot) {
+        return Math.max(3, Math.min(8, 3 + bot.getLevel() / 20));
+    }
+
+    /** SSOT classification of the USE bag into RUNWAY/JUNK/SHELF, with shelf value ranking. Shared
+     *  by the sell collectors and the {@code inv debug} dump so both always agree (no second
+     *  decision tree). */
+    static Map<Item, UseClass> classifyBagUse(Character bot) {
         WeaponType ownAmmoType = tradeAmmoWeaponType(bot);
-        List<Item> result = new ArrayList<>();
-        // botAwareSafety: a stale USE quest item (BotQuestIndex says the bot has finished or far
-        // outleveled every quest needing it) is allowed past the quest-item exclusion so it can sell.
-        collectFromBag(bot, result, InventoryType.USE, item -> {
+        List<Item> all = new ArrayList<>();
+        // botAwareSafety: stale quest items pass the quest exclusion so they can be classified JUNK.
+        collectFromBag(bot, all, InventoryType.USE, item -> true, true);
+
+        Map<Item, UseClass> out = new IdentityHashMap<>();
+        List<Item> recovery = new ArrayList<>();
+        List<Item> allCure = new ArrayList<>();
+        List<Item> ownAmmo = new ArrayList<>();
+        List<Item> shelf = new ArrayList<>(); // other-class/surplus ammo, buffs, uncategorized
+
+        for (Item item : all) {
             int id = item.getItemId();
+            if (isUseJunk(bot, id)) {
+                out.put(item, new UseClass(UseTier.JUNK, 0, 0, junkReason(bot, id)));
+                continue;
+            }
             WeaponType ammoType = ammoWeaponType(id);
-            if (ammoType != null) {
-                return ammoType != ownAmmoType
-                        && !ItemConstants.isRechargeable(id)
-                        && !isRareDrop(id)
-                        && sellTrashQuantity(item) > 0
-                        && sellPrice.price(id, sellTrashQuantity(item)) > 0;
+            if (ammoType != null && ammoType == ownAmmoType) {
+                ownAmmo.add(item);
+            } else if (isRecoveryPotion(id)) {
+                recovery.add(item);
+            } else if (isAllCurePotion(id)) {
+                allCure.add(item);
+            } else {
+                shelf.add(item); // other-class ammo, buffs, misc -> kept unless cramped
             }
-            // A stale quest USE item (finished/outleveled quests) is pure clutter - sell if an NPC
-            // pays for it. Rare drops stay (a stale quest item that's also a rare drop has other
-            // value - default KEEP, see report).
-            if (isStaleQuestItem(bot, id)) {
-                return !isRareDrop(id)
-                        && item.getQuantity() > 0
-                        && sellPrice.price(id, item.getQuantity()) > 0;
+        }
+
+        // RUNWAY: strongest recovery first; surplus to the shelf.
+        recovery.sort(Comparator
+                .comparingDouble((Item it) -> recoveryHealScore(it.getItemId())).reversed()
+                .thenComparing(Comparator.comparingInt(Item::getQuantity).reversed()));
+        int recRunway = consumableRunwaySlots(bot);
+        for (int i = 0; i < recovery.size(); i++) {
+            if (i < recRunway) out.put(recovery.get(i), new UseClass(UseTier.RUNWAY, 0, 0, "recovery-runway"));
+            else shelf.add(recovery.get(i));
+        }
+
+        // RUNWAY: a little all-cure insurance; surplus to the shelf.
+        allCure.sort(Comparator.comparingInt(Item::getQuantity).reversed());
+        for (int i = 0; i < allCure.size(); i++) {
+            if (i < ALL_CURE_RESERVE_SLOTS) out.put(allCure.get(i), new UseClass(UseTier.RUNWAY, 0, 0, "allcure-reserve"));
+            else shelf.add(allCure.get(i));
+        }
+
+        classifyOwnAmmoRunway(ownAmmo, bot, out, shelf);
+        rankUseShelf(shelf, out);
+        return out;
+    }
+
+    // Own ammo runway: rechargeable (stars/bullets) needs only ONE set of the best tier (it
+    // recharges free at shops); consumed ammo (arrows/bolts) keeps a deeper grind runway. Every
+    // other own-ammo slot — lesser tiers and duplicate sets — drops to the shelf.
+    private static void classifyOwnAmmoRunway(List<Item> ownAmmo, Character bot,
+                                              Map<Item, UseClass> out, List<Item> shelf) {
+        if (ownAmmo.isEmpty()) {
+            return;
+        }
+        ownAmmo.sort(Comparator
+                .comparingInt((Item it) -> projectileWatk.applyAsInt(it.getItemId())).reversed()
+                .thenComparing(Comparator.comparingInt(Item::getQuantity).reversed()));
+        int bestTier = ownAmmo.get(0).getItemId();
+        int runway = ItemConstants.isRechargeable(bestTier) ? 1 : consumableRunwaySlots(bot);
+        int kept = 0;
+        for (Item it : ownAmmo) {
+            if (it.getItemId() == bestTier && kept < runway) {
+                out.put(it, new UseClass(UseTier.RUNWAY, 0, 0, "ammo-runway"));
+                kept++;
+            } else {
+                shelf.add(it);
             }
-            return isIrrelevantEquipScroll(bot, id)
-                    && sellTrashQuantity(item) > 0
-                    && sellPrice.price(id, sellTrashQuantity(item)) > 0;
-        }, true);
+        }
+    }
+
+    // Rank the shelf by value-per-slot ascending (sold first). Rechargeable ammo is valued per-set
+    // (quantity-independent): the first slot of each tier carries the set value, every further slot
+    // of that same tier is a redundant duplicate worth ~0 and leads the sale.
+    private static void rankUseShelf(List<Item> shelf, Map<Item, UseClass> out) {
+        java.util.Set<Integer> seenRechargeableTier = new java.util.HashSet<>();
+        // A rechargeable tier already kept in the runway is "seen", so its first shelf slot is a
+        // redundant duplicate.
+        for (var e : out.entrySet()) {
+            int id = e.getKey().getItemId();
+            if (e.getValue().tier() == UseTier.RUNWAY
+                    && ammoWeaponType(id) != null && ItemConstants.isRechargeable(id)) {
+                seenRechargeableTier.add(id);
+            }
+        }
+        // Fuller stacks first, so the slot that keeps a tier's set value is the fullest one.
+        List<Item> ordered = new ArrayList<>(shelf);
+        ordered.sort(Comparator.comparingInt(Item::getQuantity).reversed());
+        Map<Item, Double> value = new IdentityHashMap<>();
+        for (Item it : ordered) {
+            int id = it.getItemId();
+            double v;
+            if (ammoWeaponType(id) != null && ItemConstants.isRechargeable(id)) {
+                v = seenRechargeableTier.add(id) ? ammoSetValue.applyAsInt(id) : 0;
+            } else {
+                v = sellPrice.price(id, it.getQuantity());
+            }
+            value.put(it, Math.max(0, v));
+        }
+        List<Item> ranked = new ArrayList<>(shelf);
+        ranked.sort(Comparator.comparingDouble(value::get));
+        for (int i = 0; i < ranked.size(); i++) {
+            Item it = ranked.get(i);
+            out.put(it, new UseClass(UseTier.SHELF, value.get(it), i + 1, shelfReason(it, value.get(it))));
+        }
+    }
+
+    private static String shelfReason(Item item, double value) {
+        int id = item.getItemId();
+        if (ammoWeaponType(id) != null) {
+            return value <= 0 ? "ammo-dup-set" : "ammo-shelf";
+        }
+        if (isBuffConsumable(id)) return "buff";
+        if (isRecoveryPotion(id)) return "recovery-extra";
+        if (isAllCurePotion(id)) return "allcure-extra";
+        return "misc";
+    }
+
+    // Always-sellable JUNK only: single cures, irrelevant scrolls, stale quest clutter an NPC pays
+    // for. Trade-worthy stacks (ammo, pots, buffs) are NOT here — they sell only under bag pressure
+    // via collectCrampedUseSales. Keeps a plain "sell trash" trip non-destructive.
+    static List<Item> collectSellTrashUseItems(Character bot) {
+        List<Item> result = new ArrayList<>();
+        for (var e : classifyBagUse(bot).entrySet()) {
+            Item item = e.getKey();
+            if (e.getValue().tier() == UseTier.JUNK
+                    && item.getQuantity() > 0
+                    && sellPrice.price(item.getItemId(), item.getQuantity()) > 0) {
+                result.add(item);
+            }
+        }
         return result;
+    }
+
+    // Under bag pressure: the lowest value-per-slot SHELF stacks (worst slot first), enough to free
+    // `slotsToFree` slots. Excludes the runway, the JUNK already in the sell plan, and anything at
+    // or above USE_NEVER_SELL_MESO (trade goods stay). Small cheap stacks and redundant ammo sets
+    // lead; the user's example holds: a 3x500 (1500) stack sells before a 700x10 (7000) one.
+    static List<Item> collectCrampedUseSales(Character bot, int slotsToFree, java.util.Set<Item> exclude) {
+        if (slotsToFree <= 0) {
+            return List.of();
+        }
+        List<Map.Entry<Item, UseClass>> shelf = new ArrayList<>();
+        for (var e : classifyBagUse(bot).entrySet()) {
+            Item item = e.getKey();
+            if (e.getValue().tier() != UseTier.SHELF) continue;
+            if (exclude != null && exclude.contains(item)) continue;
+            if (e.getValue().keepValue() >= USE_NEVER_SELL_MESO) continue;
+            if (item.getQuantity() <= 0) continue;
+            if (sellPrice.price(item.getItemId(), item.getQuantity()) <= 0) continue;
+            shelf.add(e);
+        }
+        shelf.sort(Comparator.comparingDouble(en -> en.getValue().keepValue()));
+        List<Item> result = new ArrayList<>();
+        for (var en : shelf) {
+            if (result.size() >= slotsToFree) break;
+            result.add(en.getKey());
+        }
+        return result;
+    }
+
+    /** True when the bag holds at least one shelf stack that a cramped sell trip could unload. */
+    static boolean crampedUseSalesAvailable(Character bot) {
+        return !collectCrampedUseSales(bot, 1, null).isEmpty();
     }
 
     // An equip scroll is sell-trash only when its effect grants nothing of trade value:
@@ -2178,22 +2390,38 @@ class BotInventoryManager {
                     tradeValueScore(ii, e), c == null ? "-" : c.label()));
         }
 
-        Set<Item> sellingUse = Collections.newSetFromMap(new IdentityHashMap<>());
-        sellingUse.addAll(collectSellTrashUseItems(bot));
-        WeaponType ownAmmoType = tradeAmmoWeaponType(bot);
+        // SELL = JUNK (always sold); SHELF#r = sold only when cramped, rank r worst-first (1 sells
+        // first); RUNWAY = combat reserve, never auto-sold. unit/stack = NPC meso (per-unit / whole
+        // stack); rechargeable ammo is valued per-set, so dup sets show stack meso but rank ~last.
+        Map<Item, UseClass> useClasses = classifyBagUse(bot);
         sb.append("\n--- USE ---\n");
-        sb.append(String.format("%-30s %-6s %-5s %s%n", "name", "qty", "verd", "reason"));
+        sb.append(String.format("%-28s %-6s %-9s %8s %8s  %s%n",
+                "name", "qty", "tier", "unit", "stack", "reason"));
         int useSell = 0;
         int useCount = 0;
         for (Item item : bot.getInventory(InventoryType.USE).list()) {
             useCount++;
-            boolean sell = sellingUse.contains(item);
-            if (sell) {
+            int id = item.getItemId();
+            UseClass uc = useClasses.get(item);
+            String tier;
+            String reason;
+            if (uc == null) {
+                tier = "KEEP";
+                reason = "quest-or-untradeable";
+            } else if (uc.tier() == UseTier.JUNK) {
+                tier = "SELL";
+                reason = uc.reason();
                 useSell++;
+            } else if (uc.tier() == UseTier.RUNWAY) {
+                tier = "RUNWAY";
+                reason = uc.reason();
+            } else {
+                tier = "SHELF#" + uc.shelfRank();
+                reason = uc.reason();
             }
-            sb.append(String.format("%-30s x%-5d %-5s %s%n",
-                    itemName(ii, item.getItemId()), item.getQuantity(),
-                    sell ? "SELL" : "KEEP", useVerdictReason(bot, ownAmmoType, item, sell)));
+            sb.append(String.format("%-28s x%-5d %-9s %8d %8d  %s%n",
+                    itemName(ii, id), item.getQuantity(),
+                    tier, sellPrice.price(id, 1), sellPrice.price(id, item.getQuantity()), reason));
         }
 
         Set<Item> sellingEtc = Collections.newSetFromMap(new IdentityHashMap<>());
@@ -2230,50 +2458,6 @@ class BotInventoryManager {
             name = "id=" + itemId;
         }
         return name.length() > 30 ? name.substring(0, 30) : name;
-    }
-
-    // Coarse reason labels probing the same predicates collectSellTrashUseItems applies.
-    private static String useVerdictReason(Character bot, WeaponType ownAmmoType, Item item, boolean sell) {
-        int id = item.getItemId();
-        WeaponType ammoType = ammoWeaponType(id);
-        if (ammoType != null) {
-            if (sell) {
-                return sellTrashQuantity(item) < item.getQuantity()
-                        ? "ammo-other-class (excess over party reserve)" : "ammo-other-class";
-            }
-            if (ammoType == ownAmmoType) {
-                return "own-ammo";
-            }
-            if (ItemConstants.isRechargeable(id)) {
-                return "rechargeable-ammo";
-            }
-            if (isRareDrop(id)) {
-                return "rare-drop";
-            }
-            if (sellTrashQuantity(item) <= 0) {
-                return "party-arrow-reserve";
-            }
-            return "no-npc-price";
-        }
-        if (ItemConstants.isEquipScroll(id)) {
-            if (sell) {
-                return "scroll-no-relevant-stat";
-            }
-            return isIrrelevantEquipScroll(bot, id) ? "scroll-junk-but-unsellable" : "scroll-relevant";
-        }
-        if (sell && isStaleQuestItem(bot, id)) {
-            return "quest-stale";
-        }
-        if (!isSafeToDrop(bot, item)) {
-            return isStaleQuestItem(bot, id) ? "quest-stale-but-unsellable" : "quest-or-untradeable";
-        }
-        if (isRecoveryPotion(id)) {
-            return "pot";
-        }
-        if (isBuffConsumable(id)) {
-            return "buff";
-        }
-        return "uncategorized-use";
     }
 
     // Coarse reason labels probing the same predicates collectSellTrashEtcItems applies.

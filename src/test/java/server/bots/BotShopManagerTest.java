@@ -229,7 +229,9 @@ class BotShopManagerTest {
     }
 
     @Test
-    void shouldSellOnlyEnhancedArrowExcessAbovePartyReserve() throws Exception {
+    void shouldSellWholePlannedAmmoStackWithNoPartyReserveCarveOut() throws Exception {
+        // Party-arrow reserve removed: a stack the planner put on the sell list is shed whole; ammo
+        // reserves are now decided upstream by the runway/shelf model, not a per-item quantity guard.
         Character bot = mock(Character.class);
         MapleMap map = mock(MapleMap.class);
         BotEntry entry = new BotEntry(bot, null, null);
@@ -265,7 +267,7 @@ class BotShopManagerTest {
                     List.of(arrows), List.of(), null);
         }
 
-        verify(shop).sell(any(), eq(InventoryType.USE), eq(slot), eq((short) 2_000));
+        verify(shop).sell(any(), eq(InventoryType.USE), eq(slot), eq((short) 7_000));
     }
 
     @Test
