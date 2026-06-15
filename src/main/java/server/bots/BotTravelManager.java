@@ -483,6 +483,7 @@ final class BotTravelManager {
         entry.followTravelMoveTarget = new Point(portalPos);
         entry.moveTarget = entry.followTravelMoveTarget;
         entry.moveTargetPrecise = true;
+        entry.moveTargetSource = "travel-pin";
     }
 
     static void clearMoveTargetPin(BotEntry entry) {

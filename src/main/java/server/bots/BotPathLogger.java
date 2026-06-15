@@ -50,6 +50,9 @@ final class BotPathLogger {
     private final int mapId;
     private final long startMs = System.currentTimeMillis();
     private final Deque<TickRecord> history = new ArrayDeque<>(MAX_TICKS + 1);
+    // Live map at dump time — lets pointRegionStr flag points that float off the walkable surface
+    // their region= was resolved from (region= drops straight down to the floor, hiding mid-air).
+    private MapleMap dumpMap;
 
     BotPathLogger(String botName, int mapId) {
         this.botName = botName;
@@ -106,6 +109,7 @@ final class BotPathLogger {
 
         GraphSnapshot graphSnapshot = resolveGraphSnapshot(entry);
         BotNavigationGraph graph = graphSnapshot.graph();
+        this.dumpMap = entry.bot.getMap();
         Point botPos = entry.bot.getPosition();
         Point goalTargetPos = targetSnapshot.primaryTargetPos();
         Point steeringTargetPos = targetSnapshot.steeringTargetPos(entry);
@@ -224,7 +228,11 @@ final class BotPathLogger {
                     .append("  [after snap/clamp]\n");
         }
         if (targetSnapshot.moveTargetPos() != null) {
-            sb.append("Move target:").append(" ").append(pointRegionStr(targetSnapshot.moveTargetPos(), moveTargetRegionId)).append("\n");
+            sb.append("Move target:").append(" ").append(pointRegionStr(targetSnapshot.moveTargetPos(), moveTargetRegionId));
+            if (entry.moveTargetSource != null) {
+                sb.append("  [set by: ").append(entry.moveTargetSource).append("]");
+            }
+            sb.append("\n");
         }
         if (targetSnapshot.grindTargetPos() != null) {
             sb.append("Grind tgt:  ").append(pointRegionStr(targetSnapshot.grindTargetPos(), grindTargetRegionId)).append("\n");
@@ -515,7 +523,13 @@ final class BotPathLogger {
             sb.append("  unknown region  botRegion=").append(botRegionId)
                     .append(" targetRegion=").append(targetRegionId).append("\n");
         } else if (botRegionId == targetRegionId) {
-            sb.append("  same region - no inter-region path\n");
+            sb.append("  same region - no inter-region path");
+            String surface = surfaceFlag(targetPos);
+            if (!surface.isEmpty()) {
+                sb.append("  <-- target").append(surface)
+                        .append("; same-region straight-line steer cannot reach it");
+            }
+            sb.append("\n");
         } else {
             List<BotNavigationGraph.Edge> path = BotNavigationManager.findPath(
                     graph, entry.bot, botRegionId, targetRegionId, targetPos);
@@ -622,7 +636,34 @@ final class BotPathLogger {
         return " window=[" + edge.launchMinX + "," + edge.launchMaxX + "]";
     }
 
-    private static String pointRegionStr(Point point, int regionId) {
-        return "(" + point.x + ", " + point.y + ")  region=" + regionId;
+    private String pointRegionStr(Point point, int regionId) {
+        return "(" + point.x + ", " + point.y + ")  region=" + regionId + surfaceFlag(point);
+    }
+
+    /**
+     * Flags a point that does NOT sit on the walkable surface its region= was resolved from.
+     * region= comes from findGroundFoothold, which drops straight down to the floor under the
+     * point — so an airborne target (a follow/move target left mid-jump, a formation slot with
+     * no ground, an upper-platform point) reads as the bot's OWN region and tricks nav into a
+     * "same-region" straight-line steer it can never satisfy (the arrival check needs both x and
+     * y). The gap is the vertical distance down to that floor; >tolerance ⇒ not standable here.
+     */
+    private String surfaceFlag(Point point) {
+        if (dumpMap == null || point == null) {
+            return "";
+        }
+        Point ground = BotPhysicsEngine.findGroundPoint(dumpMap, point);
+        if (ground == null) {
+            return "  *OFF-GRAPH: no ground below*";
+        }
+        int gap = ground.y - point.y; // y grows downward: >0 ⇒ point floats above the floor
+        int tol = BotMovementManager.cfg.JUMP_Y_THRESH;
+        if (gap > tol) {
+            return "  *MIDAIR +" + gap + "px above floor(y=" + ground.y + ") — not standable here*";
+        }
+        if (gap < -tol) {
+            return "  *BELOW-FLOOR " + (-gap) + "px*";
+        }
+        return "";
     }
 }
