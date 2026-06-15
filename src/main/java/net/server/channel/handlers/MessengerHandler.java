@@ -122,7 +122,11 @@ public final class MessengerHandler extends AbstractPacketHandler {
                         if (messenger != null) {
                             MessengerCharacter messengerplayer = new MessengerCharacter(player, player.getMessengerPosition());
                             input = p.readString();
-                            world.messengerChat(messenger, input, messengerplayer.getName());
+                            if (player.isGM() && server.bots.BotOpsConsole.getInstance().isConsoleLine(input)) {
+                                server.bots.BotOpsConsole.getInstance().handle(player, input); // swallow: ops console, don't broadcast
+                            } else {
+                                world.messengerChat(messenger, input, messengerplayer.getName());
+                            }
                         }
                         break;
                 }

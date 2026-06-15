@@ -5913,6 +5913,7 @@ public class Character extends AbstractCharacterObject {
     }
 
     public void closePlayerMessenger() {
+        server.bots.BotOpsConsole.getInstance().onMessengerClosed(this);
         Messenger m = this.getMessenger();
         if (m == null) {
             return;

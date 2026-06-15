@@ -911,6 +911,15 @@ public class BotManager {
         return List.copyOf(entries);
     }
 
+    /** Console/admin: read-only snapshot of every registered bot entry across all owners. */
+    List<BotEntry> allEntries() {
+        List<BotEntry> all = new ArrayList<>();
+        for (List<BotEntry> entries : bots.values()) {
+            all.addAll(entries);
+        }
+        return all;
+    }
+
     /** Called when the owner picks up or receives an item; notifies bots that might want it. */
     public void notifyOwnerGainedItem(Character owner, Item item) {
         if (owner == null || item == null) return;
