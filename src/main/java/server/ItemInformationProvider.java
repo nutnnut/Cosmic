@@ -99,11 +99,14 @@ public class ItemInformationProvider {
     // Concurrent: written by parallel startup loaders (DressingRoom + cash/quest futures) and
     // read/populated from game threads and the bot decide pool at runtime.
     protected Map<Integer, Map<String, Integer>> equipStatsCache = new java.util.concurrent.ConcurrentHashMap<>();
-    protected Map<Integer, Equip> equipCache = new HashMap<>();
+    // Concurrent: warmed off-thread by BotGrindAdvisor.warmGrindData() (getEquipById/getEquipStats
+    // over the equip catalog) while game threads read/populate the same caches. Drop-in CHM:
+    // none of these ever store a null value (Equip / int / List / "" / boolean).
+    protected Map<Integer, Equip> equipCache = new java.util.concurrent.ConcurrentHashMap<>();
     protected Map<Integer, Data> equipLevelInfoCache = new HashMap<>();
-    protected Map<Integer, Integer> equipLevelReqCache = new HashMap<>();
+    protected Map<Integer, Integer> equipLevelReqCache = new java.util.concurrent.ConcurrentHashMap<>();
     protected Map<Integer, Integer> equipMaxLevelCache = new HashMap<>();
-    protected Map<Integer, List<Integer>> scrollReqsCache = new HashMap<>();
+    protected Map<Integer, List<Integer>> scrollReqsCache = new java.util.concurrent.ConcurrentHashMap<>();
     protected Map<Integer, Integer> wholePriceCache = new HashMap<>();
     protected Map<Integer, Double> unitPriceCache = new HashMap<>();
     protected Map<Integer, Integer> projectileWatkCache = new HashMap<>();
@@ -116,7 +119,9 @@ public class ItemInformationProvider {
     protected Map<Integer, Boolean> pickupRestrictionCache = new HashMap<>();
     protected Map<Integer, Integer> getMesoCache = new HashMap<>();
     protected Map<Integer, Integer> monsterBookID = new HashMap<>();
-    protected Map<Integer, Boolean> untradeableCache = new HashMap<>();
+    // Concurrent: getEquipById's stat loop reaches isUntradeableRestricted for nearly every equip,
+    // so the boot warm hammers this. Stores a primitive boolean -> CHM-safe.
+    protected Map<Integer, Boolean> untradeableCache = new java.util.concurrent.ConcurrentHashMap<>();
     protected Map<Integer, Boolean> onEquipUntradeableCache = new HashMap<>();
     protected Map<Integer, ScriptedItem> scriptedItemCache = new HashMap<>();
     protected Map<Integer, Boolean> karmaCache = new HashMap<>();
@@ -133,7 +138,9 @@ public class ItemInformationProvider {
     protected Map<Integer, Boolean> isQuestItemCache = new HashMap<>();
     protected Map<Integer, Boolean> isPartyQuestItemCache = new HashMap<>();
     protected Map<Integer, Pair<Integer, String>> replaceOnExpireCache = new HashMap<>();
-    protected Map<Integer, String> equipmentSlotCache = new HashMap<>();
+    // Concurrent: warmed via primarySlot(getEquipmentSlot) during the boot equip-catalog warm.
+    // Only ever stores the WZ islot string (or ""), never null -> CHM-safe.
+    protected Map<Integer, String> equipmentSlotCache = new java.util.concurrent.ConcurrentHashMap<>();
     protected Map<Integer, Boolean> noCancelMouseCache = new HashMap<>();
     protected Map<Integer, Integer> mobCrystalMakerCache = new HashMap<>();
     protected Map<Integer, Pair<String, Integer>> statUpgradeMakerCache = new HashMap<>();

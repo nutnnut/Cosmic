@@ -981,6 +981,16 @@ public class BotManager {
         return null;
     }
 
+    /** Live count of spawned bots across all owners - for debug profiling that wants the current
+     *  registry load (e.g. "grind profile" reports decision cost vs concurrent bot-tick threads). */
+    int activeBotCount() {
+        int n = 0;
+        for (List<BotEntry> entries : bots.values()) {
+            n += entries.size();
+        }
+        return n;
+    }
+
     public void syncPartyBotsQuestStart(Character source, Quest quest, int npc) {
         if (quest == null) {
             return;

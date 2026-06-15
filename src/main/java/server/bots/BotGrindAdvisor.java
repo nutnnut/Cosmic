@@ -120,6 +120,91 @@ final class BotGrindAdvisor {
         Thread worldWarmup = new Thread(BotWorldGraph::get, "bot-world-graph-warmup");
         worldWarmup.setDaemon(true);
         worldWarmup.start();
+        // Mob stats, gear-drop table, and the ii equip/scroll catalog: the cold cache tax the first
+        // decision would otherwise pay on the single DECIDE_POOL thread (measured full-world cold
+        // ~16.5s -> warm ~0.26s; the BULK is ii equip/scroll-catalog parsing, mob loads ~1.5s of it).
+        // MIN_PRIORITY so it never steals CPU from boot or live ticks; depends on the spawn index.
+        Thread dataWarmup = new Thread(BotGrindAdvisor::warmGrindData, "bot-grind-data-warmup");
+        dataWarmup.setDaemon(true);
+        dataWarmup.setPriority(Thread.MIN_PRIORITY);
+        dataWarmup.start();
+    }
+
+    /**
+     * Pre-load the bot-independent grind caches off-thread at boot so the first decision pass
+     * doesn't pay the cold cache tax on the single {@link #DECIDE_POOL} thread. Best-effort and
+     * idempotent: it loads, early, the same data the decision would otherwise lazy-load — per-mob
+     * stats ({@link LifeFactory}) plus the gear-drop table and the {@link ItemInformationProvider}
+     * equip/scroll catalog (which measured as the BULK of the cold cost, not the mob loads).
+     * Safe to run alongside live map spawns: the maps it warms ({@code LifeFactory.monsterStats}
+     * and the {@code MonsterInformationProvider} mob-attack caches) are {@code ConcurrentHashMap}.
+     * Also pre-warms the {@code ItemInformationProvider} equip catalog (the dominant cold tax for the
+     * gear scan); the ii caches it touches on that path are {@code ConcurrentHashMap} so the warm is
+     * safe alongside game-thread reads/writes.
+     */
+    static void warmGrindData() {
+        try {
+            MonsterInformationProvider mi = MonsterInformationProvider.getInstance();
+            gearDropsByMob(); // drop_data equips/scrolls: one DB query, cached for the gear scan
+            BotSpawnIndex.Index index = BotSpawnIndex.get(); // blocks until the spawn scan is built
+            java.util.Set<Integer> mobIds = new java.util.HashSet<>();
+            for (BotSpawnIndex.MapSpawns map : index.byMap().values()) {
+                mobIds.addAll(map.mobCounts().keySet());
+                // mapName -> MapFactory.loadPlaceName walks String.wz per call; the build loop hits it
+                // once per qualifying map. mapNameCache is a ConcurrentHashMap, so warming it is safe.
+                mapName(map.mapId());
+            }
+            int warmed = 0;
+            for (int mobId : mobIds) {
+                try {
+                    if (LifeFactory.getMonster(mobId) != null) {
+                        warmed++;
+                    }
+                    // The build loop also looks up each mob's name (a String.wz read on first touch);
+                    // mobNameCache is a ConcurrentHashMap so warming it off-thread is safe.
+                    mi.getMobNameFromId(mobId);
+                } catch (RuntimeException ignored) {
+                    // a bad mob id just stays lazy — never fail the whole warmup over one mob
+                }
+            }
+            log.info("Bot grind cache warmup: loaded {} of {} grindable mob stats", warmed, mobIds.size());
+
+            // Pre-warm the ii WZ equip catalog the gear scan touches, off-thread, so the first grind
+            // decision doesn't pay the cold equip-stat parse on the decide thread. Droppable gear only:
+            // getEquipById per id is a ~7ms WZ parse, so warming the whole ~10k equip catalog would cost
+            // ~80s — not worth it. Bagged gear the bot already owns still lazy-loads on first decision.
+            ItemInformationProvider ii = ItemInformationProvider.getInstance();
+            // The dominant cold cost of the first gear scan is building the catalog-scroll index
+            // (parses every scroll's stats/reqs once). Prime it here via the shared SSOT builder.
+            BotScrollManager.warmScrollCatalog(ii);
+            int equipsWarmed = 0;
+            int scrollsWarmed = 0;
+            for (List<int[]> drops : gearDropsByMob().values()) {
+                for (int[] drop : drops) {
+                    int id = drop[0];
+                    try {
+                        if (id >= 1_000_000 && id <= 1_999_999) {
+                            // The gear scan walks the (uncached) WZ item directory once per equip
+                            // through these three: getEquipById (stats + untradeable via its stat
+                            // loop), getEquipmentSlot (primarySlot), getEquipLevelReq (wearable check).
+                            ii.getEquipById(id);
+                            ii.getEquipmentSlot(id);
+                            ii.getEquipLevelReq(id);
+                            equipsWarmed++;
+                        } else if (id >= 2_040_000 && id <= 2_049_999) {
+                            ii.getEquipStats(id);  // scrolls: getEquipById is equip-only
+                            scrollsWarmed++;
+                        }
+                    } catch (RuntimeException ignored) {
+                        // one corrupt id must not abort the warm — it just stays lazy
+                    }
+                }
+            }
+            log.info("Bot grind cache warmup: warmed {} equip + {} scroll catalog entries (droppable set)",
+                    equipsWarmed, scrollsWarmed);
+        } catch (RuntimeException e) {
+            log.warn("Bot grind cache warmup failed; decisions will lazy-load as before", e);
+        }
     }
 
     /** Owner asked where to grind: decide (off-thread), then explain the what/why in chat. */
@@ -187,6 +272,7 @@ final class BotGrindAdvisor {
         Map<Integer, Double> scrollGainCache = new HashMap<>();
         Map<Integer, Optional<MobProfile>> profiles = new HashMap<>();
 
+        long tBuild = BotPerformanceMonitor.start();
         List<MobCandidate> candidates = new ArrayList<>();
         for (BotSpawnIndex.MapSpawns map : index.byMap().values()) {
             if (map.town() || map.mapId() >= INSTANCED_MAPID_FLOOR
@@ -206,9 +292,12 @@ final class BotGrindAdvisor {
             if (totalPoints(pointsByMob) < MIN_SPAWN_POINTS) {
                 continue;
             }
+            long tBlend = BotPerformanceMonitor.start();
             candidates.add(blendCandidate(map.mapId(), mapName(map.mapId()), map.areaPx(),
                     pointsByMob));
+            BotPerformanceMonitor.recordSince("grind.blend", tBlend);
         }
+        BotPerformanceMonitor.recordSince("grind.build", tBuild);
         return candidates;
     }
 
@@ -298,14 +387,18 @@ final class BotGrindAdvisor {
         if (stats.isBoss() || stats.isFriendly()) {
             return null;
         }
+        long tKill = BotPerformanceMonitor.start();
         double killSeconds = killSeconds(entry, bot, mob);
+        BotPerformanceMonitor.recordSince("grind.kill", tKill);
         if (killSeconds <= 0) {
             return null;
         }
+        long tGear = BotPerformanceMonitor.start();
         List<GearProspect> gear = withProspects
                 ? gearProspects(bot, ii, mobId, wornScoreBySlot, rollScoreCache, scrollGainCache,
                         totalWornOffense)
                 : List.of();
+        BotPerformanceMonitor.recordSince("grind.gear", tGear);
         return new MobProfile(mobId, mobName(mi, mobId), stats.getLevel(),
                 stats.getExp() * bot.getExpRate(), killSeconds, gear);
     }
@@ -555,7 +648,9 @@ final class BotGrindAdvisor {
         if (levelsToGo < 0) {
             return 0.0; // unmet stat/job requirement is never grown into (low-secondary builds)
         }
+        long tBar = BotPerformanceMonitor.start();
         double ownedScore = gearBar(bot, ii, itemId, slot, ownedBarCache);
+        BotPerformanceMonitor.recordSince("grind.ownedbar", tBar);
         double[] samples = sampler.sample(bot, itemId, sampleCount);
         return expectedImprovement(samples, levelDiscount(levelsToGo), ownedScore);
     }
@@ -757,10 +852,23 @@ final class BotGrindAdvisor {
         Short slot = BotScrollManager.primarySlot(ii, itemId);
         double speed = slot != null && slot == (short) -11 ? weaponSpeedFactor(itemId) : 1.0;
         double[] out = new double[n];
+        boolean prof = BotPerformanceMonitor.enabled();
+        long rollNs = 0L;
+        long scoreNs = 0L;
         for (int i = 0; i < n; i++) {
+            long t0 = prof ? System.nanoTime() : 0L;
             Equip rolled = roll.roll((Equip) ii.getEquipById(itemId));
+            long t1 = prof ? System.nanoTime() : 0L;
             out[i] = (BotScrollManager.offenseValue(bot, rolled)
                     + BotScrollManager.scrollHeadroom(rolled.getUpgradeSlots(), evPerSlot)) * speed;
+            if (prof) {
+                rollNs += t1 - t0;
+                scoreNs += System.nanoTime() - t1;
+            }
+        }
+        if (prof) {
+            BotPerformanceMonitor.record("grind.roll", rollNs);
+            BotPerformanceMonitor.record("grind.score", scoreNs);
         }
         return out;
     }
@@ -865,6 +973,81 @@ final class BotGrindAdvisor {
         String path = writeReport(bot, sb.toString());
         BotManager.getInstance().botReply(entry,
                 path != null ? "wrote it to " + path : "couldn't write the grind report");
+    }
+
+    /** "grind profile": measure the REAL party grind-decision under live load. Runs the same
+     *  read-only pipeline {@link BotAutopilotManager#partyDecider} uses (partyInputs ->
+     *  planPartyBest) TWICE and times it with nanoTime, so run1 (likely cold) vs run2 (warm)
+     *  separates one-time cache warm-up from steady-state/contention cost. Measures only - no
+     *  global BotPerformanceMonitor toggle, no plan applied. */
+    static void exportGrindProfile(BotEntry entry, Character bot) {
+        DECIDE_POOL.execute(() -> exportGrindProfileBlocking(entry, bot));
+    }
+
+    private static void exportGrindProfileBlocking(BotEntry entry, Character bot) {
+        // Same member set party-autopilot decides over; empty (not autopiloting) -> solo.
+        List<BotEntry> members = BotAutopilotManager.partyMembers.members(entry);
+        if (members.isEmpty()) {
+            members = List.of(entry);
+        }
+        int liveBots = BotManager.getInstance().activeBotCount();
+        long run1Ms, run2Ms, planMs;
+        long[] memberMs = new long[members.size()];
+        int[] memberCands = new int[members.size()];
+        try {
+            // Run 1: end-to-end (partyInputs is the heavy part; planPartyBest is pure scoring).
+            long t0 = System.nanoTime();
+            BotAutopilotManager.PartyInputs in1 = BotAutopilotManager.partyInputs(members);
+            BotGrindPlanner.planPartyBest(in1.perMember(), in1.weights(), ThreadLocalRandom.current());
+            run1Ms = (System.nanoTime() - t0) / 1_000_000;
+
+            // Run 2: warm, with a planPartyBest split-out and a per-member candidatesFor breakdown.
+            t0 = System.nanoTime();
+            BotAutopilotManager.PartyInputs in2 = BotAutopilotManager.partyInputs(members);
+            long tMid = System.nanoTime();
+            BotGrindPlanner.planPartyBest(in2.perMember(), in2.weights(), ThreadLocalRandom.current());
+            long t1 = System.nanoTime();
+            run2Ms = (t1 - t0) / 1_000_000;
+            planMs = (t1 - tMid) / 1_000_000;
+            for (int i = 0; i < members.size(); i++) {
+                BotEntry m = members.get(i);
+                long ts = System.nanoTime();
+                List<MobCandidate> cands = candidatesFor(m, m.bot, in2.allowed()::contains);
+                memberMs[i] = (System.nanoTime() - ts) / 1_000_000;
+                memberCands[i] = cands.size();
+            }
+        } catch (RuntimeException e) {
+            log.warn("Grind profile failed for {}", bot.getName(), e);
+            BotManager.getInstance().botReply(entry, "grind profile blew up, check the log");
+            return;
+        }
+
+        String diag;
+        if (run1Ms > run2Ms * 3 && run1Ms - run2Ms > 50) {
+            diag = "COLD CACHE TAX (one-time warm-up dominates)";
+        } else if (run1Ms > 100 && run2Ms > 100) {
+            diag = "STEADY-STATE/CONTENTION (caches hot, cost is per-decision or CPU contention)";
+        } else {
+            diag = "warm and cheap";
+        }
+
+        StringBuilder sb = new StringBuilder();
+        sb.append(String.format("grind profile for %s (lv %d) @ %tF %<tT%n%n",
+                bot.getName(), bot.getLevel(), System.currentTimeMillis()));
+        sb.append(String.format("live bots: %d   party profiled: %d%n", liveBots, members.size()));
+        sb.append(String.format("run1 (cold?): %d ms   run2 (warm): %d ms%n", run1Ms, run2Ms));
+        sb.append(String.format("run2 planPartyBest: %d ms%n%n", planMs));
+        sb.append("run2 per-member candidatesFor:\n");
+        for (int i = 0; i < members.size(); i++) {
+            sb.append(String.format("  %-16s %4d ms   %d candidates%n",
+                    members.get(i).bot.getName(), memberMs[i], memberCands[i]));
+        }
+        sb.append(String.format("%ndiagnosis: %s%n", diag));
+
+        String path = writeReport(bot, "grind-profile-", sb.toString());
+        BotManager.getInstance().botReply(entry, String.format(
+                "grind profile: run1=%dms run2=%dms, %d bots live -> %s",
+                run1Ms, run2Ms, liveBots, path != null ? "wrote " + path : "report write failed"));
     }
 
     private static String writeReport(Character bot, String report) {

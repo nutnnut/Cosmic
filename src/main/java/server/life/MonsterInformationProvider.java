@@ -64,13 +64,18 @@ public class MonsterInformationProvider {
     private final Set<Integer> hasNoMultiEquipDrops = new HashSet<>();
     private final Map<Integer, List<MonsterDropEntry>> extraMultiEquipDrops = new HashMap<>();
 
-    private final Map<Pair<Integer, Integer>, Integer> mobAttackAnimationTime = new HashMap<>();
+    // ConcurrentHashMap: written via LifeFactory.setMonsterAttackInfo on a mob cache-miss, which the
+    // bot grind-cache warmup drives for every mob off-thread alongside live spawns (see monsterStats).
+    private final Map<Pair<Integer, Integer>, Integer> mobAttackAnimationTime = new java.util.concurrent.ConcurrentHashMap<>();
     private final Map<MobSkill, Integer> mobSkillAnimationTime = new HashMap<>();
 
-    private final Map<Integer, Pair<Integer, Integer>> mobAttackInfo = new HashMap<>();
+    private final Map<Integer, Pair<Integer, Integer>> mobAttackInfo = new java.util.concurrent.ConcurrentHashMap<>();
 
     private final Map<Integer, Boolean> mobBossCache = new HashMap<>();
-    private final Map<Integer, String> mobNameCache = new HashMap<>();
+    // ConcurrentHashMap: warmed off-thread by BotGrindAdvisor.warmGrindData() (grind build looks up
+    // every spawn mob's name) while game threads read/populate it. getMobNameFromId stores "" (never
+    // null) for missing names, so CHM is a safe drop-in.
+    private final Map<Integer, String> mobNameCache = new java.util.concurrent.ConcurrentHashMap<>();
 
     protected MonsterInformationProvider() {
         retrieveGlobal();

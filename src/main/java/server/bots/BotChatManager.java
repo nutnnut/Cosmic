@@ -488,6 +488,9 @@ public class BotChatManager {
             Pattern.CASE_INSENSITIVE);
     private static final Pattern GRIND_DEBUG_PATTERN = Pattern.compile(
             "^\\s*(?:grind\\s+debug|debug\\s+grind)\\s*[?!.,]*\\s*$", Pattern.CASE_INSENSITIVE);
+    // Profile the REAL party grind-decision under live load (run1 cold vs run2 warm timings).
+    private static final Pattern GRIND_PROFILE_PATTERN = Pattern.compile(
+            "^\\s*(?:grind\\s+profile|profile\\s+grind)\\s*[?!.,]*\\s*$", Pattern.CASE_INSENSITIVE);
     // Party-autopilot decision dump: full per-member gear/score breakdown to a report file.
     private static final Pattern AUTOPILOT_DEBUG_PATTERN = Pattern.compile(
             "^\\s*(?:autopilot\\s+debug|ap\\s+debug|party\\s+debug|debug\\s+(?:autopilot|party)"
@@ -1216,6 +1219,12 @@ public class BotChatManager {
         if (GRIND_DEBUG_PATTERN.matcher(message).matches()) {
             BotManager.after(BotManager.randMs(300, 500), () ->
                     BotGrindAdvisor.exportGrindDecision(entry, entry.bot));
+            return;
+        }
+
+        if (GRIND_PROFILE_PATTERN.matcher(message).matches()) {
+            BotManager.after(BotManager.randMs(300, 500), () ->
+                    BotGrindAdvisor.exportGrindProfile(entry, entry.bot));
             return;
         }
 

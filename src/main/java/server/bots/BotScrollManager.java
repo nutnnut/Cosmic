@@ -847,6 +847,14 @@ final class BotScrollManager {
      *  modifier / white), no boom risk, positive success. Built once from the item catalog. */
     private static volatile Map<Integer, List<Integer>> scrollsByCategory;
 
+    /** Boot warm hook (BotGrindAdvisor.warmGrindData): build the catalog-scroll index off-thread.
+     *  This is the dominant one-time cold cost of the first grind gear scan — it parses every
+     *  catalog scroll's stats/reqs — so priming it here makes the first decision fast. SSOT: it
+     *  just calls the same {@link #scrollsByCategory} builder the scan uses, no parallel logic. */
+    static void warmScrollCatalog(ItemInformationProvider ii) {
+        scrollsByCategory(ii);
+    }
+
     private static Map<Integer, List<Integer>> scrollsByCategory(ItemInformationProvider ii) {
         Map<Integer, List<Integer>> cached = scrollsByCategory;
         if (cached != null) {
