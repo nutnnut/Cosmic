@@ -416,6 +416,10 @@ public class BotEntry {
     // "Move here" target — bot navigates to this fixed point, then idles until cleared
     Point moveTarget = null;
     boolean moveTargetPrecise = false; // true when triggered by "move here" — uses tight stop dist
+    // Short label of what last set moveTarget (cmd-moveto / farm-here / script-task / travel-pin /
+    // fidget-return-origin). Surfaced in the path log so a spurious/airborne moveTarget that
+    // hijacks the goal (it outranks follow-target) is traceable to its source without a guess.
+    String moveTargetSource = null;
     // "Farm here" anchor — bot returns to this fixed point and only takes local attacks.
     Point farmAnchor = null;
     int farmAnchorMapId = -1;

@@ -97,6 +97,7 @@ final class BotFidgetManager {
         if (shouldReturnToOrigin(trigger, origin, botPos)) {
             entry.moveTarget = origin;
             entry.moveTargetPrecise = true;
+            entry.moveTargetSource = "fidget-return-origin";
             BotMovementManager.clearNavigationState(entry);
         }
     }

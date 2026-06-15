@@ -3072,6 +3072,7 @@ public class BotManager {
 
         entry.moveTarget = anchor;
         entry.moveTargetPrecise = true;
+        entry.moveTargetSource = "script-task";
         stepMovementCore(entry, anchor, runAiTick);
     }
 
@@ -3437,6 +3438,7 @@ public class BotManager {
         clearMode(entry);
         entry.moveTarget = new Point(dest);
         entry.moveTargetPrecise = precise;
+        entry.moveTargetSource = "cmd-moveto";
     }
 
     public void issueFarmHere(BotEntry entry, Point dest) {
@@ -3458,6 +3460,7 @@ public class BotManager {
         entry.farmAnchorMapId = entry.bot.getMapId();
         entry.moveTarget = new Point(dest);
         entry.moveTargetPrecise = true;
+        entry.moveTargetSource = "farm-here";
     }
 
     public void issuePatrol(BotEntry entry, Point ownerPos) {
