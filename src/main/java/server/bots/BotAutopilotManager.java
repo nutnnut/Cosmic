@@ -199,6 +199,8 @@ final class BotAutopilotManager {
         entry.autopilotDecisionInFlight = false;
         BotQuestManager.clearQuestErrand(entry); // a canceled autopilot abandons any quest detour
         BotGachaponManager.clearGachaErrand(entry); // ...and any gachapon trip
+        BotTravelManager.resetForModeChange(entry); // drop the in-flight hop AND the give-up cooldown,
+        // so a re-command (follow/grind/move) isn't silently gated by a stale travel give-up window.
         // autopilotNextErrandAtMs deliberately survives: it rate-limits errands, not the mode.
         // autopilotOwnerSupplyGraceUntilMs also survives: player trade grace is supply state,
         // not a combat-mode destination.
@@ -395,7 +397,14 @@ final class BotAutopilotManager {
         // (BotTravelManager.tickWanderToRandomPortal). Only when truly off-site — on the
         // grind map an empty target is just "mobs cleared", which the normal grind-wander
         // handles. No usable portal here -> fall through and grind whatever is around.
-        if (BotTravelManager.tickWanderToRandomPortal(entry, bot, runAiTick)) {
+        //
+        // NOT during the give-up window: a hop that just failed (route exists, portal hard to
+        // reach) re-arms a 45s cooldown; wandering through it re-rolls a different random portal
+        // every tick (tickTravel's clear() wipes the wander's committed portal), so the bot
+        // thrashes between portals and never converges. While cooling down, grind/wait in place
+        // and let tickTravel retry the real hop once the window passes.
+        if (System.currentTimeMillis() >= entry.followTravelGiveUpUntilMs
+                && BotTravelManager.tickWanderToRandomPortal(entry, bot, runAiTick)) {
             return true;
         }
         return false;

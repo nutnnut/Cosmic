@@ -483,4 +483,65 @@ class BotTravelManagerTest {
             assertNull(BotTravelManager.nextHopPortalPosition(f.entry(), f.bot(), HENESYS, 4));
         }
     }
+
+    @Test
+    void pickRandomCrossMapPortalExcludesNoDestinationSpawnPortals() {
+        // Spawn points / doors carry tm=999999999 (a positive sentinel, not a real map). Treating
+        // them as exits is what made a one-exit town offer ~16 "portals" to wander between.
+        Portal spawn = portal(0, 999999999, 0, "", true, new Point(0, 0));
+        Portal real = portal(1, HENESYS, 0, "", true, new Point(50, 0));
+
+        assertSame(real, BotTravelManager.pickRandomCrossMapPortal(
+                List.of(spawn, real), HUNTING_GROUND, new java.util.Random(3)));
+        assertNull(BotTravelManager.pickRandomCrossMapPortal(
+                List.of(spawn), HUNTING_GROUND, new java.util.Random(3)));
+    }
+
+    @Test
+    void resetForModeChangeDropsGiveUpCooldownSoCommandsUnstick() {
+        BotEntry entry = new BotEntry(mock(Character.class), null, null);
+        entry.followTravelGiveUpUntilMs = System.currentTimeMillis() + 60_000;
+        entry.followTravelGiveUpReason = "deadline";
+        entry.followTravelTargetMapId = HENESYS;
+
+        BotTravelManager.resetForModeChange(entry);
+
+        assertEquals(0L, entry.followTravelGiveUpUntilMs);
+        assertNull(entry.followTravelGiveUpReason);
+        assertEquals(-1, entry.followTravelTargetMapId);
+    }
+
+    @Test
+    void plainClearKeepsGiveUpCooldownForTheInternalRetryLoop() {
+        // clear() runs every tick during the give-up window and must NOT drop the cooldown — only
+        // the deliberate resetForModeChange() does. Guards the stuck-state fix from regressing into
+        // "the give-up window never holds".
+        BotEntry entry = new BotEntry(mock(Character.class), null, null);
+        long until = System.currentTimeMillis() + 60_000;
+        entry.followTravelGiveUpUntilMs = until;
+
+        BotTravelManager.clear(entry);
+
+        assertEquals(until, entry.followTravelGiveUpUntilMs);
+    }
+
+    @Test
+    void progressTowardPortalTracksClosestDistanceAndRefreshesDeadline() {
+        // Fix for the give-up macro-loop: a long multi-jump climb must not be aborted while the bot
+        // is still closing on the portal. Each new closest distance refreshes the deadline; only a
+        // bot that stops making progress times out.
+        Portal portal = portal(1, HENESYS, Portal.MAP_PORTAL, null, Portal.OPEN, new Point(2000, 0));
+        Fixture f = fixture(HUNTING_GROUND, HENESYS, new Point(0, 0), List.of(portal));
+
+        try (MovementRecorder movement = new MovementRecorder()) {
+            assertTrue(BotTravelManager.tickFollowTravel(f.entry(), f.bot(), f.anchor(), true));
+            assertEquals(2000, f.entry().followTravelBestDist);
+
+            when(f.bot().getPosition()).thenReturn(new Point(1500, 0));
+            long beforeMs = System.currentTimeMillis();
+            assertTrue(BotTravelManager.tickFollowTravel(f.entry(), f.bot(), f.anchor(), true));
+            assertEquals(500, f.entry().followTravelBestDist);          // new closest distance recorded
+            assertTrue(f.entry().followTravelDeadlineMs >= beforeMs);   // deadline refreshed from 'now'
+        }
+    }
 }

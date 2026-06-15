@@ -450,13 +450,18 @@ final class BotPathLogger {
             if (entry.followTravelEnteredAtMs > 0) {
                 sb.append(" enteredAgoMs=").append(now - entry.followTravelEnteredAtMs);
             }
-            sb.append(" deadlineInMs=").append(entry.followTravelDeadlineMs - now).append("\n");
+            sb.append(" deadlineInMs=").append(entry.followTravelDeadlineMs - now);
+            if (entry.followTravelBestDist != Integer.MAX_VALUE) {
+                sb.append(" bestDist=").append(entry.followTravelBestDist); // closest to portal so far; resets deadline on progress
+            }
+            sb.append("\n");
         } else {
             sb.append("            hop: <inactive>\n");
         }
         if (now < entry.followTravelGiveUpUntilMs) {
             sb.append("            give-up window: ").append(entry.followTravelGiveUpUntilMs - now)
-                    .append("ms left (warp / random-portal fallback active)\n");
+                    .append("ms left  reason=").append(entry.followTravelGiveUpReason == null ? "?" : entry.followTravelGiveUpReason)
+                    .append("  (travel paused; retries the real hop when it lapses)\n");
         }
     }
 

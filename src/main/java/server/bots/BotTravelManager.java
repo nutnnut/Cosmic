@@ -39,6 +39,9 @@ final class BotTravelManager {
     private static final long TRAVEL_BUDGET_BASE_MS = 10_000L;
     private static final long TRAVEL_BUDGET_PER_PX_MS = 15L;
     private static final long TRAVEL_BUDGET_MAX_MS = 45_000L;
+    // tm of spawn points / doors (mirrors BotWorldGraph.NO_TARGET_MAPID): a positive sentinel, NOT
+    // a real map — must be excluded from cross-map portal candidates or the wander targets dead ends.
+    private static final int NO_DESTINATION_MAPID = 999999999;
     // enterPortal fired but the map change lands asynchronously; if it never lands the
     // portal was blocked (e.g. closed mid-walk) and the warp fallback takes over.
     private static final long PORTAL_LAND_GRACE_MS = 2_000L;
@@ -185,12 +188,12 @@ final class BotTravelManager {
             active = false;
         }
         if (active && now > entry.followTravelDeadlineMs) {
-            giveUp(entry, now);
+            giveUp(entry, now, "deadline");
             return false;
         }
         if (active && entry.followTravelEnteredAtMs > 0) {
             if (now - entry.followTravelEnteredAtMs > PORTAL_LAND_GRACE_MS) {
-                giveUp(entry, now);
+                giveUp(entry, now, "warp-no-land");
                 return false;
             }
             return true; // warp is in flight — hold still
@@ -202,7 +205,7 @@ final class BotTravelManager {
                 BotFerryManager.FerryRoute ferry =
                         BotFerryManager.findFerryEdge(bot.getMapId(), entry.followTravelNextHopMapId);
                 if (ferry == null || !BotFerryManager.tickBoarding(entry, bot, ferry, now, runAiTick)) {
-                    giveUp(entry, now);
+                    giveUp(entry, now, "ferry-board-fail");
                     return false;
                 }
                 return true;
@@ -212,7 +215,7 @@ final class BotTravelManager {
             }
             portal = map.getPortal(entry.followTravelPortalId);
             if (portal == null || !portal.getPortalStatus()) {
-                giveUp(entry, now); // our portal closed mid-walk
+                giveUp(entry, now, "portal-closed"); // our portal closed mid-walk
                 return false;
             }
         } else {
@@ -238,11 +241,18 @@ final class BotTravelManager {
             entry.followTravelNextHopMapId = nextHopMapId;
             entry.followTravelFromMapId = bot.getMapId();
             entry.followTravelPortalId = portal.getId();
-            long budget = Math.min(TRAVEL_BUDGET_MAX_MS, TRAVEL_BUDGET_BASE_MS
-                    + TRAVEL_BUDGET_PER_PX_MS * manhattan(bot.getPosition(), portal.getPosition()));
-            entry.followTravelDeadlineMs = now + budget;
+            entry.followTravelBestDist = Integer.MAX_VALUE; // fresh hop — first walk tick seeds progress
+            entry.followTravelDeadlineMs = now + travelBudgetMs(manhattan(bot.getPosition(), portal.getPosition()));
         }
 
+        // Progress-aware deadline: while the bot is still closing on the portal (a long multi-jump
+        // climb counts), push the give-up deadline out. Only NET progress (a new closest distance)
+        // resets it, so a bot that's genuinely stuck or oscillating in place still times out.
+        int distToPortal = manhattan(bot.getPosition(), portal.getPosition());
+        if (distToPortal < entry.followTravelBestDist) {
+            entry.followTravelBestDist = distToPortal;
+            entry.followTravelDeadlineMs = now + travelBudgetMs(distToPortal);
+        }
         return walkToPortalAndEnter(entry, bot, portal, now, runAiTick);
     }
 
@@ -302,9 +312,7 @@ final class BotTravelManager {
             entry.followTravelPortalId = -1;
             entry.followTravelTaxiNpcId = taxi.npcId();
             entry.followTravelTaxiPos = new Point(npcPos);
-            long budget = Math.min(TRAVEL_BUDGET_MAX_MS, TRAVEL_BUDGET_BASE_MS
-                    + TRAVEL_BUDGET_PER_PX_MS * manhattan(bot.getPosition(), npcPos));
-            entry.followTravelDeadlineMs = now + budget;
+            entry.followTravelDeadlineMs = now + travelBudgetMs(manhattan(bot.getPosition(), npcPos));
             return tickTaxiHop(entry, bot, now, runAiTick);
         }
         BotFerryManager.FerryRoute ferry = BotFerryManager.findFerryEdge(bot.getMapId(), nextHopMapId);
@@ -327,7 +335,7 @@ final class BotTravelManager {
         Point npcPos = entry.followTravelTaxiPos;
         Point botPos = bot.getPosition();
         if (npcPos == null) {
-            giveUp(entry, now);
+            giveUp(entry, now, "taxi-npc-missing");
             return false;
         }
         if (!entry.inAir && !entry.climbing && manhattan(botPos, npcPos) <= TAXI_TRIGGER_RADIUS_PX) {
@@ -335,7 +343,7 @@ final class BotTravelManager {
                     BotWorldGraph.findTaxiEdge(entry.followTravelFromMapId, entry.followTravelNextHopMapId);
             clearMoveTargetPin(entry);
             if (taxi == null || !taxiRide.ride(bot, taxi)) {
-                giveUp(entry, now); // fare spent elsewhere mid-walk — don't retry the same hop
+                giveUp(entry, now, "taxi-fare-fail"); // fare spent elsewhere mid-walk — don't retry the same hop
                 return false;
             }
             entry.followTravelEnteredAtMs = now;
@@ -413,6 +421,7 @@ final class BotTravelManager {
         for (Portal portal : portals) {
             int target = portal.getTargetMapId();
             if (target <= 0
+                    || target == NO_DESTINATION_MAPID
                     || target == currentMapId
                     || !portal.getPortalStatus()
                     || portal.getType() == Portal.DOOR_PORTAL
@@ -462,14 +471,36 @@ final class BotTravelManager {
         entry.followTravelFromMapId = -1;
         entry.followTravelDeadlineMs = 0L;
         entry.followTravelEnteredAtMs = 0L;
+        entry.followTravelBestDist = Integer.MAX_VALUE;
         entry.followTravelTaxiNpcId = 0;
         entry.followTravelTaxiPos = null;
         entry.followTravelFerry = false;
+        // NOTE: followTravelGiveUpUntilMs is intentionally NOT reset here — the internal retry loop
+        // calls clear() every tick during the give-up window and must keep that cooldown. Deliberate
+        // mode changes use resetForModeChange() to also drop the cooldown.
     }
 
-    private static void giveUp(BotEntry entry, long now) {
+    /**
+     * Full reset for a deliberate owner/mode change (follow / grind / move-here / stop): clears the
+     * in-flight hop AND the give-up cooldown. Without this a stale 45s give-up window silently gates
+     * the bot's travel even after it's been re-commanded, so follow/move-here appear to "do nothing"
+     * (the stuck-state bug). Routed through BotAutopilotManager.clear(), the single mode-change hub.
+     */
+    static void resetForModeChange(BotEntry entry) {
+        clear(entry);
+        entry.followTravelGiveUpUntilMs = 0L;
+        entry.followTravelGiveUpReason = null;
+    }
+
+    private static void giveUp(BotEntry entry, long now, String reason) {
         clear(entry);
         entry.followTravelGiveUpUntilMs = now + GIVE_UP_WARP_WINDOW_MS;
+        entry.followTravelGiveUpReason = reason;
+    }
+
+    /** Walk budget = give-up window for reaching a portal/NPC, scaled by manhattan distance. */
+    private static long travelBudgetMs(int manhattanDist) {
+        return Math.min(TRAVEL_BUDGET_MAX_MS, TRAVEL_BUDGET_BASE_MS + TRAVEL_BUDGET_PER_PX_MS * manhattanDist);
     }
 
     // moveTarget makes the movement stack treat the portal as a precise destination (exact
