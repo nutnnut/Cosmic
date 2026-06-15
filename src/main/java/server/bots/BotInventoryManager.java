@@ -284,7 +284,7 @@ class BotInventoryManager {
         if (entry.pendingTradeCategory != null) return;
 
         Trade trade = bot.getTrade();
-        Character owner = entry.owner;
+        Character commander = BotManager.getInstance().commanderOrOwner(entry);
         if (trade == null) {
             clearManualTradeState(entry, bot);
             return;
@@ -304,22 +304,22 @@ class BotInventoryManager {
             }
         }
 
-        if (owner == null) {
+        if (commander == null) {
             return;
         }
 
-        Trade ownerTrade = owner.getTrade();
+        Trade commanderTrade = commander.getTrade();
         Trade partner = trade.getPartner();
-        boolean isOwnerTrade = ownerTrade != null
-                && partner == ownerTrade
-                && ownerTrade.getPartner() == trade
-                && owner.getId() == ownerTrade.getChr().getId();
-        if (!isOwnerTrade) {
+        boolean isCommanderTrade = commanderTrade != null
+                && partner == commanderTrade
+                && commanderTrade.getPartner() == trade
+                && commander.getId() == commanderTrade.getChr().getId();
+        if (!isCommanderTrade) {
             // Handle peer-bot trade: same-owner bot offering an item to this bot
             boolean isPeerBotTrade = partner != null
                     && partner.getChr().getClient() instanceof client.BotClient
-                    && owner != null
-                    && BotOwnershipService.getInstance().isAuthorizedOwner(partner.getChr().getId(), owner.getId());
+                    && entry.owner != null
+                    && BotOwnershipService.getInstance().isAuthorizedOwner(partner.getChr().getId(), entry.owner.getId());
             if (!isPeerBotTrade) {
                 manualTradeGreetingSent.remove(bot.getId());
                 return;
@@ -338,20 +338,20 @@ class BotInventoryManager {
             // Confirm once the offering bot has confirmed its side
             if (trade.isPartnerConfirmed()) {
                 completeTradeAndThank(entry, bot, trade);
-                BotEquipManager.autoEquip(bot, owner, null);
+                BotEquipManager.autoEquip(bot, commander, null);
             }
             return;
         }
 
         if (!trade.isFullTrade()) {
-            // Only accept on bot's behalf when the owner was the initiator (bot is slot 1).
-            // When bot is slot 0 (bot initiated via "trade me"), wait for owner to accept.
+            // Only accept on bot's behalf when the commander was the initiator (bot is slot 1).
+            // When bot is slot 0 (bot initiated via "trade me"), wait for commander to accept.
             if (trade.getNumber() != 1) return;
             if (entry.manualTradeAcceptDelayMs == 0)
                 entry.manualTradeAcceptDelayMs = 500 + BotMovementManager.cfg.TICK_MS;
             entry.manualTradeAcceptDelayMs = BotMovementManager.tickDown(entry.manualTradeAcceptDelayMs);
             if (entry.manualTradeAcceptDelayMs > 0) return;
-            Trade.visitTrade(bot, owner);
+            Trade.visitTrade(bot, commander);
             trade = bot.getTrade();
             if (trade == null || !trade.isFullTrade()) return;
         }
@@ -362,7 +362,7 @@ class BotInventoryManager {
 
         if (trade.isPartnerConfirmed()) {
             completeTradeAndThank(entry, bot, trade);
-            BotEquipManager.autoEquip(bot, owner, null);
+            BotEquipManager.autoEquip(bot, commander, null);
         }
     }
 

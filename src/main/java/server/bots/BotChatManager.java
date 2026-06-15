@@ -1095,7 +1095,8 @@ public class BotChatManager {
         }
 
         if (isFarmHereCommand(message)) {
-            Point dest = entry.owner != null ? new Point(entry.owner.getPosition()) : null;
+            Character commander = BotManager.getInstance().commanderOrOwner(entry);
+            Point dest = commander != null ? new Point(commander.getPosition()) : null;
             if (dest != null) {
                 BotManager.after(BotManager.randMs(1000, 1500), () -> {
                     prepareActiveModeEntry(entry);
@@ -1104,16 +1105,18 @@ public class BotChatManager {
                 });
             }
         } else if (isPatrolCommand(message)) {
-            Point ownerPos = entry.owner != null ? new Point(entry.owner.getPosition()) : null;
-            if (ownerPos != null) {
+            Character commander = BotManager.getInstance().commanderOrOwner(entry);
+            Point commanderPos = commander != null ? new Point(commander.getPosition()) : null;
+            if (commanderPos != null) {
                 BotManager.after(BotManager.randMs(1000, 1500), () -> {
                     prepareActiveModeEntry(entry);
-                    BotManager.getInstance().issuePatrol(entry, ownerPos);
+                    BotManager.getInstance().issuePatrol(entry, commanderPos);
                     BotManager.getInstance().botReply(entry, BotManager.randomReply(MOVE_HERE_REPLIES));
                 });
             }
         } else if (isMoveHereCommand(message)) {
-            Point dest = entry.owner != null ? new Point(entry.owner.getPosition()) : null;
+            Character commander = BotManager.getInstance().commanderOrOwner(entry);
+            Point dest = commander != null ? new Point(commander.getPosition()) : null;
             if (dest != null) {
                 BotManager.after(BotManager.randMs(1000, 1500), () -> {
                     BotManager.getInstance().issueMoveTo(entry, dest, true);
