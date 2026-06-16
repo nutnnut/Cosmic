@@ -48,7 +48,14 @@ final class BotBuffManager {
 
     private BotBuffManager() {}
 
+    /** Shots-to-kill at/above which an autopilot bot turns cheap buff pots on; below the disengage
+     *  value it turns its own auto-enable back off (hysteresis avoids flapping on borderline maps). */
+    static final double AUTO_BUFF_SHOTS_TO_KILL = 3.0;
+    static final double AUTO_BUFF_DISENGAGE_SHOTS = 2.5;
+    private static final long AUTO_BUFF_EVAL_MS = 5_000;
+
     public static void tick(BotEntry entry, Character bot) {
+        autoEngageForToughMobs(entry, bot);
         if (!entry.buffConsumablesEnabled) return;
 
         long now = System.currentTimeMillis();
@@ -118,7 +125,7 @@ final class BotBuffManager {
             int itemId = item.getItemId();
             if (!BotInventoryManager.isBuffConsumable(itemId)) continue;
 
-            StatEffect fx = fxCache.computeIfAbsent(itemId, BotInventoryManager::itemEffect);
+            StatEffect fx = fxCache.computeIfAbsent(itemId, id -> BotInventoryManager.useEffect.effect(id));
             if (fx == null || fx.getStatups().isEmpty()) continue;
 
             List<BuffStat> statKey = buildStatKey(bot, fx);
@@ -144,6 +151,65 @@ final class BotBuffManager {
             return itemName(left.item().getItemId()).compareTo(itemName(right.item().getItemId()));
         });
         return result;
+    }
+
+    /** The buff pots this bot would actually use - the best item per relevant buff stat-key under
+     *  BOTH max and cheap selection (so whichever mode is active, incl. its WATK/MATK pick, is
+     *  covered). BotInventoryManager protects these as the combat runway; inferior/duplicate buff
+     *  stacks shelf and only sell under bag pressure. */
+    static java.util.Set<Item> runwayBuffItems(Character bot) {
+        java.util.Set<Item> out = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+        for (SelectedBuff choice : buildSelection(bot, false)) {
+            out.add(choice.item());
+        }
+        for (SelectedBuff choice : buildSelection(bot, true)) {
+            out.add(choice.item());
+        }
+        return out;
+    }
+
+    /** Autopilot: turn cheap buff pots on when the map is hard enough to be worth it, off when it
+     *  isn't. "Hard" = the bot's best single-target shot needs >= AUTO_BUFF_SHOTS_TO_KILL hits to
+     *  drop the toughest live mob (SSOT damage benchmark estimateBestSkillHitDamage, the same the
+     *  grind advisor uses). Only undoes its OWN enable (autoBuffEngaged); a manual "buff on/off"
+     *  clears that flag so the owner always wins. */
+    static void autoEngageForToughMobs(BotEntry entry, Character bot) {
+        if (entry == null || bot == null || !BotAutopilotManager.isActive(entry)) {
+            return;
+        }
+        long now = System.currentTimeMillis();
+        if (now - entry.lastAutoBuffEvalMs < AUTO_BUFF_EVAL_MS) {
+            return;
+        }
+        entry.lastAutoBuffEvalMs = now;
+        if (bot.getMap() == null) {
+            return;
+        }
+        Monster hardest = null;
+        for (Monster monster : bot.getMap().getAllMonsters()) {
+            if (monster.isAlive() && (hardest == null || monster.getMaxHp() > hardest.getMaxHp())) {
+                hardest = monster;
+            }
+        }
+        if (hardest == null) {
+            return;
+        }
+        double perShot = BotCombatManager.estimateBestSkillHitDamage(entry, bot, hardest);
+        if (perShot <= 0) {
+            return;
+        }
+        double shots = hardest.getMaxHp() / perShot;
+        if (shots >= AUTO_BUFF_SHOTS_TO_KILL && !entry.buffConsumablesEnabled) {
+            entry.buffConsumablesEnabled = true;
+            entry.buffCheapMode = true;
+            entry.autoBuffEngaged = true;
+            entry.lastBuffScanMs = 0;
+            noteDecision(entry, "tough map (~" + Math.round(shots) + " shots/kill) - cheap buffs on");
+        } else if (shots < AUTO_BUFF_DISENGAGE_SHOTS && entry.autoBuffEngaged) {
+            entry.buffConsumablesEnabled = false;
+            entry.autoBuffEngaged = false;
+            noteDecision(entry, "easy map (~" + Math.round(shots) + " shots/kill) - auto buffs off");
+        }
     }
 
     private static boolean needsAnyBuffStat(BotEntry entry, Character bot, StatEffect fx) {

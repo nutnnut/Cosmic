@@ -1,5 +1,6 @@
 package server.bots;
 
+import client.BuffStat;
 import client.Character;
 import client.Job;
 import client.inventory.Equip;
@@ -10,6 +11,7 @@ import org.junit.jupiter.api.Test;
 import org.mockito.MockedStatic;
 import server.StatEffect;
 import server.Trade;
+import tools.Pair;
 import server.maps.Foothold;
 import server.maps.MapItem;
 import server.maps.MapleMap;
@@ -345,19 +347,20 @@ class BotInventoryManagerTest {
     }
 
     @Test
-    void recoveryRunwayIsProtected_surplusShelfedAndHardFloorHeld() {
+    void recoveryRunwayCoversTarget_surplusShelfedAndNeverSoldBelowTarget() {
+        int prevWarn = BotManager.cfg.POT_LOW_WARN;
+        BotManager.cfg.POT_LOW_WARN = 2; // potResupplyTarget = 2 * 5 = 10 (HP and MP)
         Character bot = mock(Character.class);
-        when(bot.getLevel()).thenReturn(0); // consumableRunwaySlots -> 3
         Inventory use = new Inventory(bot, InventoryType.USE, (byte) 96);
         List<Item> pots = new java.util.ArrayList<>();
         for (int i = 0; i < 5; i++) {
-            Item p = Items.itemWithQuantity(2000000 + i, 100);
+            Item p = Items.itemWithQuantity(2000000 + i, 4); // 4 each: 3 stacks (12) cover the 10 target
             pots.add(p);
             use.addItem(p);
         }
         when(bot.getInventory(InventoryType.USE)).thenReturn(use);
 
-        try (AutoCloseable seams = withUseSeams(id -> recovery(100 - (id - 2000000), 0),
+        try (AutoCloseable seams = withUseSeams(id -> recovery(50, 50), // each restores HP and MP
                     id -> 0, id -> 0, (id, qty) -> 10 * qty);
              MockedStatic<BotAttackExecutionProvider> attacks = mockStatic(BotAttackExecutionProvider.class)) {
             attacks.when(() -> BotAttackExecutionProvider.getEquippedWeaponType(bot))
@@ -366,16 +369,18 @@ class BotInventoryManagerTest {
             var classes = BotInventoryManager.classifyBagUse(bot);
             long runway = pots.stream().filter(p -> classes.get(p).tier() == BotInventoryManager.UseTier.RUNWAY).count();
             long shelf = pots.stream().filter(p -> classes.get(p).tier() == BotInventoryManager.UseTier.SHELF).count();
-            assertEquals(3, runway);
+            assertEquals(3, runway); // 3 x 4 = 12 >= target 10, for both HP and MP
             assertEquals(2, shelf);
 
-            // Even asked to free far more than exists, the runway is never sold (hard floor).
+            // Even asked to free far more than exists, the target-covering runway is never sold.
             List<Item> sales = BotInventoryManager.collectCrampedUseSales(bot, 99, null);
             assertEquals(2, sales.size());
             assertTrue(sales.stream().allMatch(it ->
                     classes.get(it).tier() == BotInventoryManager.UseTier.SHELF));
         } catch (Exception e) {
             throw new AssertionError(e);
+        } finally {
+            BotManager.cfg.POT_LOW_WARN = prevWarn;
         }
     }
 
@@ -426,6 +431,71 @@ class BotInventoryManagerTest {
         } catch (Exception e) {
             throw new AssertionError(e);
         }
+    }
+
+    @Test
+    void buffRunwayKeepsRelevantBuffsAndShelvesIrrelevant() {
+        Character bot = mock(Character.class);
+        when(bot.getJobStyle()).thenReturn(Job.WARRIOR);
+        Inventory use = new Inventory(bot, InventoryType.USE, (byte) 96);
+        use.addItem(Items.itemWithQuantity(2022501, 5));   // WATK buff -> relevant -> runway
+        use.addItem(Items.itemWithQuantity(2022509, 5));   // MATK-only buff -> irrelevant for warrior -> shelf
+        when(bot.getInventory(InventoryType.USE)).thenReturn(use);
+
+        Map<Integer, StatEffect> fx = Map.of(
+                2022501, buffEffect(BuffStat.WATK, 10),
+                2022509, buffEffect(BuffStat.MATK, 10));
+        try (AutoCloseable seams = withUseSeams(fx::get, id -> 0, id -> 0, (id, qty) -> 10 * qty);
+             MockedStatic<BotAttackExecutionProvider> attacks = mockStatic(BotAttackExecutionProvider.class)) {
+            attacks.when(() -> BotAttackExecutionProvider.getEquippedWeaponType(bot))
+                    .thenReturn(client.inventory.WeaponType.SWORD1H);
+            var classes = BotInventoryManager.classifyBagUse(bot);
+            assertEquals(BotInventoryManager.UseTier.RUNWAY, tierOf(classes, 2022501));
+            assertEquals(BotInventoryManager.UseTier.SHELF, tierOf(classes, 2022509));
+        } catch (Exception e) {
+            throw new AssertionError(e);
+        }
+    }
+
+    @Test
+    void recoveryRunwayCoversResupplyTargetSoItDoesNotRebuy() {
+        int prevWarn = BotManager.cfg.POT_LOW_WARN;
+        BotManager.cfg.POT_LOW_WARN = 1; // potResupplyTarget = 1 * 5 = 5
+        Character bot = mock(Character.class);
+        Inventory use = new Inventory(bot, InventoryType.USE, (byte) 96);
+        use.addItem(Items.itemWithQuantity(2000010, 3));    // HP heal
+        use.addItem(Items.itemWithQuantity(2000011, 4));    // HP heal
+        use.addItem(Items.itemWithQuantity(2000012, 10));   // MP heal
+        use.addItem(Items.itemWithQuantity(2000013, 100));  // HP heal surplus (target already met)
+        when(bot.getInventory(InventoryType.USE)).thenReturn(use);
+
+        Map<Integer, StatEffect> fx = Map.of(
+                2000010, recovery(50, 0),
+                2000011, recovery(50, 0),
+                2000012, recovery(0, 50),
+                2000013, recovery(10, 0));
+        try (AutoCloseable seams = withUseSeams(fx::get, id -> 0, id -> 0, (id, qty) -> 10 * qty);
+             MockedStatic<BotAttackExecutionProvider> attacks = mockStatic(BotAttackExecutionProvider.class)) {
+            attacks.when(() -> BotAttackExecutionProvider.getEquippedWeaponType(bot))
+                    .thenReturn(client.inventory.WeaponType.SWORD1H);
+            var classes = BotInventoryManager.classifyBagUse(bot);
+            // Target HP and MP coverage is in the runway; only the surplus HP stack is sellable.
+            assertEquals(BotInventoryManager.UseTier.RUNWAY, tierOf(classes, 2000012));
+            assertEquals(BotInventoryManager.UseTier.SHELF, tierOf(classes, 2000013));
+            List<Item> sales = BotInventoryManager.collectCrampedUseSales(bot, 99, null);
+            assertEquals(1, sales.size());
+            assertEquals(2000013, sales.get(0).getItemId());
+        } catch (Exception e) {
+            throw new AssertionError(e);
+        } finally {
+            BotManager.cfg.POT_LOW_WARN = prevWarn;
+        }
+    }
+
+    private static StatEffect buffEffect(BuffStat stat, int amount) {
+        StatEffect fx = mock(StatEffect.class);
+        doReturn(List.of(new Pair<>(stat, amount))).when(fx).getStatups();
+        return fx;
     }
 
     private static BotInventoryManager.UseTier tierOf(

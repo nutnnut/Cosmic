@@ -441,6 +441,10 @@ public class BotEntry {
     long    lastBuffScanMs         = 0;
     long    lastBuffActionAtMs     = 0L;
     String  lastBuffActionSummary  = "no buff scans yet";
+    // Autopilot auto-buff: true while autopilot (not the owner) turned cheap buffs on for a tough
+    // map, so it may turn its own enable back off on an easy map. A manual buff on/off clears it.
+    boolean autoBuffEngaged        = false;
+    long    lastAutoBuffEvalMs     = 0L;
 
     // Skill buff tracking (always enabled; tracks last decision for debug)
     long   lastSkillBuffActionAtMs    = 0L;

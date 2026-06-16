@@ -807,6 +807,18 @@ final class BotShopManager {
         return BotCombatManager.cfg.AMMO_LOW_WARN * AMMO_TARGET_THRESHOLD;
     }
 
+    /** Quantity resupply tops the bot up to, per HP/MP potion type. The USE runway protects at
+     *  least this much so a cramped sell trip never sheds pots the bot would immediately rebuy. */
+    static int potResupplyTarget() {
+        return BotManager.cfg.POT_LOW_WARN * POT_TARGET_THRESHOLD;
+    }
+
+    /** Quantity resupply tops (non-rechargeable) ammo up to; the USE runway protects at least this
+     *  much so the bot never auto-sells arrows/bolts it would immediately rebuy. */
+    static int ammoResupplyTarget() {
+        return ammoTargetThreshold();
+    }
+
     private static boolean needsFixedAmmoForShop(Character bot, Shop shop, WeaponType wt, int threshold) {
         if (!needsAmmo(bot, wt) || BotCombatManager.countAmmo(bot, wt) >= threshold) {
             return false;
@@ -1057,7 +1069,7 @@ final class BotShopManager {
             return new BuyReport(0, 0, 0, ShortfallReason.NONE);
         }
 
-        int target = BotManager.cfg.POT_LOW_WARN * POT_TARGET_THRESHOLD;
+        int target = potResupplyTarget();
         int[] pots = BotPotionManager.countPotions(bot);
         int current = forHp ? pots[0] : pots[1];
         return buyFixedCostItem(bot, shop, pot, Math.max(0, target - current), 100);

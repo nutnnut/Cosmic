@@ -139,8 +139,8 @@ final class BotPotionManager {
             if (effect == null) {
                 continue;
             }
-            boolean healsHp = effect.getHp() > 0 || effect.getHpRate() > 0;
-            boolean healsMp = effect.getMp() > 0 || effect.getMpRate() > 0;
+            boolean healsHp = healsHp(effect);
+            boolean healsMp = healsMp(effect);
             if ((!healsHp && !healsMp) || !effect.getStatups().isEmpty()) {
                 continue;
             }
@@ -166,15 +166,24 @@ final class BotPotionManager {
                 continue;
             }
             int quantity = item.getQuantity();
-            if (effect.getHp() > 0 || effect.getHpRate() > 0) {
+            if (healsHp(effect)) {
                 hp += quantity;
             }
-            if (effect.getMp() > 0 || effect.getMpRate() > 0) {
+            if (healsMp(effect)) {
                 mp += quantity;
             }
         }
         BotPerformanceMonitor.recordSince("potion-recovery-count", startedAt);
         return new int[]{hp, mp};
+    }
+
+    /** SSOT recovery-axis tests (flat or percent), shared by potion counting and the USE runway. */
+    static boolean healsHp(StatEffect fx) {
+        return fx != null && (fx.getHp() > 0 || fx.getHpRate() > 0);
+    }
+
+    static boolean healsMp(StatEffect fx) {
+        return fx != null && (fx.getMp() > 0 || fx.getMpRate() > 0);
     }
 
     /**

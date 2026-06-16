@@ -904,6 +904,7 @@ public class BotChatManager {
         if (BUFF_OFF_PATTERN.matcher(message).find()) {
             BotManager.after(BotManager.randMs(500, 700), () -> {
                 entry.buffConsumablesEnabled = false;
+                entry.autoBuffEngaged = false; // manual choice wins over autopilot auto-buff
                 entry.lastBuffScanMs = 0;
                 BotManager.getInstance().botReply(entry, "ok, no buff pots");
             });
@@ -912,6 +913,7 @@ public class BotChatManager {
         if (BUFF_ON_PATTERN.matcher(message).find()) {
             BotManager.after(BotManager.randMs(500, 700), () -> {
                 entry.buffConsumablesEnabled = true;
+                entry.autoBuffEngaged = false; // manual choice wins over autopilot auto-buff
                 entry.lastBuffScanMs = 0;
                 String mode = entry.buffCheapMode ? "cheap" : "max";
                 BotManager.getInstance().botReply(entry, "ok, using buff pots (" + mode + ")");

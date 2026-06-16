@@ -1921,13 +1921,6 @@ class BotInventoryManager {
         return fx.getHp() + fx.getMp() + (fx.getHpRate() + fx.getMpRate()) * 10.0;
     }
 
-    // Combat runway depth in slots for consumed supplies (recovery pots, non-rechargeable arrows):
-    // a grind-session reserve, lightly level-scaled. Surplus beyond this lives on the shelf and
-    // only sells under bag pressure, so this stays modest.
-    private static int consumableRunwaySlots(Character bot) {
-        return Math.max(3, Math.min(8, 3 + bot.getLevel() / 20));
-    }
-
     /** SSOT classification of the USE bag into RUNWAY/JUNK/SHELF, with shelf value ranking. Shared
      *  by the sell collectors and the {@code inv debug} dump so both always agree (no second
      *  decision tree). */
@@ -1941,7 +1934,8 @@ class BotInventoryManager {
         List<Item> recovery = new ArrayList<>();
         List<Item> allCure = new ArrayList<>();
         List<Item> ownAmmo = new ArrayList<>();
-        List<Item> shelf = new ArrayList<>(); // other-class/surplus ammo, buffs, uncategorized
+        List<Item> buffs = new ArrayList<>();
+        List<Item> shelf = new ArrayList<>(); // other-class/surplus ammo, misc -> kept unless cramped
 
         for (Item item : all) {
             int id = item.getItemId();
@@ -1956,38 +1950,57 @@ class BotInventoryManager {
                 recovery.add(item);
             } else if (isAllCurePotion(id)) {
                 allCure.add(item);
+            } else if (isBuffConsumable(id)) {
+                buffs.add(item);
             } else {
-                shelf.add(item); // other-class ammo, buffs, misc -> kept unless cramped
+                shelf.add(item); // other-class ammo, uncategorized -> kept unless cramped
             }
         }
 
-        // RUNWAY: strongest recovery first; surplus to the shelf.
-        recovery.sort(Comparator
-                .comparingDouble((Item it) -> recoveryHealScore(it.getItemId())).reversed()
-                .thenComparing(Comparator.comparingInt(Item::getQuantity).reversed()));
-        int recRunway = consumableRunwaySlots(bot);
-        for (int i = 0; i < recovery.size(); i++) {
-            if (i < recRunway) out.put(recovery.get(i), new UseClass(UseTier.RUNWAY, 0, 0, "recovery-runway"));
-            else shelf.add(recovery.get(i));
-        }
+        classifyRecoveryRunway(recovery, out, shelf);
 
-        // RUNWAY: a little all-cure insurance; surplus to the shelf.
+        // RUNWAY: a little all-cure insurance; surplus to the shelf. (Not resupplied -> no buy loop.)
         allCure.sort(Comparator.comparingInt(Item::getQuantity).reversed());
         for (int i = 0; i < allCure.size(); i++) {
             if (i < ALL_CURE_RESERVE_SLOTS) out.put(allCure.get(i), new UseClass(UseTier.RUNWAY, 0, 0, "allcure-reserve"));
             else shelf.add(allCure.get(i));
         }
 
-        classifyOwnAmmoRunway(ownAmmo, bot, out, shelf);
+        classifyOwnAmmoRunway(ownAmmo, out, shelf);
+        classifyBuffRunway(buffs, bot, out, shelf);
         rankUseShelf(shelf, out);
         return out;
     }
 
+    // Recovery runway sized to the RESUPPLY target so a cramped trip never sheds pots the bot would
+    // immediately rebuy (buy/sell loop). Keep strongest-heal stacks first until both the HP and MP
+    // recovery quantities cover BotShopManager.potResupplyTarget(); the rest is surplus -> shelf.
+    private static void classifyRecoveryRunway(List<Item> recovery, Map<Item, UseClass> out, List<Item> shelf) {
+        recovery.sort(Comparator
+                .comparingDouble((Item it) -> recoveryHealScore(it.getItemId())).reversed()
+                .thenComparing(Comparator.comparingInt(Item::getQuantity).reversed()));
+        int target = BotShopManager.potResupplyTarget();
+        int hp = 0;
+        int mp = 0;
+        for (Item it : recovery) {
+            StatEffect fx = useEffect.effect(it.getItemId());
+            boolean keepForHp = hp < target && BotPotionManager.healsHp(fx);
+            boolean keepForMp = mp < target && BotPotionManager.healsMp(fx);
+            if (keepForHp || keepForMp) {
+                out.put(it, new UseClass(UseTier.RUNWAY, 0, 0, "recovery-runway"));
+                if (BotPotionManager.healsHp(fx)) hp += it.getQuantity();
+                if (BotPotionManager.healsMp(fx)) mp += it.getQuantity();
+            } else {
+                shelf.add(it);
+            }
+        }
+    }
+
     // Own ammo runway: rechargeable (stars/bullets) needs only ONE set of the best tier (it
-    // recharges free at shops); consumed ammo (arrows/bolts) keeps a deeper grind runway. Every
-    // other own-ammo slot — lesser tiers and duplicate sets — drops to the shelf.
-    private static void classifyOwnAmmoRunway(List<Item> ownAmmo, Character bot,
-                                              Map<Item, UseClass> out, List<Item> shelf) {
+    // recharges free at shops, so quantity is irrelevant); consumed ammo (arrows/bolts) keeps the
+    // best tier up to the RESUPPLY target quantity (so it never auto-sells what it would rebuy).
+    // Every other own-ammo slot — lesser tiers and duplicate sets — drops to the shelf.
+    private static void classifyOwnAmmoRunway(List<Item> ownAmmo, Map<Item, UseClass> out, List<Item> shelf) {
         if (ownAmmo.isEmpty()) {
             return;
         }
@@ -1995,12 +2008,30 @@ class BotInventoryManager {
                 .comparingInt((Item it) -> projectileWatk.applyAsInt(it.getItemId())).reversed()
                 .thenComparing(Comparator.comparingInt(Item::getQuantity).reversed()));
         int bestTier = ownAmmo.get(0).getItemId();
-        int runway = ItemConstants.isRechargeable(bestTier) ? 1 : consumableRunwaySlots(bot);
+        boolean rechargeable = ItemConstants.isRechargeable(bestTier);
+        int target = rechargeable ? 1 : BotShopManager.ammoResupplyTarget();
         int kept = 0;
         for (Item it : ownAmmo) {
-            if (it.getItemId() == bestTier && kept < runway) {
+            if (it.getItemId() == bestTier && kept < target) {
                 out.put(it, new UseClass(UseTier.RUNWAY, 0, 0, "ammo-runway"));
-                kept++;
+                kept += rechargeable ? 1 : it.getQuantity();
+            } else {
+                shelf.add(it);
+            }
+        }
+    }
+
+    // Buff runway: the buff pots this bot actually uses (best per relevant stat-key, WATK/MATK
+    // included) per BotBuffManager's SSOT selection; inferior/duplicate buff stacks shelf.
+    private static void classifyBuffRunway(List<Item> buffs, Character bot,
+                                           Map<Item, UseClass> out, List<Item> shelf) {
+        if (buffs.isEmpty()) {
+            return;
+        }
+        java.util.Set<Item> runway = BotBuffManager.runwayBuffItems(bot);
+        for (Item it : buffs) {
+            if (runway.contains(it)) {
+                out.put(it, new UseClass(UseTier.RUNWAY, 0, 0, "buff-runway"));
             } else {
                 shelf.add(it);
             }
