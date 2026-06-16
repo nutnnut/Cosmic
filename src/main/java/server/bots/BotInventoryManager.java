@@ -517,7 +517,10 @@ class BotInventoryManager {
         if (entry == null || bot == null || !(equip instanceof Equip) || scroll == null) {
             return;
         }
-        Character owner = entry.owner;
+        // Show it to whoever asked: the admin commander while a debug binding is fresh, else the real
+        // owner (mirrors resolveTradeRecipient). Using entry.owner here sent the "let me see" trade to
+        // the absent owner when an admin requested it, so nothing opened for the admin.
+        Character owner = BotManager.getInstance().commanderOrOwner(entry);
         if (owner == null || owner == bot) {
             BotManager.getInstance().botReply(entry, "no one here to show it to");
             return;
@@ -1342,7 +1345,16 @@ class BotInventoryManager {
             return false;
         }
 
-        Inventory inv = bot.getInventory(item.getInventoryType());
+        // A worn equip lives in the EQUIPPED inventory at a negative slot, but getInventoryType()
+        // reports EQUIP (it's derived from the item id, not the slot). Resolve the real inventory by
+        // slot sign so a currently-equipped item isn't falsely reported as gone — that false negative
+        // broke the scroll-confirm re-check ("cant scroll that anymore") once the bot equipped the
+        // proposed gear mid-grind, and the equivalent guard in startScrollReviewTrade.
+        InventoryType type = item.getInventoryType();
+        if (type == InventoryType.EQUIP && item.getPosition() < 0) {
+            type = InventoryType.EQUIPPED;
+        }
+        Inventory inv = bot.getInventory(type);
         if (inv == null) {
             return false;
         }
