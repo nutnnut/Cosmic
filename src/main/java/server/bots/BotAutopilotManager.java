@@ -63,7 +63,7 @@ final class BotAutopilotManager {
 
     static Advisor advisor = (entry, bot, fromMapId, maxHops, withFerry) -> {
         BotWorldGraph.RouteOptions options = travelOptions(bot, withFerry);
-        Set<Integer> reachable = BotWorldGraph.reachableWithin(fromMapId, maxHops, options);
+        Set<Integer> reachable = BotWorldGraph.reachableWithin(fromMapId, maxHops, options, m -> isAvoided(entry, m));
         return BotGrindAdvisor.recommend(entry, bot, reachable::contains,
                 travelWeight(bot, fromMapId, maxHops, options));
     };
@@ -76,10 +76,44 @@ final class BotAutopilotManager {
 
     static FarmAdvisor farmAdvisor = (entry, bot, itemId, fromMapId, maxHops, withFerry) -> {
         BotWorldGraph.RouteOptions options = travelOptions(bot, withFerry);
-        Set<Integer> reachable = BotWorldGraph.reachableWithin(fromMapId, maxHops, options);
+        Set<Integer> reachable = BotWorldGraph.reachableWithin(fromMapId, maxHops, options, m -> isAvoided(entry, m));
         return BotGrindAdvisor.recommendFarmItem(entry, bot, itemId, reachable::contains,
                 travelWeight(bot, fromMapId, maxHops, options));
     };
+
+    // Death-loop breaker tuning. Deaths closer together than the window chain into a streak; once the
+    // streak hits the threshold the bot is judged stuck on a lethal route and escapes (below).
+    static final long DEATH_LOOP_WINDOW_MS = 3 * 60_000L;
+    static final int  DEATH_LOOP_THRESHOLD = 3;
+    static final long DEATH_LOOP_AVOID_MS  = 20 * 60_000L; // how long the lethal route map stays shunned
+
+    /** True while {@code mapId} is on this bot's death-loop blacklist (expired entries read as clear). */
+    static boolean isAvoided(BotEntry entry, int mapId) {
+        Long until = entry.autopilotAvoidMapUntilMs.get(mapId);
+        return until != null && System.currentTimeMillis() < until;
+    }
+
+    /**
+     * Death-loop escape. Blacklists the lethal route — the map the bot died on plus the grind target
+     * it kept dying trying to reach — so {@link #isAvoided} prunes them from the route flood and the
+     * next decide picks a safe, reachable target instead. Drops the current destination and returns
+     * the nearest safe town to revive at (forced-return town) instead of the dungeon return map, or
+     * -1 when no distinct town is known (caller keeps the normal return map). Resets the streak.
+     */
+    static int onDeathLoop(BotEntry entry, Character bot, long now) {
+        long until = now + DEATH_LOOP_AVOID_MS;
+        entry.autopilotAvoidMapUntilMs.put(bot.getMapId(), until);
+        if (entry.autopilotMapId > 0) {
+            entry.autopilotAvoidMapUntilMs.put(entry.autopilotMapId, until);
+        }
+        entry.autopilotMapId = -1;            // drop the pick so the next tick re-decides
+        entry.autopilotDestinationName = "";
+        entry.autopilotErrandMapId = -1;
+        entry.autopilotDeathStreak = 0;       // gave it an escape; count fresh from here
+        reply.accept(entry, "i keep dying getting there - heading to town to find somewhere safer");
+        int town = bot.getMap().getForcedReturnId();
+        return (town > 0 && town != 999999999 && town != bot.getMapId()) ? town : -1; // 999999999 = MapId.NONE
+    }
 
     /** Ferries need the owner's green light ("sail away") while the owner is around; with the
      *  owner absent/offline nobody is waiting, so the bot may sail on its own judgment.

@@ -215,6 +215,11 @@ public class BotEntry {
     long autopilotOwnerSupplyGraceUntilMs = 0L;
     boolean autopilotReturningFromErrand = false;
     long autopilotLastDeathAtMs = 0L;
+    // Death-loop breaker: consecutive deaths within a short window (rapid re-death = stuck on a
+    // lethal route), and a per-bot map blacklist (mapId -> avoid-until ms) so the route flood prunes
+    // maps the bot keeps dying on/through and re-decides a safer target. Both managed in respawnBot.
+    int autopilotDeathStreak = 0;
+    final java.util.Map<Integer, Long> autopilotAvoidMapUntilMs = new java.util.HashMap<>();
     // Party autopilot cohesion: while in transit a follower rides the regular follow pipeline
     // behind the leader bot (formation offsets, legal portal-follow, warp catch-up for free)
     // instead of traveling independently; grind mode is restored on arrival. The leader's

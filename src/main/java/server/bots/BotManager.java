@@ -4514,8 +4514,15 @@ public class BotManager {
 
     private void respawnBot(BotEntry entry, Character bot, Character owner) {
         entry.deadUntil = 0;
-        if (BotAutopilotManager.isActive(entry)) {
-            entry.autopilotLastDeathAtMs = System.currentTimeMillis();
+        long deathNow = System.currentTimeMillis();
+        boolean autopilot = BotAutopilotManager.isActive(entry);
+        if (autopilot) {
+            // Chain rapid deaths into a streak (an occasional death resets it); a streak means the bot
+            // is stuck dying on one lethal route, handled by the death-loop breaker below.
+            entry.autopilotDeathStreak = (entry.autopilotLastDeathAtMs > 0
+                    && deathNow - entry.autopilotLastDeathAtMs <= BotAutopilotManager.DEATH_LOOP_WINDOW_MS)
+                    ? entry.autopilotDeathStreak + 1 : 1;
+            entry.autopilotLastDeathAtMs = deathNow;
         }
 
         // Inside a PQ/event instance a town respawn can't re-enter the run — keep the
@@ -4533,7 +4540,18 @@ public class BotManager {
         // the exact Character.respawn path ChangeMapHandler runs for real players —
         // then walk back through portals like anyone else (follow/autopilot travel
         // handles the trip; autopot tops the HP back up).
-        bot.respawn(bot.getMap().getReturnMapId());
+        // Death-loop breaker: when stuck dying on the same route, revive in a safe town instead of the
+        // dungeon return map (and shun that route so the next decide picks somewhere safer).
+        int reviveMapId = bot.getMap().getReturnMapId();
+        boolean escapedLoop = false;
+        if (autopilot && entry.autopilotDeathStreak >= BotAutopilotManager.DEATH_LOOP_THRESHOLD) {
+            int town = BotAutopilotManager.onDeathLoop(entry, bot, deathNow);
+            if (town != -1) {
+                reviveMapId = town;
+                escapedLoop = true;
+            }
+        }
+        bot.respawn(reviveMapId);
         if (!groundAfterMapChange(entry, bot)) {
             // Died in a map that is its own return map (e.g. a town): no map change
             // happened, so revive the physics state in place.
@@ -4543,7 +4561,9 @@ public class BotManager {
             BotMovementManager.resetEntryStateAfterTeleport(entry);
             BotMovementManager.broadcastMovement(entry);
         }
-        botSay(bot, randomReply(RESPAWN_REPLIES));
+        if (!escapedLoop) { // onDeathLoop already announced the town retreat
+            botSay(bot, randomReply(RESPAWN_REPLIES));
+        }
         bot.changeFaceExpression(Emote.GLARE.getValue());
     }
 

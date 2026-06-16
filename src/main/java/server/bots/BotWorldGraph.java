@@ -229,16 +229,32 @@ final class BotWorldGraph {
         return reachableWithin(get(), fromMapId, maxHops, options);
     }
 
+    /** Reachability that refuses to traverse INTO any map {@code blocked} accepts — pruning routes
+     *  THROUGH it, not just the map as a destination (so a target only reachable via a blacklisted
+     *  map drops out of the set entirely). Used by the death-loop breaker / risk-aware planner. */
+    static Set<Integer> reachableWithin(int fromMapId, int maxHops, RouteOptions options,
+                                        java.util.function.IntPredicate blocked) {
+        return reachableWithin(get(), fromMapId, maxHops, options, blocked);
+    }
+
     /** Pure BFS flood over an explicit graph; see {@link #reachableWithin(int, int, RouteOptions)}. */
     static Set<Integer> reachableWithin(Index graph, int fromMapId, int maxHops, RouteOptions options) {
+        return reachableWithin(graph, fromMapId, maxHops, options, m -> false);
+    }
+
+    static Set<Integer> reachableWithin(Index graph, int fromMapId, int maxHops, RouteOptions options,
+                                        java.util.function.IntPredicate blocked) {
         Set<Integer> seen = new HashSet<>();
         ArrayDeque<Integer> frontier = new ArrayDeque<>();
-        seen.add(fromMapId);
+        seen.add(fromMapId); // origin always allowed: the bot is standing on it
         frontier.add(fromMapId);
         for (int depth = 0; depth < maxHops && !frontier.isEmpty(); depth++) {
             for (int level = frontier.size(); level > 0; level--) {
                 int current = frontier.poll();
                 for (int next : expand(graph, current, options)) {
+                    if (blocked.test(next)) {
+                        continue; // never step into a blacklisted map -> any route through it is pruned
+                    }
                     if (seen.add(next)) {
                         frontier.add(next);
                     }
