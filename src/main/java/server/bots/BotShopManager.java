@@ -460,6 +460,14 @@ final class BotShopManager {
         }
     }
 
+    /** SSOT affordability gate for a BUY-pots resupply errand: skip the town trip when the bot can't
+     *  afford a useful restock, so a broke bot doesn't walk to a shop, buy nothing on NOT_ENOUGH_MESO,
+     *  and bounce back forever. Used by BOTH errand triggers (reactive grind-stop in BotPotionManager
+     *  and pre-travel in BotAutopilotManager). Selling is never gated by this — it earns the meso. */
+    static boolean canAffordPotResupply(Character bot) {
+        return bot.getMeso() >= BotManager.cfg.RESUPPLY_MIN_MESO;
+    }
+
     /** True when the bot needs to BUY a consumable (HP/MP potions or ammo) — i.e. the errand is a
      *  supply run, not a pure sell-trash / bag-dump. Drives the errand-destination shop filter: a
      *  supply run must reach a potion-stocking shop (which also carries ammo), while a sell-only trip

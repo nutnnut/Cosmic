@@ -367,8 +367,11 @@ final class BotAutopilotManager {
         // which flips this tick's destination + skips cohesion (line below) so the bot peels off
         // independently. The !returningFromErrand guard breaks the loop: after restocking, the
         // return trip must not re-trigger the pre-travel errand.
+        // Affordability gate matches the reactive errand (BotPotionManager): a broke bot low on pots
+        // shouldn't peel off to town to buy nothing. Bag-full (a SELL trip) stays ungated — it earns meso.
+        boolean lowAndCanBuy = supplyLevel.lowOnSupplies(bot) && BotShopManager.canAffordPotResupply(bot);
         if (entry.autopilotErrandMapId == -1 && !entry.autopilotReturningFromErrand
-                && (supplyLevel.lowOnSupplies(bot) || bagFull.bagFull(entry, bot))) {
+                && (lowAndCanBuy || bagFull.bagFull(entry, bot))) {
             requestResupplyErrand(entry, bot);
             if (entry.autopilotErrandMapId != -1) {
                 destination = entry.autopilotErrandMapId; // head to town this tick, not the grind map

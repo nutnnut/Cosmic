@@ -428,7 +428,7 @@ final class BotPotionManager {
         // Affordability gate: a broke bot can't buy pots, so don't send it on a futile buy trip
         // (walk to shop -> NOT_ENOUGH_MESO -> buy nothing -> walk back -> repeat). The sell-trash
         // branch below is intentionally NOT gated - selling is how a broke bot earns meso to buy.
-        boolean canAffordPots = bot.getMeso() >= BotManager.cfg.RESUPPLY_MIN_MESO;
+        boolean canAffordPots = BotShopManager.canAffordPotResupply(bot);
         if (canAffordPots && pots[0] < BotManager.cfg.POT_STOP
                 && BotAutopilotManager.requestResupplyErrand(entry, bot)) {
             // Autopilot restocks on its own: town errand, shop, walk back. Proactive — no
