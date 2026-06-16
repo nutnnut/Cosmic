@@ -425,11 +425,15 @@ final class BotPotionManager {
             BotMakerManager.autoCompactIfCramped(entry, bot);
         }
         startedAt = BotPerformanceMonitor.start();
-        if (pots[0] < BotManager.cfg.POT_STOP
+        // Affordability gate: a broke bot can't buy pots, so don't send it on a futile buy trip
+        // (walk to shop -> NOT_ENOUGH_MESO -> buy nothing -> walk back -> repeat). The sell-trash
+        // branch below is intentionally NOT gated - selling is how a broke bot earns meso to buy.
+        boolean canAffordPots = bot.getMeso() >= BotManager.cfg.RESUPPLY_MIN_MESO;
+        if (canAffordPots && pots[0] < BotManager.cfg.POT_STOP
                 && BotAutopilotManager.requestResupplyErrand(entry, bot)) {
             // Autopilot restocks on its own: town errand, shop, walk back. Proactive — no
             // HP gate, an independent bot shouldn't grind its last potions dry first.
-        } else if (pots[1] < BotManager.cfg.POT_STOP
+        } else if (canAffordPots && pots[1] < BotManager.cfg.POT_STOP
                 && BotAutopilotManager.requestResupplyErrand(entry, bot)) {
             // Mages can be combat-stopped by zero MP pots; give them the same autopilot
             // resupply path after the party/owner grace request has had a chance to land.
