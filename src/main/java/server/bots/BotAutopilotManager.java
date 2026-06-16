@@ -263,6 +263,7 @@ final class BotAutopilotManager {
         entry.autopilotDecisionInFlight = false;
         BotQuestManager.clearQuestErrand(entry); // a canceled autopilot abandons any quest detour
         BotGachaponManager.clearGachaErrand(entry); // ...and any gachapon trip
+        BotStarterKitManager.clearJobErrand(entry); // ...and any job-change instructor walk
         BotTravelManager.resetForModeChange(entry); // drop the in-flight hop AND the give-up cooldown,
         // so a re-command (follow/grind/move) isn't silently gated by a stale travel give-up window.
         // autopilotNextErrandAtMs deliberately survives: it rate-limits errands, not the mode.
@@ -378,8 +379,14 @@ final class BotAutopilotManager {
         // anchor is set; clearWaitAnchor restores grinding=true.
         if (entry.autopilotWaitAnchor != null
                 && (entry.questErrandMapId != -1 || entry.gachaErrandMapId != -1
-                    || entry.autopilotErrandMapId != -1)) {
+                    || entry.autopilotErrandMapId != -1 || entry.jobErrandMapId != -1)) {
             clearWaitAnchor(entry);
+        }
+        // Job-change errand takes precedence: walk to the class-town instructor and advance on
+        // arrival. Consumes the tick (no grinding/attacking en route, so the bot doesn't over-level
+        // past the advancement). Its own state (jobErrandMapId), like the quest/gacha errands.
+        if (entry.jobErrandMapId != -1 && BotStarterKitManager.tickJobErrand(entry, bot, runAiTick)) {
+            return true;
         }
         // Quest piggyback errand takes precedence over the grind destination: detour to a quest NPC
         // to start/turn in a mob quest, then resume grinding. Its own state, not autopilotErrandMapId

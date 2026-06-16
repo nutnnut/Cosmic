@@ -108,6 +108,53 @@ class BotStarterKitManagerTest {
     }
 
     @Test
+    void jobChangeNpcForRoutesEachBranchTo_ItsVerifiedTownInstructor() {
+        // Branch = job id / 100. Each 1st-job (X00) and a 2nd-job (X10/X20/X30) maps to the same
+        // town instructor (npc, map). Verified vs Map.wz + handbook/NPC.txt.
+        assertJobNpc(Job.WARRIOR, 1022000, 102000003);   // 1st
+        assertJobNpc(Job.FIGHTER, 1022000, 102000003);   // 2nd, same branch instructor
+        assertJobNpc(Job.MAGICIAN, 1032001, 101000003);
+        assertJobNpc(Job.CLERIC, 1032001, 101000003);
+        assertJobNpc(Job.BOWMAN, 1012100, 100000201);
+        assertJobNpc(Job.HUNTER, 1012100, 100000201);
+        assertJobNpc(Job.THIEF, 1052001, 103000003);
+        assertJobNpc(Job.ASSASSIN, 1052001, 103000003);
+        assertJobNpc(Job.PIRATE, 1090000, 120000101);
+        assertJobNpc(Job.BRAWLER, 1090000, 120000101);
+    }
+
+    private static void assertJobNpc(Job target, int npcId, int mapId) {
+        BotStarterKitManager.JobChangeNpc npc = BotStarterKitManager.jobChangeNpcFor(target);
+        assertEquals(npcId, npc.npcId(), target + " npc");
+        assertEquals(mapId, npc.mapId(), target + " map");
+    }
+
+    @Test
+    void thirdAndFourthJobAndNonExplorerDoNotRouteThroughAnInstructor() {
+        // 3rd job ids end in 1, 4th in 2 -> advance instantly (null), routesThroughNpc false.
+        for (Job j : List.of(Job.CRUSADER, Job.PRIEST, Job.HERMIT,   // 3rd
+                Job.HERO, Job.BISHOP, Job.NIGHTLORD,                 // 4th
+                Job.BEGINNER)) {
+            assertNull(BotStarterKitManager.jobChangeNpcFor(j), j + " should advance instantly");
+            assertFalse(BotStarterKitManager.routesThroughNpc(j), j + " should not route");
+        }
+        assertNull(BotStarterKitManager.jobChangeNpcFor(null));
+        assertFalse(BotStarterKitManager.routesThroughNpc(null));
+    }
+
+    @Test
+    void routesThroughNpcAcceptsEveryFirstAndSecondJob() {
+        for (Job j : List.of(Job.WARRIOR, Job.MAGICIAN, Job.BOWMAN, Job.THIEF, Job.PIRATE,
+                Job.FIGHTER, Job.PAGE, Job.SPEARMAN, Job.FP_WIZARD, Job.IL_WIZARD, Job.CLERIC,
+                Job.HUNTER, Job.CROSSBOWMAN, Job.ASSASSIN, Job.BANDIT, Job.BRAWLER, Job.GUNSLINGER)) {
+            assertTrue(BotStarterKitManager.routesThroughNpc(j), j + " (1st/2nd job) should route");
+            assertEquals(j.getId() / 100,
+                    BotStarterKitManager.jobChangeNpcFor(j) == null ? -1 : (j.getId() / 100),
+                    j + " maps to a non-null instructor");
+        }
+    }
+
+    @Test
     void shouldOnlyGrantKitsForBeginnerToFirstJobAdvancements() {
         assertTrue(BotStarterKitManager.isFirstJobAdvancement(Job.BEGINNER, Job.WARRIOR));
         assertTrue(BotStarterKitManager.isFirstJobAdvancement(Job.BEGINNER, Job.MAGICIAN));
@@ -123,6 +170,8 @@ class BotStarterKitManagerTest {
 
         when(bot.getJob()).thenReturn(Job.BOWMAN);
 
+        var savedReply = BotStarterKitManager.reply;
+        BotStarterKitManager.reply = (e, t) -> { }; // avoid the BotManager singleton in the unit test
         try (MockedStatic<BotBuildManager> buildManager = mockStatic(BotBuildManager.class);
              MockedStatic<BotChatManager> chatManager = mockStatic(BotChatManager.class);
              MockedStatic<BotEquipManager> equipManager = mockStatic(BotEquipManager.class)) {
@@ -132,6 +181,8 @@ class BotStarterKitManagerTest {
             buildManager.verify(() -> BotBuildManager.handleJobAdvance(entry, bot, Job.BOWMAN, Job.HUNTER));
             equipManager.verify(() -> BotEquipManager.autoEquip(bot, owner, null));
             chatManager.verify(() -> BotChatManager.checkBotStatus(entry, bot));
+        } finally {
+            BotStarterKitManager.reply = savedReply;
         }
     }
 }

@@ -260,6 +260,15 @@ public class BotEntry {
     // it accepted instead of drifting onto other mobs. volatile: written on the scan, read on the tick.
     volatile java.util.Set<Integer> activeQuestMobIds = java.util.Set.of();
 
+    // Job-change errand (BotStarterKitManager): an autopilot bot at a 1st/2nd-job milestone WALKS to
+    // its class-town instructor NPC and advances on arrival (instead of changing job instantly,
+    // anywhere). Suppresses grinding en route so it doesn't over-level. jobErrandMapId = -1 / target
+    // null when no errand. Reset in clearJobErrand() (called from BotAutopilotManager.clear).
+    client.Job jobErrandTarget = null;
+    int jobErrandNpcId = 0;
+    int jobErrandMapId = -1;
+    long jobErrandStartedAtMs = 0L;    // abort the walk if it can't reach the instructor in time
+
     // Gachapon errand (BotGachaponManager): autopilot-only. When the bot has spare account NX (from
     // looted NX cards), it picks the best-EV reachable gachapon town, travels to the NPC, buys
     // tickets (abstracted cash-shop purchase) and rolls. gachaErrandMapId = -1 when no trip is

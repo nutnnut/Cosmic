@@ -606,27 +606,23 @@ final class BotQuestManager {
             finishErrand(entry, bot, "couldn't get to that quest, dropping it");
             return false;
         }
-        if (bot.getMapId() != entry.questErrandMapId) {
-            // Travel toward the NPC's map, reusing the autopilot travel driver and its hop cap.
-            return BotTravelManager.tickTravel(entry, bot, entry.questErrandMapId,
-                    BotAutopilotManager.MAX_TRAVEL_HOPS, runAiTick, false);
+        // Travel to the NPC's map, then walk within the interaction radius (shared SSOT stepper).
+        BotTravelManager.ApproachStatus status = BotTravelManager.tickApproachNpc(
+                entry, bot, entry.questErrandMapId, entry.questErrandNpcId,
+                BotAutopilotManager.MAX_TRAVEL_HOPS, runAiTick, NPC_TRIGGER_RADIUS_PX);
+        switch (status) {
+            case NPC_GONE -> {
+                finishErrand(entry, bot, "huh, npc's gone, never mind");
+                return false;
+            }
+            case ARRIVED -> {
+                interactAndFinish(entry, bot);
+                return false; // grind resumes on the return map next ticks
+            }
+            default -> {
+                return true; // TRAVELING / WALKING — tick consumed
+            }
         }
-        // On the NPC's map: walk within the interaction radius, then act.
-        NPC npc = bot.getMap().getNPCById(entry.questErrandNpcId);
-        if (npc == null) {
-            finishErrand(entry, bot, "huh, npc's gone, never mind");
-            return false;
-        }
-        Point npcPos = npc.getPosition();
-        Point botPos = bot.getPosition();
-        if (!entry.inAir && !entry.climbing && manhattan(botPos, npcPos) <= NPC_TRIGGER_RADIUS_PX) {
-            BotTravelManager.clearMoveTargetPin(entry);
-            interactAndFinish(entry, bot);
-            return false; // grind resumes on the return map next ticks
-        }
-        BotTravelManager.pinMoveTarget(entry, npcPos);
-        BotTravelManager.movementStep.step(entry, npcPos, runAiTick);
-        return true;
     }
 
     private static void interactAndFinish(BotEntry entry, Character bot) {

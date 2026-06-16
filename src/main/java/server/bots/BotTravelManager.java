@@ -503,6 +503,43 @@ final class BotTravelManager {
         return Math.min(TRAVEL_BUDGET_MAX_MS, TRAVEL_BUDGET_BASE_MS + TRAVEL_BUDGET_PER_PX_MS * manhattanDist);
     }
 
+    /** Outcome of one {@link #tickApproachNpc} step. */
+    enum ApproachStatus {
+        TRAVELING,  // still hopping toward the NPC's map (tick consumed)
+        WALKING,    // on the NPC's map, walking within radius (tick consumed)
+        ARRIVED,    // within radius of the NPC this tick (caller acts; tick NOT consumed)
+        NPC_GONE    // NPC isn't on the resolved map (caller aborts; tick NOT consumed)
+    }
+
+    /**
+     * Shared "travel to a map, then walk within {@code radiusPx} of an NPC" stepper, the SSOT
+     * for the errand approach loop both {@link BotQuestManager#tickErrand} and
+     * {@link BotStarterKitManager#tickJobErrand} drive. Pure routing/positioning — it does NOT
+     * decide WHAT to do at the NPC (the caller acts on {@link ApproachStatus#ARRIVED}) nor own any
+     * timeout/announce (caller's concern). Reuses {@link #tickTravel} for cross-map hops and
+     * {@link #movementStep}/{@link #pinMoveTarget} for the on-map walk — no reimplemented travel.
+     */
+    static ApproachStatus tickApproachNpc(BotEntry entry, Character bot, int targetMapId, int npcId,
+                                          int maxHops, boolean runAiTick, int radiusPx) {
+        if (bot.getMapId() != targetMapId) {
+            tickTravel(entry, bot, targetMapId, maxHops, runAiTick, false);
+            return ApproachStatus.TRAVELING;
+        }
+        server.life.NPC npc = bot.getMap() == null ? null : bot.getMap().getNPCById(npcId);
+        if (npc == null || npc.getPosition() == null) {
+            return ApproachStatus.NPC_GONE;
+        }
+        Point npcPos = npc.getPosition();
+        Point botPos = bot.getPosition();
+        if (!entry.inAir && !entry.climbing && manhattan(botPos, npcPos) <= radiusPx) {
+            clearMoveTargetPin(entry);
+            return ApproachStatus.ARRIVED;
+        }
+        pinMoveTarget(entry, npcPos);
+        movementStep.step(entry, npcPos, runAiTick);
+        return ApproachStatus.WALKING;
+    }
+
     // moveTarget makes the movement stack treat the portal as a precise destination (exact
     // approach, stuck detection, fidget suppression). Pin/clear by instance identity so a
     // moveTarget issued by a player command is never clobbered.

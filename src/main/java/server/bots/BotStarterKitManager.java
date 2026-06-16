@@ -15,6 +15,10 @@ import java.util.Map;
 final class BotStarterKitManager {
     private static final Logger log = LoggerFactory.getLogger(BotStarterKitManager.class);
 
+    /** Bot chat output, behind a seam so tests stay off the BotManager singleton (mirrors BotQuestManager). */
+    static java.util.function.BiConsumer<BotEntry, String> reply =
+            (entry, text) -> BotManager.getInstance().botReply(entry, text);
+
     record ItemGrant(int itemId, short quantity) {}
 
     private static final int BEGINNER_WARRIOR_SWORD = 1302077;
@@ -52,6 +56,7 @@ final class BotStarterKitManager {
         BotBuildManager.handleJobAdvance(entry, bot, oldJob, newJob);
         grantStarterKitIfEligible(bot, oldJob, newJob);
         BotEquipManager.autoEquip(bot, owner, null);
+        reply.accept(entry, "advanced to " + newJob + "!");
         BotChatManager.checkBotStatus(entry, bot);
     }
 
@@ -85,6 +90,110 @@ final class BotStarterKitManager {
         int id = thirdJob == null ? 0 : thirdJob.getId();
         boolean isThird = id >= EXPLORER_MIN && id < EXPLORER_MAX && id % 10 == 1;
         return isThird ? Job.getById(id + 1) : null;
+    }
+
+    // ---- job-change NPC errand (autopilot only) ----------------------------------------------
+
+    /** A class instructor: the town NPC that handles 1st+2nd job advancement, and the map it sits on. */
+    record JobChangeNpc(int npcId, int mapId, String townName) {}
+
+    // SSOT for "which instructor advances each explorer branch". Keyed by branch = id/100 (the
+    // shared first digit of every job in a class line). Each branch's TOWN instructor handles BOTH
+    // 1st and 2nd job (the 1072xxx 2nd-job test-map instructors are unreachable, so abstracted away).
+    // Verified vs Map.wz life data + handbook/NPC.txt.
+    private static final Map<Integer, JobChangeNpc> JOB_CHANGE_NPC = Map.of(
+            1, new JobChangeNpc(1022000, 102000003, "Perion"),    // Warrior  - Dances with Balrog
+            2, new JobChangeNpc(1032001, 101000003, "Ellinia"),   // Magician - Grendel the Really Old
+            3, new JobChangeNpc(1012100, 100000201, "Henesys"),   // Bowman   - Athena Pierce
+            4, new JobChangeNpc(1052001, 103000003, "Kerning"),   // Thief    - Dark Lord
+            5, new JobChangeNpc(1090000, 120000101, "Nautilus")   // Pirate   - Kyrin
+    );
+
+    /** The instructor NPC for a 1st/2nd-job advancement target, or null when the target is not a
+     *  routed advancement: 3rd-job ids end in 1, 4th in 2 (their El Nath/Leafre NPCs are
+     *  unverified/unreachable, so those advance instantly), and any non-explorer branch is absent. */
+    static JobChangeNpc jobChangeNpcFor(Job target) {
+        if (!routesThroughNpc(target)) {
+            return null;
+        }
+        return JOB_CHANGE_NPC.get(target.getId() / 100);
+    }
+
+    /** True when advancing to {@code target} should WALK to an instructor first: explorer 1st/2nd
+     *  job only (ids ending in 0). 3rd (…1) and 4th (…2) advance instantly. */
+    static boolean routesThroughNpc(Job target) {
+        if (target == null) {
+            return false;
+        }
+        int id = target.getId();
+        return id > 0 && id % 10 == 0 && JOB_CHANGE_NPC.containsKey(id / 100);
+    }
+
+    /** Within this many px of the instructor counts as "talked to it" — matches the quest/cab radius. */
+    static final int NPC_TRIGGER_RADIUS_PX = 500;
+    /** Give up an instructor walk that can't arrive in time so the errand state can't wedge. */
+    static final long ERRAND_TIMEOUT_MS = 90_000L;
+
+    /** Begin an instructor-walk errand for an autopilot bot instead of advancing instantly. */
+    static void beginJobErrand(BotEntry entry, Job target) {
+        JobChangeNpc instructor = jobChangeNpcFor(target);
+        if (instructor == null) {
+            return;
+        }
+        entry.jobErrandTarget = target;
+        entry.jobErrandNpcId = instructor.npcId();
+        entry.jobErrandMapId = instructor.mapId();
+        entry.jobErrandStartedAtMs = System.currentTimeMillis();
+        reply.accept(entry, "heading to " + instructor.townName() + " to change job");
+    }
+
+    static void clearJobErrand(BotEntry entry) {
+        BotTravelManager.clearMoveTargetPin(entry);
+        entry.jobErrandTarget = null;
+        entry.jobErrandNpcId = 0;
+        entry.jobErrandMapId = -1;
+        entry.jobErrandStartedAtMs = 0L;
+    }
+
+    /**
+     * Drives an active job-change errand: travel to the instructor's town, walk within radius, then
+     * advance on arrival. Returns true while the tick is consumed (traveling/walking), false once
+     * the errand is done or dropped. Called from {@link BotAutopilotManager#tick} BEFORE combat so
+     * the bot does not grind (and over-level) en route. Reuses the shared
+     * {@link BotTravelManager#tickApproachNpc} stepper (no reimplemented travel).
+     */
+    static boolean tickJobErrand(BotEntry entry, Character bot, boolean runAiTick) {
+        if (entry.jobErrandMapId == -1 || entry.jobErrandTarget == null) {
+            return false;
+        }
+        if (System.currentTimeMillis() - entry.jobErrandStartedAtMs > ERRAND_TIMEOUT_MS) {
+            // Couldn't get there — advance on the spot rather than wedge or stay under-leveled.
+            Job target = entry.jobErrandTarget;
+            clearJobErrand(entry);
+            advanceJob(entry, target);
+            return false;
+        }
+        BotTravelManager.ApproachStatus status = BotTravelManager.tickApproachNpc(
+                entry, bot, entry.jobErrandMapId, entry.jobErrandNpcId,
+                BotAutopilotManager.MAX_TRAVEL_HOPS, runAiTick, NPC_TRIGGER_RADIUS_PX);
+        switch (status) {
+            case NPC_GONE -> {
+                // Instructor not on the map (shouldn't happen for town NPCs) — advance anyway.
+                Job target = entry.jobErrandTarget;
+                clearJobErrand(entry);
+                advanceJob(entry, target);
+                return false;
+            }
+            case ARRIVED -> {
+                Job target = entry.jobErrandTarget;
+                clearJobErrand(entry);
+                advanceJob(entry, target);
+                return false;
+            }
+            default -> {
+                return true; // TRAVELING / WALKING — tick consumed
+            }
+        }
     }
 
     // Job-topology SSOT for the autonomous (ownerless) job picker in BotBuildManager. Unlike the
