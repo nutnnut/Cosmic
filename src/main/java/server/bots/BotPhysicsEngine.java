@@ -859,12 +859,14 @@ final class BotPhysicsEngine {
         entry.groundPhysicsCarryMs = 0.0;
         entry.blockedRopeGrab = null;
         entry.hspeed = landingGroundHSpeed(bot.getMap(), foothold, incomingDeltaX, incomingDeltaY, entry.movementProfile);
-        // Counter-strafe landing (packet-verified): touching down with the OPPOSITE direction
-        // held zeroes the horizontal velocity outright (-122 -> 0 on ice, -79 -> 0 at fs=1)
-        // instead of halving it — the legal "stop dead on an icy ledge" trick.
-        if (entry.moveDir != 0 && incomingDeltaX != 0.0 && entry.moveDir * incomingDeltaX < 0.0) {
-            entry.hspeed = 0.0;
-        }
+        // NOTE: we deliberately do NOT counter-strafe-brake here. At the landing tick entry.moveDir
+        // still holds stale AIRBORNE steering, not the ground continuation direction, so the old
+        // "opposite held key zeroes hspeed" brake fired on noise: it killed the landing momentum and,
+        // because setMovementVelocity only re-derives facing when velX != 0, left facingDir stuck at
+        // the air-steer direction — the bot visibly faced backwards on landing even when continuing.
+        // Keep the halved landing momentum (set above) so the bot rides it and faces its travel
+        // direction; the next ground tick's applyGroundMotion brakes on the REAL planned direction
+        // (and slipperyStopDir still prevents sliding off an icy ledge).
         entry.groundBrakeDir = 0;
         setMovementVelocity(entry, velocityFromDeltaX(tickDeltaFromGroundHSpeed(bot.getMap(), entry.hspeed, entry.movementProfile)), 0);
         syncCharacterState(entry);
