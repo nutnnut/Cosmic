@@ -9,6 +9,7 @@ import client.creator.BotCreator;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import server.bots.BotManager;
+import server.bots.BotNameGenerator;
 import server.bots.BotOwnershipService;
 import tools.BCrypt;
 import tools.DatabaseConnection;
@@ -34,17 +35,24 @@ public class SpawnBotCommand extends Command {
         BotManager botManager = BotManager.getInstance();
         BotOwnershipService ownershipService = BotOwnershipService.getInstance();
         if (params.length < 1) {
-            player.yellowMessage("Syntax: @spawnbot <name> [confirm] [autopilot]");
+            player.yellowMessage("Syntax: @spawnbot <name|generate> [confirm] [autopilot]");
             return;
         }
 
         // params are lowercased by CommandsExecutor; use lastCommandMessage to preserve casing
         String[] rawArgs = player.getLastCommandMessage().trim().split("[ ]", 2);
-        String botName = rawArgs[0];
+        String requestedName = rawArgs[0];
         boolean createRequested = hasFlag(params, "confirm");
         // "autopilot": spawn it self-owned and playing on its own (no human owner), instead of
         // following the spawner. This is the launch path for ownerless/supervised bots.
         boolean ownerless = hasFlag(params, "autopilot");
+
+        // "generate" as the name: pick a procedural MMO name instead of a literal name
+        boolean autoName = requestedName.equalsIgnoreCase("generate");
+        String botName = autoName ? BotNameGenerator.generate() : requestedName;
+        if (autoName) {
+            player.yellowMessage("Generated bot name: " + botName);
+        }
 
         BotOwnershipService.ResolvedCharacter bot = ownershipService.resolveCharacterByName(botName);
         if (bot == null) {
@@ -52,7 +60,7 @@ public class SpawnBotCommand extends Command {
 //                player.yellowMessage("Only existing characters can be spawned as bots. Same-account characters auto-register; otherwise log in on the target and use @registerbot " + player.getName() + ".");
 //                return;
 //            }
-            if (!createRequested) {
+            if (!createRequested && !autoName) {
                 player.yellowMessage("Bot '" + botName + "' does not exist. Run: @spawnbot " + botName + " confirm  to create it.");
                 return;
             }
