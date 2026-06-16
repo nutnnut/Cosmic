@@ -1820,6 +1820,36 @@ class BotManagerTest {
         return bot;
     }
 
+    @Test
+    void dangerRetreatGivesUpAfterLoopingSoTheBotIsNeverFrozen() {
+        BotEntry e = new BotEntry(org.mockito.Mockito.mock(Character.class), null, null);
+        long t = 1_000_000L;
+        // Persistent danger (every reachable mob dangerous): retreats at first...
+        assertTrue(BotManager.applyDangerRetreatGiveUp(e, true, t), "retreats while danger persists");
+        assertTrue(BotManager.applyDangerRetreatGiveUp(e, true, t + 1000), "still retreating before the cap");
+        // ...but once the unbroken streak exceeds the cap it GIVES UP (must not loop forever).
+        assertFalse(BotManager.applyDangerRetreatGiveUp(e, true, t + MAX_DANGER_RETREAT_MS_TEST + 1),
+                "gives up after the streak cap so the bot fights instead of freezing");
+        // During the suppression window it keeps fighting even though the mob is still dangerous.
+        assertFalse(BotManager.applyDangerRetreatGiveUp(e, true, t + MAX_DANGER_RETREAT_MS_TEST + 50),
+                "suppressed -> fights through the danger window");
+    }
+
+    @Test
+    void dangerRetreatStreakResetsWhenSafeReached() {
+        BotEntry e = new BotEntry(org.mockito.Mockito.mock(Character.class), null, null);
+        long t = 2_000_000L;
+        assertTrue(BotManager.applyDangerRetreatGiveUp(e, true, t), "retreats on danger");
+        // Reaching a non-dangerous spot clears the streak; a fresh later danger doesn't inherit it.
+        assertFalse(BotManager.applyDangerRetreatGiveUp(e, false, t + 5000),
+                "no danger -> no retreat once the hold lapses");
+        assertTrue(BotManager.applyDangerRetreatGiveUp(e, true, t + 10_000),
+                "new danger after safety retreats fresh (streak was reset)");
+    }
+
+    // Mirror of BotManager.MAX_DANGER_RETREAT_MS for the test (private constant).
+    private static final int MAX_DANGER_RETREAT_MS_TEST = 3500;
+
     private static Field field(Class<?> type, String name) throws Exception {
         Field field = type.getDeclaredField(name);
         field.setAccessible(true);

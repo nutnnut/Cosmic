@@ -1997,6 +1997,11 @@ class BotCombatManager {
         if (bot.getHp() < bot.getMaxHp() * BotManager.cfg.AUTOPOT_HP_THRESH) {
             return false;
         }
+        // Only a fragile bot (small HP pool / out of pots) flees — a stocked/tanky bot trades hits and
+        // grinds. Matches the targeting-penalty gate, and stops well-supplied bots fleeing normal mobs.
+        if (!isFragile(bot)) {
+            return false;
+        }
         return server.bots.combat.BotDangerAssessment.isTouchDangerous(bot, mob, cfg.TOUCH_HITS_TO_KILL);
     }
 

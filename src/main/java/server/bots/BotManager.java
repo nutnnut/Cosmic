@@ -1780,6 +1780,13 @@ public class BotManager {
     // re-engaging tick-to-tick. Distinct from RETREAT_HOLD_MS, which holds the spatial retreat goal.
     private static final int DANGER_RETREAT_HOLD_MS = 1200;
     private static final int DANGER_RETREAT_JITTER_MS = 400;
+    // Anti-freeze give-up: a bot whose every reachable mob is touch-dangerous would otherwise
+    // approach->flee->approive forever and never attack (frozen, esp. solo where mobs don't move).
+    // Cap how long danger-retreat may run UNBROKEN; once exceeded, suppress it and FIGHT for a window
+    // so the bot makes progress (reactive heal/pots are the survival net, the death-loop breaker the
+    // last resort). The streak resets the moment the bot reaches a non-dangerous target/spot.
+    private static final int MAX_DANGER_RETREAT_MS = 3500;
+    private static final int DANGER_RETREAT_SUPPRESS_MS = 12_000;
 
     // AoE reposition commitment: returns the sweet-spot Point to walk to before firing, or null to
     // fire now. Scores once when a commitment starts (BotCombatManager.aoeRepositionTarget); while
@@ -1923,17 +1930,43 @@ public class BotManager {
     private static boolean computeProactiveDangerRetreat(BotEntry entry, Character bot, Monster target, long now) {
         if (target == null || bot == null) {
             entry.dangerRetreatUntilMs = 0L;
+            entry.dangerRetreatStreakStartMs = 0L;
             return false;
         }
-        if (BotCombatManager.shouldProactivelyRetreat(bot, target)) {
+        return applyDangerRetreatGiveUp(entry, BotCombatManager.shouldProactivelyRetreat(bot, target), now);
+    }
+
+    /**
+     * Danger-retreat hold + anti-freeze give-up state machine (pure over {@code entry}+{@code now}).
+     * Returns whether to proactively retreat THIS tick given a danger verdict. While the retreat
+     * keeps re-arming without ever reaching safety (the {@code dangerous} flag stays true past
+     * {@link #MAX_DANGER_RETREAT_MS}), it gives up: suppresses retreat for {@link
+     * #DANGER_RETREAT_SUPPRESS_MS} so the bot FIGHTS instead of looping forever. The streak (and thus
+     * the give-up timer) resets the moment the bot reaches a non-dangerous spot.
+     */
+    static boolean applyDangerRetreatGiveUp(BotEntry entry, boolean dangerous, long now) {
+        if (now < entry.dangerRetreatSuppressUntilMs) {
+            return false; // forced fight window — never freeze
+        }
+        if (dangerous) {
+            if (entry.dangerRetreatStreakStartMs == 0L) {
+                entry.dangerRetreatStreakStartMs = now;
+            } else if (now - entry.dangerRetreatStreakStartMs > MAX_DANGER_RETREAT_MS) {
+                // Fleeing isn't reaching safety (every reachable mob is dangerous): stop looping.
+                entry.dangerRetreatSuppressUntilMs = now + DANGER_RETREAT_SUPPRESS_MS;
+                entry.dangerRetreatStreakStartMs = 0L;
+                entry.dangerRetreatUntilMs = 0L;
+                return false;
+            }
             if (now >= entry.dangerRetreatUntilMs) {
                 entry.dangerRetreatUntilMs = now + DANGER_RETREAT_HOLD_MS
                         + ThreadLocalRandom.current().nextInt(DANGER_RETREAT_JITTER_MS);
             }
             return true;
         }
-        // Mob no longer dangerous (or HP dropped to the reactive band): honor any live hold so a
-        // committed back-off completes, but don't re-arm it.
+        // Reached a non-dangerous spot: clear the streak (legit brief retreats keep working), but
+        // honor any live hold so a committed back-off finishes.
+        entry.dangerRetreatStreakStartMs = 0L;
         return now < entry.dangerRetreatUntilMs;
     }
 
