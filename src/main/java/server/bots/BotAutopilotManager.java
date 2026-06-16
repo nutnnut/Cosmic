@@ -1,6 +1,7 @@
 package server.bots;
 
 import client.Character;
+import constants.id.MapId;
 import client.inventory.WeaponType;
 import server.bots.BotGrindPlanner.MobCandidate;
 import server.bots.BotGrindPlanner.PartyPlan;
@@ -63,7 +64,8 @@ final class BotAutopilotManager {
 
     static Advisor advisor = (entry, bot, fromMapId, maxHops, withFerry) -> {
         BotWorldGraph.RouteOptions options = travelOptions(bot, withFerry);
-        Set<Integer> reachable = BotWorldGraph.reachableWithin(fromMapId, maxHops, options, m -> isAvoided(entry, m));
+        Set<Integer> reachable = BotWorldGraph.reachableWithin(fromMapId, maxHops, options,
+                m -> isAvoided(entry, m) || isDangerRegionBlocked(bot, m));
         return BotGrindAdvisor.recommend(entry, bot, reachable::contains,
                 travelWeight(bot, fromMapId, maxHops, options));
     };
@@ -76,7 +78,8 @@ final class BotAutopilotManager {
 
     static FarmAdvisor farmAdvisor = (entry, bot, itemId, fromMapId, maxHops, withFerry) -> {
         BotWorldGraph.RouteOptions options = travelOptions(bot, withFerry);
-        Set<Integer> reachable = BotWorldGraph.reachableWithin(fromMapId, maxHops, options, m -> isAvoided(entry, m));
+        Set<Integer> reachable = BotWorldGraph.reachableWithin(fromMapId, maxHops, options,
+                m -> isAvoided(entry, m) || isDangerRegionBlocked(bot, m));
         return BotGrindAdvisor.recommendFarmItem(entry, bot, itemId, reachable::contains,
                 travelWeight(bot, fromMapId, maxHops, options));
     };
@@ -91,6 +94,22 @@ final class BotAutopilotManager {
     static boolean isAvoided(BotEntry entry, int mapId) {
         Long until = entry.autopilotAvoidMapUntilMs.get(mapId);
         return until != null && System.currentTimeMillis() < until;
+    }
+
+    // Sleepywood (the Victoria dungeon area: every map id 105######) is a deadly maze a fragile bot
+    // can't walk out of on its own - even real players need a rescue. Hard-block routing INTO any of
+    // it below this level so the planner never sends a low bot there (prevention; the death-loop
+    // breaker still teleports an already-stuck bot out to a hub town).
+    static final int SLEEPYWOOD_REGION_MIN_LEVEL = 15;
+
+    /** True for any map in the Sleepywood / Victoria-dungeon region (map ids 105######). */
+    static boolean isSleepywoodRegion(int mapId) {
+        return mapId / 1_000_000 == 105;
+    }
+
+    /** A region the bot is too low-level to safely traverse — pruned from route planning entirely. */
+    static boolean isDangerRegionBlocked(Character bot, int mapId) {
+        return bot.getLevel() < SLEEPYWOOD_REGION_MIN_LEVEL && isSleepywoodRegion(mapId);
     }
 
     /**
@@ -111,8 +130,14 @@ final class BotAutopilotManager {
         entry.autopilotErrandMapId = -1;
         entry.autopilotDeathStreak = 0;       // gave it an escape; count fresh from here
         reply.accept(entry, "i keep dying getting there - heading to town to find somewhere safer");
+        // Revive at the forced-return town, UNLESS that's itself in a region this bot is walled out of
+        // (e.g. Sleepywood town, reachable only back through the blocked dungeon) or unset - then bail
+        // to Henesys, a real hub from which a low bot has safe local grind spots.
         int town = bot.getMap().getForcedReturnId();
-        return (town > 0 && town != 999999999 && town != bot.getMapId()) ? town : -1; // 999999999 = MapId.NONE
+        boolean unusable = town <= 0 || town == 999999999 // MapId.NONE
+                || town == bot.getMapId()
+                || isDangerRegionBlocked(bot, town);
+        return unusable ? MapId.HENESYS : town;
     }
 
     /** Ferries need the owner's green light ("sail away") while the owner is around; with the
@@ -139,7 +164,8 @@ final class BotAutopilotManager {
                                                     BotWorldGraph.RouteOptions options) {
         IntToLongFunction transportationTime = ms -> bot.getWorldServer().getTransportationTime(ms);
         Map<Integer, Double> seconds = BotTravelCost.floodSeconds(fromMapId, maxHops, options, transportationTime);
-        return mapId -> BotTravelCost.scoreWeight(seconds, mapId);
+        int level = bot.getLevel();
+        return mapId -> BotTravelCost.scoreWeight(seconds, mapId, level);
     }
 
     @FunctionalInterface

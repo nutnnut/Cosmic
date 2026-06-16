@@ -34,6 +34,14 @@ final class BotTravelCost {
     /** Penalty floor: even the far side of the world keeps a quarter of its score. */
     static final double MIN_SCORE_WEIGHT = 0.25;
 
+    /** Below this level the travel penalty is amplified (a fragile bot shouldn't trek across the
+     *  world); at/above it travel is costed normally. */
+    static final int TRAVEL_RISK_LEVEL = 30;
+    /** Multiplier on effective travel time at level 1 — every travel-second feels this many times
+     *  costlier, so a low-level bot strongly prefers nearby grind spots. Eases LINEARLY to 1.0 by
+     *  {@link #TRAVEL_RISK_LEVEL}. */
+    static final double MAX_LOW_LEVEL_TRAVEL_RISK = 4.0;
+
     private BotTravelCost() {}
 
     /** Estimated seconds from one map to every reachable map (production world graph). */
@@ -102,10 +110,29 @@ final class BotTravelCost {
     }
 
     /** The travel penalty for a candidate map: multiply its score by this. Maps missing from
-     *  the flood (unreachable under these options) get the floor. */
+     *  the flood (unreachable under these options) get the floor. Level-neutral. */
     static double scoreWeight(Map<Integer, Double> travelSeconds, int mapId) {
+        return scoreWeight(travelSeconds, mapId, TRAVEL_RISK_LEVEL);
+    }
+
+    /** Level-scaled travel penalty: a low-level bot treats every travel-second as
+     *  {@link #travelRiskFactor} times costlier, so it prefers nearby grind spots and won't trek
+     *  across the world while fragile. Eases LINEARLY to the level-neutral cost by
+     *  {@link #TRAVEL_RISK_LEVEL}. */
+    static double scoreWeight(Map<Integer, Double> travelSeconds, int mapId, int botLevel) {
         Double s = travelSeconds.get(mapId);
         double sec = s != null ? s : HORIZON_SECONDS;
-        return Math.max(MIN_SCORE_WEIGHT, 1.0 - sec / HORIZON_SECONDS);
+        double effectiveSec = sec * travelRiskFactor(botLevel);
+        return Math.max(MIN_SCORE_WEIGHT, 1.0 - effectiveSec / HORIZON_SECONDS);
+    }
+
+    /** Linear travel-risk multiplier: {@link #MAX_LOW_LEVEL_TRAVEL_RISK} at level 1, easing straight
+     *  down to 1.0 at {@link #TRAVEL_RISK_LEVEL} and staying 1.0 above it. */
+    static double travelRiskFactor(int botLevel) {
+        if (botLevel >= TRAVEL_RISK_LEVEL) {
+            return 1.0;
+        }
+        double belowFrac = (TRAVEL_RISK_LEVEL - botLevel) / (double) TRAVEL_RISK_LEVEL;
+        return 1.0 + belowFrac * (MAX_LOW_LEVEL_TRAVEL_RISK - 1.0);
     }
 }
