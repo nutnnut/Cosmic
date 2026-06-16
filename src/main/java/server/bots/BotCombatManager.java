@@ -185,6 +185,18 @@ class BotCombatManager {
         // Mob damage
         public int   MOB_TOUCH_SWEEP_HEIGHT = 50;
         public int   MOB_HIT_COOLDOWN_MS = 1500;
+
+        // Self-preservation (combat-side). A mob is "touch-dangerous" if its worst-case contact hit
+        // would kill the bot in TOUCH_HITS_TO_KILL or fewer hits (BotDangerAssessment, SSOT touch-dmg
+        // roll). Two consumers, kept non-redundant:
+        //  - target selection: a fragile bot (low HP pool / out of HP pots) adds TOUCH_DANGER_PENALTY
+        //    to a dangerous mob's score so it prefers safer mobs, but still fights if nothing safer.
+        //  - proactive retreat: a healthy bot disengages a touch-dangerous mob before it ever drops
+        //    to the reactive heal threshold (BotManager).
+        public int   TOUCH_HITS_TO_KILL = 3;     // lower = more cautious; !botcfg-tunable
+        public long  TOUCH_DANGER_PENALTY = 1500L; // soft scorer penalty (~ the cross-foothold penalty)
+        public int   TOUCH_FRAGILE_MAXHP = 600;  // below this max-HP a bot counts as fragile for targeting
+        public boolean PROACTIVE_RETREAT_ENABLED = true;
         // Time between dying and clicking "OK" on the revive dialog, like a player would.
         // The walk back from town replaces the old long respawn-in-place wait.
         public long  BOT_DEAD_MS      = 5_000L;
@@ -1806,7 +1818,8 @@ class BotCombatManager {
         for (Monster candidate : candidates) {
             long localScore = grindTargetScore(bot, botPos, botFoothold, candidate)
                     - aoeClusterBonus(entry, candidate, candidates)
-                    - questTargetBonus(entry, candidate);
+                    - questTargetBonus(entry, candidate)
+                    + touchDangerPenalty(entry, bot, candidate);
             scoredTargets.add(new ScoredGrindTarget(candidate, localScore, localScore,
                     candidate.getPosition().distanceSq(botPos)));
         }
@@ -1830,7 +1843,8 @@ class BotCombatManager {
 
             long localScore = grindTargetScore(bot, botPos, botFoothold, candidate)
                     - aoeClusterBonus(entry, candidate, candidates)
-                    - questTargetBonus(entry, candidate);
+                    - questTargetBonus(entry, candidate)
+                    + touchDangerPenalty(entry, bot, candidate);
             GrindTargetGroup group = groupsByRegionId.computeIfAbsent(targetRegionId, GrindTargetGroup::new);
             group.add(candidate, localScore, targetPos.distanceSq(botPos));
         }
@@ -1952,6 +1966,47 @@ class BotCombatManager {
         java.util.Set<Integer> needed = entry.activeQuestMobIds;
         return (needed != null && !needed.isEmpty() && needed.contains(target.getId()))
                 ? QUEST_TARGET_BONUS : 0L;
+    }
+
+    // Touch-danger penalty (self-preservation, combat-side). ADDED to localScore (raise = worse,
+    // lower wins) — mirrors how aoeClusterBonus / questTargetBonus are SUBTRACTED, composing cleanly
+    // with them. Only a *fragile* bot pays it, and only on a touch-dangerous mob, so a geared bot's
+    // selection is unchanged. Kept SOFT (a single foothold-sized bump, not a hard skip) so a fragile
+    // bot still picks the least-bad mob when everything nearby is dangerous — the travel layer and
+    // death-loop breaker are the backstops against being stranded somewhere lethal.
+    static long touchDangerPenalty(BotEntry entry, Character bot, Monster target) {
+        if (target == null || bot == null || !cfg.PROACTIVE_RETREAT_ENABLED || !isFragile(bot)) {
+            return 0L;
+        }
+        return server.bots.combat.BotDangerAssessment.isTouchDangerous(bot, target, cfg.TOUCH_HITS_TO_KILL)
+                ? cfg.TOUCH_DANGER_PENALTY : 0L;
+    }
+
+    /**
+     * Proactive-retreat verdict (self-preservation, combat-side): disengage a touch-dangerous mob
+     * while HP is still HEALTHY — earlier and danger-driven, distinct from the reactive low-HP
+     * potion/heal path (HP &lt; AUTOPOT_HP_THRESH). When HP has already dropped to/below the reactive
+     * threshold we defer to that path (heal, don't add a competing retreat). The caller wires this
+     * into the existing retreat/re-spacing machinery; this only decides whether to retreat.
+     */
+    static boolean shouldProactivelyRetreat(Character bot, Monster mob) {
+        if (!cfg.PROACTIVE_RETREAT_ENABLED || bot == null || mob == null) {
+            return false;
+        }
+        // Healthy = above the reactive heal threshold. Below it, the reactive layer owns the response.
+        if (bot.getHp() < bot.getMaxHp() * BotManager.cfg.AUTOPOT_HP_THRESH) {
+            return false;
+        }
+        return server.bots.combat.BotDangerAssessment.isTouchDangerous(bot, mob, cfg.TOUCH_HITS_TO_KILL);
+    }
+
+    /** A bot is fragile (and should weigh touch danger in targeting) when its HP pool is small or it
+     *  is out of HP potions — i.e. it can't trade hits. Geared/stocked bots ignore the penalty. */
+    private static boolean isFragile(Character bot) {
+        if (bot.getMaxHp() <= cfg.TOUCH_FRAGILE_MAXHP) {
+            return true;
+        }
+        return BotPotionManager.countPotions(bot)[0] < BotManager.cfg.POT_STOP;
     }
 
     private static long aoeClusterBonus(BotEntry entry, Monster target, List<Monster> candidates) {

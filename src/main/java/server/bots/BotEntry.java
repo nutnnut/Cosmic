@@ -140,6 +140,7 @@ public class BotEntry {
     boolean degenAttackDone = false; // force retreat after an accidental close-range hit
     long retreatHoldUntilMs = 0L; // hysteresis: lock the local retreat goal for a short window
     Point retreatHoldPos = null;  // the locked retreat target — reused while hold is active
+    long dangerRetreatUntilMs = 0L; // proactive self-preservation: keep disengaging a touch-dangerous mob until this expires (anti-flip-flop)
     int breakoutDirection = 0;    // -1/+1 committed escape side while surrounded, 0 = not breaking out
     long breakoutUntilMs = 0L;    // hard safety timeout for the surround-breakout commitment
     Point aoeRepositionAnchor = null; // committed AoE sweet-spot to walk to before firing, null = not repositioning

@@ -1775,6 +1775,11 @@ public class BotManager {
 
     private static final int RETREAT_HOLD_MS = 600;
     private static final int RETREAT_ARRIVAL_TOLERANCE_X = 25; // 50ms tick can't land on an exact pixel
+    // Proactive danger-retreat hold: once a healthy bot decides a mob is too touch-dangerous, keep
+    // disengaging for at least this long (jittered) so it doesn't flip-flop between fleeing and
+    // re-engaging tick-to-tick. Distinct from RETREAT_HOLD_MS, which holds the spatial retreat goal.
+    private static final int DANGER_RETREAT_HOLD_MS = 1200;
+    private static final int DANGER_RETREAT_JITTER_MS = 400;
 
     // AoE reposition commitment: returns the sweet-spot Point to walk to before firing, or null to
     // fire now. Scores once when a commitment starts (BotCombatManager.aoeRepositionTarget); while
@@ -1803,13 +1808,21 @@ public class BotManager {
     }
 
     static Point selectGrindNavigationTarget(BotEntry entry, Point botPos, Point combatTargetPos) {
-        return selectGrindNavigationTarget(entry, botPos, combatTargetPos, false);
+        return selectGrindNavigationTarget(entry, botPos, combatTargetPos, false, false);
     }
 
     private static Point selectGrindNavigationTarget(BotEntry entry,
                                                      Point botPos,
                                                      Point combatTargetPos,
                                                      boolean crossRegionRetreatChecked) {
+        return selectGrindNavigationTarget(entry, botPos, combatTargetPos, crossRegionRetreatChecked, false);
+    }
+
+    private static Point selectGrindNavigationTarget(BotEntry entry,
+                                                     Point botPos,
+                                                     Point combatTargetPos,
+                                                     boolean crossRegionRetreatChecked,
+                                                     boolean forceRetreat) {
         if (entry == null || botPos == null || combatTargetPos == null) {
             return combatTargetPos;
         }
@@ -1820,7 +1833,10 @@ public class BotManager {
         }
 
         long now = System.currentTimeMillis();
-        boolean retreatNeeded = BotAttackExecutionProvider.shouldRetreatFromNearbyTarget(
+        // forceRetreat (proactive danger-retreat) makes the bot back off even when it isn't yet
+        // inside the spatial ranged-spacing band — the mob is dangerous on contact, so distance is
+        // worth opening regardless of the normal spacing heuristic.
+        boolean retreatNeeded = forceRetreat || BotAttackExecutionProvider.shouldRetreatFromNearbyTarget(
                 BotAttackExecutionProvider.getEquippedWeaponType(bot), botPos, combatTargetPos);
 
         // Surround-breakout commitment: once pincered, keep bursting the SAME way until the
@@ -1893,6 +1909,32 @@ public class BotManager {
 
     private static Point breakoutStep(Point botPos, int dir) {
         return new Point(botPos.x + dir * BotCombatManager.cfg.RANGED_RETREAT_DISTANCE_X, botPos.y);
+    }
+
+    /**
+     * Proactive self-preservation: decide whether to disengage a touch-dangerous mob this tick.
+     * Fires only while HP is still healthy (the reactive heal path owns low-HP), so it is danger-
+     * driven and earlier than the 40%/autopot path — a distinct layer. Held with a jittered window
+     * (anti-flip-flop hysteresis, humanlike) once committed: while the hold is live the bot keeps
+     * disengaging even if the mob momentarily looks survivable, and the window only re-arms while
+     * the mob is still dangerous. Does no movement itself — the caller wires the verdict into the
+     * existing retreat machinery.
+     */
+    private static boolean computeProactiveDangerRetreat(BotEntry entry, Character bot, Monster target, long now) {
+        if (target == null || bot == null) {
+            entry.dangerRetreatUntilMs = 0L;
+            return false;
+        }
+        if (BotCombatManager.shouldProactivelyRetreat(bot, target)) {
+            if (now >= entry.dangerRetreatUntilMs) {
+                entry.dangerRetreatUntilMs = now + DANGER_RETREAT_HOLD_MS
+                        + ThreadLocalRandom.current().nextInt(DANGER_RETREAT_JITTER_MS);
+            }
+            return true;
+        }
+        // Mob no longer dangerous (or HP dropped to the reactive band): honor any live hold so a
+        // committed back-off completes, but don't re-arm it.
+        return now < entry.dangerRetreatUntilMs;
     }
 
     /**
@@ -2867,9 +2909,17 @@ public class BotManager {
             attackPlan = BotCombatManager.planAttack(entry, bot, target);
         }
         WeaponType grindWeaponType = BotAttackExecutionProvider.getEquippedWeaponType(bot);
+        // Proactive self-preservation: while HP is still healthy, disengage a touch-dangerous mob
+        // instead of trading hits with it (the reactive heal path owns the low-HP response). Held
+        // with jittered hysteresis so the bot commits to backing off rather than flip-flopping.
+        // Drives BOTH the attack gate (stop firing/swinging) and the retreat positioning below,
+        // reusing the existing retreat/re-spacing machinery rather than new movement code.
+        boolean proactiveDangerRetreat = computeProactiveDangerRetreat(entry, bot, target, now);
         boolean targetInDegenerateBand = BotAttackExecutionProvider.shouldDegenerateRangedAttack(grindWeaponType, botPos, tp);
-        boolean allowOneDegenerateAttack = targetInDegenerateBand && !entry.degenAttackDone && rangedPriorityTarget == null;
-        boolean shouldRetreatForRangedSpacing = entry.degenAttackDone
+        boolean allowOneDegenerateAttack = targetInDegenerateBand && !entry.degenAttackDone && rangedPriorityTarget == null
+                && !proactiveDangerRetreat;
+        boolean shouldRetreatForRangedSpacing = proactiveDangerRetreat
+                || entry.degenAttackDone
                 || (BotAttackExecutionProvider.shouldRetreatFromNearbyTarget(grindWeaponType, botPos, tp)
                 && !allowOneDegenerateAttack);
         // Opportunity attack: keep firing during retreat as long as the shot would land
@@ -2877,7 +2927,10 @@ public class BotManager {
         // there would re-trigger degenAttackDone and extend the retreat indefinitely.
         boolean canFireWithoutDegen = grindWeaponType == null
                 || !BotAttackExecutionProvider.shouldDegenerateRangedAttack(grindWeaponType, botPos, tp);
-        boolean attackGateOpen = !shouldRetreatForRangedSpacing || canFireWithoutDegen || allowOneDegenerateAttack;
+        // A proactive danger-retreat hard-closes the gate: continuing to fire/swing keeps the bot in
+        // contact range trading touch damage, which is exactly what we are disengaging from.
+        boolean attackGateOpen = !proactiveDangerRetreat
+                && (!shouldRetreatForRangedSpacing || canFireWithoutDegen || allowOneDegenerateAttack);
         // Sticky cross-region retreat: pre-compute so an opportunity attack doesn't stall
         // the traversal — bot fires AND keeps walking toward the safe vantage in the same tick.
         Point crossRegionRetreatPos = shouldRetreatForRangedSpacing
@@ -2942,7 +2995,7 @@ public class BotManager {
                 ? crossRegionRetreatPos
                 : aoeRepositionPos != null
                 ? selectGrindNavigationTarget(entry, botPos, aoeRepositionPos)
-                : selectGrindNavigationTarget(entry, botPos, tp, shouldRetreatForRangedSpacing);
+                : selectGrindNavigationTarget(entry, botPos, tp, shouldRetreatForRangedSpacing, proactiveDangerRetreat);
         // Clear only once the bot has physically left the retreat zone, not after the
         // first retreat tick — otherwise the flag resets while the bot is still overlapping
         // and allowOneDegenerateAttack re-opens the attack gate next tick.
