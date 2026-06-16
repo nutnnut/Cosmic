@@ -5,6 +5,7 @@ import config.YamlConfig;
 import client.Character;
 import client.Client;
 import client.Disease;
+import client.Job;
 import client.QuestStatus;
 import client.inventory.InventoryType;
 import client.inventory.Item;
@@ -36,6 +37,7 @@ import tools.Pair;
 import java.awt.*;
 import java.sql.SQLException;
 import java.util.ArrayList;
+import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -123,6 +125,12 @@ public class BotManager {
         // in NX-equivalent units) must clear this for the bot to make the trip - otherwise it hoards
         // the NX for a better/closer pool. Positive so the pull must beat its own ticket cost.
         public double GACHA_MIN_NET_EV = 50.0;
+
+        // Autonomous (ownerless) 1st-job pick weights (BotBuildManager.pickWeightedJob). Relative
+        // weights across the five explorer classes; uniform by default. A class absent from the map
+        // is treated as weight 1. 2nd-job picks are uniform among the branch's options (no knob).
+        public Map<Job, Integer> JOB_WEIGHTS = new EnumMap<>(Map.of(
+                Job.WARRIOR, 1, Job.MAGICIAN, 1, Job.BOWMAN, 1, Job.THIEF, 1, Job.PIRATE, 1));
 
     }
 
@@ -375,6 +383,33 @@ public class BotManager {
                 log.warn("Failed to load bot character '{}' for owner '{}'", botName, owner.getName(), e);
                 return SpawnResult.fail("Failed to load bot character '" + botName + "'.");
             }
+        }
+    }
+
+    /**
+     * Spawn an offline bot character as a SELF-OWNED autopilot bot (runtime owner == the bot) and
+     * immediately kick it into solo autopilot. Unlike {@link #spawnBotForOwner} (which follows a
+     * human owner), this is the launch path for ownerless bots: nothing else would ever issue a play
+     * command, so it auto-starts the same independent-play autopilot the {@code @botme} takeover uses.
+     */
+    public SpawnResult spawnOwnerlessBot(Character requester, String botName) {
+        BotOwnershipService ownershipService = BotOwnershipService.getInstance();
+        BotOwnershipService.ResolvedCharacter resolved = ownershipService.resolveCharacterByName(botName);
+        if (resolved == null) {
+            return SpawnResult.fail("No character named '" + botName + "' exists.");
+        }
+        if (resolved.isOnline()) {
+            return SpawnResult.fail("'" + botName + "' is already online.");
+        }
+        try {
+            Character botChar = loadOfflineBot(resolved.id(),
+                    requester.getClient().getWorld(), requester.getClient().getChannel());
+            BotEntry entry = registerSpawnedBot(botChar.getId(), botChar, botChar); // self-owned: owner == bot
+            startTakeoverAutopilot(entry, botChar); // no owner to command it - auto-start solo autopilot
+            return SpawnResult.ok(botChar, false);
+        } catch (SQLException e) {
+            log.warn("Failed to load ownerless bot character '{}'", botName, e);
+            return SpawnResult.fail("Failed to load bot character '" + botName + "'.");
         }
     }
 

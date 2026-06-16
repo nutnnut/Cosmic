@@ -34,6 +34,81 @@ import static org.mockito.Mockito.when;
 
 class BotEquipManagerTest {
 
+    // ---- recommendSecondaryTarget / chooseSecondaryTarget (autonomous AP build) ----------------
+    // floors/base/gear are int[4] indexed [STR, DEX, INT, LUK]. Warrior: primary STR ('s'),
+    // secondary DEX ('d'). cycleMs 0 keeps DPS == raw so the arithmetic is exact in assertions.
+
+    private static BotEquipManager.WeaponCand sword(int reqDex, int watk) {
+        return new BotEquipManager.WeaponCand(reqDex, watk, WeaponType.SWORD1H, 0);
+    }
+
+    @Test
+    void chooseSecondaryTargetStaysAtFloorWhenGearCoversRequirement() {
+        int[] floors = {4, 4, 4, 4};
+        int[] base = {4, 4, 4, 4};
+        int[] gear = {0, 30, 0, 0}; // +30 DEX from gear
+        // Weapon needs 20 DEX; gear alone covers it -> no AP into DEX -> near-pure.
+        int target = BotEquipManager.chooseSecondaryTarget(Job.WARRIOR, 's', 'd', 4,
+                floors, base, gear, 50, List.of(sword(20, 100)), 0);
+        assertEquals(4, target);
+    }
+
+    @Test
+    void chooseSecondaryTargetRaisesToRequirementMinusGearWhenGearIsShort() {
+        int[] floors = {4, 4, 4, 4};
+        int[] base = {4, 4, 4, 4};
+        int[] gear = {0, 10, 0, 0}; // +10 DEX from gear
+        // Weapon needs 40 DEX; gear supplies 10 -> AP must cover the remaining 30.
+        int target = BotEquipManager.chooseSecondaryTarget(Job.WARRIOR, 's', 'd', 4,
+                floors, base, gear, 100, List.of(sword(40, 100)), 0);
+        assertEquals(30, target);
+    }
+
+    @Test
+    void chooseSecondaryTargetKeepsFloorWhenWeaponUpgradeIsNotWorthTheApLoss() {
+        int[] floors = {4, 4, 4, 4};
+        int[] base = {4, 4, 4, 4};
+        int[] gear = {0, 0, 0, 0};
+        // Cheap weapon (no extra DEX) vs a 80-DEX weapon with only a tiny WATK bump: the AP lost
+        // from STR to fund 76 DEX outweighs the WATK gain, so the bot stays pure on the cheap one.
+        int target = BotEquipManager.chooseSecondaryTarget(Job.WARRIOR, 's', 'd', 4,
+                floors, base, gear, 100, List.of(sword(4, 100), sword(80, 105)), 0);
+        assertEquals(4, target);
+    }
+
+    @Test
+    void chooseSecondaryTargetInvestsSecondaryWhenWeaponUpgradeIsWorthIt() {
+        int[] floors = {4, 4, 4, 4};
+        int[] base = {4, 4, 4, 4};
+        int[] gear = {0, 0, 0, 0};
+        // Cheap weak weapon vs a 30-DEX weapon with a large WATK jump: paying 26 AP into DEX wins.
+        int target = BotEquipManager.chooseSecondaryTarget(Job.WARRIOR, 's', 'd', 4,
+                floors, base, gear, 100, List.of(sword(4, 50), sword(30, 300)), 0);
+        assertEquals(30, target);
+    }
+
+    @Test
+    void chooseSecondaryTargetNeverStrandsTheEquippedWeapon() {
+        int[] floors = {4, 4, 4, 4};
+        int[] base = {4, 4, 4, 4};
+        int[] gear = {0, 0, 0, 0};
+        // Best candidate needs no DEX, but the currently-equipped weapon needs 50 DEX: the target
+        // is floored at the equipped requirement so reallocation doesn't unequip the worn weapon.
+        int target = BotEquipManager.chooseSecondaryTarget(Job.WARRIOR, 's', 'd', 4,
+                floors, base, gear, 200, List.of(sword(4, 200)), 50);
+        assertEquals(50, target);
+    }
+
+    @Test
+    void chooseSecondaryTargetFallsBackToFloorWithNoCandidates() {
+        int[] floors = {4, 4, 4, 4};
+        int[] base = {4, 4, 4, 4};
+        int[] gear = {0, 0, 0, 0};
+        int target = BotEquipManager.chooseSecondaryTarget(Job.WARRIOR, 's', 'd', 4,
+                floors, base, gear, 100, List.of(), 0);
+        assertEquals(4, target);
+    }
+
     @Test
     void firstJobBowmanAcceptsBowAndCrossbowOnly() {
         Character bot = mock(Character.class);

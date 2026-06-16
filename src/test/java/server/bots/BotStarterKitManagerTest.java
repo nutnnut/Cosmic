@@ -84,6 +84,30 @@ class BotStarterKitManagerTest {
     }
 
     @Test
+    void firstJobChoicesAreTheFiveExplorerClasses() {
+        assertEquals(List.of(Job.WARRIOR, Job.MAGICIAN, Job.BOWMAN, Job.THIEF, Job.PIRATE),
+                BotStarterKitManager.firstJobChoices());
+    }
+
+    @Test
+    void secondJobChoicesMirrorEachBranchOptionSet() {
+        assertEquals(List.of(Job.FIGHTER, Job.PAGE, Job.SPEARMAN),
+                BotStarterKitManager.secondJobChoices(Job.WARRIOR));
+        assertEquals(List.of(Job.FP_WIZARD, Job.IL_WIZARD, Job.CLERIC),
+                BotStarterKitManager.secondJobChoices(Job.MAGICIAN));
+        assertEquals(List.of(Job.HUNTER, Job.CROSSBOWMAN),
+                BotStarterKitManager.secondJobChoices(Job.BOWMAN));
+        assertEquals(List.of(Job.ASSASSIN, Job.BANDIT),
+                BotStarterKitManager.secondJobChoices(Job.THIEF));
+        assertEquals(List.of(Job.BRAWLER, Job.GUNSLINGER),
+                BotStarterKitManager.secondJobChoices(Job.PIRATE));
+        // No 2nd-job topology for a non-1st-job (or null) -> empty, so the picker falls back.
+        assertTrue(BotStarterKitManager.secondJobChoices(Job.BEGINNER).isEmpty());
+        assertTrue(BotStarterKitManager.secondJobChoices(Job.FIGHTER).isEmpty());
+        assertTrue(BotStarterKitManager.secondJobChoices(null).isEmpty());
+    }
+
+    @Test
     void shouldOnlyGrantKitsForBeginnerToFirstJobAdvancements() {
         assertTrue(BotStarterKitManager.isFirstJobAdvancement(Job.BEGINNER, Job.WARRIOR));
         assertTrue(BotStarterKitManager.isFirstJobAdvancement(Job.BEGINNER, Job.MAGICIAN));

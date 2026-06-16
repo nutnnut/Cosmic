@@ -34,14 +34,17 @@ public class SpawnBotCommand extends Command {
         BotManager botManager = BotManager.getInstance();
         BotOwnershipService ownershipService = BotOwnershipService.getInstance();
         if (params.length < 1) {
-            player.yellowMessage("Syntax: @spawnbot <name> [confirm]");
+            player.yellowMessage("Syntax: @spawnbot <name> [confirm] [autopilot]");
             return;
         }
 
         // params are lowercased by CommandsExecutor; use lastCommandMessage to preserve casing
         String[] rawArgs = player.getLastCommandMessage().trim().split("[ ]", 2);
         String botName = rawArgs[0];
-        boolean createRequested = params.length >= 2 && params[1].equals("confirm");
+        boolean createRequested = hasFlag(params, "confirm");
+        // "autopilot": spawn it self-owned and playing on its own (no human owner), instead of
+        // following the spawner. This is the launch path for ownerless/supervised bots.
+        boolean ownerless = hasFlag(params, "autopilot");
 
         BotOwnershipService.ResolvedCharacter bot = ownershipService.resolveCharacterByName(botName);
         if (bot == null) {
@@ -79,9 +82,15 @@ public class SpawnBotCommand extends Command {
             }
         }
 
-        BotManager.SpawnResult result = botManager.spawnBotForOwner(player, botName);
+        BotManager.SpawnResult result = ownerless
+                ? botManager.spawnOwnerlessBot(player, botName)
+                : botManager.spawnBotForOwner(player, botName);
         if (!result.success()) {
             player.yellowMessage(result.errorMessage());
+            return;
+        }
+        if (ownerless) {
+            player.yellowMessage("Bot '" + result.bot().getName() + "' spawned as a self-owned autopilot bot - it'll play on its own.");
             return;
         }
         joinBotToPlayerParty(player, result.bot());
@@ -89,6 +98,15 @@ public class SpawnBotCommand extends Command {
             player.yellowMessage("Bot '" + result.bot().getName() + "' auto-registered to " + player.getName() + " because it is on the same account.");
         }
         player.yellowMessage("Bot '" + result.bot().getName() + "' spawned. Say 'follow me' or 'stop' to control it.");
+    }
+
+    private static boolean hasFlag(String[] params, String flag) {
+        for (int i = 1; i < params.length; i++) {
+            if (flag.equals(params[i])) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private void joinBotToPlayerParty(Character player, Character bot) {

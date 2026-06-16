@@ -87,6 +87,30 @@ final class BotStarterKitManager {
         return isThird ? Job.getById(id + 1) : null;
     }
 
+    // Job-topology SSOT for the autonomous (ownerless) job picker in BotBuildManager. Unlike the
+    // deterministic 3rd/4th successors above, the 1st and 2nd advancements are real choices, so
+    // these mirror the option sets the owner is offered in BotBuildManager.buildJobPrompt.
+
+    /** The five explorer 1st-job classes an ownerless Beginner can advance into at lv10. */
+    static List<Job> firstJobChoices() {
+        return List.of(Job.WARRIOR, Job.MAGICIAN, Job.BOWMAN, Job.THIEF, Job.PIRATE);
+    }
+
+    /** The 2nd-job options for an explorer 1st job (lv30 choice), or empty for anything else. */
+    static List<Job> secondJobChoices(Job firstJob) {
+        if (firstJob == null) {
+            return List.of();
+        }
+        return switch (firstJob) {
+            case WARRIOR -> List.of(Job.FIGHTER, Job.PAGE, Job.SPEARMAN);
+            case MAGICIAN -> List.of(Job.FP_WIZARD, Job.IL_WIZARD, Job.CLERIC);
+            case BOWMAN -> List.of(Job.HUNTER, Job.CROSSBOWMAN);
+            case THIEF -> List.of(Job.ASSASSIN, Job.BANDIT);
+            case PIRATE -> List.of(Job.BRAWLER, Job.GUNSLINGER);
+            default -> List.of();
+        };
+    }
+
     private static void grantStarterKitIfEligible(Character bot, Job oldJob, Job newJob) {
         if (!isFirstJobAdvancement(oldJob, newJob)) {
             return;

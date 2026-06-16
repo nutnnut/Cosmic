@@ -4,6 +4,8 @@ import client.Character;
 import client.Job;
 import client.Skill;
 import client.SkillFactory;
+import client.Stat;
+import client.processor.stat.AssignAPProcessor;
 import constants.game.GameConstants;
 import constants.skills.Archer;
 import constants.skills.Bishop;
@@ -12,6 +14,7 @@ import constants.skills.Rogue;
 import constants.skills.Warrior;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -20,6 +23,7 @@ import org.mockito.MockedStatic;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyByte;
@@ -422,6 +426,88 @@ class BotBuildManagerTest {
         assertEquals(4, intStat.get());
         assertEquals(131, luk.get());
         assertEquals(0, remainingAp.get());
+    }
+
+    // ---- autonomous (ownerless) job picker + AP resolver ---------------------------------------
+
+    @Test
+    void weightedPickHonorsZeroWeightsDeterministically() {
+        List<Job> choices = List.of(Job.WARRIOR, Job.MAGICIAN);
+        // A weight of 0 is never chosen while another option has a positive weight.
+        assertEquals(Job.WARRIOR,
+                BotBuildManager.weightedPick(choices, Map.of(Job.WARRIOR, 1, Job.MAGICIAN, 0)));
+        assertEquals(Job.MAGICIAN,
+                BotBuildManager.weightedPick(choices, Map.of(Job.WARRIOR, 0, Job.MAGICIAN, 1)));
+    }
+
+    @Test
+    void pickWeightedJobReturnsValidFirstAndSecondJobs() {
+        assertTrue(List.of(Job.FIGHTER, Job.PAGE, Job.SPEARMAN)
+                .contains(BotBuildManager.pickWeightedJob(Job.WARRIOR)));
+        assertTrue(List.of(Job.ASSASSIN, Job.BANDIT)
+                .contains(BotBuildManager.pickWeightedJob(Job.THIEF)));
+    }
+
+    @Test
+    void pickWeightedJobNeverPicksAClassItCannotBuild() {
+        // PIRATE has no AP/SP build, so an ownerless bot must never roll into it (it would bank
+        // AP/SP forever). Only the four buildable explorer classes are eligible.
+        List<Job> buildable = List.of(Job.WARRIOR, Job.MAGICIAN, Job.BOWMAN, Job.THIEF);
+        for (int i = 0; i < 200; i++) {
+            assertTrue(buildable.contains(BotBuildManager.pickWeightedJob(Job.BEGINNER)));
+        }
+    }
+
+    @Test
+    void resolveApBuildForMageParksSecondaryAtFloor() {
+        Character bot = mock(Character.class);
+        BotEntry entry = new BotEntry(bot, mock(Character.class), mock(ScheduledFuture.class));
+        when(bot.getJob()).thenReturn(Job.MAGICIAN);
+
+        BotBuildManager.ApBuild build = BotBuildManager.resolveApBuild(entry, bot);
+
+        // Mage damage and wand/staff reqs ignore LUK, so the secondary stays parked at the job floor.
+        assertEquals(BotBuildManager.StatType.INT, build.primaryStat);
+        assertEquals(BotBuildManager.StatType.LUK, build.secondaryStat);
+        assertEquals(AssignAPProcessor.getMinStatFloor(Job.MAGICIAN, Stat.LUK), build.secondaryTarget);
+    }
+
+    @Test
+    void ownerlessWarriorResolvesApBuildInsteadOfPrompting() {
+        Character bot = mock(Character.class);
+        BotEntry entry = new BotEntry(bot, bot, mock(ScheduledFuture.class)); // self-owned: owner == bot
+        when(bot.getJob()).thenReturn(Job.WARRIOR);
+        when(bot.getRemainingAp()).thenReturn(5);
+
+        try (MockedStatic<BotManager> bm = mockStatic(BotManager.class)) {
+            bm.when(() -> BotManager.isAutopilotActive(entry)).thenReturn(true);
+            bm.when(() -> BotManager.hasOnlinePlayerOwner(entry)).thenReturn(false);
+            // cfg is a static field (untouched by mockStatic); inventory/WZ is absent so the resolver
+            // falls back to the DEX floor (pure) rather than throwing.
+            assertNull(BotBuildManager.buildApPrompt(entry, bot)); // no owner prompt: resolved autonomously
+        }
+
+        assertEquals(BotBuildManager.StatType.STR, entry.apBuild.primaryStat);
+        assertEquals(BotBuildManager.StatType.DEX, entry.apBuild.secondaryStat);
+        assertEquals(AssignAPProcessor.getMinStatFloor(Job.WARRIOR, Stat.DEX), entry.apBuild.secondaryTarget);
+    }
+
+    @Test
+    void ownerlessBeginnerAutoAdvancesAtLevel10InsteadOfPrompting() {
+        Character bot = mock(Character.class);
+        BotEntry entry = new BotEntry(bot, bot, mock(ScheduledFuture.class)); // self-owned: owner == bot
+        when(bot.getJob()).thenReturn(Job.BEGINNER);
+        when(bot.getLevel()).thenReturn(10);
+
+        try (MockedStatic<BotManager> bm = mockStatic(BotManager.class)) {
+            bm.when(() -> BotManager.isAutopilotActive(entry)).thenReturn(true);
+            bm.when(() -> BotManager.hasOnlinePlayerOwner(entry)).thenReturn(false);
+            // BotManager.after/randMs default to no-op under mockStatic, so scheduleAutoAdvance does
+            // not run the deferred advance here; we assert the branch was taken, not the advance itself.
+            assertNull(BotBuildManager.buildJobPrompt(entry, bot)); // no owner prompt: advance scheduled
+        }
+
+        assertEquals(10, entry.jobPromptSent);
     }
 
     private static void stubSkillState(Character bot, int[] remainingSps, Map<Integer, Integer> skillLevels) {

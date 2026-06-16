@@ -1187,7 +1187,8 @@ final class BotScrollManager {
     }
 
     // [main, secondary] stat codes; mageOut[0] set true for magician branches.
-    private static char[] mainSecondary(int jobId, boolean[] mageOut) {
+    // Package-private: also the job->stat SSOT for BotBuildManager.resolveApBuild (autonomous AP).
+    static char[] mainSecondary(int jobId, boolean[] mageOut) {
         boolean mage = (jobId >= 200 && jobId < 300) || (jobId >= 1200 && jobId < 1300)
                 || jobId == 2001 || (jobId >= 2200 && jobId < 2300);
         mageOut[0] = mage;

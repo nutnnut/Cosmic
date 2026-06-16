@@ -10,6 +10,7 @@ import constants.game.GameConstants;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ThreadLocalRandom;
 import server.bots.build.BowmanBuilds;
 import server.bots.build.BuildStep;
 import server.bots.build.MageBuilds;
@@ -56,6 +57,10 @@ class BotBuildManager {
         String prompt = apPromptForJob(bot.getJob());
         if (prompt == null) return null;
         if (entry.apBuild != null || entry.apPromptSent || bot.getRemainingAp() < 1) return null;
+        if (isOwnerless(entry)) {
+            maybeRecomputeAutonomousApBuild(entry, bot); // resolve + assign autonomously, no owner prompt
+            return null;
+        }
         return requestApBuildPrompt(entry, bot);
     }
 
@@ -114,6 +119,7 @@ class BotBuildManager {
         }
 
         autoAssignSp(entry, bot);
+        maybeRecomputeAutonomousApBuild(entry, bot);
         autoAssignAp(entry, bot);
     }
 
@@ -131,6 +137,109 @@ class BotBuildManager {
         return true;
     }
 
+    /** True for a bot playing autonomously with no online player to answer choice prompts: a
+     *  self-owned (@botme) bot, or an autopilot bot whose owner is offline. These resolve job/AP/SP
+     *  choices themselves instead of waiting on owner chat. Supervised + owner-online bots are unaffected. */
+    private static boolean isOwnerless(BotEntry entry) {
+        return BotManager.isAutopilotActive(entry) && !BotManager.hasOnlinePlayerOwner(entry);
+    }
+
+    /**
+     * The autonomous AP build for the bot's current job (the ownerless default), or null if the job
+     * has no AP build (Beginner/Pirate). Reuses the BotScrollManager job->stat SSOT and the
+     * BotEquipManager DPS/requirement scorer. Mages park the secondary (LUK) at the floor: magic
+     * damage and wand/staff requirements ignore LUK, so a non-floor target would only waste AP.
+     */
+    static ApBuild resolveApBuild(BotEntry entry, Character bot) {
+        Job job = bot.getJob();
+        if (apPromptForJob(job) == null) return null;
+        boolean[] mageOut = new boolean[1];
+        char[] ms = BotScrollManager.mainSecondary(job.getId(), mageOut);
+        StatType primary = statTypeOf(ms[0]);
+        StatType secondary = statTypeOf(ms[1]);
+        if (primary == null || secondary == null) return null;
+        int floor = AssignAPProcessor.getMinStatFloor(job, statOf(secondary));
+        int target = mageOut[0] ? floor : BotEquipManager.recommendSecondaryTarget(bot, ms[0], ms[1], floor);
+        return new ApBuild(primary, secondary, target);
+    }
+
+    /**
+     * Ownerless autonomous AP build: set/raise the secondary target and spend AP additively, with no
+     * chat prompt. Deliberately ADDITIVE ONLY - it never reduces an already-spent secondary stat and
+     * never autonomously respecs, because a legal player cannot un-spend AP without an AP reset. So
+     * the target only ever ratchets UP (toward unlocking a better owned weapon); it never drifts back
+     * down as gear improves. Reclaiming over-invested secondary (funded->pure) is deferred to a future
+     * NX-funded AP-reset feature (a well-geared bot with spare NX resets when worth it - see the
+     * design doc). No-op for owned/online-owner bots and for jobs with no build (Beginner/Pirate).
+     */
+    static void maybeRecomputeAutonomousApBuild(BotEntry entry, Character bot) {
+        if (!isOwnerless(entry)) return;
+        ApBuild fresh = resolveApBuild(entry, bot);
+        if (fresh == null) return;
+        entry.apPromptSent = true; // ownerless: never wait on an owner reply
+        int target = fresh.secondaryTarget;
+        if (entry.apBuild != null && entry.apBuild.secondaryStat == fresh.secondaryStat) {
+            target = Math.max(entry.apBuild.secondaryTarget, fresh.secondaryTarget); // ratchet up only
+        }
+        entry.apBuild = new ApBuild(fresh.primaryStat, fresh.secondaryStat, target);
+        autoAssignAp(entry, bot); // additive: fill secondary to target, rest to primary; never reduces
+    }
+
+    /**
+     * Autonomous job choice for an ownerless bot: weighted-random 1st job (from Beginner) using
+     * BotManager.cfg.JOB_WEIGHTS, or a uniform 2nd job among the current 1st job's options. Returns
+     * null when there is no choice topology (e.g. an unsupported/non-explorer branch), so the caller
+     * falls back to the owner-prompt path.
+     */
+    static Job pickWeightedJob(Job currentJob) {
+        if (currentJob == null || currentJob == Job.BEGINNER) {
+            // Only classes the bot can actually BUILD: PIRATE has no AP build (apPromptForJob) and no
+            // SP build tree, so an ownerless pirate would bank AP/SP forever. Filtering here (rather
+            // than dropping PIRATE from firstJobChoices, which mirrors the owner prompt) auto-includes
+            // pirate the moment a pirate build lands.
+            List<Job> buildable = new ArrayList<>();
+            for (Job j : BotStarterKitManager.firstJobChoices()) {
+                if (apPromptForJob(j) != null) buildable.add(j);
+            }
+            return weightedPick(buildable, BotManager.cfg.JOB_WEIGHTS);
+        }
+        List<Job> choices = BotStarterKitManager.secondJobChoices(currentJob);
+        if (choices.isEmpty()) return null;
+        return choices.get(ThreadLocalRandom.current().nextInt(choices.size()));
+    }
+
+    static Job weightedPick(List<Job> choices, Map<Job, Integer> weights) {
+        if (choices.isEmpty()) return null;
+        int total = 0;
+        for (Job j : choices) total += Math.max(0, weights.getOrDefault(j, 1));
+        if (total <= 0) return choices.get(ThreadLocalRandom.current().nextInt(choices.size()));
+        int roll = ThreadLocalRandom.current().nextInt(total);
+        for (Job j : choices) {
+            roll -= Math.max(0, weights.getOrDefault(j, 1));
+            if (roll < 0) return j;
+        }
+        return choices.get(choices.size() - 1);
+    }
+
+    private static StatType statTypeOf(char code) {
+        return switch (code) {
+            case 's' -> StatType.STR;
+            case 'd' -> StatType.DEX;
+            case 'i' -> StatType.INT;
+            case 'l' -> StatType.LUK;
+            default -> null;
+        };
+    }
+
+    private static Stat statOf(StatType type) {
+        return switch (type) {
+            case STR -> Stat.STR;
+            case DEX -> Stat.DEX;
+            case INT -> Stat.INT;
+            case LUK -> Stat.LUK;
+        };
+    }
+
     /**
      * Returns a prompt asking for the SP build variant, or null if not needed.
      * Currently only Hero has two documented builds.
@@ -138,6 +247,11 @@ class BotBuildManager {
     static String buildSpVariantPrompt(BotEntry entry, Character bot) {
         if (bot.getJob() != Job.HERO) return null;
         if (entry.spVariant != null || entry.spVariantPromptSent || bot.getRemainingSps()[3] < 1) return null;
+        if (isOwnerless(entry)) {
+            entry.spVariant = "2h"; // autonomous default; no owner to choose 1h vs 2h
+            entry.spVariantPromptSent = true;
+            return null;
+        }
         entry.spVariantPromptSent = true;
         return "hero build: '1h' (1h sword, Brandish first) or '2h' (interleave AC + Brandish for faster charges)?";
     }
@@ -341,6 +455,7 @@ class BotBuildManager {
             // re-advanced and doesn't fire checkBotStatus on every level-up. Beginners stay at 0.
             entry.jobPromptSent = Math.max(entry.jobPromptSent, passedMilestoneForJob(bot.getJob()));
             autoAssignSp(entry, bot);
+            maybeRecomputeAutonomousApBuild(entry, bot);
             autoAssignAp(entry, bot);
             return;
         }
@@ -360,6 +475,7 @@ class BotBuildManager {
         }
 
         autoAssignSp(entry, bot);
+        maybeRecomputeAutonomousApBuild(entry, bot);
         autoAssignAp(entry, bot);
     }
 
@@ -411,11 +527,21 @@ class BotBuildManager {
 
         if (job == Job.BEGINNER) {
             if (lvl >= 10 && prompted < 10) {
+                if (isOwnerless(entry)) {
+                    Job target = pickWeightedJob(Job.BEGINNER); // no owner to choose: pick a class autonomously
+                    if (target != null) {
+                        entry.jobPromptSent = 10;
+                        scheduleAutoAdvance(entry, target);
+                        return null;
+                    }
+                }
                 entry.jobPromptSent = 10;
                 parkIfAutopilot(entry); // 1st job is a choice: autopilot bot stops + the owner still decides
                 return new JobPrompt("hey i can change jobs now!! warrior, mage, bowman, thief, or pirate?",
                         List.of("warrior", "mage", "bowman", "thief", "pirate"));
             } else if (lvl >= 8 && prompted < 8) {
+                // Ownerless bots skip the lv8 mage-only early choice and pick from all classes at lv10.
+                if (isOwnerless(entry)) return null;
                 entry.jobPromptSent = 8;
                 parkIfAutopilot(entry);
                 return new JobPrompt("i can become a mage already if u want, or wait til lv10 for other jobs",
@@ -425,6 +551,14 @@ class BotBuildManager {
         }
 
         if (lvl >= 30 && prompted < 30) {
+            if (isOwnerless(entry)) {
+                Job target = pickWeightedJob(job); // 2nd job is a choice: pick autonomously when no owner
+                if (target != null) {
+                    entry.jobPromptSent = 30;
+                    scheduleAutoAdvance(entry, target);
+                    return null;
+                }
+            }
             JobPrompt p = switch (job) {
                 case WARRIOR -> new JobPrompt("lv30! 2nd job time~ fighter, page, or spearman?",
                         List.of("fighter", "page", "spearman"));

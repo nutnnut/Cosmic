@@ -2,6 +2,7 @@ package server.bots;
 
 import client.Character;
 import client.Job;
+import client.Stat;
 import client.inventory.Equip;
 import client.inventory.Inventory;
 import client.inventory.InventoryType;
@@ -21,6 +22,7 @@ import constants.skills.Spearman;
 import constants.skills.WhiteKnight;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import client.processor.stat.AssignAPProcessor;
 import server.ItemInformationProvider;
 import server.bots.combat.BotAttackDataProvider;
 import server.combat.CombatFormulaProvider;
@@ -1988,6 +1990,140 @@ class BotEquipManager {
             // WZ data may not be initialized in unit-test contexts; fall back to no DPS scaling.
             return 0;
         }
+    }
+
+    // ===== Autonomous AP build: secondary-stat target ============================================
+    //
+    // Picks the base secondary-stat target for an ownerless bot's AP build (BotBuildManager).
+    // rawPhysicalMax weights the primary stat by the weapon multiplier (~3.5-4.6x) and the secondary
+    // by 1x, so a secondary AP point is mostly wasted damage. We therefore raise the secondary stat
+    // ONLY to clear a weapon's equip requirement, and only when the weapon it unlocks out-DPSes
+    // staying on a cheaper weapon with that AP back in the primary. Reactive over owned + equipped
+    // weapons (no aspirational/unowned stretch - that would fight BotScrollManager.levelsUntilWearable's
+    // deliberate "never project secondary" SSOT). As gear supplies the secondary stat the target
+    // collapses to the job floor (near-pure), matching the godly-gear meta.
+
+    /** A candidate weapon's resolved scoring inputs. WZ-free so {@link #chooseSecondaryTarget} is
+     *  unit-testable: {@code totalWatk} already folds in this weapon's WATK in place of the worn one. */
+    record WeaponCand(int reqSecondary, int totalWatk, WeaponType type, int cycleMs) {}
+
+    /**
+     * Returns the base secondary-stat target for the bot's AP build, or {@code floorSecondary} when
+     * there is no usable weapon / no WZ context. {@code primaryCode}/{@code secondaryCode} are the
+     * BotScrollManager stat codes ('s','d','i','l'). Reactive over owned + currently-equipped weapons.
+     */
+    static int recommendSecondaryTarget(Character bot, char primaryCode, char secondaryCode, int floorSecondary) {
+        try {
+            ItemInformationProvider ii = ItemInformationProvider.getInstance();
+            Inventory eqpInv = bot.getInventory(InventoryType.EQUIP);
+            Inventory eqdInv = bot.getInventory(InventoryType.EQUIPPED);
+
+            Map<Short, List<Equip>> bySlot = collectAutoEquipCandidates(bot, ii, eqpInv, eqdInv, null);
+            List<Equip> pool = new ArrayList<>(bySlot.getOrDefault((short) -11, List.of()));
+            Equip equipped = compatibleWeaponOrNull(bot, ii, (Equip) eqdInv.getItem((short) -11));
+            if (equipped != null && !pool.contains(equipped)) pool.add(equipped);
+            if (pool.isEmpty()) return floorSecondary;
+
+            int watkNoWeapon = bot.getTotalWatk() - (equipped != null ? equipped.getWatk() : 0);
+            List<WeaponCand> cands = new ArrayList<>();
+            for (Equip w : pool) {
+                if (w == null) continue;
+                cands.add(new WeaponCand(reqStat(ii, w.getItemId(), secondaryCode),
+                        watkNoWeapon + w.getWatk(), ii.getWeaponType(w.getItemId()),
+                        weaponCycleMs(w.getItemId())));
+            }
+            int equippedReqSec = equipped != null ? reqStat(ii, equipped.getItemId(), secondaryCode) : 0;
+
+            Job job = bot.getJob();
+            int[] floors = {floorOf(job, 's'), floorOf(job, 'd'), floorOf(job, 'i'), floorOf(job, 'l')};
+            int[] base = {bot.getStr(), bot.getDex(), bot.getInt(), bot.getLuk()};
+            int[] gear = {bot.getTotalStr() - bot.getStr(), bot.getTotalDex() - bot.getDex(),
+                    bot.getTotalInt() - bot.getInt(), bot.getTotalLuk() - bot.getLuk()};
+            return chooseSecondaryTarget(job, primaryCode, secondaryCode, floorSecondary,
+                    floors, base, gear, bot.getRemainingAp(), cands, equippedReqSec);
+        } catch (Throwable t) {
+            return floorSecondary; // WZ/inventory unavailable (e.g. unit-test contexts) -> safe default
+        }
+    }
+
+    /**
+     * Pure chooser: the AP freely movable between primary and secondary (the two off-stats stay
+     * pinned at their floors) is, for each candidate weapon, spent to clear that weapon's secondary
+     * requirement first and the remainder into primary; DPS is scored with the SSOT
+     * {@link #rawPhysicalMax} normalized by attack cycle. Returns the secondary BASE target of the
+     * max-DPS wieldable weapon, never below {@code floorSecondary} nor below what keeps the
+     * currently-equipped weapon wearable (anti-strand). {@code floors}/{@code base}/{@code gear} are
+     * int[4] indexed [STR,DEX,INT,LUK].
+     */
+    static int chooseSecondaryTarget(Job job, char primaryCode, char secondaryCode, int floorSecondary,
+                                     int[] floors, int[] base, int[] gear, int remainingAp,
+                                     List<WeaponCand> cands, int equippedReqSecondary) {
+        int pi = statIndex(primaryCode), si = statIndex(secondaryCode);
+        if (pi < 0 || si < 0) return floorSecondary;
+
+        int freeAp = remainingAp;
+        for (int k = 0; k < 4; k++) freeAp += Math.max(0, base[k] - floors[k]);
+        int gearSecondary = gear[si];
+        int floorPrimary = floors[pi];
+
+        int bestNeed = floorSecondary;
+        double bestDps = -1;
+        for (WeaponCand w : cands) {
+            if (w == null || w.type() == null) continue;
+            int need = Math.max(floorSecondary, w.reqSecondary() - gearSecondary);
+            int secCost = need - floorSecondary;
+            if (secCost > freeAp) continue; // can't fund this weapon's secondary even maxing it out
+            int primaryBase = floorPrimary + (freeAp - secCost);
+            int[] total = new int[4];
+            for (int k = 0; k < 4; k++) {
+                int b = (k == pi) ? primaryBase : (k == si) ? need : floors[k];
+                total[k] = b + gear[k];
+            }
+            StatSnapshot snap = new StatSnapshot(total[0], total[1], total[2], total[3],
+                    w.totalWatk(), 0, 0, 0, 0, job);
+            int raw = rawPhysicalMax(snap, w.type());
+            double dps = w.cycleMs() > 0 ? raw * 1000.0 / w.cycleMs() : raw;
+            if (dps > bestDps) {
+                bestDps = dps;
+                bestNeed = need;
+            }
+        }
+        int antiStrand = Math.max(floorSecondary, equippedReqSecondary - gearSecondary);
+        return Math.max(bestNeed, antiStrand);
+    }
+
+    private static int statIndex(char code) {
+        return switch (code) {
+            case 's' -> 0;
+            case 'd' -> 1;
+            case 'i' -> 2;
+            case 'l' -> 3;
+            default -> -1;
+        };
+    }
+
+    private static int floorOf(Job job, char code) {
+        Stat stat = switch (code) {
+            case 's' -> Stat.STR;
+            case 'd' -> Stat.DEX;
+            case 'i' -> Stat.INT;
+            case 'l' -> Stat.LUK;
+            default -> null;
+        };
+        return stat == null ? 0 : AssignAPProcessor.getMinStatFloor(job, stat);
+    }
+
+    private static int reqStat(ItemInformationProvider ii, int itemId, char code) {
+        Map<String, Integer> stats = ii.getEquipStats(itemId);
+        if (stats == null) return 0;
+        String key = switch (code) {
+            case 's' -> "reqSTR";
+            case 'd' -> "reqDEX";
+            case 'i' -> "reqINT";
+            case 'l' -> "reqLUK";
+            default -> null;
+        };
+        return key == null ? 0 : stats.getOrDefault(key, 0);
     }
 
     private static int defScore(Equip e)  { return e != null ? e.getWdef() + e.getMdef() : 0; }
