@@ -165,7 +165,11 @@ final class BotAutopilotManager {
         IntToLongFunction transportationTime = ms -> bot.getWorldServer().getTransportationTime(ms);
         Map<Integer, Double> seconds = BotTravelCost.floodSeconds(fromMapId, maxHops, options, transportationTime);
         int level = bot.getLevel();
-        return mapId -> BotTravelCost.scoreWeight(seconds, mapId, level);
+        // Quest commitment: boost maps that spawn a mob the bot still needs for a started quest, so it
+        // goes to finish what it accepted instead of drifting to a richer grind. Computed once per pass.
+        Set<Integer> questMobs = BotQuestManager.activeQuestMobIds(bot);
+        return mapId -> BotTravelCost.scoreWeight(seconds, mapId, level)
+                * BotQuestManager.questMapScoreBias(mapId, questMobs);
     }
 
     @FunctionalInterface

@@ -253,6 +253,11 @@ public class BotEntry {
     int questErrandReturnMapId = -1;     // grind map to resume after the errand
     long questErrandStartedAtMs = 0L;    // abort the errand if it can't reach the NPC in time
     long nextQuestScanAtMs = 0L;
+    // Mob ids the bot still needs to kill for any STARTED indexed quest (unmet counts). Refreshed on
+    // the quest scan + on quest start/complete by BotQuestManager.refreshActiveQuestMobs. Read O(1) by
+    // combat target selection (BotCombatManager) to PREFER quest mobs, so a bot commits to the quests
+    // it accepted instead of drifting onto other mobs. volatile: written on the scan, read on the tick.
+    volatile java.util.Set<Integer> activeQuestMobIds = java.util.Set.of();
 
     // Gachapon errand (BotGachaponManager): autopilot-only. When the bot has spare account NX (from
     // looted NX cards), it picks the best-EV reachable gachapon town, travels to the NPC, buys

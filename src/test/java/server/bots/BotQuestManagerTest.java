@@ -123,6 +123,28 @@ class BotQuestManagerTest {
                 false, false, scripted, List.of("npc"), true /*talk*/);
     }
 
+    // ---- quest commitment: map-score bias toward maps with still-needed quest mobs ----
+
+    @Test
+    void questMapBiasNeutralWhenNoActiveQuestMobs() {
+        BotQuestManager.mapMobs = mapId -> Map.of(100, 5);
+        assertEquals(1.0, BotQuestManager.questMapScoreBias(200000, java.util.Set.of()), 1e-9,
+                "no active quest mobs -> no bias");
+    }
+
+    @Test
+    void questMapBiasBoostsMapThatSpawnsANeededMob() {
+        // map 111 spawns mob 100 (which the bot still needs) -> boosted; map 222 does not -> neutral.
+        BotQuestManager.mapMobs = mapId -> mapId == 111 ? Map.of(100, 8, 101, 2) : Map.of(999, 3);
+        java.util.Set<Integer> needed = java.util.Set.of(100);
+
+        assertEquals(BotQuestManager.QUEST_GRIND_MAP_BIAS,
+                BotQuestManager.questMapScoreBias(111, needed), 1e-9,
+                "map with a needed quest mob is boosted");
+        assertEquals(1.0, BotQuestManager.questMapScoreBias(222, needed), 1e-9,
+                "map without any needed quest mob stays neutral");
+    }
+
     // ---- auto quests: drive start/complete only when the gates pass ----
 
     @Test

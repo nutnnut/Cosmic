@@ -273,6 +273,11 @@ final class BotQuestManager {
             maybeAutoSuggest(entry, bot);
             return;
         }
+        // Opportunistic free grab: start any indexed quest whose NPC the bot is already standing
+        // next to (no detour, no overlap/worthwhile gate - it's free). Then keep the quest-mob cache
+        // fresh so combat prefers what we accepted. Both run even mid-errand (grabbing is free).
+        tickOpportunisticGrab(entry, bot);
+        refreshActiveQuestMobs(entry, bot);
         if (entry.questErrandMapId != -1) {
             return; // one errand at a time
         }
@@ -310,6 +315,96 @@ final class BotQuestManager {
             }
         }
         return true;
+    }
+
+    // ---- opportunistic grab + quest commitment (so the bot does what it accepted) ----------------
+
+    /** Free quest grab: start any startable INDEXED quest whose start NPC is on the bot's CURRENT map
+     *  within talk radius. No detour, no overlap/worthwhile gate - the bot is already standing there,
+     *  so taking it costs nothing. The commitment bias ({@link #questMapScoreBias} /
+     *  {@link #activeQuestMobIds}) then steers grinding to actually finish it. Indexed-only: the bot
+     *  can only meaningfully complete quests it knows how to (talk + the overlapping mob quests). */
+    static void tickOpportunisticGrab(BotEntry entry, Character bot) {
+        MapleMap map = bot.getMap();
+        if (map == null) {
+            return;
+        }
+        Point botPos = bot.getPosition();
+        if (botPos == null || entry.inAir || entry.climbing) {
+            return;
+        }
+        boolean grabbed = false;
+        for (BotQuestIndex.QuestMeta q : BotQuestIndex.get().byId().values()) {
+            if (gate.isStarted(bot, q.id()) || gate.isCompleted(bot, q.id())) {
+                continue;
+            }
+            NPC npc = map.getNPCById(q.startNpc());
+            if (npc == null || npc.getPosition() == null) {
+                continue; // NPC not on this map - not "passing" it
+            }
+            if (manhattan(botPos, npc.getPosition()) > NPC_TRIGGER_RADIUS_PX) {
+                continue; // on the map but not next to it
+            }
+            if (!gate.canStart(bot, q.id(), q.startNpc())) {
+                continue; // level/job/prereq not met
+            }
+            gate.start(bot, q.id(), q.startNpc());
+            grantScriptedStartItem(bot, q.id());
+            grabbed = true;
+        }
+        if (grabbed) {
+            refreshActiveQuestMobs(entry, bot);
+            reply.accept(entry, "grabbed a quest while i'm here");
+        }
+    }
+
+    /** Mob ids the bot still needs to kill for any STARTED indexed quest (counts not yet met). The
+     *  SSOT for "what mobs is this bot committed to" - used by both the grind map-bias and the combat
+     *  target-bias. Cheap (a handful of indexed quests). */
+    static java.util.Set<Integer> activeQuestMobIds(Character bot) {
+        if (bot == null) {
+            return java.util.Set.of();
+        }
+        java.util.Set<Integer> out = new java.util.HashSet<>();
+        for (BotQuestIndex.QuestMeta q : BotQuestIndex.get().byId().values()) {
+            if (q.mobs().isEmpty() || !gate.isStarted(bot, q.id())) {
+                continue;
+            }
+            Map<Integer, Integer> progress = gate.currentProgress(bot, q.id());
+            for (Map.Entry<Integer, Integer> need : q.mobs().entrySet()) {
+                if (progress.getOrDefault(need.getKey(), 0) < need.getValue()) {
+                    out.add(need.getKey());
+                }
+            }
+        }
+        return out;
+    }
+
+    /** Refresh the bot's cached still-needed quest-mob set (read O(1) by combat target selection). */
+    static void refreshActiveQuestMobs(BotEntry entry, Character bot) {
+        if (entry != null) {
+            entry.activeQuestMobIds = activeQuestMobIds(bot);
+        }
+    }
+
+    /** Map-score multiplier that favors maps spawning a still-needed started-quest mob, so an
+     *  autopilot bot commits to the quest it accepted instead of drifting to a richer grind. 1.0 when
+     *  the bot has no active quest mobs or this map has none of them. Applied by the autopilot
+     *  travel-weight closure ({@link BotAutopilotManager}); the {@code neededMobs} set is computed
+     *  once per decide pass via {@link #activeQuestMobIds}. */
+    static final double QUEST_GRIND_MAP_BIAS = 1.6;
+
+    static double questMapScoreBias(int mapId, java.util.Set<Integer> neededMobs) {
+        if (neededMobs == null || neededMobs.isEmpty()) {
+            return 1.0;
+        }
+        Map<Integer, Integer> here = mapMobs.mobsOn(mapId);
+        for (int mobId : neededMobs) {
+            if (here.containsKey(mobId)) {
+                return QUEST_GRIND_MAP_BIAS;
+            }
+        }
+        return 1.0;
     }
 
     /** Best startable quest worth a detour from the current grind: a MOB quest whose kills overlap
@@ -541,6 +636,7 @@ final class BotQuestManager {
             if (gate.canStart(bot, questId, npc)) {
                 gate.start(bot, questId, npc);
                 grantScriptedStartItem(bot, questId);
+                refreshActiveQuestMobs(entry, bot); // commit: combat now prefers this quest's mobs
                 finishErrand(entry, bot, "got it, back to farming");
             } else {
                 finishErrand(entry, bot, "couldn't take that quest, oh well");
@@ -554,6 +650,7 @@ final class BotQuestManager {
             }
             if (gate.canComplete(bot, questId, npc)) {
                 gate.complete(bot, questId, npc);
+                refreshActiveQuestMobs(entry, bot); // done: drop its mobs from the combat bias
                 announceDone(entry, questId);
                 finishErrand(entry, bot, null);
             } else {

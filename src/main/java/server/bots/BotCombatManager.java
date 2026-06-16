@@ -1805,7 +1805,8 @@ class BotCombatManager {
         List<ScoredGrindTarget> scoredTargets = new ArrayList<>(candidates.size());
         for (Monster candidate : candidates) {
             long localScore = grindTargetScore(bot, botPos, botFoothold, candidate)
-                    - aoeClusterBonus(entry, candidate, candidates);
+                    - aoeClusterBonus(entry, candidate, candidates)
+                    - questTargetBonus(entry, candidate);
             scoredTargets.add(new ScoredGrindTarget(candidate, localScore, localScore,
                     candidate.getPosition().distanceSq(botPos)));
         }
@@ -1828,7 +1829,8 @@ class BotCombatManager {
             }
 
             long localScore = grindTargetScore(bot, botPos, botFoothold, candidate)
-                    - aoeClusterBonus(entry, candidate, candidates);
+                    - aoeClusterBonus(entry, candidate, candidates)
+                    - questTargetBonus(entry, candidate);
             GrindTargetGroup group = groupsByRegionId.computeIfAbsent(targetRegionId, GrindTargetGroup::new);
             group.add(candidate, localScore, targetPos.distanceSq(botPos));
         }
@@ -1936,6 +1938,21 @@ class BotCombatManager {
     // pile of 10 mobs doesn't crater scores past the natural distance/foothold penalties.
     static final int AOE_CLUSTER_RADIUS_PX = 150;
     static final long AOE_CLUSTER_BONUS_PER_MOB = 200L;
+
+    // Quest commitment: prefer mobs the bot still needs for a started quest (set cached on BotEntry,
+    // refreshed by BotQuestManager). Subtracted from localScore like the AoE bonus (lower wins). Sized
+    // to out-rank the same-level penalty but not the foothold penalty, so the bot favors quest mobs
+    // within easy reach without leaping across footholds for them.
+    static final long QUEST_TARGET_BONUS = 600L;
+
+    private static long questTargetBonus(BotEntry entry, Monster target) {
+        if (entry == null || target == null) {
+            return 0L;
+        }
+        java.util.Set<Integer> needed = entry.activeQuestMobIds;
+        return (needed != null && !needed.isEmpty() && needed.contains(target.getId()))
+                ? QUEST_TARGET_BONUS : 0L;
+    }
 
     private static long aoeClusterBonus(BotEntry entry, Monster target, List<Monster> candidates) {
         if (entry == null || entry.aoeSkillId == 0 || entry.aoeSkillMobs <= 1
