@@ -35,7 +35,7 @@ public class BotCreator extends CharacterFactory {
         botChar.setFace(20100);
         botChar.setJob(Job.BEGINNER);
         botChar.setLevel(1);
-        botChar.setMapId(MapId.HENESYS);
+        botChar.setMapId(MapId.MUSHROOM_TOWN);
 
         // Equip standard beginner starting gear (mirrors CharacterFactory.createNewCharacter)
         Inventory equipped = botChar.getInventory(InventoryType.EQUIPPED);
@@ -57,7 +57,7 @@ public class BotCreator extends CharacterFactory {
         weapon.setPosition((byte) -11);
         equipped.addItemFromDB(weapon.copy());
 
-        CharacterFactoryRecipe recipe = new CharacterFactoryRecipe(Job.BEGINNER, 1, MapId.HENESYS, 1040002, 1060002, 1072001, 1302000);
+        CharacterFactoryRecipe recipe = new CharacterFactoryRecipe(Job.BEGINNER, 1, MapId.MUSHROOM_TOWN, 1040002, 1060002, 1072001, 1302000);
 
         if (!botChar.insertNewChar(recipe)) {
             log.error("insertNewChar failed for bot '{}'", name);
