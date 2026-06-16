@@ -661,15 +661,16 @@ class BotMovementManager {
             return false;
         }
 
-        Monster blockingMob = firstBlockingMobInWalkLane(entry, currentFh, botPos, stepX);
-        if (blockingMob == null) {
+        // Humanlike reaction: don't dodge with perfect reflexes. Checked BEFORE the mob-lane scan
+        // (it's a mob-independent roll) so we skip that scan on the ~40% of ticks it rejects. The bot
+        // is grounded only between jumps, so airborne spacing already prevents per-tick spam; this just
+        // adds a little imperfection so dodges aren't frame-perfect.
+        if (ThreadLocalRandom.current().nextDouble() >= cfg.MOB_AVOID_REACTION_CHANCE) {
             return false;
         }
 
-        // Humanlike reaction: don't dodge with perfect reflexes the instant a mob enters the lane.
-        // The bot is grounded only between jumps, so the natural airborne spacing already prevents
-        // per-tick spam; this jitter just adds a little imperfection so dodges aren't frame-perfect.
-        if (ThreadLocalRandom.current().nextDouble() >= cfg.MOB_AVOID_REACTION_CHANCE) {
+        Monster blockingMob = firstBlockingMobInWalkLane(entry, currentFh, botPos, stepX);
+        if (blockingMob == null) {
             return false;
         }
 
