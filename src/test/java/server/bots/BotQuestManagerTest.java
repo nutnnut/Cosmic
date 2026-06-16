@@ -35,6 +35,7 @@ class BotQuestManagerTest {
     private final BotQuestManager.NameLookup prevMobName = BotQuestManager.mobName;
     private final BotQuestManager.NameLookup prevItemName = BotQuestManager.itemNameLookup;
     private final java.util.function.BiConsumer<BotEntry, String> prevReply = BotQuestManager.reply;
+    private final java.util.function.ObjIntConsumer<Character> prevGrant = BotQuestManager.grantItem;
     private final List<String> replies = new ArrayList<>();
 
     {
@@ -60,6 +61,7 @@ class BotQuestManagerTest {
         BotQuestManager.mobName = prevMobName;
         BotQuestManager.itemNameLookup = prevItemName;
         BotQuestManager.reply = prevReply;
+        BotQuestManager.grantItem = prevGrant;
     }
 
     /** Stub the scorer's WZ-backed seams to deterministic values so worthwhile/score is pure. */
@@ -113,6 +115,12 @@ class BotQuestManagerTest {
                                                     Map<Integer, Integer> mobs, List<Integer> rewardItems) {
         return new BotQuestIndex.QuestMeta(id, startNpc, endNpc, 0, mobs, rewardExp, rewardItems,
                 false, false, false, List.of("npc", "mob"));
+    }
+
+    private static BotQuestIndex.QuestMeta talkQuest(int id, int startNpc, int endNpc, int rewardExp,
+                                                     boolean scripted) {
+        return new BotQuestIndex.QuestMeta(id, startNpc, endNpc, 0, Map.of(), rewardExp, List.of(),
+                false, false, scripted, List.of("npc"), true /*talk*/);
     }
 
     // ---- auto quests: drive start/complete only when the gates pass ----
@@ -527,5 +535,61 @@ class BotQuestManagerTest {
         when(bot.canHold(anyInt(), anyInt())).thenReturn(true);
         var q = mobQuest(1018, 2004, 2002, 30, Map.of(9300018, 1), List.of(4000142));
         assertTrue(BotQuestManager.hasRoomForRewards(bot, q));
+    }
+
+    // ---- talk quests: worth scoring + scripted-item grant on start ----
+
+    @Test
+    void talkQuestScoresWorthDoingForFreshBot() {
+        // q1031 Heena/Sera: 5 exp talk quest. Fresh bot grinds ~8 exp/min; short NPC trip.
+        BotQuestManager.travelSeconds = (from, to) -> 30.0;
+        BotQuestManager.uniqueRewardValue = (b, q) -> 0.0;
+        var q = talkQuest(1031, 2101, 2100, 5, false);
+        BotEntry e = entry();
+        double score = BotQuestManager.scoreQuest(e, e.bot, 10000, 10000, q, 8.0 /*fresh baseline*/);
+        assertTrue(score >= BotQuestScorer.RECOMMEND_MIN_SCORE,
+                "a fresh bot should find the tutorial talk quest worth doing; got " + score);
+    }
+
+    @Test
+    void talkQuestStartGrantsScriptedItemForRogersApple() {
+        // q1021 start NPC arrival: the bot self-grants Roger's Apple (2010007) the NPC script gives.
+        Character bot = mock(Character.class);
+        server.maps.MapleMap map = mock(server.maps.MapleMap.class);
+        server.life.NPC npc = mock(server.life.NPC.class);
+        when(bot.getMap()).thenReturn(map);
+        when(bot.getMapId()).thenReturn(60000);
+        when(bot.getPosition()).thenReturn(new java.awt.Point(100, 200));
+        when(npc.getPosition()).thenReturn(new java.awt.Point(120, 200)); // within 500px
+        when(map.getNPCById(2000)).thenReturn(npc);
+        BotQuestManager.reply = (en, s) -> replies.add(s);
+
+        RecordingGate g = new RecordingGate();
+        g.canStart = true;
+        BotQuestManager.gate = g;
+        List<Integer> granted = new ArrayList<>();
+        BotQuestManager.grantItem = (b, itemId) -> granted.add(itemId);
+
+        BotEntry e = new BotEntry(bot, null, null);
+        e.questErrandMapId = 60000;
+        e.questErrandNpcId = 2000;
+        e.questErrandQuestId = 1021;
+        e.questErrandPhase = BotQuestManager.Phase.START;
+        e.questErrandStartedAtMs = System.currentTimeMillis();
+
+        BotQuestManager.tickErrand(e, bot, false);
+
+        assertEquals(List.of(1021), g.startsCalled, "start must be called at the NPC");
+        assertEquals(List.of(2010007), granted, "Roger's Apple must be self-granted on start");
+    }
+
+    @Test
+    void startGrantsNoItemForOrdinaryTalkQuest() {
+        // A talk quest with no scripted gift (e.g. 1031) grants nothing on start.
+        Character bot = mock(Character.class);
+        List<Integer> granted = new ArrayList<>();
+        BotQuestManager.grantItem = (b, itemId) -> granted.add(itemId);
+        BotQuestManager.grantScriptedStartItem(bot, 1031);
+        assertTrue(granted.isEmpty(), "no scripted item gift for an ordinary talk quest");
     }
 }

@@ -312,21 +312,20 @@ final class BotQuestManager {
         return true;
     }
 
-    /** Best startable mob quest whose kills overlap the current grind map and that clears the
-     *  worthwhile bar. Null when nothing here is worth a detour. */
+    /** Best startable quest worth a detour from the current grind: a MOB quest whose kills overlap
+     *  the current map, or a TALK quest (no kills needed). Null when nothing here clears the bar. */
     private static BotQuestIndex.QuestMeta pickStartable(BotEntry entry, Character bot) {
         int mapId = bot.getMapId();
         Map<Integer, Integer> here = mapMobs.mobsOn(mapId);
-        if (here.isEmpty()) {
-            return null;
-        }
         BotQuestIndex.QuestMeta best = null;
         double bestScore = -1;
         for (BotQuestIndex.QuestMeta q : BotQuestIndex.get().byId().values()) {
             if (gate.isStarted(bot, q.id())) {
                 continue;
             }
-            if (!overlaps(q.mobs().keySet(), here.keySet())) {
+            // Mob quests are only worth a detour when their kills overlap what the bot already farms
+            // here (free exp). Talk quests have no kills, so this overlap gate doesn't apply to them.
+            if (!q.talk() && !overlaps(q.mobs().keySet(), here.keySet())) {
                 continue;
             }
             // Pre-check eligibility with the quest's OWN start npc id (legality is the walk, not the
@@ -387,6 +386,13 @@ final class BotQuestManager {
      *  trivial reward is not scored against a near-zero cost. */
     static double scoreQuest(BotEntry entry, Character bot, int grindMapId, int npcMapId,
                              BotQuestIndex.QuestMeta q, double baseline) {
+        // Talk quests (no kills, no fetched items) score on a flat completion worth + reward vs the
+        // NPC round-trip cost - there are no mobs to overlap or kill.
+        if (q.talk()) {
+            double travelT = travelSeconds.seconds(grindMapId, npcMapId);
+            double uniqueT = uniqueRewardExpEquivalent(bot, q);
+            return BotQuestScorer.scoreTalk(q.rewardExp(), uniqueT, travelT, baseline);
+        }
         // Overlap = required mobs the bot already kills on its current grind map (free exp).
         java.util.Set<Integer> here = mapMobs.mobsOn(grindMapId).keySet();
         java.util.Set<Integer> overlap = new java.util.HashSet<>();
@@ -534,6 +540,7 @@ final class BotQuestManager {
         if (entry.questErrandPhase == Phase.START) {
             if (gate.canStart(bot, questId, npc)) {
                 gate.start(bot, questId, npc);
+                grantScriptedStartItem(bot, questId);
                 finishErrand(entry, bot, "got it, back to farming");
             } else {
                 finishErrand(entry, bot, "couldn't take that quest, oh well");
@@ -552,6 +559,37 @@ final class BotQuestManager {
             } else {
                 finishErrand(entry, bot, "hm, can't turn that in yet");
             }
+        }
+    }
+
+    /** The one scripted talk quest a bot runs whose tutorial NPC dialog GIVES an item the player is
+     *  then asked to consume - q1021 Roger's Apple (item 2010007). The bot can't run the NPC dialog
+     *  script, so it self-grants the item the script would (count 1), the SAME legal grant
+     *  {@link BotFerryManager}/{@link BotGachaponManager} use. This is the single allowed hardcoded
+     *  step (per the owner): the quest still STARTS and COMPLETES through {@link Quest#start}/{@code
+     *  complete}; only the script's item gift is reproduced. Other talk quests give nothing on start. */
+    static final Map<Integer, Integer> SCRIPTED_START_ITEM = Map.of(1021, 2010007);
+
+    /** Item grant seam (production: the legal {@code InventoryManipulator.addById}); tests stub it. */
+    static java.util.function.ObjIntConsumer<Character> grantItem = (bot, itemId) -> {
+        try {
+            if (client.inventory.manipulator.InventoryManipulator.checkSpace(
+                    bot.getClient(), itemId, 1, "")) {
+                client.inventory.manipulator.InventoryManipulator.addById(
+                        bot.getClient(), itemId, (short) 1);
+            }
+        } catch (RuntimeException ignored) {
+            // a failed grant is non-fatal: the talk-quest complete-req for this item is count-0
+            // (non-blocking), so the quest still turns in.
+        }
+    };
+
+    /** Reproduce the start-NPC script's item gift for the one quest that has one (q1021). No-op for
+     *  every other quest. */
+    static void grantScriptedStartItem(Character bot, int questId) {
+        Integer itemId = SCRIPTED_START_ITEM.get(questId);
+        if (itemId != null) {
+            grantItem.accept(bot, itemId);
         }
     }
 
@@ -653,8 +691,12 @@ final class BotQuestManager {
         return sb.toString();
     }
 
-    /** "kill 50 Zombie Mushroom, 20 Stump" — the required-mob turn-in objective, ASCII. */
+    /** "kill 50 Zombie Mushroom, 20 Stump" — the required-mob turn-in objective, ASCII. A talk quest
+     *  has no kills: "talk to <end NPC>". */
     static String objectiveSummary(BotQuestIndex.QuestMeta q) {
+        if (q.talk()) {
+            return "talk to " + npcName.name(q.endNpc());
+        }
         StringBuilder sb = new StringBuilder("kill ");
         boolean first = true;
         for (Map.Entry<Integer, Integer> need : q.mobs().entrySet()) {

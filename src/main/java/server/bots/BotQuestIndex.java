@@ -56,7 +56,9 @@ final class BotQuestIndex {
     private static final Logger log = LoggerFactory.getLogger(BotQuestIndex.class);
     // v2: adds the item-req reverse map (Feature B quest-item hygiene). Bumped so a warm v1 cache
     // (which lacks the ITEMREQ rows) is rebuilt rather than loaded with an empty reverse map.
-    private static final int INDEX_VERSION = 2;
+    // v3: indexes TALK quests too (talk NPC A -> talk NPC B). Bumped so a v2 cache (mob quests only,
+    // no talk column) is rebuilt rather than loaded missing the talk-quest rows.
+    private static final int INDEX_VERSION = 3;
     private static final Path CACHE_FILE =
             Path.of("cache", "bot-quest", "v" + INDEX_VERSION, "quest-index.tsv");
     private static final Path SCRIPT_DIR = Path.of("scripts", "quest");
@@ -70,7 +72,17 @@ final class BotQuestIndex {
     record QuestMeta(int id, int startNpc, int endNpc, int lvmin,
                      Map<Integer, Integer> mobs, int rewardExp, List<Integer> rewardItems,
                      boolean autoStart, boolean autoComplete, boolean scripted,
-                     List<String> completeReqKeys) {}
+                     List<String> completeReqKeys, boolean talk) {
+        /** Back-compat 11-arg form (pre-talk): builds a non-talk mob quest. Used by the slice-1/2
+         *  unit tests and the cache-row reader, which never construct talk quests. */
+        QuestMeta(int id, int startNpc, int endNpc, int lvmin,
+                  Map<Integer, Integer> mobs, int rewardExp, List<Integer> rewardItems,
+                  boolean autoStart, boolean autoComplete, boolean scripted,
+                  List<String> completeReqKeys) {
+            this(id, startNpc, endNpc, lvmin, mobs, rewardExp, rewardItems,
+                    autoStart, autoComplete, scripted, completeReqKeys, false);
+        }
+    }
 
     /** One quest that REQUIRES an item (to start at Check.img node 0, or to complete at node 1).
      *  {@code lvmin}/{@code lvmax} are that quest's level window (0 = absent). Drives the Feature B
@@ -115,9 +127,16 @@ final class BotQuestIndex {
     private static final java.util.Set<String> ALLOWED_COMPLETE_KEYS = java.util.Set.of(
             "mob", "npc", "lvmin", "lvmax", "job", "quest", "interval", "normalAutoStart", "infoNumber");
 
-    /** True when this quest is the kill-and-turn-in shape a bot can drive by itself. Pure over
+    /** True when this quest is a bot-runnable shape: either the kill-and-turn-in MOB quest (slice
+     *  1/2) or a pure TALK quest (talk NPC A -> talk NPC B, no kills, no fetched items). Pure over
      *  {@link QuestMeta}; the WZ parse is elsewhere. */
     static boolean qualifies(QuestMeta q) {
+        return qualifiesMob(q) || q.talk();
+    }
+
+    /** The original kill-and-turn-in shape: not scripted, both NPCs, at least one required mob, and
+     *  every complete-req is a kill target or a runtime-rechecked gate. */
+    static boolean qualifiesMob(QuestMeta q) {
         if (q.scripted()) {
             return false;
         }
@@ -302,8 +321,52 @@ final class BotQuestIndex {
             }
         }
 
+        boolean talk = isTalkShape(startNpc, endNpc, mobs, complete);
+
         return new QuestMeta(id, startNpc, endNpc, lvmin, mobs, rewardExp, rewardItems,
-                autoStart, autoComplete, scripted, completeKeys);
+                autoStart, autoComplete, scripted, completeKeys, talk);
+    }
+
+    /** A TALK quest is the simplest bot-runnable shape: walk to the start NPC and press start, walk
+     *  to the end NPC and press complete — no kills, no items the bot must fetch. It qualifies when
+     *  it has both NPCs, NO required mobs, and every COMPLETE requirement is either a runtime-rechecked
+     *  gate (level/job/prereq/npc/...) OR a non-blocking item req (count {@literal <=} 0, i.e. a
+     *  tutorial "use this" item that {@code ItemRequirement} treats as already satisfied — e.g.
+     *  Roger's Apple in q1021). Scripts don't block: {@code ScriptRequirement.check} always returns
+     *  true, so a startscript/endscript quest is still completable via {@code Quest.start/complete}. */
+    static boolean isTalkShape(int startNpc, int endNpc, Map<Integer, Integer> mobs, Data complete) {
+        if (startNpc <= 0 || endNpc <= 0 || !mobs.isEmpty()) {
+            return false;
+        }
+        if (complete == null) {
+            return false;
+        }
+        for (Data req : complete.getChildren()) {
+            String key = req.getName();
+            if (ALLOWED_COMPLETE_KEYS.contains(key) || "startscript".equals(key) || "endscript".equals(key)) {
+                continue;
+            }
+            if ("item".equals(key)) {
+                if (hasBlockingItemReq(req)) {
+                    return false; // a real fetch item the bot can't get by talking
+                }
+                continue;
+            }
+            return false; // money/pop/pet/... — out of a talk quest's reach
+        }
+        return true;
+    }
+
+    /** True when any item entry under a Check.img item node demands a positive count (a real fetch).
+     *  Count-absent / {@literal <=}0 entries are tutorial "consume this" markers the runtime
+     *  {@code ItemRequirement} treats as satisfied (countNeeded 0), so they don't block a bot. */
+    private static boolean hasBlockingItemReq(Data itemNode) {
+        for (Data it : itemNode.getChildren()) {
+            if (DataTool.getInt("count", it, 0) > 0) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** Mirrors {@code Quest.isAutoStart() && Quest.isAutoComplete()} read straight off a
@@ -379,7 +442,7 @@ final class BotQuestIndex {
         }
     }
 
-    /** Row: id \t startNpc \t endNpc \t lvmin \t rewardExp \t mob:count,... \t item,... */
+    /** Row: id \t startNpc \t endNpc \t lvmin \t rewardExp \t mob:count,... \t item,... \t talk(0/1) */
     private static QuestMeta parseRow(String line) {
         String[] f = line.split("\t", -1);
         if (f.length < 7) {
@@ -399,10 +462,15 @@ final class BotQuestIndex {
                 items.add(Integer.parseInt(s));
             }
         }
-        // Cached rows are already-qualified mob quests: non-scripted, mob-only completes.
+        boolean talk = f.length > 7 && "1".equals(f[7]);
+        // Cached rows are already-qualified: mob quests have mob-only completes; talk quests have
+        // none. completeReqKeys is reconstructed enough to keep status/objective rendering correct.
+        List<String> completeKeys = talk
+                ? new ArrayList<>(List.of("npc"))
+                : new ArrayList<>(mobs.keySet().stream().map(x -> "mob").toList());
         return new QuestMeta(id, Integer.parseInt(f[1]), Integer.parseInt(f[2]),
                 Integer.parseInt(f[3]), mobs, Integer.parseInt(f[4]), items,
-                false, false, false, new ArrayList<>(mobs.keySet().stream().map(x -> "mob").toList()));
+                false, false, talk, completeKeys, talk);
     }
 
     private static void writeCache(Index idx) {
@@ -429,6 +497,7 @@ final class BotQuestIndex {
                     sb.append(it);
                     first = false;
                 }
+                sb.append('\t').append(q.talk() ? '1' : '0');
                 sb.append('\n');
             }
             sb.append("AUTO\t");

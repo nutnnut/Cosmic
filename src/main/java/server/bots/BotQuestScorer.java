@@ -103,4 +103,36 @@ final class BotQuestScorer {
         }
         return value / forgoneExp;
     }
+
+    /** Exp-equivalent worth a TALK quest carries beyond its (often tiny or zero) reward exp: it
+     *  advances the bot's tutorial/story line, unlocks follow-ups, and is cheap. A fresh low-level
+     *  bot earns very little exp/min, so this modest base is enough to make the cluster of early
+     *  talk quests (Heena/Sera, Roger, Nina, Todd) clear the "worth it" bar — exactly the
+     *  calibration intent. A visible knob; not tuned to be huge so it fades against a real grind
+     *  baseline once the bot levels and these quests fall out of its level window anyway. */
+    static final double TALK_QUEST_BASE_VALUE = 200.0;
+
+    /**
+     * Score one TALK quest (talk NPC A -> talk NPC B, no kills, no fetched items). Value is the
+     * {@link #TALK_QUEST_BASE_VALUE} completion worth plus the reward exp and any unique-equip
+     * reward bonus; cost is the forgone grind exp during the NPC round trip. Same value/cost ratio
+     * and {@link #RECOMMEND_MIN_SCORE} semantics as {@link #score} so one bar governs both shapes.
+     *
+     * @param rewardExp          complete-action exp reward (0 for a pure tutorial talk quest)
+     * @param uniqueRewardBonus  exp-equivalent of a unique equip reward (0 when none)
+     * @param travelSeconds      round-trip travel seconds to the start+end NPC
+     * @param grindExpPerMinute  the bot's actual grind exp/min (the opportunity-cost baseline)
+     * @return value / cost, a multiple of the grind baseline (>1 beats grinding).
+     */
+    static double scoreTalk(int rewardExp, double uniqueRewardBonus,
+                            double travelSeconds, double grindExpPerMinute) {
+        double baseline = Math.max(MIN_BASELINE_EXP_PER_MINUTE, grindExpPerMinute);
+        double value = TALK_QUEST_BASE_VALUE + rewardExp + uniqueRewardBonus;
+        double forgoneExp = (Math.max(0.0, travelSeconds) / 60.0) * baseline;
+        if (forgoneExp <= 0.0) {
+            // Already at the NPC (zero travel): a talk quest is pure win.
+            return Double.MAX_VALUE;
+        }
+        return value / forgoneExp;
+    }
 }
