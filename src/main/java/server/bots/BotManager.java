@@ -78,7 +78,7 @@ public class BotManager {
         // Don't start a BUY-pots town errand below this much meso: a broke bot (e.g. a fresh lv1
         // ownerless spawn) would otherwise walk all the way to a shop, buy nothing on NOT_ENOUGH_MESO,
         // walk back, and repeat. The SELL-trash errand is NOT gated by this - selling earns the meso.
-        public int RESUPPLY_MIN_MESO = 500;
+        public int RESUPPLY_MIN_MESO = 5000;
 
         // Follow stagger: each bot is offset this many px from the owner (index-based, alternating left/right)
         public int FOLLOW_STAGGER = 60;
