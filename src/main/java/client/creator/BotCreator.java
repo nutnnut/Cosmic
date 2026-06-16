@@ -11,6 +11,7 @@ import constants.id.MapId;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import server.ItemInformationProvider;
+import server.bots.BotAppearance;
 
 /**
  * Creates bot/companion characters server-side using the same Character.getDefault +
@@ -28,11 +29,12 @@ public class BotCreator extends CharacterFactory {
 
         Character botChar = Character.getDefault(c);
         botChar.setWorld(c.getWorld());
-        botChar.setSkinColor(SkinColor.getById(0));
-        botChar.setGender(0);
+        BotAppearance look = BotAppearance.random();
+        botChar.setSkinColor(SkinColor.getById(look.skin));
+        botChar.setGender(look.gender);
         botChar.setName(name);
-        botChar.setHair(30020);
-        botChar.setFace(20100);
+        botChar.setHair(look.hair);
+        botChar.setFace(look.face);
         botChar.setJob(Job.BEGINNER);
         botChar.setLevel(1);
         botChar.setMapId(MapId.MUSHROOM_TOWN);

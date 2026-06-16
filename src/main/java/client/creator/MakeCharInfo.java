@@ -79,6 +79,26 @@ public class MakeCharInfo {
         }
     }
 
+    /** Legal face ids for this gender/type (defensive copy). */
+    public Set<Integer> getFaces() {
+        return new HashSet<>(charFaces);
+    }
+
+    /** Legal hair base ids (color stripped) for this gender/type (defensive copy). */
+    public Set<Integer> getHairs() {
+        return new HashSet<>(charHairs);
+    }
+
+    /** Legal hair color ids (0-9) for this gender/type (defensive copy). */
+    public Set<Integer> getHairColors() {
+        return new HashSet<>(charHairColors);
+    }
+
+    /** Legal skin color ids for this gender/type (defensive copy). */
+    public Set<Integer> getSkins() {
+        return new HashSet<>(charSkins);
+    }
+
     public boolean verifyFaceId(int id) {
         return this.charFaces.contains(id);
     }
