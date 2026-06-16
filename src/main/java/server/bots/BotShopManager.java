@@ -560,6 +560,8 @@ final class BotShopManager {
                 !mage, POT_SECONDARY_RESERVE_FRAC, mage ? "MP pots" : "HP pots"));
         actions.add((sequence, shop) -> buyPotsCapped(sequence, bot, shop,
                 mage, 0.0, mage ? "HP pots" : "MP pots"));
+        // Last: spend any surplus on a worthwhile gear upgrade (after consumables are covered).
+        actions.add(BotShopManager::evaluateAndBuyEquip);
 
         runPurchaseStep(new PurchaseSequence(entry, bot, npcPos, actions, new ArrayList<>(), null), 0);
     }
@@ -1006,6 +1008,62 @@ final class BotShopManager {
             break;
         }
         return new BuyReport(shortfallItemId, recharged, attempted, reason);
+    }
+
+    /** Cap on meso spent buying gear per shop visit, so one purchase can't drain the bot. */
+    private static final int EQUIP_BUY_MAX_MESO = 50_000;
+
+    /**
+     * Buy at most ONE worthwhile equipment upgrade from the shop catalog. Shop equips have FIXED
+     * stats, so they're scored on their base stats with the SAME offense valuation the grind planner
+     * uses for gear ({@link BotScrollManager#potentialValue}) and compared to what's worn in the slot
+     * - one SSOT, no parallel scorer. Only buys a strict upgrade the bot can wear right now, and only
+     * from surplus meso above the resupply floor (capped), so consumable money is never touched. The
+     * bought item is equipped by the regular autoEquip tick (it valued it an upgrade too).
+     */
+    private static PurchaseSequence evaluateAndBuyEquip(PurchaseSequence sequence, Shop shop) {
+        Character bot = sequence.bot();
+        // Surplus only: reserve the pot/ammo resupply floor, then cap the gear spend.
+        long budget = Math.min((long) EQUIP_BUY_MAX_MESO, (long) bot.getMeso() - BotManager.cfg.RESUPPLY_MIN_MESO);
+        if (budget <= 0) {
+            return sequence;
+        }
+        ItemInformationProvider ii = ItemInformationProvider.getInstance();
+        List<ShopItem> items = shop.getItems();
+        short bestShopSlot = -1;
+        int bestItemId = -1;
+        double bestGain = 0.0; // strictly positive gain required -> only a real upgrade is bought
+        for (int i = 0; i < items.size(); i++) {
+            ShopItem si = items.get(i);
+            int id = si.getItemId();
+            int price = si.getPrice();
+            if (price <= 0 || price > budget) {
+                continue;
+            }
+            if (!ItemConstants.isEquipment(id) || ii.isCash(id)) {
+                continue;
+            }
+            Short slot = BotScrollManager.primarySlot(ii, id);
+            if (slot == null) {
+                continue;
+            }
+            if (!(ii.getEquipById(id) instanceof Equip cand) || !ii.canWearEquipment(bot, cand, slot)) {
+                continue; // fixed stats -> must be wearable right now (no future/stat-blocked projection)
+            }
+            Equip worn = BotScrollManager.wornInSlot(bot, ii, slot);
+            double wornValue = worn == null ? 0.0 : BotScrollManager.potentialValue(bot, ii, worn);
+            double gain = BotScrollManager.potentialValue(bot, ii, cand) - wornValue;
+            if (gain > bestGain) {
+                bestGain = gain;
+                bestShopSlot = (short) i;
+                bestItemId = id;
+            }
+        }
+        if (bestItemId != -1
+                && shop.buyDirect(bot, bestShopSlot, bestItemId, (short) 1) == Shop.TransactionResult.SUCCESS) {
+            sequence.bought().add(resolveItemName(bestItemId, "gear"));
+        }
+        return sequence;
     }
 
     private static ShopSlotItem findPotionItem(Shop shop, Character bot, boolean forHp) {
