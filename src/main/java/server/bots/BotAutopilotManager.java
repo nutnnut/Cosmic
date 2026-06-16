@@ -42,7 +42,7 @@ final class BotAutopilotManager {
     static final int MAX_TRAVEL_HOPS = 8;
     private static final long DECISION_INTERVAL_MS = 12 * 60_000L;
     private static final long DECISION_JITTER_MS = 6 * 60_000L; // de-syncs many bots' re-decides
-    private static final long ERRAND_COOLDOWN_MS = 5 * 60_000L; // min spacing between resupply trips
+    private static final long ERRAND_COOLDOWN_MS = 10 * 60_000L; // min spacing between resupply trips
     private static final long OWNER_SUPPLY_GRACE_MS = 20_000L;
     static final long UPGRADE_REDECIDE_DELAY_MS = 25_000L; // re-ask stay-or-leave soon after a roll lands
     private static final long DEATH_STATUS_WINDOW_MS = 5 * 60_000L;
