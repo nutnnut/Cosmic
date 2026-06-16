@@ -1,6 +1,7 @@
 package server.bots;
 
 import client.Character;
+import client.Job;
 import client.inventory.Equip;
 import client.inventory.InventoryType;
 import client.inventory.Item;
@@ -550,20 +551,15 @@ final class BotShopManager {
         if (shouldBuyReturnScrollWhileShopping(bot)) {
             actions.add((sequence, shop) -> appendBuyReport(sequence, buyReturnScrolls(bot, shop), "Return Scroll - Nearest Town"));
         }
-        actions.add((sequence, shop) -> {
-            int[] pots = BotPotionManager.countPotions(bot);
-            if (pots[0] < BotManager.cfg.POT_LOW_WARN * 5) {
-                return appendBuyReport(sequence, buyPotions(bot, shop, true), "HP pots");
-            }
-            return sequence;
-        });
-        actions.add((sequence, shop) -> {
-            int[] pots = BotPotionManager.countPotions(bot);
-            if (pots[1] < BotManager.cfg.POT_LOW_WARN * 5) {
-                return appendBuyReport(sequence, buyPotions(bot, shop, false), "MP pots");
-            }
-            return sequence;
-        });
+        // Class-weighted pot budget: buy the PRIMARY pot type first (mage -> MP, everyone else -> HP)
+        // but cap its spend so the SECONDARY keeps a reserve share of the meso, then the secondary
+        // takes the rest. Without this the first type (HP) drained the whole wallet to its target and
+        // starved the second (MP) - backwards for a mage. Ammo was bought above (essential to attack).
+        boolean mage = bot.getJobStyle() == Job.MAGICIAN;
+        actions.add((sequence, shop) -> buyPotsCapped(sequence, bot, shop,
+                !mage, POT_SECONDARY_RESERVE_FRAC, mage ? "MP pots" : "HP pots"));
+        actions.add((sequence, shop) -> buyPotsCapped(sequence, bot, shop,
+                mage, 0.0, mage ? "HP pots" : "MP pots"));
 
         runPurchaseStep(new PurchaseSequence(entry, bot, npcPos, actions, new ArrayList<>(), null), 0);
     }
@@ -1071,7 +1067,24 @@ final class BotShopManager {
         return bestTooLow != null ? bestTooLow : bestTooHigh;
     }
 
-    private static BuyReport buyPotions(Character bot, Shop shop, boolean forHp) {
+    /** Reserve share of the meso the SECONDARY pot type is guaranteed when the primary buys first,
+     *  so a tight budget can't be fully spent on one pot type while starving the other. */
+    private static final double POT_SECONDARY_RESERVE_FRAC = 0.35;
+
+    /** Buy one pot type, but only if low, and spend at most {@code (1 - reserveForOtherFrac)} of the
+     *  bot's current meso so the other pot type keeps its share. Skips quietly if already stocked. */
+    private static PurchaseSequence buyPotsCapped(PurchaseSequence sequence, Character bot, Shop shop,
+                                                  boolean forHp, double reserveForOtherFrac, String label) {
+        int[] pots = BotPotionManager.countPotions(bot);
+        int current = forHp ? pots[0] : pots[1];
+        if (current >= BotManager.cfg.POT_LOW_WARN * 5) {
+            return sequence;
+        }
+        long mesoCap = (long) Math.floor(bot.getMeso() * (1.0 - reserveForOtherFrac));
+        return appendBuyReport(sequence, buyPotions(bot, shop, forHp, mesoCap), label);
+    }
+
+    private static BuyReport buyPotions(Character bot, Shop shop, boolean forHp, long mesoCap) {
         ShopSlotItem pot = findPotionItem(shop, bot, forHp);
         if (pot == null) {
             return new BuyReport(0, 0, 0, ShortfallReason.NONE);
@@ -1080,7 +1093,14 @@ final class BotShopManager {
         int target = potResupplyTarget();
         int[] pots = BotPotionManager.countPotions(bot);
         int current = forHp ? pots[0] : pots[1];
-        return buyFixedCostItem(bot, shop, pot, Math.max(0, target - current), 100);
+        int want = Math.max(0, target - current);
+        int price = pot.shopItem.getPrice();
+        if (price > 0) {
+            // Cap the quantity to what this type's meso share can afford (buyFixedCostItem's
+            // NOT_ENOUGH_MESO handling is the backstop); leaves the rest for the other pot type.
+            want = (int) Math.min((long) want, mesoCap / price);
+        }
+        return buyFixedCostItem(bot, shop, pot, want, 100);
     }
 
     private static BuyReport buyFixedCostItem(Character bot, Shop shop, ShopSlotItem item, int desiredQuantity, int batchSize) {
