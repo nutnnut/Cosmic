@@ -1814,12 +1814,13 @@ class BotCombatManager {
                                                              Point botPos,
                                                              Foothold botFoothold,
                                                              List<Monster> candidates) {
+        boolean fragile = isFragile(bot); // compute ONCE per scoring pass, not per candidate (USE-bag scan)
         List<ScoredGrindTarget> scoredTargets = new ArrayList<>(candidates.size());
         for (Monster candidate : candidates) {
             long localScore = grindTargetScore(bot, botPos, botFoothold, candidate)
                     - aoeClusterBonus(entry, candidate, candidates)
                     - questTargetBonus(entry, candidate)
-                    + touchDangerPenalty(entry, bot, candidate);
+                    + touchDangerPenalty(fragile, bot, candidate);
             scoredTargets.add(new ScoredGrindTarget(candidate, localScore, localScore,
                     candidate.getPosition().distanceSq(botPos)));
         }
@@ -1832,6 +1833,7 @@ class BotCombatManager {
                                                               Point botPos,
                                                               Foothold botFoothold,
                                                               List<Monster> candidates) {
+        boolean fragile = isFragile(bot); // compute ONCE per scoring pass, not per candidate (USE-bag scan)
         Map<Integer, GrindTargetGroup> groupsByRegionId = new HashMap<>();
         for (Monster candidate : candidates) {
             Point targetPos = candidate.getPosition();
@@ -1844,7 +1846,7 @@ class BotCombatManager {
             long localScore = grindTargetScore(bot, botPos, botFoothold, candidate)
                     - aoeClusterBonus(entry, candidate, candidates)
                     - questTargetBonus(entry, candidate)
-                    + touchDangerPenalty(entry, bot, candidate);
+                    + touchDangerPenalty(fragile, bot, candidate);
             GrindTargetGroup group = groupsByRegionId.computeIfAbsent(targetRegionId, GrindTargetGroup::new);
             group.add(candidate, localScore, targetPos.distanceSq(botPos));
         }
@@ -1974,8 +1976,8 @@ class BotCombatManager {
     // selection is unchanged. Kept SOFT (a single foothold-sized bump, not a hard skip) so a fragile
     // bot still picks the least-bad mob when everything nearby is dangerous — the travel layer and
     // death-loop breaker are the backstops against being stranded somewhere lethal.
-    static long touchDangerPenalty(BotEntry entry, Character bot, Monster target) {
-        if (target == null || bot == null || !cfg.PROACTIVE_RETREAT_ENABLED || !isFragile(bot)) {
+    static long touchDangerPenalty(boolean fragile, Character bot, Monster target) {
+        if (!fragile || target == null || bot == null || !cfg.PROACTIVE_RETREAT_ENABLED) {
             return 0L;
         }
         return server.bots.combat.BotDangerAssessment.isTouchDangerous(bot, target, cfg.TOUCH_HITS_TO_KILL)

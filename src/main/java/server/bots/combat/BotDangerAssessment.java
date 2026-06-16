@@ -27,11 +27,17 @@ public final class BotDangerAssessment {
     /** Samples of the random touch-damage roll; we take the max as the worst-case contact hit. */
     private static final int SAMPLES = 6;
 
-    /** Cache the worst-case touch damage per (bot, mob) — recomputed when the bot's level changes. */
-    private record DamageKey(int botId, int mobId, int botLevel) {
+    /** Cache the worst-case touch damage per (bot, mob, level, WDEF). WDEF is in the key because bots
+     *  auto-equip drops/owner gifts mid-life with NO level change — keying on level alone went stale
+     *  (a re-armored bot kept reading its old, higher touch damage and fleeing now-safe mobs). The mob
+     *  side (PAD) is static per mobId; maxHp isn't cached (the verdict reads it live). */
+    private record DamageKey(int botId, int mobId, int botLevel, int botWdef) {
     }
 
     private static final Map<DamageKey, Integer> DAMAGE_CACHE = new ConcurrentHashMap<>();
+    /** Coarse cap so the cache can't grow without bound over long server uptime (many bot/mob/gear
+     *  combos). The estimate is cheap to recompute, so a hard clear at the cap is fine. */
+    private static final int DAMAGE_CACHE_MAX = 20_000;
 
     private BotDangerAssessment() {
     }
@@ -39,20 +45,23 @@ public final class BotDangerAssessment {
     /**
      * Worst-case physical touch (contact) damage this mob can deal the bot, after the bot's armor.
      * Wraps the SSOT roll (sampled {@link #SAMPLES} times, max taken — the roll has a random factor
-     * and a hit/miss gate, so a single call would understate the threat on a miss). Lightly cached
-     * per (botId, mobId, botLevel); the level component invalidates the entry on level-up (and, in
-     * practice, on the gear/stat swings that ride along with leveling) — kept deliberately simple.
+     * and a hit/miss gate, so a single call would understate the threat on a miss). Cached per
+     * (botId, mobId, botLevel, botWdef) so a level-up OR a gear swap (bots re-equip without leveling)
+     * invalidates the entry; the cache is size-capped ({@link #DAMAGE_CACHE_MAX}) against unbounded growth.
      */
     public static int estimateMaxTouchDamage(Character bot, Monster mob) {
         if (bot == null || mob == null) {
             return 0;
         }
-        DamageKey key = new DamageKey(bot.getId(), mob.getId(), bot.getLevel());
+        DamageKey key = new DamageKey(bot.getId(), mob.getId(), bot.getLevel(), bot.getTotalWdef());
         Integer cached = DAMAGE_CACHE.get(key);
         if (cached != null) {
             return cached;
         }
         int worst = rollWorstCaseTouchDamage(bot, mob);
+        if (DAMAGE_CACHE.size() >= DAMAGE_CACHE_MAX) {
+            DAMAGE_CACHE.clear();
+        }
         DAMAGE_CACHE.put(key, worst);
         return worst;
     }

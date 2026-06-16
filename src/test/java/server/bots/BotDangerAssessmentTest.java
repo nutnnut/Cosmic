@@ -104,8 +104,10 @@ class BotDangerAssessmentTest {
             Monster dangerous = stubMob(700, 15); // big PAD -> dangerous
             Monster harmless = stubMob(0, 5);      // 0 PAD -> rollPhysicalTouchDamage returns 1, safe
 
-            long dangerScore = BotCombatManager.touchDangerPenalty(entry, fragile, dangerous);
-            long safeScore = BotCombatManager.touchDangerPenalty(entry, fragile, harmless);
+            // fragile flag is now precomputed once per scoring pass (hoisted out of the per-candidate
+            // loop); pass true here since `fragile` bot has maxHp <= TOUCH_FRAGILE_MAXHP.
+            long dangerScore = BotCombatManager.touchDangerPenalty(true, fragile, dangerous);
+            long safeScore = BotCombatManager.touchDangerPenalty(true, fragile, harmless);
 
             // ADDED to localScore (lower wins), so the dangerous mob must score strictly higher (worse).
             assertTrue(dangerScore > safeScore,
