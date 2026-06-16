@@ -81,6 +81,10 @@ class BotMovementManager {
         public int FOLLOW_DIST = 80;
         public int GRIND_EDGE_MARGIN = 40; // keep bot this many px from foothold edge while grinding
         public int MOB_AVOID_LOOKAHEAD_STEPS = 3;
+        // Per-grounded-tick chance to actually commit a legal dodge jump when a mob blocks the walk
+        // lane. < 1.0 adds humanlike reaction jitter so dodges aren't frame-perfect; the bot re-rolls
+        // each grounded tick the mob stays in the lane, so a high value still dodges promptly.
+        public double MOB_AVOID_REACTION_CHANCE = 0.6;
 
         public int JUMP_Y_THRESH = 30;
         // Within-map "hopelessly far -> teleport to target" fallback. Big maps legitimately exceed
@@ -647,7 +651,13 @@ class BotMovementManager {
         if (entry == null || entry.bot == null || currentFh == null || botPos == null || stepX == 0) {
             return false;
         }
-        if ((!entry.following && !entry.grinding) || entry.navEdge != null || entry.navPreciseTarget) {
+        // Mode gate: dodge applies to autopilot-driven ground locomotion (following or grinding, which
+        // also covers travel — BotAutopilotManager resumes travel with grinding=true). It must NOT fire
+        // while a non-WALK edge is committed (JUMP/DROP/CLIMB/PORTAL have launch windows a dodge would
+        // wreck) nor while steering to a precise nav target. A committed WALK edge is itself plain
+        // ground walking toward a region exit, so dodging across it is safe: simulatedJumpLandsInCurrentRegion
+        // below guarantees the bot lands in the same region and does not derail the path.
+        if (!dodgeModeAllowed(entry.following, entry.grinding, entry.navEdge, entry.navPreciseTarget)) {
             return false;
         }
 
@@ -656,7 +666,32 @@ class BotMovementManager {
             return false;
         }
 
+        // Humanlike reaction: don't dodge with perfect reflexes the instant a mob enters the lane.
+        // The bot is grounded only between jumps, so the natural airborne spacing already prevents
+        // per-tick spam; this jitter just adds a little imperfection so dodges aren't frame-perfect.
+        if (ThreadLocalRandom.current().nextDouble() >= cfg.MOB_AVOID_REACTION_CHANCE) {
+            return false;
+        }
+
         return simulatedJumpLandsInCurrentRegion(entry, currentFh, botPos, stepX);
+    }
+
+    /**
+     * Pure mode predicate for the walk-lane mob dodge (separated for unit testing without nav/graph
+     * state). Dodge is allowed only during autopilot-driven ground locomotion (following or grinding;
+     * travel resumes with grinding=true), and only when not steering to a precise nav target and not on
+     * a committed non-WALK edge. A committed WALK edge is still plain ground walking, so dodging across
+     * it is safe; JUMP/DROP/CLIMB/PORTAL edges have launch windows a dodge would wreck.
+     */
+    static boolean dodgeModeAllowed(boolean following, boolean grinding,
+            BotNavigationGraph.Edge navEdge, boolean navPreciseTarget) {
+        if (!following && !grinding) {
+            return false;
+        }
+        if (navPreciseTarget) {
+            return false;
+        }
+        return navEdge == null || navEdge.type == BotNavigationGraph.EdgeType.WALK;
     }
 
     private static Monster firstBlockingMobInWalkLane(BotEntry entry, Foothold currentFh, Point botPos, int stepX) {

@@ -1018,6 +1018,37 @@ class BotMovementManagerTest {
         assertFalse(entry.navPreciseTarget);
     }
 
+    private static BotNavigationGraph.Edge edge(BotNavigationGraph.EdgeType type) {
+        return new BotNavigationGraph.Edge(0, 1, type, new Point(0, 0), new Point(100, 0),
+                1, 0, 0, 0, 0, 0);
+    }
+
+    @Test
+    void dodgeModeAllowedOnlyDuringGroundLocomotionOffLaunchEdges() {
+        // Idle (neither following nor grinding): never dodge.
+        assertFalse(BotMovementManager.dodgeModeAllowed(false, false, null, false));
+
+        // Following with free walking (no committed edge): dodge allowed.
+        assertTrue(BotMovementManager.dodgeModeAllowed(true, false, null, false));
+
+        // Grinding (also the travel state — autopilot resumes travel with grinding=true): allowed.
+        assertTrue(BotMovementManager.dodgeModeAllowed(false, true, null, false));
+
+        // THE GAP THIS TASK FIXES: a committed WALK edge is still plain ground walking, so dodge
+        // must be allowed across it (previously navEdge != null blocked all dodges during travel).
+        assertTrue(BotMovementManager.dodgeModeAllowed(false, true, edge(BotNavigationGraph.EdgeType.WALK), false));
+
+        // Non-WALK edges have launch windows a dodge would wreck: never dodge mid JUMP/DROP/CLIMB/PORTAL.
+        assertFalse(BotMovementManager.dodgeModeAllowed(false, true, edge(BotNavigationGraph.EdgeType.JUMP), false));
+        assertFalse(BotMovementManager.dodgeModeAllowed(false, true, edge(BotNavigationGraph.EdgeType.DROP), false));
+        assertFalse(BotMovementManager.dodgeModeAllowed(false, true, edge(BotNavigationGraph.EdgeType.CLIMB), false));
+        assertFalse(BotMovementManager.dodgeModeAllowed(false, true, edge(BotNavigationGraph.EdgeType.PORTAL), false));
+
+        // Precise nav target steering: never dodge even on a WALK edge.
+        assertFalse(BotMovementManager.dodgeModeAllowed(false, true, edge(BotNavigationGraph.EdgeType.WALK), true));
+        assertFalse(BotMovementManager.dodgeModeAllowed(true, false, null, true));
+    }
+
     private static Character mockBot(Point startPosition, MapleMap map) {
         Character bot = mock(Character.class);
         AtomicReference<Point> position = new AtomicReference<>(new Point(startPosition));
