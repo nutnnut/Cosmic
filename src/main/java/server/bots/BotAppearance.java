@@ -62,6 +62,12 @@ public final class BotAppearance {
     }
 
     private static int randomOf(Set<Integer> pool) {
+        if (pool == null || pool.isEmpty()) {
+            // An empty legal pool means the WZ char-creation data (Etc.wz/MakeCharInfo.img) failed to
+            // load. Fail fast with a clear cause instead of a bare IllegalArgumentException from
+            // nextInt(0); there is no safe hardcoded fallback look (the old face=20100 was illegal).
+            throw new IllegalStateException("empty appearance pool - Etc.wz/MakeCharInfo.img not loaded?");
+        }
         List<Integer> list = new ArrayList<>(pool);
         return list.get(ThreadLocalRandom.current().nextInt(list.size()));
     }

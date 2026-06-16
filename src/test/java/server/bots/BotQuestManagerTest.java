@@ -574,8 +574,10 @@ class BotQuestManagerTest {
     }
 
     @Test
-    void talkQuestStartGrantsScriptedItemForRogersApple() {
-        // q1021 start NPC arrival: the bot self-grants Roger's Apple (2010007) the NPC script gives.
+    void talkQuestStartDoesNotGrantRogersAppleSoItCanComplete() {
+        // q1021's COMPLETE req is "item 2010007, countNeeded 0" -> ItemRequirement fails if you HOLD
+        // the apple (player eats it, turns in with zero). So the bot must NOT self-grant it on start,
+        // or it could never turn the quest in. Assert the start grants nothing.
         Character bot = mock(Character.class);
         server.maps.MapleMap map = mock(server.maps.MapleMap.class);
         server.life.NPC npc = mock(server.life.NPC.class);
@@ -602,7 +604,7 @@ class BotQuestManagerTest {
         BotQuestManager.tickErrand(e, bot, false);
 
         assertEquals(List.of(1021), g.startsCalled, "start must be called at the NPC");
-        assertEquals(List.of(2010007), granted, "Roger's Apple must be self-granted on start");
+        assertTrue(granted.isEmpty(), "Roger's Apple must NOT be granted - holding it blocks turn-in");
     }
 
     @Test

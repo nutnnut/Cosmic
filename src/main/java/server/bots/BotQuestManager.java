@@ -619,6 +619,9 @@ final class BotQuestManager {
                 interactAndFinish(entry, bot);
                 return false; // grind resumes on the return map next ticks
             }
+            case TRAVEL_YIELDED -> {
+                return false; // travel gave up this tick — let the bot grind, errand retries/timeouts
+            }
             default -> {
                 return true; // TRAVELING / WALKING — tick consumed
             }
@@ -655,13 +658,14 @@ final class BotQuestManager {
         }
     }
 
-    /** The one scripted talk quest a bot runs whose tutorial NPC dialog GIVES an item the player is
-     *  then asked to consume - q1021 Roger's Apple (item 2010007). The bot can't run the NPC dialog
-     *  script, so it self-grants the item the script would (count 1), the SAME legal grant
-     *  {@link BotFerryManager}/{@link BotGachaponManager} use. This is the single allowed hardcoded
-     *  step (per the owner): the quest still STARTS and COMPLETES through {@link Quest#start}/{@code
-     *  complete}; only the script's item gift is reproduced. Other talk quests give nothing on start. */
-    static final Map<Integer, Integer> SCRIPTED_START_ITEM = Map.of(1021, 2010007);
+    /** Per-quest item the start-NPC script would GIVE, for the rare scripted talk quest where the bot
+     *  must reproduce that gift. EMPTY for now: the one candidate, q1021 Roger's Apple (2010007), must
+     *  NOT be granted — its COMPLETE requirement is "item 2010007, countNeeded 0", and
+     *  {@link server.quest.requirements.ItemRequirement#check} fails when {@code countNeeded <= 0 &&
+     *  count > 0}. I.e. the player EATS the apple and turns in holding ZERO; a bot that self-grants it
+     *  could never complete the quest. So the bot starts q1021 with no apple and turns it in clean.
+     *  Only add an id here if the script's item is genuinely ADDITIVE (needed at turn-in, not consumed). */
+    static final Map<Integer, Integer> SCRIPTED_START_ITEM = Map.of();
 
     /** Item grant seam (production: the legal {@code InventoryManipulator.addById}); tests stub it. */
     static java.util.function.ObjIntConsumer<Character> grantItem = (bot, itemId) -> {
@@ -672,13 +676,12 @@ final class BotQuestManager {
                         bot.getClient(), itemId, (short) 1);
             }
         } catch (RuntimeException ignored) {
-            // a failed grant is non-fatal: the talk-quest complete-req for this item is count-0
-            // (non-blocking), so the quest still turns in.
+            // a failed grant is non-fatal.
         }
     };
 
-    /** Reproduce the start-NPC script's item gift for the one quest that has one (q1021). No-op for
-     *  every other quest. */
+    /** Reproduce a start-NPC script's ADDITIVE item gift, for any quest listed in
+     *  {@link #SCRIPTED_START_ITEM} (currently none). No-op otherwise. */
     static void grantScriptedStartItem(Character bot, int questId) {
         Integer itemId = SCRIPTED_START_ITEM.get(questId);
         if (itemId != null) {

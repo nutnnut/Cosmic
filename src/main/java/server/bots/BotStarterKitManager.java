@@ -190,6 +190,9 @@ final class BotStarterKitManager {
                 advanceJob(entry, target);
                 return false;
             }
+            case TRAVEL_YIELDED -> {
+                return false; // travel gave up this tick — release it (errand retries / times out)
+            }
             default -> {
                 return true; // TRAVELING / WALKING — tick consumed
             }

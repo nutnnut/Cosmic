@@ -711,6 +711,9 @@ class BotAutopilotManagerTest {
             travel.when(() -> BotTravelManager.tickTravel(any(), any(), anyInt(), anyInt(), anyBoolean(), anyBoolean()))
                     .thenReturn(true);
             BotAutopilotManager.supplyLevel = bot -> true; // low on supplies
+            // ...and able to afford the restock: the pre-travel gate is low && canAffordPotResupply,
+            // and canAffordPotResupply requires meso >= RESUPPLY_MIN_MESO (a broke bot must not detour).
+            when(f.bot().getMeso()).thenReturn(50_000);
 
             assertTrue(BotAutopilotManager.tick(f.entry(), f.bot(), true));
             assertEquals(TOWN, f.entry().autopilotErrandMapId); // errand triggered pre-travel

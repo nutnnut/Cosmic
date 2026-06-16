@@ -505,10 +505,11 @@ final class BotTravelManager {
 
     /** Outcome of one {@link #tickApproachNpc} step. */
     enum ApproachStatus {
-        TRAVELING,  // still hopping toward the NPC's map (tick consumed)
-        WALKING,    // on the NPC's map, walking within radius (tick consumed)
-        ARRIVED,    // within radius of the NPC this tick (caller acts; tick NOT consumed)
-        NPC_GONE    // NPC isn't on the resolved map (caller aborts; tick NOT consumed)
+        TRAVELING,      // still hopping toward the NPC's map (tick consumed)
+        TRAVEL_YIELDED, // travel gave up this tick (give-up window) — tick NOT consumed, let grind resume
+        WALKING,        // on the NPC's map, walking within radius (tick consumed)
+        ARRIVED,        // within radius of the NPC this tick (caller acts; tick NOT consumed)
+        NPC_GONE        // NPC isn't on the resolved map (caller aborts; tick NOT consumed)
     }
 
     /**
@@ -522,8 +523,11 @@ final class BotTravelManager {
     static ApproachStatus tickApproachNpc(BotEntry entry, Character bot, int targetMapId, int npcId,
                                           int maxHops, boolean runAiTick, int radiusPx) {
         if (bot.getMapId() != targetMapId) {
-            tickTravel(entry, bot, targetMapId, maxHops, runAiTick, false);
-            return ApproachStatus.TRAVELING;
+            // Propagate tickTravel's verdict: it returns false in its give-up window (no movement for
+            // up to ~45s), and the caller must release the tick then so the bot grinds instead of
+            // standing frozen until the errand's own timeout. (Pre-extraction tickErrand returned this.)
+            boolean moved = tickTravel(entry, bot, targetMapId, maxHops, runAiTick, false);
+            return moved ? ApproachStatus.TRAVELING : ApproachStatus.TRAVEL_YIELDED;
         }
         server.life.NPC npc = bot.getMap() == null ? null : bot.getMap().getNPCById(npcId);
         if (npc == null || npc.getPosition() == null) {

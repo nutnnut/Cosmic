@@ -67,7 +67,7 @@ final class BotAutopilotManager {
         Set<Integer> reachable = BotWorldGraph.reachableWithin(fromMapId, maxHops, options,
                 m -> isAvoided(entry, m) || isDangerRegionBlocked(bot, m));
         return BotGrindAdvisor.recommend(entry, bot, reachable::contains,
-                travelWeight(bot, fromMapId, maxHops, options));
+                travelWeight(bot, fromMapId, maxHops, options, entry.activeQuestMobIds));
     };
 
     @FunctionalInterface
@@ -81,7 +81,7 @@ final class BotAutopilotManager {
         Set<Integer> reachable = BotWorldGraph.reachableWithin(fromMapId, maxHops, options,
                 m -> isAvoided(entry, m) || isDangerRegionBlocked(bot, m));
         return BotGrindAdvisor.recommendFarmItem(entry, bot, itemId, reachable::contains,
-                travelWeight(bot, fromMapId, maxHops, options));
+                travelWeight(bot, fromMapId, maxHops, options, entry.activeQuestMobIds));
     };
 
     // Death-loop breaker tuning. Deaths closer together than the window chain into a streak; once the
@@ -161,13 +161,14 @@ final class BotAutopilotManager {
      * the bot's world at query time, never cached.
      */
     private static IntToDoubleFunction travelWeight(Character bot, int fromMapId, int maxHops,
-                                                    BotWorldGraph.RouteOptions options) {
+                                                    BotWorldGraph.RouteOptions options, Set<Integer> questMobs) {
         IntToLongFunction transportationTime = ms -> bot.getWorldServer().getTransportationTime(ms);
         Map<Integer, Double> seconds = BotTravelCost.floodSeconds(fromMapId, maxHops, options, transportationTime);
         int level = bot.getLevel();
         // Quest commitment: boost maps that spawn a mob the bot still needs for a started quest, so it
-        // goes to finish what it accepted instead of drifting to a richer grind. Computed once per pass.
-        Set<Integer> questMobs = BotQuestManager.activeQuestMobIds(bot);
+        // goes to finish what it accepted instead of drifting to a richer grind. questMobs is the
+        // tick-thread-refreshed BotEntry snapshot (volatile) - NOT recomputed here, since this runs on
+        // DECIDE_POOL and iterating the live quest-progress map off-thread races the kill counter (CME).
         return mapId -> BotTravelCost.scoreWeight(seconds, mapId, level)
                 * BotQuestManager.questMapScoreBias(mapId, questMobs);
     }
@@ -193,7 +194,8 @@ final class BotAutopilotManager {
             BotWorldGraph.RouteOptions options = travelOptions(member.bot, ferryAllowed(member));
             Set<Integer> reachable = BotWorldGraph.reachableWithin(
                     member.bot.getMapId(), MAX_TRAVEL_HOPS, options);
-            weights.add(travelWeight(member.bot, member.bot.getMapId(), MAX_TRAVEL_HOPS, options));
+            weights.add(travelWeight(member.bot, member.bot.getMapId(), MAX_TRAVEL_HOPS, options,
+                    member.activeQuestMobIds));
             if (common == null) {
                 common = new HashSet<>(reachable);
             } else {
