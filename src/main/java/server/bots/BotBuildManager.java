@@ -12,6 +12,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ThreadLocalRandom;
 import server.bots.build.BowmanBuilds;
+import constants.skills.Beginner;
 import server.bots.build.BuildStep;
 import server.bots.build.MageBuilds;
 import server.bots.build.ThiefBuilds;
@@ -374,7 +375,14 @@ class BotBuildManager {
         };
     }
 
+    /** Beginner SP goes into Recovery (spend MP -> HP regen): a cheap survival skill that lets a
+     *  fresh/broke bot self-heal without potions. Recovery maxes at level 3; canLevelSkill caps it. */
+    private static final List<BuildStep> BEGINNER_BUILD = List.of(new BuildStep(Beginner.RECOVERY, 3));
+
     private static List<BuildStep> getBuildOrder(Job job, String variant) {
+        if (job == Job.BEGINNER) {
+            return BEGINNER_BUILD;
+        }
         List<BuildStep> warriorBuild = WarriorBuilds.getBuildOrder(job, variant);
         if (warriorBuild != null) {
             return warriorBuild;

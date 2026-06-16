@@ -18,6 +18,7 @@ import constants.skills.Buccaneer;
 import constants.skills.Cleric;
 import constants.skills.Corsair;
 import constants.skills.Crossbowman;
+import constants.skills.Beginner;
 import constants.skills.Crusader;
 import constants.skills.DawnWarrior;
 import constants.skills.DragonKnight;
@@ -78,7 +79,10 @@ class BotCombatManager {
     // breaking combat entirely.
     static final Set<Integer> BUFF_BLACKLIST = Set.of(
             Rogue.DARK_SIGHT,
-            NightWalker.DARK_SIGHT
+            NightWalker.DARK_SIGHT,
+            // Recovery is driven by tryCastRecovery (HP-gated, runs in and out of combat), not the
+            // combat buff loop, so it isn't rebuffed blindly while at full HP.
+            Beginner.RECOVERY
     );
     static final Set<Integer> NON_DAMAGE_ACTIVE_SKILL_IDS = Set.of(
             Crusader.ARMOR_CRASH,
@@ -198,6 +202,9 @@ class BotCombatManager {
         // kick a diagonal jump toward them just before the heal cast so the bot keeps closing
         // distance instead of stopping to plant the heal animation. 0 disables.
         public int   JUMP_HEAL_LEADER_AHEAD_PX = 80;
+        // Beginner Recovery (spend MP -> HP regen): cast proactively to save pots, but only worth the
+        // cast time on low-HP-pool bots. Above this max-HP the slow regen isn't worth interrupting for.
+        public int   RECOVERY_MAXHP_CAP = 500;
     }
 
     static Config cfg = new Config();
@@ -2502,6 +2509,30 @@ class BotCombatManager {
         }
 
         return false;
+    }
+
+    /**
+     * Beginner Recovery as a top-priority, pot-saving self-heal: cast proactively whenever the bot is
+     * below full HP so the slow MP->HP regen runs in the background, in OR out of combat. It does not
+     * replace potions — the client autopot still fires at its HP threshold (Recovery is too slow to
+     * hold the line alone), this just bleeds the gap with MP the low-level bot isn't otherwise using.
+     * Gated to {@code RECOVERY_MAXHP_CAP}: above that HP pool the cast time isn't worth it. Reuses the
+     * {@link #castSupportSkill} cast SSOT (MP cost, visible SPECIAL_MOVE packet, animation lock).
+     */
+    static boolean tryCastRecovery(BotEntry entry, Character bot) {
+        if (entry.attackCooldownMs > 0) return false;                 // mid-animation: don't interrupt an attack/heal
+        if (entry.inAir || entry.climbing) return false;              // cast planted on the ground, like a player
+        if (bot == null || !bot.isAlive()) return false;
+        if (bot.getMaxHp() >= cfg.RECOVERY_MAXHP_CAP) return false;   // big HP pool: slow regen not worth the cast
+        if (bot.getHp() >= bot.getCurrentMaxHp()) return false;       // already topped off
+        if (bot.getBuffedValue(BuffStat.RECOVERY) != null) return false; // already regenerating
+        Skill recovery = SkillFactory.getSkill(Beginner.RECOVERY);
+        if (recovery == null) return false;
+        int lvl = bot.getSkillLevel(recovery);
+        if (lvl <= 0) return false;
+        StatEffect fx = recovery.getEffect(lvl);
+        if (fx == null) return false;                                 // canPaySkillCost (MP) is checked inside castSupportSkill
+        return castSupportSkill(entry, bot, recovery, fx, System.currentTimeMillis());
     }
 
     private static boolean castSupportSkill(BotEntry entry, Character bot, Skill skill, StatEffect fx, long now) {
