@@ -443,7 +443,7 @@ final class BotScrollManager {
                 base, tuc, reproSpecs(pc, opts), cleanBaseCostMeso(pc, ii, itemId));
         // wornRivalValue 0 / not-dominated / no fallback: a fresh clean base valued on its own.
         BotScrollPlanner.EquipCandidate c = new BotScrollPlanner.EquipCandidate(
-                itemId, equipName(ii, itemId), base, tuc, tuc, 0.0, false, false, opts, vf);
+                itemId, equipName(ii, itemId), base, tuc, tuc, 0.0, false, false, false, opts, vf);
         BotScrollPlanner.ScrollPlan p = BotScrollPlanner.planBest(List.of(c));
         return p == null ? vf.applyAsDouble(base) : p.achievableValue();
     }
@@ -486,12 +486,19 @@ final class BotScrollManager {
             // candidate this equals its own stop-now; for a bag piece it's the rival it must beat.
             Equip worn = wornInSlot(bot, ii, slot);
             double wornRivalValue = worn == null ? 0.0 : reproValueNow(pc, bot, ii, worn);
+            // dominatedByWorn: this is a BAG spare strictly out-classed by the worn copy (worn better
+            // as-is AND worn has >= upgrade slots), so even fully scrolled it can't beat what's worn —
+            // never worth scrolling (don't burn scrolls on inferior duplicates of equipped gear). A
+            // spare with MORE slots than the worn is NOT flagged (its scrolled ceiling can still win).
+            boolean dominatedByWorn = worn != null && worn != eq
+                    && offenseValue(bot, worn) > value
+                    && worn.getUpgradeSlots() >= eq.getUpgradeSlots();
             // slotsRemaining = free upgrade slots = the DP horizon; totalSlots = catalog tuc, so
             // (totalSlots - slotsRemaining) = slots already consumed (the profit-decay exponent).
             BotScrollPlanner.EquipCandidate c = new BotScrollPlanner.EquipCandidate(
                     eq.getItemId(), equipName(ii, eq.getItemId()),
                     value, eq.getUpgradeSlots(), totalSlots(ii, eq.getItemId()), wornRivalValue,
-                    betterAvailable, hasFallbackForSlot(all, slotOf, eq, slot), options, valueFn);
+                    betterAvailable, dominatedByWorn, hasFallbackForSlot(all, slotOf, eq, slot), options, valueFn);
             candidates.add(c);
             backing.put(c, eq);
         }

@@ -387,7 +387,7 @@ class BotEquipManager {
         sb.append("\n--- equipped ---\n");
         sb.append(itemHeader(false));
         for (Item it : eqdInv.list()) {
-            if (it instanceof Equip e) appendItemRow(sb, ii, e, e.getPosition(), null);
+            if (it instanceof Equip e) appendItemRow(sb, ii, bot, e, e.getPosition(), null);
         }
 
         sb.append("\n--- inventory (equip bag) ---\n");
@@ -400,7 +400,7 @@ class BotEquipManager {
         for (Item it : eqpInv.list()) {
             if (it instanceof Equip e) {
                 BotInventoryManager.BagEquipClass c = statuses.get(it);
-                appendItemRow(sb, ii, e, e.getPosition(), c == null ? "-" : c.label());
+                appendItemRow(sb, ii, bot, e, e.getPosition(), c == null ? "-" : c.label());
             }
         }
 
@@ -480,22 +480,27 @@ class BotEquipManager {
     }
 
     private static String itemHeader(boolean includeStatus) {
-        return String.format("%-3s %-30s %-7s %4s %4s %4s %4s %4s %4s %4s %4s %4s %4s %5s %5s%s   reqs%n",
+        return String.format("%-3s %-30s %-7s %4s %4s %4s %4s %4s %4s %4s %4s %4s %4s %5s %5s %4s %6s%s   reqs%n",
                 "pos", "name", "slot", "STR", "DEX", "INT", "LUK", "WAK", "MAK", "WDF", "MDF", "ACC", "AVD", "HP", "MP",
+                "ups", "ofns",
                 includeStatus ? "  STATUS    " : "");
     }
 
-    private static void appendItemRow(StringBuilder sb, ItemInformationProvider ii, Equip e, short pos,
+    private static void appendItemRow(StringBuilder sb, ItemInformationProvider ii, Character bot, Equip e, short pos,
                                       String status) {
         String name = ii.getName(e.getItemId());
         if (name == null) name = "id=" + e.getItemId();
         if (name.length() > 30) name = name.substring(0, 30);
         String textSlot = ii.getEquipmentSlot(e.getItemId());
-        sb.append(String.format("%-3d %-30s %-7s %4d %4d %4d %4d %4d %4d %4d %4d %4d %4d %5d %5d%s   ",
+        // ups = free upgrade slots remaining; ofns = job-weighted offense score (the scroll planner's
+        // currentStatScore SSOT) so scroll decisions are inspectable alongside the equip dump.
+        double ofns = bot != null ? BotScrollManager.offenseValue(bot, e) : 0.0;
+        sb.append(String.format("%-3d %-30s %-7s %4d %4d %4d %4d %4d %4d %4d %4d %4d %4d %5d %5d %4d %6.0f%s   ",
                 pos, name, textSlot == null ? "?" : textSlot,
                 e.getStr(), e.getDex(), e.getInt(), e.getLuk(),
                 e.getWatk(), e.getMatk(), e.getWdef(), e.getMdef(),
                 e.getAcc(), e.getAvoid(), e.getHp(), e.getMp(),
+                e.getUpgradeSlots(), ofns,
                 status == null ? "" : String.format("  %-10s", status)));
         // Reqs from WZ stat map.
         Map<String, Integer> stats = ii.getEquipStats(e.getItemId());

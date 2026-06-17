@@ -49,7 +49,14 @@ class BotScrollPlannerTest {
             BotScrollPlanner.ScrollOption... options) {
         return new BotScrollPlanner.EquipCandidate(
                 1302000, name, score, slots, totalSlots, wornRivalValue,
-                betterAvailable, fallback, List.of(options), value);
+                betterAvailable, false, fallback, List.of(options), value);
+    }
+
+    /** Candidate explicitly flagged as a spare out-classed by the worn copy (worn better, worn slots >=). */
+    private static BotScrollPlanner.EquipCandidate dominatedByWornEquip(
+            String name, double score, int slots, BotScrollPlanner.ScrollOption... options) {
+        return new BotScrollPlanner.EquipCandidate(
+                1302000, name, score, slots, slots, 0.0, true, true, false, List.of(options), LINEAR);
     }
 
     @Test
@@ -221,6 +228,16 @@ class BotScrollPlannerTest {
                         scroll("60% dex", 0.60, 4.0))));
         assertNotNull(plan, "scrolled potential of a high-slot spare must be considered, not pre-filtered");
         assertFalse(plan.profitDriven(), "it beats the worn rival -> a combat upgrade");
+    }
+
+    @Test
+    void neverScrollsASpareDominatedByTheWornCopy() {
+        // Two spare weapons, each out-classed by the worn copy (better att + >= slots). Even with a
+        // free, high-odds scroll the planner must NOT scroll them (combat: can't beat worn; profit:
+        // burning scrolls on inferior dupes). Reproduces the 91/7-slot-worn vs 89/87 spares bug.
+        assertNull(BotScrollPlanner.planBest(List.of(
+                dominatedByWornEquip("spare nishada A", 89.0, 7, scroll("100% att", 1.00, 5.0)),
+                dominatedByWornEquip("spare nishada B", 87.0, 7, scroll("100% att", 1.00, 5.0)))));
     }
 
     // --- item 08, layer 2: per-scroll opportunity-cost margin suppresses trivial-gain plays ---

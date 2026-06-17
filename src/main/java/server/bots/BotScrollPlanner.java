@@ -79,6 +79,7 @@ final class BotScrollPlanner {
                           int totalSlots,
                           double wornRivalValue,
                           boolean betterItemAvailable,
+                          boolean dominatedByWorn,
                           boolean hasFallbackForSlot,
                           List<ScrollOption> options,
                           DoubleUnaryOperator value) {}
@@ -138,6 +139,15 @@ final class BotScrollPlanner {
                 continue;
             }
             if (eq.slotsRemaining() <= 0) {
+                continue;
+            }
+            // A spare strictly out-classed by the WORN copy in its slot (worn better AND worn has >=
+            // slots) can never catch up by scrolling — and scroll-to-sell of such a dupe is value-
+            // negative. Skip it in BOTH passes so the bot doesn't burn scrolls on inferior duplicates
+            // of gear it already wears better (e.g. two spare 89/87-att weapons under a worn 91/7-slot).
+            // Note: a dominated spare with MORE slots than the worn is NOT dominatedByWorn, so the
+            // "dominated can still scroll into an upgrade" case is preserved.
+            if (eq.dominatedByWorn()) {
                 continue;
             }
             // Combat won't invest in soon-benched gear; profit still may (you can scroll it to sell).
