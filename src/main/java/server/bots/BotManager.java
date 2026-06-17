@@ -119,6 +119,23 @@ public class BotManager {
         public int PARTY_LEECH_GAP_RELEASE = 2;
         public boolean PARTY_LEECH_ENABLED = true;
 
+        // Living-server population scheduler (BotScheduler). DEFAULT OFF — it auto logs managed bots
+        // in/out (and, when enabled, auto-generates fresh ones) to track a target online-count curve,
+        // so a server start never silently spawns a crowd. Enable via @botpop or by flipping this.
+        public boolean POPULATION_SCHED_ENABLED = false;
+        public long POPULATION_SWEEP_MS = 60_000L;         // reconcile cadence
+        public int POPULATION_WORLD = 0;                   // world/channel scheduled bots spawn into
+        public int POPULATION_CHANNEL = 1;
+        // Target ONLINE managed-bot count by server-local hour (0-23): quiet overnight, busy evening.
+        public int[] POPULATION_CURVE = {
+                3, 2, 2, 1, 1, 1, 2, 4, 6, 7, 8, 9,        // 00-11
+                10, 10, 9, 9, 10, 12, 14, 15, 14, 11, 7, 4 // 12-23
+        };
+        public int POPULATION_NOISE = 1;                   // +/- jitter on the hourly target
+        public int MANAGED_POOL_MAX = 60;                  // hard cap on auto-generated managed bots
+        public int HARDCORE_CAP = 5;                       // max bots that never retire (the veterans)
+        public boolean POPULATION_AUTOGEN = true;          // generate fresh bots when the pool is short
+
         // Grind loot convenience: loot competes with mob navigation only when
         // lootDistSq < mobDistSq * ratio. 0.09 ≈ loot within 30% of mob distance.
         public float GRIND_LOOT_CONVENIENCE_RATIO = 0.09f;
@@ -726,6 +743,49 @@ public class BotManager {
             }
         }
         return removed;
+    }
+
+    /**
+     * Spawn a managed (server-generated) bot self-owned into the population world/channel, with no
+     * requester — used by {@link BotScheduler}. Guards against double-spawning a bot that is already
+     * live or online as a player. Mirrors {@link #spawnOwnerlessBot} minus the requester context.
+     */
+    public boolean spawnManagedBot(int charId) {
+        if (getEntryByBotCharId(charId) != null) {
+            return false; // already a live bot
+        }
+        int world = cfg.POPULATION_WORLD;
+        int channel = cfg.POPULATION_CHANNEL;
+        var worldServer = Server.getInstance().getWorld(world);
+        if (worldServer == null) {
+            return false;
+        }
+        if (worldServer.getPlayerStorage().getCharacterById(charId) != null) {
+            return false; // online already (as a player or bot) — never double-load
+        }
+        try {
+            Character botChar = loadOfflineBot(charId, world, channel);
+            BotEntry entry = registerSpawnedBot(charId, botChar, botChar); // self-owned: owner == bot
+            startTakeoverAutopilot(entry, botChar);
+            ManagedBotService.getInstance().touchOnline(charId);
+            return true;
+        } catch (SQLException e) {
+            log.warn("spawnManagedBot: failed to load charId={}", charId, e);
+            return false;
+        }
+    }
+
+    /** Graceful logout of a live managed bot (save + leave the world), reusing the bot-logout SSOT. */
+    public void logoutManagedBot(int charId) {
+        BotEntry entry = getEntryByBotCharId(charId);
+        if (entry == null || entry.bot == null) {
+            return;
+        }
+        Character bot = entry.bot;
+        bot.saveCharToDB(true);
+        if (bot.getClient() != null) {
+            bot.getClient().disconnect(false, false);
+        }
     }
 
     /** Release bot-owned runtime state before this character leaves bot control. */

@@ -973,6 +973,10 @@ public class Server {
         Duration initDuration = Duration.between(beforeInit, Instant.now());
         log.info("Cosmic is now online after {} ms.", initDuration.toMillis());
 
+        // Living-server bot population scheduler. Registers its sweep timer now but self-guards on
+        // BotManager.cfg.POPULATION_SCHED_ENABLED (default OFF), so this is a no-op until enabled.
+        server.bots.BotScheduler.getInstance().start();
+
         OpcodeConstants.generateOpcodeNames();
         CommandsExecutor.getInstance();
 
