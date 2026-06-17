@@ -2022,6 +2022,14 @@ public class StatEffect {
         return moneyCon;
     }
 
+    public int getItemCon() {
+        return itemCon;
+    }
+
+    public int getItemConNo() {
+        return itemConNo;
+    }
+
     public int getCooldown() {
         return cooldown;
     }

@@ -2994,6 +2994,34 @@ class BotInventoryManager {
         startTradeSequence("ammo_share", recipient, items, 0, true, entry, bot);
     }
 
+    static List<Item> collectRockShareItems(Character donorBot, int rockId, int maxQty) {
+        if (maxQty <= 0 || rockId <= 0) return List.of();
+        Inventory inv = donorBot.getInventory(ItemConstants.getInventoryType(rockId));
+        List<Item> result = new ArrayList<>();
+        int totalQty = 0;
+        for (short slot = 1; slot <= inv.getSlotLimit(); slot++) {
+            Item item = inv.getItem(slot);
+            if (item == null || item.getItemId() != rockId) continue;
+            result.add(item);
+            totalQty += item.getQuantity();
+            if (result.size() >= 9 || totalQty >= maxQty) break;
+        }
+        return result;
+    }
+
+    static void startRockShareTransfer(List<Item> items, Character recipient, BotEntry entry, Character bot, int maxQty) {
+        if (items.isEmpty()) return;
+        if (bot.getTrade() != null || entry.pendingTradeCategory != null || recipient.getTrade() != null) {
+            if (entry.pendingBotTradeRetry == null) {
+                entry.pendingBotTradeRetry = () -> startRockShareTransfer(items, recipient, entry, bot, maxQty);
+                entry.pendingBotTradeRetryMs = BotMovementManager.delayAfterCurrentTick(10_000);
+            }
+            return;
+        }
+        entry.pendingPotShareBudget = maxQty;
+        startTradeSequence("rock_share", recipient, items, 0, true, entry, bot);
+    }
+
     private static boolean isAmmoForWeapon(int itemId, WeaponType weaponType) {
         return switch (weaponType) {
             case BOW -> ItemConstants.isArrowForBow(itemId);

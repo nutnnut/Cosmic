@@ -166,6 +166,15 @@ class BotCombatManager {
         // Ammo
         public int   AMMO_LOW_WARN = 500;
 
+        // Rock-consuming buffs (Shadow Partner etc., StatEffect.itemCon) + rock resupply.
+        public int   ROCK_LOW_WARN = 100;          // request rocks (like potions) below this count
+        // A short low-level buff isn't worth a rock on a trash mob: only fire when the current fight
+        // is long enough. Threshold = attacks-to-kill (best single-target skill), scaled by skill
+        // level: lvl 1 needs a long fight (4+ attacks), max level only needs the mob to survive one
+        // hit (>=2 attacks, i.e. not 1-shottable). Interpolated linearly between.
+        public int   ROCK_TTK_ATTACKS_LVL1 = 4;
+        public int   ROCK_TTK_ATTACKS_MAX  = 2;
+
         // Grind / AoE
         public int   GRIND_SEEK_RANGE  = 800;
         public int   GRIND_RETARGET_INTERVAL_MS = 400;
@@ -679,11 +688,63 @@ class BotCombatManager {
             if (!isActiveSupportSkill(skill, fx) || BUFF_BLACKLIST.contains(skill.getId())) {
                 continue;
             }
+            if (!rockBuffWorthCasting(entry, bot, skill, fx, lvl)) {
+                continue;
+            }
             if (castSupportSkill(entry, bot, skill, fx, now)) {
                 return;
             }
         }
         noteSkillBuffDecision(entry, "all skill buffs active or on cooldown");
+    }
+
+    /**
+     * Gate for buffs that consume a rock per cast (Shadow Partner etc. — {@link StatEffect#getItemConNo()} &gt; 0,
+     * rock id {@link StatEffect#getItemCon()}). Skip the cast unless (a) the bot actually holds the rock, and
+     * (b) the current fight is long enough to be worth a charge. Non-rock buffs are never gated.
+     */
+    private static boolean rockBuffWorthCasting(BotEntry entry, Character bot, Skill skill, StatEffect fx, int skillLevel) {
+        int per = fx.getItemConNo();
+        if (per <= 0) {
+            return true;                                       // not a rock buff: no gate
+        }
+        int rockId = fx.getItemCon();
+        if (BotRockManager.countRocks(bot, rockId) < per) {
+            noteSkillBuffDecision(entry, "no rock for " + skillLabel(skill.getId()));
+            return false;                                      // can't pay the rock anyway (StatEffect would reject)
+        }
+        Monster target = entry.grindTarget;
+        if (target == null || !target.isAlive()) {
+            target = nearestMonster(bot.getMap().getAllMonsters().stream()
+                    .filter(Monster::isAlive).toList(), bot.getPosition().x, bot.getPosition().y);
+        }
+        if (target == null) {
+            return false;                                      // nothing to fight: don't burn a charge
+        }
+        double perHit = estimateBestSkillHitDamage(entry, bot, target);
+        if (perHit <= 0) {
+            return true;                                       // no damage estimate (offline/no WZ): allow
+        }
+        int hp = target.getMaxHp() > 0 ? target.getMaxHp() : target.getHp();
+        int attacks = (int) Math.ceil(hp / perHit);
+        int threshold = rockTtkThreshold(skillLevel, Math.max(1, skill.getMaxLevel()));
+        boolean worth = attacks >= threshold;
+        if (!worth) {
+            noteSkillBuffDecision(entry, "rock buff " + skillLabel(skill.getId())
+                    + " skipped: TTK " + attacks + " < " + threshold);
+        }
+        return worth;
+    }
+
+    /** TTK-attacks threshold for a rock buff, interpolated by skill level (lvl1 -> LVL1 knob, max -> MAX knob). */
+    static int rockTtkThreshold(int skillLevel, int maxLevel) {
+        int lo = cfg.ROCK_TTK_ATTACKS_MAX;
+        int hi = cfg.ROCK_TTK_ATTACKS_LVL1;
+        if (maxLevel <= 1) {
+            return lo;
+        }
+        double t = hi + (lo - hi) * (skillLevel - 1.0) / (maxLevel - 1.0);
+        return Math.max(lo, (int) Math.round(t));
     }
 
     private static boolean shouldUseAsBestSingleTargetSkill(Character bot, Skill skill, StatEffect effect,

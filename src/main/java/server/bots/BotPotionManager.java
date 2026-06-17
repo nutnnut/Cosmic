@@ -401,6 +401,7 @@ final class BotPotionManager {
         }
         startedAt = BotPerformanceMonitor.start();
         BotAmmoManager.tickAmmoShareCheck(entry, bot);
+        BotRockManager.tickRockShareCheck(entry, bot);
         BotPerformanceMonitor.recordSince("potion-ammo-share", startedAt);
 
         startedAt = BotPerformanceMonitor.start();
@@ -456,6 +457,7 @@ final class BotPotionManager {
         entry.potShareRequestedHp = false;
         entry.potShareRequestedMp = false;
         BotAmmoManager.checkAmmoShareOnModeStart(entry, bot);
+        BotRockManager.checkRockShareOnModeStart(entry, bot);
         requestLowPotShares(entry, bot, false);
     }
 

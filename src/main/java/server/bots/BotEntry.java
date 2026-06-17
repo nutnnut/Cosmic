@@ -353,6 +353,7 @@ public class BotEntry {
     boolean potShareRequestedHp = false; // true once an HP pot-share request has been broadcast this episode
     boolean potShareRequestedMp = false; // reset when pot count recovers above POT_LOW_WARN
     boolean ammoShareRequested = false; // reset when arrow/bolt count recovers above AMMO_LOW_WARN
+    boolean rockShareRequested = false; // reset when summoning/magic rock count recovers above ROCK_LOW_WARN
 
     // Job advancement prompts
     int jobPromptSent = 0;
