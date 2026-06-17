@@ -5,6 +5,11 @@
 ## Features
 
 - bot autonomy / autopilot - send a bot or party off to travel, grind, resupply, and play on its own
+- fully ownerless bots - spawn with `autopilot`/`generate` and they pick a job, walk to the instructor NPC to advance, assign their own AP/SP, and grow from level 1 with no human in the loop
+- smarter combat - accuracy-aware target/map choice (skips mobs it can't hit), target commitment, mob dodging while walking, steps closer to land a stronger skill, and self-preservation vs touch-dangerous mobs
+- shares summoning/magic rocks like potions (and uses rock-consuming buffs sparingly); offers scrolls useless to itself but useful to a partymate
+- opportunity-cost-aware scrolling - won't waste a scroll for a tiny gain and holds scrolls when a clearly-better base is farmable
+- party catch-up - over-levelled `@botparty` members idle (no damage) so the lower bots get full EXP share
 - follow, trade, loot
 - auto fight/grind, use skill, auto assign ap/sp, buffs (Only 1st jobs + select 2nd job configured/tested)
 - auto buy/resupply potions/ammo if shop available within the same map
@@ -32,14 +37,24 @@
 ### Option 2: register existing character
 log in on the target character and run: `@registerbot <characterName>`
 
+### Option 3: auto-generate a brand-new bot
+`@spawnbot generate confirm` invents a procedural MMO name and auto-creates the account + character for it (password `botbot`). Add `autopilot` to have it start playing on its own (see below).
+
 ## Spawning a Bot
 
-### Option 1: `@spawnbot <name>`
+`@spawnbot <name|generate> [confirm] [autopilot]`
 
-### Option 2: Buddy invite shortcut
+- `<name>` — spawn an existing/authorized character as a follower bot.
+- `generate` — pick a procedural name instead of typing one (creates it with `confirm`).
+- `confirm` — create the character if it doesn't exist yet.
+- `autopilot` — spawn it **self-owned / ownerless**: it plays independently from the moment it spawns instead of following you. Fresh ownerless bots start at level 1 in Mushroom Town.
+
+**Spawning many bots:** there's no single "spawn N" command — each `@spawnbot` makes one bot. To stand up a crowd, run `@spawnbot generate confirm autopilot` repeatedly (each gets its own name and plays on its own), then optionally group your own alts with `@botparty`.
+
+### Buddy invite shortcut
 Add bots as friends. Bots will always show up as online. Invite a bot to party or chatroom through buddy menu to spawn.
 
-### Option 3: Take over the character you're on
+### Take over the character you're on
 `@botme` turns your current character into a bot. `@botparty` does it for a full party of your alts (everyone else in the party must be a bot) and runs party autopilot.
 
 ## Bot commands
@@ -238,8 +253,23 @@ Verbs: `trade [me] <type/name>`, `give [me] <type/name>`, `drop <type/name>`, `p
 | `autopilot debug` / `ap debug` | Full autopilot grind-decision dump |
 | `!botperfdebug` | Toggle console spam on bot performance |
 | `!botnav`                  | Navigation debug command |
+| `grind profile` | Measure the real party grind-decision cost under live load (perf) |
 | `@botstatus` | (GM) Private listing of every bot on the map |
 | `@autosell` | (GM) Preview/run the bot sell pipeline on your own character |
+
+### GM Ops Console (Messenger)
+
+Open the in-game **Maple Messenger** window and type `Console: <verb>` to drive bots without spamming map chat:
+
+| Type in Messenger | Effect |
+|---|---|
+| `Console: list` | All spawned bots (name, map, job/lv) |
+| `Console: status [name]` | Bot status (one bot, or all on your map) |
+| `Console: log <name>` | Stream that bot's live autopilot decisions into the Messenger |
+| `Console: unlog` | Stop streaming |
+| `Console: grind <name>` | Write that bot's autopilot decision dump (path printed to chat) |
+| `Console: say <name> <text>` | Drive the bot via its own chat commands |
+| `Console: cmd <@command ...>` | Run a GM command (output to normal chat) |
 
 ## Notes
 - Bot characters can be logged into as normal accounts (user = bot name, password = `botbot`) to manually equip or manage inventory.
