@@ -1815,12 +1815,14 @@ class BotCombatManager {
                                                              Foothold botFoothold,
                                                              List<Monster> candidates) {
         boolean fragile = isFragile(bot); // compute ONCE per scoring pass, not per candidate (USE-bag scan)
+        AccuracyContext acc = accuracyContext(bot); // bot accuracy is per-pass, not per-candidate
         List<ScoredGrindTarget> scoredTargets = new ArrayList<>(candidates.size());
         for (Monster candidate : candidates) {
             long localScore = grindTargetScore(bot, botPos, botFoothold, candidate)
                     - aoeClusterBonus(entry, candidate, candidates)
                     - questTargetBonus(entry, candidate)
-                    + touchDangerPenalty(fragile, bot, candidate);
+                    + touchDangerPenalty(fragile, bot, candidate)
+                    + lowAccuracyPenalty(acc, candidate);
             scoredTargets.add(new ScoredGrindTarget(candidate, localScore, localScore,
                     candidate.getPosition().distanceSq(botPos)));
         }
@@ -1834,6 +1836,7 @@ class BotCombatManager {
                                                               Foothold botFoothold,
                                                               List<Monster> candidates) {
         boolean fragile = isFragile(bot); // compute ONCE per scoring pass, not per candidate (USE-bag scan)
+        AccuracyContext acc = accuracyContext(bot); // bot accuracy is per-pass, not per-candidate
         Map<Integer, GrindTargetGroup> groupsByRegionId = new HashMap<>();
         for (Monster candidate : candidates) {
             Point targetPos = candidate.getPosition();
@@ -1846,7 +1849,8 @@ class BotCombatManager {
             long localScore = grindTargetScore(bot, botPos, botFoothold, candidate)
                     - aoeClusterBonus(entry, candidate, candidates)
                     - questTargetBonus(entry, candidate)
-                    + touchDangerPenalty(fragile, bot, candidate);
+                    + touchDangerPenalty(fragile, bot, candidate)
+                    + lowAccuracyPenalty(acc, candidate);
             GrindTargetGroup group = groupsByRegionId.computeIfAbsent(targetRegionId, GrindTargetGroup::new);
             group.add(candidate, localScore, targetPos.distanceSq(botPos));
         }
@@ -1982,6 +1986,40 @@ class BotCombatManager {
         }
         return server.bots.combat.BotDangerAssessment.isTouchDangerous(bot, target, cfg.TOUCH_HITS_TO_KILL)
                 ? cfg.TOUCH_DANGER_PENALTY : 0L;
+    }
+
+    // Low-accuracy targeting penalty: de-prioritize mobs the bot can barely hit (on a mixed-mob map)
+    // so it spends swings on hittable targets instead of whiffing on a high-avoid mob. Soft and
+    // proportional to the miss rate (still fights them if nothing better is in reach). The bot's
+    // accuracy is per scoring-pass, not per-candidate, so it is hoisted into AccuracyContext.
+    static final double ACCURACY_OK_HIT = 0.5;          // at/above this hit chance, no penalty
+    static final long ACCURACY_TARGET_PENALTY = 1200L;  // max penalty as hit chance -> 0
+
+    record AccuracyContext(int accuracy, int botLevel, boolean magic) {}
+
+    static AccuracyContext accuracyContext(Character bot) {
+        boolean magic = bot.getJobStyle() == client.Job.MAGICIAN;
+        server.combat.CombatFormulaProvider f = server.combat.CombatFormulaProvider.getInstance();
+        int acc = magic ? f.getTotalMagicAccuracy(bot) : f.getTotalAccuracy(bot);
+        return new AccuracyContext(acc, bot.getLevel(), magic);
+    }
+
+    static long lowAccuracyPenalty(AccuracyContext ctx, Monster target) {
+        if (ctx == null || target == null) {
+            return 0L;
+        }
+        int avoid = target.getAvoidability();
+        if (avoid <= 0) {
+            return 0L; // mob can't dodge -> always hittable
+        }
+        server.combat.CombatFormulaProvider f = server.combat.CombatFormulaProvider.getInstance();
+        double hit = ctx.magic()
+                ? f.calculateMagicMobHitChance(ctx.accuracy(), ctx.botLevel(), target.getLevel(), avoid)
+                : f.calculatePhysicalMobHitChance(ctx.accuracy(), ctx.botLevel(), target.getLevel(), avoid);
+        if (hit >= ACCURACY_OK_HIT) {
+            return 0L;
+        }
+        return (long) ((ACCURACY_OK_HIT - hit) / ACCURACY_OK_HIT * ACCURACY_TARGET_PENALTY);
     }
 
     /**

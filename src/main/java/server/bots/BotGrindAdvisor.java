@@ -572,7 +572,14 @@ final class BotGrindAdvisor {
             return -1;
         }
         double dps = perAttack / ATTACK_CYCLE_SECONDS;
-        return Math.max(ATTACK_CYCLE_SECONDS, Math.max(1, mob.getMaxHp()) / dps);
+        // Factor accuracy: a missed swing deals no damage, so a high-avoid mob the bot can barely hit
+        // takes proportionally longer to kill. This makes the planner prefer maps the bot can actually
+        // land hits on (a low-DEX warrior steers away from high-avoid mobs) and keeps exp/hr honest.
+        // Magic attackers use magic accuracy (INT/LUK), so don't penalize a mage on its low DEX.
+        boolean magic = bot.getJobStyle() == client.Job.MAGICIAN;
+        double hitChance = server.combat.CombatFormulaProvider.getInstance().calculateMobHitChance(bot, mob, magic);
+        double effectiveDps = dps * Math.max(0.01, hitChance);
+        return Math.max(ATTACK_CYCLE_SECONDS, Math.max(1, mob.getMaxHp()) / effectiveDps);
     }
 
     /** Gear-progression drops of this mob: wearable equips valued as expected improvement over
