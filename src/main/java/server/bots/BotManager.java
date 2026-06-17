@@ -2865,7 +2865,17 @@ public class BotManager {
         // exp share. Reuses the existing no-target idle resolver; no attack/target search runs.
         if (BotAutopilotManager.updateIdleLeech(entry, bot)) {
             entry.grindTarget = null;
-            Point idlePos = resolveNoGrindTargetPosition(entry, botPos, bot.getMap());
+            // Pick a personal idle spot ONCE and hold it: re-resolving every tick made leechers drift
+            // and pile onto the same point. Independent one-shot in-region picks spread them out.
+            if (entry.leechIdleAnchor == null) {
+                entry.leechIdleAnchor = resolveNoGrindTargetPosition(entry, botPos, bot.getMap());
+            }
+            Point idlePos = entry.leechIdleAnchor;
+            if (idlePos == null || isNear(botPos, idlePos, BotMovementManager.cfg.STOP_DIST)) {
+                BotPhysicsEngine.idleOnGround(entry, bot);   // arrived: stand still, don't re-wander
+                BotMovementManager.broadcastMovement(entry);
+                return new LocalOpportunityAttackResult(true, botPos);
+            }
             stepMovementCore(entry, idlePos, runAiTick);
             return new LocalOpportunityAttackResult(true, idlePos);
         }

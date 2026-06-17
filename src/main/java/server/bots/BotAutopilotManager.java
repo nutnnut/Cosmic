@@ -918,6 +918,7 @@ final class BotAutopilotManager {
     static boolean updateIdleLeech(BotEntry entry, Character bot) {
         if (!BotManager.cfg.PARTY_LEECH_ENABLED || !isActive(entry) || bot == null) {
             entry.idleLeech = false;
+            entry.leechIdleAnchor = null;
             return false;
         }
         int mapId = bot.getMapId();
@@ -932,6 +933,7 @@ final class BotAutopilotManager {
         }
         if (sameMap < 2 || minLevel == Integer.MAX_VALUE) {
             entry.idleLeech = false;     // no cohort to wait for
+            entry.leechIdleAnchor = null;
             return false;
         }
         boolean was = entry.idleLeech;
@@ -939,6 +941,9 @@ final class BotAutopilotManager {
                 BotManager.cfg.PARTY_LEECH_GAP_TRIGGER, BotManager.cfg.PARTY_LEECH_GAP_RELEASE);
         if (now != was) {
             entry.idleLeech = now;
+            if (!now) {
+                entry.leechIdleAnchor = null;   // resumed grinding: drop the held idle spot
+            }
             reply.accept(entry, now
                     ? BotManager.randomReply(LEECH_ENTER_MSGS)
                     : BotManager.randomReply(LEECH_EXIT_MSGS));

@@ -244,6 +244,9 @@ public class BotEntry {
     // lower cohort members become the damage-dealers and keep getting full exp share. Hysteresis
     // state (BotAutopilotManager.updateIdleLeech); cleared when the gap closes.
     volatile boolean idleLeech = false;
+    // A personal idle spot picked once when idle-leech begins and held, so leechers settle at distinct
+    // points instead of re-wandering into each other / stacking. Cleared when leech ends.
+    java.awt.Point leechIdleAnchor = null;
     long autopilotNextStragglerCheckAtMs = 0L;
     boolean autopilotWaitingForStragglers = false;
     // Why the LAST actual straggler RECOMPUTE decided to wait (tripping member + metric), or null
