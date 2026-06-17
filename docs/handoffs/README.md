@@ -60,6 +60,14 @@ item doc, then execute. One item per agent (they touch mostly different files �
 | Quest piggyback infra | `BotQuestManager` (Config `AUTO_QUESTS`, `QUEST_PIGGYBACK`; `tickScan`, `tickErrand`) | `server/bots/BotQuestManager.java` |
 | Global tunables | `BotManager.cfg` (`Config`); combat tunables `BotCombatManager.cfg` (hot via `!botcfg`) | `BotManager.java:58`, `BotCombatManager.java:~180` |
 | Char-create defaults (appearance) | `client.creator.BotCreator.createCharacter` | `client/creator/BotCreator.java` |
+| Bot→mob hit chance / accuracy | `CombatFormulaProvider.calculateMobHitChance` / `getTotalAccuracy` | `server/combat/CombatFormulaProvider.java:114,146` |
+| Skill per-cast item consumption (rocks) | `StatEffect.itemCon`/`itemConNo` (add getters) — rocks `4006001`/`4006000` | `server/StatEffect.java:147,496,951` |
+| What gear the bot can FARM | `BotGrindAdvisor.gearProspects` / `gearDropsByMob` | `server/bots/BotGrindAdvisor.java:~580` |
+| Active farm-a-specific-item | farm-item autopilot / `BotGrindAdvisor.recommendFarmItem`, `entry.autopilotFarmItemId` | `server/bots/BotAutopilotManager.java`, `BotGrindAdvisor.java` |
+| Potion donor-share (mirror for rocks) | `BotPotionManager.requestPotShare` / `selectPotDonor` | `server/bots/BotPotionManager.java:528,600` |
+| Useless-scroll-to-self (stat-only; extend w/ category) | `BotInventoryManager.isIrrelevantEquipScroll` | `server/bots/BotInventoryManager.java:2159` |
+| Scroll-plan valuation (run OFF-thread) | `BotScrollManager.buildBestPlan` via `scheduleScrollPlan` → `DECIDE_POOL` | `server/bots/BotScrollManager.java` |
+| Party exp level-gap cutoff | `EXP_SPLIT_LEECH_INTERVAL`/`LEVEL_INTERVAL` = 5; `Monster.distributePartyExperience` | `config.yaml:306`, `server/life/Monster.java:549` |
 
 ## Already shipped this session (don't redo; build on)
 broke-shop affordability gate · pre-travel gate (SSOT `BotShopManager.canAffordPotResupply`) ·
@@ -72,11 +80,38 @@ SP build `BotBuildManager.BEGINNER_BUILD`) · errand cooldown 10m · **death-loo
 flip — `BotPhysicsEngine.landOnGround`) · **shop gear buying** (`BotShopManager.evaluateAndBuyEquip`).
 
 > Note: a partial **self-preservation** layer already shipped (the travel-side: level-scaled travel
-> penalty + Sleepywood block). `05-self-preservation.md` is the **combat-side remainder**.
+> penalty + Sleepywood block). `05-self-preservation.md` is the **combat-side remainder** — also DONE now.
+
+**Also shipped later in the session (don't redo):** quest commitment (map+target bias, SSOT
+`BotQuestManager.activeQuestMobIds`) · opportunistic quest grab · combat self-preservation
+(`BotDangerAssessment`, `isFragile`-gated + **anti-freeze give-up** `BotManager.applyDangerRetreatGiveUp`)
+· **job advance walks to the class town instructor** (`BotStarterKitManager.jobChangeNpcFor`/`tickJobErrand`,
+shared `BotTravelManager.tickApproachNpc`) · **accuracy-aware grinding** (kill-time factors hit chance in
+`BotGrindAdvisor.killSeconds`; `BotCombatManager.lowAccuracyPenalty`; AP **DEX floor for ~25% hit**
+`BotBuildManager.accuracyDexFloor`) · **grind-target commitment** (`cfg.GRIND_TARGET_COMMIT_MS`, stops
+retarget thrash while approaching) · **scroll valuation moved off the tick thread**
+(`BotScrollManager.scheduleScrollPlan` → `BotGrindAdvisor.DECIDE_POOL`) · crossbowman SP-leak fix (FOCUS).
+Known follow-ups (NOT done): other 2nd-job builds (warrior/mage/thief) likely share the SP under-allocation
+leak (fix with the class-appropriate 1st-job filler, like FOCUS for archer); `BotCombatManagerTest` has 6
+pre-existing WZ-data failures unrelated to this work.
 
 ## Items
-- `01-name-generator.md` — procedural MMO name generator (design ready).
-- `02-appearance-and-per-bot-config.md` — randomize appearance + per-bot config store (verify legal ids first).
-- `03-mob-dodge-while-walking.md` — wire the existing jump-apex mob dodge into travel (investigation-first).
-- `04-talk-quests.md` — dynamic talk-quest completion via `BotQuestManager` (investigation-first).
-- `05-self-preservation.md` — combat-side: touch-damage-aware target avoidance + proactive retreat.
+**01–05 are DONE (shipped on `experimental`).** Open items are **06–09** below.
+- `01-name-generator.md` — ✅ DONE (`BotNameGenerator`).
+- `02-appearance-and-per-bot-config.md` — ✅ DONE (`BotAppearance` + `bot_config` table).
+- `03-mob-dodge-while-walking.md` — ✅ DONE (dodge on committed WALK edges).
+- `04-talk-quests.md` — ✅ DONE (`BotQuestManager` talk quests).
+- `05-self-preservation.md` — ✅ DONE (touch-danger targeting + bounded proactive retreat).
+- **`06-summoning-rock.md`** — OPEN. Sparing skill-level/TTK-scaled use of Shadow-Partner-type rock
+  buffs + request rocks like potions when low. Touches buff casting + supply share.
+- **`07-party-level-gap-leech.md`** — OPEN. Higher bots idle (do no damage) when the party level gap
+  approaches the exp-share cutoff (verified 5) so lower bots catch up. Touches party/cohort + combat gate.
+- **`08-scroll-opportunity-cost.md`** — OPEN, CENTRAL. Read `docs/bot/scroll-opportunity-cost.md` (design).
+  Scrolled-potential valuation + per-scroll opportunity cost + ACTIVE farmable-base steering.
+- **`09-proactive-scroll-offer.md`** — OPEN. Offer useless-to-self scrolls to a party member who can use
+  them (category-aware, not stat-only). Independent of the others.
+
+**Conflict note for 06–09:** `08` (scroll) and `09` (scroll offer) both touch `BotScrollManager`/
+`BotInventoryManager` — don't run them in parallel in the same worktree (or sequence them). `06` (buff/
+supply) and `07` (party/combat-gate) are mostly isolated from the scroll pair and from each other,
+though `06` and `07` both read combat/skill code — coordinate if parallel.
