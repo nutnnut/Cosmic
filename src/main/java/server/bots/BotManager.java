@@ -2859,6 +2859,19 @@ public class BotManager {
      * for the shared stepMovementCore tail. Single source of truth shared by the perf and non-perf
      * dispatch arms in the bot tick.
      */
+    /** Walk to a held idle anchor, or stand still once arrived (no re-wander). Shared by idle-leech
+     *  and in-session breaks so idlers settle at distinct, stable spots instead of drifting/stacking. */
+    private LocalOpportunityAttackResult walkToOrIdleAt(BotEntry entry, Character bot, Point botPos,
+            Point anchor, boolean runAiTick) {
+        if (anchor == null || isNear(botPos, anchor, BotMovementManager.cfg.STOP_DIST)) {
+            BotPhysicsEngine.idleOnGround(entry, bot);
+            BotMovementManager.broadcastMovement(entry);
+            return new LocalOpportunityAttackResult(true, botPos);
+        }
+        stepMovementCore(entry, anchor, runAiTick);
+        return new LocalOpportunityAttackResult(true, anchor);
+    }
+
     private LocalOpportunityAttackResult tickGrindMode(BotEntry entry, Character bot, Point botPos,
             Point targetPos, boolean runAiTick) {
         // Party level-gap idle-leech: a member that has out-levelled the cohort stops dealing damage
@@ -2871,14 +2884,21 @@ public class BotManager {
             if (entry.leechIdleAnchor == null) {
                 entry.leechIdleAnchor = resolveNoGrindTargetPosition(entry, botPos, bot.getMap());
             }
-            Point idlePos = entry.leechIdleAnchor;
-            if (idlePos == null || isNear(botPos, idlePos, BotMovementManager.cfg.STOP_DIST)) {
-                BotPhysicsEngine.idleOnGround(entry, bot);   // arrived: stand still, don't re-wander
-                BotMovementManager.broadcastMovement(entry);
-                return new LocalOpportunityAttackResult(true, botPos);
+            return walkToOrIdleAt(entry, bot, botPos, entry.leechIdleAnchor, runAiTick);
+        }
+        // In-session break: a personality-driven pause from grinding (managed bots only — non-managed
+        // profiles have breakFreqPerHour 0). Parks at a held spot like idle-leech, so it isn't farming
+        // 24/7. Pots/heals still run (potion tick); no attack/target search while on break.
+        long breakNow = System.currentTimeMillis();
+        BotBreakManager.maybeStartBreak(entry, bot, breakNow);
+        if (BotBreakManager.onBreak(entry, breakNow)) {
+            entry.grindTarget = null;
+            if (entry.breakIdleAnchor == null) {
+                entry.breakIdleAnchor = resolveNoGrindTargetPosition(entry, botPos, bot.getMap());
             }
-            stepMovementCore(entry, idlePos, runAiTick);
-            return new LocalOpportunityAttackResult(true, idlePos);
+            return walkToOrIdleAt(entry, bot, botPos, entry.breakIdleAnchor, runAiTick);
+        } else if (entry.breakUntilMs != 0L) {
+            BotBreakManager.endBreak(entry, bot);   // break just elapsed -> clear + resume grind
         }
         double seekRangeSq = (double) BotCombatManager.cfg.GRIND_SEEK_RANGE * BotCombatManager.cfg.GRIND_SEEK_RANGE;
         Monster target = entry.grindTarget;

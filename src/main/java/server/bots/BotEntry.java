@@ -251,6 +251,13 @@ public class BotEntry {
     // A personal idle spot picked once when idle-leech begins and held, so leechers settle at distinct
     // points instead of re-wandering into each other / stacking. Cleared when leech ends.
     java.awt.Point leechIdleAnchor = null;
+    // In-session breaks (BotBreakManager): a grinding bot periodically stops and idles for a while so
+    // it isn't farming non-stop — realizing its personality's farm/idle ratio. breakUntilMs = when the
+    // current break ends (0 = not on break); nextBreakRollAtMs gates the once-a-minute start roll;
+    // breakIdleAnchor is the held idle spot (spread, like leechIdleAnchor).
+    long breakUntilMs = 0L;
+    long nextBreakRollAtMs = 0L;
+    java.awt.Point breakIdleAnchor = null;
     long autopilotNextStragglerCheckAtMs = 0L;
     boolean autopilotWaitingForStragglers = false;
     // Why the LAST actual straggler RECOMPUTE decided to wait (tripping member + metric), or null
