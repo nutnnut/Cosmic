@@ -3260,6 +3260,23 @@ public class BotManager {
         return !entry.following;
     }
 
+    /**
+     * Fire-in-passing attack for autopilot travel: hits a mob ONLY if it's already in attack range
+     * while the bot is grounded, with no combat repositioning and no jump-chase, so it never diverts
+     * the walk to the portal. Reuses the follow/grind opportunity-attack SSOT ({@link #tryLocalOpportunityAttack});
+     * target selection (findFollowAttackTarget) keeps it to a mob right in the lane, not a detour.
+     */
+    boolean tryEnRouteOpportunityAttack(BotEntry entry, Character bot) {
+        if (entry == null || bot == null || entry.noAmmo || entry.inAir || entry.climbing) {
+            return false;
+        }
+        Point botPos = bot.getPosition();
+        if (botPos == null) {
+            return false;
+        }
+        return tryLocalOpportunityAttack(entry, bot, botPos, botPos, botPos, false, false).consumedTick();
+    }
+
     private LocalOpportunityAttackResult tryLocalOpportunityAttack(BotEntry entry,
                                                                   Character bot,
                                                                   Point botPos,

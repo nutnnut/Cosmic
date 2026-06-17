@@ -657,7 +657,8 @@ class BotMovementManager {
         // wreck) nor while steering to a precise nav target. A committed WALK edge is itself plain
         // ground walking toward a region exit, so dodging across it is safe: simulatedJumpLandsInCurrentRegion
         // below guarantees the bot lands in the same region and does not derail the path.
-        if (!dodgeModeAllowed(entry.following, entry.grinding, entry.navEdge, entry.navPreciseTarget)) {
+        boolean traveling = entry.followTravelTargetMapId != -1;
+        if (!dodgeModeAllowed(entry.following, entry.grinding, traveling, entry.navEdge, entry.navPreciseTarget)) {
             return false;
         }
 
@@ -684,9 +685,12 @@ class BotMovementManager {
      * a committed non-WALK edge. A committed WALK edge is still plain ground walking, so dodging across
      * it is safe; JUMP/DROP/CLIMB/PORTAL edges have launch windows a dodge would wreck.
      */
-    static boolean dodgeModeAllowed(boolean following, boolean grinding,
+    static boolean dodgeModeAllowed(boolean following, boolean grinding, boolean traveling,
             BotNavigationGraph.Edge navEdge, boolean navPreciseTarget) {
-        if (!following && !grinding) {
+        // traveling: autopilot map-to-map travel walks long ground stretches to a portal where neither
+        // following nor grinding is reliably set yet — so it never dodged blocking mobs. A travel WALK
+        // edge is plain ground walking like the others, so allow the same dodge SSOT there.
+        if (!following && !grinding && !traveling) {
             return false;
         }
         if (navPreciseTarget) {

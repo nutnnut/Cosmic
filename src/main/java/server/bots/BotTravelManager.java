@@ -64,6 +64,12 @@ final class BotTravelManager {
         void step(BotEntry entry, Point targetPos, boolean runAiTick);
     }
 
+    /** Fire-in-passing attack while walking a hop (a mob already in range), without diverting travel. */
+    @FunctionalInterface
+    interface EnRouteAttack {
+        boolean attack(BotEntry entry, Character bot);
+    }
+
     @FunctionalInterface
     interface RouteLookup {
         List<Integer> route(int fromMapId, int toMapId, int maxHops, BotWorldGraph.RouteOptions options);
@@ -96,6 +102,8 @@ final class BotTravelManager {
 
     static MovementStep movementStep =
             (entry, targetPos, runAiTick) -> BotManager.getInstance().stepMovementCore(entry, targetPos, runAiTick);
+    static EnRouteAttack enRouteAttack =
+            (entry, bot) -> BotManager.getInstance().tryEnRouteOpportunityAttack(entry, bot);
     static RouteLookup routeLookup = BotWorldGraph::route;
     static ScrollTargetLookup scrollTargetLookup = mapId -> BotWorldGraph.get().scrollTarget(mapId);
     static java.util.function.ToIntFunction<Character> returnScrollCount = BotShopManager::countReturnScrolls;
@@ -276,6 +284,11 @@ final class BotTravelManager {
             return true;
         }
         pinMoveTarget(entry, portalPos);
+        // Opportunity attack on the way: only fires at a mob already in range (no chase/divert),
+        // so the bot picks off mobs blocking its path while still walking to the portal.
+        if (runAiTick) {
+            enRouteAttack.attack(entry, bot);
+        }
         movementStep.step(entry, portalPos, runAiTick);
         return true;
     }

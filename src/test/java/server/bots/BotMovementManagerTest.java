@@ -1025,28 +1025,34 @@ class BotMovementManagerTest {
 
     @Test
     void dodgeModeAllowedOnlyDuringGroundLocomotionOffLaunchEdges() {
-        // Idle (neither following nor grinding): never dodge.
-        assertFalse(BotMovementManager.dodgeModeAllowed(false, false, null, false));
+        // Idle (not following/grinding/traveling): never dodge.
+        assertFalse(BotMovementManager.dodgeModeAllowed(false, false, false, null, false));
 
         // Following with free walking (no committed edge): dodge allowed.
-        assertTrue(BotMovementManager.dodgeModeAllowed(true, false, null, false));
+        assertTrue(BotMovementManager.dodgeModeAllowed(true, false, false, null, false));
 
-        // Grinding (also the travel state — autopilot resumes travel with grinding=true): allowed.
-        assertTrue(BotMovementManager.dodgeModeAllowed(false, true, null, false));
+        // Grinding: allowed.
+        assertTrue(BotMovementManager.dodgeModeAllowed(false, true, false, null, false));
 
-        // THE GAP THIS TASK FIXES: a committed WALK edge is still plain ground walking, so dodge
-        // must be allowed across it (previously navEdge != null blocked all dodges during travel).
-        assertTrue(BotMovementManager.dodgeModeAllowed(false, true, edge(BotNavigationGraph.EdgeType.WALK), false));
+        // Traveling (map-to-map autopilot, grinding not yet set): now allowed on plain ground too.
+        assertTrue(BotMovementManager.dodgeModeAllowed(false, false, true, null, false));
+        assertTrue(BotMovementManager.dodgeModeAllowed(false, false, true, edge(BotNavigationGraph.EdgeType.WALK), false));
 
-        // Non-WALK edges have launch windows a dodge would wreck: never dodge mid JUMP/DROP/CLIMB/PORTAL.
-        assertFalse(BotMovementManager.dodgeModeAllowed(false, true, edge(BotNavigationGraph.EdgeType.JUMP), false));
-        assertFalse(BotMovementManager.dodgeModeAllowed(false, true, edge(BotNavigationGraph.EdgeType.DROP), false));
-        assertFalse(BotMovementManager.dodgeModeAllowed(false, true, edge(BotNavigationGraph.EdgeType.CLIMB), false));
-        assertFalse(BotMovementManager.dodgeModeAllowed(false, true, edge(BotNavigationGraph.EdgeType.PORTAL), false));
+        // THE GAP: a committed WALK edge is still plain ground walking, so dodge must be allowed across it.
+        assertTrue(BotMovementManager.dodgeModeAllowed(false, true, false, edge(BotNavigationGraph.EdgeType.WALK), false));
 
-        // Precise nav target steering: never dodge even on a WALK edge.
-        assertFalse(BotMovementManager.dodgeModeAllowed(false, true, edge(BotNavigationGraph.EdgeType.WALK), true));
-        assertFalse(BotMovementManager.dodgeModeAllowed(true, false, null, true));
+        // Non-WALK edges have launch windows a dodge would wreck: never dodge mid JUMP/DROP/CLIMB/PORTAL
+        // (true even while traveling).
+        assertFalse(BotMovementManager.dodgeModeAllowed(false, true, false, edge(BotNavigationGraph.EdgeType.JUMP), false));
+        assertFalse(BotMovementManager.dodgeModeAllowed(false, true, false, edge(BotNavigationGraph.EdgeType.DROP), false));
+        assertFalse(BotMovementManager.dodgeModeAllowed(false, true, false, edge(BotNavigationGraph.EdgeType.CLIMB), false));
+        assertFalse(BotMovementManager.dodgeModeAllowed(false, true, false, edge(BotNavigationGraph.EdgeType.PORTAL), false));
+        assertFalse(BotMovementManager.dodgeModeAllowed(false, false, true, edge(BotNavigationGraph.EdgeType.JUMP), false));
+
+        // Precise nav target steering: never dodge even on a WALK edge (incl. while traveling near the portal).
+        assertFalse(BotMovementManager.dodgeModeAllowed(false, true, false, edge(BotNavigationGraph.EdgeType.WALK), true));
+        assertFalse(BotMovementManager.dodgeModeAllowed(true, false, false, null, true));
+        assertFalse(BotMovementManager.dodgeModeAllowed(false, false, true, edge(BotNavigationGraph.EdgeType.WALK), true));
     }
 
     private static Character mockBot(Point startPosition, MapleMap map) {
