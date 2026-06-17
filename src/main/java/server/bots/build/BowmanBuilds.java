@@ -114,7 +114,12 @@ public final class BowmanBuilds {
                 s(Crossbowman.IRON_ARROW, 30),
                 s(Crossbowman.SOUL_ARROW, 20),
                 s(Crossbowman.CROSSBOW_BOOSTER, 20),
-                s(Crossbowman.POWER_KNOCKBACK, 20)
+                s(Crossbowman.POWER_KNOCKBACK, 20),
+                // The 2nd-job core above is 110 SP, but a crossbowman earns ~121 by lv70. Spend the
+                // surplus on a 1st-job skill HERE (while it's earned as a 2nd job) instead of letting
+                // it bank and get dumped into 3rd-job skills at advancement — a real player can't spend
+                // 2nd-job-era SP on 3rd-job skills, so neither should a bot (play legally, rule #1).
+                s(Archer.FOCUS, max(Archer.FOCUS))
         );
     }
 
