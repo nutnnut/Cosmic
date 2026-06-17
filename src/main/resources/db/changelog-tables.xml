@@ -105,4 +105,12 @@
         <sqlFile path="db/tables/025-bot-ownership.sql"/>
     </changeSet>
 
+    <changeSet id="26" author="Claude">
+        <sqlFile path="db/tables/026-bot-config.sql"/>
+    </changeSet>
+
+    <changeSet id="27" author="Claude">
+        <sqlFile path="db/tables/027-managed-bot.sql"/>
+    </changeSet>
+
 </databaseChangeLog>

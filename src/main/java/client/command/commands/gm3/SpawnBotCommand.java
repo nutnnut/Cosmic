@@ -82,6 +82,13 @@ public class SpawnBotCommand extends Command {
             }
 
             ownershipService.registerOwner(createdCharId, player.getId());
+            // A procedurally-generated ("generate") bot is a disposable, server-owned character: mark it
+            // in the managed_bot registry so the population scheduler may schedule it. Characters created
+            // for a named @spawnbot, or registered via @registerbot/@botme, are NOT marked and are never
+            // auto-scheduled.
+            if (autoName) {
+                server.bots.ManagedBotService.getInstance().insert(createdCharId, null);
+            }
             bot = ownershipService.resolveCharacterByName(botName);
             if (account.created()) {
                 player.yellowMessage("Bot '" + botName + "' created. Login with: user=" + botName + " pw=botbot");
