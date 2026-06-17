@@ -94,13 +94,32 @@ class BotNameGeneratorTest {
 
     @Test
     void generateProducesVariedNames() {
-        // Over 50 calls, we expect at least 10 distinct names (not all the same)
+        // The combination engine (N² two-word combos over a ~4k word pool) should make
+        // collisions vanishingly rare: expect near-total distinctness over 500 calls.
         java.util.Set<String> seen = new java.util.HashSet<>();
-        for (int i = 0; i < 50; i++) {
+        for (int i = 0; i < 500; i++) {
             seen.add(BotNameGenerator.generateForTest());
         }
-        assertTrue(seen.size() >= 10,
-                "Expected at least 10 distinct names in 50 calls, got " + seen.size());
+        // ~95%+ unique in practice; the <5% collisions come from the plain single-word
+        // fraction. A loose floor keeps this from flaking on RNG variance.
+        assertTrue(seen.size() >= 460,
+                "Expected >=460 distinct names in 500 calls, got " + seen.size());
+    }
+
+    @Test
+    void composeBaseProducesTwoWordCombos() {
+        // Over many samples we must see at least some multi-uppercase CamelCase combos
+        // (e.g. "FrostHawk") — proof the combination engine fires, not just single words.
+        int combos = 0;
+        for (int i = 0; i < 300; i++) {
+            String base = BotNameGenerator.composeBase(java.util.List.of(),
+                    ThreadLocalRandom.current());
+            assertTrue(base.length() >= 1 && base.length() <= 12,
+                    "composeBase produced bad-length '" + base + "'");
+            long uppers = base.chars().filter(Character::isUpperCase).count();
+            if (uppers >= 2) combos++;
+        }
+        assertTrue(combos > 0, "Expected at least one two-word CamelCase combo in 300 samples");
     }
 
     // ── Fallback / retry path doesn't throw ──────────────────────────────────
