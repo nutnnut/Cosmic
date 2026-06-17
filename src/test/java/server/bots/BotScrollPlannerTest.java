@@ -207,4 +207,40 @@ class BotScrollPlannerTest {
                 equip("weapon", 100.0, 1, false, true,
                         boomScroll("chaos", 0.50, 0.50, 30.0)))));
     }
+
+    // --- item 08, layer 1: a stat-dominated spare with MORE slots can still scroll into an upgrade ---
+
+    @Test
+    void dominatedLookingSpareWithMoreSlotsIsScrolledNotPreFiltered() {
+        // Owner's example: worn 10DEX/6ATT/0slot (rival value ~120 here), spare 8DEX/0ATT/5slot.
+        // The spare looks worse as-is (score 80) but has 5 free slots; under a convex (rarity) value
+        // its scrolled potential clears the worn rival, so it IS proposed as a combat upgrade. It must
+        // NOT be pre-skipped: betterAvailable=false (more slots => the worn does not dominate it).
+        BotScrollPlanner.ScrollPlan plan = BotScrollPlanner.planBest(List.of(
+                equipR(CONVEX, "spare cape", 8.0, 5, 5, 120.0, false, false,
+                        scroll("60% dex", 0.60, 4.0))));
+        assertNotNull(plan, "scrolled potential of a high-slot spare must be considered, not pre-filtered");
+        assertFalse(plan.profitDriven(), "it beats the worn rival -> a combat upgrade");
+    }
+
+    // --- item 08, layer 2: per-scroll opportunity-cost margin suppresses trivial-gain plays ---
+
+    @Test
+    void opportunityMarginSuppressesTinyNetGain() {
+        // LINEAR, 1 slot: improvement = p*gain - cost. Here 1.0*11 - 10 = 1, below cost*margin
+        // (10 * 0.2 = 2) -> not worth burning a reusable scroll for a trivial bump.
+        assertNull(BotScrollPlanner.planBest(List.of(
+                equip("glove", 100.0, 1, false, false,
+                        new BotScrollPlanner.ScrollOption(2040000, "60% att", 1.00, 0.0, 11.0, 10.0)))));
+    }
+
+    @Test
+    void opportunityMarginAllowsGainThatClearsTheMargin() {
+        // Same scroll cost, bigger gain: improvement = 1.0*15 - 10 = 5 > cost*margin (2) -> proposed.
+        BotScrollPlanner.ScrollPlan plan = BotScrollPlanner.planBest(List.of(
+                equip("glove", 100.0, 1, false, false,
+                        new BotScrollPlanner.ScrollOption(2040000, "60% att", 1.00, 0.0, 15.0, 10.0))));
+        assertNotNull(plan);
+        assertEquals(5.0, plan.expectedValue(), 1e-9);
+    }
 }

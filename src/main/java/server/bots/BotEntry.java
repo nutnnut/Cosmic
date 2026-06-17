@@ -210,6 +210,13 @@ public class BotEntry {
     // Farm-item objective override ("farm <item>"): re-decides only re-pick the SITE for this
     // item instead of running the general advisor; the item is never sold as trash.
     int autopilotFarmItemId = 0;
+    // Scroll<->farm coupling (item 08, layer 3): the better-base equip the autopilot is actively
+    // steering to farm (gearFocused), so the off-thread scroll planner can HOLD scrolls instead of
+    // burning them on the inferior base it currently wears in that slot. 0 = none; chance is the
+    // per-kill drop chance used to gate "realistically obtainable". Set in installPlan, read in
+    // BotScrollManager.shouldHoldForFarmableBase.
+    volatile int wantedGearItemId = 0;
+    volatile double wantedGearChancePerKill = 0.0;
     // Owner said "sail away": the bot may board cross-continent ferries while the owner is
     // online. Owner-offline autopilot never needs it. Reset in BotAutopilotManager.clear().
     boolean autopilotFerryApproved = false;

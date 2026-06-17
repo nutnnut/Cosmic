@@ -1306,6 +1306,18 @@ final class BotAutopilotManager {
         entry.autopilotDestinationName = destinationName(pick);
         entry.autopilotObjectiveSummary = objectiveSummary(entry, rec);
         entry.autopilotObjectiveReason = objectiveReason(entry, rec);
+        // Scroll<->farm coupling (item 08): when this plan is actively steering toward a better-base
+        // equip drop, record it so the scroll planner holds scrolls for that slot instead of burning
+        // them on the inferior base. Only equips (not scroll drops); cleared otherwise.
+        BotGrindPlanner.GearProspect wg = rec.wantedGear();
+        if (rec.gearFocused() && wg != null
+                && server.ItemInformationProvider.getInstance().getEquipStats(wg.itemId()) != null) {
+            entry.wantedGearItemId = wg.itemId();
+            entry.wantedGearChancePerKill = wg.chancePerKill();
+        } else {
+            entry.wantedGearItemId = 0;
+            entry.wantedGearChancePerKill = 0.0;
+        }
         // Already on the picked map: announcePlan's "this map works" covers it — a separate
         // "arrived" line right after would be redundant chatter.
         entry.autopilotArrivalAnnounced = pick.mapId() == fromMapId;

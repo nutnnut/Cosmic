@@ -65,6 +65,14 @@ final class BotScrollManager {
      *  per-apply action cost only (the value curve still uses full market price). Could later be a
      *  per-bot personality knob (more/less willing to burn scrolls). */
     private static final double SCROLL_OPPORTUNITY_FRACTION = 0.9;
+    /** Farmable-base hold (item 08, layer 3): when the autopilot is actively steering toward a
+     *  clearly-better base for a slot, don't burn scrolls on the inferior base it wears there now.
+     *  The clean farmable base's full scrolled potential must beat the current scroll play's
+     *  achievable value by this factor to suppress (must be CLEARLY better, not marginal). */
+    static double FARMABLE_SAVE_FACTOR = 1.5;
+    /** ...and it must be realistically obtainable: expected kills to drop one (1/chancePerKill) must
+     *  be at or under this, else the bot would hold scrolls forever chasing a near-phantom drop. */
+    static double FARMABLE_MAX_EXPECTED_KILLS = 3_000.0;
     /** Per-level meso assumed to acquire a clean base — last-resort fallback only, used when an item
      *  has neither an NPC price nor any known drop source (so farming cost can't be computed). */
     private static final int CLEAN_BASE_COST_PER_LEVEL = 10_000;
@@ -374,7 +382,70 @@ final class BotScrollManager {
         ProducerCombat pc = resolveProducerCombat(entry, bot);
         List<BotScrollPlanner.EquipCandidate> candidates = collectCandidates(pc, bot, ii, backing);
         BotScrollPlanner.ScrollPlan plan = BotScrollPlanner.planBest(candidates);
-        return plan == null ? null : new Resolved(plan, backing.get(plan.equip()));
+        if (plan == null) {
+            return null;
+        }
+        if (shouldHoldForFarmableBase(entry, bot, ii, pc, plan)) {
+            return null; // hold scrolls: the autopilot is steering to a clearly-better base for this slot
+        }
+        return new Resolved(plan, backing.get(plan.equip()));
+    }
+
+    /**
+     * Layer 3 (item 08): suppress scrolling the inferior base the bot wears in a slot when the
+     * autopilot is actively farming a clearly-better, realistically-obtainable base for that SAME
+     * slot. Compares the clean farmable base's full scrolled potential against the current play's
+     * achievable value — both in meso reproduction units (same SSOT) — and holds the scrolls when
+     * the farmable base wins by {@link #FARMABLE_SAVE_FACTOR}. The active steering itself is the
+     * autopilot's existing gearFocused bias (it already routes the bot to that map); here we only
+     * keep the scrolls for the better base instead of wasting them. Inert when not gear-steering.
+     */
+    private static boolean shouldHoldForFarmableBase(BotEntry entry, Character bot,
+            ItemInformationProvider ii, ProducerCombat pc, BotScrollPlanner.ScrollPlan plan) {
+        int wantId = entry.wantedGearItemId;
+        if (wantId == 0) {
+            return false;
+        }
+        Short wantSlot = primarySlot(ii, wantId);
+        Short planSlot = primarySlot(ii, plan.equip().equipItemId());
+        if (wantSlot == null || planSlot == null || !wantSlot.equals(planSlot)) {
+            return false; // the play isn't on the slot we're farming a better base for
+        }
+        double chance = entry.wantedGearChancePerKill;
+        if (chance <= 0.0 || 1.0 / chance > FARMABLE_MAX_EXPECTED_KILLS) {
+            return false; // a near-phantom drop: don't hold scrolls forever, scroll what we have
+        }
+        double farmablePotential = farmableScrolledEv(pc, bot, ii, wantId);
+        double currentPlayPotential = plan.achievableValue();
+        return farmablePotential > currentPlayPotential * FARMABLE_SAVE_FACTOR;
+    }
+
+    /** Realistic scrolled value (meso reproduction units) of a CLEAN copy of {@code itemId} with all
+     *  its upgrade slots — the value the bot could reach by farming this base and scrolling it. Runs
+     *  the SAME planner DP as the live candidates (rule #6) so it's directly comparable to a live
+     *  play's {@code achievableValue} (both stochastic EVs, not all-success ceilings). Falls back to
+     *  the clean base's as-is value when no positive play exists. */
+    private static double farmableScrolledEv(ProducerCombat pc, Character bot,
+            ItemInformationProvider ii, int itemId) {
+        if (!(ii.getEquipById(itemId) instanceof Equip clean)) {
+            return 0.0;
+        }
+        int tuc = totalSlots(ii, itemId);
+        if (tuc <= 0) {
+            return 0.0;
+        }
+        List<BotScrollPlanner.ScrollOption> opts = buildOptions(pc, bot, ii, clean);
+        if (opts.isEmpty()) {
+            return 0.0;
+        }
+        double base = baseOffenseValue(bot, ii, itemId);
+        DoubleUnaryOperator vf = BotScrollValuer.reproductionValue(
+                base, tuc, reproSpecs(pc, opts), cleanBaseCostMeso(pc, ii, itemId));
+        // wornRivalValue 0 / not-dominated / no fallback: a fresh clean base valued on its own.
+        BotScrollPlanner.EquipCandidate c = new BotScrollPlanner.EquipCandidate(
+                itemId, equipName(ii, itemId), base, tuc, tuc, 0.0, false, false, opts, vf);
+        BotScrollPlanner.ScrollPlan p = BotScrollPlanner.planBest(List.of(c));
+        return p == null ? vf.applyAsDouble(base) : p.achievableValue();
     }
 
     /** Build a planner candidate for every scrollable equip, recording the backing {@link Equip}. */

@@ -98,6 +98,14 @@ final class BotScrollPlanner {
      *  The combat pass does NOT apply it (the bot upgrades its own gear on raw expected stat). */
     private static final double SLOT_DECAY = 0.9;
 
+    /** Per-scroll opportunity-cost margin. {@link #evApply} already nets out the consumed scroll's
+     *  value (cost paid win-or-lose), so a play with {@code improvement > 0} is nominally EV-positive.
+     *  But a scroll is reusable on a future better item, so a near-zero net gain isn't worth burning
+     *  one: require the net improvement to also clear this fraction of the scroll's own value. Stops
+     *  "burned a 60% att scroll on spare gear for a tiny avg->good bump." 0.2 = gain must beat the
+     *  scroll cost by 20%. */
+    static double SCROLL_OPPORTUNITY_MARGIN = 0.2;
+
     /**
      * Best eligible (equip, scroll) play across all candidates, or null if none clear the bar.
      *
@@ -157,7 +165,9 @@ final class BotScrollPlanner {
                 continue;
             }
             double improvement = pickValue - floor;
-            if (improvement <= 0.0) {
+            // Opportunity-cost floor: the net gain must beat not just zero but a margin of the
+            // consumed scroll's own value (it could be saved for a better item / better base).
+            if (improvement <= pick.cost() * SCROLL_OPPORTUNITY_MARGIN) {
                 continue;
             }
             if (best == null || improvement > best.expectedValue()) {
