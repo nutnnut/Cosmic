@@ -185,6 +185,14 @@ final class BotGrindPlanner {
         return planBest(candidates, mapId -> 1.0, rng);
     }
 
+    /** Solo pick with crowd dispersion: spawn-share each candidate by 1 + the per-map crowd surcharge
+     *  (other bots/players there), so the believed kill rate — and thus the pick — accounts for who is
+     *  already on the map. {@code extraCompetitors} returns 0 when alone (then this == the plain pick). */
+    static Recommendation planBest(List<MobCandidate> candidates, IntToDoubleFunction mapScoreWeight,
+                                   IntToDoubleFunction extraCompetitors, Random rng) {
+        return planBest(shareForCrowd(candidates, 1.0, extraCompetitors), mapScoreWeight, rng);
+    }
+
     /** Gear-first pick: when meaningful attainable gear value exists anywhere, restrict to
      *  candidates within {@link #GEAR_POOL_FRACTION} of the best gear-value/h and let exp
      *  break the tie (near-best weighted draw); otherwise pure exp ranking as before.
@@ -281,7 +289,15 @@ final class BotGrindPlanner {
      */
     static PartyPlan planPartyBest(List<List<MobCandidate>> perMember,
                                    List<IntToDoubleFunction> mapScoreWeights, Random rng) {
-        PartyScoring scoring = scorePartyBest(perMember, mapScoreWeights, rng);
+        return planPartyBest(perMember, mapScoreWeights, mapId -> 0.0, rng);
+    }
+
+    /** Party pick with crowd dispersion: members share spawns by party size PLUS the per-map crowd
+     *  surcharge (bots/players outside the party already there), steering the cohort off contested maps. */
+    static PartyPlan planPartyBest(List<List<MobCandidate>> perMember,
+                                   List<IntToDoubleFunction> mapScoreWeights,
+                                   IntToDoubleFunction extraCompetitors, Random rng) {
+        PartyScoring scoring = scorePartyBest(perMember, mapScoreWeights, extraCompetitors, rng);
         return scoring == null ? null : scoring.plan();
     }
 
@@ -299,17 +315,20 @@ final class BotGrindPlanner {
      *  one implementation. Null when no member has any positive-scoring candidate. */
     static PartyScoring scorePartyBest(List<List<MobCandidate>> perMember,
                                        List<IntToDoubleFunction> mapScoreWeights, Random rng) {
+        return scorePartyBest(perMember, mapScoreWeights, mapId -> 0.0, rng);
+    }
+
+    /** {@link #scorePartyBest} with crowd dispersion: spawn-share divisor = party size + per-map surcharge. */
+    static PartyScoring scorePartyBest(List<List<MobCandidate>> perMember,
+                                       List<IntToDoubleFunction> mapScoreWeights,
+                                       IntToDoubleFunction extraCompetitors, Random rng) {
         if (perMember == null || perMember.isEmpty()) {
             return null;
         }
         int partySize = perMember.size();
         List<List<MobCandidate>> adjusted = new ArrayList<>(partySize);
         for (List<MobCandidate> candidates : perMember) {
-            List<MobCandidate> shared = new ArrayList<>(candidates.size());
-            for (MobCandidate c : candidates) {
-                shared.add(withSpawnShare(c, partySize));
-            }
-            adjusted.add(shared);
+            adjusted.add(shareForCrowd(candidates, partySize, extraCompetitors));
         }
 
         // Sum each member's best score per map.
@@ -386,6 +405,12 @@ final class BotGrindPlanner {
         return planFarmBest(candidates, mapId -> 1.0, rng);
     }
 
+    /** Farm-item pick with crowd dispersion (spawn-shared by 1 + the per-map crowd surcharge). */
+    static Recommendation planFarmBest(List<MobCandidate> candidates, IntToDoubleFunction mapScoreWeight,
+                                       IntToDoubleFunction extraCompetitors, Random rng) {
+        return planFarmBest(shareForCrowd(candidates, 1.0, extraCompetitors), mapScoreWeight, rng);
+    }
+
     /** Like {@link #planFarmBest(List, Random)} with a per-map travel-time score weight. */
     static Recommendation planFarmBest(List<MobCandidate> candidates, IntToDoubleFunction mapScoreWeight,
                                        Random rng) {
@@ -413,11 +438,27 @@ final class BotGrindPlanner {
                 score[picked]);
     }
 
-    /** A party member's view of a map: the spawn points are shared N ways (raising seek time —
-     *  same area, fewer free mobs — and cutting the respawn supply cap), the area is not. */
-    private static MobCandidate withSpawnShare(MobCandidate c, int partySize) {
-        int shared = Math.max(1, c.spawnPoints() / partySize);
+    /** A bot's view of a contested map: the spawn points are shared among all competitors (raising
+     *  seek time — same area, fewer free mobs — and cutting the respawn supply cap), the area is not.
+     *  {@code competitors} = party size + crowd surcharge (other bots/players already there, weighted),
+     *  so a map with strangers on it yields fewer kills/h and the bot is steered toward emptier spots. */
+    private static MobCandidate withSpawnShare(MobCandidate c, double competitors) {
+        int shared = Math.max(1, (int) Math.round(c.spawnPoints() / Math.max(1.0, competitors)));
         return new MobCandidate(c.mobId(), c.mobName(), c.mobLevel(), c.exp(), c.killSeconds(),
                 c.mapId(), c.mapName(), shared, c.mapAreaPx(), c.gearDrops());
+    }
+
+    /** Spawn-share every candidate for crowding: divisor = {@code base} (1 solo / party size) plus the
+     *  per-map crowd surcharge. Identity when nobody else is around (surcharge 0, base 1). */
+    private static List<MobCandidate> shareForCrowd(List<MobCandidate> candidates, double base,
+                                                    IntToDoubleFunction extraCompetitors) {
+        if (candidates == null || candidates.isEmpty()) {
+            return candidates;
+        }
+        List<MobCandidate> out = new ArrayList<>(candidates.size());
+        for (MobCandidate c : candidates) {
+            out.add(withSpawnShare(c, base + extraCompetitors.applyAsDouble(c.mapId())));
+        }
+        return out;
     }
 }

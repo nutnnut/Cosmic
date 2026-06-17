@@ -76,7 +76,8 @@ final class BotAutopilotManager {
         Set<Integer> reachable = BotWorldGraph.reachableWithin(fromMapId, maxHops, options,
                 m -> isAvoided(entry, m) || isDangerRegionBlocked(bot, m));
         return BotGrindAdvisor.recommend(entry, bot, reachable::contains,
-                travelWeight(bot, fromMapId, maxHops, options, entry.activeQuestMobIds, rollWanderlust(entry)));
+                travelWeight(bot, fromMapId, maxHops, options, entry.activeQuestMobIds, rollWanderlust(entry)),
+                BotOccupancy.extraCompetitors(bot, BotManager.cfg.CROWD_PENALTY_FACTOR));
     };
 
     @FunctionalInterface
@@ -90,7 +91,8 @@ final class BotAutopilotManager {
         Set<Integer> reachable = BotWorldGraph.reachableWithin(fromMapId, maxHops, options,
                 m -> isAvoided(entry, m) || isDangerRegionBlocked(bot, m));
         return BotGrindAdvisor.recommendFarmItem(entry, bot, itemId, reachable::contains,
-                travelWeight(bot, fromMapId, maxHops, options, entry.activeQuestMobIds, rollWanderlust(entry)));
+                travelWeight(bot, fromMapId, maxHops, options, entry.activeQuestMobIds, rollWanderlust(entry)),
+                BotOccupancy.extraCompetitors(bot, BotManager.cfg.CROWD_PENALTY_FACTOR));
     };
 
     // Death-loop breaker tuning. Deaths closer together than the window chain into a streak; once the
@@ -241,7 +243,11 @@ final class BotAutopilotManager {
 
     static PartyDecider partyDecider = members -> {
         PartyInputs in = partyInputs(members);
-        return BotGrindPlanner.planPartyBest(in.perMember(), in.weights(), ThreadLocalRandom.current());
+        // Crowd surcharge from the cohort's shared perspective (own party already excluded); pick any
+        // member to read world occupancy — they share a party so the exclusion is identical.
+        IntToDoubleFunction crowd = members.isEmpty() ? mapId -> 0.0
+                : BotOccupancy.extraCompetitors(members.get(0).bot, BotManager.cfg.CROWD_PENALTY_FACTOR);
+        return BotGrindPlanner.planPartyBest(in.perMember(), in.weights(), crowd, ThreadLocalRandom.current());
     };
 
     static BiConsumer<BotEntry, String> reply =

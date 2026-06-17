@@ -249,8 +249,17 @@ final class BotGrindAdvisor {
     static Recommendation recommend(BotEntry entry, Character bot,
                                     java.util.function.IntPredicate mapAllowed,
                                     java.util.function.IntToDoubleFunction mapScoreWeight) {
+        return recommend(entry, bot, mapAllowed, mapScoreWeight, mapId -> 0.0);
+    }
+
+    /** Like the 4-arg {@code recommend} plus a per-map crowd surcharge: maps with other bots/players
+     *  already there yield fewer kills/h (spawn-shared), so the bot disperses instead of stacking. */
+    static Recommendation recommend(BotEntry entry, Character bot,
+                                    java.util.function.IntPredicate mapAllowed,
+                                    java.util.function.IntToDoubleFunction mapScoreWeight,
+                                    java.util.function.IntToDoubleFunction extraCompetitors) {
         List<MobCandidate> candidates = buildCandidates(entry, bot, mapAllowed);
-        return BotGrindPlanner.planBest(candidates, mapScoreWeight, ThreadLocalRandom.current());
+        return BotGrindPlanner.planBest(candidates, mapScoreWeight, extraCompetitors, ThreadLocalRandom.current());
     }
 
     /** Candidate pool for external planners (party autopilot). Same pool recommend() uses;
@@ -466,6 +475,14 @@ final class BotGrindAdvisor {
     static Recommendation recommendFarmItem(BotEntry entry, Character bot, int itemId,
                                             java.util.function.IntPredicate mapAllowed,
                                             java.util.function.IntToDoubleFunction mapScoreWeight) {
+        return recommendFarmItem(entry, bot, itemId, mapAllowed, mapScoreWeight, mapId -> 0.0);
+    }
+
+    /** Like the 5-arg {@code recommendFarmItem} plus a per-map crowd surcharge (anti-stacking). */
+    static Recommendation recommendFarmItem(BotEntry entry, Character bot, int itemId,
+                                            java.util.function.IntPredicate mapAllowed,
+                                            java.util.function.IntToDoubleFunction mapScoreWeight,
+                                            java.util.function.IntToDoubleFunction extraCompetitors) {
         Map<Integer, Integer> droppers = droppersForItem.droppers(itemId);
         if (droppers.isEmpty()) {
             return null;
@@ -531,7 +548,7 @@ final class BotGrindAdvisor {
                     blend.exp(), blend.killSeconds(), mapId, blend.mapName(), totalPoints,
                     map.areaPx(), List.of(new GearProspect(itemId, name, chancePerKill, 0, 0))));
         }
-        return BotGrindPlanner.planFarmBest(candidates, mapScoreWeight, ThreadLocalRandom.current());
+        return BotGrindPlanner.planFarmBest(candidates, mapScoreWeight, extraCompetitors, ThreadLocalRandom.current());
     }
 
     /** All mobs dropping an item with their best chance ({@code drop_data}); test seam. */

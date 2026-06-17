@@ -283,4 +283,47 @@ class BotGrindPlannerTest {
             assertEquals(0.02 * rec.killsPerHour(), rec.wantedGearPerHour(), 1e-9);
         }
     }
+
+    // ---- crowd dispersion (anti-stacking): outsiders count as extra spawn-competitors ----
+
+    @Test
+    void noCrowdSurchargeIsIdenticalToPlainPlanning() {
+        MobCandidate smallDense = new MobCandidate(1, "mob1", 30, 100, 2.0, 10, "map10", 4, 200_000, List.of());
+        MobCandidate bigRoomy = new MobCandidate(2, "mob2", 30, 100, 2.0, 20, "map20", 12, 1_200_000, List.of());
+        java.util.function.IntToDoubleFunction none = mapId -> 0.0;
+        for (int seed = 0; seed < 20; seed++) {
+            Recommendation plain = BotGrindPlanner.planBest(List.of(smallDense, bigRoomy), new Random(seed));
+            Recommendation crowd0 = BotGrindPlanner.planBest(List.of(smallDense, bigRoomy), mapId -> 1.0, none, new Random(seed));
+            assertEquals(plain.pick().mapId(), crowd0.pick().mapId(), "zero surcharge must not change the pick");
+        }
+    }
+
+    @Test
+    void aCrowdedMapPushesTheSoloBotToAnEmptierOne() {
+        // Solo normally takes the dense small map (see shouldPreferRoomierMapForAPartyButDenserMapSolo).
+        MobCandidate smallDense = new MobCandidate(1, "mob1", 30, 100, 2.0, 10, "map10", 4, 200_000, List.of());
+        MobCandidate bigRoomy = new MobCandidate(2, "mob2", 30, 100, 2.0, 20, "map20", 12, 1_200_000, List.of());
+        // 3 outsiders on the small map at penalty 2 -> divisor 1 + 6 = 7: its spawns/supply collapse.
+        java.util.function.IntToDoubleFunction crowd = mapId -> mapId == 10 ? 6.0 : 0.0;
+        for (int seed = 0; seed < 20; seed++) {
+            Recommendation rec = BotGrindPlanner.planBest(
+                    List.of(smallDense, bigRoomy), mapId -> 1.0, crowd, new Random(seed));
+            assertEquals(20, rec.pick().mapId(), "a crowded small map must lose to the empty roomy one");
+        }
+    }
+
+    @Test
+    void aCrowdedMapPushesThePartyOffIt() {
+        // Party of 4 normally prefers the roomy map (supply); pile outsiders onto it and they relocate.
+        MobCandidate smallDense = new MobCandidate(1, "mob1", 30, 100, 2.0, 10, "map10", 8, 200_000, List.of());
+        MobCandidate bigRoomy = new MobCandidate(2, "mob2", 30, 100, 2.0, 20, "map20", 24, 1_200_000, List.of());
+        List<List<MobCandidate>> perMember = java.util.Collections.nCopies(4, List.of(smallDense, bigRoomy));
+        List<java.util.function.IntToDoubleFunction> weights =
+                java.util.Collections.nCopies(4, (java.util.function.IntToDoubleFunction) mapId -> 1.0);
+        java.util.function.IntToDoubleFunction crowd = mapId -> mapId == 20 ? 12.0 : 0.0;
+        for (int seed = 0; seed < 20; seed++) {
+            BotGrindPlanner.PartyPlan plan = BotGrindPlanner.planPartyBest(perMember, weights, crowd, new Random(seed));
+            assertEquals(10, plan.mapId(), "a crowded roomy map must lose the party to the emptier one");
+        }
+    }
 }

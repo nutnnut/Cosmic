@@ -136,6 +136,11 @@ public class BotManager {
         public int HARDCORE_CAP = 5;                       // max bots that never retire (the veterans)
         public boolean POPULATION_AUTOGEN = true;          // generate fresh bots when the pool is short
 
+        // Grind dispersion: each other bot/player already on (or committed to) a candidate map counts as
+        // this many extra spawn-competitors, so crowded maps yield fewer kills/h and bots spread out
+        // instead of stacking / kill-stealing. 0 disables. See BotOccupancy + BotGrindPlanner spawn-share.
+        public double CROWD_PENALTY_FACTOR = 2.0;
+
         // Grind loot convenience: loot competes with mob navigation only when
         // lootDistSq < mobDistSq * ratio. 0.09 ≈ loot within 30% of mob distance.
         public float GRIND_LOOT_CONVENIENCE_RATIO = 0.09f;
