@@ -51,6 +51,41 @@ class BotPersonalityTest {
         assertEquals(1, p.hourWeight(-1), "out-of-range hour is safe");
     }
 
+    /** farm/idle, sociability, risk fixed; everything else neutral — for behavior-by-trait checks. */
+    private static BotPersonality trait(double farmIdle, double sociability, double risk) {
+        return new BotPersonality(1L, 1.0, new int[24], 60, farmIdle, 0.0, 5,
+                sociability, 0.3, risk, BotPersonality.Archetype.REGULAR, 60);
+    }
+
+    @Test
+    void wanderlustVariesByTrait() {
+        BotPersonality roamer = trait(0.95, 0.05, 0.9);   // diligent, antisocial, bold
+        BotPersonality homebody = trait(0.45, 0.95, 0.2); // lazy, social, timid
+        assertTrue(roamer.wanderlustChance() > homebody.wanderlustChance(),
+                "an active bold loner should roam more often than a lazy social homebody");
+
+        // each trait pushes the right way, holding the others fixed
+        assertTrue(trait(0.9, 0.3, 0.5).wanderlustChance() > trait(0.4, 0.3, 0.5).wanderlustChance(),
+                "more active (higher farm ratio) -> roams more");
+        assertTrue(trait(0.7, 0.1, 0.5).wanderlustChance() > trait(0.7, 0.9, 0.5).wanderlustChance(),
+                "more social -> roams less");
+        assertTrue(trait(0.7, 0.3, 0.9).wanderlustChance() > trait(0.7, 0.3, 0.1).wanderlustChance(),
+                "bolder -> roams more");
+
+        // it's a "once in a while" rate, not a coin flip
+        assertTrue(roamer.wanderlustChance() < 0.5, "wanderlust stays occasional even for the keenest bot");
+    }
+
+    @Test
+    void wanderlustDiscountStrongerForBolderBots() {
+        // discount multiplies travel seconds; smaller = penalty lifted harder = ranges farther
+        assertTrue(trait(0.7, 0.3, 0.9).wanderlustTravelDiscount() < trait(0.7, 0.3, 0.1).wanderlustTravelDiscount(),
+                "a bolder bot lifts the travel penalty harder");
+        assertTrue(trait(0.7, 0.3, 1.0).wanderlustTravelDiscount() > 0.0
+                        && trait(0.7, 0.3, 0.0).wanderlustTravelDiscount() < 1.0,
+                "discount stays in (0,1): always lifts, never inverts");
+    }
+
     @Test
     void engagementDecaysWithLevelExceptHardcore() {
         BotPersonality regular = new BotPersonality(1L, 1.0, new int[24], 60, 0.8, 1.0, 5,

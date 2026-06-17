@@ -115,14 +115,24 @@ final class BotTravelCost {
         return scoreWeight(travelSeconds, mapId, TRAVEL_RISK_LEVEL);
     }
 
+    /** Level-scaled travel penalty at full strength (no wanderlust discount). */
+    static double scoreWeight(Map<Integer, Double> travelSeconds, int mapId, int botLevel) {
+        return scoreWeight(travelSeconds, mapId, botLevel, 1.0);
+    }
+
     /** Level-scaled travel penalty: a low-level bot treats every travel-second as
      *  {@link #travelRiskFactor} times costlier, so it prefers nearby grind spots and won't trek
      *  across the world while fragile. Eases LINEARLY to the level-neutral cost by
-     *  {@link #TRAVEL_RISK_LEVEL}. */
-    static double scoreWeight(Map<Integer, Double> travelSeconds, int mapId, int botLevel) {
+     *  {@link #TRAVEL_RISK_LEVEL}.
+     *
+     *  <p>{@code travelDiscount} (1.0 = normal) shrinks effective travel time for an occasional
+     *  "wanderlust" decision, so distant maps keep most of their value and grind quality, not
+     *  proximity, drives the pick. Hazard/level avoidance is enforced separately (the reachable-set
+     *  prune + per-mob danger scoring), so a discounted decision still never routes into danger. */
+    static double scoreWeight(Map<Integer, Double> travelSeconds, int mapId, int botLevel, double travelDiscount) {
         Double s = travelSeconds.get(mapId);
         double sec = s != null ? s : HORIZON_SECONDS;
-        double effectiveSec = sec * travelRiskFactor(botLevel);
+        double effectiveSec = sec * travelRiskFactor(botLevel) * travelDiscount;
         return Math.max(MIN_SCORE_WEIGHT, 1.0 - effectiveSec / HORIZON_SECONDS);
     }
 

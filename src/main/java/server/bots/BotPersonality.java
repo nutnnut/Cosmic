@@ -135,6 +135,30 @@ public record BotPersonality(
         return 1.0 - (1.0 - floor) * t;
     }
 
+    /** Base per-decision wanderlust probability before trait scaling. */
+    private static final double WANDERLUST_BASE = 0.12;
+
+    /**
+     * Per grind-decision chance the bot drops its local-grind travel bias and roams for a better spot
+     * elsewhere. Trait-driven so behavior varies per bot: a diligent, bold loner roams often; a lazy,
+     * homebody socializer (idles/parties in town) stays local. Hazard/level avoidance is enforced
+     * separately, so roaming never sends a bot somewhere dangerous.
+     */
+    public double wanderlustChance() {
+        double active = farmIdleRatio;             // lazy/idle bots (low farm) roam less
+        double adventure = 0.5 + riskTolerance;    // 0.5..1.5: bold bots roam more
+        double homebody = 1.0 - 0.5 * sociability; // social bots idle/party in town instead of roaming
+        return WANDERLUST_BASE * active * adventure * homebody;
+    }
+
+    /**
+     * Travel-time discount applied during a wanderlust decision (multiplies effective travel seconds;
+     * 1.0 = no lift). Bolder bots lift the penalty harder and so range farther.
+     */
+    public double wanderlustTravelDiscount() {
+        return 0.25 - 0.15 * riskTolerance; // risk 0 -> 0.25 (modest), risk 1 -> 0.10 (strong lift)
+    }
+
     // ---- serialization (flat key=value; tolerant on read) ----
 
     public String serialize() {

@@ -76,7 +76,7 @@ final class BotAutopilotManager {
         Set<Integer> reachable = BotWorldGraph.reachableWithin(fromMapId, maxHops, options,
                 m -> isAvoided(entry, m) || isDangerRegionBlocked(bot, m));
         return BotGrindAdvisor.recommend(entry, bot, reachable::contains,
-                travelWeight(bot, fromMapId, maxHops, options, entry.activeQuestMobIds));
+                travelWeight(bot, fromMapId, maxHops, options, entry.activeQuestMobIds, rollWanderlust(entry)));
     };
 
     @FunctionalInterface
@@ -90,7 +90,7 @@ final class BotAutopilotManager {
         Set<Integer> reachable = BotWorldGraph.reachableWithin(fromMapId, maxHops, options,
                 m -> isAvoided(entry, m) || isDangerRegionBlocked(bot, m));
         return BotGrindAdvisor.recommendFarmItem(entry, bot, itemId, reachable::contains,
-                travelWeight(bot, fromMapId, maxHops, options, entry.activeQuestMobIds));
+                travelWeight(bot, fromMapId, maxHops, options, entry.activeQuestMobIds, rollWanderlust(entry)));
     };
 
     // Death-loop breaker tuning. Deaths closer together than the window chain into a streak; once the
@@ -171,6 +171,12 @@ final class BotAutopilotManager {
      */
     private static IntToDoubleFunction travelWeight(Character bot, int fromMapId, int maxHops,
                                                     BotWorldGraph.RouteOptions options, Set<Integer> questMobs) {
+        return travelWeight(bot, fromMapId, maxHops, options, questMobs, 1.0);
+    }
+
+    private static IntToDoubleFunction travelWeight(Character bot, int fromMapId, int maxHops,
+                                                    BotWorldGraph.RouteOptions options, Set<Integer> questMobs,
+                                                    double travelDiscount) {
         IntToLongFunction transportationTime = ms -> bot.getWorldServer().getTransportationTime(ms);
         Map<Integer, Double> seconds = BotTravelCost.floodSeconds(fromMapId, maxHops, options, transportationTime);
         int level = bot.getLevel();
@@ -178,8 +184,22 @@ final class BotAutopilotManager {
         // goes to finish what it accepted instead of drifting to a richer grind. questMobs is the
         // tick-thread-refreshed BotEntry snapshot (volatile) - NOT recomputed here, since this runs on
         // DECIDE_POOL and iterating the live quest-progress map off-thread races the kill counter (CME).
-        return mapId -> BotTravelCost.scoreWeight(seconds, mapId, level)
+        return mapId -> BotTravelCost.scoreWeight(seconds, mapId, level, travelDiscount)
                 * BotQuestManager.questMapScoreBias(mapId, questMobs);
+    }
+
+    /**
+     * Once in a while a bot abandons its local-grind travel bias and roams for a genuinely better spot,
+     * even far away. Whether it fires and how hard it lifts the travel penalty are both trait-driven
+     * ({@link BotPersonality#wanderlustChance}/{@link BotPersonality#wanderlustTravelDiscount}). Returns
+     * the travel-time discount for this decision (1.0 = normal local bias). Hazard/level avoidance is
+     * unaffected — it lives in the reachable-set prune, so a roaming bot still never routes into danger.
+     */
+    private static double rollWanderlust(BotEntry entry) {
+        BotPersonality p = entry.personality != null ? entry.personality : BotPersonality.defaults();
+        return ThreadLocalRandom.current().nextDouble() < p.wanderlustChance()
+                ? p.wanderlustTravelDiscount()
+                : 1.0;
     }
 
     @FunctionalInterface
@@ -629,6 +649,14 @@ final class BotAutopilotManager {
         String currentMap = currentMapName(bot);
         if (entry == null || bot == null) {
             return "not sure where i am rn";
+        }
+        // Transient sub-states sit on top of grind mode (entry.grinding stays true), so report them
+        // first — otherwise a town break or level-gap idle-leech misreads as "grinding here".
+        if (System.currentTimeMillis() < entry.breakUntilMs) {
+            return "im at " + currentMap + ", taking a break";
+        }
+        if (entry.idleLeech) {
+            return "im at " + currentMap + ", idling while my party catches up";
         }
         if (!isActive(entry)) {
             String activity = nonAutopilotActivity(entry);
