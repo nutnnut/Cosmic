@@ -661,6 +661,7 @@ public class BotManager {
         ref[0] = entry;
         entry.movementProfile = BotMovementProfile.fromCharacter(bot);
         entry.selfScrollEnabled = BotPrefsStore.loadSelfScroll(bot.getId());
+        entry.personality = BotPersonality.loadOrCreate(botCharId);
         BotNavigationGraphProvider.warmGraphAsync(bot.getMap(), entry.movementProfile);
         entries.add(entry);
         FormationState fs = ownerFormations.getOrDefault(ownerCharId, FormationState.defaultStagger());

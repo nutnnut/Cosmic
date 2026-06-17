@@ -210,6 +210,10 @@ public class BotEntry {
     // Farm-item objective override ("farm <item>"): re-decides only re-pick the SITE for this
     // item instead of running the general advisor; the item is never sold as trash.
     int autopilotFarmItemId = 0;
+    // Per-bot personality/behavior profile (schedule, farm/idle, breaks, sociability, risk, career).
+    // Loaded at spawn from bot_config (BotPersonality.loadOrCreate); neutral defaults for non-managed
+    // bots. Consumed by the break logic, the population scheduler, party formation, and chat.
+    BotPersonality personality = BotPersonality.defaults();
     // Scroll<->farm coupling (item 08, layer 3): the better-base equip the autopilot is actively
     // steering to farm (gearFocused), so the off-thread scroll planner can HOLD scrolls instead of
     // burning them on the inferior base it currently wears in that slot. 0 = none; chance is the
