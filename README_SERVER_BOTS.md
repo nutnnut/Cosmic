@@ -271,6 +271,38 @@ Open the in-game **Maple Messenger** window and type `Console: <verb>` to drive 
 | `Console: say <name> <text>` | Drive the bot via its own chat commands |
 | `Console: cmd <@command ...>` | Run a GM command (output to normal chat) |
 
+### Living-server population (`@botpop`)
+
+A background scheduler can keep a population of **server-generated** bots logging in and out on their
+own, on varying per-bot schedules, so the world feels alive (busy in the evening, quiet at 4am). It is
+**OFF by default**.
+
+**IMPORTANT — only `@spawnbot generate` bots are managed.** The scheduler will only ever spawn/retire
+bots created with `@spawnbot generate ...`. Bots you made with a name (`@spawnbot <name>`), `@botme`, or
+`@registerbot` are **never** auto-scheduled — this is the safety rule that stops it from ever spawning a
+real player's character. (So spawning 2 named bots and logging them out, then `@botpop on`, does nothing —
+they aren't in the managed pool.)
+
+| Command | Effect |
+|---|---|
+| `@botpop` / `@botpop status` | Show: scheduler on/off, this hour's target vs. current live count, managed-pool size |
+| `@botpop on` / `@botpop off` | Enable / disable the scheduler |
+| `@botpop list` | List managed bots (id, group, active/retired/disabled, online) |
+| `@botpop sweep` | Force one reconcile pass now (instead of waiting for the next tick) |
+
+**To use it:**
+1. Build a pool: run `@spawnbot generate confirm` several times (each becomes a managed bot with a random
+   personality — preferred play hours, session length, farm/idle ratio, sociability, career length).
+2. `@botpop on`, then watch with `@botpop status` / `@botpop list` (or `@botpop sweep` to act immediately).
+
+Even then, a given bot only logs in when (a) it's "active today" (each bot plays only a fraction of days),
+(b) the current hour is one it likes, and (c) the hourly target exceeds the live count — so at an off-hour
+or for a sporadic bot it may stay offline. Tune the 24-hour target curve and knobs in `BotManager.cfg`
+(`POPULATION_CURVE`, `POPULATION_SCHED_ENABLED`, etc.). Design notes: `docs/bot/living-server-design.md`.
+
+> Career turnover (bots "retiring" after a while) and auto-generating fresh bots to refill the population
+> are planned next; today the scheduler tracks the curve over the pool you generate.
+
 ## Notes
 - Bot characters can be logged into as normal accounts (user = bot name, password = `botbot`) to manually equip or manage inventory.
 
