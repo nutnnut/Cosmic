@@ -110,6 +110,11 @@ public class BotEntry {
     volatile boolean grinding = false;
     Monster grindTarget = null;
     long nextGrindTargetSearchAtMs = 0L;
+    // Stay committed to the chosen grind target until this (set when a target is adopted). Stops the
+    // bot thrashing between far mobs while approaching one: re-scoring picks a different "best" each
+    // retarget tick as the bot moves, so without this it never commits to reach any of them. Broken
+    // early only if the target dies/vanishes. See BotManager.shouldSearchForGrindTarget.
+    long grindTargetCommitUntilMs = 0L;
     int attackCooldownMs = 0;
     int moveWindowMs = 0;    // movement-only gap after attack animation; attacks blocked, walking allowed
 

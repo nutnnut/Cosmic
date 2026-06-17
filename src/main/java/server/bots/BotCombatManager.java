@@ -169,6 +169,10 @@ class BotCombatManager {
         // Grind / AoE
         public int   GRIND_SEEK_RANGE  = 800;
         public int   GRIND_RETARGET_INTERVAL_MS = 400;
+        // Once a grind target is picked, stay committed to it for at least this long even while still
+        // approaching it (out of attack range), so the bot doesn't flip between far mobs every retarget
+        // tick as re-scoring shifts the "best" pick. Broken early only if the target dies/vanishes.
+        public int   GRIND_TARGET_COMMIT_MS = 3000;
         public int   AOE_MOB_THRESHOLD = 2;
         // AoE repositioning: when the best fire-now plan is single-target but stepping into the
         // cluster centroid would let the AoE skill beat it by this DPS factor, defer the shot and

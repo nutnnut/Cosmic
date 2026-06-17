@@ -2292,6 +2292,12 @@ public class BotManager {
         if (now < entry.nextGrindTargetSearchAtMs) {
             return false;
         }
+        // Stay committed to a live target for a few seconds even while approaching it (out of range):
+        // re-scoring picks a different "best" mob each retarget tick as the bot moves, so without this
+        // the bot thrashes between far mobs and never reaches any. Commit breaks once it dies/vanishes.
+        if (currentTarget.isAlive() && now < entry.grindTargetCommitUntilMs) {
+            return false;
+        }
         if (bot == null
                 || currentAttackPlan == null
                 || !BotCombatManager.isTargetInAttackRange(currentAttackPlan, bot, currentTarget)) {
@@ -2864,6 +2870,11 @@ public class BotManager {
             if (shouldSwitchToSearchedTarget(entry, bot, target, searchedTarget, attackPlan)) {
                 target = searchedTarget;
                 attackPlan = null;
+                // Commit to this pick for a few seconds so the bot actually travels to it instead of
+                // re-choosing a different far mob on the next retarget tick.
+                if (target != null) {
+                    entry.grindTargetCommitUntilMs = now + BotCombatManager.cfg.GRIND_TARGET_COMMIT_MS;
+                }
             }
             entry.nextGrindTargetSearchAtMs = now + BotCombatManager.cfg.GRIND_RETARGET_INTERVAL_MS;
         }
