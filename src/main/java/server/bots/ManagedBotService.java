@@ -32,11 +32,17 @@ public final class ManagedBotService {
     private ManagedBotService() {
     }
 
-    /** One managed-bot registry row. {@code groupId} is null for soloists; {@code retired} = career ended. */
-    public record ManagedBot(int botCharId, Integer groupId, boolean enabled, boolean retired) {
+    /** One managed-bot registry row. {@code groupId} is null for soloists; {@code retired} = career ended;
+     *  {@code createdAtMs} is the career start (epoch millis) used for turnover age. */
+    public record ManagedBot(int botCharId, Integer groupId, boolean enabled, boolean retired, long createdAtMs) {
         /** Schedulable = a generated bot that is enabled and hasn't retired. */
         public boolean schedulable() {
             return enabled && !retired;
+        }
+
+        /** Career age in whole days as of {@code now} (epoch millis). */
+        public long ageDays(long now) {
+            return Math.max(0, (now - createdAtMs) / 86_400_000L);
         }
     }
 
@@ -48,7 +54,7 @@ public final class ManagedBotService {
     public ManagedBot get(int botCharId) {
         try (Connection con = DatabaseConnection.getConnection();
              PreparedStatement ps = con.prepareStatement(
-                     "SELECT group_id, enabled, retired_at FROM managed_bot WHERE bot_char_id = ?")) {
+                     "SELECT group_id, enabled, retired_at, created_at FROM managed_bot WHERE bot_char_id = ?")) {
             ps.setInt(1, botCharId);
             try (ResultSet rs = ps.executeQuery()) {
                 if (rs.next()) {
@@ -66,7 +72,7 @@ public final class ManagedBotService {
         List<ManagedBot> out = new ArrayList<>();
         try (Connection con = DatabaseConnection.getConnection();
              PreparedStatement ps = con.prepareStatement(
-                     "SELECT bot_char_id, group_id, enabled, retired_at FROM managed_bot");
+                     "SELECT bot_char_id, group_id, enabled, retired_at, created_at FROM managed_bot");
              ResultSet rs = ps.executeQuery()) {
             while (rs.next()) {
                 out.add(readRow(rs.getInt("bot_char_id"), rs));
@@ -82,7 +88,9 @@ public final class ManagedBotService {
         Integer groupId = rs.wasNull() ? null : gid;
         boolean enabled = rs.getInt("enabled") != 0;
         boolean retired = rs.getTimestamp("retired_at") != null;
-        return new ManagedBot(botCharId, groupId, enabled, retired);
+        java.sql.Timestamp created = rs.getTimestamp("created_at");
+        long createdAtMs = created != null ? created.getTime() : 0L;
+        return new ManagedBot(botCharId, groupId, enabled, retired, createdAtMs);
     }
 
     /** Marks a freshly-generated character as a managed bot. Idempotent (keeps the existing row). */

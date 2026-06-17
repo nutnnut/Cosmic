@@ -75,13 +75,27 @@ GM command to drive/inspect the population: `status` (curve target now vs live c
 `on`/`off` (toggle the scheduler), `list` (managed bots + schedulable/retired), `sweep` (force a
 reconcile now). See `client/command/commands/.../BotPopCommand`.
 
+## Career turnover + auto-generation (`BotGenerator`) — P3b SHIPPED (default OFF)
+
+The self-sustaining churn: newcomers join as veterans leave, all inside the same default-OFF reconcile
+sweep (nothing happens until `@botpop on`).
+
+- **Turnover:** each sweep, an OFFLINE managed bot whose career age (`managed_bot.created_at` → days)
+  has reached its `careerLenDays` is retired (`retired_at` set) — kept as a record, no longer scheduled.
+  Hardcore never retire; a live session is never yanked (retire only when offline).
+- **Auto-generation:** when the live count is still below the hour's target after waking every eligible
+  offline bot, `BotGenerator.generateManaged` creates ONE fresh level-1 managed bot per sweep (gradual
+  inflow; gated by `POPULATION_AUTOGEN` + the non-retired `MANAGED_POOL_MAX` ceiling) and spawns it.
+- **Hardcore cap:** enforced at generation, not retirement — a fresh HARDCORE roll is re-rolled to a
+  finite career while the non-retired hardcore count is already at `HARDCORE_CAP`, so the never-retiring
+  veteran set stays small and turnover keeps flowing. Hardcore bots, once created, truly stay forever.
+- **Shared creation path (rule #1/#6):** account + character creation was extracted out of
+  `SpawnBotCommand` into `BotGenerator.createBotCharacter`; both `@spawnbot`/`generate` and the
+  auto-generator now use it. Decision math (`autogenCount`, `hardcoreAllowed`, `careerEnded`) is pure and
+  unit-tested in `BotScheduleMath`.
+
 ## Planned (not yet shipped)
 
-- **P3b — career turnover + auto-generation:** retire bots whose `careerLenDays` elapsed (set
-  `retired_at`; hardcore exempt, capped by `HARDCORE_CAP`) and auto-generate fresh level-1 bots to refill
-  toward the curve (extract account+char creation from `SpawnBotCommand` into a shared
-  `generateManagedBot`). This is the self-sustaining churn (newcomers join as veterans leave) — the
-  riskiest part (DB creation from a timer), so it lands separately and wants live validation.
 - **P4 — parties:** persistent crews (`managed_bot.group_id` → log in together and form a party via
   `joinBotToOwnerParty` + `BotAutopilotManager.startParty`) and dynamic ad-hoc party-up by `sociability`.
   Reuses the existing cohort travel/grind cohesion + the level-gap idle-leech catch-up.

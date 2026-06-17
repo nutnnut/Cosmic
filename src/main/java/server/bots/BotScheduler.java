@@ -116,6 +116,23 @@ public final class BotScheduler {
         BotManager bm = BotManager.getInstance();
         List<ManagedBot> managed = ManagedBotService.getInstance().loadAll();
 
+        // --- 0. turnover: retire OFFLINE bots whose career has ended ("left"); never hardcore, never a
+        // live session. They stay as records (no longer scheduled); auto-gen below refills the pool. ---
+        boolean retiredAny = false;
+        for (ManagedBot m : managed) {
+            if (m.retired() || bm.getEntryByBotCharId(m.botCharId()) != null) {
+                continue;
+            }
+            BotPersonality p = BotPersonality.parse(BotConfigService.getInstance().load(m.botCharId()));
+            if (BotScheduleMath.careerEnded(m.ageDays(now), p.careerLenDays(), p.isHardcore())) {
+                ManagedBotService.getInstance().retire(m.botCharId());
+                retiredAny = true;
+            }
+        }
+        if (retiredAny) {
+            managed = ManagedBotService.getInstance().loadAll(); // re-read so the reconcile sees the live pool
+        }
+
         // --- 1. session-length logouts + live census (independent of the target) ---
         List<Integer> live = new ArrayList<>();
         for (ManagedBot m : managed) {
@@ -168,8 +185,27 @@ public final class BotScheduler {
                 brought++;
             }
         }
+        // Still short after waking everyone eligible: trickle in fresh bots (one per sweep), gated by the
+        // autogen flag + the non-retired pool cap, so the world grows toward the curve over time.
         if (brought < need) {
-            log.debug("population under target by {} (pool exhausted; auto-gen is P3b)", need - brought);
+            int poolSize = 0;
+            for (ManagedBot m : managed) {
+                if (!m.retired()) {
+                    poolSize++;
+                }
+            }
+            int gen = BotScheduleMath.autogenCount(BotManager.cfg.POPULATION_AUTOGEN, need, brought, 0,
+                    poolSize, BotManager.cfg.MANAGED_POOL_MAX);
+            if (gen > 0) {
+                int newId = BotGenerator.generateManaged(BotManager.cfg.POPULATION_WORLD,
+                        BotManager.cfg.POPULATION_CHANNEL, BotGenerator.countHardcore(managed),
+                        BotManager.cfg.HARDCORE_CAP);
+                if (newId > 0 && bm.spawnManagedBot(newId)) {
+                    onlineSince.put(newId, now);
+                }
+            } else {
+                log.debug("population under target by {} (autogen off or pool at cap)", need - brought);
+            }
         }
     }
 

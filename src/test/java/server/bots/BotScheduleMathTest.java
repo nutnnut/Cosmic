@@ -70,6 +70,27 @@ class BotScheduleMathTest {
     }
 
     @Test
+    void autogenOnlyWhenShortAndAllowed() {
+        // short by 2 after waking everyone, autogen on, pool has room -> generate (capped at 1/sweep)
+        assertEquals(1, BotScheduleMath.autogenCount(true, 5, 3, 0, 10, 60));
+        // already at/over target -> none
+        assertEquals(0, BotScheduleMath.autogenCount(true, 5, 5, 0, 10, 60));
+        // eligible offline still cover the deficit -> wake them, don't generate
+        assertEquals(0, BotScheduleMath.autogenCount(true, 5, 1, 4, 10, 60));
+        // autogen disabled -> never
+        assertEquals(0, BotScheduleMath.autogenCount(false, 5, 0, 0, 10, 60));
+        // pool at cap -> never (cap is a hard ceiling)
+        assertEquals(0, BotScheduleMath.autogenCount(true, 5, 0, 0, 60, 60));
+    }
+
+    @Test
+    void hardcoreCapIsAHardCeiling() {
+        assertTrue(BotScheduleMath.hardcoreAllowed(4, 5));
+        assertFalse(BotScheduleMath.hardcoreAllowed(5, 5));
+        assertFalse(BotScheduleMath.hardcoreAllowed(9, 5));
+    }
+
+    @Test
     void unitHashIsInRangeAndDeterministic() {
         for (long i = 0; i < 100; i++) {
             double u = BotScheduleMath.unitHash(i, i * 31);

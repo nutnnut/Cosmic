@@ -50,6 +50,27 @@ final class BotScheduleMath {
         return onlineSinceMs > 0 && sessionLenMs > 0 && (now - onlineSinceMs) >= sessionLenMs;
     }
 
+    /**
+     * How many fresh bots to auto-generate this sweep. Only when, after waking everyone eligible, the
+     * live count is still below target — and only if autogen is on and the non-retired pool has room.
+     * Throttled to one per sweep so newcomers trickle in (gradual inflow, and the DB create stays off
+     * the critical path) rather than a burst filling the world the instant the curve rises.
+     */
+    static int autogenCount(boolean autogenOn, int target, int live, int eligibleOffline,
+                            int poolSize, int poolMax) {
+        if (!autogenOn || poolSize >= poolMax) {
+            return 0;
+        }
+        int deficit = target - live - eligibleOffline;
+        return deficit > 0 ? 1 : 0;
+    }
+
+    /** Hardcore cap: a fresh bot may keep a HARDCORE roll only while below the veteran cap — otherwise
+     *  it's re-rolled to a finite career, so the never-retiring set stays small and turnover continues. */
+    static boolean hardcoreAllowed(int currentHardcore, int cap) {
+        return currentHardcore < cap;
+    }
+
     /** Deterministic [0,1) hash of two longs (splitmix64-style finalizer); stable across runs/JVMs. */
     static double unitHash(long a, long b) {
         long z = a * 0x9E3779B97F4A7C15L + (b + 0x7F4A7C159E3779B9L);
