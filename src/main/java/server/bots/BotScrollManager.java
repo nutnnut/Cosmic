@@ -100,14 +100,23 @@ final class BotScrollManager {
             BotManager.getInstance().botReply(entry, "busy rn, ask me in a sec");
             return;
         }
+        // Heavy valuation runs off the calling thread (owner "scroll now" command + the post-scroll
+        // chain re-scan, both previously inline). Apply/announce back on the scheduler thread.
+        scheduleScrollPlan(entry, bot, BotScrollManager::applyRequestedScrollPlan);
+    }
 
+    /** Apply an owner-requested (or chained) scroll plan on the scheduler thread, prompting for
+     *  confirmation. Unlike the auto path, a null plan explains why nothing is worthwhile. */
+    private static void applyRequestedScrollPlan(BotEntry entry, Resolved resolved) {
+        Character bot = entry.bot;
+        if (bot == null || entry.pendingAction != null || entry.pendingTradeCategory != null) {
+            return; // state changed while the plan computed off-thread
+        }
         ItemInformationProvider ii = ItemInformationProvider.getInstance();
-        Resolved resolved = buildBestPlan(entry, bot, ii);
         if (resolved == null) {
             BotManager.getInstance().botReply(entry, explainNoPlan(bot, ii));
             return;
         }
-
         BotScrollPlanner.ScrollPlan plan = resolved.plan();
         Equip equip = resolved.equip();
         Item scroll = findScroll(bot, plan.scroll().scrollItemId());
@@ -115,7 +124,6 @@ final class BotScrollManager {
             BotManager.getInstance().botReply(entry, "nvm, my inventory changed");
             return;
         }
-
         entry.pendingAction = "scroll_confirm";
         entry.pendingScrollEquip = equip;
         entry.pendingScrollScroll = scroll;
@@ -231,8 +239,36 @@ final class BotScrollManager {
         }
         entry.nextSelfScrollScanAtMs = nowMs + BotManager.randMs(AUTO_SCAN_MIN_MS, AUTO_SCAN_MAX_MS);
 
-        Resolved resolved = buildBestPlan(entry, bot, ItemInformationProvider.getInstance());
-        if (resolved == null) {
+        // The plan valuation walks the whole inventory with WZ lookups — far too heavy for the bot tick
+        // thread (was maxing cores / stuttering with a party of self-scroll bots). Compute it off-thread
+        // on the shared decision pool (serialized to ~one core for ALL bots), then apply the light
+        // result back on the scheduler thread where executeConfirmed already runs.
+        scheduleScrollPlan(entry, bot, BotScrollManager::applyAutoScrollPlan);
+    }
+
+    /** Run {@link #buildBestPlan} off the bot tick thread (the shared {@link BotGrindAdvisor#DECIDE_POOL})
+     *  and hand the result to {@code apply} on the scheduler thread. The plan is re-validated at apply
+     *  time ({@link #executeConfirmed}/{@link BotInventoryManager#hasItem}), so a stale off-thread read
+     *  just yields a no-op and the next scan retries. */
+    static void scheduleScrollPlan(BotEntry entry, Character bot, java.util.function.BiConsumer<BotEntry, Resolved> apply) {
+        BotGrindAdvisor.DECIDE_POOL.execute(() -> {
+            Resolved resolved;
+            try {
+                resolved = buildBestPlan(entry, bot, ItemInformationProvider.getInstance());
+            } catch (RuntimeException e) {
+                return; // WZ/inventory hiccup off-thread — skip this scan, the timer re-arms
+            }
+            final Resolved r = resolved; // may be null (no worthwhile play) — apply decides what to do
+            BotManager.after(0, () -> apply.accept(entry, r));
+        });
+    }
+
+    /** Apply an auto-scan plan on the scheduler thread. Re-checks the gating state (it may have changed
+     *  while the plan computed off-thread) before committing. */
+    private static void applyAutoScrollPlan(BotEntry entry, Resolved resolved) {
+        Character bot = entry.bot;
+        if (resolved == null || bot == null || !entry.selfScrollEnabled
+                || entry.pendingAction != null || entry.pendingTradeCategory != null) {
             return;
         }
         Equip equip = resolved.equip();
