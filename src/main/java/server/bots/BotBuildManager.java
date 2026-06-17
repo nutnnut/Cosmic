@@ -160,8 +160,64 @@ class BotBuildManager {
         StatType secondary = statTypeOf(ms[1]);
         if (primary == null || secondary == null) return null;
         int floor = AssignAPProcessor.getMinStatFloor(job, statOf(secondary));
+        // Accuracy floor: a STR job (warrior/pirate) with DEX parked at the stat floor can't hit
+        // similar-level mobs (the lv12/9-DEX warrior whiffing). Raise the DEX floor to ~25% hit on a
+        // nearby same-level mob so it lands hits. Kept low on purpose - equips/buffs add accuracy later
+        // and the floor relaxes as they do. Only when DEX is the secondary stat (archers have DEX as
+        // primary, thieves get accuracy from LUK, mages use magic accuracy - none need this).
+        if (!mageOut[0] && ms[1] == 'd') {
+            floor = Math.max(floor, accuracyDexFloor(bot));
+        }
         int target = mageOut[0] ? floor : BotEquipManager.recommendSecondaryTarget(bot, ms[0], ms[1], floor);
         return new ApBuild(primary, secondary, target);
+    }
+
+    static final int ACC_FLOOR_TARGET_HIT_PCT = 25; // aim for >= this % hit on a nearby same-level mob
+    static final int ACC_FLOOR_LEVEL_BAND = 10;     // "nearby" = within this many levels (skip noise)
+
+    /**
+     * Minimum BASE DEX so the bot lands ~{@link #ACC_FLOOR_TARGET_HIT_PCT}% on a typical nearby
+     * same-level mob. Reference avoid = median avoidability of non-boss mobs near the bot's level on
+     * its CURRENT map (the owner's "nearby mob, skip boss/unused noise"); 0 (no floor) when none are
+     * around or current gear/LUK/flat accuracy already covers it. The floor relaxes automatically as
+     * equips/buffs raise accuracy. SSOT: inverts {@link server.combat.CombatFormulaProvider}'s hit math.
+     */
+    static int accuracyDexFloor(Character bot) {
+        if (bot == null || bot.getMap() == null) {
+            return 0;
+        }
+        int botLevel = bot.getLevel();
+        java.util.List<Integer> avoids = new java.util.ArrayList<>();
+        for (server.life.Monster m : bot.getMap().getAllMonsters()) {
+            if (m == null || m.getStats() == null || m.isBoss()) {
+                continue;
+            }
+            if (Math.abs(m.getLevel() - botLevel) > ACC_FLOOR_LEVEL_BAND) {
+                continue;
+            }
+            int av = m.getAvoidability();
+            if (av > 0) {
+                avoids.add(av);
+            }
+        }
+        if (avoids.isEmpty()) {
+            return 0;
+        }
+        java.util.Collections.sort(avoids);
+        int refAvoid = avoids.get(avoids.size() / 2); // median is robust to a stray high-avoid mob
+        // Invert the physical hit formula for a same-level mob (levelDelta 0, accuracyRate=acc*100/255):
+        //   hit = (1.3 - avoid/accuracyRate)/0.6  =>  acc = avoid / (1.3 - 0.6*hit) * 2.55
+        double targetHit = ACC_FLOOR_TARGET_HIT_PCT / 100.0;
+        double accNeeded = refAvoid / (1.3 - 0.6 * targetHit) * 2.55;
+        // accuracy = floor(totalDex*0.8 + totalLuk*0.5) + flat(equip/buff). Solve for the base DEX that
+        // reaches accNeeded, crediting current LUK + flat + worn DEX.
+        server.combat.CombatFormulaProvider f = server.combat.CombatFormulaProvider.getInstance();
+        int totalAcc = f.getTotalAccuracy(bot);
+        int dexLukAcc = (int) Math.floor(bot.getTotalDex() * 0.8 + bot.getTotalLuk() * 0.5);
+        int flatAcc = totalAcc - dexLukAcc;
+        double minTotalDex = (accNeeded - bot.getTotalLuk() * 0.5 - flatAcc) / 0.8;
+        int gearDex = bot.getTotalDex() - bot.getDex();
+        return Math.max(0, (int) Math.ceil(minTotalDex) - gearDex);
     }
 
     /**
