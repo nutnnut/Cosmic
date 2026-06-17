@@ -44,7 +44,9 @@ import java.util.concurrent.atomic.AtomicInteger;
  *       {@link #RETURN_SCROLL_MIN_HOPS}+ hops (or doesn't exist) — a scroll on a short walk
  *       is a waste.</li>
  *   <li><b>Taxi</b>: the hardcoded Victoria cab table ({@link #TAXI_EDGES}, verified against
- *       the NPC scripts) — town → town for a meso fare, plus the VIP cab to the Ant Tunnel.</li>
+ *       the NPC scripts) — town → town for a meso fare, plus the VIP cab to the Ant Tunnel, plus
+ *       cross-continent scripted-warp rides of the same shape (Maple Island exit boat, Herb Town
+ *       &harr; Aqua Road dolphin) that connect continents the portal graph can't.</li>
  * </ul>
  *
  * <p>Same pattern as {@link BotSpawnIndex}: ~5.8k map XMLs scanned in seconds on first boot,
@@ -112,7 +114,16 @@ final class BotWorldGraph {
             new TaxiEdge(120000000, 1092014, 102000000, 1000),
             new TaxiEdge(120000000, 1092014, 100000000, 1000),
             new TaxiEdge(120000000, 1092014, 101000000, 800),
-            new TaxiEdge(120000000, 1092014, 103000000, 1000));
+            new TaxiEdge(120000000, 1092014, 103000000, 1000),
+
+            // --- Cross-continent scripted-warp rides: same instant "stand near NPC, pay, land at
+            // portal 0" shape as a cab (so taxiRide drives them unchanged), connecting continents the
+            // portal graph can't. Verified against scripts/npc/<npc>.js. ---
+            // Maple Island exit: Southperry dock NPC 22000 sails to Lith Harbor (22000.js: gainMeso(-150), warp(104000000,0)).
+            new TaxiEdge(60000, 22000, 104000000, 150),
+            // Dolphin NPC 2060009: Herb Town <-> Aqua Road (2060009.js: 10000 meso each way).
+            new TaxiEdge(251000100, 2060009, 230000000, 10000),
+            new TaxiEdge(230000000, 2060009, 251000100, 10000));
 
     private static final Map<Integer, List<TaxiEdge>> TAXI_BY_MAP = buildTaxiByMap();
 

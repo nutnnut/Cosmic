@@ -126,4 +126,21 @@ class BotWorldGraphTest {
                 "expected many scroll shortcuts, got " + graph.scrollTargets().size());
         assertEquals(-1, graph.scrollTarget(104040000));
     }
+
+    /** WZ-free: the cross-continent scripted-warp rides are wired into the taxi edge table (so
+     *  reachableWithin/route can traverse them and taxiRide executes them like a cab). */
+    @Test
+    void crossContinentScriptedWarpEdgesAreWired() {
+        // Maple Island exit boat (Southperry 60000 -> Lith Harbor 104000000) — the off-island keystone.
+        BotWorldGraph.TaxiEdge maple = BotWorldGraph.findTaxiEdge(60000, 104000000);
+        assertNotNull(maple, "Maple Island exit boat edge must exist");
+        assertEquals(22000, maple.npcId());
+        assertEquals(150, maple.fare());
+        // Dolphin both directions: Herb Town 251000100 <-> Aqua Road 230000000.
+        assertNotNull(BotWorldGraph.findTaxiEdge(251000100, 230000000));
+        BotWorldGraph.TaxiEdge back = BotWorldGraph.findTaxiEdge(230000000, 251000100);
+        assertNotNull(back);
+        assertEquals(2060009, back.npcId());
+        assertEquals(10000, back.fare());
+    }
 }
