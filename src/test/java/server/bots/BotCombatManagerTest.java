@@ -868,6 +868,68 @@ class BotCombatManagerTest {
     }
 
     @Test
+    void shouldStepCloserForAStrongerOutOfReachSkill() {
+        MapleMap map = mock(MapleMap.class);
+        Character bot = mockBot(new Point(100, 200), map, 20_000, null);
+        // Weak long-reach skill (the "Avenger from afar" analog): wide box x[20,320] reaches the
+        // target at x=240, low damage -> this is the fire-now plan.
+        Skill weakFar = skillWithAttackBox(Warrior.SLASH_BLAST, 1, 1, 10, new Rectangle(20, 170, 300, 60));
+        // Strong short-reach skill: box x[60,160] does NOT reach the target now, high damage.
+        Skill strongNear = skillWithAttackBox(Warrior.POWER_STRIKE, 1, 1, 400, new Rectangle(60, 170, 100, 60));
+        Monster primary = mockMob(new Point(240, 200), 9300560);
+        when(map.getAllMonsters()).thenReturn(List.of(primary));
+        when(bot.getSkillLevel(any(Skill.class))).thenReturn((byte) 1);
+
+        BotEntry entry = new BotEntry(bot, null, null);
+        entry.attackSkillId = strongNear.getId();
+        entry.aoeSkillId = weakFar.getId();
+
+        try (MockedStatic<SkillFactory> skillFactory = Mockito.mockStatic(SkillFactory.class)) {
+            skillFactory.when(() -> SkillFactory.getSkill(strongNear.getId())).thenReturn(strongNear);
+            skillFactory.when(() -> SkillFactory.getSkill(weakFar.getId())).thenReturn(weakFar);
+
+            // The strong skill is out of reach now, so the only in-range plan is the weak far skill.
+            BotCombatManager.AttackPlan fireNow = new BotCombatManager.AttackPlan(
+                    weakFar.getId(), 1, 1, new Rectangle(20, 170, 300, 60), List.of(primary),
+                    BotCombatManager.AttackRoute.CLOSE, 0, 0, 0, 0, 0, 0, 100, null);
+
+            Point step = BotCombatManager.betterReachRepositionTarget(entry, bot, primary, fireNow);
+            assertNotNull(step, "should step closer so the much stronger skill lands");
+            // reach(strong) = maxX(160) - bot(100) = 60; dist = 140; step = 140 - 60 + arrival(20) = 100.
+            assertEquals(100 + 100, step.x);
+        }
+    }
+
+    @Test
+    void shouldNotStepCloserWhenToggleDisabled() {
+        MapleMap map = mock(MapleMap.class);
+        Character bot = mockBot(new Point(100, 200), map, 20_000, null);
+        Skill weakFar = skillWithAttackBox(Warrior.SLASH_BLAST, 1, 1, 10, new Rectangle(20, 170, 300, 60));
+        Skill strongNear = skillWithAttackBox(Warrior.POWER_STRIKE, 1, 1, 400, new Rectangle(60, 170, 100, 60));
+        Monster primary = mockMob(new Point(240, 200), 9300561);
+        when(map.getAllMonsters()).thenReturn(List.of(primary));
+        when(bot.getSkillLevel(any(Skill.class))).thenReturn((byte) 1);
+
+        BotEntry entry = new BotEntry(bot, null, null);
+        entry.attackSkillId = strongNear.getId();
+        entry.aoeSkillId = weakFar.getId();
+
+        boolean original = BotCombatManager.cfg.BETTER_REACH_REPOSITION_ENABLED;
+        BotCombatManager.cfg.BETTER_REACH_REPOSITION_ENABLED = false;
+        try (MockedStatic<SkillFactory> skillFactory = Mockito.mockStatic(SkillFactory.class)) {
+            skillFactory.when(() -> SkillFactory.getSkill(strongNear.getId())).thenReturn(strongNear);
+            skillFactory.when(() -> SkillFactory.getSkill(weakFar.getId())).thenReturn(weakFar);
+
+            BotCombatManager.AttackPlan fireNow = new BotCombatManager.AttackPlan(
+                    weakFar.getId(), 1, 1, new Rectangle(20, 170, 300, 60), List.of(primary),
+                    BotCombatManager.AttackRoute.CLOSE, 0, 0, 0, 0, 0, 0, 100, null);
+            assertNull(BotCombatManager.betterReachRepositionTarget(entry, bot, primary, fireNow));
+        } finally {
+            BotCombatManager.cfg.BETTER_REACH_REPOSITION_ENABLED = original;
+        }
+    }
+
+    @Test
     void shouldNotRepositionForLoneMob() {
         MapleMap map = mock(MapleMap.class);
         Character bot = mockBot(new Point(100, 200), map, 20_000, null);

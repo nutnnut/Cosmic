@@ -1817,6 +1817,11 @@ public class BotManager {
             return entry.aoeRepositionAnchor;
         }
         Point anchor = BotCombatManager.aoeRepositionTarget(entry, bot, target, attackPlan);
+        if (anchor == null) {
+            // No AoE step worth it — try the inverse: step CLOSER to land a stronger out-of-reach
+            // skill instead of firing the weak long-reach plan now (shares the same anchor/deadline).
+            anchor = BotCombatManager.betterReachRepositionTarget(entry, bot, target, attackPlan);
+        }
         if (anchor != null) {
             entry.aoeRepositionAnchor = anchor;
             entry.aoeRepositionDeadlineMs = now + BotCombatManager.cfg.AOE_REPOSITION_MAX_MS;

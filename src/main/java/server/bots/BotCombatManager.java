@@ -192,6 +192,14 @@ class BotCombatManager {
         public int   AOE_REPOSITION_MAX_DISTANCE_X = 150;
         public int   AOE_REPOSITION_ARRIVAL_X = 20;
         public long  AOE_REPOSITION_MAX_MS = 800L;
+        // Step-closer-for-a-stronger-skill: the inverse of AoE reposition. When the in-range fire-now
+        // plan is a weak long-reach skill (e.g. a Hermit firing Avenger from afar) but a stronger
+        // skill is just out of reach (shorter hitbox), walk in so the stronger skill lands — only when
+        // it beats the fire-now plan's single-target DPS by this factor, and the step is bounded
+        // (opportunity cost: time spent walking isn't firing). Reuses the AoE reposition anchor/timer.
+        public boolean BETTER_REACH_REPOSITION_ENABLED = true;
+        public double BETTER_REACH_REPOSITION_DPS_FACTOR = 1.5d;
+        public int   BETTER_REACH_REPOSITION_MAX_DISTANCE_X = 120;
         public int   GRIND_REGION_OCCUPANCY_PENALTY = 1200;
         public int   GRIND_REGION_OCCUPANCY_PENALTY_CAP = 3600;
 
@@ -2250,6 +2258,92 @@ class BotCombatManager {
             return new Point(botPos.x + shift, botPos.y);
         }
         return null;
+    }
+
+    /**
+     * Inverse of {@link #aoeRepositionTarget}: when the in-range fire-now plan is a weak long-reach
+     * skill but a STRONGER skill is just out of reach (shorter hitbox), return a step-closer Point so
+     * the stronger skill lands instead. Generic — fixes any "fires the weaker far-reach skill rather
+     * than stepping in for the stronger one" case (e.g. a Hermit defaulting to Avenger). Gated on the
+     * stronger skill beating the fire-now single-target DPS by {@link Config#BETTER_REACH_REPOSITION_DPS_FACTOR}
+     * and a bounded step (the walk time is the opportunity cost). Returns null when nothing closer wins.
+     */
+    static Point betterReachRepositionTarget(BotEntry entry, Character bot, Monster primaryTarget, AttackPlan fireNowBest) {
+        if (!cfg.BETTER_REACH_REPOSITION_ENABLED || entry == null || bot == null
+                || primaryTarget == null || fireNowBest == null) {
+            return null;
+        }
+        Point botPos = bot.getPosition();
+        Point tp = primaryTarget.getPosition();
+        if (botPos == null || tp == null) {
+            return null;
+        }
+        PlanScore fireNowScore = scoreAttackPlan(bot, fireNowBest);
+        // Kill priority: if the fire-now plan already one-shots a full-HP target, don't walk — fire.
+        if (fireNowScore.minimumKillsFullHpTargets || fireNowScore.rawDps <= 0) {
+            return null;
+        }
+        WeaponType weaponType = BotAttackExecutionProvider.getEquippedWeaponType(bot);
+        int dist = Math.abs(tp.x - botPos.x);
+        int dir = tp.x >= botPos.x ? 1 : -1;
+
+        Point best = null;
+        double bestDps = fireNowScore.rawDps * cfg.BETTER_REACH_REPOSITION_DPS_FACTOR;
+        for (int skillId : cachedAttackSkillIds(entry)) {
+            if (skillId == fireNowBest.skillId || bot.skillIsCooling(skillId)) {
+                continue;
+            }
+            Skill skill = SkillFactory.getSkill(skillId);
+            if (skill == null) {
+                continue;
+            }
+            int lvl = bot.getSkillLevel(skill);
+            if (lvl <= 0) {
+                continue;
+            }
+            StatEffect effect = skill.getEffect(lvl);
+            if (effect == null || !effect.canPaySkillCost(bot)
+                    || !canUseAttackSkillWithWeapon(skillId, weaponType)) {
+                continue;
+            }
+            AttackRoute route = BotAttackExecutionProvider.determineSkillRoute(bot, skillId);
+            int ammoCost = Math.max(effect.getBulletCount(), effect.getBulletConsume())
+                    * shadowPartnerHitMultiplier(bot, route);
+            if (ammoCost > 0 && route == AttackRoute.RANGED && countAmmo(bot, weaponType) < ammoCost) {
+                continue;
+            }
+            String action = BotAttackExecutionProvider.resolveSkillAttackAction(bot, skill, lvl, weaponType);
+            Rectangle hb = calculateSkillHitBox(effect, bot, primaryTarget, route, skillId, action);
+            if (hb == null || doesHitBoxIntersectMonster(hb, primaryTarget)) {
+                continue; // null, or already in reach (planAttack already considered it)
+            }
+            int reach = dir > 0 ? (int) Math.round(hb.getMaxX()) - botPos.x
+                                : botPos.x - (int) Math.round(hb.getMinX());
+            if (reach <= 0) {
+                continue;
+            }
+            int step = dist - reach + cfg.AOE_REPOSITION_ARRIVAL_X; // end just inside reach
+            if (step <= cfg.AOE_REPOSITION_ARRIVAL_X || step > cfg.BETTER_REACH_REPOSITION_MAX_DISTANCE_X) {
+                continue; // already in horizontal reach (failure is vertical), or too far to be worth it
+            }
+            Rectangle shifted = new Rectangle(hb);
+            shifted.translate(dir * step, 0);
+            if (!doesHitBoxIntersectMonster(shifted, primaryTarget)) {
+                continue; // stepping horizontally won't bring it into reach (vertical mismatch)
+            }
+            int lines = Math.max(1, effectiveHitCount(effect) * shadowPartnerHitMultiplier(bot, route));
+            CombatFormulaProvider.DamageProfile profile = resolveAttackDamageProfile(
+                    bot, skillId, lvl, route, damageWeaponTypeForAction(skillId, weaponType, action));
+            double dmg = CombatFormulaProvider.getInstance().estimateExpectedDamage(bot, primaryTarget, lines, skillId, profile);
+            BotAttackExecutionProvider.SkillAttackTiming timing =
+                    BotAttackExecutionProvider.resolveSkillAttackTiming(skill, action, bot, buildBasicAttackData(bot, primaryTarget));
+            double dps = dmg / Math.max(0.001, timing.cooldownMs() / 1000.0);
+            if (dps > bestDps) {
+                bestDps = dps;
+                best = new Point(botPos.x + dir * step, botPos.y);
+            }
+        }
+        return best;
     }
 
     private static List<Monster> clusterMonsters(Character bot, Monster primaryTarget) {

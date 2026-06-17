@@ -102,14 +102,15 @@ pre-existing WZ-data failures unrelated to this work.
 - `03-mob-dodge-while-walking.md` — ✅ DONE (dodge on committed WALK edges).
 - `04-talk-quests.md` — ✅ DONE (`BotQuestManager` talk quests).
 - `05-self-preservation.md` — ✅ DONE (touch-danger targeting + bounded proactive retreat).
-- **`06-summoning-rock.md`** — OPEN. Sparing skill-level/TTK-scaled use of Shadow-Partner-type rock
-  buffs + request rocks like potions when low. Touches buff casting + supply share.
-- **`07-party-level-gap-leech.md`** — OPEN. Higher bots idle (do no damage) when the party level gap
-  approaches the exp-share cutoff (verified 5) so lower bots catch up. Touches party/cohort + combat gate.
-- **`08-scroll-opportunity-cost.md`** — OPEN, CENTRAL. Read `docs/bot/scroll-opportunity-cost.md` (design).
-  Scrolled-potential valuation + per-scroll opportunity cost + ACTIVE farmable-base steering.
-- **`09-proactive-scroll-offer.md`** — OPEN. Offer useless-to-self scrolls to a party member who can use
-  them (category-aware, not stat-only). Independent of the others.
+- `06-summoning-rock.md` — ✅ DONE. Rock-buff sparing gate (TTK/skill-level-scaled) + low-rock party
+  resupply (`BotRockManager`, `StatEffect.getItemCon/No`). Commit `0aa374f30`.
+- `07-party-level-gap-leech.md` — ✅ DONE. Higher cohort bots idle (no damage) via
+  `BotAutopilotManager.updateIdleLeech` hysteresis when the level gap nears 5. Commit `b0297b1d9`.
+- `08-scroll-opportunity-cost.md` — ✅ DONE (CENTRAL). 3 layers: scrolled-potential (verified),
+  per-scroll opportunity-cost margin (`BotScrollPlanner.SCROLL_OPPORTUNITY_MARGIN`), farmable-base hold
+  (`BotScrollManager.shouldHoldForFarmableBase` + `entry.wantedGearItemId`). Commit `4ebd2f88f`.
+- `09-proactive-scroll-offer.md` — ✅ DONE. Category-aware useless-to-self scroll offer to the best
+  cohort recipient (`BotOfferManager.offerUselessScrollToCohort`). Commit `e3b8a12d5`.
 
 **Conflict note for 06–09:** `08` (scroll) and `09` (scroll offer) both touch `BotScrollManager`/
 `BotInventoryManager` — don't run them in parallel in the same worktree (or sequence them). `06` (buff/
