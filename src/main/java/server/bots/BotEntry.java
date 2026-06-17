@@ -258,6 +258,9 @@ public class BotEntry {
     long breakUntilMs = 0L;
     long nextBreakRollAtMs = 0L;
     java.awt.Point breakIdleAnchor = null;
+    // A scheduled logout is mid-flight: the bot said goodbye + left its party and will disconnect after
+    // a short delay. Guards against the scheduler re-triggering the goodbye sequence on the next sweep.
+    volatile boolean loggingOut = false;
     long autopilotNextStragglerCheckAtMs = 0L;
     boolean autopilotWaitingForStragglers = false;
     // Why the LAST actual straggler RECOMPUTE decided to wait (tripping member + metric), or null
@@ -387,6 +390,12 @@ public class BotEntry {
     // AP/SP builds
     BotBuildManager.ApBuild apBuild = null;
     boolean apPromptSent = false;
+    // Aspirational grind target (level, avoidability) — the mob this bot would grind if accuracy
+    // were free, produced by the off-thread grind pass (BotGrindAdvisor) and read by the on-thread
+    // AP build resolver so the DEX accuracy floor aims at the map the bot wants, not the easy map
+    // it's stuck on. avoid < 0 = unset (no grind pass yet) -> callers fall back to the current map.
+    volatile int aspirationalMobLevel = 0;
+    volatile int aspirationalMobAvoid = -1;
     String spVariant = null;
     boolean spVariantPromptSent = false;
 

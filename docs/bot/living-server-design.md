@@ -96,11 +96,71 @@ sweep (nothing happens until `@botpop on`).
 
 ## Planned (not yet shipped)
 
-- **P4 — parties:** persistent crews (`managed_bot.group_id` → log in together and form a party via
-  `joinBotToOwnerParty` + `BotAutopilotManager.startParty`) and dynamic ad-hoc party-up by `sociability`.
-  Reuses the existing cohort travel/grind cohesion + the level-gap idle-leech catch-up.
-- **Aliveness extras:** login/logout chatter (gated by `chattiness`); the scheduled population is also the
-  natural substrate for the simulated economy (`docs/bot/economy-design.md`).
+- **P4 — parties:** see the dedicated design below.
+- **Aliveness extras:** login chatter (gated by `chattiness`); the scheduled population is also the
+  natural substrate for the simulated economy (`docs/bot/economy-design.md`). **Logout goodbye SHIPPED:**
+  a scheduled logout says a chattiness-gated goodbye ("gtg ty cya", many variants), leaves its party, then
+  disconnects after a 5-15s human beat (`BotManager.logoutManagedBot`, `loggingOut` guard).
+
+## Parties (`BotSocialManager` + crews) — P4 DESIGN (not yet shipped)
+
+Two layers, both reusing the server-side party SSOT (`Party.createParty`/`joinParty` — bots join
+server-side, no invite-packet dance) and the existing cohort grind cohesion (`BotAutopilotManager
+.startParty`/`applyPartyPlan`, the `autopilotParty` flag) plus crowd-dispersion + level-gap idle-leech.
+
+### Safety invariant (audited): party membership grants ZERO owner privileges
+Ownership is DB-backed (`bot_owners`, written ONLY by `registerOwner` via @registerbot / @spawnbot /
+same-account login); no party path ever calls it. Owner perks — loot/NX redirect, potion + ammo supply
+share, ferry/follow — are each gated on `entry.owner` (the registered, online owner) and donor-filtered
+to the owner's own bot collection, so a party-mate triggers none. Trade-rob is structurally impossible:
+a headless bot has no trade UI and its tick halts during an open trade, so it never adds/confirms items.
+**Required fix:** `BotChatManager.handleChat` currently parses follow/stop/grind for any speaker — gate it
+on `sender == entry.owner` so a party-mate (or peer social chatter) can't command the bot. That gate is
+also the seam where non-owner chat branches into the social handler.
+
+### P4a — persistent crews
+Bots sharing `managed_bot.group_id` (stored since P0, unused) are brought online together by the
+scheduler and auto-formed into a party (mechanical, server-side), then `startParty` as a cohort. One
+crew greeting, `chattiness`-gated.
+
+### P4b — chat-driven ad-hoc party-up
+`BotSocialManager` runs a trait-gated state machine over MAP chat (bots already receive all map chat via
+`GeneralChatHandler` → `BotManager.handleChat`). Interactions: open LFP shout, targeted offer to a
+co-located soloist (bot OR real player), ask to join a visible party, accept / decline / ignore,
+"sorry, full" at 6, greet-then-ask (chatty bots), leave/disband on logout or interest-decay.
+
+- **Real players included (per owner request):** a bot may offer a nearby player a party — sends a real
+  `PacketCreator.partyInvite` through `InviteCoordinator` so the player's client shows accept/decline; a
+  player asking "can I join?" in map chat makes the bot leader invite them per `sociability`. Bot↔bot
+  uses silent server-side `Party.joinParty`. The player joins as a plain party-mate: NO ownership, NO
+  command rights, NO supply/loot priority, NO trade trust (see the safety invariant).
+- **Invite-acceptance routed through sociability:** the existing PartyOperationHandler BotClient
+  auto-accept becomes a social decision — a managed bot accepts per `sociability`; an OWNED companion bot
+  accepts only its registered owner's invite (so a stranger can't yank someone's companion).
+- **Trait gating (the spectrum):** `partyInitiateChance ∝ sociability × chattiness × (not partied)`;
+  `acceptChance ∝ sociability`; `chattiness` gates whether responses are spoken (sociable+quiet → joins
+  with a terse/no reply; unsociable+quiet → just ignores). So some bots never party, some always offer,
+  some never talk.
+- **Level-gap gate (exp-share aware, SSOT):** a party only shares a kill's exp with members inside the
+  server's `EXP_SPLIT_LEECH_INTERVAL` (= 5) level window (`Monster.distributePartyExperience` — outside it
+  a member is flagged `underleveled` and gets nothing; this is the same cutoff the idle-leech keys off).
+  So the social decision computes the level gap to the prospective partner / party level-range and
+  **declines (or won't initiate)** when the gap exceeds that window — partying out of exp range is
+  pointless. To stay humanlike, a small personality-scaled MISTAKE chance (≈ base × (0.5 + riskTolerance))
+  still occasionally offers/asks across too-big a gap (bots, like people, don't always check first); the
+  *other* side then usually declines, which reads naturally.
+- **Anti-spam:** a per-bot social cooldown (`nextSocialAtMs`) + pending-offer timeout
+  (`pendingPartyOfferUntilMs`) on top of the existing ~5s chat-queue drain; canned ASCII line-pools per
+  intent (like `BREAK_MSGS`/`WB_REPLIES`), not LLM.
+
+### Pieces / refactors
+Pure tested core in `BotPersonality`: `partyInitiateChance()` / `acceptChance()` + a
+`socialDecision(personality, intent, levelGap, shareWindow, roll) → {INITIATE, ACCEPT, DECLINE, IGNORE}`
+(levelGap > shareWindow ⇒ DECLINE unless the MISTAKE roll fires; `shareWindow` is passed in from
+`EXP_SPLIT_LEECH_INTERVAL`, never hardcoded). Extract a generic
+`partyUp(Character leader, Character joiner)` SSOT from the misnamed `joinBotToOwnerParty` (it already
+does server-side create/join, no `registerOwner`); add the `sender == owner` command gate; new
+`BotSocialManager`; new `BotEntry` social fields.
 
 ## How to turn it on (operator)
 

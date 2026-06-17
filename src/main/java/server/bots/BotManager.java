@@ -780,14 +780,51 @@ public class BotManager {
         }
     }
 
-    /** Graceful logout of a live managed bot (save + leave the world), reusing the bot-logout SSOT. */
+    /** Human-like goodbye lines for a managed bot logging off (US-ASCII). Picked only when the bot's
+     *  chattiness rolls in — a quiet bot just slips away. */
+    private static final List<String> LOGOUT_GOODBYE_MSGS = List.of(
+            "gtg", "gtg cya", "gtg ty", "ty cya", "cya", "cya all", "cya guys", "ttyl", "ttyl all",
+            "ok im out", "alright im out", "im out", "heading off", "heading off for the night",
+            "logging off", "time to log", "calling it for tonight", "calling it", "thats it for me",
+            "im done for now", "gg", "gg all", "ty for the grind", "ty all gl", "thanks all, gl",
+            "had fun, cya", "see ya around", "later", "later all", "peace", "gn", "gn all", "off i go");
+
+    /**
+     * Graceful scheduled logout of a live managed bot: say goodbye (personality-gated), leave the party
+     * so it doesn't linger as an offline member, then disconnect after a short human-like beat (5-15s).
+     * Idempotent — the {@code loggingOut} guard stops a later sweep from re-running the sequence.
+     */
     public void logoutManagedBot(int charId) {
         BotEntry entry = getEntryByBotCharId(charId);
-        if (entry == null || entry.bot == null) {
+        if (entry == null || entry.bot == null || entry.loggingOut) {
             return;
         }
+        entry.loggingOut = true;
         Character bot = entry.bot;
-        bot.saveCharToDB(true);
+
+        // 1. Goodbye, gated by chattiness (a quiet bot just leaves). Party chat if grouped so mates see
+        //    the "ty"; otherwise open map chat.
+        BotPersonality p = entry.personality != null ? entry.personality : BotPersonality.defaults();
+        if (ThreadLocalRandom.current().nextDouble() < p.chattiness()) {
+            botSayParty(bot, randomReply(LOGOUT_GOODBYE_MSGS));
+        }
+
+        // 2. Leave the party before going (clean exit, not a stale offline member).
+        net.server.world.Party party = bot.getParty();
+        if (party != null && bot.getClient() != null) {
+            net.server.world.Party.leaveParty(party, bot.getClient());
+        }
+
+        // 3. Disconnect after a short beat so the goodbye actually shows and the exit looks human.
+        after(randMs(5_000, 15_000), () -> finishManagedLogout(bot));
+    }
+
+    private void finishManagedLogout(Character bot) {
+        try {
+            bot.saveCharToDB(true);
+        } catch (RuntimeException e) {
+            log.warn("managed-bot logout save failed for {}", bot.getId(), e);
+        }
         if (bot.getClient() != null) {
             bot.getClient().disconnect(false, false);
         }
