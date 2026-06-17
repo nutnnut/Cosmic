@@ -233,6 +233,10 @@ public class BotEntry {
     // instead of traveling independently; grind mode is restored on arrival. The leader's
     // straggler check is rate-limited and its last verdict cached between checks.
     boolean autopilotTransitFollow = false;
+    // Party level-gap idle-leech: this (higher-level) member stops dealing damage and idles so the
+    // lower cohort members become the damage-dealers and keep getting full exp share. Hysteresis
+    // state (BotAutopilotManager.updateIdleLeech); cleared when the gap closes.
+    volatile boolean idleLeech = false;
     long autopilotNextStragglerCheckAtMs = 0L;
     boolean autopilotWaitingForStragglers = false;
     // Why the LAST actual straggler RECOMPUTE decided to wait (tripping member + metric), or null

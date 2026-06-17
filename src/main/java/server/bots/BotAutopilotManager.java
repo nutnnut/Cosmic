@@ -56,6 +56,15 @@ final class BotAutopilotManager {
             "back, continuing",
             "back, resuming");
 
+    private static final List<String> LEECH_ENTER_MSGS = List.of(
+            "ill chill and let you catch up",
+            "taking a breather so you can level",
+            "ill idle a bit, catch up");
+    private static final List<String> LEECH_EXIT_MSGS = List.of(
+            "ok were close enough, back in",
+            "caught up, grinding again",
+            "back to it");
+
     // Test seams: the real advisor needs WZ/DB; replies go through the owner's chat channel.
     @FunctionalInterface
     interface Advisor {
@@ -884,6 +893,58 @@ final class BotAutopilotManager {
     }
 
     static BagFull bagFull = BotShopManager::shouldAutoSellTrash;
+
+    /**
+     * Pure hysteresis decision for party level-gap idle-leech. A member that has pulled at least
+     * {@code trigger} levels above the lowest same-map cohort member stops dealing damage; once
+     * leeching it resumes only after the gap closes to {@code release} or below. The lowest member
+     * (gap 0) is never a leecher, so it stays the damage-dealer and keeps full exp share.
+     */
+    static boolean decideIdleLeech(boolean currentlyLeeching, int myLevel, int minPartyLevel,
+                                   int trigger, int release) {
+        int gap = myLevel - minPartyLevel;
+        if (currentlyLeeching) {
+            return gap > release;        // stay idling until the gap closes to <= release
+        }
+        return gap >= trigger;           // start idling once the gap reaches the trigger
+    }
+
+    /**
+     * Recompute and store this member's idle-leech state from the live cohort levels on its current
+     * map. Returns true when the bot should idle (do no damage) this tick so the lower bots become
+     * the damage-dealers and get full exp. Only cohort autopilot bots with 2+ same-map members
+     * participate; announces on transition (ASCII, jittered by the random reply pick).
+     */
+    static boolean updateIdleLeech(BotEntry entry, Character bot) {
+        if (!BotManager.cfg.PARTY_LEECH_ENABLED || !isActive(entry) || bot == null) {
+            entry.idleLeech = false;
+            return false;
+        }
+        int mapId = bot.getMapId();
+        int minLevel = Integer.MAX_VALUE;
+        int sameMap = 0;
+        for (BotEntry m : defaultPartyMembers(entry)) {
+            if (m.bot == null || m.bot.getMapId() != mapId) {
+                continue;
+            }
+            sameMap++;
+            minLevel = Math.min(minLevel, m.bot.getLevel());
+        }
+        if (sameMap < 2 || minLevel == Integer.MAX_VALUE) {
+            entry.idleLeech = false;     // no cohort to wait for
+            return false;
+        }
+        boolean was = entry.idleLeech;
+        boolean now = decideIdleLeech(was, bot.getLevel(), minLevel,
+                BotManager.cfg.PARTY_LEECH_GAP_TRIGGER, BotManager.cfg.PARTY_LEECH_GAP_RELEASE);
+        if (now != was) {
+            entry.idleLeech = now;
+            reply.accept(entry, now
+                    ? BotManager.randomReply(LEECH_ENTER_MSGS)
+                    : BotManager.randomReply(LEECH_EXIT_MSGS));
+        }
+        return now;
+    }
 
     /**
      * Active party-autopilot members, leader first. The game party is the source of truth

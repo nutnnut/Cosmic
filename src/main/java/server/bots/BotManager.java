@@ -109,6 +109,16 @@ public class BotManager {
         public int SAME_MAP_STRAGGLER_PX = 700;
         public int SAME_MAP_STRAGGLER_RESUME_PX = 350;
 
+        // Party level-gap idle-leech (BotAutopilotManager.updateIdleLeech). The server stops sharing
+        // a kill's exp with a member more than EXP_SPLIT_LEECH_INTERVAL (5) levels below the
+        // damage-dealer (Monster.distributePartyExperience). To stop the gap running away, a cohort
+        // member that has pulled this many levels above the lowest member stops dealing damage and
+        // idles on a safe spot, so the lower bots become the damage-dealers and get full exp.
+        // Hysteresis: enter at TRIGGER, resume only once the gap closes to <= RELEASE.
+        public int PARTY_LEECH_GAP_TRIGGER = 4;  // just under the 5-level exp cutoff
+        public int PARTY_LEECH_GAP_RELEASE = 2;
+        public boolean PARTY_LEECH_ENABLED = true;
+
         // Grind loot convenience: loot competes with mob navigation only when
         // lootDistSq < mobDistSq * ratio. 0.09 ≈ loot within 30% of mob distance.
         public float GRIND_LOOT_CONVENIENCE_RATIO = 0.09f;
@@ -2845,6 +2855,15 @@ public class BotManager {
      */
     private LocalOpportunityAttackResult tickGrindMode(BotEntry entry, Character bot, Point botPos,
             Point targetPos, boolean runAiTick) {
+        // Party level-gap idle-leech: a member that has out-levelled the cohort stops dealing damage
+        // and parks on a safe no-grind spot so the lower bots become the damage-dealers and keep full
+        // exp share. Reuses the existing no-target idle resolver; no attack/target search runs.
+        if (BotAutopilotManager.updateIdleLeech(entry, bot)) {
+            entry.grindTarget = null;
+            Point idlePos = resolveNoGrindTargetPosition(entry, botPos, bot.getMap());
+            stepMovementCore(entry, idlePos, runAiTick);
+            return new LocalOpportunityAttackResult(true, idlePos);
+        }
         double seekRangeSq = (double) BotCombatManager.cfg.GRIND_SEEK_RANGE * BotCombatManager.cfg.GRIND_SEEK_RANGE;
         Monster target = entry.grindTarget;
         if (target == null || !target.isAlive()
@@ -3234,7 +3253,9 @@ public class BotManager {
                                                                   boolean allowCombatMovement,
                                                                   boolean allowJumpTowardTarget) {
         Point targetPos = movementTargetPos;
-        if (entry.noAmmo || bot == null || botPos == null) {
+        // entry.idleLeech: party level-gap idle-leech suppresses ALL damage, including opportunity
+        // shots, so the over-levelled member truly drops out of the exp-share interval.
+        if (entry.noAmmo || bot == null || botPos == null || entry.idleLeech) {
             return new LocalOpportunityAttackResult(false, targetPos);
         }
 
