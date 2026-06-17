@@ -60,6 +60,50 @@ public final class BotScheduler {
         }
     }
 
+    // ---- @botpop admin surface ----
+
+    public void setEnabled(boolean on) {
+        BotManager.cfg.POPULATION_SCHED_ENABLED = on;
+    }
+
+    /** Force a reconcile now (no-op if disabled). */
+    public void sweepNow() {
+        sweep();
+    }
+
+    public List<String> statusLines() {
+        int hour = LocalTime.now().getHour();
+        int target = BotScheduleMath.targetForHour(BotManager.cfg.POPULATION_CURVE, hour, 0, 0.5);
+        List<ManagedBot> managed = ManagedBotService.getInstance().loadAll();
+        int schedulable = 0;
+        int live = 0;
+        for (ManagedBot m : managed) {
+            if (m.schedulable()) {
+                schedulable++;
+            }
+            if (BotManager.getInstance().getEntryByBotCharId(m.botCharId()) != null) {
+                live++;
+            }
+        }
+        return List.of(
+                "scheduler: " + (BotManager.cfg.POPULATION_SCHED_ENABLED ? "ON" : "OFF")
+                        + " (autogen " + (BotManager.cfg.POPULATION_AUTOGEN ? "on" : "off") + ")",
+                "hour " + hour + ": target=" + target + "  live=" + live,
+                "managed pool: " + managed.size() + " (" + schedulable + " schedulable)");
+    }
+
+    public List<String> listLines() {
+        List<String> out = new ArrayList<>();
+        for (ManagedBot m : ManagedBotService.getInstance().loadAll()) {
+            boolean liveNow = BotManager.getInstance().getEntryByBotCharId(m.botCharId()) != null;
+            String state = m.retired() ? "retired" : m.enabled() ? "active" : "disabled";
+            out.add("#" + m.botCharId()
+                    + (m.groupId() != null ? " grp" + m.groupId() : "")
+                    + " " + state + (liveNow ? " [online]" : ""));
+        }
+        return out;
+    }
+
     private record Candidate(int charId, double desire) {}
 
     private void reconcile() {
