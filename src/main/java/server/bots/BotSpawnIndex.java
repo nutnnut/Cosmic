@@ -39,13 +39,17 @@ import java.util.concurrent.atomic.AtomicInteger;
 final class BotSpawnIndex {
 
     private static final Logger log = LoggerFactory.getLogger(BotSpawnIndex.class);
-    private static final int INDEX_VERSION = 2;
+    // v3: also records the NPC ids placed on each map (life type "n") and a reverse npc->maps table,
+    // so the bot can resolve where a quest NPC stands and walk to it (BotQuestManager.resolveNpcMap).
+    private static final int INDEX_VERSION = 3;
     private static final Path CACHE_FILE =
             Path.of("cache", "bot-spawn", "v" + INDEX_VERSION, "spawn-index.tsv");
 
     /** One field's spawns: total spawn points per mob id ({@code hide}-flagged life excluded),
-     *  plus the playable area in px&sup2; (VR bounds, miniMap fallback; 0 = unknown). */
-    record MapSpawns(int mapId, boolean town, int areaPx, Map<Integer, Integer> mobCounts) {
+     *  plus the playable area in px&sup2; (VR bounds, miniMap fallback; 0 = unknown), plus the NPC
+     *  ids placed on the field (life type {@code n}). */
+    record MapSpawns(int mapId, boolean town, int areaPx, Map<Integer, Integer> mobCounts,
+                     List<Integer> npcs) {
         int totalSpawnPoints() {
             int total = 0;
             for (int c : mobCounts.values()) {
@@ -58,7 +62,8 @@ final class BotSpawnIndex {
     /** A mob's presence on one map. */
     record SpawnSite(int mapId, int spawnPoints) {}
 
-    record Index(Map<Integer, MapSpawns> byMap, Map<Integer, List<SpawnSite>> byMob) {}
+    record Index(Map<Integer, MapSpawns> byMap, Map<Integer, List<SpawnSite>> byMob,
+                 Map<Integer, List<Integer>> mapsByNpc) {}
 
     private static volatile Index index;
 
@@ -81,6 +86,12 @@ final class BotSpawnIndex {
     /** Maps where the mob spawns, best (most spawn points) first; empty list when it spawns nowhere. */
     static List<SpawnSite> spawnSites(int mobId) {
         return get().byMob().getOrDefault(mobId, List.of());
+    }
+
+    /** Maps where this NPC stands (quest-NPC walk targets), from Map.wz life nodes; empty when the
+     *  NPC isn't placed on any indexed field. */
+    static List<Integer> mapsWithNpc(int npcId) {
+        return get().mapsByNpc().getOrDefault(npcId, List.of());
     }
 
     private static Index loadOrBuild() {
@@ -170,7 +181,7 @@ final class BotSpawnIndex {
                 int linkId = Integer.parseInt(link);
                 mapData = mapSource.getData(mapImgPath(linkId / 100000000, linkId));
                 if (mapData == null) {
-                    return new MapSpawns(mapId, town, playableArea(original), Map.of());
+                    return new MapSpawns(mapId, town, playableArea(original), Map.of(), List.of());
                 }
             } catch (NumberFormatException ignored) {
                 // malformed link — read the map as-is
@@ -181,27 +192,32 @@ final class BotSpawnIndex {
             areaPx = playableArea(mapData);
         }
         Map<Integer, Integer> mobCounts = new HashMap<>();
+        java.util.Set<Integer> npcs = new java.util.LinkedHashSet<>();
         Data life = mapData.getChildByPath("life");
         if (life != null) {
             for (Data entry : life) {
                 String type = DataTool.getString("type", entry, "");
-                if (!"m".equals(type)) {
-                    continue;
-                }
-                if (DataTool.getInt("hide", entry, 0) == 1) {
-                    continue;
-                }
                 String id = DataTool.getString("id", entry, null);
                 if (id == null) {
                     continue;
                 }
-                try {
-                    mobCounts.merge(Integer.parseInt(id), 1, Integer::sum);
-                } catch (NumberFormatException ignored) {
+                if ("m".equals(type)) {
+                    if (DataTool.getInt("hide", entry, 0) == 1) {
+                        continue;
+                    }
+                    try {
+                        mobCounts.merge(Integer.parseInt(id), 1, Integer::sum);
+                    } catch (NumberFormatException ignored) {
+                    }
+                } else if ("n".equals(type)) {
+                    try {
+                        npcs.add(Integer.parseInt(id));
+                    } catch (NumberFormatException ignored) {
+                    }
                 }
             }
         }
-        return new MapSpawns(mapId, town, areaPx, Map.copyOf(mobCounts));
+        return new MapSpawns(mapId, town, areaPx, Map.copyOf(mobCounts), List.copyOf(npcs));
     }
 
     /** Playable field size in px&sup2;: VR bounds when baked, miniMap canvas as the fallback —
@@ -229,22 +245,30 @@ final class BotSpawnIndex {
         return "Map/Map" + area + "/" + String.format("%09d", mapId) + ".img";
     }
 
-    private static Index withMobIndex(Map<Integer, MapSpawns> byMap) {
+    /** Build the reverse indexes (mob->maps, npc->maps) from the per-map table. Package-private and
+     *  pure (no WZ/IO) so the reverse-mapping logic is unit-testable with synthetic {@link MapSpawns}. */
+    static Index withMobIndex(Map<Integer, MapSpawns> byMap) {
         Map<Integer, List<SpawnSite>> byMob = new HashMap<>();
+        Map<Integer, List<Integer>> mapsByNpc = new HashMap<>();
         for (MapSpawns map : byMap.values()) {
             for (Map.Entry<Integer, Integer> e : map.mobCounts().entrySet()) {
                 byMob.computeIfAbsent(e.getKey(), k -> new ArrayList<>())
                         .add(new SpawnSite(map.mapId(), e.getValue()));
+            }
+            for (int npcId : map.npcs()) {
+                mapsByNpc.computeIfAbsent(npcId, k -> new ArrayList<>()).add(map.mapId());
             }
         }
         for (List<SpawnSite> sites : byMob.values()) {
             sites.sort((a, b) -> Integer.compare(b.spawnPoints(), a.spawnPoints()));
         }
         byMob.replaceAll((k, v) -> List.copyOf(v));
-        return new Index(Collections.unmodifiableMap(byMap), Collections.unmodifiableMap(byMob));
+        mapsByNpc.replaceAll((k, v) -> List.copyOf(v));
+        return new Index(Collections.unmodifiableMap(byMap), Collections.unmodifiableMap(byMob),
+                Collections.unmodifiableMap(mapsByNpc));
     }
 
-    // ---- disk cache: one row per map: mapId \t town(0/1) \t areaPx \t mobId:count,... ----
+    // ---- disk cache: one row per map: mapId \t town(0/1) \t areaPx \t mobId:count,... \t npcId,... ----
 
     private static Index loadCache() {
         if (!Files.isRegularFile(CACHE_FILE)) {
@@ -268,7 +292,13 @@ final class BotSpawnIndex {
                                 Integer.parseInt(pair.substring(sep + 1)));
                     }
                 }
-                byMap.put(mapId, new MapSpawns(mapId, town, areaPx, Map.copyOf(mobCounts)));
+                List<Integer> npcs = new ArrayList<>();
+                if (cols.length > 4 && !cols[4].isEmpty()) {
+                    for (String s : cols[4].split(",")) {
+                        npcs.add(Integer.parseInt(s));
+                    }
+                }
+                byMap.put(mapId, new MapSpawns(mapId, town, areaPx, Map.copyOf(mobCounts), List.copyOf(npcs)));
             }
             return byMap.isEmpty() ? null : withMobIndex(byMap);
         } catch (IOException | RuntimeException e) {
@@ -290,6 +320,15 @@ final class BotSpawnIndex {
                         sb.append(',');
                     }
                     sb.append(e.getKey()).append(':').append(e.getValue());
+                    first = false;
+                }
+                sb.append('\t');
+                first = true;
+                for (int npcId : map.npcs()) {
+                    if (!first) {
+                        sb.append(',');
+                    }
+                    sb.append(npcId);
                     first = false;
                 }
                 sb.append('\n');

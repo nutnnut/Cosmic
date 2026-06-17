@@ -586,7 +586,10 @@ final class BotQuestManager {
         if (returnMap != null && returnMap.getNPCById(npcId) != null) {
             return returnMap.getId();
         }
-        return -1;
+        // Beyond the current/return map: consult the world NPC->map index so the errand can target a
+        // quest NPC a few hops away (worthwhile's MAX_ERRAND_HOPS check then gates whether it's close
+        // enough). Without this, talk quests only ever fire when the bot grinds right next to the NPC.
+        return npcMapLookup.mapOf(npcId);
     }
 
     /**
@@ -829,26 +832,24 @@ final class BotQuestManager {
         return itemNameLookup.name(itemId);
     }
 
-    /** Where the start NPC actually is. Unlike the errand's {@link #resolveNpcMap} (which only
-     *  checks the bot's current map + its return-map town), recommend may surface cross-region
-     *  quests, so this also consults the index's NPC->map table when available. */
+    /** Where the start NPC actually is. {@link #resolveNpcMap} now itself consults the NPC->map
+     *  index (current/return map first, then the index), so this is a thin alias kept for the
+     *  recommend path's call site. */
     private static int resolveStartNpcMap(Character bot, int npcId) {
-        int local = resolveNpcMap(bot, npcId);
-        if (local != -1) {
-            return local;
-        }
-        return npcMapLookup.mapOf(npcId);
+        return resolveNpcMap(bot, npcId);
     }
 
-    /** NPC id -> home map id; seam over the world's NPC placement. Production currently returns -1
-     *  (no global NPC->map index yet), so recommend falls back to {@link #resolveNpcMap}'s
-     *  current-map + return-map-town check — which covers the common low-level kill quest whose
-     *  start NPC sits in the adjacent town. Tests stub it for cross-region cases. */
+    /** NPC id -> home map id; seam over the world's NPC placement. Production consults the
+     *  {@link BotSpawnIndex} NPC->map table (built from Map.wz life nodes); -1 when the NPC isn't
+     *  placed on any indexed field. Tests stub it for cross-region cases. */
     interface NpcMapLookup {
         int mapOf(int npcId);
     }
 
-    static NpcMapLookup npcMapLookup = npcId -> -1;
+    static NpcMapLookup npcMapLookup = npcId -> {
+        java.util.List<Integer> maps = BotSpawnIndex.mapsWithNpc(npcId);
+        return maps.isEmpty() ? -1 : maps.get(0);
+    };
 
     // ---- auto-suggest (Feature A, supervised only) -------------------------------------------
 

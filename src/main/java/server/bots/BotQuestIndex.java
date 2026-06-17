@@ -468,9 +468,11 @@ final class BotQuestIndex {
         List<String> completeKeys = talk
                 ? new ArrayList<>(List.of("npc"))
                 : new ArrayList<>(mobs.keySet().stream().map(x -> "mob").toList());
+        // scripted isn't persisted (it's only consulted at build-time qualify, which cache rows skip);
+        // pass false rather than mis-feeding `talk` into the scripted slot.
         return new QuestMeta(id, Integer.parseInt(f[1]), Integer.parseInt(f[2]),
                 Integer.parseInt(f[3]), mobs, Integer.parseInt(f[4]), items,
-                false, false, talk, completeKeys, talk);
+                false, false, false, completeKeys, talk);
     }
 
     private static void writeCache(Index idx) {
