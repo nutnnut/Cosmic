@@ -2183,7 +2183,7 @@ class BotInventoryManager {
 
     // Scroll effects come from the same WZ read path as equips (getEquipStats: "inc"-stripped
     // keys), so WATK/MATK live under PAD/MAD.
-    private static String scrollStatKey(BotEquipManager.RelevantStat stat) {
+    static String scrollStatKey(BotEquipManager.RelevantStat stat) {
         return switch (stat) {
             case STR -> "STR";
             case DEX -> "DEX";

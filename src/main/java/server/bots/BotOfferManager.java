@@ -133,6 +133,121 @@ final class BotOfferManager {
                 && offerGearItem(entry, bot, starRecipient, throwingStar, GearOfferNeed.CURRENT);
     }
 
+    /**
+     * Proactively offer an equip scroll that is useless to THIS bot but useful to a cohort member /
+     * owner who can actually use it (e.g. a bow-attack scroll -> archer, an INT scroll -> mage).
+     * Category-aware (not just stat): the scroll must apply to gear the recipient wears AND grant a
+     * stat their job values, while applying to nothing this bot wears. No class hardcoding — the
+     * scroll-applicability ({@link BotScrollManager#applicable}) and job stat-relevance
+     * ({@link BotEquipManager#relevantStatsFor}) SSOTs decide. Reuses the loot-offer flow (prompt +
+     * auto-accept + trade); returns true once an offer is queued. Meta scrolls (clean slate / chaos /
+     * modifier / white) are universally valuable and never offered away.
+     */
+    static boolean offerUselessScrollToCohort(BotEntry entry, Character bot) {
+        Character owner = entry.owner;
+        if (owner == null || owner == bot || bot.getTrade() != null
+                || entry.pendingAction != null || entry.pendingTradeCategory != null
+                || hasOfferReservation(entry)) {
+            return false;
+        }
+        ItemInformationProvider ii = ItemInformationProvider.getInstance();
+        for (Item s : bot.getInventory(InventoryType.USE).list()) {
+            int sid = s.getItemId();
+            if (!isOfferableScroll(ii, sid) || scrollUsefulTo(ii, bot, sid)) {
+                continue; // not a category-specific scroll, or this bot can still use it -> keep
+            }
+            Character recipient = bestScrollRecipient(entry, bot, owner, ii, sid);
+            if (recipient != null) {
+                return offerGearItem(entry, bot, recipient, s, GearOfferNeed.CURRENT);
+            }
+        }
+        return false;
+    }
+
+    /** An equip scroll worth routing by category (skips universally-valuable meta scrolls). */
+    private static boolean isOfferableScroll(ItemInformationProvider ii, int sid) {
+        if (!ItemConstants.isEquipScroll(sid)) {
+            return false;
+        }
+        if (ItemConstants.isCleanSlate(sid) || ItemConstants.isChaosScroll(sid)
+                || ItemConstants.isModifierScroll(sid) || sid == constants.id.ItemId.WHITE_SCROLL) {
+            return false;
+        }
+        return ii.getEquipStats(sid) != null;
+    }
+
+    /** Useful to {@code c} = the scroll grants a stat c's job values AND applies to gear c wears. */
+    private static boolean scrollUsefulTo(ItemInformationProvider ii, Character c, int sid) {
+        if (!scrollStatRelevantTo(ii, c, sid)) {
+            return false;
+        }
+        for (Item it : c.getInventory(InventoryType.EQUIPPED).list()) {
+            if (it instanceof Equip e && !ii.isCash(e.getItemId())
+                    && BotScrollManager.applicable(ii, sid, e.getItemId())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean scrollStatRelevantTo(ItemInformationProvider ii, Character c, int sid) {
+        return scrollStatRelevantToJob(ii.getEquipStats(sid), c.getJob());
+    }
+
+    /** Pure seam: does a scroll's stat block grant anything {@code job} values? (WZ-free, testable.) */
+    static boolean scrollStatRelevantToJob(java.util.Map<String, Integer> scrollStats, client.Job job) {
+        if (scrollStats == null || job == null) {
+            return false;
+        }
+        for (BotEquipManager.RelevantStat stat : BotEquipManager.relevantStatsFor(job)) {
+            if (scrollStats.getOrDefault(BotInventoryManager.scrollStatKey(stat), 0) > 0) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** Best same-map recipient (owner + cohort siblings) for whom the scroll is useful — the one
+     *  with the most applicable worn gear that still has free upgrade slots (most immediately usable). */
+    private static Character bestScrollRecipient(BotEntry entry, Character bot, Character owner,
+            ItemInformationProvider ii, int sid) {
+        Character best = null;
+        int bestScore = -1;
+        List<Character> candidates = new ArrayList<>();
+        if (owner != bot && owner.getMapId() == bot.getMapId()) {
+            candidates.add(owner);
+        }
+        for (BotEntry sib : BotManager.getInstance().getBotEntries(owner.getId())) {
+            if (sib == entry || sib.bot == null || sib.bot == bot || sib.bot.getMapId() != bot.getMapId()) {
+                continue;
+            }
+            candidates.add(sib.bot);
+        }
+        for (Character c : candidates) {
+            if (!scrollUsefulTo(ii, c, sid)) {
+                continue;
+            }
+            int score = scrollUsableSlotScore(ii, c, sid);
+            if (score > bestScore) {
+                bestScore = score;
+                best = c;
+            }
+        }
+        return best;
+    }
+
+    /** How many worn equips the scroll applies to still have a free upgrade slot to spend it on. */
+    private static int scrollUsableSlotScore(ItemInformationProvider ii, Character c, int sid) {
+        int score = 0;
+        for (Item it : c.getInventory(InventoryType.EQUIPPED).list()) {
+            if (it instanceof Equip e && !ii.isCash(e.getItemId())
+                    && BotScrollManager.applicable(ii, sid, e.getItemId()) && e.getUpgradeSlots() > 0) {
+                score++;
+            }
+        }
+        return score;
+    }
+
     static void scheduleLootOfferPrompt(BotEntry entry, Character bot, Item item, long delayMs) {
         Character owner = entry.owner;
         long now = System.currentTimeMillis();

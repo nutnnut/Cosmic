@@ -1513,6 +1513,7 @@ public class BotChatManager {
         }
         maybeSuggestRecommendedGear(entry, bot);
         maybeSuggestGearToSiblings(entry, bot);
+        maybeOfferUselessScroll(entry, bot);
         if (!entry.spawnUpgradeCheckDone) {
             entry.spawnUpgradeCheckDone = true;
             Character owner = entry.owner;
@@ -2215,6 +2216,19 @@ public class BotChatManager {
         }
 
         if (BotOfferManager.offerBestGearToSibling(entry, bot)) {
+            entry.nextGearSuggestionAt = now + 60_000L;
+        }
+    }
+
+    /** Offer a scroll that's useless to this bot but useful to a cohort member who can use it. */
+    private static void maybeOfferUselessScroll(BotEntry entry, Character bot) {
+        Character owner = entry.owner;
+        long now = System.currentTimeMillis();
+        if (owner == null || now < entry.nextGearSuggestionAt) {
+            return;
+        }
+
+        if (BotOfferManager.offerUselessScrollToCohort(entry, bot)) {
             entry.nextGearSuggestionAt = now + 60_000L;
         }
     }
