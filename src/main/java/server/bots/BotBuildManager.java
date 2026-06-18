@@ -58,7 +58,7 @@ class BotBuildManager {
         String prompt = apPromptForJob(bot.getJob());
         if (prompt == null) return null;
         if (entry.apBuild != null || entry.apPromptSent || bot.getRemainingAp() < 1) return null;
-        if (isOwnerless(entry)) {
+        if (isOwnerless(entry) || entry.apAuto) {
             maybeRecomputeAutonomousApBuild(entry, bot); // resolve + assign autonomously, no owner prompt
             return null;
         }
@@ -70,6 +70,17 @@ class BotBuildManager {
         if (prompt == null) return null;
         entry.apPromptSent = true;
         return prompt;
+    }
+
+    /** Owner picked "auto" at the build prompt: hand AP over to the same self-managed path an
+     *  ownerless bot uses — resolve the build (job + accuracy floor + weapon needs) and ratchet it on
+     *  every future level-up, no more prompts. Returns the confirm line, or null if the job has no AP
+     *  build (Beginner/Pirate). */
+    static String setAutoApBuild(BotEntry entry, Character bot) {
+        if (apPromptForJob(bot.getJob()) == null) return null;
+        entry.apAuto = true;
+        maybeRecomputeAutonomousApBuild(entry, bot);
+        return "ok, i'll manage my own ap from here";
     }
 
     /** Spends all remaining AP according to the stored build. */
@@ -245,10 +256,11 @@ class BotBuildManager {
      * the target only ever ratchets UP (toward unlocking a better owned weapon); it never drifts back
      * down as gear improves. Reclaiming over-invested secondary (funded->pure) is deferred to a future
      * NX-funded AP-reset feature (a well-geared bot with spare NX resets when worth it - see the
-     * design doc). No-op for owned/online-owner bots and for jobs with no build (Beginner/Pirate).
+     * design doc). No-op for jobs with no build (Beginner/Pirate) and for owned bots UNLESS the owner
+     * opted into "auto" ({@code entry.apAuto}), which mirrors them onto this same self-managed path.
      */
     static void maybeRecomputeAutonomousApBuild(BotEntry entry, Character bot) {
-        if (!isOwnerless(entry)) return;
+        if (!isOwnerless(entry) && !entry.apAuto) return;
         ApBuild fresh = resolveApBuild(entry, bot);
         if (fresh == null) return;
         entry.apPromptSent = true; // ownerless: never wait on an owner reply
@@ -477,16 +489,16 @@ class BotBuildManager {
             return null;
         }
         if (job.isA(Job.WARRIOR)) {
-            return "what AP build? type 'dexless'/'pure' or e.g. '25 dex' to set a dex target";
+            return "what AP build? type 'auto' to let me decide, 'dexless'/'pure' or e.g. '25 dex' for a dex target";
         }
         if (job.isA(Job.MAGICIAN)) {
-            return "what AP build? type 'lukless'/'pure' or e.g. '25 luk' to set a luk target";
+            return "what AP build? type 'auto' to let me decide, 'lukless'/'pure' or e.g. '25 luk' for a luk target";
         }
         if (job.isA(Job.BOWMAN)) {
-            return "what AP build? type 'strless'/'pure' or e.g. '25 str' to set a str target";
+            return "what AP build? type 'auto' to let me decide, 'strless'/'pure' or e.g. '25 str' for a str target";
         }
         if (job.isA(Job.THIEF)) {
-            return "what AP build? type 'dexless'/'pure' or e.g. '25 dex' to set a dex target";
+            return "what AP build? type 'auto' to let me decide, 'dexless'/'pure' or e.g. '25 dex' for a dex target";
         }
         return null;
     }
@@ -497,13 +509,13 @@ class BotBuildManager {
             return List.of();
         }
         if (job.isA(Job.MAGICIAN)) {
-            return List.of("pure", "lukless", "25 luk");
+            return List.of("auto", "pure", "lukless", "25 luk");
         }
         if (job.isA(Job.BOWMAN)) {
-            return List.of("pure", "strless", "25 str");
+            return List.of("auto", "pure", "strless", "25 str");
         }
         if (job.isA(Job.WARRIOR) || job.isA(Job.THIEF)) {
-            return List.of("pure", "dexless", "25 dex");
+            return List.of("auto", "pure", "dexless", "25 dex");
         }
         return List.of();
     }

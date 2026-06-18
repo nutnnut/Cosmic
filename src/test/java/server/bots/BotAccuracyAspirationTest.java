@@ -60,6 +60,30 @@ class BotAccuracyAspirationTest {
         assertEquals(0, BotBuildManager.accuracyDexFloor(entry, entry.getBot()));
     }
 
+    private static BotGrindAdvisor.MobProfile mob(int id, int exp, double rawKill) {
+        return new BotGrindAdvisor.MobProfile(id, "m" + id, 10, 5, exp, rawKill, rawKill, java.util.List.of());
+    }
+
+    @Test
+    void aspirationalSkipsMobsTheBotOneShots() {
+        // Trivial: a dense low mob killed in ~1 swing (raw kill floored near the attack cycle) has the
+        // highest raw exp/sec, but the bot already crushes it -> not aspirational.
+        BotGrindAdvisor.MobProfile trivial = mob(1, 10, 0.72); // rate 13.9
+        BotGrindAdvisor.MobProfile chunky = mob(2, 30, 3.0);   // rate 10.0, but takes real hits
+        BotGrindAdvisor.MobProfile picked =
+                BotGrindAdvisor.pickAspirational(java.util.List.of(trivial, chunky));
+        assertEquals(2, picked.mobId(), "should aspire to the non-trivial mob despite lower raw exp/sec");
+    }
+
+    @Test
+    void aspirationalFallsBackToBestWhenEverythingIsTrivial() {
+        // Very over-geared: one-shots everything -> no mob clears the frontier -> fall back to best exp/sec.
+        BotGrindAdvisor.MobProfile a = mob(1, 10, 0.72);
+        BotGrindAdvisor.MobProfile b = mob(2, 25, 0.72); // higher exp, same (floored) kill time
+        BotGrindAdvisor.MobProfile picked = BotGrindAdvisor.pickAspirational(java.util.List.of(a, b));
+        assertEquals(2, picked.mobId(), "fallback picks the best raw exp/sec when all mobs are trivial");
+    }
+
     @Test
     void moreAccuracyRaisesHitChance_underpinsTheGearAccuracyFactor() {
         // The gear accuracy hit-factor (BotGrindAdvisor) is hit(accWithItem)/hit(accNow); it only makes

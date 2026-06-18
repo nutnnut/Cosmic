@@ -416,6 +416,7 @@ public class BotChatManager {
     // "pure <stat>" matches only the class whose primary stat it names.
     // Bare "pure" (no stat qualifier) matches all classes via the negative lookahead,
     // and the per-class job gate in handleApBuildSelection ensures only the right bot acts.
+    private static final Pattern AP_AUTO_PATTERN = Pattern.compile("^\\s*auto\\s*$", Pattern.CASE_INSENSITIVE);
     private static final String PURE_NO_STAT = "^\\s*pure\\s*$";
     private static final Pattern AP_PURE_STR_PATTERN = Pattern.compile(
             "\\bpure\\s+str\\b|\\bdexless\\b|" + PURE_NO_STAT, Pattern.CASE_INSENSITIVE);
@@ -2038,6 +2039,12 @@ public class BotChatManager {
 
     private static void handleApBuildSelection(BotEntry entry, String message) {
         Job job = entry.bot.getJob();
+
+        if (AP_AUTO_PATTERN.matcher(message).find()) {
+            String msg = BotBuildManager.setAutoApBuild(entry, entry.bot);
+            BotManager.getInstance().botReply(entry, msg != null ? msg : "cant auto-build my ap for this job");
+            return;
+        }
 
         if (job.isA(Job.WARRIOR) && AP_PURE_STR_PATTERN.matcher(message).find()) {
             int effectiveDex = Math.max(minStatFloor(job, Stat.DEX), entry.bot.getDex());

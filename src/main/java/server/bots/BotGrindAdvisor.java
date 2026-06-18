@@ -505,26 +505,40 @@ final class BotGrindAdvisor {
                 stats.getExp() * bot.getExpRate(), kp[0], kp[1], List.of());
     }
 
-    /** The mob with the best ACCURACY-BLIND exp/sec among everything profiled this pass — the map the
-     *  bot would grind if it never missed. Damage-limited raw kill time self-bounds this to a
-     *  level-appropriate mob (a too-tough mob has too much HP to be the raw-exp/hr leader), so no
-     *  mob-table noise. Drives the accuracy value of gear ({@link #accuracyHitFactor}) and the AP DEX
-     *  floor: both ask "how well would this help me hit the map I actually want?". Null when nothing
-     *  is grindable. */
-    private static MobProfile pickAspirational(java.util.Collection<MobProfile> profiles) {
+    /** Below this many swings to kill, a mob is "trivial" — the bot one-/two-shots it, so it's not
+     *  worth aspiring to (and accuracy never matters there). Raw kill time is floored at the attack
+     *  cycle, so a near-one-shot sits right at {@code cycle}; this lifts the frontier off those. */
+    private static final double ASPIRATION_MIN_HITS = 1.75;
+
+    /** The mob the bot would grind if it never missed AND that isn't trivial for it — the best
+     *  ACCURACY-BLIND exp/sec among mobs it can't one-/two-shot ({@link #ASPIRATION_MIN_HITS}). Biasing
+     *  off the mobs it already crushes is what makes this point at content the bot grows INTO, where
+     *  accuracy/gear actually pays — not the densest low-level farm (which raw exp/hr otherwise wins,
+     *  since a one-shot's kill time floors at the attack cycle). Damage stays the SSOT: only the
+     *  SELECTION is biased, the real {@code rawKillSeconds} is untouched. Drives the accuracy value of
+     *  gear ({@link #accuracyHitFactor}) and the AP DEX floor. Falls back to the global best exp/sec if
+     *  the bot one-shots everything (very over-geared); null when nothing is grindable. */
+    static MobProfile pickAspirational(java.util.Collection<MobProfile> profiles) {
+        double frontier = ATTACK_CYCLE_SECONDS * ASPIRATION_MIN_HITS;
         MobProfile best = null;
+        MobProfile bestAny = null;
         double bestRate = 0.0;
+        double bestAnyRate = 0.0;
         for (MobProfile p : profiles) {
             if (p == null || p.exp() <= 0 || p.rawKillSeconds() <= 0) {
                 continue;
             }
             double rate = p.exp() / p.rawKillSeconds();
-            if (rate > bestRate) {
+            if (rate > bestAnyRate) {
+                bestAnyRate = rate;
+                bestAny = p;
+            }
+            if (p.rawKillSeconds() >= frontier && rate > bestRate) {
                 bestRate = rate;
                 best = p;
             }
         }
-        return best;
+        return best != null ? best : bestAny;
     }
 
     /**

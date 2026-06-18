@@ -67,6 +67,29 @@ class BotBuildManagerTest {
     }
 
     @Test
+    void ownerAutoOptionMirrorsOwnerlessApAssignment() {
+        // Owner replies "auto": the bot must flip onto the same self-managed AP path an ownerless bot
+        // uses (resolve now + ratchet later), even though it HAS an online owner (not ownerless).
+        Character bot = mock(Character.class);
+        BotEntry entry = new BotEntry(bot, mock(Character.class), mock(ScheduledFuture.class));
+        when(bot.getJob()).thenReturn(Job.WARRIOR);
+        when(bot.getLevel()).thenReturn(20);
+        when(bot.getRemainingAp()).thenReturn(5);
+        when(bot.getStr()).thenReturn(40);
+        when(bot.getDex()).thenReturn(4);
+        when(bot.getTotalDex()).thenReturn(4);
+        when(bot.getTotalLuk()).thenReturn(4);
+
+        String reply = BotBuildManager.setAutoApBuild(entry, bot);
+
+        assertTrue(entry.apAuto, "auto should flip the bot onto self-managed AP");
+        assertTrue(entry.apBuild != null, "auto should resolve a build immediately");
+        assertEquals(BotBuildManager.StatType.STR, entry.apBuild.primaryStat);
+        assertEquals(BotBuildManager.StatType.DEX, entry.apBuild.secondaryStat);
+        assertTrue(reply != null && !reply.isEmpty());
+    }
+
+    @Test
     void initialSyncHeroKeepsPendingSpUntilVariantIsChosen() {
         Character bot = mock(Character.class);
         BotEntry entry = new BotEntry(bot, mock(Character.class), mock(ScheduledFuture.class));
