@@ -102,7 +102,26 @@ sweep (nothing happens until `@botpop on`).
   a scheduled logout says a chattiness-gated goodbye ("gtg ty cya", many variants), leaves its party, then
   disconnects after a 5-15s human beat (`BotManager.logoutManagedBot`, `loggingOut` guard).
 
-## Parties (`BotSocialManager` + crews) — P4 DESIGN (not yet shipped)
+## Parties (`BotSocialManager` + crews) — P4
+
+**SHIPPED — dynamic ad-hoc party-up + invite gating:**
+- `BotManager.partyUp(leader, joiner)` is the party-formation SSOT (owner-join delegates to it); it
+  never assigns ownership, so a party-mate gets zero owner privileges.
+- `BotSocialManager.tick` (common-tick, per-bot cooldown): a SOLO self-owned autopilot bot, co-located
+  with another solo bot, occasionally offers to party — trait-gated by `BotSocialMath` (initiate ∝
+  sociability×chattiness; accept ∝ sociability + the `EXP_SPLIT_LEECH_INTERVAL` exp-share window, with a
+  riskTolerance-scaled "mistake" across too-big a gap; a quiet bot ignores rather than speaks a decline).
+  Offer/accept/decline lines are cosmetic ASCII; the party is formed server-side + `startParty` cohort.
+  Self-owned only — never touches a player's companion. Knob `cfg.SOCIAL_PARTY_ENABLED` (default on).
+- Invite acceptance (`PartyOperationHandler` → `BotManager.acceptsPartyInvite`): a bot no longer blindly
+  auto-accepts any invite. An OWNED companion accepts only its registered owner (anti-yank); a self-owned
+  bot accepts a real player's invite per sociability/level — so players can party managed bots safely.
+- Pure policy unit-tested in `BotSocialMath`.
+
+**STILL PLANNED — persistent crews (`managed_bot.group_id`):** a fixed group that logs in together and
+auto-parties on spawn. Needs BOTH a crew-assignment path (nothing sets `group_id` yet) AND scheduler
+co-spawn — deferred (the dynamic system above already makes bots group up; crews add only "always the
+same people"). Also deferred: a bot proactively *inviting a real player* (vs the player inviting it).
 
 Two layers, both reusing the server-side party SSOT (`Party.createParty`/`joinParty` — bots join
 server-side, no invite-packet dance) and the existing cohort grind cohesion (`BotAutopilotManager
