@@ -79,6 +79,7 @@ class BotAutopilotManagerTest {
         private final BotAutopilotManager.HopDistance previousHopDistance = BotAutopilotManager.hopDistance;
         private final BotAutopilotManager.SupplyLevel previousSupplyLevel = BotAutopilotManager.supplyLevel;
         private final BotAutopilotManager.BagFull previousBagFull = BotAutopilotManager.bagFull;
+        private final java.util.function.IntPredicate previousEquipStatsExist = BotAutopilotManager.equipStatsExist;
 
         Seams(Recommendation recommendation) {
             this(recommendation, recommendation);
@@ -99,6 +100,9 @@ class BotAutopilotManagerTest {
             BotAutopilotManager.supplyLevel = bot -> false;
             // Default: bag has room, so the bag-full pre-travel gate never trips either.
             BotAutopilotManager.bagFull = (entry, bot) -> false;
+            // Default: any wanted-gear id is a real equip, so installPlan records it without
+            // loading ItemInformationProvider / a DB pool in the unit-test JVM.
+            BotAutopilotManager.equipStatsExist = itemId -> true;
         }
 
         @Override
@@ -112,6 +116,7 @@ class BotAutopilotManagerTest {
             BotAutopilotManager.hopDistance = previousHopDistance;
             BotAutopilotManager.supplyLevel = previousSupplyLevel;
             BotAutopilotManager.bagFull = previousBagFull;
+            BotAutopilotManager.equipStatsExist = previousEquipStatsExist;
         }
     }
 

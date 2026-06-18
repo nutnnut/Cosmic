@@ -957,6 +957,13 @@ final class BotAutopilotManager {
 
     static BagFull bagFull = BotShopManager::shouldAutoSellTrash;
 
+    /** Seam over the "is this item a real equip?" check installPlan uses to record a wanted-gear
+     *  drop, so unit tests need neither ItemInformationProvider nor a DB pool (its &lt;clinit&gt;
+     *  loads card data over a JDBC connection). Default delegates to the same SSOT every other gear
+     *  path uses; tests swap it for a fixed predicate. */
+    static java.util.function.IntPredicate equipStatsExist =
+            itemId -> server.ItemInformationProvider.getInstance().getEquipStats(itemId) != null;
+
     /**
      * Pure hysteresis decision for party level-gap idle-leech. A member that has pulled at least
      * {@code trigger} levels above the lowest same-map cohort member stops dealing damage; once
@@ -1378,8 +1385,7 @@ final class BotAutopilotManager {
         // equip drop, record it so the scroll planner holds scrolls for that slot instead of burning
         // them on the inferior base. Only equips (not scroll drops); cleared otherwise.
         BotGrindPlanner.GearProspect wg = rec.wantedGear();
-        if (rec.gearFocused() && wg != null
-                && server.ItemInformationProvider.getInstance().getEquipStats(wg.itemId()) != null) {
+        if (rec.gearFocused() && wg != null && equipStatsExist.test(wg.itemId())) {
             entry.wantedGearItemId = wg.itemId();
             entry.wantedGearChancePerKill = wg.chancePerKill();
         } else {
