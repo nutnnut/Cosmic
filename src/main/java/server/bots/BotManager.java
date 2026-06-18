@@ -135,6 +135,9 @@ public class BotManager {
         public int MANAGED_POOL_MAX = 60;                  // hard cap on auto-generated managed bots
         public int HARDCORE_CAP = 5;                       // max bots that never retire (the veterans)
         public boolean POPULATION_AUTOGEN = true;          // generate fresh bots when the pool is short
+        public double POPULATION_CREW_CHANCE = 0.20;       // chance an autogen event spawns a fresh CREW (vs a soloist)
+        public int POPULATION_CREW_MIN = 2;                // crew size range when auto-generating a crew
+        public int POPULATION_CREW_MAX = 4;
 
         // Grind dispersion: each other bot/player already on (or committed to) a candidate map counts as
         // this many extra spawn-competitors, so crowded maps yield fewer kills/h and bots spread out

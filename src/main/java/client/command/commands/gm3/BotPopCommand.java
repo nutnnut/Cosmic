@@ -11,15 +11,20 @@ import java.util.List;
 
 /**
  * Drive/inspect the living-server bot population scheduler (default OFF).
- * Usage: {@code @botpop [status|on|off|list|sweep|add <name>|remove <name>]} (no arg = status).
+ * Usage: {@code @botpop [status|on|off|list|sweep|add <name>|remove <name>|crew <id|none> <name...>]}
+ * (no arg = status).
  *
  * <p>{@code add}/{@code remove} mark an EXISTING character as a managed (schedulable) bot or unmark it
  * — the only way besides {@code @spawnbot generate} to put a character in the population. GM-explicit,
  * so it doesn't violate the "never auto-schedule a real player" rule.
+ *
+ * <p>{@code crew <id> <name...>} assigns managed bots to a persistent crew (group): the scheduler logs
+ * a crew in together and parties them, and crewmates share gear/ammo/supplies like an owned party.
+ * {@code crew none <name...>} clears the assignment (back to soloist / dynamic party-up).
  */
 public class BotPopCommand extends Command {
     {
-        setDescription("Living-server bot population: status / on / off / list / sweep / add <name> / remove <name>.");
+        setDescription("Living-server bot population: status / on / off / list / sweep / add <name> / remove <name> / crew <id|none> <name...>.");
     }
 
     @Override
@@ -56,6 +61,7 @@ public class BotPopCommand extends Command {
             }
             case "add" -> manage(player, params, true);
             case "remove" -> manage(player, params, false);
+            case "crew" -> crew(player, params);
             default -> print(player, scheduler.statusLines());
         }
     }
@@ -82,6 +88,45 @@ public class BotPopCommand extends Command {
             svc.remove(target.id());
             player.yellowMessage("'" + name + "' is no longer a managed bot (removed from the population).");
         }
+    }
+
+    /** Assign managed bots to a persistent crew (group id), or clear with "none". */
+    private static void crew(Character player, String[] params) {
+        if (params.length < 3) {
+            player.yellowMessage("Usage: @botpop crew <id|none> <name> [name2 ...]");
+            return;
+        }
+        Integer groupId;
+        if (params[1].equalsIgnoreCase("none") || params[1].equalsIgnoreCase("clear")) {
+            groupId = null;
+        } else {
+            try {
+                groupId = Integer.parseInt(params[1]);
+            } catch (NumberFormatException e) {
+                player.yellowMessage("Crew id must be a number (or 'none' to clear). Got: " + params[1]);
+                return;
+            }
+        }
+        ManagedBotService svc = ManagedBotService.getInstance();
+        int done = 0;
+        for (int i = 2; i < params.length; i++) {
+            String name = params[i];
+            BotOwnershipService.ResolvedCharacter target =
+                    BotOwnershipService.getInstance().resolveCharacterByName(name);
+            if (target == null) {
+                player.yellowMessage("  skip '" + name + "': no such character.");
+                continue;
+            }
+            if (!svc.isManaged(target.id())) {
+                player.yellowMessage("  skip '" + name + "': not a managed bot (@botpop add it first).");
+                continue;
+            }
+            svc.setGroup(target.id(), groupId);
+            done++;
+        }
+        player.yellowMessage(groupId == null
+                ? "Cleared crew on " + done + " bot(s)."
+                : "Assigned " + done + " bot(s) to crew " + groupId + ".");
     }
 
     private static void print(Character player, List<String> lines) {

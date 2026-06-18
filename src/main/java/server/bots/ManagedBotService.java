@@ -111,6 +111,37 @@ public final class ManagedBotService {
         }
     }
 
+    /** Assigns (or clears, with {@code null}) the persistent-crew group of a managed bot. Crews log in
+     *  together and share items like an owned party — see {@code BotScheduler} / the crew share cohort. */
+    public void setGroup(int botCharId, Integer groupId) {
+        update("UPDATE managed_bot SET group_id = ? WHERE bot_char_id = ?", ps -> {
+            if (groupId == null) {
+                ps.setNull(1, java.sql.Types.INTEGER);
+            } else {
+                ps.setInt(1, groupId);
+            }
+            ps.setInt(2, botCharId);
+        });
+    }
+
+    /** Char ids of the non-retired members of a crew (group), for co-spawn + the crew share cohort. */
+    public List<Integer> crewMembers(int groupId) {
+        List<Integer> out = new ArrayList<>();
+        try (Connection con = DatabaseConnection.getConnection();
+             PreparedStatement ps = con.prepareStatement(
+                     "SELECT bot_char_id FROM managed_bot WHERE group_id = ? AND retired_at IS NULL")) {
+            ps.setInt(1, groupId);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    out.add(rs.getInt("bot_char_id"));
+                }
+            }
+        } catch (SQLException e) {
+            return out;
+        }
+        return out;
+    }
+
     public void setEnabled(int botCharId, boolean enabled) {
         update("UPDATE managed_bot SET enabled = ? WHERE bot_char_id = ?", ps -> {
             ps.setInt(1, enabled ? 1 : 0);

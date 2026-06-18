@@ -133,11 +133,12 @@ public final class BotScheduler {
             managed = ManagedBotService.getInstance().loadAll(); // re-read so the reconcile sees the live pool
         }
 
-        // --- 1. session-length logouts + live census (independent of the target) ---
-        List<Integer> live = new ArrayList<>();
+        // --- 1. SOLOIST session-length logouts + live census (crew members are handled as a unit in
+        // step 2, so they're skipped here — never logged out individually mid-crew-session). ---
+        List<Integer> soloLive = new ArrayList<>();
         for (ManagedBot m : managed) {
-            if (!m.schedulable()) {
-                continue;
+            if (!m.schedulable() || m.groupId() != null) {
+                continue; // unschedulable, or crewed (step 2 owns crews as a unit)
             }
             BotEntry e = bm.getEntryByBotCharId(m.botCharId());
             if (e == null) {
@@ -149,24 +150,175 @@ public final class BotScheduler {
                 bm.logoutManagedBot(m.botCharId());
                 onlineSince.remove(m.botCharId());
             } else {
-                live.add(m.botCharId());
+                soloLive.add(m.botCharId());
             }
         }
 
-        // --- 2. reconcile the live count toward the target ---
-        if (live.size() < target) {
-            bringOnline(bm, managed, hour, epochDay, target - live.size(), now);
-        } else if (live.size() > target) {
-            logOutExcess(bm, live, hour, epochDay, live.size() - target);
+        // --- 2. crews: keep each crew online together as one unit on its leader's schedule ---
+        int crewLive = cohereCrews(bm, managed, hour, epochDay, now, target, soloLive.size());
+
+        // --- 3. reconcile the SOLOIST count so total (crew + solo) tracks the target ---
+        int live = soloLive.size() + crewLive;
+        if (live < target) {
+            bringOnline(bm, managed, hour, epochDay, target - live, now);
+        } else if (live > target) {
+            logOutExcess(bm, soloLive, hour, epochDay, live - target);
         }
+    }
+
+    /** charId of a crew's leader = its lowest member char id (deterministic, stable across restarts). */
+    private static int crewLeader(List<ManagedBot> members) {
+        int leader = Integer.MAX_VALUE;
+        for (ManagedBot m : members) {
+            leader = Math.min(leader, m.botCharId());
+        }
+        return leader;
+    }
+
+    /** when each crew (group id) was brought online together, for the shared leader-paced session. */
+    private final Map<Integer, Long> crewOnlineSince = new ConcurrentHashMap<>();
+
+    /**
+     * Persistent crews ({@code managed_bot.group_id}): a crew logs in TOGETHER and parties up, on its
+     * leader's personality schedule, and logs out together when that session elapses. Returns how many
+     * crew members are live after this pass (counted toward the population target). New crews are brought
+     * up only while under target (so crews still respect the curve), but once up the whole crew stays
+     * together until its shared session ends — it's never thinned by the soloist reconcile.
+     */
+    private int cohereCrews(BotManager bm, List<ManagedBot> managed, int hour, long epochDay, long now,
+                            int target, int soloLiveCount) {
+        Map<Integer, List<ManagedBot>> crews = new java.util.HashMap<>();
+        for (ManagedBot m : managed) {
+            if (m.schedulable() && m.groupId() != null) {
+                crews.computeIfAbsent(m.groupId(), k -> new ArrayList<>()).add(m);
+            }
+        }
+
+        int crewLive = 0;
+        List<Map.Entry<Integer, List<ManagedBot>>> offlineCrews = new ArrayList<>();
+
+        // Pass A: maintain crews that already have a member online (cohere or end-of-session logout).
+        for (Map.Entry<Integer, List<ManagedBot>> e : crews.entrySet()) {
+            int gid = e.getKey();
+            List<ManagedBot> members = e.getValue();
+            boolean anyLive = members.stream().anyMatch(m -> bm.getEntryByBotCharId(m.botCharId()) != null);
+            if (!anyLive) {
+                crewOnlineSince.remove(gid);
+                offlineCrews.add(e);
+                continue;
+            }
+            long since = crewOnlineSince.computeIfAbsent(gid, k -> now);
+            BotPersonality leaderP = BotPersonality.parse(
+                    BotConfigService.getInstance().load(crewLeader(members)));
+            if (BotScheduleMath.sessionElapsed(since, sessionMsOf(leaderP), now)) {
+                for (ManagedBot m : members) {
+                    if (bm.getEntryByBotCharId(m.botCharId()) != null) {
+                        bm.logoutManagedBot(m.botCharId());
+                    }
+                }
+                crewOnlineSince.remove(gid);
+                continue;
+            }
+            boolean broughtAny = false;
+            for (ManagedBot m : members) {
+                if (bm.getEntryByBotCharId(m.botCharId()) == null && bm.spawnManagedBot(m.botCharId())) {
+                    broughtAny = true;
+                }
+            }
+            formCrewParty(bm, members, broughtAny);
+            crewLive += liveCount(bm, members);
+        }
+
+        // Pass B: bring up fully-offline crews (whole-crew), most-eager leader first, while under target.
+        offlineCrews.sort((a, b) -> Double.compare(
+                leaderDesire(b.getValue(), hour, epochDay), leaderDesire(a.getValue(), hour, epochDay)));
+        int liveNow = soloLiveCount + crewLive;
+        for (Map.Entry<Integer, List<ManagedBot>> e : offlineCrews) {
+            if (liveNow >= target) {
+                break;
+            }
+            if (leaderDesire(e.getValue(), hour, epochDay) <= 0.0) {
+                continue;
+            }
+            boolean broughtAny = false;
+            for (ManagedBot m : e.getValue()) {
+                if (bm.spawnManagedBot(m.botCharId())) {
+                    broughtAny = true;
+                }
+            }
+            if (broughtAny) {
+                crewOnlineSince.put(e.getKey(), now);
+                formCrewParty(bm, e.getValue(), true);
+                int n = liveCount(bm, e.getValue());
+                crewLive += n;
+                liveNow += n;
+            }
+        }
+        return crewLive;
+    }
+
+    private static double leaderDesire(List<ManagedBot> members, int hour, long epochDay) {
+        BotPersonality p = BotPersonality.parse(BotConfigService.getInstance().load(crewLeader(members)));
+        return BotScheduleMath.onlineDesire(p, hour, 1, epochDay);
+    }
+
+    private static int liveCount(BotManager bm, List<ManagedBot> members) {
+        int n = 0;
+        for (ManagedBot m : members) {
+            if (bm.getEntryByBotCharId(m.botCharId()) != null) {
+                n++;
+            }
+        }
+        return n;
+    }
+
+    /**
+     * Form (or refresh) the crew's real party around its leader and, when a member was just brought up,
+     * issue ONE shared cohort directive ({@link BotAutopilotManager#startParty}) so they grind together.
+     * partyUp is skipped for members already in the leader's party, so the steady-state sweep is cheap.
+     */
+    private static void formCrewParty(BotManager bm, List<ManagedBot> members, boolean runStartParty) {
+        List<BotEntry> live = new ArrayList<>();
+        BotEntry leaderEntry = null;
+        int leaderId = crewLeader(members);
+        for (ManagedBot m : members) {
+            BotEntry e = bm.getEntryByBotCharId(m.botCharId());
+            if (e != null && e.bot != null) {
+                live.add(e);
+                if (m.botCharId() == leaderId) {
+                    leaderEntry = e;
+                }
+            }
+        }
+        if (live.size() < 2) {
+            return; // a lone crew member just parties up later when a mate arrives
+        }
+        BotEntry leader = leaderEntry != null ? leaderEntry : live.get(0);
+        for (BotEntry e : live) {
+            if (e == leader) {
+                continue;
+            }
+            if (leader.bot.getParty() == null || e.bot.getParty() == null
+                    || e.bot.getParty().getId() != leader.bot.getParty().getId()) {
+                bm.partyUp(leader.bot, e.bot);
+            }
+        }
+        if (runStartParty) {
+            BotAutopilotManager.startParty(leader.bot, live);
+        }
+    }
+
+    private static long sessionMsOf(BotPersonality p) {
+        int min = p != null ? p.sessionLenMeanMin() : 60;
+        return Math.max(1, min) * 60_000L;
     }
 
     /** Bring the most-eager offline managed bots online (active-today, hour-preferred ranked first). */
     private void bringOnline(BotManager bm, List<ManagedBot> managed, int hour, long epochDay, int need, long now) {
         List<Candidate> cands = new ArrayList<>();
         for (ManagedBot m : managed) {
-            if (!m.schedulable() || bm.getEntryByBotCharId(m.botCharId()) != null) {
-                continue;
+            if (!m.schedulable() || m.groupId() != null || bm.getEntryByBotCharId(m.botCharId()) != null) {
+                continue; // crewed bots come online as a unit in cohereCrews, never as soloists
             }
             BotPersonality p = BotPersonality.parse(BotConfigService.getInstance().load(m.botCharId()));
             double desire = BotScheduleMath.onlineDesire(p, hour, 1, epochDay); // level decay is a P3b refinement
@@ -197,16 +349,75 @@ public final class BotScheduler {
             int gen = BotScheduleMath.autogenCount(BotManager.cfg.POPULATION_AUTOGEN, need, brought, 0,
                     poolSize, BotManager.cfg.MANAGED_POOL_MAX);
             if (gen > 0) {
-                int newId = BotGenerator.generateManaged(BotManager.cfg.POPULATION_WORLD,
-                        BotManager.cfg.POPULATION_CHANNEL, BotGenerator.countHardcore(managed),
-                        BotManager.cfg.HARDCORE_CAP);
-                if (newId > 0 && bm.spawnManagedBot(newId)) {
-                    onlineSince.put(newId, now);
+                // Some autogen events spawn a fresh CREW (a friend group that arrives together) rather
+                // than a lone newcomer — emergent crews, not just admin-assigned ones. Crew size is
+                // bounded by the remaining pool room so it never blows past MANAGED_POOL_MAX.
+                int room = BotManager.cfg.MANAGED_POOL_MAX - poolSize;
+                int crewSize = rollCrewSize(room);
+                if (crewSize >= 2) {
+                    generateCrew(bm, managed, crewSize, now);
+                } else {
+                    int newId = BotGenerator.generateManaged(BotManager.cfg.POPULATION_WORLD,
+                            BotManager.cfg.POPULATION_CHANNEL, BotGenerator.countHardcore(managed),
+                            BotManager.cfg.HARDCORE_CAP);
+                    if (newId > 0 && bm.spawnManagedBot(newId)) {
+                        onlineSince.put(newId, now);
+                    }
                 }
             } else {
                 log.debug("population under target by {} (autogen off or pool at cap)", need - brought);
             }
         }
+    }
+
+    /** Crew size for an autogen event: with {@code POPULATION_CREW_CHANCE} a 2..MAX crew (capped by the
+     *  remaining pool room), else 1 (a lone newcomer). Returns 1 when there's no room for a crew. */
+    private static int rollCrewSize(int room) {
+        if (room < 2 || ThreadLocalRandom.current().nextDouble() >= BotManager.cfg.POPULATION_CREW_CHANCE) {
+            return 1;
+        }
+        int lo = Math.max(2, BotManager.cfg.POPULATION_CREW_MIN);
+        int hi = Math.min(room, Math.max(lo, BotManager.cfg.POPULATION_CREW_MAX));
+        return lo >= hi ? lo : lo + ThreadLocalRandom.current().nextInt(hi - lo + 1);
+    }
+
+    /** Generate a fresh crew that arrives together: {@code size} new managed bots sharing one group id
+     *  (the leader's char id), brought online and partied immediately. */
+    private void generateCrew(BotManager bm, List<ManagedBot> managed, int size, long now) {
+        int hardcore = BotGenerator.countHardcore(managed);
+        ManagedBotService svc = ManagedBotService.getInstance();
+        List<Integer> ids = new ArrayList<>();
+        Integer gid = null;
+        for (int i = 0; i < size; i++) {
+            int id = BotGenerator.generateManaged(BotManager.cfg.POPULATION_WORLD,
+                    BotManager.cfg.POPULATION_CHANNEL, hardcore, BotManager.cfg.HARDCORE_CAP);
+            if (id <= 0) {
+                continue;
+            }
+            if (gid == null) {
+                gid = id; // crew id = its leader's (first member's) char id — unique, collision-free
+            }
+            svc.setGroup(id, gid);
+            ids.add(id);
+        }
+        if (gid == null || ids.size() < 2) {
+            // 0-1 actually created (gen failure / collisions): bring the lone one up as a soloist.
+            for (int id : ids) {
+                svc.setGroup(id, null);
+                if (bm.spawnManagedBot(id)) {
+                    onlineSince.put(id, now);
+                }
+            }
+            return;
+        }
+        List<ManagedBot> crew = new ArrayList<>();
+        for (int id : ids) {
+            if (bm.spawnManagedBot(id)) {
+                crew.add(new ManagedBot(id, gid, true, false, now));
+            }
+        }
+        crewOnlineSince.put(gid, now);
+        formCrewParty(bm, crew, true);
     }
 
     /** Log out the least-eager live bots down to the target. */
