@@ -38,6 +38,11 @@ final class BotNavigationManager {
     // immediately re-entering a portal (e.g. bouncing back through the return portal). Gates ONLY
     // portal execution — movement, attacks and every other action continue unaffected.
     private static final long PORTAL_USE_COOLDOWN_MS = 250L;
+    // Intra-map portal shortcuts only fire once the bot is LANDED (never midair — e.g. down-jumping
+    // from a platform above and clipping the portal below as soon as it's permitted), and then it
+    // walks a few extra ticks deeper onto the portal before activating instead of firing the instant
+    // it's in range. Positional jitter like a launch window — extra walk ticks, NOT a standing wait.
+    private static final int PORTAL_ENTER_EXTRA_TICKS_MAX = 3;
     // Terminal warns are for the absolute worst searches only — the perf monitor already
     // aggregates everything else. Rate-limited so one degenerate map can't flood the console.
     private static final long SLOW_PATHFIND_WARN_NS = 250_000_000L;
@@ -476,7 +481,7 @@ final class BotNavigationManager {
             case JUMP -> tryExecuteJump(graph, entry, bot, rawTargetPos, edge);
             case DROP -> tryExecuteDrop(graph, entry, bot, botPos, rawTargetPos, edge);
             case CLIMB -> tryExecuteClimb(graph, entry, bot, botPos, rawTargetPos, edge);
-            case PORTAL -> isReadyForEdge(botPos, edge) ? tryExecutePortal(entry, bot, rawTargetPos, edge) : null;
+            case PORTAL -> tryExecutePortalEdge(entry, bot, botPos, rawTargetPos, edge);
             default -> null;
         };
     }
@@ -718,6 +723,31 @@ final class BotNavigationManager {
         return true;
     }
 
+    private static NavigationDirective tryExecutePortalEdge(BotEntry entry,
+                                                            Character bot,
+                                                            Point botPos,
+                                                            Point rawTargetPos,
+                                                            BotNavigationGraph.Edge edge) {
+        // Landed gate: never activate a portal while airborne. A down-jump or knockback that clips
+        // the portal's trigger box mid-fall must NOT warp — the bot lands and walks in first.
+        if (entry.inAir || !isReadyForEdge(botPos, edge)) {
+            entry.portalEnterReadyTicks = -1;
+            return null;
+        }
+        // Positional jitter: once eligible, keep walking deeper onto the portal for a few extra ticks
+        // (selectWaypoint/precise targeting keep steering to startPoint) instead of firing the instant
+        // it's permitted. Tick-counted inward movement, not a standing wait.
+        if (entry.portalEnterReadyTicks < 0) {
+            entry.portalEnterReadyTicks = ThreadLocalRandom.current().nextInt(PORTAL_ENTER_EXTRA_TICKS_MAX + 1);
+        }
+        if (entry.portalEnterReadyTicks > 0) {
+            entry.portalEnterReadyTicks--;
+            return null;
+        }
+        entry.portalEnterReadyTicks = -1;
+        return tryExecutePortal(entry, bot, rawTargetPos, edge);
+    }
+
     private static NavigationDirective tryExecutePortal(BotEntry entry,
                                                         Character bot,
                                                         Point rawTargetPos,
@@ -752,7 +782,7 @@ final class BotNavigationManager {
                     && !canExecuteClimbExitFromCurrentPosition(graph, entry.bot.getMap(), botPos, edge)
                     : !canExecuteClimbEntryFromCurrentPosition(entry.bot.getMap(), botPos, edge,
                     findRopeForRegion(entry.bot.getMap(), graph.getRegion(edge.toRegionId)));
-            case PORTAL -> !isReadyForEdge(botPos, edge);
+            case PORTAL -> !isReadyForEdge(botPos, edge) || entry.portalEnterReadyTicks > 0; // precise while walking the extra jitter ticks in
         };
     }
 
@@ -762,7 +792,7 @@ final class BotNavigationManager {
             case CLIMB -> selectClimbWaypoint(graph, entry, botPos, edge);
             case JUMP -> entry.inAir ? new Point(edge.endPoint) : selectJumpWaypoint(graph, entry, botPos, edge);
             case DROP -> selectDropWaypoint(entry, graph, botPos, edge);
-            case PORTAL -> entry.inAir ? new Point(edge.endPoint) : new Point(edge.startPoint);
+            case PORTAL -> new Point(edge.startPoint); // always head to the portal entrance; it only fires once landed there
         };
     }
 

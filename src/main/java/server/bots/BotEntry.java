@@ -367,6 +367,9 @@ public class BotEntry {
     // Pre-warp pause while standing on a travel portal before stepping through (set in
     // BotTravelManager.walkToPortalAndEnter); the bot keeps centring on the portal until it elapses.
     long portalEnterDwellUntilMs = 0L;
+    // Grind-nav (intra-map) portal positional jitter: extra walk ticks remaining before the bot fires
+    // a landed, in-range PORTAL edge. -1 = disarmed (airborne / not in range / not on a portal edge).
+    int portalEnterReadyTicks = -1;
     // Human "settle after arriving" window: on any map change the bot stands a beat before it
     // resumes grinding/fighting (set via BotManager.armPostWarpQuiet). Travel hops never reach the
     // gated grind section, so multi-hop routes aren't slowed.
