@@ -389,8 +389,12 @@ final class BotFerryManager {
         if (!entry.inAir && !entry.climbing
                 && Math.abs(botPos.x - npcPos.x) + Math.abs(botPos.y - npcPos.y) <= NPC_TRIGGER_RADIUS_PX) {
             BotTravelManager.clearMoveTargetPin(entry);
+            if (!BotManager.npcDwellReady(entry, BotManager.NPC_TALK_DELAY_MS, BotManager.NPC_TALK_JITTER_MS)) {
+                return true; // pause a beat at the NPC before buying/boarding
+            }
             return act.getAsBoolean();
         }
+        BotManager.npcDwellReset(entry);
         BotTravelManager.pinMoveTarget(entry, npcPos);
         BotTravelManager.movementStep.step(entry, npcPos, runAiTick);
         return true;

@@ -619,13 +619,18 @@ final class BotQuestManager {
                 return false;
             }
             case ARRIVED -> {
+                if (!BotManager.npcDwellReady(entry, BotManager.NPC_READ_DELAY_MS, BotManager.NPC_READ_JITTER_MS)) {
+                    return true; // standing at the NPC, "reading" before accept/turn-in
+                }
                 interactAndFinish(entry, bot);
                 return false; // grind resumes on the return map next ticks
             }
             case TRAVEL_YIELDED -> {
+                BotManager.npcDwellReset(entry);
                 return false; // travel gave up this tick — let the bot grind, errand retries/timeouts
             }
             default -> {
+                BotManager.npcDwellReset(entry);
                 return true; // TRAVELING / WALKING — tick consumed
             }
         }

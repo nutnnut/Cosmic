@@ -34,6 +34,10 @@ final class BotTravelManager {
     // (EDGE_READY_X_TOLERANCE / JUMP_Y_THRESH * 2).
     private static final int ENTER_X_TOLERANCE = 14;
     private static final int ENTER_Y_TOLERANCE = 60;
+    // Pre-warp pause at the portal (humanlike): keep nudging toward the portal centre while it
+    // elapses, so the bot steps through from the middle, not the tolerance edge. 0.5s + up to 1s.
+    private static final int PORTAL_ENTER_DELAY_MIN_MS = 500;
+    private static final int PORTAL_ENTER_DELAY_MAX_MS = 1_500;
     // Walk budget scales with distance to the portal (climb/jump detours make straight-line
     // estimates optimistic), then the bot stops being stubborn and warps.
     private static final long TRAVEL_BUDGET_BASE_MS = 10_000L;
@@ -288,12 +292,25 @@ final class BotTravelManager {
             if (now < entry.portalUseCooldownUntilMs) {
                 return true; // brief breather between portals, same as nav portal edges
             }
+            // Pause a beat before stepping through, and keep walking onto the portal centre while
+            // the pause elapses so the bot enters from the middle, not the tolerance edge.
+            if (entry.portalEnterDwellUntilMs == 0L) {
+                entry.portalEnterDwellUntilMs =
+                        now + BotManager.randMs(PORTAL_ENTER_DELAY_MIN_MS, PORTAL_ENTER_DELAY_MAX_MS);
+            }
+            if (now < entry.portalEnterDwellUntilMs) {
+                pinMoveTarget(entry, portalPos);
+                movementStep.step(entry, portalPos, runAiTick);
+                return true;
+            }
+            entry.portalEnterDwellUntilMs = 0L;
             clearMoveTargetPin(entry);
             entry.followTravelEnteredAtMs = now;
             entry.portalUseCooldownUntilMs = now + PORTAL_USE_COOLDOWN_MS;
             portal.enterPortal(bot.getClient());
             return true;
         }
+        entry.portalEnterDwellUntilMs = 0L; // not at the portal yet — re-arm on the next arrival
         pinMoveTarget(entry, portalPos);
         // Opportunity attack on the way: only fires at a mob already in range (no chase/divert),
         // so the bot picks off mobs blocking its path while still walking to the portal.
@@ -399,9 +416,12 @@ final class BotTravelManager {
             return false;
         }
         if (!entry.inAir && !entry.climbing && manhattan(botPos, npcPos) <= TAXI_TRIGGER_RADIUS_PX) {
+            clearMoveTargetPin(entry);
+            if (!BotManager.npcDwellReady(entry, BotManager.NPC_TALK_DELAY_MS, BotManager.NPC_TALK_JITTER_MS)) {
+                return true; // pause a beat at the cab before paying the fare
+            }
             BotWorldGraph.TaxiEdge taxi =
                     BotWorldGraph.findTaxiEdge(entry.followTravelFromMapId, entry.followTravelNextHopMapId);
-            clearMoveTargetPin(entry);
             if (taxi == null || !taxiRide.ride(bot, taxi)) {
                 giveUp(entry, now, "taxi-fare-fail"); // fare spent elsewhere mid-walk — don't retry the same hop
                 return false;
@@ -409,6 +429,7 @@ final class BotTravelManager {
             entry.followTravelEnteredAtMs = now;
             return true;
         }
+        BotManager.npcDwellReset(entry);
         pinMoveTarget(entry, npcPos);
         movementStep.step(entry, npcPos, runAiTick);
         return true;

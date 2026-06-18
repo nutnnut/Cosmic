@@ -364,6 +364,17 @@ public class BotEntry {
     // Absolute time until which this bot may not take another portal (set on portal use).
     // Portal-only gate: does not block movement, attacks, or any other action.
     long portalUseCooldownUntilMs = 0L;
+    // Pre-warp pause while standing on a travel portal before stepping through (set in
+    // BotTravelManager.walkToPortalAndEnter); the bot keeps centring on the portal until it elapses.
+    long portalEnterDwellUntilMs = 0L;
+    // Human "settle after arriving" window: on any map change the bot stands a beat before it
+    // resumes grinding/fighting (set via BotManager.armPostWarpQuiet). Travel hops never reach the
+    // gated grind section, so multi-hop routes aren't slowed.
+    long postWarpQuietUntilMs = 0L;
+    // Reading/talking pause while standing at an NPC before the bot fires the interaction
+    // (quest accept/turn-in, job advance, taxi/ferry edge). Armed on the first in-range tick,
+    // re-armed fresh each approach via BotManager.npcDwellReady/npcDwellReset.
+    long npcDwellUntilMs = 0L;
     // Client-side alert-stance emulation: when currentTimeMillis < alertedUntilMs the bot's
     // broadcast stance gets STAND→ALERT substituted so observers see the alert pose.
     // Mirrors CharLook::alerted (TimedBool, 5000ms) in maplestory-wasm. Absolute reset on each

@@ -132,7 +132,7 @@ public class BotManager {
                 15, 15, 14, 14, 15, 14, 15, 16, 15, 12, 10, 7 // 12-23
         };
         public int POPULATION_NOISE = 2;                   // +/- jitter on the hourly target
-        public double POPULATION_MULTIPLIER = 1.0;         // scales the whole online target up/down, so bot
+        public double POPULATION_MULTIPLIER = 3.0;         // scales the whole online target up/down, so bot
                                                            // count is adjustable without editing the curve/noise
         public int MANAGED_POOL_MAX = 60;                  // hard cap on auto-generated managed bots
         public int HARDCORE_CAP = 5;                       // max bots that never retire (the veterans)
@@ -374,6 +374,35 @@ public class BotManager {
     /** Uniform random delay in [lo, hi) ms — use wherever a fixed delay would feel robotic. */
     static long randMs(int lo, int hi) {
         return lo + ThreadLocalRandom.current().nextInt(hi - lo);
+    }
+
+    // Human "settle/read" pauses before a bot fires an NPC interaction. base + uniform[0,jitter) ms.
+    static final int NPC_READ_DELAY_MS = 2_000, NPC_READ_JITTER_MS = 20_000;   // quest accept/turn-in, job advance — reading dialogue
+    static final int NPC_TALK_DELAY_MS = 2_000, NPC_TALK_JITTER_MS = 5_000;    // taxi/ferry edges — quick "hi, one ticket please"
+    static final int POST_WARP_DELAY_MS = 2_000, POST_WARP_JITTER_MS = 2_000;  // getting bearings after any map change
+
+    /**
+     * Reading/talking pause while standing at an NPC. On the first in-range tick (timer at 0) it arms
+     * a jittered pause and returns false; returns true only once the pause elapses. Callers MUST call
+     * {@link #npcDwellReset} on every not-yet-in-range tick so the timer re-arms fresh at the next NPC.
+     */
+    static boolean npcDwellReady(BotEntry entry, int baseMs, int jitterMs) {
+        long now = System.currentTimeMillis();
+        if (entry.npcDwellUntilMs == 0L) {
+            entry.npcDwellUntilMs = now + baseMs + ThreadLocalRandom.current().nextInt(jitterMs);
+            return false;
+        }
+        return now >= entry.npcDwellUntilMs;
+    }
+
+    static void npcDwellReset(BotEntry entry) {
+        entry.npcDwellUntilMs = 0L;
+    }
+
+    /** Arm the post-map-change settle window; called wherever a map change is detected. */
+    static void armPostWarpQuiet(BotEntry entry) {
+        entry.postWarpQuietUntilMs = System.currentTimeMillis()
+                + POST_WARP_DELAY_MS + ThreadLocalRandom.current().nextInt(POST_WARP_JITTER_MS);
     }
 
     // -------------------------------------------------------------------------
@@ -2911,6 +2940,7 @@ public class BotManager {
                 else if (BotPqHooks.requiresFollow(entry, bot) && entry.owner != bot) { issueFollowOwner(entry); }
                 else { entry.kpq.stage5Claimed = false; } // left KPQ — reset for next run
                 BotShopManager.onMapChange(entry, bot);
+                armPostWarpQuiet(entry);
                 BotChatManager.checkBotStatus(entry, bot);
             } else {
                 long tMapChange = System.nanoTime();
@@ -2927,6 +2957,7 @@ public class BotManager {
                     else if (BotPqHooks.requiresFollow(entry, bot) && entry.owner != bot) { issueFollowOwner(entry); }
                     else { entry.kpq.stage5Claimed = false; } // left KPQ — reset for next run
                     BotShopManager.onMapChange(entry, bot);
+                    armPostWarpQuiet(entry);
                     BotChatManager.checkBotStatus(entry, bot);
                 } finally {
                     BotPerformanceMonitor.record("tick-map-change", System.nanoTime() - tMapChange);
@@ -2990,6 +3021,13 @@ public class BotManager {
             if (targetPos != null) {
                 stepMovementCore(entry, targetPos, runAiTick);
             }
+            return;
+        }
+
+        // Just warped in: stand a beat and get your bearings before fighting/grinding. Only on-map
+        // action waits this out — travel hops return above (autopilot/follow) while in transit, so
+        // multi-hop routes aren't slowed. ponytail: suppresses proactive AI only; physics already ran.
+        if (System.currentTimeMillis() < entry.postWarpQuietUntilMs) {
             return;
         }
 
@@ -4721,6 +4759,7 @@ public class BotManager {
             BotMovementManager.resetEntryStateAfterTeleport(entry);
             BotMovementManager.broadcastMovement(entry);
             BotShopManager.onMapChange(entry, bot);
+            armPostWarpQuiet(entry);
             BotChatManager.checkBotStatus(entry, bot);
             return;
         }

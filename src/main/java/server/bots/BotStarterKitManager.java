@@ -185,15 +185,20 @@ final class BotStarterKitManager {
                 return false;
             }
             case ARRIVED -> {
+                if (!BotManager.npcDwellReady(entry, BotManager.NPC_READ_DELAY_MS, BotManager.NPC_READ_JITTER_MS)) {
+                    return true; // standing at the instructor, "reading" before advancing
+                }
                 Job target = entry.jobErrandTarget;
                 clearJobErrand(entry);
                 advanceJob(entry, target);
                 return false;
             }
             case TRAVEL_YIELDED -> {
+                BotManager.npcDwellReset(entry);
                 return false; // travel gave up this tick — release it (errand retries / times out)
             }
             default -> {
+                BotManager.npcDwellReset(entry);
                 return true; // TRAVELING / WALKING — tick consumed
             }
         }
