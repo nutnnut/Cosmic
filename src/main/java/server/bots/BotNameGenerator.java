@@ -62,9 +62,20 @@ public class BotNameGenerator {
             "Havoc", "Marl", "Keel", "Scurvy", "Bilge", "Mast", "Reef"
     );
 
+    // MapleStory-specific flavor: economy / slang / class lingo distilled from real IGN samples
+    // (Maple, God, Sin, Scroll, Mule, Grind, Fame, Funded, Chair, Slot, Boss, Toxic, Noob, Pro...).
+    // This is what makes a generated name read like a real MapleStory player vs a generic fantasy stem.
+    // All <= 6 chars so they combine (cap()s to "ScrollKing", "BossMule", "GrindGod", "ToxicNoob").
+    private static final List<String> ROOTS_MAPLE = List.of(
+            "Maple", "Scroll", "Fame", "Funded", "Chair", "Slot", "Boss", "Ramen", "Grind", "Toxic",
+            "Noob", "God", "Lord", "King", "Hero", "Ninja", "Mage", "Archer", "Sin", "Dark", "Rich",
+            "Mule", "Pog", "Pro", "Tank", "Leech", "Meso", "Loot", "Rush", "Solo", "Carry", "Sweat",
+            "Smega", "Whale", "Bishop", "Hunter", "Crit", "Buff", "Drop", "Kill"
+    );
+
     // Flat merged pool used for job-agnostic generation
     private static final List<List<String>> ALL_POOLS = List.of(
-            ROOTS_UNISEX, ROOTS_WARRIOR, ROOTS_MAGE, ROOTS_BOWMAN, ROOTS_THIEF, ROOTS_PIRATE
+            ROOTS_UNISEX, ROOTS_WARRIOR, ROOTS_MAGE, ROOTS_BOWMAN, ROOTS_THIEF, ROOTS_PIRATE, ROOTS_MAPLE
     );
 
     // ── Generic dictionary pool (freq-ranked, loaded from resource) ────────────
@@ -176,15 +187,26 @@ public class BotNameGenerator {
      */
     static String composeBase(List<String> themed, ThreadLocalRandom rng) {
         int roll = rng.nextInt(100);
+        String base = null;
         if (roll < 55) {
             for (int i = 0; i < 6; i++) {
                 String s = cap(pickCombinable(themed, rng)) + cap(pickCombinable(themed, rng));
-                if (s.length() >= 3 && s.length() <= 12) return s;
+                if (s.length() >= 3 && s.length() <= 12) {
+                    base = s;
+                    break;
+                }
             }
             // all 6 tries too long — fall through to a single word
         }
-        if (roll < 80) return cap(pickStandalone(themed, rng));
-        return cap(pickCombinable(themed, rng));
+        if (base == null) {
+            base = roll < 80 ? cap(pickStandalone(themed, rng)) : cap(pickCombinable(themed, rng));
+        }
+        // Real players often don't capitalize at all (~7% of IGNs are fully lowercase, e.g. "larryang",
+        // "dualbladeyo") — so sometimes drop the CamelCase entirely.
+        if (rng.nextInt(100) < 12) {
+            base = base.toLowerCase();
+        }
+        return base;
     }
 
     private static String pickCombinable(List<String> themed, ThreadLocalRandom rng) {
