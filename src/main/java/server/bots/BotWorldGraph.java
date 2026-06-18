@@ -123,7 +123,9 @@ final class BotWorldGraph {
             new TaxiEdge(60000, 22000, 104000000, 150),
             // Dolphin NPC 2060009: Herb Town <-> Aqua Road (2060009.js: 10000 meso each way).
             new TaxiEdge(251000100, 2060009, 230000000, 10000),
-            new TaxiEdge(230000000, 2060009, 251000100, 10000));
+            new TaxiEdge(230000000, 2060009, 251000100, 10000),
+            // Pason 1002002 on Lith Harbor sails to Florina Beach (1002002.js: gainMeso(-1500), warp(110000000)).
+            new TaxiEdge(104000000, 1002002, 110000000, 1500));
 
     private static final Map<Integer, List<TaxiEdge>> TAXI_BY_MAP = buildTaxiByMap();
 

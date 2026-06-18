@@ -142,5 +142,10 @@ class BotWorldGraphTest {
         assertNotNull(back);
         assertEquals(2060009, back.npcId());
         assertEquals(10000, back.fare());
+        // Pason: Lith Harbor 104000000 -> Florina Beach 110000000 (1002002, 1500 meso).
+        BotWorldGraph.TaxiEdge florina = BotWorldGraph.findTaxiEdge(104000000, 110000000);
+        assertNotNull(florina);
+        assertEquals(1002002, florina.npcId());
+        assertEquals(1500, florina.fare());
     }
 }

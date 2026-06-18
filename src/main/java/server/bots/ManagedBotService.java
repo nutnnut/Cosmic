@@ -124,6 +124,13 @@ public final class ManagedBotService {
                 ps -> ps.setInt(1, botCharId));
     }
 
+    /** Drops the managed-bot row entirely (un-manage): the character stops being scheduled and is no
+     *  longer in the population. Unlike {@link #retire} this leaves no record — used by the admin
+     *  add/remove command, not career turnover. */
+    public void remove(int botCharId) {
+        update("DELETE FROM managed_bot WHERE bot_char_id = ?", ps -> ps.setInt(1, botCharId));
+    }
+
     /** Records that the scheduler just brought this bot online. */
     public void touchOnline(int botCharId) {
         update("UPDATE managed_bot SET last_online_at = CURRENT_TIMESTAMP WHERE bot_char_id = ?",
