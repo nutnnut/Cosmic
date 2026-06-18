@@ -84,8 +84,8 @@ class BotFerryManagerTest {
                 guided.add(route.guideTargetMapId());
                 return true;
             };
-            BotFerryManager.gateCheck = bot -> gateOpen;
-            BotFerryManager.threatCheck = bot -> invaded;
+            BotFerryManager.gateCheck = (bot, eventName) -> gateOpen;
+            BotFerryManager.threatCheck = (bot, eventName) -> invaded;
             BotTravelManager.movementStep = (entry, targetPos, runAiTick) -> steps.add(new Point(targetPos));
             BotTravelManager.taxiNpcLocator = (map, npcId) -> npcPos;
         }

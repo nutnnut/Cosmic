@@ -43,7 +43,7 @@ final class BotFerryManager {
                       int usherNpcId, int usherNpcMapId,
                       int guideNpcId, int guideMapId, int guideTargetMapId,
                       int waitingMapId, int deckMapId, int cabinMapId,
-                      List<Integer> boardingMapIds) {
+                      List<Integer> boardingMapIds, String eventName) {
     }
 
     // Ellinia station 101000300: seller 1032007 (4031045, 5k) and usher 1032008 in one map.
@@ -53,7 +53,7 @@ final class BotFerryManager {
             1032008, 101000300,
             0, -1, -1,
             101000301, 200090010, 200090011,
-            List.of(101000300));
+            List.of(101000300), "Boats");
 
     // Orbis: seller 2012000 + platform guide 2012006 in the hall 200000100; the guide warps
     // to walkway 200000110 (west00), a plain portal leads to the pier 200000111 with usher
@@ -64,9 +64,42 @@ final class BotFerryManager {
             2012001, 200000111,
             2012006, 200000100, 200000110,
             200000112, 200090000, 200090001,
-            List.of(200000100, 200000110, 200000111));
+            List.of(200000100, 200000110, 200000111), "Boats");
 
-    private static final List<FerryRoute> ROUTES = List.of(ELLINIA_TO_ORBIS, ORBIS_TO_ELLINIA);
+    // The other Orbis-hub lines: SAME station model as ORBIS_TO_ELLINIA - Agatha (2012000) sells the
+    // ticket in hall 200000100, the station guide 2012006 warps to platform 200000110+sel*10 (Ludibrium
+    // sel1=...120, Leafre sel2=...130, Ariant sel4=...150), the usher sits one map past it (+1) and
+    // boards into the waiting room (+2); a per-line EventManager (gate property "entry", like Boats)
+    // then rides the single deck to the destination station. No Balrog cabin on these (cabin = deck).
+    // Verified: scripts/npc/2012006,2012013,2012021,2012025 + scripts/event/Trains,Cabin,Genie +
+    // each usher's host map (Map.wz life).
+    static final FerryRoute ORBIS_TO_LUDIBRIUM = new FerryRoute(
+            220000100, 4031074, 6000,
+            2012000, 200000100,
+            2012013, 200000121,
+            2012006, 200000100, 200000120,
+            200000122, 200090100, 200090100,
+            List.of(200000100, 200000120, 200000121), "Trains");
+
+    static final FerryRoute ORBIS_TO_LEAFRE = new FerryRoute(
+            240000100, 4031331, 30000,
+            2012000, 200000100,
+            2012021, 200000131,
+            2012006, 200000100, 200000130,
+            200000132, 200090200, 200090200,
+            List.of(200000100, 200000130, 200000131), "Cabin");
+
+    static final FerryRoute ORBIS_TO_ARIANT = new FerryRoute(
+            260000100, 4031576, 6000,
+            2012000, 200000100,
+            2012025, 200000151,
+            2012006, 200000100, 200000150,
+            200000152, 200090400, 200090400,
+            List.of(200000100, 200000150, 200000151), "Genie");
+
+    private static final List<FerryRoute> ROUTES = List.of(
+            ELLINIA_TO_ORBIS, ORBIS_TO_ELLINIA,
+            ORBIS_TO_LUDIBRIUM, ORBIS_TO_LEAFRE, ORBIS_TO_ARIANT);
 
     private static final Map<Integer, FerryRoute> BOARDING_MAP_TO_ROUTE = buildBoardingIndex();
     private static final Map<Integer, FerryRoute> TRANSIT_MAP_TO_ROUTE = buildTransitIndex();
@@ -126,12 +159,12 @@ final class BotFerryManager {
 
     @FunctionalInterface
     interface GateCheck {
-        boolean entryOpen(Character bot);
+        boolean entryOpen(Character bot, String eventName);
     }
 
     @FunctionalInterface
     interface ThreatCheck {
-        boolean invaded(Character bot);
+        boolean invaded(Character bot, String eventName);
     }
 
     static TicketCheck ticketCheck = (bot, ticketItemId) -> bot.haveItem(ticketItemId);
@@ -168,18 +201,18 @@ final class BotFerryManager {
         return true;
     };
 
-    static GateCheck gateCheck = bot -> "true".equals(boatsProperty(bot, "entry"));
+    static GateCheck gateCheck = (bot, eventName) -> "true".equals(eventProperty(bot, eventName, "entry"));
 
-    static ThreatCheck threatCheck = bot -> {
-        if ("true".equals(boatsProperty(bot, "haveBalrog"))) {
+    static ThreatCheck threatCheck = (bot, eventName) -> {
+        if ("true".equals(eventProperty(bot, eventName, "haveBalrog"))) { // only Boats sets this; others null
             return true;
         }
         MapleMap map = bot.getMap();
         return map != null && map.getAllMonsters().stream().anyMatch(server.life.Monster::isAlive);
     };
 
-    private static String boatsProperty(Character bot, String key) {
-        EventManager em = bot.getClient().getChannelServer().getEventSM().getEventManager("Boats");
+    private static String eventProperty(Character bot, String eventName, String key) {
+        EventManager em = bot.getClient().getChannelServer().getEventSM().getEventManager(eventName);
         return em != null ? em.getProperty(key) : null;
     }
 
@@ -198,10 +231,10 @@ final class BotFerryManager {
         }
         long now = System.currentTimeMillis();
         if (bot.getMapId() == route.deckMapId()
-                && (threatCheck.invaded(bot) || targetMapId == route.cabinMapId())) {
+                && (threatCheck.invaded(bot, route.eventName()) || targetMapId == route.cabinMapId())) {
             enterAdjacentPortal(entry, bot, route.cabinMapId(), now, runAiTick);
         } else if (bot.getMapId() == route.cabinMapId()
-                && targetMapId == route.deckMapId() && !threatCheck.invaded(bot)) {
+                && targetMapId == route.deckMapId() && !threatCheck.invaded(bot, route.eventName())) {
             enterAdjacentPortal(entry, bot, route.deckMapId(), now, runAiTick);
         }
         return true; // the boat decides when this ends, not the travel deadline
@@ -235,7 +268,7 @@ final class BotFerryManager {
             if (!hasTicket) {
                 return false; // ticket gone mid-walk — fall back, a re-plan walks back to the seller
             }
-            if (!gateCheck.entryOpen(bot)) {
+            if (!gateCheck.entryOpen(bot, route.eventName())) {
                 // Stand at the gate until the boat docks; the wait is legitimate, so keep
                 // the travel deadline from giving up under us.
                 if (entry.followTravelDeadlineMs < now + LEG_BUDGET_MS) {
