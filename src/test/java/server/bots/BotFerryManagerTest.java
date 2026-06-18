@@ -257,5 +257,9 @@ class BotFerryManagerTest {
         assertTrue(BotFerryManager.findFerryEdge(260000100, 200000100) == BotFerryManager.ARIANT_TO_ORBIS);
         // A destination no line sails to resolves to null.
         assertFalse(BotFerryManager.findFerryEdge(200000100, 999999999) != null);
+        // Solo rides (ticketItemId 0) resolve as edges too.
+        assertTrue(BotFerryManager.findFerryEdge(200000161, 130000210) == BotFerryManager.ORBIS_TO_EREVE);
+        assertTrue(BotFerryManager.findFerryEdge(104000000, 140020300) == BotFerryManager.LITH_TO_RIEN);
+        assertTrue(BotFerryManager.findFerryEdge(140020300, 104000000) == BotFerryManager.RIEN_TO_LITH);
     }
 }

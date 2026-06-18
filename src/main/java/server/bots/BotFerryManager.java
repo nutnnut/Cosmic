@@ -126,10 +126,43 @@ final class BotFerryManager {
             260000110, 200090410, 200090410,
             List.of(260000100), "Genie");
 
+    // Solo rides (ticketItemId 0 = pay meso to the boat NPC, no ticket/usher/gate). The NPC warps the
+    // bot onto the ride map (waiting=deck=cabin), whose coded MapleMap onUserEnter timer delivers it to
+    // the destination (FROM_*_EREVE / FROM_*_RIEN handlers - run for bots, not behind the client guard).
+    // Verified: scripts/npc/{1100008,1100004,1200004,1200003} + MapleMap.java:2364+ + MapId arrival ids.
+    static final FerryRoute ORBIS_TO_EREVE = new FerryRoute(
+            130000210, 0, 1000,
+            1100008, 200000161,
+            0, -1, 0, -1, -1,
+            200090020, 200090020, 200090020,
+            List.of(200000161), "");
+
+    static final FerryRoute EREVE_TO_ORBIS = new FerryRoute(
+            200000161, 0, 1000,
+            1100004, 130000210,
+            0, -1, 0, -1, -1,
+            200090021, 200090021, 200090021,
+            List.of(130000210), "");
+
+    static final FerryRoute LITH_TO_RIEN = new FerryRoute(
+            140020300, 0, 800,
+            1200004, 104000000,
+            0, -1, 0, -1, -1,
+            200090060, 200090060, 200090060,
+            List.of(104000000), "");
+
+    static final FerryRoute RIEN_TO_LITH = new FerryRoute(
+            104000000, 0, 800,
+            1200003, 140020300,
+            0, -1, 0, -1, -1,
+            200090070, 200090070, 200090070,
+            List.of(140020300), "");
+
     private static final List<FerryRoute> ROUTES = List.of(
             ELLINIA_TO_ORBIS, ORBIS_TO_ELLINIA,
             ORBIS_TO_LUDIBRIUM, ORBIS_TO_LEAFRE, ORBIS_TO_ARIANT,
-            LUDIBRIUM_TO_ORBIS, LEAFRE_TO_ORBIS, ARIANT_TO_ORBIS);
+            LUDIBRIUM_TO_ORBIS, LEAFRE_TO_ORBIS, ARIANT_TO_ORBIS,
+            ORBIS_TO_EREVE, EREVE_TO_ORBIS, LITH_TO_RIEN, RIEN_TO_LITH);
 
     // A hub map (Orbis 200000100) carries SEVERAL ferry lines, so each boarding map maps to a LIST.
     private static final Map<Integer, List<FerryRoute>> BOARDING_MAP_TO_ROUTES = buildBoardingIndex();
@@ -285,6 +318,25 @@ final class BotFerryManager {
      */
     static boolean tickBoarding(BotEntry entry, Character bot, FerryRoute route, long now, boolean runAiTick) {
         int mapId = bot.getMapId();
+
+        // Solo ride (ticketItemId 0: Ereve / Rien sky-whale ferries): no ticket item, no usher, no gate.
+        // Walk to the boat NPC, pay the meso fare, and it warps the bot onto the ride map - whose coded
+        // onUserEnter timer (MapleMap, runs for bots too) then delivers it to the destination station.
+        if (route.ticketItemId() == 0) {
+            if (mapId != route.ticketNpcMapId() || bot.getMeso() < route.ticketCost()) {
+                return false;
+            }
+            return walkToNpcThenAct(entry, bot, route.ticketNpcId(), now, runAiTick, () -> {
+                MapleMap ride = bot.getClient().getChannelServer().getMapFactory().getMap(route.waitingMapId());
+                if (ride == null) {
+                    return false;
+                }
+                bot.gainMeso(-route.ticketCost(), false);
+                bot.changeMap(ride);
+                return true;
+            });
+        }
+
         boolean hasTicket = ticketCheck.hasTicket(bot, route.ticketItemId());
 
         if (mapId == route.ticketNpcMapId() && !hasTicket) {
