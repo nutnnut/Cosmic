@@ -177,7 +177,6 @@ public class BotPopCommand extends Command {
         }
 
         BotManager bm = BotManager.getInstance();
-        int gmAcc = player.getAccountID();
         int wiped = 0, failed = 0;
         for (BotRow r : roster) {
             // Scope guard: a generated bot has its own single-char account. An account with other
@@ -193,7 +192,8 @@ public class BotPopCommand extends Command {
             if (online != null && online.getClient() != null) {
                 online.getClient().disconnect(false, false); // leave the world (and final-save) before the DB delete
             }
-            CharacterDeletionService.Result res = CharacterDeletionService.deleteCharacter(r.cid(), gmAcc);
+            // Delete as the bot's OWN account: validateCharacterOwnership requires senderAccId to own the char.
+            CharacterDeletionService.Result res = CharacterDeletionService.deleteCharacter(r.cid(), accId);
             if (!res.isSuccess()) {
                 failed++;
                 player.yellowMessage("  skip " + r.name() + ": " + res.getCommandMessage());
