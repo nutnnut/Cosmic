@@ -5,23 +5,18 @@
 ## Features
 
 - bot autonomy / autopilot - send a bot or party off to travel, grind, resupply, and play on its own
-- fully ownerless bots - spawn with `autopilot`/`generate` and they pick a job, walk to the instructor NPC to advance, assign their own AP/SP, and grow from level 1 with no human in the loop
-- living-server population (`@botpop`) - a scheduler logs server-generated bots in/out on per-bot schedules, auto-generates fresh ones to track an hourly target curve, retires veterans, and spawns friend-group "crews" that party and share supplies - so the world feels populated (off by default)
-- humanlike pacing - delay jitter on NPC talks, map changes, and portal entry; bots walk in a bit before using an intra-map portal instead of teleporting on top of it
-- smarter combat - accuracy-aware target/map choice (skips mobs it can't hit), target commitment, mob dodging while walking, steps closer to land a stronger skill, and self-preservation vs touch-dangerous mobs
-- shares summoning/magic rocks like potions (and uses rock-consuming buffs sparingly); offers scrolls useless to itself but useful to a partymate
-- opportunity-cost-aware scrolling - won't waste a scroll for a tiny gain and holds scrolls when a clearly-better base is farmable
-- party catch-up - over-levelled `@botparty` members idle (no damage) so the lower bots get full EXP share
+- fully ownerless bots/living-server population (`!botpop`)
 - follow, trade, loot
 - auto fight/grind, use skill, auto assign ap/sp, buffs (Only 1st jobs + select 2nd job configured/tested)
 - auto buy/resupply potions/ammo if shop available within the same map
-- auto share potions/ammo among themselves and to owner(if requested) when running low while farming
+- auto share potions/ammo/rocks among themselves and to owner(if requested) when running low while farming
 - auto equip and optimize own gear loadout - including chaining stats bonus to unlock higher requirement equips and weapons, allowing dexless/strless/lukless builds
+- auto gear progression, grind mob for drop, grind scroll, apply scroll
 - auto share equipment upgrades with owner and other sibling bots (auto compare stats directly against recipient's inventory)
 - auto sort equipment from junk equip so selling trash equips become manageable. (sell trash command available)
 - automation command for maker skill disassemble gear / craft monster crystals
-- auto complete any quest the owner turn in (with rewards)
-- AI LLM support (reply to chat, no effect on gameplay whatsoever)
+- auto questing (basic quests like kill/fetch/talk quests)
+- optional AI LLM support (reply to chat, no effect on gameplay whatsoever)
 - Party Quest Automation(currently only KPQ 1st stage + auto accept rewards 5th stage)
 - Each bot is a real character you can log in as, can spawn your alts as bots
 
@@ -259,47 +254,26 @@ Verbs: `trade [me] <type/name>`, `give [me] <type/name>`, `drop <type/name>`, `p
 | `@botstatus` | (GM) Private listing of every bot on the map |
 | `@autosell` | (GM) Preview/run the bot sell pipeline on your own character |
 
-### GM Ops Console (Messenger)
-
-Open the in-game **Maple Messenger** window and type `Console: <verb>` to drive bots without spamming map chat:
-
-| Type in Messenger | Effect |
-|---|---|
-| `Console: list` | All spawned bots (name, map, job/lv) |
-| `Console: status [name]` | Bot status (one bot, or all on your map) |
-| `Console: log <name>` | Stream that bot's live autopilot decisions into the Messenger |
-| `Console: unlog` | Stop streaming |
-| `Console: grind <name>` | Write that bot's autopilot decision dump (path printed to chat) |
-| `Console: say <name> <text>` | Drive the bot via its own chat commands |
-| `Console: cmd <@command ...>` | Run a GM command (output to normal chat) |
-
 ### Living-server population (`@botpop`)
 
 A background scheduler can keep a population of **server-generated** bots logging in and out on their
-own, on varying per-bot schedules, so the world feels alive (busy in the evening, quiet at 4am). It is
-**OFF by default**.
+own, on varying per-bot schedules, so the world feels alive. It is **OFF by default**.
 
-**IMPORTANT — only `@spawnbot generate` bots are managed.** The scheduler will only ever spawn/retire
-bots created with `@spawnbot generate ...`. Bots you made with a name (`@spawnbot <name>`), `@botme`, or
+**IMPORTANT — only `@spawnbot generate` bots and auto-generated bots are managed.** The scheduler will only ever spawn/retire. Bots you made with a name (`@spawnbot <name>`), `@botme`, or
 `@registerbot` are **never** auto-scheduled — this is the safety rule that stops it from ever spawning a
 real player's character. (So spawning 2 named bots and logging them out, then `@botpop on`, does nothing —
 they aren't in the managed pool.)
 
 | Command | Effect |
 |---|---|
-| `@botpop` / `@botpop status` | Show: scheduler on/off, this hour's target vs. current live count, managed-pool size |
-| `@botpop on` / `@botpop off` | Enable / disable the scheduler. `on` sweeps **immediately** and ramps the population in over ~30s (fast-start) instead of waiting for the next tick |
+| `@botpop` / `@botpop status` | Status |
+| `@botpop on` / `@botpop off` | Toggle auto spawning bots |
 | `@botpop list` | List managed bots (id, group, active/retired/disabled, online) |
 | `@botpop sweep` | Force one reconcile pass now (instead of waiting for the next tick) |
-| `@botpop clear` | Disconnect **all** online bots now (managed + companions). Keeps them in the DB; run `@botpop off` first or the next sweep respawns managed ones |
+| `@botpop clear` | Disconnect **all** online bots |
 | `@botpop add <name>` / `@botpop remove <name>` | Mark/unmark an existing character as a managed (schedulable) bot |
 | `@botpop crew <id\|none> <name...>` | Assign managed bots to a persistent crew (they co-spawn, party, and share gear/ammo/supplies), or clear with `none` |
-| `@botpop wipe [confirm]` | Bare = preview the roster (name, Lv, job, high→low); `confirm` = permanently delete every managed bot (character + inventory + bot account). For resetting the test population back to fresh Lv1. Skips any managed char on a multi-character account |
-
-**To use it:**
-1. Build a pool: run `@spawnbot generate confirm` several times (each becomes a managed bot with a random
-   personality — preferred play hours, session length, farm/idle ratio, sociability, career length).
-2. `@botpop on`, then watch with `@botpop status` / `@botpop list` (or `@botpop sweep` to act immediately).
+| `@botpop wipe [confirm]` | delete all managed bots(so new bots lv1 spawns) |
 
 Even then, a given bot only logs in when (a) it's "active today" (each bot plays only a fraction of days),
 (b) the current hour is one it likes, and (c) the hourly target exceeds the live count — so at an off-hour
