@@ -146,8 +146,10 @@ public class BotEntry {
     long retreatHoldUntilMs = 0L; // hysteresis: lock the local retreat goal for a short window
     Point retreatHoldPos = null;  // the locked retreat target — reused while hold is active
     long dangerRetreatUntilMs = 0L; // proactive self-preservation: keep disengaging a touch-dangerous mob until this expires (anti-flip-flop)
-    long dangerRetreatStreakStartMs = 0L;  // when the current unbroken danger-retreat streak began (0 = none)
-    long dangerRetreatSuppressUntilMs = 0L; // anti-freeze: after retreating too long without escaping, FIGHT until this
+    // Anti-freeze watchdogs (shared logic, independent state per reason). A retreat that never opens
+    // distance forces a fight window instead of looping forever. See RetreatGiveUp.
+    final RetreatGiveUp dangerGiveUp = new RetreatGiveUp();
+    final RetreatGiveUp spacingGiveUp = new RetreatGiveUp();
     int breakoutDirection = 0;    // -1/+1 committed escape side while surrounded, 0 = not breaking out
     long breakoutUntilMs = 0L;    // hard safety timeout for the surround-breakout commitment
     Point aoeRepositionAnchor = null; // committed AoE sweet-spot to walk to before firing, null = not repositioning
@@ -162,6 +164,8 @@ public class BotEntry {
     boolean dbgRangedSpacingRetreat = false;   // ranged weapon backing off a too-close mob
     boolean dbgInDegenBand = false;      // mob inside the degenerate close-range band (ranged wpn)
     boolean dbgCrossRegionRetreat = false; // retreat vantage is in another nav region (jump/edge away)
+    boolean dbgRangedSpacingGaveUp = false; // anti-freeze fired: spacing never opened, fighting in place
+    boolean dbgRangedSpacingCrowded = false; // mob inside the ranged retreat band this tick (spacing want)
     int wanderDirection = 0;      // -1 left, +1 right, 0 = unset (picked when grind has no target)
 
     // Shop auto-buy (triggered once per map change)

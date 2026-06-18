@@ -1942,8 +1942,16 @@ public class BotManager {
     // Cap how long danger-retreat may run UNBROKEN; once exceeded, suppress it and FIGHT for a window
     // so the bot makes progress (reactive heal/pots are the survival net, the death-loop breaker the
     // last resort). The streak resets the moment the bot reaches a non-dangerous target/spot.
-    private static final int MAX_DANGER_RETREAT_MS = 3500;
+    static final int MAX_DANGER_RETREAT_MS = 3500;
     private static final int DANGER_RETREAT_SUPPRESS_MS = 12_000;
+    // Same anti-freeze, for the ranged-SPACING retreat (degenAttackDone / shouldRetreatFromNearbyTarget).
+    // A ranged bot that can never open distance — mob chases at the same speed, blocked nav, pinned on
+    // a rope/ledge against a mob sitting on it — would retreat forever with the attack gate shut and
+    // freeze (observed on claw AND bow, 2026-06-18). Cap how long spacing-retreat may run while the mob
+    // stays inside the retreat band; once exceeded, FIGHT in place (degenerate-fire) for a window. The
+    // streak resets the instant the bot opens distance, so healthy kiting is untouched.
+    static final int MAX_RANGED_SPACING_RETREAT_MS = 1500;
+    static final int RANGED_SPACING_RETREAT_SUPPRESS_MS = 2500;
 
     // AoE reposition commitment: returns the sweet-spot Point to walk to before firing, or null to
     // fire now. Scores once when a commitment starts (BotCombatManager.aoeRepositionTarget); while
@@ -2092,8 +2100,7 @@ public class BotManager {
     private static boolean computeProactiveDangerRetreat(BotEntry entry, Character bot, Monster target, long now) {
         if (target == null || bot == null) {
             entry.dangerRetreatUntilMs = 0L;
-            entry.dangerRetreatStreakStartMs = 0L;
-            return false;
+            return false; // dangerGiveUp streak self-resets on the next non-dangerous tick
         }
         return applyDangerRetreatGiveUp(entry, BotCombatManager.shouldProactivelyRetreat(bot, target), now);
     }
@@ -2107,28 +2114,19 @@ public class BotManager {
      * the give-up timer) resets the moment the bot reaches a non-dangerous spot.
      */
     static boolean applyDangerRetreatGiveUp(BotEntry entry, boolean dangerous, long now) {
-        if (now < entry.dangerRetreatSuppressUntilMs) {
-            return false; // forced fight window — never freeze
+        // Shared anti-freeze: while danger never clears past the cap, give up and fight.
+        if (entry.dangerGiveUp.forcedFight(dangerous, now, MAX_DANGER_RETREAT_MS, DANGER_RETREAT_SUPPRESS_MS)) {
+            entry.dangerRetreatUntilMs = 0L; // give-up also drops any live hold
+            return false;
         }
         if (dangerous) {
-            if (entry.dangerRetreatStreakStartMs == 0L) {
-                entry.dangerRetreatStreakStartMs = now;
-            } else if (now - entry.dangerRetreatStreakStartMs > MAX_DANGER_RETREAT_MS) {
-                // Fleeing isn't reaching safety (every reachable mob is dangerous): stop looping.
-                entry.dangerRetreatSuppressUntilMs = now + DANGER_RETREAT_SUPPRESS_MS;
-                entry.dangerRetreatStreakStartMs = 0L;
-                entry.dangerRetreatUntilMs = 0L;
-                return false;
-            }
             if (now >= entry.dangerRetreatUntilMs) {
                 entry.dangerRetreatUntilMs = now + DANGER_RETREAT_HOLD_MS
                         + ThreadLocalRandom.current().nextInt(DANGER_RETREAT_JITTER_MS);
             }
             return true;
         }
-        // Reached a non-dangerous spot: clear the streak (legit brief retreats keep working), but
-        // honor any live hold so a committed back-off finishes.
-        entry.dangerRetreatStreakStartMs = 0L;
+        // Reached a non-dangerous spot: honor any live hold so a committed back-off finishes.
         return now < entry.dangerRetreatUntilMs;
     }
 
@@ -3161,12 +3159,24 @@ public class BotManager {
         // reusing the existing retreat/re-spacing machinery rather than new movement code.
         boolean proactiveDangerRetreat = computeProactiveDangerRetreat(entry, bot, target, now);
         boolean targetInDegenerateBand = BotAttackExecutionProvider.shouldDegenerateRangedAttack(grindWeaponType, botPos, tp);
-        boolean allowOneDegenerateAttack = targetInDegenerateBand && !entry.degenAttackDone && rangedPriorityTarget == null
+        // Spacing retreat is a horizontal-ground maneuver — you cannot open distance while clinging
+        // to a rope, and trying to sends the bot climbing DOWN away from a mob sitting on top of the
+        // rope, then back up: endless oscillation. While climbing, never space-retreat; finish the
+        // climb and fight on the platform (danger-retreat still applies — flee a lethal mob anywhere).
+        boolean rangedSpacingCrowded = !entry.climbing
+                && BotAttackExecutionProvider.shouldRetreatFromNearbyTarget(grindWeaponType, botPos, tp);
+        // Anti-freeze: a spacing retreat that never opens distance (mob chases, blocked nav) loops
+        // forever with the gate shut. Shared give-up watchdog forces a fight window — same escape
+        // hatch the danger-retreat uses (see RetreatGiveUp).
+        boolean rangedSpacingGaveUp = !proactiveDangerRetreat && entry.spacingGiveUp.forcedFight(
+                rangedSpacingCrowded, now, MAX_RANGED_SPACING_RETREAT_MS, RANGED_SPACING_RETREAT_SUPPRESS_MS);
+        boolean allowOneDegenerateAttack = targetInDegenerateBand
+                && (!entry.degenAttackDone || rangedSpacingGaveUp) && rangedPriorityTarget == null
                 && !proactiveDangerRetreat;
         boolean shouldRetreatForRangedSpacing = proactiveDangerRetreat
-                || entry.degenAttackDone
-                || (BotAttackExecutionProvider.shouldRetreatFromNearbyTarget(grindWeaponType, botPos, tp)
-                && !allowOneDegenerateAttack);
+                || (!rangedSpacingGaveUp
+                && (entry.degenAttackDone
+                || (rangedSpacingCrowded && !allowOneDegenerateAttack)));
         // Opportunity attack: keep firing during retreat as long as the shot would land
         // as a true ranged hit. Suppress only inside the degenerate band, since firing
         // there would re-trigger degenAttackDone and extend the retreat indefinitely.
@@ -3188,6 +3198,8 @@ public class BotManager {
         entry.dbgRangedSpacingRetreat = shouldRetreatForRangedSpacing;
         entry.dbgInDegenBand = targetInDegenerateBand;
         entry.dbgCrossRegionRetreat = crossRegionRetreatPos != null;
+        entry.dbgRangedSpacingGaveUp = rangedSpacingGaveUp;
+        entry.dbgRangedSpacingCrowded = rangedSpacingCrowded;
         // AoE positioning: when in range but the chosen plan is single-target, defer the shot
         // and walk into the cluster centroid if the AoE would beat it on DPS there (bounded).
         // Suppressed during ranged-spacing/cross-region retreats — spacing takes priority.

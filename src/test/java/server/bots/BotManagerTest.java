@@ -1847,6 +1847,30 @@ class BotManagerTest {
                 "new danger after safety retreats fresh (streak was reset)");
     }
 
+    @Test
+    void retreatGiveUpForcesFightWhenConditionNeverClears() {
+        RetreatGiveUp g = new RetreatGiveUp();
+        long t = 5_000_000L;
+        int max = 1500, fight = 2500;
+        assertFalse(g.forcedFight(true, t, max, fight), "retreats while the streak is under the cap");
+        assertFalse(g.forcedFight(true, t + 1000, max, fight), "still under the cap");
+        assertTrue(g.forcedFight(true, t + max + 1, max, fight), "gives up after the cap -> fight");
+        assertTrue(g.forcedFight(true, t + max + 100, max, fight), "stays fighting inside the window");
+        assertFalse(g.forcedFight(true, t + max + 1 + fight + 1, max, fight),
+                "window lapsed -> retreats again (fresh streak)");
+    }
+
+    @Test
+    void retreatGiveUpStreakResetsTheInstantTheConditionClears() {
+        RetreatGiveUp g = new RetreatGiveUp();
+        long t = 6_000_000L;
+        int max = 1500, fight = 2500;
+        assertFalse(g.forcedFight(true, t, max, fight));
+        assertFalse(g.forcedFight(false, t + 1000, max, fight), "opened distance -> streak reset");
+        // A long-later re-trigger must not inherit the old streak (else it'd give up instantly).
+        assertFalse(g.forcedFight(true, t + 10_000, max, fight), "fresh streak after escaping");
+    }
+
     // Mirror of BotManager.MAX_DANGER_RETREAT_MS for the test (private constant).
     private static final int MAX_DANGER_RETREAT_MS_TEST = 3500;
 

@@ -321,15 +321,40 @@ final class BotPathLogger {
             sb.append("            decision=<no grind-combat tick recorded yet>\n");
             return;
         }
-        sb.append("            attackGateOpen=").append(entry.dbgAttackGateOpen)
-                .append("  proactiveDangerRetreat=").append(entry.dbgProactiveDangerRetreat)
-                .append("  rangedSpacingRetreat=").append(entry.dbgRangedSpacingRetreat)
-                .append("\n            inDegenBand=").append(entry.dbgInDegenBand)
+        long now = System.currentTimeMillis();
+        BotCombatManager.Config c = BotCombatManager.cfg;
+        // VERDICT — what the bot decided this tick.
+        sb.append("            verdict: attackGateOpen=").append(entry.dbgAttackGateOpen)
+                .append("  retreatSpacing=").append(entry.dbgRangedSpacingRetreat)
+                .append("  dangerRetreat=").append(entry.dbgProactiveDangerRetreat)
+                .append("  crossRegion=").append(entry.dbgCrossRegionRetreat)
+                .append("  decisionAgoMs=").append(now - entry.dbgCombatDecisionAtMs).append("\n");
+        // INPUTS — the factors that produced it. Bands shown so "crowded/degen" is provable from dx/dy.
+        sb.append("            inputs:  crowded=").append(entry.dbgRangedSpacingCrowded)
+                .append(" (retreatBand dx<=").append(c.RANGED_RETREAT_THRESHOLD_X)
+                .append(" dy<=").append(c.RANGED_DEGENERATE_RANGE_Y).append(")")
+                .append("  inDegenBand=").append(entry.dbgInDegenBand)
+                .append(" (dx<=").append(c.RANGED_DEGENERATE_RANGE_X)
+                .append(" dy<=").append(c.RANGED_DEGENERATE_RANGE_Y).append(")")
                 .append("  degenAttackDone=").append(entry.degenAttackDone)
-                .append("  crossRegionRetreat=").append(entry.dbgCrossRegionRetreat)
-                .append("  retreatHoldPos=").append(entry.retreatHoldPos == null ? "none"
+                .append("  climbing=").append(entry.climbing).append(entry.climbing ? " (spacing suppressed)" : "")
+                .append("\n");
+        // ANTI-FREEZE — the shared give-up watchdogs (RetreatGiveUp). fightLeftMs>0 => fighting in place;
+        // streakMs counts up to the cap, at which point it gives up and opens a fight window.
+        sb.append("            antifreeze: spacing[gaveUp=").append(entry.dbgRangedSpacingGaveUp)
+                .append(" streakMs=").append(entry.spacingGiveUp.streakAgeMs(now))
+                .append("/").append(BotManager.MAX_RANGED_SPACING_RETREAT_MS)
+                .append(" fightLeftMs=").append(entry.spacingGiveUp.fightWindowLeftMs(now)).append("]")
+                .append("  danger[streakMs=").append(entry.dangerGiveUp.streakAgeMs(now))
+                .append("/").append(BotManager.MAX_DANGER_RETREAT_MS)
+                .append(" fightLeftMs=").append(entry.dangerGiveUp.fightWindowLeftMs(now))
+                .append(" holdLeftMs=").append(Math.max(0L, entry.dangerRetreatUntilMs - now)).append("]")
+                .append("\n");
+        // POSITION — committed retreat target state.
+        sb.append("            position: retreatHoldPos=").append(entry.retreatHoldPos == null ? "none"
                         : "(" + entry.retreatHoldPos.x + "," + entry.retreatHoldPos.y + ")")
-                .append("  decisionAgoMs=").append(System.currentTimeMillis() - entry.dbgCombatDecisionAtMs)
+                .append("  retreatHoldLeftMs=").append(Math.max(0L, entry.retreatHoldUntilMs - now))
+                .append("  breakoutDir=").append(entry.breakoutDirection)
                 .append("\n");
     }
 
@@ -343,7 +368,8 @@ final class BotPathLogger {
                 : entry.dbgRangedSpacingRetreat ? "RETrng"
                 : entry.dbgAttackGateOpen ? "ATK"
                 : "hold";
-        String flags = (entry.dbgInDegenBand ? "d" : "") + (entry.dbgCrossRegionRetreat ? "X" : "");
+        String flags = (entry.dbgInDegenBand ? "d" : "") + (entry.dbgCrossRegionRetreat ? "X" : "")
+                + (entry.dbgRangedSpacingGaveUp ? "g" : "");
         return flags.isEmpty() ? base : base + "/" + flags;
     }
 
