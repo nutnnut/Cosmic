@@ -3,7 +3,11 @@ package server.bots;
 import client.BotClient;
 import client.Character;
 import config.YamlConfig;
+import net.server.coordinator.world.InviteCoordinator;
+import net.server.coordinator.world.InviteCoordinator.InviteType;
+import net.server.world.Party;
 import server.maps.MapleMap;
+import tools.PacketCreator;
 
 import java.util.List;
 import java.util.concurrent.ThreadLocalRandom;
@@ -30,6 +34,9 @@ final class BotSocialManager {
             "sure lets go", "ok im in", "yeah lets party", "sounds good", "lets do it");
     private static final List<String> DECLINE_MSGS = List.of(
             "nah im good", "soloing rn", "maybe later", "no thanks", "ill pass");
+    private static final List<String> INVITE_PLAYER_MSGS = List.of(
+            "hey %s, wanna party up?", "%s wanna group?", "yo %s, party?", "%s lets duo!",
+            "wanna team up %s?", "%s join me? sent an invite");
 
     private BotSocialManager() {}
 
@@ -50,6 +57,11 @@ final class BotSocialManager {
         BotEntry target = findCandidate(bot);
         if (target != null) {
             offerParty(entry, bot, target, target.bot);
+        } else if (BotManager.cfg.SOCIAL_INVITE_PLAYERS) {
+            Character player = findPlayerCandidate(bot);
+            if (player != null) {
+                inviteRealPlayer(entry, bot, player);
+            }
         }
     }
 
@@ -74,6 +86,62 @@ final class BotSocialManager {
             }
         }
         return null;
+    }
+
+    /** A co-located, party-less REAL player within the exp-share level window, or null. */
+    private static Character findPlayerCandidate(Character bot) {
+        MapleMap map = bot.getMap();
+        int shareWindow = YamlConfig.config.server.EXP_SPLIT_LEECH_INTERVAL;
+        for (Character c : map.getCharacters()) {
+            if (c == bot || c.getClient() instanceof BotClient || c.getParty() != null) {
+                continue;
+            }
+            if (Math.abs(bot.getLevel() - c.getLevel()) <= shareWindow) {
+                return c;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Proactively invite a co-located real player to party: a chattiness-gated chat line plus a REAL
+     * party invite the player accepts/declines through the normal UI (never auto-joined — players are
+     * never force-grouped). The bot creates a party to host the invite; if it's not taken, a delayed
+     * cleanup disbands the lone party so a declined invite doesn't strand the bot out of "solo" state.
+     */
+    private static void inviteRealPlayer(BotEntry entry, Character bot, Character player) {
+        BotManager bm = BotManager.getInstance();
+        if (ThreadLocalRandom.current().nextDouble() < personality(entry).chattiness()) {
+            bm.botSay(bot, String.format(BotManager.randomReply(INVITE_PLAYER_MSGS), player.getName()));
+        }
+        if (bot.getClient() == null) {
+            return;
+        }
+        Party party = bot.getParty();
+        if (party == null) {
+            if (!Party.createParty(bot, true)) {
+                return;
+            }
+            party = bot.getParty();
+        }
+        if (party == null || party.getMembers().size() >= 6) {
+            return;
+        }
+        int partyId = party.getId();
+        if (InviteCoordinator.createInvite(InviteType.PARTY, bot, partyId, player.getId())) {
+            player.sendPacket(PacketCreator.partyInvite(bot));
+            scheduleLonePartyCleanup(bot, partyId);
+        }
+    }
+
+    /** Disband the bot's just-created party if the player never joined, so the bot returns to solo. */
+    private static void scheduleLonePartyCleanup(Character bot, int partyId) {
+        BotManager.after(40_000L, () -> {
+            Party p = bot.getParty();
+            if (p != null && p.getId() == partyId && p.getMembers().size() <= 1 && bot.getClient() != null) {
+                Party.leaveParty(p, bot.getClient());
+            }
+        });
     }
 
     private static void offerParty(BotEntry initiator, Character bot, BotEntry targetEntry, Character target) {

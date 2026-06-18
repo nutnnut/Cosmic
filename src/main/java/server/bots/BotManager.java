@@ -153,6 +153,10 @@ public class BotManager {
         // may offer to party (trait-gated). Cosmetic chatter + real server-side party; never a player's
         // companion. false disables the whole behavior.
         public boolean SOCIAL_PARTY_ENABLED = true;
+        // A solo self-owned autopilot bot may also proactively invite a co-located REAL PLAYER to party
+        // (trait-gated, exp-range-aware). The player chooses via the normal invite UI — never auto-joined.
+        // Gated separately since unsolicited invites are more intrusive than bot-to-bot chatter.
+        public boolean SOCIAL_INVITE_PLAYERS = true;
 
         // Grind loot convenience: loot competes with mob navigation only when
         // lootDistSq < mobDistSq * ratio. 0.09 ≈ loot within 30% of mob distance.
