@@ -119,8 +119,12 @@ final class BotWorldGraph {
             // --- Cross-continent scripted-warp rides: same instant "stand near NPC, pay, land at
             // portal 0" shape as a cab (so taxiRide drives them unchanged), connecting continents the
             // portal graph can't. Verified against scripts/npc/<npc>.js. ---
-            // Maple Island exit: Southperry dock NPC 22000 sails to Lith Harbor (22000.js: gainMeso(-150), warp(104000000,0)).
+            // Maple Island exit: Shanks (NPC 22000) sails to Lith Harbor (22000.js: gainMeso(-150),
+            // warp(104000000,0)). He stands on BOTH Southperry maps - the classic 60000 and the post-Big-
+            // Bang 2000000 that the Adventurer Training Center (1010000 -> 1020000 -> 2000000) leads to -
+            // so both need the edge or training-center bots reach Southperry but find no boat out.
             new TaxiEdge(60000, 22000, 104000000, 150),
+            new TaxiEdge(2000000, 22000, 104000000, 150),
             // Dolphin NPC 2060009: Herb Town <-> Aqua Road (2060009.js: 10000 meso each way).
             new TaxiEdge(251000100, 2060009, 230000000, 10000),
             new TaxiEdge(230000000, 2060009, 251000100, 10000),

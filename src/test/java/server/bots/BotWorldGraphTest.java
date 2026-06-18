@@ -136,6 +136,10 @@ class BotWorldGraphTest {
         assertNotNull(maple, "Maple Island exit boat edge must exist");
         assertEquals(22000, maple.npcId());
         assertEquals(150, maple.fare());
+        // Post-Big-Bang Southperry 2000000 (reachable from the Adventurer Training Center) also has Shanks.
+        BotWorldGraph.TaxiEdge maple2 = BotWorldGraph.findTaxiEdge(2000000, 104000000);
+        assertNotNull(maple2, "post-BB Southperry 2000000 must also have the boat edge");
+        assertEquals(22000, maple2.npcId());
         // Dolphin both directions: Herb Town 251000100 <-> Aqua Road 230000000.
         assertNotNull(BotWorldGraph.findTaxiEdge(251000100, 230000000));
         BotWorldGraph.TaxiEdge back = BotWorldGraph.findTaxiEdge(230000000, 251000100);
