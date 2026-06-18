@@ -159,6 +159,27 @@ public record BotPersonality(
         return 0.25 - 0.15 * riskTolerance; // risk 0 -> 0.25 (modest), risk 1 -> 0.10 (strong lift)
     }
 
+    // ---- party sociability (P4: ad-hoc party-up) ----
+    private static final double PARTY_INITIATE_BASE = 0.12;
+    private static final double PARTY_MISTAKE_BASE = 0.10;
+
+    /** Per social-tick chance the bot proactively offers/asks to party when solo and co-located with a
+     *  candidate. Social AND talkative bots initiate most; a near-silent bot rarely speaks up, an
+     *  antisocial one never wants company. */
+    public double partyInitiateChance() {
+        return PARTY_INITIATE_BASE * sociability * (0.3 + 0.7 * chattiness);
+    }
+
+    /** Willingness to accept a party offer/invite (the level-gap exp-range check is applied separately). */
+    public double acceptChance() {
+        return sociability;
+    }
+
+    /** Humanlike chance to offer/ask DESPITE an out-of-exp-range level gap (bolder bots slip up more). */
+    public double partyMistakeChance() {
+        return PARTY_MISTAKE_BASE * (0.5 + riskTolerance);
+    }
+
     // ---- serialization (flat key=value; tolerant on read) ----
 
     public String serialize() {
