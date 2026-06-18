@@ -125,7 +125,10 @@ final class BotWorldGraph {
             new TaxiEdge(251000100, 2060009, 230000000, 10000),
             new TaxiEdge(230000000, 2060009, 251000100, 10000),
             // Pason 1002002 on Lith Harbor sails to Florina Beach (1002002.js: gainMeso(-1500), warp(110000000)).
-            new TaxiEdge(104000000, 1002002, 110000000, 1500));
+            new TaxiEdge(104000000, 1002002, 110000000, 1500),
+            // Crane 2090005: Mu Lung Temple <-> Herb Town, instant warp + 500 meso (2090005.js cost[2]).
+            new TaxiEdge(250000100, 2090005, 251000000, 500),
+            new TaxiEdge(251000000, 2090005, 250000100, 500));
 
     private static final Map<Integer, List<TaxiEdge>> TAXI_BY_MAP = buildTaxiByMap();
 
