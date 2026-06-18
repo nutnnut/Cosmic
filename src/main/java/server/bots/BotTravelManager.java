@@ -271,7 +271,12 @@ final class BotTravelManager {
     static boolean walkToPortalAndEnter(BotEntry entry, Character bot, Portal portal, long now, boolean runAiTick) {
         Point portalPos = portal.getPosition();
         Point botPos = bot.getPosition();
-        if (!entry.inAir && !entry.climbing
+        // A portal at the top of (or on) a rope is only reachable by climbing - the bot arrives in the
+        // climbing state, so blocking entry while climbing strands it hanging at the portal forever
+        // (e.g. Henesys Hunting Ground I->II->III). Allow entry while climbing; still block mid-jump/fall
+        // (inAir) so the bot doesn't trigger a portal it's only passing through. The X/Y tolerance below
+        // ensures this only fires once actually at the portal.
+        if (!entry.inAir
                 && Math.abs(botPos.x - portalPos.x) <= ENTER_X_TOLERANCE
                 && Math.abs(botPos.y - portalPos.y) <= ENTER_Y_TOLERANCE) {
             if (now < entry.portalUseCooldownUntilMs) {
