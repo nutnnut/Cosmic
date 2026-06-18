@@ -146,6 +146,11 @@ public class BotManager {
         // still win - the penalty deters, it doesn't forbid.
         public double TRAVEL_PENALTY_FLOOR = 0.5;
 
+        // Ad-hoc party-up (BotSocialManager): a solo self-owned autopilot bot, co-located with another,
+        // may offer to party (trait-gated). Cosmetic chatter + real server-side party; never a player's
+        // companion. false disables the whole behavior.
+        public boolean SOCIAL_PARTY_ENABLED = true;
+
         // Grind loot convenience: loot competes with mob navigation only when
         // lootDistSq < mobDistSq * ratio. 0.09 ≈ loot within 30% of mob distance.
         public float GRIND_LOOT_CONVENIENCE_RATIO = 0.09f;
@@ -455,29 +460,40 @@ public class BotManager {
     }
 
     public void joinBotToOwnerParty(Character owner, Character bot) {
-        net.server.world.Party botParty = bot.getParty();
-        if (botParty != null) {
-            net.server.world.Party ownerParty = owner.getParty();
-            if (ownerParty != null && botParty.getId() == ownerParty.getId()) {
-                // Ensure the party member entry is marked online with a live character reference
-                PartyCharacter pchar = new PartyCharacter(bot);
-                pchar.setChannel(bot.getClient().getChannel());
-                pchar.setMapId(bot.getMapId());
-                bot.getWorldServer().updateParty(ownerParty.getId(), PartyOperation.LOG_ONOFF, pchar);
-                bot.updatePartyMemberHP();
+        partyUp(owner, bot);
+    }
+
+    /**
+     * Put {@code joiner} into {@code leader}'s party (creating it if leader has none), leaving any
+     * other party first. The SSOT for ALL bot party formation — owner-join, ad-hoc social party-up,
+     * crews. Server-side (no invite packet). Deliberately does NOT touch ownership: a party-mate gains
+     * no owner privileges (commands, loot/supply priority, trade trust all stay gated on the
+     * registered owner).
+     */
+    public void partyUp(Character leader, Character joiner) {
+        net.server.world.Party joinerParty = joiner.getParty();
+        if (joinerParty != null) {
+            net.server.world.Party leaderParty = leader.getParty();
+            if (leaderParty != null && joinerParty.getId() == leaderParty.getId()) {
+                // Already in the same party — re-mark the member online with a live character ref.
+                PartyCharacter pchar = new PartyCharacter(joiner);
+                pchar.setChannel(joiner.getClient().getChannel());
+                pchar.setMapId(joiner.getMapId());
+                joiner.getWorldServer().updateParty(leaderParty.getId(), PartyOperation.LOG_ONOFF, pchar);
+                joiner.updatePartyMemberHP();
                 return;
             }
-            // Bot is in a different party — leave it first
-            Party.leaveParty(botParty, bot.getClient());
+            // joiner is in a different party — leave it first
+            Party.leaveParty(joinerParty, joiner.getClient());
         }
-        net.server.world.Party ownerParty = owner.getParty();
-        if (ownerParty == null) {
-            if (!Party.createParty(owner, true)) return;
-            ownerParty = owner.getParty();
+        net.server.world.Party leaderParty = leader.getParty();
+        if (leaderParty == null) {
+            if (!Party.createParty(leader, true)) return;
+            leaderParty = leader.getParty();
         }
-        if (ownerParty == null) return;
-        if (Party.joinParty(bot, ownerParty.getId(), true)) {
-            bot.updatePartyMemberHP();
+        if (leaderParty == null) return;
+        if (Party.joinParty(joiner, leaderParty.getId(), true)) {
+            joiner.updatePartyMemberHP();
         }
     }
 
@@ -4284,6 +4300,10 @@ public class BotManager {
         // (climbed/walked onto it, or got knocked into a pit) - runs in every mode, intent-independent.
         BotTravelManager.tickCollisionPortal(entry, bot);
         if (perf) BotPerformanceMonitor.record("common-collision-portal", System.nanoTime() - t);
+        if (perf) t = System.nanoTime();
+        // Ad-hoc party-up: a solo autopilot bot may offer to party a co-located solo bot (self-gated cooldown).
+        BotSocialManager.tick(entry, bot);
+        if (perf) BotPerformanceMonitor.record("common-social", System.nanoTime() - t);
         if (perf) t = System.nanoTime();
         BotGachaponManager.tickScan(entry, bot);
         if (perf) BotPerformanceMonitor.record("common-gacha-scan", System.nanoTime() - t);

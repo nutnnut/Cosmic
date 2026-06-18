@@ -268,6 +268,9 @@ public class BotEntry {
     long breakUntilMs = 0L;
     long nextBreakRollAtMs = 0L;
     java.awt.Point breakIdleAnchor = null;
+    // Ad-hoc party-up (BotSocialManager): throttles how often a solo bot considers offering to party,
+    // and stops a bot just offered-to from immediately re-offering.
+    long nextSocialAtMs = 0L;
     // A scheduled logout is mid-flight: the bot said goodbye + left its party and will disconnect after
     // a short delay. Guards against the scheduler re-triggering the goodbye sequence on the next sweep.
     volatile boolean loggingOut = false;
