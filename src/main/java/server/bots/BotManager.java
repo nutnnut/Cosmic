@@ -1909,29 +1909,32 @@ public class BotManager {
         if (owner == null) {
             return null;
         }
-        // Self-owned (@botme) bot: anchoring to itself makes the formation offset oscillate the
-        // bot around its own position. No anchor — the commander check above still wins when set.
-        if (owner == entry.bot) {
-            return null;
-        }
 
+        // Explicit follow target (transit-follow leader, @follow <name>): resolve it among the
+        // live game party and sibling bots FIRST, before the self-owned guard below. A self-owned
+        // (@botparty) bot has owner == entry.bot, so the guard would otherwise return null and
+        // strand it with no anchor the instant the leader steps through a portal. Resolving the
+        // leader here lets syncFollowMap legally walk/route the bot across maps to catch up.
         int targetId = entry.followTargetId;
-        if (targetId <= 0 || targetId == owner.getId() || targetId == entry.bot.getId()) {
-            return owner;
-        }
-
-        if (owner.getParty() != null) {
-            for (Character member : owner.getPartyMembersOnline()) {
-                if (member != null && member.getId() == targetId && member.isLoggedinWorld()) {
-                    return member;
+        if (targetId > 0 && targetId != entry.bot.getId() && targetId != owner.getId()) {
+            if (owner.getParty() != null) {
+                for (Character member : owner.getPartyMembersOnline()) {
+                    if (member != null && member.getId() == targetId && member.isLoggedinWorld()) {
+                        return member;
+                    }
+                }
+            }
+            for (BotEntry sibling : getBotEntries(owner.getId())) {
+                if (sibling.bot != null && sibling.bot.getId() == targetId && sibling.bot.isLoggedinWorld()) {
+                    return sibling.bot;
                 }
             }
         }
 
-        for (BotEntry sibling : getBotEntries(owner.getId())) {
-            if (sibling.bot != null && sibling.bot.getId() == targetId && sibling.bot.isLoggedinWorld()) {
-                return sibling.bot;
-            }
+        // Self-owned (@botme) bot: anchoring to itself makes the formation offset oscillate the
+        // bot around its own position. No anchor — the commander check above still wins when set.
+        if (owner == entry.bot) {
+            return null;
         }
 
         return owner;
