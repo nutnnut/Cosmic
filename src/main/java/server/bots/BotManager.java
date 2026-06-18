@@ -128,10 +128,10 @@ public class BotManager {
         public int POPULATION_CHANNEL = 1;
         // Target ONLINE managed-bot count by server-local hour (0-23): quiet overnight, busy evening.
         public int[] POPULATION_CURVE = {
-                3, 2, 2, 1, 1, 1, 2, 4, 6, 7, 8, 9,        // 00-11
-                10, 10, 9, 9, 10, 12, 14, 15, 14, 11, 7, 4 // 12-23
+                6, 5, 5, 4, 4, 3, 4, 5, 7, 9, 10, 12,        // 00-11
+                15, 15, 14, 14, 15, 14, 15, 16, 15, 12, 10, 7 // 12-23
         };
-        public int POPULATION_NOISE = 1;                   // +/- jitter on the hourly target
+        public int POPULATION_NOISE = 2;                   // +/- jitter on the hourly target
         public int MANAGED_POOL_MAX = 60;                  // hard cap on auto-generated managed bots
         public int HARDCORE_CAP = 5;                       // max bots that never retire (the veterans)
         public boolean POPULATION_AUTOGEN = true;          // generate fresh bots when the pool is short
