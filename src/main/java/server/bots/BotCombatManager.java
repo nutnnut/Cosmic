@@ -2384,27 +2384,28 @@ class BotCombatManager {
     }
 
     private static long grindRegionOccupancyPenalty(GrindGraphContext context, Character bot, int targetRegionId) {
-        if (!context.available() || context.entry().owner == null || bot == null || targetRegionId < 0) {
+        if (!context.available() || bot == null || targetRegionId < 0 || context.map() == null) {
             return 0L;
         }
 
-        int occupiedCount = 0;
-        for (BotEntry sibling : BotManager.getInstance().getBotEntries(context.entry().owner.getId())) {
-            if (sibling == context.entry() || sibling == null || !sibling.grinding || sibling.bot == null) {
+        // Weighted region crowding over EVERY live character in the target region, regardless of
+        // source: same-party occupants (owner, owned/managed/crew/dynamic-party bots all share a
+        // real game Party) cost weight 1 so teammates lightly spread out; everyone else (other
+        // players, foreign bots) costs weight 2 so the bot steers clear and doesn't kill-steal.
+        int myPartyId = bot.getPartyId();
+        long weighted = 0L;
+        for (Character other : context.map().getCharacters()) {
+            if (other == null || other == bot || other.getHp() <= 0 || other.getPosition() == null) {
                 continue;
             }
-            if (sibling.bot.getMap() != context.map() || sibling.bot.getHp() <= 0 || sibling.bot.getPosition() == null) {
+            if (context.graph().findRegionId(context.map(), other.getPosition()) != targetRegionId) {
                 continue;
             }
-
-            int occupiedRegionId = BotNavigationManager.resolveCurrentRegionId(
-                    context.graph(), sibling, context.map(), sibling.bot.getPosition());
-            if (occupiedRegionId == targetRegionId) {
-                occupiedCount++;
-            }
+            boolean sameParty = myPartyId > 0 && other.getPartyId() == myPartyId;
+            weighted += sameParty ? 1L : 2L;
         }
 
-        long penalty = (long) Math.max(0, occupiedCount) * Math.max(0, cfg.GRIND_REGION_OCCUPANCY_PENALTY);
+        long penalty = Math.max(0L, weighted) * Math.max(0, cfg.GRIND_REGION_OCCUPANCY_PENALTY);
         return Math.min(Math.max(0, cfg.GRIND_REGION_OCCUPANCY_PENALTY_CAP), penalty);
     }
 

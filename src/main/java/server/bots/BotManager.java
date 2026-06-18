@@ -5144,16 +5144,31 @@ public class BotManager {
      * prefix routing in handleChat because the whisper target already identifies
      * the bot uniquely. No-op if target isn't a bot owned by the speaker.
      */
-    public void handleWhisperToBot(Character owner, Character target, String message) {
-        if (owner == null || target == null || message == null) {
+    public void handleWhisperToBot(Character speaker, Character target, String message) {
+        if (speaker == null || target == null || message == null) {
             return;
         }
         if (!(target.getClient() instanceof BotClient)) {
             return;
         }
-        BotEntry entry = getBotEntry(owner.getId(), target.getId());
+        // Resolve the bot's entry under its ACTIVE owner (a self-owned bot owns itself), so an admin
+        // can whisper-command a foreign/self-owned bot — not just the speaker's own bots.
+        Character botOwner = getActiveOwnerByBotCharId(target.getId());
+        if (botOwner == null) {
+            return;
+        }
+        BotEntry entry = getBotEntry(botOwner.getId(), target.getId());
         if (entry == null) {
             return;
+        }
+        // Whisperer isn't the real owner: only a gm6 admin may drive a foreign bot. Bind them as the
+        // debug commander so the bot's WHISPER reply goes back to the command giver (commanderOrOwner)
+        // rather than the owner — which for a self-owned bot is the bot itself, dropping the reply.
+        if (speaker.getId() != botOwner.getId()) {
+            if (speaker.gmLevel() < 6) {
+                return;
+            }
+            bindDebugCommander(entry, speaker);
         }
         entry.replyChannel = ReplyChannel.WHISPER;
         BotChatManager.handleChat(entry, message);
