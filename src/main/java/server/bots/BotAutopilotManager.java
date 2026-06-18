@@ -39,8 +39,13 @@ final class BotAutopilotManager {
     // Throttled so a persistently-blocked bot doesn't flood the log every grind tick.
     private static final long ERRAND_BLOCK_LOG_THROTTLE_MS = 60_000L;
 
-    // Autopilot may roam farther than follow-travel: the trip is deliberate, nobody is waiting.
-    static final int MAX_TRAVEL_HOPS = 8;
+    // Autopilot may roam farther than follow-travel: the trip is deliberate, nobody is waiting. Set
+    // high enough that the long intra-region WALKS are reachable (Orbis->El Nath ~16, Ludibrium->Omega
+    // Sector ~26 portal hops) and the TRAVEL-TIME PENALTY (BotTravelCost: decays to a 0.25 floor over a
+    // 1h horizon, x4 for low levels) is the judge of whether a far map is worth it - not a hard hop cap.
+    // Trade-off: a larger reachable set means more candidate maps profiled per decision, but that runs
+    // on the async DECIDE_POOL with warmed caches. Tune down if decisions get heavy.
+    static final int MAX_TRAVEL_HOPS = 30;
     private static final long DECISION_INTERVAL_MS = 12 * 60_000L;
     private static final long DECISION_JITTER_MS = 6 * 60_000L; // de-syncs many bots' re-decides
     private static final long ERRAND_COOLDOWN_MS = 10 * 60_000L; // min spacing between resupply trips
