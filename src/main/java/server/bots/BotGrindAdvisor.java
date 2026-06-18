@@ -279,24 +279,48 @@ final class BotGrindAdvisor {
         Map<Short, Double> wornScoreBySlot = new HashMap<>();
         Map<Integer, double[]> rollScoreCache = new HashMap<>(); // per pass: same item drops from many mobs
         Map<Integer, Double> scrollGainCache = new HashMap<>();
-        Map<Integer, Optional<MobProfile>> profiles = new HashMap<>();
+        Map<Integer, MobProfile> profiles = new HashMap<>();
 
         long tBuild = BotPerformanceMonitor.start();
-        List<MobCandidate> candidates = new ArrayList<>();
+        // Pass 1: profile every grindable mob on the allowed maps (exp + kill times + avoid, no gear/DB).
+        List<BotSpawnIndex.MapSpawns> maps = new ArrayList<>();
         for (BotSpawnIndex.MapSpawns map : index.byMap().values()) {
             if (map.town() || map.mapId() >= INSTANCED_MAPID_FLOOR
                     || !mapAllowed.test(map.mapId())) {
                 continue;
             }
+            for (int mobId : map.mobCounts().keySet()) {
+                if (!profiles.containsKey(mobId)) {
+                    profiles.put(mobId, profileFor(entry, bot, mi, mobId)); // null allowed (ungrindable)
+                }
+            }
+            maps.add(map);
+        }
+        // The aspirational mob (best accuracy-blind exp/sec) anchors gear's accuracy value AND, cached on
+        // the entry, the on-thread AP DEX floor — so both aim at the map the bot wants, not the easy map
+        // it's stuck on. Computed here, in the off-thread grind pass, so the AP path never pays the scan.
+        MobProfile asp = pickAspirational(profiles.values());
+        cacheAspirational(entry, asp);
+        int botAcc = server.combat.CombatFormulaProvider.getInstance().getTotalAccuracy(bot);
+        double baseHit = aspBaseHit(bot, asp, botAcc);
+
+        // Pass 2: attach gear prospects (DB-backed, keyed to the aspirational mob) and blend per map.
+        Map<Integer, List<GearProspect>> gearByMob = new HashMap<>();
+        List<MobCandidate> candidates = new ArrayList<>();
+        for (BotSpawnIndex.MapSpawns map : maps) {
             Map<MobProfile, Integer> pointsByMob = new HashMap<>();
             for (Map.Entry<Integer, Integer> e : map.mobCounts().entrySet()) {
-                MobProfile p = profiles.computeIfAbsent(e.getKey(),
-                        id -> Optional.ofNullable(profileFor(entry, bot, ii, mi, id, true,
-                                wornScoreBySlot, rollScoreCache, scrollGainCache, totalWornOffense)))
-                        .orElse(null);
-                if (p != null && p.exp() > 0) { // 0-exp props aren't grinding
-                    pointsByMob.put(p, e.getValue());
+                MobProfile p = profiles.get(e.getKey());
+                if (p == null || p.exp() <= 0) { // 0-exp props aren't grinding
+                    continue;
                 }
+                long tGear = BotPerformanceMonitor.start();
+                List<GearProspect> gear = gearByMob.computeIfAbsent(e.getKey(), id ->
+                        gearProspects(bot, ii, id, wornScoreBySlot, rollScoreCache, scrollGainCache,
+                                totalWornOffense, asp, baseHit, botAcc));
+                BotPerformanceMonitor.recordSince("grind.gear", tGear);
+                pointsByMob.put(new MobProfile(p.mobId(), p.mobName(), p.level(), p.avoid(), p.exp(),
+                        p.killSeconds(), p.rawKillSeconds(), gear), e.getValue());
             }
             if (totalPoints(pointsByMob) < MIN_SPAWN_POINTS) {
                 continue;
@@ -310,10 +334,88 @@ final class BotGrindAdvisor {
         return candidates;
     }
 
+    /** Cache the aspirational mob's (level, avoid) on the entry for the on-thread AP DEX floor to read
+     *  ({@link BotBuildManager#accuracyDexFloor}). avoid &lt; 0 = unset, so the floor falls back to its
+     *  current-map sampling until the first grind pass runs. */
+    private static void cacheAspirational(BotEntry entry, MobProfile asp) {
+        if (entry == null) {
+            return;
+        }
+        if (asp == null) {
+            entry.aspirationalMobAvoid = -1;
+            return;
+        }
+        entry.aspirationalMobLevel = asp.level();
+        entry.aspirationalMobAvoid = asp.avoid();
+    }
+
+    /** The bot's current physical hit chance on the aspirational mob — the denominator of
+     *  {@link #accuracyHitFactor}. 1.0 (accuracy never matters) for mages or when there's no
+     *  aspirational mob. */
+    private static double aspBaseHit(Character bot, MobProfile asp, int botAcc) {
+        if (asp == null || bot.getJobStyle() == client.Job.MAGICIAN) {
+            return 1.0;
+        }
+        return server.combat.CombatFormulaProvider.getInstance()
+                .calculatePhysicalMobHitChance(botAcc, bot.getLevel(), asp.level(), asp.avoid());
+    }
+
+    /** Largest accuracy-driven multiplier any single gear swap may earn — names the ceiling on the
+     *  "accuracy is king when you can't hit" boost so one trivial-accuracy piece can't run away with
+     *  the shortlist when current hit is near the formula floor. */
+    private static final double MAX_ACCURACY_HIT_FACTOR = 10.0;
+
+    /**
+     * How much more often acquiring {@code itemId} would let the bot hit the aspirational grind mob,
+     * relative to its current hit there: {@code hit(acc with this item) / hit(acc now)}. This is the
+     * accuracy half of the effective-DPS view of gear — a Fish Spear's +ACC leaps up a low-DEX
+     * warrior's farm shortlist precisely because it multiplies hit rate where the bot is starved, and
+     * collapses to ~1.0 once the bot already lands hits. Scales with accuracy ADDED (incACC + the
+     * accuracy from the item's DEX/LUK over the worn piece), so a tiny-accuracy item earns a tiny
+     * boost. 1.0 for mages (physical accuracy is irrelevant to magic) and when there's no aspirational
+     * mob. Uses catalog (mean) stats — per-roll DEX variance on accuracy is second-order.
+     */
+    private static double accuracyHitFactor(Character bot, ItemInformationProvider ii, int itemId,
+                                            MobProfile asp, double baseHit, int botAcc) {
+        if (asp == null || baseHit <= 0 || bot.getJobStyle() == client.Job.MAGICIAN) {
+            return 1.0;
+        }
+        Short slot = BotScrollManager.primarySlot(ii, itemId);
+        if (slot == null) {
+            return 1.0;
+        }
+        Equip cand;
+        try {
+            if (!(ii.getEquipById(itemId) instanceof Equip e)) {
+                return 1.0;
+            }
+            cand = e;
+        } catch (RuntimeException ex) {
+            return 1.0;
+        }
+        Equip worn = BotScrollManager.wornInSlot(bot, ii, slot);
+        double candAcc = accContribution(cand);
+        double wornAcc = worn == null ? 0.0 : accContribution(worn);
+        int newAcc = (int) Math.max(0, Math.round(botAcc - wornAcc + candAcc));
+        double newHit = server.combat.CombatFormulaProvider.getInstance()
+                .calculatePhysicalMobHitChance(newAcc, bot.getLevel(), asp.level(), asp.avoid());
+        return Math.min(MAX_ACCURACY_HIT_FACTOR, newHit / baseHit);
+    }
+
+    /** An equip's contribution to physical accuracy = flat incACC + the accuracy its DEX/LUK confer
+     *  (CombatFormulaProvider's 0.8/DEX, 0.5/LUK SSOT). */
+    private static double accContribution(Equip e) {
+        return e.getAcc() + 0.8 * e.getDex() + 0.5 * e.getLuk();
+    }
+
     /** A mob's bot-specific grind numbers, computed once per pass. Exp is rate-multiplied;
-     *  prospect chances are per kill OF THIS MOB (the map blend dilutes them by spawn share). */
-    record MobProfile(int mobId, String mobName, int level, int exp, double killSeconds,
-                      List<GearProspect> prospects) {}
+     *  prospect chances are per kill OF THIS MOB (the map blend dilutes them by spawn share).
+     *  {@code killSeconds} is accuracy-discounted (what the planner ranks on); {@code rawKillSeconds}
+     *  is accuracy-blind (what the aspirational pick ranks on — "if I always hit, where's the best
+     *  exp?"). {@code avoid} is the mob's avoidability, carried so the AP accuracy floor can aim at
+     *  this mob without re-loading it. */
+    record MobProfile(int mobId, String mobName, int level, int avoid, int exp, double killSeconds,
+                      double rawKillSeconds, List<GearProspect> prospects) {}
 
     /**
      * The bot's blended grind exp-per-minute on the map it is currently standing on — the
@@ -333,12 +435,11 @@ final class BotGrindAdvisor {
         if (map == null || map.town() || mapId >= INSTANCED_MAPID_FLOOR) {
             return 0.0;
         }
-        ItemInformationProvider ii = ItemInformationProvider.getInstance();
         MonsterInformationProvider mi = MonsterInformationProvider.getInstance();
         Map<MobProfile, Integer> pointsByMob = new HashMap<>();
         for (Map.Entry<Integer, Integer> e : map.mobCounts().entrySet()) {
-            // withProspects=false: no gear-drop valuation, no DB — just exp + kill time.
-            MobProfile p = profileFor(entry, bot, ii, mi, e.getKey(), false, null, null, null, 0.0);
+            // profileFor never values gear (DB-free) — just exp + kill time, safe on the tick thread.
+            MobProfile p = profileFor(entry, bot, mi, e.getKey());
             if (p != null && p.exp() > 0) {
                 pointsByMob.put(p, e.getValue());
             }
@@ -376,13 +477,11 @@ final class BotGrindAdvisor {
     }
 
     /** Null = not grindable for this bot: boss/friendly, unresolvable, or the bot can't
-     *  meaningfully damage it (such mobs don't dilute a map — the bot won't engage them). */
-    private static MobProfile profileFor(BotEntry entry, Character bot, ItemInformationProvider ii,
-                                         MonsterInformationProvider mi, int mobId, boolean withProspects,
-                                         Map<Short, Double> wornScoreBySlot,
-                                         Map<Integer, double[]> rollScoreCache,
-                                         Map<Integer, Double> scrollGainCache,
-                                         double totalWornOffense) {
+     *  meaningfully damage it (such mobs don't dilute a map — the bot won't engage them). Gear
+     *  prospects are attached separately ({@link #gearProspects}) so they can be keyed to the
+     *  aspirational mob, which isn't known until every mob has been profiled. */
+    private static MobProfile profileFor(BotEntry entry, Character bot,
+                                         MonsterInformationProvider mi, int mobId) {
         Monster mob;
         try {
             mob = LifeFactory.getMonster(mobId);
@@ -397,19 +496,35 @@ final class BotGrindAdvisor {
             return null;
         }
         long tKill = BotPerformanceMonitor.start();
-        double killSeconds = killSeconds(entry, bot, mob);
+        double[] kp = killProfile(entry, bot, mob);
         BotPerformanceMonitor.recordSince("grind.kill", tKill);
-        if (killSeconds <= 0) {
+        if (kp == null || kp[0] <= 0) {
             return null;
         }
-        long tGear = BotPerformanceMonitor.start();
-        List<GearProspect> gear = withProspects
-                ? gearProspects(bot, ii, mobId, wornScoreBySlot, rollScoreCache, scrollGainCache,
-                        totalWornOffense)
-                : List.of();
-        BotPerformanceMonitor.recordSince("grind.gear", tGear);
-        return new MobProfile(mobId, mobName(mi, mobId), stats.getLevel(),
-                stats.getExp() * bot.getExpRate(), killSeconds, gear);
+        return new MobProfile(mobId, mobName(mi, mobId), stats.getLevel(), Math.max(0, mob.getAvoidability()),
+                stats.getExp() * bot.getExpRate(), kp[0], kp[1], List.of());
+    }
+
+    /** The mob with the best ACCURACY-BLIND exp/sec among everything profiled this pass — the map the
+     *  bot would grind if it never missed. Damage-limited raw kill time self-bounds this to a
+     *  level-appropriate mob (a too-tough mob has too much HP to be the raw-exp/hr leader), so no
+     *  mob-table noise. Drives the accuracy value of gear ({@link #accuracyHitFactor}) and the AP DEX
+     *  floor: both ask "how well would this help me hit the map I actually want?". Null when nothing
+     *  is grindable. */
+    private static MobProfile pickAspirational(java.util.Collection<MobProfile> profiles) {
+        MobProfile best = null;
+        double bestRate = 0.0;
+        for (MobProfile p : profiles) {
+            if (p == null || p.exp() <= 0 || p.rawKillSeconds() <= 0) {
+                continue;
+            }
+            double rate = p.exp() / p.rawKillSeconds();
+            if (rate > bestRate) {
+                bestRate = rate;
+                best = p;
+            }
+        }
+        return best;
     }
 
     /**
@@ -510,8 +625,7 @@ final class BotGrindAdvisor {
             Map<MobProfile, Integer> pointsByMob = new HashMap<>();
             for (Map.Entry<Integer, Integer> e : map.mobCounts().entrySet()) {
                 MobProfile p = profiles.computeIfAbsent(e.getKey(),
-                        id -> Optional.ofNullable(profileFor(entry, bot, ii, mi, id, false,
-                                null, null, null, 0.0)))
+                        id -> Optional.ofNullable(profileFor(entry, bot, mi, id)))
                         .orElse(null);
                 // Grindable mobs dilute; 0-exp droppers (prop-like sources) still count.
                 if (p != null && (p.exp() > 0 || droppers.containsKey(p.mobId()))) {
@@ -577,8 +691,14 @@ final class BotGrindAdvisor {
         return droppers;
     }
 
-    /** Time to kill one mob for THIS bot — same shape as the scroll farming-cost producer model. */
-    private static double killSeconds(BotEntry entry, Character bot, Monster mob) {
+    /** Kill numbers for THIS bot vs one mob: {@code [discountedKillSeconds, rawKillSeconds]} (same
+     *  shape as the scroll farming-cost producer model), or {@code null} when the bot can't damage it.
+     *  Discounted factors accuracy (a missed swing deals no damage, so a high-avoid mob the bot can
+     *  barely hit takes proportionally longer) — this keeps the planner on maps it can actually land
+     *  hits on and exp/hr honest. Raw drops the hit discount, so the aspirational pick sees the map the
+     *  bot WOULD grind if accuracy were free. Magic attackers use magic accuracy (INT/LUK), so a mage
+     *  isn't penalized on its low DEX. */
+    private static double[] killProfile(BotEntry entry, Character bot, Monster mob) {
         double perAttack = BotCombatManager.estimateBestSkillHitDamage(entry, bot, mob);
         if (perAttack <= 0.0) {
             int mobWdef = mob.getStats() != null ? mob.getStats().getPDDamage() : 0;
@@ -586,17 +706,15 @@ final class BotGrindAdvisor {
                     bot.calculateMaxBaseDamage(bot.getTotalWatk()), mobWdef);
         }
         if (perAttack <= 0.0) {
-            return -1;
+            return null;
         }
         double dps = perAttack / ATTACK_CYCLE_SECONDS;
-        // Factor accuracy: a missed swing deals no damage, so a high-avoid mob the bot can barely hit
-        // takes proportionally longer to kill. This makes the planner prefer maps the bot can actually
-        // land hits on (a low-DEX warrior steers away from high-avoid mobs) and keeps exp/hr honest.
-        // Magic attackers use magic accuracy (INT/LUK), so don't penalize a mage on its low DEX.
+        double hp = Math.max(1, mob.getMaxHp());
+        double rawKill = Math.max(ATTACK_CYCLE_SECONDS, hp / dps);
         boolean magic = bot.getJobStyle() == client.Job.MAGICIAN;
         double hitChance = server.combat.CombatFormulaProvider.getInstance().calculateMobHitChance(bot, mob, magic);
-        double effectiveDps = dps * Math.max(0.01, hitChance);
-        return Math.max(ATTACK_CYCLE_SECONDS, Math.max(1, mob.getMaxHp()) / effectiveDps);
+        double killSeconds = Math.max(ATTACK_CYCLE_SECONDS, hp / (dps * Math.max(0.01, hitChance)));
+        return new double[]{killSeconds, rawKill};
     }
 
     /** Gear-progression drops of this mob: wearable equips valued as expected improvement over
@@ -605,7 +723,8 @@ final class BotGrindAdvisor {
                                                     Map<Short, Double> wornScoreBySlot,
                                                     Map<Integer, double[]> rollScoreCache,
                                                     Map<Integer, Double> scrollGainCache,
-                                                    double totalWornOffense) {
+                                                    double totalWornOffense,
+                                                    MobProfile asp, double baseHit, int botAcc) {
         List<int[]> drops = gearDropsByMob().get(mobId);
         if (drops == null) {
             return List.of();
@@ -615,7 +734,7 @@ final class BotGrindAdvisor {
             int itemId = drop[0];
             double gain = itemId / 10000 == BotScrollManager.SCROLL_ITEM_PREFIX
                     ? scrollGainCache.computeIfAbsent(itemId, id -> scrollGains.gain(bot, id))
-                    : equipGain(bot, ii, itemId, wornScoreBySlot, rollScoreCache);
+                    : equipGain(bot, ii, itemId, wornScoreBySlot, rollScoreCache, asp, baseHit, botAcc);
             if (gain < MIN_GEAR_GAIN_SCORE) {
                 continue;
             }
@@ -633,10 +752,14 @@ final class BotGrindAdvisor {
      *  memoized per item id across the mob's drop list. */
     private static double equipGain(Character bot, ItemInformationProvider ii, int itemId,
                                     Map<Short, Double> wornScoreBySlot,
-                                    Map<Integer, double[]> rollScoreCache) {
+                                    Map<Integer, double[]> rollScoreCache,
+                                    MobProfile asp, double baseHit, int botAcc) {
+        // The accuracy half of effective DPS: scale the rolled offense by how much better this item
+        // lets the bot hit the aspirational mob vs now (>1 when it adds accuracy the bot needs).
+        double hitFactor = accuracyHitFactor(bot, ii, itemId, asp, baseHit, botAcc);
         return expectedAcquireGain(bot, ii, itemId,
                 (b, id, n) -> rollScoreCache.computeIfAbsent(id, k -> rollScores.sample(b, k, n)),
-                ROLL_SAMPLES, wornScoreBySlot);
+                ROLL_SAMPLES, wornScoreBySlot, hitFactor);
     }
 
     /**
@@ -652,6 +775,16 @@ final class BotGrindAdvisor {
     static double expectedAcquireGain(Character bot, ItemInformationProvider ii, int itemId,
                                       RollScoreSampler sampler, int sampleCount,
                                       Map<Short, Double> ownedBarCache) {
+        return expectedAcquireGain(bot, ii, itemId, sampler, sampleCount, ownedBarCache, 1.0);
+    }
+
+    /** As above, with an extra sample multiplier folded into the level discount — the grind-drop path
+     *  passes the accuracy hit-factor ({@link #accuracyHitFactor}) here so accuracy gear is valued by
+     *  the effective DPS it unlocks; Maker/gacha pass 1.0 and are unchanged. The bar (worn) stays at
+     *  factor 1.0 because the hit-factor is already defined RELATIVE to the worn item's accuracy. */
+    static double expectedAcquireGain(Character bot, ItemInformationProvider ii, int itemId,
+                                      RollScoreSampler sampler, int sampleCount,
+                                      Map<Short, Double> ownedBarCache, double sampleScaleExtra) {
         if (ii.getEquipStats(itemId) == null) {
             return 0.0;
         }
@@ -676,7 +809,7 @@ final class BotGrindAdvisor {
         double ownedScore = gearBar(bot, ii, itemId, slot, ownedBarCache);
         BotPerformanceMonitor.recordSince("grind.ownedbar", tBar);
         double[] samples = sampler.sample(bot, itemId, sampleCount);
-        return expectedImprovement(samples, levelDiscount(levelsToGo), ownedScore);
+        return expectedImprovement(samples, levelDiscount(levelsToGo) * sampleScaleExtra, ownedScore);
     }
 
     /** Value of waiting: a thing usable in {@code levelsToGo} levels is worth a decayed
@@ -972,8 +1105,20 @@ final class BotGrindAdvisor {
         candidates.sort((a, b) -> Double.compare(
                 b.exp() * BotGrindPlanner.killsPerHour(b), a.exp() * BotGrindPlanner.killsPerHour(a)));
         StringBuilder sb = new StringBuilder();
-        sb.append(String.format("grind candidates for %s (lv %d), %d total%n%n",
+        sb.append(String.format("grind candidates for %s (lv %d), %d total%n",
                 bot.getName(), bot.getLevel(), candidates.size()));
+        // The aspirational target buildCandidates just cached drives gear's accuracy value + the AP DEX
+        // floor; show it and the bot's current hit there so a low-hit number explains why accuracy gear
+        // (e.g. a Fish Spear) is ranking high.
+        int botAcc = server.combat.CombatFormulaProvider.getInstance().getTotalAccuracy(bot);
+        if (entry != null && entry.aspirationalMobAvoid >= 0) {
+            double hit = server.combat.CombatFormulaProvider.getInstance().calculatePhysicalMobHitChance(
+                    botAcc, bot.getLevel(), entry.aspirationalMobLevel, entry.aspirationalMobAvoid);
+            sb.append(String.format("acc=%d  aspirational mob lv%d avoid%d  current hit=%.0f%%%n%n",
+                    botAcc, entry.aspirationalMobLevel, entry.aspirationalMobAvoid, hit * 100));
+        } else {
+            sb.append(String.format("acc=%d  (no aspirational mob this pass)%n%n", botAcc));
+        }
         int shown = 0;
         for (MobCandidate c : candidates) {
             if (shown++ >= 40) {

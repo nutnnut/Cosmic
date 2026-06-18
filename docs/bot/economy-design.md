@@ -531,3 +531,35 @@ Bottom line: the demand-generation half (value → decision → derived want) is
 today. The leap from "every bot has a private WTP" to "the server has one emergent clearing price" is
 the part that is still best-effort, not proven-at-scale — but even the semi-optimal version already
 prices gear and can steer farm targets without the full equilibrium.
+
+## Calibration scenario: the Fish Spear trap (accuracy as willingness-to-pay)
+
+A worked example to calibrate the future market against, because it stresses the value model where it
+matters most — *an item is most valuable to exactly the bot least able to farm it*.
+
+The live bot **"alone"** (lv18 Warrior, STR 93 / DEX 9) has ~9 accuracy and lands roughly **1% of
+swings** even on a lv15 avoid-5 mob. The **Fish Spear** (`1432008`, reqLv20, **+5 incACC**) is dropped
+by **Bubbling** (`1210103`). For this bot the Fish Spear is transformative — +5 ACC roughly takes hit
+rate from ~1% to ~40–65%, i.e. a near-10× effective-DPS swing (see the grind-advisor accuracy
+hit-factor, capped at `MAX_ACCURACY_HIT_FACTOR`). Yet it is **very hard for this bot to self-farm**:
+to drop from Bubbling it must first grind Bubbling, which it can barely hit. High value × low
+self-farmability = the canonical "should buy, not grind" case.
+
+This is the scenario to calibrate the market on:
+
+- **Willingness-to-pay must reflect the accuracy unlock, not the item's raw stat line.** A WATK-blind
+  view sees a +42 PAD spear ≈ the +43 PAD polearm it already wears and prices it near zero. The bot's
+  *true* WTP is the discounted future exp/meso the accuracy unlocks — it should be willing to pay a
+  lot. (The grind advisor already values the *farm* desirability this way via the hit-factor; the
+  market's `buy` WTP should reuse the same effective-DPS delta as SSOT, not re-derive it.)
+- **Supply price reflects self-farm difficulty.** A seller bot that *can* hit Bubbling (higher DEX /
+  accuracy gear) farms Fish Spears cheaply; the buyer who can't would pay many times its farm cost.
+  That gap is the trade surplus — exactly the liquidity the market exists to capture.
+- **Calibration target:** in a healthy market "alone" should *buy* a Fish Spear (or AP-reset toward
+  DEX, or have a guildmate farm it) rather than burn hours at ~1% hit. If the priced WTP doesn't make
+  buying clearly beat self-farming here, the value model is mis-weighting accuracy — use this case as
+  the regression fixture.
+
+SSOT note: the accuracy→effective-DPS valuation now lives in `BotGrindAdvisor` (gear hit-factor vs the
+aspirational mob) and `BotBuildManager.accuracyDexFloor` (DEX investment toward the aspirational mob).
+The market's buy/sell pricing should consume that same model rather than introduce a parallel one.

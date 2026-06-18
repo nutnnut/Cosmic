@@ -172,7 +172,7 @@ class BotGrindAdvisorTest {
     private static BotGrindAdvisor.MobProfile profile(int mobId, String name, int exp,
                                                       double killSeconds,
                                                       BotGrindPlanner.GearProspect... drops) {
-        return new BotGrindAdvisor.MobProfile(mobId, name, 10, exp, killSeconds,
+        return new BotGrindAdvisor.MobProfile(mobId, name, 10, 0, exp, killSeconds, killSeconds,
                 java.util.List.of(drops));
     }
 

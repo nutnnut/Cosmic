@@ -166,7 +166,7 @@ class BotBuildManager {
         // and the floor relaxes as they do. Only when DEX is the secondary stat (archers have DEX as
         // primary, thieves get accuracy from LUK, mages use magic accuracy - none need this).
         if (!mageOut[0] && ms[1] == 'd') {
-            floor = Math.max(floor, accuracyDexFloor(bot));
+            floor = Math.max(floor, accuracyDexFloor(entry, bot));
         }
         int target = mageOut[0] ? floor : BotEquipManager.recommendSecondaryTarget(bot, ms[0], ms[1], floor);
         return new ApBuild(primary, secondary, target);
@@ -176,39 +176,57 @@ class BotBuildManager {
     static final int ACC_FLOOR_LEVEL_BAND = 10;     // "nearby" = within this many levels (skip noise)
 
     /**
-     * Minimum BASE DEX so the bot lands ~{@link #ACC_FLOOR_TARGET_HIT_PCT}% on a typical nearby
-     * same-level mob. Reference avoid = median avoidability of non-boss mobs near the bot's level on
-     * its CURRENT map (the owner's "nearby mob, skip boss/unused noise"); 0 (no floor) when none are
-     * around or current gear/LUK/flat accuracy already covers it. The floor relaxes automatically as
-     * equips/buffs raise accuracy. SSOT: inverts {@link server.combat.CombatFormulaProvider}'s hit math.
+     * Minimum BASE DEX so the bot lands ~{@link #ACC_FLOOR_TARGET_HIT_PCT}% on its ASPIRATIONAL grind
+     * mob — the map it would farm if accuracy were free ({@link BotGrindAdvisor}, cached on the entry).
+     * Aiming at where the bot wants to be (not the easy map it's stuck on) is what breaks the "too low
+     * DEX to farm harder mobs, so it never farms them, so it never needs more DEX" loop. Falls back to
+     * the median avoid of nearby non-boss mobs on the CURRENT map until the first grind pass runs;
+     * 0 (no floor) when nothing's around or current gear/LUK/flat accuracy already covers it. The floor
+     * relaxes automatically as equips/buffs raise accuracy. SSOT: inverts {@link
+     * server.combat.CombatFormulaProvider}'s hit math.
      */
-    static int accuracyDexFloor(Character bot) {
-        if (bot == null || bot.getMap() == null) {
+    static int accuracyDexFloor(BotEntry entry, Character bot) {
+        if (bot == null) {
             return 0;
         }
-        int botLevel = bot.getLevel();
-        java.util.List<Integer> avoids = new java.util.ArrayList<>();
-        for (server.life.Monster m : bot.getMap().getAllMonsters()) {
-            if (m == null || m.getStats() == null || m.isBoss()) {
-                continue;
+        int refAvoid;
+        int refLevel;
+        if (entry != null && entry.aspirationalMobAvoid >= 0) {
+            refAvoid = entry.aspirationalMobAvoid;
+            refLevel = entry.aspirationalMobLevel;
+        } else {
+            if (bot.getMap() == null) {
+                return 0;
             }
-            if (Math.abs(m.getLevel() - botLevel) > ACC_FLOOR_LEVEL_BAND) {
-                continue;
+            int botLevel = bot.getLevel();
+            java.util.List<Integer> avoids = new java.util.ArrayList<>();
+            for (server.life.Monster m : bot.getMap().getAllMonsters()) {
+                if (m == null || m.getStats() == null || m.isBoss()) {
+                    continue;
+                }
+                if (Math.abs(m.getLevel() - botLevel) > ACC_FLOOR_LEVEL_BAND) {
+                    continue;
+                }
+                int av = m.getAvoidability();
+                if (av > 0) {
+                    avoids.add(av);
+                }
             }
-            int av = m.getAvoidability();
-            if (av > 0) {
-                avoids.add(av);
+            if (avoids.isEmpty()) {
+                return 0;
             }
+            java.util.Collections.sort(avoids);
+            refAvoid = avoids.get(avoids.size() / 2); // median is robust to a stray high-avoid mob
+            refLevel = botLevel;
         }
-        if (avoids.isEmpty()) {
+        if (refAvoid <= 0) {
             return 0;
         }
-        java.util.Collections.sort(avoids);
-        int refAvoid = avoids.get(avoids.size() / 2); // median is robust to a stray high-avoid mob
-        // Invert the physical hit formula for a same-level mob (levelDelta 0, accuracyRate=acc*100/255):
-        //   hit = (1.3 - avoid/accuracyRate)/0.6  =>  acc = avoid / (1.3 - 0.6*hit) * 2.55
+        // Invert the physical hit formula for the reference mob (accuracyRate = acc*100/(levelDelta*10+255)):
+        //   hit = (1.3 - avoid/accuracyRate)/0.6  =>  acc = avoid / (1.3 - 0.6*hit) * (levelDelta*10+255)/100
+        int levelDelta = Math.max(0, refLevel - bot.getLevel());
         double targetHit = ACC_FLOOR_TARGET_HIT_PCT / 100.0;
-        double accNeeded = refAvoid / (1.3 - 0.6 * targetHit) * 2.55;
+        double accNeeded = refAvoid / (1.3 - 0.6 * targetHit) * ((levelDelta * 10 + 255) / 100.0);
         // accuracy = floor(totalDex*0.8 + totalLuk*0.5) + flat(equip/buff). Solve for the base DEX that
         // reaches accNeeded, crediting current LUK + flat + worn DEX.
         server.combat.CombatFormulaProvider f = server.combat.CombatFormulaProvider.getInstance();
