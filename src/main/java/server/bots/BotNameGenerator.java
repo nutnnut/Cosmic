@@ -246,7 +246,7 @@ public class BotNameGenerator {
             if (rng.nextBoolean()) {
                 name = applyNumberSuffix(name, rng);
             }
-            return truncate(name);
+            return applyMinorFlavor(truncate(name), rng);
         }
 
         // Build a transform sequence (duplicates allowed — they add variety).
@@ -265,7 +265,58 @@ public class BotNameGenerator {
             };
             name = truncate(name); // enforce limit after each step
         }
-        return name;
+        return applyMinorFlavor(name, rng);
+    }
+
+    /**
+     * Rare text-speak flavor tags, mutually exclusive and LOW-weighted to match real IGN frequency
+     * (~2-3% each, ~10% of names get any): lowercase i/ii prefix, xD/XD laugh suffix, trailing-z
+     * pluralization, and number-as-word leet (4=for, 2=to, U=you). Applied last, over plain or styled
+     * names alike.
+     */
+    private static String applyMinorFlavor(String name, ThreadLocalRandom rng) {
+        int roll = rng.nextInt(100);
+        if (roll < 3) return applyIPrefix(name, rng);       // ~3% "iiCloud"
+        if (roll < 5) return applyLaughSuffix(name, rng);   // ~2% "SasoriXD"
+        if (roll < 7) return applyZPlural(name, rng);       // ~2% "xMaplez"
+        if (roll < 10) return applyWordLeet(name, rng);     // ~3% "Fame4Fame" / "2Funded"
+        return name;                                         // ~90% no minor tag
+    }
+
+    /** Lowercase i/ii prefix, e.g. "iiCloud", "iNuke" (asymmetric — no mirrored suffix). */
+    private static String applyIPrefix(String name, ThreadLocalRandom rng) {
+        return truncate((rng.nextBoolean() ? "ii" : "i") + name);
+    }
+
+    /** Laugh-tag suffix, e.g. "SasoriXD", "KevinxD". */
+    private static String applyLaughSuffix(String name, ThreadLocalRandom rng) {
+        return truncate(name + (rng.nextBoolean() ? "xD" : "XD"));
+    }
+
+    /** Trailing-z pluralization, e.g. "Maplez", "Cloudz" (replaces a trailing s rather than doubling). */
+    private static String applyZPlural(String name, ThreadLocalRandom rng) {
+        if (name.endsWith("s") || name.endsWith("S")) {
+            name = name.substring(0, name.length() - 1);
+        }
+        return truncate(name + "z");
+    }
+
+    /** Number-as-word leet that ADDS digits/letters (never mangles existing letters): infix "4" between
+     *  the two CamelCase words ("Fame4Fame"), or a "4"/"2" prefix ("4Fame"/"2Funded"), or a "U" suffix. */
+    private static String applyWordLeet(String name, ThreadLocalRandom rng) {
+        int split = -1;
+        for (int i = 1; i < name.length(); i++) {
+            if (java.lang.Character.isUpperCase(name.charAt(i)) && java.lang.Character.isLetter(name.charAt(i - 1))) {
+                split = i;
+                break;
+            }
+        }
+        return switch (rng.nextInt(4)) {
+            case 0 -> split > 0 ? truncate(name.substring(0, split) + "4" + name.substring(split)) : truncate("4" + name);
+            case 1 -> truncate("4" + name); // 4 = "for"
+            case 2 -> truncate("2" + name); // 2 = "to"
+            default -> truncate(name + "U"); // U = "you"
+        };
     }
 
     // ── Transforms ────────────────────────────────────────────────────────────
