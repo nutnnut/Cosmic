@@ -1242,7 +1242,7 @@ public class BotManager {
             return List.of();
         }
         List<BotEntry> out = new ArrayList<>();
-        for (Character c : bot.getMap().getCharacters()) {
+        for (Character c : new ArrayList<>(bot.getMap().getCharacters())) {
             if (c == bot || !(c.getClient() instanceof BotClient)) {
                 continue;
             }
