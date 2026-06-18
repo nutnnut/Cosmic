@@ -92,7 +92,11 @@ final class BotRockManager {
 
     static boolean requestRockShare(BotEntry entry, Character bot, int rockId, boolean bypassShareLimits) {
         Character owner = entry.owner;
-        if (owner == null || owner == bot || bot.getTrade() != null || entry.pendingTradeCategory != null) {
+        // owner == bot is a self-owned (@botme) bot: no separate owner to beg rocks from. Skip UNLESS
+        // it's in a crew cohort, whose same-map crewmates share like an owned party (see
+        // shareCandidateEntries / the potion+ammo share path).
+        if (owner == null || (owner == bot && entry.crewGroupId == null)
+                || bot.getTrade() != null || entry.pendingTradeCategory != null) {
             return false;
         }
         if (countRocks(bot, rockId) >= BotCombatManager.cfg.ROCK_LOW_WARN) {
@@ -128,7 +132,7 @@ final class BotRockManager {
 
     private static RockDonorPlan selectRockDonor(int ownerId, int mapId, BotEntry excludedEntry, int rockId) {
         RockDonorPlan best = null;
-        for (BotEntry sibling : BotManager.getInstance().getBotEntries(ownerId)) {
+        for (BotEntry sibling : BotManager.getInstance().shareCandidateEntries(ownerId, excludedEntry)) {
             if (sibling == excludedEntry || sibling.bot == null || sibling.bot.getMapId() != mapId) {
                 continue;
             }
