@@ -252,10 +252,14 @@ public class BotNameGenerator {
     /** e.g. "xXBladeXx", "__Drake__" */
     private static String applyPrefixSuffix(String name, ThreadLocalRandom rng) {
         // Name regex is [a-zA-Z0-9] only — no underscore (canCreateChar forbids it).
-        String[] edges = {"xx", "ii", "oo", "vv", "zz", "ww", "kk", "yy", "qx", "xz", "zx", "xo"};
-        String edge = edges[rng.nextInt(edges.length)];
-        String pre = rng.nextBoolean() ? edge.toUpperCase() : edge;
-        String suf = rng.nextBoolean() ? edge.toUpperCase() : edge;
+        String[] edges = {"xx", "x", "xX", "Xx", "xXx", "o", "oo", "oO", "Oo", "oOo", "0", "00", "I", "II"};
+        String pre = edges[rng.nextInt(edges.length)];
+        if (rng.nextBoolean()) {
+            pre = pre.toUpperCase();
+        }
+        // Suffix MIRRORS the prefix (character-reversed) so it reads symmetrically:
+        // "xX" + name + "Xx", not "xX" + name + "xX".
+        String suf = new StringBuilder(pre).reverse().toString();
         return truncate(pre + name + suf);
     }
 
