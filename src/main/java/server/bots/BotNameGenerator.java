@@ -35,25 +35,25 @@ public class BotNameGenerator {
     private static final List<String> ROOTS_WARRIOR = List.of(
             "Drake", "Blade", "Axe", "Knight", "Guard", "Crusade", "Warlord",
             "Iron", "Titan", "Valor", "Crest", "Siege", "Bastion", "Rampart",
-            "Steel", "Lance", "Havoc", "Grim", "Fury", "Forge"
+            "Steel", "Lance", "Havoc", "Grim", "Fury", "Forge", "Hero", "Tank"
     );
 
     private static final List<String> ROOTS_MAGE = List.of(
             "Mage", "Arcane", "Frost", "Inferno", "Sage", "Spell", "Rune",
             "Hex", "Ether", "Mystic", "Vortex", "Ember", "Wield", "Aether",
-            "Prism", "Lunar", "Solar", "Enigma", "Oracle", "Wyrd"
+            "Prism", "Lunar", "Solar", "Enigma", "Oracle", "Wyrd", "Bishop"
     );
 
     private static final List<String> ROOTS_BOWMAN = List.of(
             "Arrow", "Hunter", "Ranger", "Snipe", "Marks", "Strider", "Hawk",
             "Quill", "Bolt", "Gale", "Swift", "Fledge", "Scout", "Trace",
-            "Keen", "Aim", "Covert", "Volley", "Talon", "Zephyr"
+            "Keen", "Aim", "Covert", "Volley", "Talon", "Zephyr", "Archer"
     );
 
     private static final List<String> ROOTS_THIEF = List.of(
             "Shadow", "Night", "Rogue", "Phantom", "Stealth", "Venom", "Dusk",
             "Ghost", "Cloak", "Shroud", "Whisper", "Shade", "Lurk", "Wraith",
-            "Dagger", "Nimble", "Cipher", "Eclipse", "Thorne", "Wren"
+            "Dagger", "Nimble", "Cipher", "Eclipse", "Thorne", "Wren", "Sin", "Ninja"
     );
 
     private static final List<String> ROOTS_PIRATE = List.of(
@@ -68,9 +68,8 @@ public class BotNameGenerator {
     // All <= 6 chars so they combine (cap()s to "ScrollKing", "BossMule", "GrindGod", "ToxicNoob").
     private static final List<String> ROOTS_MAPLE = List.of(
             "Maple", "Scroll", "Fame", "Funded", "Chair", "Slot", "Boss", "Ramen", "Grind", "Toxic",
-            "Noob", "God", "Lord", "King", "Hero", "Ninja", "Mage", "Archer", "Sin", "Dark", "Rich",
-            "Mule", "Pog", "Pro", "Tank", "Leech", "Meso", "Loot", "Rush", "Solo", "Carry", "Sweat",
-            "Smega", "Whale", "Bishop", "Hunter", "Crit", "Buff", "Drop", "Kill"
+            "Noob", "God", "Lord", "King", "Dark", "Rich", "Mule", "Pog", "Pro", "Leech", "Meso",
+            "Loot", "Rush", "Solo", "Carry", "Sweat", "Smega", "Whale", "Crit", "Buff", "Drop", "Kill"
     );
 
     // Flat merged pool used for job-agnostic generation
