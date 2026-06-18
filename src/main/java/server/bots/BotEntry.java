@@ -152,6 +152,16 @@ public class BotEntry {
     long breakoutUntilMs = 0L;    // hard safety timeout for the surround-breakout commitment
     Point aoeRepositionAnchor = null; // committed AoE sweet-spot to walk to before firing, null = not repositioning
     long aoeRepositionDeadlineMs = 0L; // bounded-chase timeout for the AoE reposition commitment
+
+    // Combat-decision debug snapshot — last grind-tick verdict, surfaced in the path log so a bot
+    // that "never attacks" is diagnosable: which retreat (if any) closed the attack gate, and on what
+    // mob. Set in BotManager.tickGrindMode; read-only telemetry, never drives behavior.
+    long dbgCombatDecisionAtMs = 0L;     // when the snapshot below was last written (0 = none yet)
+    boolean dbgAttackGateOpen = false;   // false = no shot/swing allowed this tick
+    boolean dbgProactiveDangerRetreat = false; // touch-danger self-preservation retreat fired
+    boolean dbgRangedSpacingRetreat = false;   // ranged weapon backing off a too-close mob
+    boolean dbgInDegenBand = false;      // mob inside the degenerate close-range band (ranged wpn)
+    boolean dbgCrossRegionRetreat = false; // retreat vantage is in another nav region (jump/edge away)
     int wanderDirection = 0;      // -1 left, +1 right, 0 = unset (picked when grind has no target)
 
     // Shop auto-buy (triggered once per map change)

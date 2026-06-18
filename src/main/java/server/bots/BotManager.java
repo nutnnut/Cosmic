@@ -3158,6 +3158,13 @@ public class BotManager {
         Point crossRegionRetreatPos = shouldRetreatForRangedSpacing
                 ? selectCrossRegionRetreatTarget(entry, botPos, tp)
                 : null;
+        // Debug snapshot for the path log — why the attack gate is open/closed this tick.
+        entry.dbgCombatDecisionAtMs = now;
+        entry.dbgAttackGateOpen = attackGateOpen;
+        entry.dbgProactiveDangerRetreat = proactiveDangerRetreat;
+        entry.dbgRangedSpacingRetreat = shouldRetreatForRangedSpacing;
+        entry.dbgInDegenBand = targetInDegenerateBand;
+        entry.dbgCrossRegionRetreat = crossRegionRetreatPos != null;
         // AoE positioning: when in range but the chosen plan is single-target, defer the shot
         // and walk into the cluster centroid if the AoE would beat it on DPS there (bounded).
         // Suppressed during ranged-spacing/cross-region retreats — spacing takes priority.

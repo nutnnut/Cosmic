@@ -34,6 +34,7 @@ final class BotPathLogger {
             String goalSource,
             String steerSource,
             String navTarget,
+            String combat,
             boolean aiTick,
             boolean consumedTick,
             boolean stuck,
@@ -85,6 +86,7 @@ final class BotPathLogger {
                 targetSnapshot.primaryTargetSource(),
                 targetSnapshot.steeringTargetSource(entry),
                 navTargetSummary(entry),
+                combatToken(entry),
                 aiTick,
                 consumedTick,
                 computeStuck(botPos.x, botPos.y),
@@ -281,9 +283,68 @@ final class BotPathLogger {
             sb.append("AdminBind:  commanderId=").append(entry.debugCommanderId)
                     .append("  untilMs=").append(entry.debugCommanderUntilMs).append("\n");
         }
+        appendCombatState(sb, entry, botPos);
         boolean isStuck = entry.stuckMs >= 500 || computeStuck(botPos.x, botPos.y);
         sb.append("Stuck:      ").append(isStuck ? "YES (" + entry.stuckMs + "ms) ***" : "no").append("\n");
         sb.append("\n");
+    }
+
+    /**
+     * Combat-decision diagnostics: why a grinding bot is/ isn't attacking its target. Surfaces the
+     * attack-gate verdict captured each grind tick in BotManager.tickGrindMode — the prime suspect
+     * when a bot "never attacks" is a retreat (ranged-spacing or touch-danger self-preservation)
+     * holding the gate shut, often toward a cross-region vantage it can't reach.
+     */
+    private void appendCombatState(StringBuilder sb, BotEntry entry, Point botPos) {
+        if (!entry.grinding || entry.bot == null) {
+            return;
+        }
+        var bot = entry.bot;
+        var wt = BotAttackExecutionProvider.getEquippedWeaponType(bot);
+        sb.append("Combat:     weapon=").append(wt == null ? "none" : wt.name())
+                .append("  hp=").append(bot.getHp()).append("/").append(bot.getCurrentMaxHp()).append("\n");
+        var mob = entry.grindTarget;
+        if (mob == null || !mob.isAlive()) {
+            sb.append("            grindTarget=<none — searching/wandering>\n");
+        } else {
+            Point mp = mob.getPosition();
+            boolean touchDanger = server.bots.combat.BotDangerAssessment.isTouchDangerous(
+                    bot, mob, BotCombatManager.cfg.TOUCH_HITS_TO_KILL);
+            sb.append("            grindTarget=").append(mob.getId())
+                    .append(" @(").append(mp.x).append(",").append(mp.y).append(")")
+                    .append(" dx=").append(Math.abs(mp.x - botPos.x))
+                    .append(" dy=").append(Math.abs(mp.y - botPos.y))
+                    .append("  touchDanger=").append(touchDanger)
+                    .append(" (hitsToKill=").append(BotCombatManager.cfg.TOUCH_HITS_TO_KILL).append(")\n");
+        }
+        if (entry.dbgCombatDecisionAtMs == 0L) {
+            sb.append("            decision=<no grind-combat tick recorded yet>\n");
+            return;
+        }
+        sb.append("            attackGateOpen=").append(entry.dbgAttackGateOpen)
+                .append("  proactiveDangerRetreat=").append(entry.dbgProactiveDangerRetreat)
+                .append("  rangedSpacingRetreat=").append(entry.dbgRangedSpacingRetreat)
+                .append("\n            inDegenBand=").append(entry.dbgInDegenBand)
+                .append("  degenAttackDone=").append(entry.degenAttackDone)
+                .append("  crossRegionRetreat=").append(entry.dbgCrossRegionRetreat)
+                .append("  retreatHoldPos=").append(entry.retreatHoldPos == null ? "none"
+                        : "(" + entry.retreatHoldPos.x + "," + entry.retreatHoldPos.y + ")")
+                .append("  decisionAgoMs=").append(System.currentTimeMillis() - entry.dbgCombatDecisionAtMs)
+                .append("\n");
+    }
+
+    /** Compact per-tick combat verdict for the tick history (mirror of appendCombatState flags). */
+    static String combatToken(BotEntry entry) {
+        if (entry.dbgCombatDecisionAtMs == 0L
+                || System.currentTimeMillis() - entry.dbgCombatDecisionAtMs > 2000L) {
+            return "-"; // no recent grind-combat decision (no target / not grinding)
+        }
+        String base = entry.dbgProactiveDangerRetreat ? "RETdgr"
+                : entry.dbgRangedSpacingRetreat ? "RETrng"
+                : entry.dbgAttackGateOpen ? "ATK"
+                : "hold";
+        String flags = (entry.dbgInDegenBand ? "d" : "") + (entry.dbgCrossRegionRetreat ? "X" : "");
+        return flags.isEmpty() ? base : base + "/" + flags;
     }
 
     /**
@@ -557,7 +618,7 @@ final class BotPathLogger {
                     && rec.goalSource.equals(rec.steerSource)
                     ? ""
                     : String.format(" steer=(%4d,%4d)[%s]", rec.steerX, rec.steerY, rec.steerSource);
-            sb.append(String.format("[+%5dms] ai=%s bot=(%4d,%4d) own=(%4d,%4d)%s%s r=%-3d %-18s nav=%-8s edge=%-46s tgt=%s%s%s%n",
+            sb.append(String.format("[+%5dms] ai=%s bot=(%4d,%4d) own=(%4d,%4d)%s%s r=%-3d %-18s nav=%-8s edge=%-46s tgt=%s cmb=%-7s%s%s%n",
                     rec.elapsedMs,
                     rec.aiTick ? "Y" : "N",
                     rec.botX, rec.botY,
@@ -569,9 +630,9 @@ final class BotPathLogger {
                     rec.navDecision,
                     rec.navEdge,
                     rec.navTarget,
+                    rec.combat,
                     rec.consumedTick ? " [exec]" : "",
-                    rec.unstuck ? " *** UNSTUCK ***" : rec.stuck ? " *** STUCK ***" : "",
-                    ""));
+                    rec.unstuck ? " *** UNSTUCK ***" : rec.stuck ? " *** STUCK ***" : ""));
         }
     }
 
