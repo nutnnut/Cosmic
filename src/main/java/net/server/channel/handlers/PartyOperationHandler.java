@@ -94,8 +94,13 @@ public final class PartyOperationHandler extends AbstractPacketHandler {
                             if (InviteCoordinator.createInvite(InviteType.PARTY, player, party.getId(), invited.getId())) {
                                 invited.sendPacket(PacketCreator.partyInvite(player));
                                 if (invited.getClient() instanceof BotClient) {
-                                    InviteCoordinator.answerInvite(InviteType.PARTY, invited.getId(), party.getId(), true);
-                                    Party.joinParty(invited, party.getId(), false);
+                                    // Bots decide per personality (owned companions: owner only; self-owned:
+                                    // sociability + level), instead of blindly auto-accepting any invite.
+                                    boolean accept = server.bots.BotManager.getInstance().acceptsPartyInvite(invited, player);
+                                    InviteCoordinator.answerInvite(InviteType.PARTY, invited.getId(), party.getId(), accept);
+                                    if (accept) {
+                                        Party.joinParty(invited, party.getId(), false);
+                                    }
                                 }
                             } else {
                                 c.sendPacket(PacketCreator.partyStatusMessage(22, invited.getName()));

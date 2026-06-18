@@ -107,6 +107,30 @@ final class BotSocialManager {
         // IGNORE: stays silent.
     }
 
+    /**
+     * Whether a bot accepts a party invite from {@code inviter} (the {@code PartyOperationHandler}
+     * BotClient branch, via {@link BotManager#acceptsPartyInvite}). An OWNED companion accepts ONLY its
+     * registered owner — a stranger can never yank it. A self-owned autopilot bot accepts per its
+     * sociability + the exp-share level window (same policy as a bot-to-bot offer). Joining a party
+     * never grants the inviter any ownership/command/loot/supply/trade privilege.
+     */
+    static boolean acceptsInvite(BotEntry entry, Character bot, Character inviter) {
+        if (entry == null || bot == null || inviter == null) {
+            return false;
+        }
+        if (entry.owner != null && entry.owner != bot) {
+            return inviter.getId() == entry.owner.getId(); // companion: registered owner only
+        }
+        if (!BotManager.cfg.SOCIAL_PARTY_ENABLED) {
+            return false;
+        }
+        int levelGap = Math.abs(bot.getLevel() - inviter.getLevel());
+        int shareWindow = YamlConfig.config.server.EXP_SPLIT_LEECH_INTERVAL;
+        ThreadLocalRandom rng = ThreadLocalRandom.current();
+        return BotSocialMath.respondToOffer(personality(entry), levelGap, shareWindow,
+                rng.nextDouble(), rng.nextDouble(), rng.nextDouble()) == BotSocialMath.Response.ACCEPT;
+    }
+
     private static BotPersonality personality(BotEntry e) {
         return e.personality != null ? e.personality : BotPersonality.defaults();
     }

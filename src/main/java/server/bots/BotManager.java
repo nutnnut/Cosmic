@@ -470,6 +470,13 @@ public class BotManager {
      * no owner privileges (commands, loot/supply priority, trade trust all stay gated on the
      * registered owner).
      */
+    /** Public entry for {@code PartyOperationHandler}: does this bot accept a party invite from
+     *  {@code inviter}? Owned companions accept only their owner; self-owned bots decide per
+     *  sociability/level. Delegates to {@link BotSocialManager#acceptsInvite}. */
+    public boolean acceptsPartyInvite(Character bot, Character inviter) {
+        return bot != null && BotSocialManager.acceptsInvite(getEntryByBotCharId(bot.getId()), bot, inviter);
+    }
+
     public void partyUp(Character leader, Character joiner) {
         net.server.world.Party joinerParty = joiner.getParty();
         if (joinerParty != null) {
