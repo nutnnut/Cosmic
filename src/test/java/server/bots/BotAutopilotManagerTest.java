@@ -1179,4 +1179,41 @@ class BotAutopilotManagerTest {
             assertEquals("farm sword from Drake for Buddy", seams.replies.get(1));
         }
     }
+
+    @Test
+    void noteLevelUpPullsSoloDecisionForwardAtEarlyLevels() {
+        Fixture f = fixture(HUNTING_GROUND);
+        f.entry().autopilotMapId = HUNTING_GROUND;
+        f.entry().autopilotNextDecisionAtMs = Long.MAX_VALUE;
+
+        BotAutopilotManager.noteLevelUp(f.entry(), 3);
+
+        long now = System.currentTimeMillis();
+        assertTrue(f.entry().autopilotNextDecisionAtMs > now, "should still be in the future");
+        assertTrue(f.entry().autopilotNextDecisionAtMs
+                <= now + BotAutopilotManager.UPGRADE_REDECIDE_DELAY_MS + 20_000L, "should be pulled forward");
+    }
+
+    @Test
+    void noteLevelUpLeavesTimerAlonePastEarlyLevels() {
+        Fixture f = fixture(HUNTING_GROUND);
+        f.entry().autopilotMapId = HUNTING_GROUND;
+        f.entry().autopilotNextDecisionAtMs = Long.MAX_VALUE;
+
+        BotAutopilotManager.noteLevelUp(f.entry(), 16); // past the early band: regular interval is fine
+
+        assertEquals(Long.MAX_VALUE, f.entry().autopilotNextDecisionAtMs);
+    }
+
+    @Test
+    void noteLevelUpZeroesPartyTimerForLeaderRedecide() {
+        Fixture f = fixture(HUNTING_GROUND);
+        f.entry().autopilotMapId = HUNTING_GROUND;
+        f.entry().autopilotParty = true;
+        f.entry().autopilotNextDecisionAtMs = Long.MAX_VALUE;
+
+        BotAutopilotManager.noteLevelUp(f.entry(), 3);
+
+        assertEquals(0L, f.entry().autopilotNextDecisionAtMs); // leader picks it up next tick
+    }
 }

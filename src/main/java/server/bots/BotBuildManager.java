@@ -585,6 +585,8 @@ class BotBuildManager {
         // buildJobPrompt. Supervised bots get pulled back to the owner to be handy for the prompt;
         // autopilot bots are handled inside checkBotStatus -> buildJobPrompt (auto-advance 3rd/4th,
         // leave the cohort and follow/town for the 1st/2nd job choice).
+        BotAutopilotManager.noteLevelUp(entry, lvl); // re-look at grind map: value is level-relative
+
         int milestoneFloor = lvl >= 120 ? 120 : lvl >= 70 ? 70 : lvl >= 30 ? 30 : lvl >= 10 ? 10 : lvl >= 8 ? 8 : 0;
         if (milestoneFloor > 0 && entry.jobPromptSent < milestoneFloor) {
             if (!BotManager.isAutopilotActive(entry)) {

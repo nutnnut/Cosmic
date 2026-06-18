@@ -783,6 +783,30 @@ final class BotAutopilotManager {
         }
     }
 
+    /**
+     * The bot just leveled up mid-autopilot: grind value is level-relative, so the map that was
+     * "best" at the old level may not be anymore (classic case: a freshly-spawned lv1 cohort glued
+     * to the lv1 starter map well into the single digits). Pull the next decision forward so the
+     * advisor re-looks — hysteresis (BotManager.Config) still decides whether to actually move, and
+     * the planner's crowd surcharge disperses stacked bots once it does. Mirrors
+     * {@link #noteGearUpgraded}. Gated to early levels (where map relevance shifts fastest) so a
+     * whole cohort dinging at once doesn't redecide on every level forever; the per-bot jitter
+     * de-syncs the cohort so they don't stampede onto the next map in lockstep.
+     */
+    static void noteLevelUp(BotEntry entry, int newLevel) {
+        if (entry == null || !isActive(entry) || entry.autopilotFarmItemId != 0) return;
+        if (newLevel > 15) return; // ponytail: early-only; past 15 the regular interval is fine
+        if (entry.autopilotParty) {
+            entry.autopilotNextDecisionAtMs = 0L; // leader-driven redecide picks it up next tick
+            return;
+        }
+        long at = System.currentTimeMillis() + UPGRADE_REDECIDE_DELAY_MS
+                + ThreadLocalRandom.current().nextLong(20_000L); // de-sync cohort level-ups
+        if (entry.autopilotNextDecisionAtMs > at) {
+            entry.autopilotNextDecisionAtMs = at;
+        }
+    }
+
     private static void maybeRedecide(BotEntry entry, Character bot) {
         long now = System.currentTimeMillis();
         if (now < entry.autopilotNextDecisionAtMs || entry.autopilotDecisionInFlight) {
