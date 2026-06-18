@@ -6,6 +6,8 @@
 
 - bot autonomy / autopilot - send a bot or party off to travel, grind, resupply, and play on its own
 - fully ownerless bots - spawn with `autopilot`/`generate` and they pick a job, walk to the instructor NPC to advance, assign their own AP/SP, and grow from level 1 with no human in the loop
+- living-server population (`@botpop`) - a scheduler logs server-generated bots in/out on per-bot schedules, auto-generates fresh ones to track an hourly target curve, retires veterans, and spawns friend-group "crews" that party and share supplies - so the world feels populated (off by default)
+- humanlike pacing - delay jitter on NPC talks, map changes, and portal entry; bots walk in a bit before using an intra-map portal instead of teleporting on top of it
 - smarter combat - accuracy-aware target/map choice (skips mobs it can't hit), target commitment, mob dodging while walking, steps closer to land a stronger skill, and self-preservation vs touch-dangerous mobs
 - shares summoning/magic rocks like potions (and uses rock-consuming buffs sparingly); offers scrolls useless to itself but useful to a partymate
 - opportunity-cost-aware scrolling - won't waste a scroll for a tiny gain and holds scrolls when a clearly-better base is farmable
@@ -286,9 +288,13 @@ they aren't in the managed pool.)
 | Command | Effect |
 |---|---|
 | `@botpop` / `@botpop status` | Show: scheduler on/off, this hour's target vs. current live count, managed-pool size |
-| `@botpop on` / `@botpop off` | Enable / disable the scheduler |
+| `@botpop on` / `@botpop off` | Enable / disable the scheduler. `on` sweeps **immediately** and ramps the population in over ~30s (fast-start) instead of waiting for the next tick |
 | `@botpop list` | List managed bots (id, group, active/retired/disabled, online) |
 | `@botpop sweep` | Force one reconcile pass now (instead of waiting for the next tick) |
+| `@botpop clear` | Disconnect **all** online bots now (managed + companions). Keeps them in the DB; run `@botpop off` first or the next sweep respawns managed ones |
+| `@botpop add <name>` / `@botpop remove <name>` | Mark/unmark an existing character as a managed (schedulable) bot |
+| `@botpop crew <id\|none> <name...>` | Assign managed bots to a persistent crew (they co-spawn, party, and share gear/ammo/supplies), or clear with `none` |
+| `@botpop wipe [confirm]` | Bare = preview the roster (name, Lv, job, high→low); `confirm` = permanently delete every managed bot (character + inventory + bot account). For resetting the test population back to fresh Lv1. Skips any managed char on a multi-character account |
 
 **To use it:**
 1. Build a pool: run `@spawnbot generate confirm` several times (each becomes a managed bot with a random
@@ -298,10 +304,16 @@ they aren't in the managed pool.)
 Even then, a given bot only logs in when (a) it's "active today" (each bot plays only a fraction of days),
 (b) the current hour is one it likes, and (c) the hourly target exceeds the live count — so at an off-hour
 or for a sporadic bot it may stay offline. Tune the 24-hour target curve and knobs in `BotManager.cfg`
-(`POPULATION_CURVE`, `POPULATION_SCHED_ENABLED`, etc.). Design notes: `docs/bot/living-server-design.md`.
+(`POPULATION_CURVE`, `POPULATION_MULTIPLIER`, `POPULATION_SCHED_ENABLED`, etc.). Design notes:
+`docs/bot/living-server-design.md`.
 
-> Career turnover (bots "retiring" after a while) and auto-generating fresh bots to refill the population
-> are planned next; today the scheduler tracks the curve over the pool you generate.
+**Auto-generation & turnover (shipped):** with `POPULATION_AUTOGEN` on (default), you don't need to
+pre-build a pool at all — when the live count is under target the scheduler **generates fresh bots to
+fill the gap** (a deficit-proportional batch per sweep, `POPULATION_AUTOGEN_FILL`/`POPULATION_AUTOGEN_MAX`),
+and bots "retire" after a personality-set career length so the population turns over. Combined with the
+`@botpop on` fast-start ramp, a fresh/wiped world fills toward the curve within ~30s. `POPULATION_MULTIPLIER`
+scales the whole online target (and fill speed) up/down. Some autogen events arrive as a **crew** (a friend
+group that spawns, parties, and shares supplies together) rather than a lone newcomer.
 
 ## Notes
 - Bot characters can be logged into as normal accounts (user = bot name, password = `botbot`) to manually equip or manage inventory.
