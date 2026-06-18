@@ -118,10 +118,28 @@ sweep (nothing happens until `@botpop on`).
   bot accepts a real player's invite per sociability/level — so players can party managed bots safely.
 - Pure policy unit-tested in `BotSocialMath`.
 
-**STILL PLANNED — persistent crews (`managed_bot.group_id`):** a fixed group that logs in together and
-auto-parties on spawn. Needs BOTH a crew-assignment path (nothing sets `group_id` yet) AND scheduler
-co-spawn — deferred (the dynamic system above already makes bots group up; crews add only "always the
-same people"). Also deferred: a bot proactively *inviting a real player* (vs the player inviting it).
+**SHIPPED — persistent crews (`managed_bot.group_id`):** a fixed group that logs in together, parties up,
+and shares supplies like an owned stable.
+- Assignment: `@botpop crew <id|none> <name...>` (managed bots only) + `ManagedBotService.setGroup`/
+  `crewMembers`. Crews also AUTO-generate: some autogen events (`POPULATION_CREW_CHANCE`) spawn a fresh
+  2–4 bot crew sharing a new group id (= the leader's char id), bounded by `MANAGED_POOL_MAX` — emergent
+  friend-groups, not just admin-assigned.
+- Scheduling: `BotScheduler` runs crews as a separate track from soloists. A crew comes online as a unit
+  on its leader's (lowest char id) personality schedule, coheres (`cohereCrews`: spawns missing members,
+  forms a real party, one `startParty` cohort directive), and logs out together when the shared session
+  elapses. Soloists keep the per-bot curve reconcile; crew members are never thinned by it; crew live
+  count folds into the population target.
+- **Crew item-sharing (per owner request):** crewmates trade gear/ammo/supplies like an owner's stable;
+  solo / dynamic-party bots stay isolated (no accidental offer-robbing between strangers). SSOT:
+  `BotEntry.crewGroupId` (cached at spawn) + `BotManager.crewMatesOnMap` / `shareCandidateEntries`, which
+  the offer (`eligibleBotRecipients` self-owned branch), potion, and ammo donor picks all route through.
+  The self-trade guard still holds — crew recipients exclude the bot itself.
+
+**SHIPPED — bot proactively invites a real player (P4b):** a solo self-owned bot that finds no bot to
+party may instead invite a co-located REAL player (trait-gated, exp-range-aware) via a real
+`PacketCreator.partyInvite` through `InviteCoordinator` — the player chooses in the UI, never auto-joined.
+A delayed cleanup disbands the bot's lone hosting party if the invite isn't taken. Knob
+`cfg.SOCIAL_INVITE_PLAYERS` (separate from bot-to-bot chatter).
 
 Two layers, both reusing the server-side party SSOT (`Party.createParty`/`joinParty` — bots join
 server-side, no invite-packet dance) and the existing cohort grind cohesion (`BotAutopilotManager
@@ -137,10 +155,10 @@ a headless bot has no trade UI and its tick halts during an open trade, so it ne
 on `sender == entry.owner` so a party-mate (or peer social chatter) can't command the bot. That gate is
 also the seam where non-owner chat branches into the social handler.
 
-### P4a — persistent crews
-Bots sharing `managed_bot.group_id` (stored since P0, unused) are brought online together by the
-scheduler and auto-formed into a party (mechanical, server-side), then `startParty` as a cohort. One
-crew greeting, `chattiness`-gated.
+### P4a — persistent crews — SHIPPED (see "SHIPPED — persistent crews" above for the as-built detail)
+Bots sharing `managed_bot.group_id` are brought online together by the scheduler and auto-formed into a
+party (mechanical, server-side), then `startParty` as a cohort. As built: crews also auto-generate, and
+crewmates share supplies/gear like an owned stable.
 
 ### P4b — chat-driven ad-hoc party-up
 `BotSocialManager` runs a trait-gated state machine over MAP chat (bots already receive all map chat via
