@@ -49,6 +49,12 @@ final class BotTravelManager {
     // (the legacy behavior) for this long.
     private static final long GIVE_UP_WARP_WINDOW_MS = 45_000L;
     private static final long PORTAL_USE_COOLDOWN_MS = 250L; // matches BotNavigationManager
+    // WZ portal type "pc" = collision portal: warps the instant the character's hitbox touches it
+    // (pits that drop you to another map, rope-top transitions). Trigger box is a touch wider than the
+    // intent-based enter tolerance so a knockback that lands the bot slightly off-centre still fires.
+    private static final int COLLISION_PORTAL_TYPE = 3;
+    private static final int COLLISION_ENTER_X = 30;
+    private static final int COLLISION_ENTER_Y = 60;
     // Walk at most this many portal hops to reach the owner; anything farther warps. Keeps a
     // party bot from being minutes behind when the owner taxis across the world, while the
     // common "owner walked a couple of maps ahead" case stays fully legal.
@@ -296,6 +302,42 @@ final class BotTravelManager {
         }
         movementStep.step(entry, portalPos, runAiTick);
         return true;
+    }
+
+    /**
+     * Collision ("pc", WZ pt=3) portals auto-warp a real player the instant their hitbox overlaps them
+     * — the CLIENT detects the collision and asks to change map; a bot has no client, so the server
+     * never fires it and the bot just sits in the pit / on the rope. Emulate it here every tick,
+     * INTENT-INDEPENDENT: whether the bot walked/climbed onto it or got KNOCKED into a pit, overlapping
+     * a type-3 portal warps it. Plain warp portals only (skip scripted ones — those may gate/dialog).
+     * Called from the common tick so it runs in every mode (grind, idle, follow, dead-knockback).
+     */
+    static boolean tickCollisionPortal(BotEntry entry, Character bot) {
+        long now = System.currentTimeMillis();
+        if (bot == null || now < entry.portalUseCooldownUntilMs) {
+            return false;
+        }
+        MapleMap map = bot.getMap();
+        Point pos = bot.getPosition();
+        if (map == null || pos == null) {
+            return false;
+        }
+        for (Portal portal : map.getPortals()) {
+            String script = portal.getScriptName();
+            if (portal.getType() != COLLISION_PORTAL_TYPE
+                    || portal.getTargetMapId() == NO_DESTINATION_MAPID
+                    || !portal.getPortalStatus()
+                    || (script != null && !script.isEmpty())) {
+                continue;
+            }
+            Point pp = portal.getPosition();
+            if (Math.abs(pos.x - pp.x) <= COLLISION_ENTER_X && Math.abs(pos.y - pp.y) <= COLLISION_ENTER_Y) {
+                entry.portalUseCooldownUntilMs = now + PORTAL_USE_COOLDOWN_MS;
+                portal.enterPortal(bot.getClient());
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
