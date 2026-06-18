@@ -31,8 +31,6 @@ final class BotTravelCost {
     static final double TAXI_SECONDS = 30.0;
     /** Travel penalty horizon: a map this far away keeps only the floor weight. */
     static final double HORIZON_SECONDS = 3600.0;
-    /** Penalty floor: even the far side of the world keeps a quarter of its score. */
-    static final double MIN_SCORE_WEIGHT = 0.25;
 
     /** Below this level the travel penalty is amplified (a fragile bot shouldn't trek across the
      *  world); at/above it travel is costed normally. */
@@ -133,7 +131,7 @@ final class BotTravelCost {
         Double s = travelSeconds.get(mapId);
         double sec = s != null ? s : HORIZON_SECONDS;
         double effectiveSec = sec * travelRiskFactor(botLevel) * travelDiscount;
-        return Math.max(MIN_SCORE_WEIGHT, 1.0 - effectiveSec / HORIZON_SECONDS);
+        return Math.max(BotManager.cfg.TRAVEL_PENALTY_FLOOR, 1.0 - effectiveSec / HORIZON_SECONDS);
     }
 
     /** Linear travel-risk multiplier: {@link #MAX_LOW_LEVEL_TRAVEL_RISK} at level 1, easing straight

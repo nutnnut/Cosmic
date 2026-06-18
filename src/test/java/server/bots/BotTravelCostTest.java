@@ -90,9 +90,9 @@ class BotTravelCostTest {
         Map<Integer, Double> seconds = Map.of(1, 0.0, 2, 1800.0, 3, 3600.0);
         assertEquals(1.0, BotTravelCost.scoreWeight(seconds, 1), 1e-9);
         assertEquals(0.5, BotTravelCost.scoreWeight(seconds, 2), 1e-9);
-        assertEquals(BotTravelCost.MIN_SCORE_WEIGHT, BotTravelCost.scoreWeight(seconds, 3), 1e-9);
+        assertEquals(BotManager.cfg.TRAVEL_PENALTY_FLOOR, BotTravelCost.scoreWeight(seconds, 3), 1e-9);
         // Unreachable under the current options: floor, not zero (data gaps shouldn't ban maps).
-        assertEquals(BotTravelCost.MIN_SCORE_WEIGHT, BotTravelCost.scoreWeight(seconds, 99), 1e-9);
+        assertEquals(BotManager.cfg.TRAVEL_PENALTY_FLOOR, BotTravelCost.scoreWeight(seconds, 99), 1e-9);
     }
 
     @Test
@@ -100,7 +100,7 @@ class BotTravelCostTest {
         Map<Integer, Double> seconds = Map.of(1, 0.0, 3, 3600.0);
         int lvl = BotTravelCost.TRAVEL_RISK_LEVEL; // neutral level: discount is the only factor
         // Normal: the far map decays to the floor.
-        assertEquals(BotTravelCost.MIN_SCORE_WEIGHT, BotTravelCost.scoreWeight(seconds, 3, lvl, 1.0), 1e-9);
+        assertEquals(BotManager.cfg.TRAVEL_PENALTY_FLOOR, BotTravelCost.scoreWeight(seconds, 3, lvl, 1.0), 1e-9);
         // Wanderlust 0.15: effective 540s -> keeps 0.85, so grind value (not distance) drives the pick.
         assertEquals(0.85, BotTravelCost.scoreWeight(seconds, 3, lvl, 0.15), 1e-9);
         // The local map is unaffected (0s * anything = 0 -> full weight).

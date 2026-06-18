@@ -141,6 +141,11 @@ public class BotManager {
         // instead of stacking / kill-stealing. 0 disables. See BotOccupancy + BotGrindPlanner spawn-share.
         public double CROWD_PENALTY_FACTOR = 2.0;
 
+        // Travel-time penalty floor: the minimum score multiplier a far map keeps (BotTravelCost). At
+        // 0.5 even the far side of the world stays half-valued, so a genuinely better distant map can
+        // still win - the penalty deters, it doesn't forbid.
+        public double TRAVEL_PENALTY_FLOOR = 0.5;
+
         // Grind loot convenience: loot competes with mob navigation only when
         // lootDistSq < mobDistSq * ratio. 0.09 ≈ loot within 30% of mob distance.
         public float GRIND_LOOT_CONVENIENCE_RATIO = 0.09f;
