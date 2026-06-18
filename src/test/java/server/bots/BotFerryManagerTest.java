@@ -241,4 +241,21 @@ class BotFerryManagerTest {
             assertFalse(BotFerryManager.tickBoarding(f.entry(), f.bot(), ELLINIA, 0L, true));
         }
     }
+
+    @Test
+    void shouldResolveMultipleFerryLinesFromTheOrbisHub() {
+        // The Orbis hall 200000100 boards four different lines: findFerryEdge must pick the one whose
+        // destination matches (the single-route-per-map index would have collapsed these to one).
+        assertTrue(BotFerryManager.findFerryEdge(200000100, 101000300) == BotFerryManager.ORBIS_TO_ELLINIA);
+        assertTrue(BotFerryManager.findFerryEdge(200000100, 220000100) == BotFerryManager.ORBIS_TO_LUDIBRIUM);
+        assertTrue(BotFerryManager.findFerryEdge(200000100, 240000100) == BotFerryManager.ORBIS_TO_LEAFRE);
+        assertTrue(BotFerryManager.findFerryEdge(200000100, 260000100) == BotFerryManager.ORBIS_TO_ARIANT);
+        assertTrue(BotFerryManager.routesBoardingAt(200000100).size() >= 4);
+        // Return legs board at each far station back to Orbis.
+        assertTrue(BotFerryManager.findFerryEdge(220000100, 200000100) == BotFerryManager.LUDIBRIUM_TO_ORBIS);
+        assertTrue(BotFerryManager.findFerryEdge(240000100, 200000100) == BotFerryManager.LEAFRE_TO_ORBIS);
+        assertTrue(BotFerryManager.findFerryEdge(260000100, 200000100) == BotFerryManager.ARIANT_TO_ORBIS);
+        // A destination no line sails to resolves to null.
+        assertFalse(BotFerryManager.findFerryEdge(200000100, 999999999) != null);
+    }
 }

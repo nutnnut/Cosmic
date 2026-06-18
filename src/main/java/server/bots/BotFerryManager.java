@@ -8,6 +8,7 @@ import server.maps.MapleMap;
 import server.maps.Portal;
 
 import java.awt.*;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -97,20 +98,51 @@ final class BotFerryManager {
             200000152, 200090400, 200090400,
             List.of(200000100, 200000150, 200000151), "Genie");
 
+    // Return legs to Orbis: a far-station seller (the Orbis ticket 4031045) + a dock usher, no guide.
+    // Ludibrium/Leafre have seller and usher on adjacent maps (one "east00" portal apart, walked by
+    // the no-guide boarding step below); Ariant's seller 2102002 and usher 2102000 share one map
+    // (single-map boarding like Ellinia). Decks + the gate event from scripts/event/{Trains,Cabin,Genie}.
+    static final FerryRoute LUDIBRIUM_TO_ORBIS = new FerryRoute(
+            200000100, 4031045, 6000,
+            2040000, 220000100,
+            2041000, 220000110,
+            0, -1, -1,
+            220000111, 200090110, 200090110,
+            List.of(220000100, 220000110), "Trains");
+
+    static final FerryRoute LEAFRE_TO_ORBIS = new FerryRoute(
+            200000100, 4031045, 30000,
+            2082000, 240000100,
+            2082001, 240000110,
+            0, -1, -1,
+            240000111, 200090210, 200090210,
+            List.of(240000100, 240000110), "Cabin");
+
+    static final FerryRoute ARIANT_TO_ORBIS = new FerryRoute(
+            200000100, 4031045, 6000,
+            2102002, 260000100,
+            2102000, 260000100,
+            0, -1, -1,
+            260000110, 200090410, 200090410,
+            List.of(260000100), "Genie");
+
     private static final List<FerryRoute> ROUTES = List.of(
             ELLINIA_TO_ORBIS, ORBIS_TO_ELLINIA,
-            ORBIS_TO_LUDIBRIUM, ORBIS_TO_LEAFRE, ORBIS_TO_ARIANT);
+            ORBIS_TO_LUDIBRIUM, ORBIS_TO_LEAFRE, ORBIS_TO_ARIANT,
+            LUDIBRIUM_TO_ORBIS, LEAFRE_TO_ORBIS, ARIANT_TO_ORBIS);
 
-    private static final Map<Integer, FerryRoute> BOARDING_MAP_TO_ROUTE = buildBoardingIndex();
+    // A hub map (Orbis 200000100) carries SEVERAL ferry lines, so each boarding map maps to a LIST.
+    private static final Map<Integer, List<FerryRoute>> BOARDING_MAP_TO_ROUTES = buildBoardingIndex();
     private static final Map<Integer, FerryRoute> TRANSIT_MAP_TO_ROUTE = buildTransitIndex();
 
-    private static Map<Integer, FerryRoute> buildBoardingIndex() {
-        Map<Integer, FerryRoute> byMap = new HashMap<>();
+    private static Map<Integer, List<FerryRoute>> buildBoardingIndex() {
+        Map<Integer, List<FerryRoute>> byMap = new HashMap<>();
         for (FerryRoute route : ROUTES) {
             for (int mapId : route.boardingMapIds()) {
-                byMap.put(mapId, route);
+                byMap.computeIfAbsent(mapId, k -> new ArrayList<>()).add(route);
             }
         }
+        byMap.replaceAll((k, v) -> List.copyOf(v));
         return Map.copyOf(byMap);
     }
 
@@ -124,15 +156,20 @@ final class BotFerryManager {
         return Map.copyOf(byMap);
     }
 
-    /** The ferry boardable from this map, or null. Feeds the world-graph edges. */
-    static FerryRoute routeBoardingAt(int mapId) {
-        return BOARDING_MAP_TO_ROUTE.get(mapId);
+    /** All ferry lines boardable from this map (a hub like Orbis has several); empty when none.
+     *  Feeds the world-graph + travel-cost edges. */
+    static List<FerryRoute> routesBoardingAt(int mapId) {
+        return BOARDING_MAP_TO_ROUTES.getOrDefault(mapId, List.of());
     }
 
-    /** The ferry edge from one map to a destination, or null when no line sails that way. */
+    /** The ferry edge from one map to a specific destination, or null when no line sails that way. */
     static FerryRoute findFerryEdge(int fromMapId, int toMapId) {
-        FerryRoute route = BOARDING_MAP_TO_ROUTE.get(fromMapId);
-        return route != null && route.destinationMapId() == toMapId ? route : null;
+        for (FerryRoute route : routesBoardingAt(fromMapId)) {
+            if (route.destinationMapId() == toMapId) {
+                return route;
+            }
+        }
+        return null;
     }
 
     // Test seams: ticket/meso/board/guide touch inventory and the live map factory; gate and
@@ -262,6 +299,12 @@ final class BotFerryManager {
                     () -> guideAction.warpToPlatform(bot, route));
         }
         if (route.guideNpcId() != 0 && mapId == route.guideTargetMapId()) {
+            return enterAdjacentPortal(entry, bot, route.usherNpcMapId(), now, runAiTick);
+        }
+        // No-guide return station: ticket bought at the seller's map, dock usher on an adjacent map.
+        // Walk the plain portal from here to the usher's map. (Same-map boardings skip this.)
+        if (route.guideNpcId() == 0 && hasTicket && mapId != route.usherNpcMapId()
+                && route.boardingMapIds().contains(mapId)) {
             return enterAdjacentPortal(entry, bot, route.usherNpcMapId(), now, runAiTick);
         }
         if (mapId == route.usherNpcMapId()) {

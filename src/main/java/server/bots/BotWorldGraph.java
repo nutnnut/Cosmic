@@ -298,9 +298,10 @@ final class BotWorldGraph {
             }
         }
         if (options.withFerry()) {
-            BotFerryManager.FerryRoute ferry = BotFerryManager.routeBoardingAt(mapId);
-            if (ferry != null && options.meso() >= ferry.ticketCost()) {
-                out.add(ferry.destinationMapId());
+            for (BotFerryManager.FerryRoute ferry : BotFerryManager.routesBoardingAt(mapId)) {
+                if (options.meso() >= ferry.ticketCost()) {
+                    out.add(ferry.destinationMapId());
+                }
             }
         }
         return out;

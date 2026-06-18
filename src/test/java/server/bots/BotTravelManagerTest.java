@@ -318,7 +318,7 @@ class BotTravelManagerTest {
         Fixture f = fixture(deck, HENESYS, new Point(0, 0), List.of());
         f.entry().followTravelGiveUpUntilMs = System.currentTimeMillis() + 60_000;
         BotFerryManager.ThreatCheck previousThreat = BotFerryManager.threatCheck;
-        BotFerryManager.threatCheck = bot -> false;
+        BotFerryManager.threatCheck = (bot, eventName) -> false;
 
         try (MovementRecorder movement = new MovementRecorder()) {
             // Mid-ocean there is nothing to give up to: the tick stays consumed, no warp.

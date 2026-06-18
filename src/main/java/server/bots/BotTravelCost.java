@@ -84,9 +84,10 @@ final class BotTravelCost {
                 }
             }
             if (options.withFerry()) {
-                BotFerryManager.FerryRoute ferry = BotFerryManager.routeBoardingAt(mapId);
-                if (ferry != null && options.meso() >= ferry.ticketCost()) {
-                    offer(frontier, seconds, ferry.destinationMapId(), cost + ferrySeconds, hops);
+                for (BotFerryManager.FerryRoute ferry : BotFerryManager.routesBoardingAt(mapId)) {
+                    if (options.meso() >= ferry.ticketCost()) {
+                        offer(frontier, seconds, ferry.destinationMapId(), cost + ferrySeconds, hops);
+                    }
                 }
             }
         }
