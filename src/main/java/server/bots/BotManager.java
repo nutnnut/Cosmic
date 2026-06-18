@@ -4360,9 +4360,36 @@ public class BotManager {
             return false;
         }
         if (System.currentTimeMillis() >= entry.deadUntil) {
+            // In a standard PQ/event a real player lies at the tomb until they press OK; there is no
+            // legal in-instance revive. While a teammate is still alive in THIS map, keep lying dead
+            // and re-check (don't exit yet) — once none remain here (all dead, or they advanced to
+            // the next stage) respawnBot runs the legal revive-and-exit path.
+            if (hasLiveEventMateInMap(bot)) {
+                entry.deadUntil = System.currentTimeMillis() + DEAD_EVENT_WAIT_MS;
+                return true;
+            }
             respawnBot(entry, bot, owner);
         }
         return true;
+    }
+
+    // Re-check cadence for a bot lying dead in a PQ while teammates still fight in the same map.
+    private static final long DEAD_EVENT_WAIT_MS = 2_000L;
+
+    /** True when the bot is in a standard (non-CPQ) EIM event and another registered member is alive
+     *  in the bot's current map — the cue to stay dead at the tomb rather than exit the run. */
+    private static boolean hasLiveEventMateInMap(Character bot) {
+        var eim = bot.getEventInstance();
+        if (eim == null || (bot.getMap() != null && bot.getMap().isCPQMap())) {
+            return false;
+        }
+        int mapId = bot.getMapId();
+        for (Character p : eim.getPlayers()) {
+            if (p != null && p.getId() != bot.getId() && p.getHp() > 0 && p.getMapId() == mapId) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private boolean runCommonTickSystems(BotEntry entry, Character bot, Character owner, boolean runAiTick) {
@@ -4973,10 +5000,31 @@ public class BotManager {
             entry.autopilotLastDeathAtMs = deathNow;
         }
 
-        // Inside a PQ/event instance a town respawn can't re-enter the run — keep the
-        // legacy warp-to-owner there so the party isn't down a member for the whole PQ.
-        boolean inEvent = bot.getEventInstance() != null
-                || (owner != null && owner.getEventInstance() != null)
+        // Standard PQ/event death exit, identical to a real player pressing OK on the death popup
+        // (ChangeMapHandler): eim.revivePlayer runs the script's playerRevive (unregister + maybe
+        // end the run if the leader leaves or the team drops below minimum), then respawn to the
+        // event's return map. There is NO legal teleport to a teammate, so the old warp-to-owner is
+        // gone. The "stay dead while a teammate is still alive here" wait happens in handleDeadTick,
+        // so by the time we get here the bot is the last live member in its map (all dead/advanced).
+        var botEim = bot.getEventInstance();
+        if (botEim != null && (bot.getMap() == null || !bot.getMap().isCPQMap())) {
+            if (botEim.revivePlayer(bot)) {
+                bot.respawn(bot.getMap().getReturnMapId());
+            }
+            if (!groundAfterMapChange(entry, bot)) {
+                Point cur = bot.getPosition();
+                Point ground = BotPhysicsEngine.findGroundPoint(bot.getMap(), new Point(cur.x, cur.y - 1));
+                BotPhysicsEngine.teleportTo(entry, bot, ground != null ? ground : cur);
+                BotMovementManager.resetEntryStateAfterTeleport(entry);
+                BotMovementManager.broadcastMovement(entry);
+            }
+            botSay(bot, randomReply(RESPAWN_REPLIES));
+            bot.changeFaceExpression(Emote.GLARE.getValue());
+            return;
+        }
+        // CPQ (no tomb — Character.playerDead returns early on CP loss) and owner-event / PQ-hook
+        // cases the bot isn't itself an EIM member: keep the legacy handling.
+        boolean inEvent = (owner != null && owner.getEventInstance() != null)
                 || BotPqHooks.requiresGrind(entry, bot)
                 || BotPqHooks.requiresFollow(entry, bot);
         if (inEvent && owner != null) {
