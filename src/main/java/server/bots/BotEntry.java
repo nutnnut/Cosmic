@@ -282,6 +282,12 @@ public class BotEntry {
     // A scheduled logout is mid-flight: the bot said goodbye + left its party and will disconnect after
     // a short delay. Guards against the scheduler re-triggering the goodbye sequence on the next sweep.
     volatile boolean loggingOut = false;
+    // Graceful logout linger: a scheduled logout first retreats to a safe town and stands at a random
+    // spot until this deadline, so the hub feels alive and the bot never vanishes mid-dungeon. The tick's
+    // logout branch drives the town trip + loiter; logoutDisconnecting guards the goodbye/disconnect once.
+    long logoutLingerUntilMs = 0L;
+    java.awt.Point logoutAnchor = null;
+    boolean logoutDisconnecting = false;
     long autopilotNextStragglerCheckAtMs = 0L;
     boolean autopilotWaitingForStragglers = false;
     // Why the LAST actual straggler RECOMPUTE decided to wait (tripping member + metric), or null

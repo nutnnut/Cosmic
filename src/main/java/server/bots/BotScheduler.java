@@ -71,9 +71,16 @@ public final class BotScheduler {
         sweep();
     }
 
+    /** Hourly online target, scaled by POPULATION_MULTIPLIER so the whole population is adjustable
+     *  without rewriting the curve/noise. */
+    private static int scaledTarget(int hour, int noise, double roll) {
+        int base = BotScheduleMath.targetForHour(BotManager.cfg.POPULATION_CURVE, hour, noise, roll);
+        return Math.max(0, (int) Math.round(base * BotManager.cfg.POPULATION_MULTIPLIER));
+    }
+
     public List<String> statusLines() {
         int hour = LocalTime.now().getHour();
-        int target = BotScheduleMath.targetForHour(BotManager.cfg.POPULATION_CURVE, hour, 0, 0.5);
+        int target = scaledTarget(hour, 0, 0.5);
         List<ManagedBot> managed = ManagedBotService.getInstance().loadAll();
         int schedulable = 0;
         int live = 0;
@@ -110,8 +117,7 @@ public final class BotScheduler {
         long now = System.currentTimeMillis();
         int hour = LocalTime.now().getHour();
         long epochDay = LocalDate.now().toEpochDay();
-        int target = BotScheduleMath.targetForHour(BotManager.cfg.POPULATION_CURVE, hour,
-                BotManager.cfg.POPULATION_NOISE, ThreadLocalRandom.current().nextDouble());
+        int target = scaledTarget(hour, BotManager.cfg.POPULATION_NOISE, ThreadLocalRandom.current().nextDouble());
 
         BotManager bm = BotManager.getInstance();
         List<ManagedBot> managed = ManagedBotService.getInstance().loadAll();

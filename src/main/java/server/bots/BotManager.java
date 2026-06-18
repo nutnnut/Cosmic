@@ -132,6 +132,8 @@ public class BotManager {
                 15, 15, 14, 14, 15, 14, 15, 16, 15, 12, 10, 7 // 12-23
         };
         public int POPULATION_NOISE = 2;                   // +/- jitter on the hourly target
+        public double POPULATION_MULTIPLIER = 1.0;         // scales the whole online target up/down, so bot
+                                                           // count is adjustable without editing the curve/noise
         public int MANAGED_POOL_MAX = 60;                  // hard cap on auto-generated managed bots
         public int HARDCORE_CAP = 5;                       // max bots that never retire (the veterans)
         public boolean POPULATION_AUTOGEN = true;          // generate fresh bots when the pool is short
@@ -827,9 +829,11 @@ public class BotManager {
             "had fun, cya", "see ya around", "later", "later all", "peace", "gn", "gn all", "off i go");
 
     /**
-     * Graceful scheduled logout of a live managed bot: say goodbye (personality-gated), leave the party
-     * so it doesn't linger as an offline member, then disconnect after a short human-like beat (5-15s).
-     * Idempotent — the {@code loggingOut} guard stops a later sweep from re-running the sequence.
+     * Graceful scheduled logout of a live managed bot: instead of vanishing on the spot, it arms a
+     * 0-5 min "linger" deadline. The autopilot tick's logout branch ({@link #tickLogout}) retreats the
+     * bot to a safe town, stands it at a random spot, and only then ({@link #finishLoggingOut}) says
+     * goodbye, leaves the party, and disconnects — so the bot never disappears mid-dungeon and town hubs
+     * feel populated. Idempotent — the {@code loggingOut} guard stops a later sweep from re-arming it.
      */
     public void logoutManagedBot(int charId) {
         BotEntry entry = getEntryByBotCharId(charId);
@@ -837,23 +841,62 @@ public class BotManager {
             return;
         }
         entry.loggingOut = true;
-        Character bot = entry.bot;
+        entry.logoutLingerUntilMs = System.currentTimeMillis() + randMs(0, 5 * 60_000);
+        entry.logoutAnchor = null;
+        entry.logoutDisconnecting = false;
+    }
 
-        // 1. Goodbye, gated by chattiness (a quiet bot just leaves). Party chat if grouped so mates see
-        //    the "ty"; otherwise open map chat.
+    /**
+     * Logout-linger tick branch (runs while {@code loggingOut}, before the normal grind flow): retreat to
+     * a safe town and stand at a random spot until the linger deadline, then hand off to
+     * {@link #finishLoggingOut}. Never fights (loiter with {@code runAiTick=false}).
+     */
+    private void tickLogout(BotEntry entry, Character bot, Point botPos, boolean runAiTick) {
+        if (System.currentTimeMillis() >= entry.logoutLingerUntilMs) {
+            finishLoggingOut(entry, bot);
+            return;
+        }
+        MapleMap map = bot.getMap();
+        // Still in a live (monster) map with a town to return to: return-scroll / warp there first.
+        if (canReturnToDifferentMap(map) && map.getAllMonsters().stream().anyMatch(Monster::isAlive)) {
+            clearMode(entry);
+            entry.grindTarget = null;
+            entry.degenAttackDone = false;
+            BotPhysicsEngine.idleOnGround(entry, bot);
+            if (!tryUseReturnScroll(bot)) {
+                bot.changeMap(map.getReturnMap());
+            }
+            groundAfterMapChange(entry, bot);
+            entry.logoutAnchor = null; // re-pick a spot in the destination town
+            return;
+        }
+        // In a safe map: walk to a random nearby spot once, then idle there until the deadline.
+        if (entry.logoutAnchor == null) {
+            // wander 150-700px to one side of where it landed, so bots spread out across the town
+            int spread = (150 + ThreadLocalRandom.current().nextInt(551))
+                    * (ThreadLocalRandom.current().nextBoolean() ? 1 : -1);
+            entry.logoutAnchor = new Point(botPos.x + spread, botPos.y);
+            BotMovementManager.resetEntryState(entry);
+        }
+        loiterAtAnchor(entry, bot, botPos, entry.logoutAnchor, false);
+    }
+
+    /** Say goodbye (chattiness-gated), leave the party, and disconnect after a short human-like beat.
+     *  Guarded by {@code logoutDisconnecting} so the per-tick logout branch only fires it once. */
+    private void finishLoggingOut(BotEntry entry, Character bot) {
+        if (entry.logoutDisconnecting) {
+            return;
+        }
+        entry.logoutDisconnecting = true;
         BotPersonality p = entry.personality != null ? entry.personality : BotPersonality.defaults();
         if (ThreadLocalRandom.current().nextDouble() < p.chattiness()) {
             botSayParty(bot, randomReply(LOGOUT_GOODBYE_MSGS));
         }
-
-        // 2. Leave the party before going (clean exit, not a stale offline member).
         net.server.world.Party party = bot.getParty();
         if (party != null && bot.getClient() != null) {
             net.server.world.Party.leaveParty(party, bot.getClient());
         }
-
-        // 3. Disconnect after a short beat so the goodbye actually shows and the exit looks human.
-        after(randMs(5_000, 15_000), () -> finishManagedLogout(bot));
+        after(randMs(3_000, 8_000), () -> finishManagedLogout(bot));
     }
 
     private void finishManagedLogout(Character bot) {
@@ -2886,6 +2929,14 @@ public class BotManager {
                     BotPerformanceMonitor.record("tick-map-change", System.nanoTime() - tMapChange);
                 }
             }
+            return;
+        }
+
+        // Logging out: retreat to a safe town and stand at a random spot until the linger deadline,
+        // then say goodbye + disconnect. Takes precedence over grind/follow so the bot stops fighting
+        // the moment its session ends and never vanishes mid-dungeon.
+        if (entry.loggingOut) {
+            tickLogout(entry, bot, botPos, runAiTick);
             return;
         }
 
