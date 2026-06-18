@@ -534,9 +534,10 @@ final class BotPotionManager {
     static boolean requestPotShare(BotEntry entry, Character bot, boolean forHp, boolean bypassShareLimits) {
         long startedAt = BotPerformanceMonitor.start();
         Character owner = entry.owner;
-        // owner == bot is a self-owned (@botme) bot: there is no separate owner to beg pots from,
-        // so skip the share request entirely (it would target itself).
-        if (owner == null || owner == bot || bot.getTrade() != null || entry.pendingTradeCategory != null) {
+        // owner == bot is a self-owned (@botme) bot: no separate owner to beg pots from. Skip UNLESS it's
+        // in a crew — then it can request from crewmates (the donor pick resolves the crew cohort).
+        boolean noCohort = owner == null || (owner == bot && entry.crewGroupId == null);
+        if (noCohort || bot.getTrade() != null || entry.pendingTradeCategory != null) {
             BotPerformanceMonitor.recordSince("potion-request", startedAt);
             return false;
         }
@@ -603,7 +604,7 @@ final class BotPotionManager {
         long startedAt = BotPerformanceMonitor.start();
         BotEntry bestEntry = null;
         int bestCount = 0;
-        for (BotEntry sibling : BotManager.getInstance().getBotEntries(owner.getId())) {
+        for (BotEntry sibling : BotManager.getInstance().shareCandidateEntries(owner.getId(), excludedEntry)) {
             if (sibling == excludedEntry || sibling.bot == null || sibling.bot.getMapId() != recipient.getMapId()) {
                 continue;
             }

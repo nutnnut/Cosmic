@@ -802,6 +802,8 @@ public class BotManager {
         try {
             Character botChar = loadOfflineBot(charId, world, channel);
             BotEntry entry = registerSpawnedBot(charId, botChar, botChar); // self-owned: owner == bot
+            ManagedBotService.ManagedBot mb = ManagedBotService.getInstance().get(charId);
+            entry.crewGroupId = mb != null ? mb.groupId() : null; // crewmates share like an owned party
             startTakeoverAutopilot(entry, botChar);
             ManagedBotService.getInstance().touchOnline(charId);
             return true;
@@ -1108,6 +1110,46 @@ public class BotManager {
             return List.of();
         }
         return List.copyOf(entries);
+    }
+
+    /** Same-map, online crewmates of {@code bot} (same {@code managed_bot.group_id}), excluding itself.
+     *  Empty when the bot isn't crewed — the SSOT for "who is in my crew right now". A crew shares gear/
+     *  ammo/supplies like an owned party; soloists/dynamic-party bots have no crew, so they never trade. */
+    List<BotEntry> crewMatesOnMap(Character bot) {
+        if (bot == null) {
+            return List.of();
+        }
+        BotEntry self = getEntryByBotCharId(bot.getId());
+        Integer gid = self != null ? self.crewGroupId : null;
+        if (gid == null || bot.getMap() == null) {
+            return List.of();
+        }
+        List<BotEntry> out = new ArrayList<>();
+        for (Character c : bot.getMap().getCharacters()) {
+            if (c == bot || !(c.getClient() instanceof BotClient)) {
+                continue;
+            }
+            BotEntry e = getEntryByBotCharId(c.getId());
+            if (e != null && gid.equals(e.crewGroupId)) {
+                out.add(e);
+            }
+        }
+        return out;
+    }
+
+    /** Supply/gear share candidates for {@code needyEntry}: the owner's stable (by {@code ownerId}) PLUS,
+     *  for a self-owned CREW bot, its same-map crewmates. SSOT used by the potion/ammo share donor picks
+     *  so crews share like an owned party while solo/dynamic bots (owner stable = just themselves) don't. */
+    List<BotEntry> shareCandidateEntries(int ownerId, BotEntry needyEntry) {
+        List<BotEntry> out = new ArrayList<>(getBotEntries(ownerId));
+        if (needyEntry != null && needyEntry.crewGroupId != null && needyEntry.bot != null) {
+            for (BotEntry ce : crewMatesOnMap(needyEntry.bot)) {
+                if (!out.contains(ce)) {
+                    out.add(ce);
+                }
+            }
+        }
+        return out;
     }
 
     /** Console/admin: read-only snapshot of every registered bot entry across all owners. */

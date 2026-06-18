@@ -49,6 +49,17 @@ import static org.mockito.Mockito.when;
 
 class BotManagerTest {
     @Test
+    void crewCohortEmptyForUnregisteredBot() {
+        // Isolation invariant: a bot that isn't in a crew (here, not even registered) has an EMPTY crew
+        // cohort, so solo / dynamic-party bots never trade gear/ammo/supplies with strangers.
+        Character bot = mock(Character.class);
+        when(bot.getId()).thenReturn(987654321);
+        assertTrue(BotManager.getInstance().crewMatesOnMap(bot).isEmpty());
+        // shareCandidateEntries with no crew falls back to just the owner's stable (here, empty).
+        assertTrue(BotManager.getInstance().shareCandidateEntries(987654321, null).isEmpty());
+    }
+
+    @Test
     void shouldParseTransferBotCommands() {
         BotCommandParser.BotTransferCommand command = BotCommandParser.matchBotTransferCommand("transfer Jason to Bob");
 

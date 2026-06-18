@@ -113,14 +113,12 @@ final class BotOfferManager {
         // to a sibling if this bot could actually wear it.
         BotEquipManager.autoEquip(bot, owner, entry.pendingLootOfferItem);
 
-        List<BotEntry> siblings = BotManager.getInstance().getBotEntries(owner.getId());
-        for (BotEntry sibling : siblings) {
-            if (sibling == entry || sibling.bot == null || sibling.bot.getMapId() != bot.getMapId()) {
-                continue;
-            }
-            GearOfferChoice choice = findBestGearOffer(entry, sibling.bot, bot);
+        // Share cohort: owner's stable for owned bots, crewmates for a self-owned crew bot, empty for
+        // soloists / dynamic-party bots (so strangers never get offered each other's loot).
+        for (Character sibling : eligibleBotRecipients(owner, bot)) {
+            GearOfferChoice choice = findBestGearOffer(entry, sibling, bot);
             if (choice != null) {
-                return offerGearItem(entry, bot, sibling.bot, choice.item(), choice.need());
+                return offerGearItem(entry, bot, sibling, choice.item(), choice.need());
             }
         }
 
@@ -252,7 +250,6 @@ final class BotOfferManager {
         Character owner = entry.owner;
         long now = System.currentTimeMillis();
         if (owner == null
-                || owner == bot // self-owned bot can't trade loot to itself
                 || item == null
                 || entry.pendingGearPromptAt > now
                 || BotChatManager.isOwnerIdle(entry)
@@ -562,11 +559,14 @@ final class BotOfferManager {
 
     private static Character findLootOfferRecipient(BotEntry entry, Character bot, Item item) {
         Character owner = entry.owner;
-        if (owner == null || owner == bot) { // self-owned bot owns no cohort to receive loot
+        if (owner == null) {
             return null;
         }
+        // Self-owned bot: never offer to itself; its cohort is its CREW (eligibleBotRecipients returns
+        // crewmates, empty for soloists / dynamic-party bots). A human-owned bot can also offer to the owner.
+        boolean selfOwned = owner == bot;
         if (ItemConstants.isThrowingStar(item.getItemId())) {
-            if (isBetterThrowingStarForRecipient(owner, bot, item)) {
+            if (!selfOwned && isBetterThrowingStarForRecipient(owner, bot, item)) {
                 return owner;
             }
             return findWeakestThrowingStarRecipient(owner, bot, item);
@@ -576,7 +576,7 @@ final class BotOfferManager {
             return null;
         }
 
-        if (gearOfferNeed(entry, owner, bot, item) != null) {
+        if (!selfOwned && gearOfferNeed(entry, owner, bot, item) != null) {
             return owner;
         }
         for (Character member : eligibleBotRecipients(owner, bot)) {
@@ -746,6 +746,17 @@ final class BotOfferManager {
     }
 
     private static List<Character> eligibleBotRecipients(Character owner, Character donor) {
+        if (owner == donor) {
+            // Self-owned bot: its share cohort is its CREW (empty for soloists / dynamic-party bots, so
+            // strangers never trade). Mirrors the owned-bot stable below — same SSOT as supply sharing.
+            List<Character> crew = new ArrayList<>();
+            for (BotEntry e : BotManager.getInstance().crewMatesOnMap(donor)) {
+                if (e.bot != null) {
+                    crew.add(e.bot);
+                }
+            }
+            return crew;
+        }
         BotOwnershipService ownership = BotOwnershipService.getInstance();
         return owner.getPartyMembersOnSameMap().stream()
                 .filter(member -> member != null)

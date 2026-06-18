@@ -143,7 +143,7 @@ final class BotAmmoManager {
 
     private static AmmoDonorPlan selectAmmoDonor(int ownerId, int mapId, BotEntry excludedEntry, WeaponType needyWeaponType) {
         AmmoDonorPlan best = null;
-        for (BotEntry sibling : BotManager.getInstance().getBotEntries(ownerId)) {
+        for (BotEntry sibling : BotManager.getInstance().shareCandidateEntries(ownerId, excludedEntry)) {
             if (sibling == excludedEntry || sibling.bot == null || sibling.bot.getMapId() != mapId) {
                 continue;
             }
