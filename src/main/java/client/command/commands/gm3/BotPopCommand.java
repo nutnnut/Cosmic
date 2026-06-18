@@ -148,7 +148,9 @@ public class BotPopCommand extends Command {
      * (name, level, job; level high->low); {@code @botpop wipe confirm} executes. Each bot is stopped,
      * logged out of the world, then deleted via the SSOT path ({@link CharacterDeletionService}, which
      * clears inventory/equips/pets/rings and all per-char rows the FK cascade misses), and its now-empty
-     * bot account is removed. Repopulate fresh Lv1 with {@code @spawnbot generate confirm}.
+     * bot account is removed. A bot marked managed on an account that holds OTHER characters is skipped
+     * entirely (shared/real account, not a dedicated bot account). Repopulate fresh Lv1 with
+     * {@code @spawnbot generate confirm}.
      */
     private static void wipe(Character player, String[] params) {
         List<ManagedBotService.ManagedBot> managed = ManagedBotService.getInstance().loadAll();
@@ -178,21 +180,26 @@ public class BotPopCommand extends Command {
         int gmAcc = player.getAccountID();
         int wiped = 0, failed = 0;
         for (BotRow r : roster) {
+            // Scope guard: a generated bot has its own single-char account. An account with other
+            // characters is a shared/real account a char was @botpop-added to — never delete that char.
+            Integer accId = accountIdOf(r.cid()); // read BEFORE delete removes the characters row
+            if (accId == null || charCountOnAccount(accId) != 1) {
+                failed++;
+                player.yellowMessage("  skip " + r.name() + ": account has other characters (not a dedicated bot account)");
+                continue;
+            }
             bm.removeBotByCharId(r.cid()); // stop the bot AI tick before deleting underneath it
             Character online = player.getWorldServer().getPlayerStorage().getCharacterById(r.cid());
             if (online != null && online.getClient() != null) {
                 online.getClient().disconnect(false, false); // leave the world (and final-save) before the DB delete
             }
-            Integer accId = accountIdOf(r.cid()); // read BEFORE delete removes the characters row
             CharacterDeletionService.Result res = CharacterDeletionService.deleteCharacter(r.cid(), gmAcc);
             if (!res.isSuccess()) {
                 failed++;
                 player.yellowMessage("  skip " + r.name() + ": " + res.getCommandMessage());
                 continue;
             }
-            if (accId != null) {
-                deleteAccountIfEmpty(accId); // bot accounts are single-char; childless-check spares shared/real ones
-            }
+            deleteAccountIfEmpty(accId); // single-char account is now empty -> remove it
             wiped++;
         }
         player.yellowMessage("Wiped " + wiped + " managed bot(s)" + (failed > 0 ? " (" + failed + " skipped)" : "") + ".");
@@ -235,19 +242,28 @@ public class BotPopCommand extends Command {
         }
     }
 
+    /** Number of characters on the account; -1 if the lookup fails (treated as unsafe by callers). */
+    private static int charCountOnAccount(int accId) {
+        try (Connection con = DatabaseConnection.getConnection();
+             PreparedStatement ps = con.prepareStatement("SELECT COUNT(*) AS n FROM characters WHERE accountid = ?")) {
+            ps.setInt(1, accId);
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next() ? rs.getInt("n") : 0;
+            }
+        } catch (SQLException e) {
+            return -1;
+        }
+    }
+
     /** Delete the account only if it has no characters left — guards against nuking a shared/real account. */
     private static void deleteAccountIfEmpty(int accId) {
+        if (charCountOnAccount(accId) != 0) {
+            return; // leaving a non-empty account row alone; harmless if the count lookup failed
+        }
         try (Connection con = DatabaseConnection.getConnection();
-             PreparedStatement chk = con.prepareStatement("SELECT COUNT(*) AS n FROM characters WHERE accountid = ?")) {
-            chk.setInt(1, accId);
-            try (ResultSet rs = chk.executeQuery()) {
-                if (rs.next() && rs.getInt("n") == 0) {
-                    try (PreparedStatement del = con.prepareStatement("DELETE FROM accounts WHERE id = ?")) {
-                        del.setInt(1, accId);
-                        del.executeUpdate();
-                    }
-                }
-            }
+             PreparedStatement del = con.prepareStatement("DELETE FROM accounts WHERE id = ?")) {
+            del.setInt(1, accId);
+            del.executeUpdate();
         } catch (SQLException ignored) {
             // leaving an empty account row is harmless; the char/inventory cleanup already succeeded
         }
