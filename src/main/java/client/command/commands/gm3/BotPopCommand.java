@@ -34,7 +34,7 @@ import java.util.List;
  */
 public class BotPopCommand extends Command {
     {
-        setDescription("Living-server bot population: status / on / off / list / sweep / add <name> / remove <name> / crew <id|none> <name...> / wipe [confirm].");
+        setDescription("Living-server bot population: status / on / off / list / sweep / clear / add <name> / remove <name> / crew <id|none> <name...> / wipe [confirm].");
     }
 
     @Override
@@ -72,6 +72,14 @@ public class BotPopCommand extends Command {
             case "add" -> manage(player, params, true);
             case "remove" -> manage(player, params, false);
             case "crew" -> crew(player, params);
+            case "clear" -> {
+                int n = BotManager.getInstance().disconnectAllBots();
+                player.yellowMessage("Disconnected " + n + " online bot(s).");
+                if (BotManager.cfg.POPULATION_SCHED_ENABLED) {
+                    player.yellowMessage("Scheduler still ON - the next sweep respawns managed bots. "
+                            + "Run @botpop off first to keep them out.");
+                }
+            }
             case "wipe" -> wipe(player, params);
             default -> print(player, scheduler.statusLines());
         }

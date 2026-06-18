@@ -833,6 +833,31 @@ public class BotManager {
     }
 
     /**
+     * Hard-disconnect every currently-online bot (managed population bots AND owned companions): cancel
+     * each bot's tick and drop its world session immediately. Returns how many were disconnected. Does
+     * NOT delete anything — the characters stay in the DB and can be respawned/rescheduled. Unlike the
+     * scheduler's graceful linger logout this is instant, for an admin "clear the world now". Note: if
+     * the population scheduler is still enabled, the next sweep will respawn managed bots toward target.
+     */
+    public int disconnectAllBots() {
+        List<Character> online = new ArrayList<>();
+        for (List<BotEntry> entries : bots.values()) {
+            for (BotEntry e : entries) {
+                if (e.bot != null) {
+                    online.add(e.bot);
+                }
+            }
+        }
+        for (Character bot : online) {
+            removeBotByCharId(bot.getId());          // cancel tick + drop the entry
+            if (bot.getClient() != null) {
+                bot.getClient().disconnect(false, false); // leave the world (with a final save)
+            }
+        }
+        return online.size();
+    }
+
+    /**
      * Spawn a managed (server-generated) bot self-owned into the population world/channel, with no
      * requester — used by {@link BotScheduler}. Guards against double-spawning a bot that is already
      * live or online as a player. Mirrors {@link #spawnOwnerlessBot} minus the requester context.
