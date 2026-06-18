@@ -63,7 +63,24 @@ public final class BotScheduler {
     // ---- @botpop admin surface ----
 
     public void setEnabled(boolean on) {
+        boolean was = BotManager.cfg.POPULATION_SCHED_ENABLED;
         BotManager.cfg.POPULATION_SCHED_ENABLED = on;
+        if (on && !was) {
+            kickFastStart();
+        }
+    }
+
+    /** Just toggled on: sweep NOW and again every POPULATION_FASTSTART_INTERVAL_MS across
+     *  POPULATION_FASTSTART_MS, so the world ramps in over ~30s instead of waiting up to a full
+     *  POPULATION_SWEEP_MS for the steady timer's next tick. Combined with the small per-sweep fill
+     *  this trickles bots in (organic) rather than bursting them at one timestamp. Each sweep
+     *  self-guards on the enabled flag, so disabling again mid-ramp stops it. */
+    private void kickFastStart() {
+        TimerManager tm = TimerManager.getInstance();
+        long step = Math.max(1_000L, BotManager.cfg.POPULATION_FASTSTART_INTERVAL_MS);
+        for (long t = 0; t <= BotManager.cfg.POPULATION_FASTSTART_MS; t += step) {
+            tm.schedule(this::sweep, t);
+        }
     }
 
     /** Force a reconcile now (no-op if disabled). */

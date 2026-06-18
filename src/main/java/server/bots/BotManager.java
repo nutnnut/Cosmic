@@ -143,11 +143,16 @@ public class BotManager {
                                                            // throttle.
         public int HARDCORE_CAP = 5;                       // max bots that never retire (the veterans)
         public boolean POPULATION_AUTOGEN = true;          // generate fresh bots when the pool is short
-        public double POPULATION_AUTOGEN_FILL = 0.7;       // fraction of the remaining deficit to generate per
-                                                           // sweep (fast catch-up after a wipe/boot; tracks the
-                                                           // multiplier since the deficit does)
+        public double POPULATION_AUTOGEN_FILL = 0.2;       // fraction of the remaining deficit to generate per
+                                                           // sweep. Small = organic trickle; the fast-start ramp
+                                                           // (below) is what makes a fresh world fill quickly,
+                                                           // not a big per-sweep burst. Tracks the multiplier
+                                                           // since the deficit does.
         public int POPULATION_AUTOGEN_MAX = 20;            // hard cap on bots generated in a single sweep, so a
                                                            // huge deficit can't stall the timer thread
+        public long POPULATION_FASTSTART_MS = 30_000L;     // on enable, ramp the population in over this window
+        public long POPULATION_FASTSTART_INTERVAL_MS = 5_000L; // ...sweeping this often during the ramp (vs the
+                                                           // POPULATION_SWEEP_MS steady cadence afterwards)
         public double POPULATION_CREW_CHANCE = 0.20;       // chance an autogen event spawns a fresh CREW (vs a soloist)
         public int POPULATION_CREW_MIN = 2;                // crew size range when auto-generating a crew
         public int POPULATION_CREW_MAX = 4;
