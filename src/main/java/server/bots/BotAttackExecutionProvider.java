@@ -340,7 +340,7 @@ final class BotAttackExecutionProvider {
     /**
      * Returns the closest live mob breaching the retreat band that is nearer to the bot
      * than the active target, or null if none. Same gates as {@link #isAnyMobNearerThanTarget}
-     * (bow/crossbow/claw/gun only). Used by grind mode to swap onto a crowding threat
+     * (bow/crossbow only). Used by grind mode to swap onto a crowding threat
      * instead of fleeing the original target while shooting in the wrong direction.
      */
     static server.life.Monster findCloserThreatMob(Character bot, Point botPos, Point targetPos) {
@@ -431,7 +431,7 @@ final class BotAttackExecutionProvider {
     /**
      * True when live mobs breach the tight retreat band ({@code dx <= RETREAT_THRESHOLD_X},
      * {@code dy <= DEGENERATE_RANGE_Y}) on BOTH horizontal sides — the bot is pincered and
-     * a one-step local retreat just walks it into the other wall. Bow/crossbow/claw/gun only.
+     * a one-step local retreat just walks it into the other wall. Bow/crossbow only.
      */
     static boolean isSurrounded(Character bot, Point botPos) {
         if (!isDegenerateCapableRangedWeapon(getEquippedWeaponType(bot)) || botPos == null) {
@@ -609,11 +609,17 @@ final class BotAttackExecutionProvider {
         };
     }
 
+    // Only the true distance-keepers (bow/crossbow) get the "back off for spacing" playstyle that
+    // this predicate gates: degenerate close-range route, ranged-spacing retreat, surround-breakout,
+    // crowding-swap. Claws (throwing stars) and guns (bullets) fire fine point-blank — an assassin
+    // or gunslinger faceroll mobs at dx=0 — so including them made the bot endlessly retreat from a
+    // mob it was standing on (RETrng freeze / rope oscillation, pathlogs 2026-06-18). Their attack
+    // route is still RANGED (see getAttackRoute); they just never need to open distance.
+    // ponytail: lost the no-ammo->melee fallback for starless claw/gun bots; they should resupply
+    // ammo instead of punching, so acceptable. Restore via a separate predicate if that regresses.
     static boolean isDegenerateCapableRangedWeapon(WeaponType weaponType) {
         return weaponType == WeaponType.BOW
-                || weaponType == WeaponType.CROSSBOW
-                || weaponType == WeaponType.CLAW
-                || weaponType == WeaponType.GUN;
+                || weaponType == WeaponType.CROSSBOW;
     }
 
     private static boolean shouldDegenerateForNoAmmo(WeaponType weaponType, Character bot) {
