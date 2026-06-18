@@ -54,7 +54,7 @@ final class BotOfferManager {
             return;
         }
         Character owner = entry.owner;
-        if (owner == null) {
+        if (owner == null || owner == bot) { // self-owned bot has no distinct owner to offer to
             return;
         }
 
@@ -68,7 +68,7 @@ final class BotOfferManager {
 
     static void requestBestUpgradeFromOwner(BotEntry entry, Character bot) {
         Character owner = entry.owner;
-        if (owner == null) {
+        if (owner == null || owner == bot) { // self-owned bot has no distinct owner to ask
             return;
         }
         if (entry.pendingAction != null || entry.pendingTradeCategory != null || hasOfferReservation(entry)) {
@@ -86,7 +86,7 @@ final class BotOfferManager {
     }
 
     static boolean offerBestRecommendedGear(BotEntry entry, Character bot, Character owner) {
-        if (owner == null) {
+        if (owner == null || owner == bot) { // self-owned bot can't trade gear to itself
             return false;
         }
 
@@ -252,6 +252,7 @@ final class BotOfferManager {
         Character owner = entry.owner;
         long now = System.currentTimeMillis();
         if (owner == null
+                || owner == bot // self-owned bot can't trade loot to itself
                 || item == null
                 || entry.pendingGearPromptAt > now
                 || BotChatManager.isOwnerIdle(entry)
@@ -561,7 +562,7 @@ final class BotOfferManager {
 
     private static Character findLootOfferRecipient(BotEntry entry, Character bot, Item item) {
         Character owner = entry.owner;
-        if (owner == null) {
+        if (owner == null || owner == bot) { // self-owned bot owns no cohort to receive loot
             return null;
         }
         if (ItemConstants.isThrowingStar(item.getItemId())) {

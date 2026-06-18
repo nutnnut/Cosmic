@@ -43,6 +43,14 @@ class BotOfferManagerTest {
     }
 
     @Test
+    void selfOwnedBotNeverOffersGearToItself() {
+        // A self-owned managed bot has owner == bot; offering would open a trade with itself
+        // ("trade declined"). The guard must short-circuit before any trade is queued.
+        Character bot = mock(Character.class);
+        assertFalse(BotOfferManager.offerBestRecommendedGear(null, bot, bot));
+    }
+
+    @Test
     void physicalRecipientStillRejectsOffTypeMatkWeaponOffers() {
         Character recipient = mock(Character.class);
         when(recipient.getJob()).thenReturn(Job.CROSSBOWMAN);
