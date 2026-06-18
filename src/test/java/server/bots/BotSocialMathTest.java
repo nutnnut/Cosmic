@@ -12,7 +12,7 @@ class BotSocialMathTest {
 
     private static BotPersonality p(double soc, double chat, double risk) {
         return new BotPersonality(1L, 1.0, new int[24], 60, 0.8, 0.0, 5, soc, chat, risk,
-                BotPersonality.Archetype.REGULAR, 60);
+                BotPersonality.Archetype.REGULAR, 60, 0, 0);
     }
 
     @Test

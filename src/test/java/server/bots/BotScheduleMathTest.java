@@ -43,9 +43,9 @@ class BotScheduleMathTest {
     @Test
     void onlineDesireZeroWhenNotActiveTodayElsePositive() {
         BotPersonality always = new BotPersonality(1L, 1.0, peakAt(20), 60, 0.8, 0.0, 5,
-                0.3, 0.3, 0.5, BotPersonality.Archetype.REGULAR, 60);
+                0.3, 0.3, 0.5, BotPersonality.Archetype.REGULAR, 60, 0, 0);
         BotPersonality never = new BotPersonality(1L, 0.0, peakAt(20), 60, 0.8, 0.0, 5,
-                0.3, 0.3, 0.5, BotPersonality.Archetype.REGULAR, 60);
+                0.3, 0.3, 0.5, BotPersonality.Archetype.REGULAR, 60, 0, 0);
         assertTrue(BotScheduleMath.onlineDesire(always, 20, 1, 100L) > 0.0);
         assertEquals(0.0, BotScheduleMath.onlineDesire(never, 20, 1, 100L), 1e-9);
         // Higher at the preferred hour than at a trough hour.

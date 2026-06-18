@@ -28,7 +28,9 @@ public record BotPersonality(
         double chattiness,          // 0..1: greeting / chat frequency
         double riskTolerance,       // 0..1: higher = willing to fight more dangerous mobs
         Archetype career,
-        int careerLenDays           // career length before retiring; Integer.MAX_VALUE = hardcore (never)
+        int careerLenDays,          // career length before retiring; Integer.MAX_VALUE = hardcore (never)
+        int plannedFirstJobId,      // chosen-at-creation 1st job (0 = none -> autopilot picks at lv10)
+        int plannedSecondJobId      // chosen-at-creation 2nd job (0 = none -> autopilot picks at lv30)
 ) {
     /** Career arc: how long a bot stays interested before it "leaves". HARDCORE never retires (capped count). */
     public enum Archetype { TOURIST, CASUAL, REGULAR, HARDCORE }
@@ -62,7 +64,7 @@ public record BotPersonality(
         int[] flat = new int[24];
         java.util.Arrays.fill(flat, 1);
         return new BotPersonality(0L, 1.0, flat, 60, 0.8, 0.0, 5,
-                0.3, 0.3, 0.5, Archetype.REGULAR, HARDCORE_FOREVER);
+                0.3, 0.3, 0.5, Archetype.REGULAR, HARDCORE_FOREVER, 0, 0);
     }
 
     /** Deterministic random personality seeded by the bot's character id (stable across restarts). */
@@ -87,7 +89,26 @@ public record BotPersonality(
                 r.nextDouble(),                       // chattiness
                 0.2 + r.nextDouble() * 0.7,           // risk 0.2-0.9
                 career,
-                careerLen);
+                careerLen,
+                0, 0);                                // planned jobs set by the managed-bot inflow, not the seed
+    }
+
+    /** Copy with the creation-time planned 1st/2nd job (null -> 0 = unplanned). The generated name is
+     *  flavored to the 1st job, so storing it here keeps name, stored plan, and eventual class aligned. */
+    public BotPersonality withPlannedJobs(client.Job first, client.Job second) {
+        return new BotPersonality(seed, daysActiveRatio, hourWeights, sessionLenMeanMin, farmIdleRatio,
+                breakFreqPerHour, breakLenMeanMin, sociability, chattiness, riskTolerance, career, careerLenDays,
+                first == null ? 0 : first.getId(), second == null ? 0 : second.getId());
+    }
+
+    /** The planned 1st job, or null if unplanned. */
+    public client.Job plannedFirstJob() {
+        return plannedFirstJobId == 0 ? null : client.Job.getById(plannedFirstJobId);
+    }
+
+    /** The planned 2nd job, or null if unplanned. */
+    public client.Job plannedSecondJob() {
+        return plannedSecondJobId == 0 ? null : client.Job.getById(plannedSecondJobId);
     }
 
     private static Archetype rollArchetype(Random r) {
@@ -200,7 +221,9 @@ public record BotPersonality(
                 + ";chat=" + fmt(chattiness)
                 + ";risk=" + fmt(riskTolerance)
                 + ";career=" + career.name()
-                + ";clen=" + careerLenDays;
+                + ";clen=" + careerLenDays
+                + ";pj1=" + plannedFirstJobId
+                + ";pj2=" + plannedSecondJobId;
     }
 
     /** Parse a saved blob; any missing/garbled field falls back to {@link #defaults()} (forward-compatible). */
@@ -213,6 +236,7 @@ public record BotPersonality(
         double days = d.daysActiveRatio, farm = d.farmIdleRatio, bfreq = d.breakFreqPerHour;
         double soc = d.sociability, chat = d.chattiness, risk = d.riskTolerance;
         int sess = d.sessionLenMeanMin, blen = d.breakLenMeanMin, clen = d.careerLenDays;
+        int pj1 = d.plannedFirstJobId, pj2 = d.plannedSecondJobId;
         int[] hours = d.hourWeights;
         Archetype career = d.career;
         for (String part : blob.split(";")) {
@@ -234,13 +258,15 @@ public record BotPersonality(
                     case "risk" -> risk = Double.parseDouble(v);
                     case "career" -> career = Archetype.valueOf(v);
                     case "clen" -> clen = Integer.parseInt(v);
+                    case "pj1" -> pj1 = Integer.parseInt(v);
+                    case "pj2" -> pj2 = Integer.parseInt(v);
                     default -> { /* unknown key: ignore (forward-compat) */ }
                 }
             } catch (RuntimeException ignored) {
                 // keep the default for this field
             }
         }
-        return new BotPersonality(seed, days, hours, sess, farm, bfreq, blen, soc, chat, risk, career, clen);
+        return new BotPersonality(seed, days, hours, sess, farm, bfreq, blen, soc, chat, risk, career, clen, pj1, pj2);
     }
 
     private static int[] parseHours(String v, int[] fallback) {

@@ -80,11 +80,17 @@ public final class BotGenerator {
      * if already at {@code cap}), and inserts the {@code managed_bot} row. Returns the new char id or -1.
      */
     public static int generateManaged(int world, int channel, int currentHardcore, int cap) {
+        // Plan the whole 1st->2nd job arc up front (reusing the same weighted/uniform pickers the
+        // autopilot uses), so the procedural name is flavored to the class the bot will actually become.
+        client.Job firstJob = BotBuildManager.pickWeightedJob(client.Job.BEGINNER);
+        client.Job secondJob = firstJob == null ? null : BotBuildManager.pickWeightedJob(firstJob);
         for (int attempt = 0; attempt < MAX_NAME_ATTEMPTS; attempt++) {
-            Result r = createBotCharacter(world, channel, BotNameGenerator.generate());
+            String name = firstJob == null ? BotNameGenerator.generate()
+                    : BotNameGenerator.generate(firstJob, secondJob);
+            Result r = createBotCharacter(world, channel, name);
             if (r.ok()) {
                 int charId = r.charId();
-                persistPersonality(charId, currentHardcore, cap);
+                persistPersonality(charId, currentHardcore, cap, firstJob, secondJob);
                 ManagedBotService.getInstance().insert(charId, null);
                 log.info("auto-generated managed bot charId={}", charId);
                 return charId;
@@ -109,12 +115,14 @@ public final class BotGenerator {
         return n;
     }
 
-    private static void persistPersonality(int charId, int currentHardcore, int cap) {
+    private static void persistPersonality(int charId, int currentHardcore, int cap,
+                                           client.Job firstJob, client.Job secondJob) {
         BotPersonality p = BotPersonality.random(charId);
         for (int guard = 1; guard <= 8 && p.isHardcore()
                 && !BotScheduleMath.hardcoreAllowed(currentHardcore, cap); guard++) {
             p = BotPersonality.random(charId + guard); // re-roll to a finite-career personality
         }
+        p = p.withPlannedJobs(firstJob, secondJob); // keep the name-tied job plan across any re-roll
         try {
             BotConfigService.getInstance().save(charId, p.serialize());
         } catch (RuntimeException e) {

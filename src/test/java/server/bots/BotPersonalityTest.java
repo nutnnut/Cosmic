@@ -1,9 +1,11 @@
 package server.bots;
 
+import client.Job;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /** WZ/DB-free tests for the personality model (deterministic generation, serialization, decay). */
@@ -54,7 +56,19 @@ class BotPersonalityTest {
     /** farm/idle, sociability, risk fixed; everything else neutral — for behavior-by-trait checks. */
     private static BotPersonality trait(double farmIdle, double sociability, double risk) {
         return new BotPersonality(1L, 1.0, new int[24], 60, farmIdle, 0.0, 5,
-                sociability, 0.3, risk, BotPersonality.Archetype.REGULAR, 60);
+                sociability, 0.3, risk, BotPersonality.Archetype.REGULAR, 60, 0, 0);
+    }
+
+    @Test
+    void plannedJobsRoundTripAndDefaultUnplanned() {
+        BotPersonality planned = BotPersonality.random(7L).withPlannedJobs(Job.THIEF, Job.ASSASSIN);
+        BotPersonality reparsed = BotPersonality.parse(planned.serialize());
+        assertEquals(Job.THIEF, reparsed.plannedFirstJob());
+        assertEquals(Job.ASSASSIN, reparsed.plannedSecondJob());
+
+        BotPersonality unplanned = BotPersonality.random(7L); // random() never sets a plan
+        assertNull(unplanned.plannedFirstJob());
+        assertNull(unplanned.plannedSecondJob());
     }
 
     @Test
@@ -89,13 +103,13 @@ class BotPersonalityTest {
     @Test
     void engagementDecaysWithLevelExceptHardcore() {
         BotPersonality regular = new BotPersonality(1L, 1.0, new int[24], 60, 0.8, 1.0, 5,
-                0.3, 0.3, 0.5, BotPersonality.Archetype.REGULAR, 60);
+                0.3, 0.3, 0.5, BotPersonality.Archetype.REGULAR, 60, 0, 0);
         assertTrue(regular.engagementMultiplier(1) > regular.engagementMultiplier(100),
                 "a leveling regular bot should taper off");
         assertTrue(regular.engagementMultiplier(200) < 0.5);
 
         BotPersonality hardcore = new BotPersonality(1L, 1.0, new int[24], 60, 0.8, 1.0, 5,
-                0.3, 0.3, 0.5, BotPersonality.Archetype.HARDCORE, BotPersonality.HARDCORE_FOREVER);
+                0.3, 0.3, 0.5, BotPersonality.Archetype.HARDCORE, BotPersonality.HARDCORE_FOREVER, 0, 0);
         assertTrue(hardcore.isHardcore());
         assertTrue(hardcore.engagementMultiplier(200) >= 0.6, "hardcore barely decays");
     }

@@ -9,6 +9,7 @@ import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.regex.Pattern;
 
@@ -72,9 +73,41 @@ public class BotNameGenerator {
             "Loot", "Rush", "Solo", "Carry", "Sweat", "Smega", "Whale", "Crit", "Buff", "Drop", "Kill"
     );
 
-    // Flat merged pool used for job-agnostic generation
+    // 2nd/3rd/4th class flavor, keyed by the PLANNED 2nd job — each explorer branch forks into distinct
+    // job trees, so an assassin (sin->hermit->night lord) must never read as a shadower (bandit tree).
+    // Only overlaid when the bot's 2nd job is planned; words are the tree's class names + signature skills.
+    private static final Map<Job, List<String>> ROOTS_BY_2ND = Map.ofEntries(
+            // WARRIOR
+            Map.entry(Job.FIGHTER, List.of("Fighter", "Crusade", "Hero", "Brandish", "Rage", "Combo")),
+            Map.entry(Job.PAGE, List.of("Page", "Paladin", "Charge", "Blast", "Divine", "Threaten")),
+            Map.entry(Job.SPEARMAN, List.of("Spear", "DrK", "Berserk", "Crusher", "Sacrifice", "Beholder")),
+            // MAGICIAN
+            Map.entry(Job.FP_WIZARD, List.of("Flame", "Meteor", "Poison", "Ifrit", "Ember", "Paralyze")),
+            Map.entry(Job.IL_WIZARD, List.of("Frost", "Blizz", "Ice", "Thunder", "Glacier", "Elquines")),
+            Map.entry(Job.CLERIC, List.of("Cleric", "Priest", "Bishop", "Holy", "Genesis", "Angel")),
+            // BOWMAN
+            Map.entry(Job.HUNTER, List.of("Hunter", "Ranger", "Bowmstr", "Phoenix", "Hurri", "Inferno")),
+            Map.entry(Job.CROSSBOWMAN, List.of("Sniper", "Marks", "Frostprey", "Pierce", "Strafe", "Blizzard")),
+            // THIEF
+            Map.entry(Job.ASSASSIN, List.of("Sin", "Hermit", "NightLord", "Avenger", "Triple", "Shadow")),
+            Map.entry(Job.BANDIT, List.of("Bandit", "Chief", "Shadower", "Boomerang", "Assault", "Meso")),
+            // PIRATE
+            Map.entry(Job.BRAWLER, List.of("Brawler", "Marauder", "Bucc", "Barrage", "Dragon", "Fist")),
+            Map.entry(Job.GUNSLINGER, List.of("Slinger", "Outlaw", "Corsair", "Octopus", "Burst", "Rapid"))
+    );
+
+    private static final List<String> ROOTS_2ND_ALL;
+    static {
+        List<String> all = new ArrayList<>();
+        for (List<String> p : ROOTS_BY_2ND.values()) all.addAll(p);
+        ROOTS_2ND_ALL = List.copyOf(all);
+    }
+
+    // Flat merged pool used for job-agnostic generation (job-agnostic names make no class claim, so the
+    // tree words are fine to mix here — the per-tree split only matters for FLAVORED names).
     private static final List<List<String>> ALL_POOLS = List.of(
-            ROOTS_UNISEX, ROOTS_WARRIOR, ROOTS_MAGE, ROOTS_BOWMAN, ROOTS_THIEF, ROOTS_PIRATE, ROOTS_MAPLE
+            ROOTS_UNISEX, ROOTS_WARRIOR, ROOTS_MAGE, ROOTS_BOWMAN, ROOTS_THIEF, ROOTS_PIRATE, ROOTS_MAPLE,
+            ROOTS_2ND_ALL
     );
 
     // ── Generic dictionary pool (freq-ranked, loaded from resource) ────────────
@@ -152,6 +185,21 @@ public class BotNameGenerator {
      */
     public static String generate(Job firstJob) {
         return generate(jobThemed(firstJob));
+    }
+
+    /**
+     * Generate a name flavored toward the planned 1st AND 2nd job: the 1st-job branch overlay plus the
+     * specific 2nd-job tree's class/skill words, so e.g. an assassin reads as Sin/Hermit/NightLord and
+     * never picks up a bandit-tree word like Shadower. Falls back to 1st-job-only when 2nd is unplanned.
+     */
+    public static String generate(Job firstJob, Job secondJob) {
+        List<String> tree = secondJob == null ? List.of() : ROOTS_BY_2ND.getOrDefault(secondJob, List.of());
+        if (tree.isEmpty()) {
+            return generate(firstJob);
+        }
+        List<String> overlay = new ArrayList<>(jobThemed(firstJob));
+        overlay.addAll(tree);
+        return generate(overlay);
     }
 
     private static String generate(List<String> themedOverlay) {

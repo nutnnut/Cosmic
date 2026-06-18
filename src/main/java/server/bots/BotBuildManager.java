@@ -295,6 +295,31 @@ class BotBuildManager {
         return choices.get(ThreadLocalRandom.current().nextInt(choices.size()));
     }
 
+    /**
+     * The job an ownerless bot advances into: its creation-time PLANNED job (stored on the personality,
+     * so the procedural name matches the eventual class) when that plan is still a legal choice, else a
+     * fresh autonomous pick. Validated against the live topology so a stale/garbled plan can't advance
+     * into an illegal class.
+     */
+    static Job plannedOrPicked(BotEntry entry, Job currentJob) {
+        BotPersonality p = entry != null ? entry.personality : null;
+        if (p != null) {
+            if (currentJob == null || currentJob == Job.BEGINNER) {
+                Job planned = p.plannedFirstJob();
+                if (planned != null && apPromptForJob(planned) != null
+                        && BotStarterKitManager.firstJobChoices().contains(planned)) {
+                    return planned;
+                }
+            } else {
+                Job planned = p.plannedSecondJob();
+                if (planned != null && BotStarterKitManager.secondJobChoices(currentJob).contains(planned)) {
+                    return planned;
+                }
+            }
+        }
+        return pickWeightedJob(currentJob);
+    }
+
     static Job weightedPick(List<Job> choices, Map<Job, Integer> weights) {
         if (choices.isEmpty()) return null;
         int total = 0;
@@ -631,7 +656,7 @@ class BotBuildManager {
         if (job == Job.BEGINNER) {
             if (lvl >= 10 && prompted < 10) {
                 if (isOwnerless(entry)) {
-                    Job target = pickWeightedJob(Job.BEGINNER); // no owner to choose: pick a class autonomously
+                    Job target = plannedOrPicked(entry, Job.BEGINNER); // honor creation-time plan, else pick autonomously
                     if (target != null) {
                         entry.jobPromptSent = 10;
                         scheduleAutoAdvance(entry, target);
@@ -655,7 +680,7 @@ class BotBuildManager {
 
         if (lvl >= 30 && prompted < 30) {
             if (isOwnerless(entry)) {
-                Job target = pickWeightedJob(job); // 2nd job is a choice: pick autonomously when no owner
+                Job target = plannedOrPicked(entry, job); // honor creation-time plan, else pick autonomously
                 if (target != null) {
                     entry.jobPromptSent = 30;
                     scheduleAutoAdvance(entry, target);
