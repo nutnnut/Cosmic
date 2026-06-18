@@ -343,8 +343,9 @@ public final class BotScheduler {
                 brought++;
             }
         }
-        // Still short after waking everyone eligible: trickle in fresh bots (one per sweep), gated by the
-        // autogen flag + the non-retired pool cap, so the world grows toward the curve over time.
+        // Still short after waking everyone eligible: generate fresh bots, gated by the autogen flag +
+        // the non-retired pool cap. A deficit-proportional batch (not one per sweep) so a wiped/booted
+        // world catches up to the curve in a couple of sweeps.
         if (brought < need) {
             int poolSize = 0;
             for (ManagedBot m : managed) {
@@ -353,21 +354,28 @@ public final class BotScheduler {
                 }
             }
             int gen = BotScheduleMath.autogenCount(BotManager.cfg.POPULATION_AUTOGEN, need, brought, 0,
-                    poolSize, BotManager.cfg.MANAGED_POOL_MAX);
+                    poolSize, BotManager.cfg.MANAGED_POOL_MAX,
+                    BotManager.cfg.POPULATION_AUTOGEN_FILL, BotManager.cfg.POPULATION_AUTOGEN_MAX);
             if (gen > 0) {
-                // Some autogen events spawn a fresh CREW (a friend group that arrives together) rather
-                // than a lone newcomer — emergent crews, not just admin-assigned ones. Crew size is
-                // bounded by the remaining pool room so it never blows past MANAGED_POOL_MAX.
-                int room = BotManager.cfg.MANAGED_POOL_MAX - poolSize;
-                int crewSize = rollCrewSize(room);
-                if (crewSize >= 2) {
-                    generateCrew(bm, managed, crewSize, now);
-                } else {
-                    int newId = BotGenerator.generateManaged(BotManager.cfg.POPULATION_WORLD,
-                            BotManager.cfg.POPULATION_CHANNEL, BotGenerator.countHardcore(managed),
-                            BotManager.cfg.HARDCORE_CAP);
-                    if (newId > 0 && bm.spawnManagedBot(newId)) {
-                        onlineSince.put(newId, now);
+                // ponytail: hardcore count computed once per sweep, not per generated bot — countHardcore
+                // loads a personality blob per managed bot, so calling it per-create would be the cost
+                // this batching was meant to avoid. Slight staleness within a sweep is fine (soft cap).
+                int hardcore = BotGenerator.countHardcore(managed);
+                // Generate the batch as a mix of lone newcomers and emergent CREWs (friend groups that
+                // arrive together); each is bounded by the budget still left this sweep.
+                int remaining = gen;
+                while (remaining > 0) {
+                    int crewSize = rollCrewSize(remaining);
+                    if (crewSize >= 2) {
+                        generateCrew(bm, managed, crewSize, now, hardcore);
+                        remaining -= crewSize;
+                    } else {
+                        int newId = BotGenerator.generateManaged(BotManager.cfg.POPULATION_WORLD,
+                                BotManager.cfg.POPULATION_CHANNEL, hardcore, BotManager.cfg.HARDCORE_CAP);
+                        if (newId > 0 && bm.spawnManagedBot(newId)) {
+                            onlineSince.put(newId, now);
+                        }
+                        remaining -= 1;
                     }
                 }
             } else {
@@ -389,8 +397,7 @@ public final class BotScheduler {
 
     /** Generate a fresh crew that arrives together: {@code size} new managed bots sharing one group id
      *  (the leader's char id), brought online and partied immediately. */
-    private void generateCrew(BotManager bm, List<ManagedBot> managed, int size, long now) {
-        int hardcore = BotGenerator.countHardcore(managed);
+    private void generateCrew(BotManager bm, List<ManagedBot> managed, int size, long now, int hardcore) {
         ManagedBotService svc = ManagedBotService.getInstance();
         List<Integer> ids = new ArrayList<>();
         Integer gid = null;

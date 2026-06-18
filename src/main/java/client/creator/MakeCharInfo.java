@@ -99,6 +99,26 @@ public class MakeCharInfo {
         return new HashSet<>(charSkins);
     }
 
+    /** Legal starter top ids for this gender/type (defensive copy). */
+    public Set<Integer> getTops() {
+        return new HashSet<>(charTops);
+    }
+
+    /** Legal starter bottom ids for this gender/type (defensive copy). */
+    public Set<Integer> getBottoms() {
+        return new HashSet<>(charBottoms);
+    }
+
+    /** Legal starter shoe ids for this gender/type (defensive copy). */
+    public Set<Integer> getShoes() {
+        return new HashSet<>(charShoes);
+    }
+
+    /** Legal starter weapon ids for this gender/type (defensive copy). */
+    public Set<Integer> getWeapons() {
+        return new HashSet<>(charWeapons);
+    }
+
     public boolean verifyFaceId(int id) {
         return this.charFaces.contains(id);
     }

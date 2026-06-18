@@ -53,16 +53,24 @@ final class BotScheduleMath {
     /**
      * How many fresh bots to auto-generate this sweep. Only when, after waking everyone eligible, the
      * live count is still below target — and only if autogen is on and the non-retired pool has room.
-     * Throttled to one per sweep so newcomers trickle in (gradual inflow, and the DB create stays off
-     * the critical path) rather than a burst filling the world the instant the curve rises.
+     * A deficit-proportional batch ({@code ceil(deficit * fill)}, min 1, capped at {@code maxPerSweep}
+     * and the remaining pool room) so a big shortfall (freshly-wiped/booted server) fills in a couple
+     * of sweeps instead of trickling one per minute, while a near-target deficit still adds gently. The
+     * deficit already carries the scaled target, so fill speed tracks POPULATION_MULTIPLIER for free.
+     * {@code maxPerSweep} bounds the per-sweep create work so a giant deficit can't stall the timer.
      */
     static int autogenCount(boolean autogenOn, int target, int live, int eligibleOffline,
-                            int poolSize, int poolMax) {
+                            int poolSize, int poolMax, double fill, int maxPerSweep) {
         if (!autogenOn || poolSize >= poolMax) {
             return 0;
         }
         int deficit = target - live - eligibleOffline;
-        return deficit > 0 ? 1 : 0;
+        if (deficit <= 0) {
+            return 0;
+        }
+        int batch = Math.max(1, (int) Math.ceil(deficit * fill));
+        batch = Math.min(batch, Math.max(1, maxPerSweep));
+        return Math.min(batch, poolMax - poolSize);
     }
 
     /** Hardcore cap: a fresh bot may keep a HARDCORE roll only while below the veteran cap — otherwise

@@ -28,27 +28,42 @@ public final class BotAppearance {
     /** Final hair id (base + color), ready for Character.setHair. */
     public final int hair;
     public final int skin;
+    /** Gender-legal beginner starter gear (drawn from the same WZ pools as face/hair). */
+    public final int top;
+    public final int bottom;
+    public final int shoes;
+    public final int weapon;
 
-    public BotAppearance(int gender, int face, int hair, int skin) {
+    public BotAppearance(int gender, int face, int hair, int skin,
+                         int top, int bottom, int shoes, int weapon) {
         this.gender = gender;
         this.face = face;
         this.hair = hair;
         this.skin = skin;
+        this.top = top;
+        this.bottom = bottom;
+        this.shoes = shoes;
+        this.weapon = weapon;
     }
 
     /**
      * Pure picker: draws a legal appearance from the supplied pools. Gender is chosen first, then a
-     * face/hair/hair-color/skin legal for that gender. The caller supplies gender-correct pools.
+     * face/hair/hair-color/skin AND starter gear legal for that gender. The caller supplies
+     * gender-correct pools, so the rolled gear never mismatches the body (the old hardcoded male
+     * top/bottom rendered wrong on female bots).
      *
      * @param male true for the male pools, false for female
      */
     public static BotAppearance pick(boolean male, Set<Integer> faces, Set<Integer> hairBases,
-                                      Set<Integer> hairColors, Set<Integer> skins) {
+                                      Set<Integer> hairColors, Set<Integer> skins,
+                                      Set<Integer> tops, Set<Integer> bottoms,
+                                      Set<Integer> shoes, Set<Integer> weapons) {
         int face = randomOf(faces);
         int hairBase = randomOf(hairBases);
         int hairColor = randomOf(hairColors);
         int skin = randomOf(skins);
-        return new BotAppearance(male ? 0 : 1, face, hairBase + hairColor, skin);
+        return new BotAppearance(male ? 0 : 1, face, hairBase + hairColor, skin,
+                randomOf(tops), randomOf(bottoms), randomOf(shoes), randomOf(weapons));
     }
 
     /**
@@ -58,7 +73,8 @@ public final class BotAppearance {
     public static BotAppearance random() {
         boolean male = ThreadLocalRandom.current().nextBoolean();
         MakeCharInfo info = MakeCharInfoValidator.beginnerInfo(male);
-        return pick(male, info.getFaces(), info.getHairs(), info.getHairColors(), info.getSkins());
+        return pick(male, info.getFaces(), info.getHairs(), info.getHairColors(), info.getSkins(),
+                info.getTops(), info.getBottoms(), info.getShoes(), info.getWeapons());
     }
 
     private static int randomOf(Set<Integer> pool) {

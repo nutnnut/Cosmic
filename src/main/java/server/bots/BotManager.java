@@ -134,9 +134,20 @@ public class BotManager {
         public int POPULATION_NOISE = 2;                   // +/- jitter on the hourly target
         public double POPULATION_MULTIPLIER = 3.0;         // scales the whole online target up/down, so bot
                                                            // count is adjustable without editing the curve/noise
-        public int MANAGED_POOL_MAX = 60;                  // hard cap on auto-generated managed bots
+        public int MANAGED_POOL_MAX = 150;                 // backstop cap on the non-retired bot roster. NOT
+                                                           // the online count (that's the curve x multiplier);
+                                                           // autogen only fires under deficit, so the pool
+                                                           // self-limits near peak target. Set comfortably
+                                                           // above peak target (curve_max x multiplier) so it
+                                                           // never throttles fill; it's a runaway guard, not a
+                                                           // throttle.
         public int HARDCORE_CAP = 5;                       // max bots that never retire (the veterans)
         public boolean POPULATION_AUTOGEN = true;          // generate fresh bots when the pool is short
+        public double POPULATION_AUTOGEN_FILL = 0.7;       // fraction of the remaining deficit to generate per
+                                                           // sweep (fast catch-up after a wipe/boot; tracks the
+                                                           // multiplier since the deficit does)
+        public int POPULATION_AUTOGEN_MAX = 20;            // hard cap on bots generated in a single sweep, so a
+                                                           // huge deficit can't stall the timer thread
         public double POPULATION_CREW_CHANCE = 0.20;       // chance an autogen event spawns a fresh CREW (vs a soloist)
         public int POPULATION_CREW_MIN = 2;                // crew size range when auto-generating a crew
         public int POPULATION_CREW_MAX = 4;

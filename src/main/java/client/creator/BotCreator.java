@@ -39,27 +39,30 @@ public class BotCreator extends CharacterFactory {
         botChar.setLevel(1);
         botChar.setMapId(MapId.MUSHROOM_TOWN);
 
-        // Equip standard beginner starting gear (mirrors CharacterFactory.createNewCharacter)
+        // Equip gender-legal beginner starting gear (rolled by BotAppearance from the same WZ pools as
+        // face/hair) — mirrors CharacterFactory.createNewCharacter, but no longer hardcodes the male
+        // top/bottom, which rendered wrong on female bots.
         Inventory equipped = botChar.getInventory(InventoryType.EQUIPPED);
         ItemInformationProvider ii = ItemInformationProvider.getInstance();
 
-        Item top = ii.getEquipById(1040002);    // White Undershirt
+        Item top = ii.getEquipById(look.top);
         top.setPosition((byte) -5);
         equipped.addItemFromDB(top);
 
-        Item bottom = ii.getEquipById(1060002); // Undies (blue shorts)
+        Item bottom = ii.getEquipById(look.bottom);
         bottom.setPosition((byte) -6);
         equipped.addItemFromDB(bottom);
 
-        Item shoes = ii.getEquipById(1072001);  // Rubber Boots
+        Item shoes = ii.getEquipById(look.shoes);
         shoes.setPosition((byte) -7);
         equipped.addItemFromDB(shoes);
 
-        Item weapon = ii.getEquipById(1302000); // Wooden Sword
+        Item weapon = ii.getEquipById(look.weapon);
         weapon.setPosition((byte) -11);
         equipped.addItemFromDB(weapon.copy());
 
-        CharacterFactoryRecipe recipe = new CharacterFactoryRecipe(Job.BEGINNER, 1, MapId.MUSHROOM_TOWN, 1040002, 1060002, 1072001, 1302000);
+        CharacterFactoryRecipe recipe = new CharacterFactoryRecipe(Job.BEGINNER, 1, MapId.MUSHROOM_TOWN,
+                look.top, look.bottom, look.shoes, look.weapon);
 
         if (!botChar.insertNewChar(recipe)) {
             log.error("insertNewChar failed for bot '{}'", name);

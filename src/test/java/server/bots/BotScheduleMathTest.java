@@ -71,16 +71,28 @@ class BotScheduleMathTest {
 
     @Test
     void autogenOnlyWhenShortAndAllowed() {
-        // short by 2 after waking everyone, autogen on, pool has room -> generate (capped at 1/sweep)
-        assertEquals(1, BotScheduleMath.autogenCount(true, 5, 3, 0, 10, 60));
+        // short by 2, fill 0.5 -> ceil(2*0.5)=1
+        assertEquals(1, BotScheduleMath.autogenCount(true, 5, 3, 0, 10, 60, 0.5, 20));
         // already at/over target -> none
-        assertEquals(0, BotScheduleMath.autogenCount(true, 5, 5, 0, 10, 60));
+        assertEquals(0, BotScheduleMath.autogenCount(true, 5, 5, 0, 10, 60, 0.5, 20));
         // eligible offline still cover the deficit -> wake them, don't generate
-        assertEquals(0, BotScheduleMath.autogenCount(true, 5, 1, 4, 10, 60));
+        assertEquals(0, BotScheduleMath.autogenCount(true, 5, 1, 4, 10, 60, 0.5, 20));
         // autogen disabled -> never
-        assertEquals(0, BotScheduleMath.autogenCount(false, 5, 0, 0, 10, 60));
+        assertEquals(0, BotScheduleMath.autogenCount(false, 5, 0, 0, 10, 60, 0.5, 20));
         // pool at cap -> never (cap is a hard ceiling)
-        assertEquals(0, BotScheduleMath.autogenCount(true, 5, 0, 0, 60, 60));
+        assertEquals(0, BotScheduleMath.autogenCount(true, 5, 0, 0, 60, 60, 0.5, 20));
+    }
+
+    @Test
+    void autogenBatchesProportionalToDeficitAndIsBounded() {
+        // big deficit (40), fill 0.7 -> ceil(28) batch
+        assertEquals(28, BotScheduleMath.autogenCount(true, 40, 0, 0, 0, 150, 0.7, 100));
+        // per-sweep cap clamps the batch
+        assertEquals(20, BotScheduleMath.autogenCount(true, 40, 0, 0, 0, 150, 0.7, 20));
+        // remaining pool room clamps below the batch (room = 60-57 = 3)
+        assertEquals(3, BotScheduleMath.autogenCount(true, 40, 0, 0, 57, 60, 0.7, 100));
+        // tiny deficit still makes at least 1
+        assertEquals(1, BotScheduleMath.autogenCount(true, 1, 0, 0, 0, 150, 0.7, 20));
     }
 
     @Test

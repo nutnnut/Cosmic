@@ -29,6 +29,11 @@ import java.util.List;
 public final class BotGenerator {
     private static final Logger log = LoggerFactory.getLogger(BotGenerator.class);
     private static final int MAX_NAME_ATTEMPTS = 5;
+    // BCrypt at cost 12 is ~250ms — hashing "botbot" per generated bot was THE cost in population
+    // autogen (everything else is random rolls + a few inserts). Bots all share this throwaway
+    // password, so one shared hash is fine (per-account salt buys nothing for server-owned bots) and
+    // turns generation into near-pure inserts, which is what makes batch fill cheap.
+    private static final String BOT_PASSWORD_HASH = BCrypt.hashpw("botbot", BCrypt.gensalt(12));
 
     private BotGenerator() {}
 
@@ -170,12 +175,11 @@ public final class BotGenerator {
     }
 
     private static int createBotAccount(Connection con, String name) throws SQLException {
-        String hashedPw = BCrypt.hashpw("botbot", BCrypt.gensalt(12));
         try (PreparedStatement ps = con.prepareStatement(
                 "INSERT INTO accounts (name, password, birthday, tempban) VALUES (?, ?, ?, ?)",
                 Statement.RETURN_GENERATED_KEYS)) {
             ps.setString(1, name);
-            ps.setString(2, hashedPw);
+            ps.setString(2, BOT_PASSWORD_HASH);
             ps.setDate(3, Date.valueOf(DefaultDates.getBirthday()));
             ps.setTimestamp(4, Timestamp.valueOf(DefaultDates.getTempban()));
             ps.executeUpdate();

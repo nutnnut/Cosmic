@@ -24,26 +24,44 @@ class BotAppearanceTest {
     // Hair colors and skins are identical across genders in this data set
     private static final Set<Integer> HAIR_COLORS = Set.of(0, 7, 3, 2);
     private static final Set<Integer> SKINS = Set.of(0, 1, 2, 3);
+    // Gender-specific starter gear (male top/bottom are the 1040/1060 range, female the 1041/1061
+    // range); shoes/weapon are shared. Distinct pools per gender so a leak would fail the assertion.
+    private static final Set<Integer> MALE_TOPS = Set.of(1040002, 1040006);
+    private static final Set<Integer> MALE_BOTTOMS = Set.of(1060002, 1060006);
+    private static final Set<Integer> FEMALE_TOPS = Set.of(1041002, 1041006);
+    private static final Set<Integer> FEMALE_BOTTOMS = Set.of(1061002, 1061006);
+    private static final Set<Integer> SHOES = Set.of(1072001, 1072005);
+    private static final Set<Integer> WEAPONS = Set.of(1302000, 1322005);
 
     @Test
     void malePicksAreAlwaysLegal() {
         for (int i = 0; i < 2000; i++) {
-            BotAppearance a = BotAppearance.pick(true, MALE_FACES, MALE_HAIR_BASES, HAIR_COLORS, SKINS);
+            BotAppearance a = BotAppearance.pick(true, MALE_FACES, MALE_HAIR_BASES, HAIR_COLORS, SKINS,
+                    MALE_TOPS, MALE_BOTTOMS, SHOES, WEAPONS);
             assertTrue(a.gender == 0, "male gender must be 0");
             assertTrue(MALE_FACES.contains(a.face), "illegal face " + a.face);
             assertTrue(SKINS.contains(a.skin), "illegal skin " + a.skin);
             assertLegalHair(a.hair, MALE_HAIR_BASES);
+            assertTrue(MALE_TOPS.contains(a.top), "illegal male top " + a.top);
+            assertTrue(MALE_BOTTOMS.contains(a.bottom), "illegal male bottom " + a.bottom);
+            assertTrue(SHOES.contains(a.shoes), "illegal shoes " + a.shoes);
+            assertTrue(WEAPONS.contains(a.weapon), "illegal weapon " + a.weapon);
         }
     }
 
     @Test
     void femalePicksAreAlwaysLegal() {
         for (int i = 0; i < 2000; i++) {
-            BotAppearance a = BotAppearance.pick(false, FEMALE_FACES, FEMALE_HAIR_BASES, HAIR_COLORS, SKINS);
+            BotAppearance a = BotAppearance.pick(false, FEMALE_FACES, FEMALE_HAIR_BASES, HAIR_COLORS, SKINS,
+                    FEMALE_TOPS, FEMALE_BOTTOMS, SHOES, WEAPONS);
             assertTrue(a.gender == 1, "female gender must be 1");
             assertTrue(FEMALE_FACES.contains(a.face), "illegal face " + a.face);
             assertTrue(SKINS.contains(a.skin), "illegal skin " + a.skin);
             assertLegalHair(a.hair, FEMALE_HAIR_BASES);
+            assertTrue(FEMALE_TOPS.contains(a.top), "illegal female top " + a.top);
+            assertTrue(FEMALE_BOTTOMS.contains(a.bottom), "illegal female bottom " + a.bottom);
+            assertTrue(SHOES.contains(a.shoes), "illegal shoes " + a.shoes);
+            assertTrue(WEAPONS.contains(a.weapon), "illegal weapon " + a.weapon);
         }
     }
 
