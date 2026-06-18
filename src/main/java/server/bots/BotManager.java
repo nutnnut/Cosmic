@@ -975,11 +975,27 @@ public class BotManager {
                 }
                 String job = bot.getJob() == null ? "?" : bot.getJob().toString();
                 lines.add(bot.getName() + " [" + job + " lv" + bot.getLevel() + "]: "
-                        + BotAutopilotManager.statusReport(entry, bot));
+                        + BotAutopilotManager.statusReport(entry, bot)
+                        + personalityTag(entry)
+                        + " | hp " + bot.getHp() + "/" + bot.getMaxHp() + " meso " + bot.getMeso());
             }
         }
         lines.sort(String.CASE_INSENSITIVE_ORDER);
         return lines;
+    }
+
+    /** Compact personality readout for @botstatus: archetype + the behavior traits that shape what the
+     *  bot does (sociability, chattiness, risk, farm-vs-idle) + mean session length. Empty when no
+     *  profile (shouldn't happen — defaults() is assigned at spawn). */
+    private static String personalityTag(BotEntry entry) {
+        BotPersonality p = entry.personality;
+        if (p == null) {
+            return "";
+        }
+        return String.format(java.util.Locale.ROOT,
+                " | %s soc=%.1f cha=%.1f rsk=%.1f frm=%.1f sess=%dm",
+                p.career(), p.sociability(), p.chattiness(), p.riskTolerance(),
+                p.farmIdleRatio(), p.sessionLenMeanMin());
     }
 
     List<BotEntry> partyBotEntries(Character anyMember) {
