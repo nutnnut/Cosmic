@@ -199,7 +199,10 @@ final class BotTravelManager {
         if (BotFerryManager.tickTransit(entry, bot, targetMapId, runAiTick)) {
             return true;
         }
-        if (now < entry.followTravelGiveUpUntilMs) {
+        // Give-up is scoped to the destination that failed: only block a fast retry of the SAME map.
+        // A different consumer traveling somewhere else (e.g. autopilot to a grind map while a quest
+        // errand's NPC map is doomed) must not inherit that cooldown — it was poisoning legit travel.
+        if (now < entry.followTravelGiveUpUntilMs && targetMapId == entry.followTravelGiveUpTargetMapId) {
             clear(entry);
             return false;
         }
@@ -579,12 +582,15 @@ final class BotTravelManager {
     static void resetForModeChange(BotEntry entry) {
         clear(entry);
         entry.followTravelGiveUpUntilMs = 0L;
+        entry.followTravelGiveUpTargetMapId = -1;
         entry.followTravelGiveUpReason = null;
     }
 
     private static void giveUp(BotEntry entry, long now, String reason) {
+        int failedDest = entry.followTravelTargetMapId; // capture before clear() wipes it
         clear(entry);
         entry.followTravelGiveUpUntilMs = now + GIVE_UP_WARP_WINDOW_MS;
+        entry.followTravelGiveUpTargetMapId = failedDest;
         entry.followTravelGiveUpReason = reason;
     }
 

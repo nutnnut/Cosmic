@@ -201,6 +201,7 @@ public class BotEntry {
     long followTravelDeadlineMs = 0L;   // give up walking and warp once this passes
     long followTravelEnteredAtMs = 0L;  // enterPortal fired; waiting for the map change to land
     long followTravelGiveUpUntilMs = 0L; // after a failed attempt, warp directly for a while
+    int followTravelGiveUpTargetMapId = -1; // the DESTINATION that failed: the give-up only blocks retravel to THIS map, so a doomed errand (e.g. an unreachable quest NPC) can't poison another consumer's travel to a different map
     String followTravelGiveUpReason = null; // why the last give-up fired (deadline/portal-closed/...) — path-log only
     int followTravelBestDist = Integer.MAX_VALUE; // closest manhattan to the hop portal so far; resets the deadline on progress
     Point followTravelMoveTarget = null; // the exact moveTarget instance travel pinned (identity-checked on clear)
@@ -321,6 +322,11 @@ public class BotEntry {
     int questErrandReturnMapId = -1;     // grind map to resume after the errand
     long questErrandStartedAtMs = 0L;    // abort the errand if it can't reach the NPC in time
     long nextQuestScanAtMs = 0L;
+    // Quests this bot has proven it can't finish — the upstream quest didn't register as completed even
+    // after a legal complete() call (bugged data/script, e.g. complete() is a no-op), or its NPC is on
+    // an unreachable map. Suppressed from all scans so the bot stops re-completing/re-announcing or
+    // re-erranding the same doomed quest in a loop. See BotQuestManager.markQuestBugged.
+    final Set<Integer> buggedQuestIds = new java.util.HashSet<>();
     // Mob ids the bot still needs to kill for any STARTED indexed quest (unmet counts). Refreshed on
     // the quest scan + on quest start/complete by BotQuestManager.refreshActiveQuestMobs. Read O(1) by
     // combat target selection (BotCombatManager) to PREFER quest mobs, so a bot commits to the quests

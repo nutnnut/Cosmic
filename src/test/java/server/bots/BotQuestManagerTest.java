@@ -77,7 +77,8 @@ class BotQuestManagerTest {
 
     /** Recording gate: tracks which (questId) had start/complete called, gated by canStart/canComplete. */
     private static final class RecordingGate implements BotQuestManager.QuestGate {
-        boolean canStart, canComplete, started;
+        boolean canStart, canComplete, started, completed;
+        boolean completeRegisters = true; // a working quest flips isCompleted on complete(); false models a bugged one
         Map<Integer, Integer> progress = Map.of();
         final List<Integer> startsCalled = new ArrayList<>();
         final List<Integer> completesCalled = new ArrayList<>();
@@ -85,12 +86,10 @@ class BotQuestManagerTest {
         @Override public boolean canStart(Character bot, int questId, int npc) { return canStart; }
         @Override public boolean canComplete(Character bot, int questId, int npc) { return canComplete; }
         @Override public void start(Character bot, int questId, int npc) { startsCalled.add(questId); }
-        @Override public void complete(Character bot, int questId, int npc) { completesCalled.add(questId); }
+        @Override public void complete(Character bot, int questId, int npc) { completesCalled.add(questId); if (completeRegisters) completed = true; }
         @Override public boolean isStarted(Character bot, int questId) { return started; }
         @Override public boolean isCompleted(Character bot, int questId) { return completed; }
         @Override public Map<Integer, Integer> currentProgress(Character bot, int questId) { return progress; }
-
-        boolean completed;
     }
 
     /** Gate that only lets ONE quest id pass canStart (others are not startable) - isolates
@@ -177,6 +176,25 @@ class BotQuestManagerTest {
         assertEquals(List.of(9800), g.startsCalled);
         assertEquals(List.of(9800), g.completesCalled);
         assertTrue(replies.stream().anyMatch(s -> s.contains("quest done")), "should announce completion");
+    }
+
+    @Test
+    void buggedAutoQuestIsSuppressedNotLoopedAndReannounced() {
+        // complete() is callable but never registers (canComplete stays true) - the 29400 loop. The bot
+        // must complete once, see it didn't take, suppress the quest, and never re-complete/re-announce.
+        BotEntry e = entry();
+        RecordingGate g = new RecordingGate();
+        g.canStart = true;
+        g.canComplete = true;
+        g.completeRegisters = false; // bugged: isCompleted never flips
+        BotQuestManager.gate = g;
+
+        BotQuestManager.runAutoQuest(e, e.bot, 29400);
+        BotQuestManager.runAutoQuest(e, e.bot, 29400); // a later scan must be a no-op now
+
+        assertEquals(List.of(29400), g.completesCalled, "must stop after the first failed complete, not loop");
+        assertTrue(replies.stream().noneMatch(s -> s.contains("quest done")), "must not announce a quest that never registered");
+        assertTrue(e.buggedQuestIds.contains(29400), "the un-completable quest must be suppressed");
     }
 
     // ---- worthwhile bar (slice-2 scorer: value vs grind-exp cost) ----

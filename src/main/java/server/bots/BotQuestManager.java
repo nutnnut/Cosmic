@@ -240,12 +240,22 @@ final class BotQuestManager {
      *  is absent or auto). canStart/canComplete self-gate everything else (level/job/prereq), so a
      *  not-yet-eligible quest is a no-op. Pure over the {@link #gate} seam (test entry point). */
     static void runAutoQuest(BotEntry entry, Character bot, int questId) {
+        if (entry.buggedQuestIds.contains(questId)) {
+            return; // proven un-completable upstream — don't loop the complete()+announce again
+        }
         if (gate.canStart(bot, questId, 0)) {
             gate.start(bot, questId, 0);
         }
         if (gate.canComplete(bot, questId, 0)) {
             gate.complete(bot, questId, 0);
-            announceDone(entry, questId);
+            // Verify it actually registered. A bugged quest whose complete() is a no-op leaves
+            // canComplete true forever, so without this the bot re-completes + re-announces "done"
+            // every scan (the 29400 loop). Suppress it instead.
+            if (gate.isCompleted(bot, questId)) {
+                announceDone(entry, questId);
+            } else {
+                markQuestBugged(entry, questId, "auto-complete did not register");
+            }
         }
     }
 
@@ -415,8 +425,8 @@ final class BotQuestManager {
         BotQuestIndex.QuestMeta best = null;
         double bestScore = -1;
         for (BotQuestIndex.QuestMeta q : BotQuestIndex.get().byId().values()) {
-            if (gate.isStarted(bot, q.id())) {
-                continue;
+            if (gate.isStarted(bot, q.id()) || entry.buggedQuestIds.contains(q.id())) {
+                continue; // already underway, or proven un-completable/unreachable — don't re-queue it
             }
             // Mob quests are only worth a detour when their kills overlap what the bot already farms
             // here (free exp). Talk quests have no kills, so this overlap gate doesn't apply to them.
@@ -570,6 +580,15 @@ final class BotQuestManager {
             clearQuestErrand(entry);
             return;
         }
+        // Don't commit an errand to an unreachable NPC map. The npc->map index can hand back a bogus or
+        // foreign map (observed: map 2) the bot can never walk to — it would announce "lemme turn in
+        // this quest", fail to arrive, time out "couldn't get to that quest", re-queue, and loop, while
+        // its travel give-up poisoned the shared state. Suppress and bail instead.
+        if (hopCount.hops(bot.getMapId(), entry.questErrandMapId) > MAX_ERRAND_HOPS) {
+            markQuestBugged(entry, q.id(), "NPC on unreachable map " + entry.questErrandMapId);
+            clearQuestErrand(entry);
+            return;
+        }
         entry.questErrandStartedAtMs = System.currentTimeMillis();
         reply.accept(entry,
                 phase == Phase.START ? "gonna grab a quest real quick" : "lemme turn in this quest");
@@ -668,11 +687,26 @@ final class BotQuestManager {
             if (gate.canComplete(bot, questId, npc)) {
                 gate.complete(bot, questId, npc);
                 refreshActiveQuestMobs(entry, bot); // done: drop its mobs from the combat bias
-                announceDone(entry, questId);
+                if (gate.isCompleted(bot, questId)) {
+                    announceDone(entry, questId);
+                } else {
+                    // complete() didn't take (bugged quest): suppress so the scan doesn't re-queue this
+                    // turn-in errand forever ("lemme turn in this quest" -> can't -> retry loop).
+                    markQuestBugged(entry, questId, "turn-in did not register");
+                }
                 finishErrand(entry, bot, null);
             } else {
                 finishErrand(entry, bot, "hm, can't turn that in yet");
             }
+        }
+    }
+
+    /** Record a quest the bot can't finish — complete() didn't register, or its NPC map is unreachable —
+     *  so every scan skips it instead of looping the same doomed start/turn-in/complete + announcement.
+     *  Tells the owner once (autopilot bots with no owner online just suppress silently). */
+    static void markQuestBugged(BotEntry entry, int questId, String why) {
+        if (entry.buggedQuestIds.add(questId)) {
+            reply.accept(entry, "quest " + questId + " seems bugged (" + why + "), skipping it");
         }
     }
 
