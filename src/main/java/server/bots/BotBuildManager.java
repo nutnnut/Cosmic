@@ -126,8 +126,17 @@ class BotBuildManager {
     }
 
     static void handleJobAdvance(BotEntry entry, Character bot, Job oldJob, Job newJob) {
-        if (oldJob == Job.BEGINNER && oldJob != newJob && entry.apBuild != null) {
-            reallocateAp(entry, bot);
+        // 1st job advancement resets stats for real players: the instructor NPC scripts call
+        // cm.resetStats() right after the job change (e.g. magician 1032001.js:137). A Beginner
+        // legitimately dumps all AP into STR, so without the reset a fresh mage/thief/etc. keeps it.
+        // Bots advance via changeJob directly (BotStarterKitManager.advanceJob), bypassing that
+        // script, so invoke the same player SSOT here. resetStats() refunds str/dex/int/luk down to
+        // the job floor as spendable AP (and recomputes SP); the autoAssign calls below then spend
+        // the refunded AP/SP into the job build. (The old apBuild-gated reallocateAp never fired -
+        // apBuild is null until maybeRecomputeAutonomousApBuild runs, two lines down.) Honors the
+        // same USE_AUTOASSIGN_STARTERS_AP config gate as the player path - no-op when it's off.
+        if (oldJob == Job.BEGINNER && oldJob != newJob) {
+            bot.resetStats();
         }
 
         autoAssignSp(entry, bot);
