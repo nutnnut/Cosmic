@@ -1,6 +1,7 @@
 package server.bots;
 
 import client.Character;
+import server.maps.Foothold;
 import server.maps.MapleMap;
 import server.maps.Portal;
 
@@ -8,6 +9,7 @@ import java.awt.*;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
+import java.util.concurrent.ThreadLocalRandom;
 
 /**
  * Follow-mode cross-map travel: when the owner is within a few portal hops, walk to the
@@ -65,6 +67,10 @@ final class BotTravelManager {
     private static final int MAX_FOLLOW_TRAVEL_HOPS = 4;
     // The cab NPC doesn't need a precise approach — anywhere near it counts as "talked to it".
     private static final int TAXI_TRIGGER_RADIUS_PX = 500;
+    // Spread radius for the shared "pick a reachable spot near a target" de-stacker: sample footholds
+    // within this manhattan distance of the NPC. Kept small so bots cluster around the NPC but on
+    // distinct, reachable ground rather than piling on the exact (often off-floor) sprite pixel.
+    static final int APPROACH_SPREAD_PX = 150;
 
     // Test seams: stepMovementCore drags in the full physics/nav stack; the world graph's
     // default lookups trigger a WZ scan on first use; scroll/taxi/prewarm defaults touch
@@ -388,7 +394,9 @@ final class BotTravelManager {
             entry.followTravelFromMapId = bot.getMapId();
             entry.followTravelPortalId = -1;
             entry.followTravelTaxiNpcId = taxi.npcId();
-            entry.followTravelTaxiPos = new Point(npcPos);
+            // Reachable spot near the cab NPC, not the exact pixel: warp NPCs (e.g. Shanks at
+            // Southperry) are major chokepoints where every bot piles on the same spot and freezes.
+            entry.followTravelTaxiPos = pickReachableApproachPoint(entry, bot, npcPos, APPROACH_SPREAD_PX);
             entry.followTravelDeadlineMs = now + travelBudgetMs(manhattan(bot.getPosition(), npcPos));
             return tickTaxiHop(entry, bot, now, runAiTick);
         }
@@ -605,6 +613,7 @@ final class BotTravelManager {
     static ApproachStatus tickApproachNpc(BotEntry entry, Character bot, int targetMapId, int npcId,
                                           int maxHops, boolean runAiTick, int radiusPx) {
         if (bot.getMapId() != targetMapId) {
+            clearNpcApproach(entry); // not on the NPC's map yet — any cached spot is for another map
             // Propagate tickTravel's verdict: it returns false in its give-up window (no movement for
             // up to ~45s), and the caller must release the tick then so the bot grinds instead of
             // standing frozen until the errand's own timeout. (Pre-extraction tickErrand returned this.)
@@ -613,6 +622,7 @@ final class BotTravelManager {
         }
         server.life.NPC npc = bot.getMap() == null ? null : bot.getMap().getNPCById(npcId);
         if (npc == null || npc.getPosition() == null) {
+            clearNpcApproach(entry);
             return ApproachStatus.NPC_GONE;
         }
         Point npcPos = npc.getPosition();
@@ -620,11 +630,85 @@ final class BotTravelManager {
         if (!entry.inAir && !entry.climbing && manhattan(botPos, npcPos) <= radiusPx) {
             clearMoveTargetPin(entry);
             settleStandingDwell(entry);
+            clearNpcApproach(entry);
             return ApproachStatus.ARRIVED;
         }
-        pinMoveTarget(entry, npcPos);
-        movementStep.step(entry, npcPos, runAiTick);
+        // Walk to a reachable spot NEAR the NPC, not its exact (often off-floor) sprite pixel: that
+        // de-stacks bots converging on one NPC and gives the movement a target the nav can actually
+        // reach (the raw pos froze bots that couldn't path to it, then dropped the errand). Cached
+        // per npcId so the random pick is stable across ticks.
+        if (entry.npcApproachPos == null || entry.npcApproachNpcId != npcId) {
+            entry.npcApproachPos = pickReachableApproachPoint(entry, bot, npcPos, APPROACH_SPREAD_PX);
+            entry.npcApproachNpcId = npcId;
+        }
+        Point walkTarget = entry.npcApproachPos != null ? entry.npcApproachPos : npcPos;
+        pinMoveTarget(entry, walkTarget);
+        movementStep.step(entry, walkTarget, runAiTick);
         return ApproachStatus.WALKING;
+    }
+
+    static void clearNpcApproach(BotEntry entry) {
+        entry.npcApproachPos = null;
+        entry.npcApproachNpcId = 0;
+    }
+
+    /**
+     * Shared de-stacker: a reachable, ground-snapped spot within {@code spreadPx} of {@code targetPos}
+     * so bots converging on one NPC/point don't pile on the exact same pixel — and so the walk target
+     * is a standable foothold the nav can actually reach, not an off-floor sprite anchor. Samples
+     * footholds near the point, keeps only nav-reachable ones (graph permitting), and returns a random
+     * survivor; falls back to {@code targetPos} when nothing better is found. SSOT for shop / quest /
+     * job / taxi(warp) NPC approaches.
+     */
+    static Point pickReachableApproachPoint(BotEntry entry, Character bot, Point targetPos, int spreadPx) {
+        MapleMap map = bot.getMap();
+        if (map == null || map.getFootholds() == null) {
+            return targetPos;
+        }
+        List<Point> candidates = new ArrayList<>();
+        for (Foothold fh : map.getFootholds().getAllFootholds()) {
+            int fx1 = fh.getX1(), fy1 = fh.getY1(), fx2 = fh.getX2(), fy2 = fh.getY2();
+            if (fx1 == fx2) {
+                continue; // wall foothold — nothing to stand on
+            }
+            int xMin = Math.min(fx1, fx2), xMax = Math.max(fx1, fx2);
+            int step = Math.max(1, (xMax - xMin) / 20);
+            for (int x = xMin; x <= xMax; x += step) {
+                double t = (double) (x - fx1) / (fx2 - fx1);
+                int y = (int) (fy1 + t * (fy2 - fy1));
+                if (Math.abs(x - targetPos.x) + Math.abs(y - targetPos.y) <= spreadPx) {
+                    candidates.add(new Point(x, y));
+                }
+            }
+        }
+        if (candidates.isEmpty()) {
+            return targetPos;
+        }
+        BotMovementProfile profile = entry.movementProfile != null
+                ? entry.movementProfile : BotMovementProfile.fromCharacter(bot);
+        BotNavigationGraph graph = BotNavigationGraphProvider.peekBestGraph(map, profile);
+        if (graph != null) {
+            Point botPos = bot.getPosition();
+            int startRegionId = BotNavigationManager.resolveCurrentRegionId(graph, entry, map, botPos);
+            if (startRegionId >= 0) {
+                List<Point> reachable = new ArrayList<>();
+                for (Point candidate : candidates) {
+                    int targetRegionId = BotNavigationManager.resolveTargetRegionId(graph, entry, map, candidate);
+                    if (targetRegionId < 0) {
+                        continue;
+                    }
+                    if (startRegionId == targetRegionId
+                            || !BotNavigationManager.findPath(graph, map, botPos,
+                                    startRegionId, targetRegionId, candidate).isEmpty()) {
+                        reachable.add(candidate);
+                    }
+                }
+                if (!reachable.isEmpty()) {
+                    candidates = reachable;
+                }
+            }
+        }
+        return candidates.get(ThreadLocalRandom.current().nextInt(candidates.size()));
     }
 
     // moveTarget makes the movement stack treat the portal as a precise destination (exact

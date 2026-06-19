@@ -207,6 +207,11 @@ public class BotEntry {
     int followTravelTaxiNpcId = 0;       // != 0: current hop is a cab ride — walk to this NPC, pay, warp
     Point followTravelTaxiPos = null;    // cab NPC position (static, cached at hop start)
     boolean followTravelFerry = false;   // current hop is a ferry boarding leg (BotFerryManager)
+    // Errand NPC approach: a per-bot reachable spot NEAR the NPC (not the exact, possibly off-floor
+    // sprite pos) so bots converging on one NPC don't stack on the same pixel and freeze. Cached so
+    // it isn't re-rolled every tick; keyed by npcId, cleared on arrival/abort/map-change.
+    Point npcApproachPos = null;
+    int npcApproachNpcId = 0;
 
     // Autopilot (BotAutopilotManager): owner-ordered independent play. -1 = off.
     // Deliberately NOT cleared on death: the bot revives in town and walks back.

@@ -16,7 +16,6 @@ import server.ShopFactory;
 import server.ShopItem;
 import server.StatEffect;
 import server.life.NPC;
-import server.maps.Foothold;
 import server.maps.MapObject;
 import server.maps.MapObjectType;
 import server.maps.MapleMap;
@@ -31,7 +30,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ThreadLocalRandom;
 import java.util.function.IntUnaryOperator;
 import java.util.function.Predicate;
 
@@ -255,7 +253,7 @@ final class BotShopManager {
     private static void startShopVisit(BotEntry entry, Character bot, NpcShopMatch match) {
         entry.shopVisitPending = true;
         entry.shopNpcPos = match.npcPos;
-        entry.shopTargetPos = pickShopApproachPoint(match.npcPos, entry, bot);
+        entry.shopTargetPos = BotTravelManager.pickReachableApproachPoint(entry, bot, match.npcPos, SHOP_MANHATTAN_RADIUS);
         entry.shopTargetGraphChecked = approachGraphReady(entry, bot);
         entry.shopApproachDelayMs = (int) BotManager.randMs(0, SHOP_APPROACH_DELAY_MAX_MS);
         entry.shopVisitStartedAtMs = System.currentTimeMillis();
@@ -304,7 +302,7 @@ final class BotShopManager {
         if (!entry.shopSequenceActive && !entry.shopTargetGraphChecked && approachGraphReady(entry, bot)) {
             // The original pick raced the map-change graph warmup and couldn't filter for
             // reachability — re-pick now that pathability is known.
-            entry.shopTargetPos = pickShopApproachPoint(entry.shopNpcPos, entry, bot);
+            entry.shopTargetPos = BotTravelManager.pickReachableApproachPoint(entry, bot, entry.shopNpcPos, SHOP_MANHATTAN_RADIUS);
             entry.shopTargetGraphChecked = true;
         }
 
@@ -1287,57 +1285,6 @@ final class BotShopManager {
         });
     }
 
-    private static Point pickShopApproachPoint(Point npcPos, BotEntry entry, Character bot) {
-        var footholds = bot.getMap().getFootholds();
-        if (footholds == null) {
-            return npcPos;
-        }
-        List<Point> candidates = new ArrayList<>();
-        for (Foothold fh : footholds.getAllFootholds()) {
-            int fx1 = fh.getX1(), fy1 = fh.getY1();
-            int fx2 = fh.getX2(), fy2 = fh.getY2();
-            if (fx1 == fx2) {
-                continue; // wall foothold
-            }
-            int xMin = Math.min(fx1, fx2);
-            int xMax = Math.max(fx1, fx2);
-            int step = Math.max(1, (xMax - xMin) / 20);
-            for (int x = xMin; x <= xMax; x += step) {
-                double t = (double) (x - fx1) / (fx2 - fx1);
-                int y = (int) (fy1 + t * (fy2 - fy1));
-                if (Math.abs(x - npcPos.x) + Math.abs(y - npcPos.y) <= SHOP_MANHATTAN_RADIUS) {
-                    candidates.add(new Point(x, y));
-                }
-            }
-        }
-        if (candidates.isEmpty()) {
-            return npcPos;
-        }
-        BotMovementProfile profile = entry.movementProfile != null
-                ? entry.movementProfile : BotMovementProfile.fromCharacter(bot);
-        BotNavigationGraph graph = BotNavigationGraphProvider.peekBestGraph(bot.getMap(), profile);
-        if (graph != null) {
-            Point botPos = bot.getPosition();
-            int startRegionId = BotNavigationManager.resolveCurrentRegionId(graph, entry, bot.getMap(), botPos);
-            if (startRegionId >= 0) {
-                List<Point> reachable = new ArrayList<>();
-                for (Point candidate : candidates) {
-                    int targetRegionId = BotNavigationManager.resolveTargetRegionId(
-                            graph, entry, bot.getMap(), candidate);
-                    if (targetRegionId < 0) continue;
-                    if (startRegionId == targetRegionId
-                            || !BotNavigationManager.findPath(graph, bot.getMap(), botPos,
-                                    startRegionId, targetRegionId, candidate).isEmpty()) {
-                        reachable.add(candidate);
-                    }
-                }
-                if (!reachable.isEmpty()) {
-                    candidates = reachable;
-                }
-            }
-        }
-        return candidates.get(ThreadLocalRandom.current().nextInt(candidates.size()));
-    }
 
     private static NPC findNpcNear(Character bot, Point pos) {
         for (MapObject obj : bot.getMap().getMapObjectsInRange(
