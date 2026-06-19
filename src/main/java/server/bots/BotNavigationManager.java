@@ -1538,9 +1538,12 @@ final class BotNavigationManager {
         return intraRegionTravelCost(graph, from, targetPos);
     }
 
-    // ponytail: route-diversification knobs — tune here if 100-bot stacking persists or routes look too lossy.
-    private static final double JITTER_FRAC = 0.25;    // per-edge cost perturbation 0..25%, stable per (bot, edge)
-    private static final double EPSILON_SPAN = 0.30;   // weighted-A* heuristic inflation: epsilon in [1.0, 1.3) per bot
+    // ponytail: route-diversification knobs — calibrated on map 10000 via BotRouteDiversityTest.
+    // jitter spreads routes; epsilon trades diversity for a perf prune. At 0.55/0.15 the modal
+    // corridor drops from 43% to ~28% of bots (12 distinct routes) for ~29% worst-case overhead.
+    // Raising jitter further mostly buys overhead, not spread; lower epsilon = more spread, less prune.
+    static double JITTER_FRAC = 0.55;    // per-edge cost perturbation 0..55%, stable per (bot, edge)
+    static double EPSILON_SPAN = 0.15;   // weighted-A* heuristic inflation: epsilon in [1.0, 1.15) per bot
     private static final long EPSILON_SALT = 0xE95011L;
 
     /** Heuristic value: zeroSeed callers keep h=0/legacy; per-bot search uses an inflated (weighted) admissible h to prune. */
