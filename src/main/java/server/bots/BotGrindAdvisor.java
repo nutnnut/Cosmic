@@ -1078,7 +1078,7 @@ final class BotGrindAdvisor {
         return sum / sampleScores.length;
     }
 
-    private static double totalWornValue(Character bot, ItemInformationProvider ii) {
+    static double totalWornValue(Character bot, ItemInformationProvider ii) {
         double total = 0.0;
         for (Item it : bot.getInventory(InventoryType.EQUIPPED).list()) {
             if (it instanceof Equip e && !ii.isCash(e.getItemId())) {

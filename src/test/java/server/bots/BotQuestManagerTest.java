@@ -28,8 +28,8 @@ class BotQuestManagerTest {
     private final BotQuestManager.GrindExpBaseline prevBestBaseline = BotQuestManager.bestGrindExpBaseline;
     private final BotQuestScorer.MobExp prevMobExp = BotQuestManager.mobExp;
     private final BotQuestManager.TravelSeconds prevTravel = BotQuestManager.travelSeconds;
-    private final java.util.function.ToDoubleBiFunction<Character, BotQuestIndex.QuestMeta>
-            prevUnique = BotQuestManager.uniqueRewardValue;
+    private final java.util.function.BiFunction<Character, BotQuestIndex.QuestMeta, BotQuestManager.RewardGain>
+            prevRewardGain = BotQuestManager.rewardGain;
     private final BotQuestManager.NameLookup prevNpcName = BotQuestManager.npcName;
     private final BotQuestManager.NameLookup prevMapName = BotQuestManager.mapName;
     private final BotQuestManager.NameLookup prevMobName = BotQuestManager.mobName;
@@ -68,7 +68,7 @@ class BotQuestManagerTest {
         BotQuestManager.bestGrindExpBaseline = prevBestBaseline;
         BotQuestManager.mobExp = prevMobExp;
         BotQuestManager.travelSeconds = prevTravel;
-        BotQuestManager.uniqueRewardValue = prevUnique;
+        BotQuestManager.rewardGain = prevRewardGain;
         BotQuestManager.npcName = prevNpcName;
         BotQuestManager.mapName = prevMapName;
         BotQuestManager.mobName = prevMobName;
@@ -85,7 +85,7 @@ class BotQuestManagerTest {
         BotQuestManager.grindExpBaseline = (e, b) -> baselineExpPerMin;
         BotQuestManager.mobExp = mobId -> perMobExp;
         BotQuestManager.travelSeconds = (from, to) -> travelSeconds;
-        BotQuestManager.uniqueRewardValue = (b, q) -> 0.0;
+        BotQuestManager.rewardGain = (b, q) -> new BotQuestManager.RewardGain(0.0, 0.0);
     }
 
     /** Recording gate: tracks which (questId) had start/complete called, gated by canStart/canComplete. */
@@ -209,7 +209,7 @@ class BotQuestManagerTest {
         BotQuestManager.mapMobs = mapId -> Map.of();          // no overlap -> pure reward-exp value
         BotQuestManager.travelSeconds = (from, to) -> 60.0;   // fixed opportunity cost
         BotQuestManager.grindExpBaseline = (en, b) -> 1000.0; // un-rated grind baseline
-        BotQuestManager.uniqueRewardValue = (b, q) -> 0.0;    // exp-only quest
+        BotQuestManager.rewardGain = (b, q) -> new BotQuestManager.RewardGain(0.0, 0.0); // exp-only quest
 
         var expQuest = mobQuest(7000, 100, 200, 5000, Map.of(), List.of());
         BotQuestManager.expRateRatio = b -> 1.0;
@@ -219,14 +219,34 @@ class BotQuestManagerTest {
         assertTrue(boosted > base * 1.99,
                 "doubling the quest/mob exp-rate ratio ~doubles an exp-reward quest's score");
 
-        // An equip-reward quest (no reward exp, value only from the unique reward) is ratio-invariant.
+        // An equip-reward quest (no reward exp, value only from the gear reward) is ratio-invariant.
         var gearQuest = mobQuest(7001, 100, 200, 0, Map.of(), List.of(1102053));
-        BotQuestManager.uniqueRewardValue = (b, q) -> 300.0;
+        BotQuestManager.rewardGain = (b, q) -> new BotQuestManager.RewardGain(0.1, 0.0);
         BotQuestManager.expRateRatio = b -> 1.0;
         double g1 = BotQuestManager.scoreQuest(e, e.bot, 50000, 60000, gearQuest);
         BotQuestManager.expRateRatio = b -> 5.0;
         double g5 = BotQuestManager.scoreQuest(e, e.bot, 50000, 60000, gearQuest);
         assertEquals(g1, g5, 1e-9, "equip reward value does not scale with the exp-rate ratio");
+    }
+
+    @Test
+    void gearRewardValueScalesWithBaselineAndHorizonButScoreIsBaselineInvariant() {
+        BotEntry e = entry();
+        BotQuestManager.mapMobs = mapId -> Map.of();          // no overlap
+        BotQuestManager.travelSeconds = (from, to) -> 60.0;   // fixed travel
+        BotQuestManager.expRateRatio = b -> 1.0;
+        // Pure gear-reward quest (no exp): value = dpsGainFraction * baseline * horizon.
+        BotQuestManager.rewardGain = (b, q) -> new BotQuestManager.RewardGain(0.1, 0.0);
+        var gearQuest = mobQuest(7002, 100, 200, 0, Map.of(), List.of(1102053));
+
+        BotQuestManager.grindExpBaseline = (en, b) -> 1000.0;
+        double lowBase = BotQuestManager.scoreQuest(e, e.bot, 50000, 60000, gearQuest);
+        BotQuestManager.grindExpBaseline = (en, b) -> 4000.0;
+        double highBase = BotQuestManager.scoreQuest(e, e.bot, 50000, 60000, gearQuest);
+        // Both value and cost scale with baseline, so the gear-quest SCORE is baseline-invariant.
+        assertEquals(lowBase, highBase, 1e-9,
+                "a pure gear reward's score is grind-rate invariant (baseline cancels)");
+        assertTrue(lowBase > 0, "a meaningful gear reward produces a positive score");
     }
 
     // ---- auto quests: drive start/complete only when the gates pass ----
@@ -671,7 +691,7 @@ class BotQuestManagerTest {
     void talkQuestScoresWorthDoingForFreshBot() {
         // q1031 Heena/Sera: 5 exp talk quest. Fresh bot grinds ~8 exp/min; short NPC trip.
         BotQuestManager.travelSeconds = (from, to) -> 30.0;
-        BotQuestManager.uniqueRewardValue = (b, q) -> 0.0;
+        BotQuestManager.rewardGain = (b, q) -> new BotQuestManager.RewardGain(0.0, 0.0);
         var q = talkQuest(1031, 2101, 2100, 5, false);
         BotEntry e = entry();
         double score = BotQuestManager.scoreQuest(e, e.bot, 10000, 10000, q, 8.0 /*fresh baseline*/);

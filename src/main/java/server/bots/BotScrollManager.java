@@ -1088,24 +1088,6 @@ final class BotScrollManager {
                 + scrollHeadroom(eq.getUpgradeSlots(), bestScrollEvPerSlot(bot, ii, eq.getItemId()));
     }
 
-    /** Expected offense gain from APPLYING this scroll item once (its stat value scaled by effective
-     *  success) — the worth of a scroll reward to a bot that will use it. 0 for a non-scroll, a
-     *  boom/meta scroll, or one with no usable offense stats. Reuses the same catalog-stat read as
-     *  {@link #bestScrollEvPerSlot}, just keyed on the scroll itself rather than a target slot. */
-    static double scrollRewardEv(Character bot, ItemInformationProvider ii, int scrollId) {
-        if (scrollId / 10000 != SCROLL_ITEM_PREFIX
-                || ItemConstants.isCleanSlate(scrollId) || ItemConstants.isModifierScroll(scrollId)
-                || scrollId == ItemId.WHITE_SCROLL) {
-            return 0.0;
-        }
-        Map<String, Integer> st = ii.getEquipStats(scrollId);
-        if (st == null || st.getOrDefault("success", 0) <= 0 || st.getOrDefault("cursed", 0) > 0) {
-            return 0.0;
-        }
-        return effectiveSuccessPct(st.getOrDefault("success", 0)) / 100.0
-                * offenseValueFromStats(bot, st);
-    }
-
     /** Pure headroom core: discounted value of open upgrade slots at a per-slot scroll EV. */
     static double scrollHeadroom(int upgradeSlots, double bestEvPerSlot) {
         return SCROLL_HEADROOM_FRACTION * Math.max(0, upgradeSlots) * Math.max(0.0, bestEvPerSlot);

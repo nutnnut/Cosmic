@@ -584,12 +584,18 @@ final class BotQuestManager {
         // quest/mob exp-rate ratio: a quest-exp-boosted server makes exp rewards weigh more, a
         // quest-exp-starved one deflates them (while equip/scroll rewards, real utility, hold).
         int rewardExp = (int) Math.round(q.rewardExp() * expRateRatio.ratio(bot));
+        // Non-exp reward worth, valued on the SAME %DPS-of-worn scale grind uses (gear acquire-gain /
+        // total worn value), turned into exp here: a permanent X% DPS gain pays back X% of the bot's
+        // grind output over GEAR_PAYBACK_HORIZON_MINUTES. baseline cancels in the value/cost ratio, so
+        // gear worth is grind-rate-invariant (correct — gear is real utility, not exp).
+        RewardGain rg = rewardGain.apply(bot, q);
+        double uniqueBonus = rg.dpsGainFraction() * baseline * GEAR_PAYBACK_HORIZON_MINUTES
+                + rg.consumableMeso() * REWARD_EXP_PER_MESO;
         // Talk quests (no kills, no fetched items) score on a flat completion worth + reward vs the
         // NPC round-trip cost - there are no mobs to overlap or kill.
         if (q.talk()) {
             double travelT = travelSeconds.seconds(grindMapId, npcMapId);
-            double uniqueT = uniqueRewardExpEquivalent(bot, q);
-            return BotQuestScorer.scoreTalk(rewardExp, uniqueT, travelT, baseline);
+            return BotQuestScorer.scoreTalk(rewardExp, uniqueBonus, travelT, baseline);
         }
         // Overlap = required mobs the bot already kills on its current grind map (free exp).
         java.util.Set<Integer> here = mapMobs.mobsOn(grindMapId).keySet();
@@ -603,7 +609,6 @@ final class BotQuestManager {
         double killSecondsPerMob = grindKillSeconds(entry, bot);
         // Round trip: grind map -> NPC map -> back. resolveNpcMap already found npcMapId.
         double travel = travelSeconds.seconds(grindMapId, npcMapId);
-        double uniqueBonus = uniqueRewardExpEquivalent(bot, q);
         return BotQuestScorer.score(q.mobs(), rewardExp, uniqueBonus, overlap, mobExp,
                 killSecondsPerMob, travel, baseline);
     }
@@ -620,38 +625,41 @@ final class BotQuestManager {
      *  visible constant; non-overlapping kill quests are rare among piggyback candidates. */
     static final double DEFAULT_OFFMAP_KILL_SECONDS = 4.0;
 
-    /** Exp-equivalent of a quest's unique equip reward, valued through the equip-value SSOT
-     *  ({@link BotScrollManager#offenseValue}). Seam so tests stay WZ-free. 0 when no equip
-     *  reward or it is worthless to this bot. */
-    static java.util.function.ToDoubleBiFunction<Character, BotQuestIndex.QuestMeta>
-            uniqueRewardValue = BotQuestManager::computeUniqueRewardValue;
+    /** A quest's non-exp reward worth as grind-comparable, baseline-free quantities (so the seam stays
+     *  WZ/DB-test-stubbable and {@link #scoreQuest} applies the bot's own rate): {@code dpsGainFraction}
+     *  is the best reward equip/scroll's acquire-gain as a fraction of total worn value — the SAME %DPS
+     *  lens grind uses (GearProspect.dpsGainFraction) — and {@code consumableMeso} the shop worth of
+     *  plain consumable rewards. */
+    record RewardGain(double dpsGainFraction, double consumableMeso) {}
 
-    static double uniqueRewardExpEquivalent(Character bot, BotQuestIndex.QuestMeta q) {
-        return uniqueRewardValue.applyAsDouble(bot, q);
-    }
+    /** Seam: a quest's non-exp reward worth as a {@link RewardGain}. Stubbed WZ-free in tests. */
+    static java.util.function.BiFunction<Character, BotQuestIndex.QuestMeta, RewardGain>
+            rewardGain = BotQuestManager::computeRewardGain;
 
-    /** Production unique-reward valuation, in exp-equivalent. Reward equips are valued through the
-     *  full equip SSOT {@link BotScrollManager#potentialValue} (offense + survivability + open upgrade
-     *  slots — so a defensive cape / a scrollable base is no longer worth 0); the bot wears the single
-     *  best one. Scroll rewards are valued by their applied offense EV ({@link BotScrollManager#scrollRewardEv})
-     *  and summed (you use them all). Other consumable (USE/ETC) rewards are valued at their shop price
-     *  via {@link #REWARD_EXP_PER_MESO}. Most indexed quests reward none of these, so this is often 0. */
-    private static double computeUniqueRewardValue(Character bot, BotQuestIndex.QuestMeta q) {
+    /** Production reward valuation, on the SAME scale grind/maker/gacha rank equips: a reward equip's
+     *  expected acquire-gain over what the bot already owns ({@link BotGrindAdvisor#expectedAcquireGain},
+     *  marginal-vs-worn, level-discounted) with a clean-catalog roll (quest rewards arrive clean), plus
+     *  scroll rewards via the same scroll-gain SSOT ({@link BotGrindAdvisor#scrollGains}); divided by total
+     *  worn value into a %DPS fraction exactly like {@code BotGrindAdvisor} GearProspect. Other consumable
+     *  rewards fall to their shop price. None/unresolvable -> zero. */
+    static RewardGain computeRewardGain(Character bot, BotQuestIndex.QuestMeta q) {
         if (q.rewardItems().isEmpty()) {
-            return 0.0;
+            return new RewardGain(0.0, 0.0);
         }
         server.ItemInformationProvider ii = server.ItemInformationProvider.getInstance();
-        double bestEquip = 0.0;   // wear the single best equip reward
-        double scrollEv = 0.0;    // apply every scroll reward
+        java.util.Map<Short, Double> barCache = new java.util.HashMap<>();
+        double bestEquipGain = 0.0;   // wear the single best reward equip
+        double scrollGain = 0.0;      // apply every scroll reward
         double consumableMeso = 0.0;
         for (int itemId : q.rewardItems()) {
             try {
                 if (constants.inventory.ItemConstants.isEquipment(itemId)) {
-                    if (ii.getEquipById(itemId) instanceof client.inventory.Equip eq) {
-                        bestEquip = Math.max(bestEquip, BotScrollManager.potentialValue(bot, ii, eq));
-                    }
+                    double gain = BotGrindAdvisor.expectedAcquireGain(bot, ii, itemId,
+                            (b, id, n) -> BotGrindAdvisor.sampleEquipScores(b, id, n, base -> base),
+                            1, barCache);
+                    bestEquipGain = Math.max(bestEquipGain, gain);
                 } else if (itemId / 10000 == BotScrollManager.SCROLL_ITEM_PREFIX) {
-                    scrollEv += BotScrollManager.scrollRewardEv(bot, ii, itemId);
+                    scrollGain += Math.max(0.0, BotGrindAdvisor.scrollGains.gain(bot, itemId));
                 } else {
                     consumableMeso += Math.max(0, ii.getPrice(itemId, 1));
                 }
@@ -659,13 +667,17 @@ final class BotQuestManager {
                 // unresolvable reward — value it at 0 (conservative).
             }
         }
-        return (bestEquip + scrollEv) * UNIQUE_REWARD_EXP_PER_OFFENSE
-                + consumableMeso * REWARD_EXP_PER_MESO;
+        double worn = Math.max(TOTAL_WORN_FLOOR, BotGrindAdvisor.totalWornValue(bot, ii));
+        return new RewardGain((bestEquipGain + scrollGain) / worn, consumableMeso);
     }
 
-    /** Exp-equivalent weight of one point of equip/scroll offense-or-survival value for a unique quest
-     *  reward. A visible knob: a strong reward equip should feel worth a few minutes of grind. */
-    static final double UNIQUE_REWARD_EXP_PER_OFFENSE = 50.0;
+    /** Payback horizon for a permanent gear reward: a quest equip that adds X% DPS is worth ~X% of the
+     *  bot's grind output over this window. 4h — grind's gear-attainability horizon is 2h, doubled so a
+     *  gear reward is favored over flat exp. The single magnitude knob for gear-reward quests. */
+    static final double GEAR_PAYBACK_HORIZON_MINUTES = 240.0;
+    /** Floor on total worn value so a near-naked bot's tiny denominator can't explode the fraction
+     *  (mirrors the {@code max(1.0, totalWorn)} floor in BotGrindAdvisor's GearProspect). */
+    static final double TOTAL_WORN_FLOOR = 1.0;
     /** Exp-equivalent per meso of a plain consumable (USE/ETC) reward, valued at its shop price. Tiny
      *  on purpose: a few potions barely move a quest's worth. ponytail: flat, tune via the economy
      *  ledger when meso<->exp is modeled for real. */
