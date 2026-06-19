@@ -1896,4 +1896,46 @@ class BotManagerTest {
         method.setAccessible(true);
         return method;
     }
+
+    /**
+     * A self-owned bot whose autopilot leaked to OFF (autopilotMapId == -1: a null decision or the
+     * death-loop escape) must self-recover: the inert-idle tick re-runs the decision, throttled, and
+     * only for self-owned bots. Without this the bot stands idle in town forever (the >90%-in-town bug).
+     */
+    @Test
+    void recoversInertSelfOwnedAutopilotThrottledAndScoped() throws Exception {
+        MapleMap map = createEmptyTestMap(910000200);
+        Character bot = mockMovingBot(new Point(100, 100), map);
+        BotEntry entry = new BotEntry(bot, bot, null); // self-owned (@botme), autopilotMapId = -1 (inert)
+
+        AtomicInteger runs = new AtomicInteger();
+        BotAutopilotManager.DecisionRunner prev = BotAutopilotManager.decisionRunner;
+        BotAutopilotManager.decisionRunner = (compute, apply) -> runs.incrementAndGet();
+        try {
+            Method recover = method(BotManager.class, "maybeRecoverInertAutopilot",
+                    BotEntry.class, Character.class);
+
+            // inert + self-owned + past the (default 0) throttle -> fires once and arms the backoff.
+            recover.invoke(BotManager.getInstance(), entry, bot);
+            assertEquals(1, runs.get());
+            assertTrue(entry.autopilotNextDecisionAtMs > System.currentTimeMillis());
+
+            // re-call within the backoff window -> no second fire (no per-tick decision spin).
+            recover.invoke(BotManager.getInstance(), entry, bot);
+            assertEquals(1, runs.get());
+
+            // active autopilot (a destination is set) -> never fires, even past the throttle.
+            entry.autopilotNextDecisionAtMs = 0L;
+            entry.autopilotMapId = 100000000;
+            recover.invoke(BotManager.getInstance(), entry, bot);
+            assertEquals(1, runs.get());
+
+            // owned companion (a real, distinct owner) -> never fires; its idle may be owner-intended.
+            BotEntry owned = new BotEntry(bot, mock(Character.class), null);
+            recover.invoke(BotManager.getInstance(), owned, bot);
+            assertEquals(1, runs.get());
+        } finally {
+            BotAutopilotManager.decisionRunner = prev;
+        }
+    }
 }

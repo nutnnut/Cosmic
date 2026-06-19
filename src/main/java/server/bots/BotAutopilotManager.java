@@ -141,7 +141,7 @@ final class BotAutopilotManager {
         if (entry.autopilotMapId > 0) {
             entry.autopilotAvoidMapUntilMs.put(entry.autopilotMapId, until);
         }
-        entry.autopilotMapId = -1;            // drop the pick so the next tick re-decides
+        entry.autopilotMapId = -1;            // drop the pick; BotManager.maybeRecoverInertAutopilot re-decides
         entry.autopilotDestinationName = "";
         entry.autopilotErrandMapId = -1;
         entry.autopilotDeathStreak = 0;       // gave it an escape; count fresh from here
@@ -273,6 +273,9 @@ final class BotAutopilotManager {
         try {
             result = compute.get();
         } catch (RuntimeException e) {
+            // Never swallow silently: a null decision idles the bot, so a hidden exception here used to
+            // masquerade as a legitimate "no spot" with no trace. Log it; the caller still degrades.
+            log.warn("bot autopilot decision threw on DECIDE_POOL", e);
             result = null;
         }
         Object applied = result;
@@ -327,6 +330,9 @@ final class BotAutopilotManager {
                 return; // a newer owner directive won while we were thinking
             }
             if (rec == null) {
+                // Legitimate "nothing reachable worth grinding from here" (a non-null Decision with a
+                // null rec). Debug, not warn — an actual exception was already warn'd in decide().
+                log.debug("bot {} found no autopilot spot; will retry", bot.getName());
                 reply.accept(entry, BotManager.randomReply(NO_SPOT_REPLIES));
                 maybeTeaseFerry(entry, decision);
                 return;
@@ -854,6 +860,9 @@ final class BotAutopilotManager {
             }
             return new Decision(local, ferryTeaser(local, recommendOnce(entry, bot, true)));
         } catch (RuntimeException e) {
+            // Visible, not swallowed: distinguishes a real failure here from a legitimate null rec
+            // (no reachable worthwhile spot), which returns a non-null Decision below.
+            log.warn("bot decide failed for {}", bot != null ? bot.getName() : "?", e);
             return null;
         }
     }

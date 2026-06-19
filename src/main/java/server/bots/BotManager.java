@@ -950,13 +950,43 @@ public class BotManager {
         }
         // In a safe map: walk to a random nearby spot once, then idle there until the deadline.
         if (entry.logoutAnchor == null) {
-            // wander 150-700px to one side of where it landed, so bots spread out across the town
-            int spread = (150 + ThreadLocalRandom.current().nextInt(551))
-                    * (ThreadLocalRandom.current().nextBoolean() ? 1 : -1);
-            entry.logoutAnchor = new Point(botPos.x + spread, botPos.y);
+            entry.logoutAnchor = pickTownLoiterAnchor(entry, bot, botPos);
             BotMovementManager.resetEntryState(entry);
         }
         loiterAtAnchor(entry, bot, botPos, entry.logoutAnchor, false);
+    }
+
+    /**
+     * One-shot town loiter spot: snapshot a RANDOM nearby anchor (a town NPC or another character) and
+     * de-stack onto a reachable, ground-snapped foothold near it via the shared NPC-approach SSOT
+     * ({@link BotTravelManager#pickReachableApproachPoint}), so idling bots cluster around NPCs/each
+     * other and look alive instead of stacking on the spawn portal. The anchor is snapshotted once
+     * (never a live reference) -- if it was a player who then moves, the bot stays put, no chasing.
+     * Falls back to a sideways spread when no anchor/foothold fits.
+     */
+    private Point pickTownLoiterAnchor(BotEntry entry, Character bot, Point botPos) {
+        MapleMap map = bot.getMap();
+        List<Point> anchors = new ArrayList<>();
+        if (map != null) {
+            for (server.maps.MapObject npc : map.getMapObjectsInRange(new Point(0, 0),
+                    Double.POSITIVE_INFINITY, java.util.List.of(server.maps.MapObjectType.NPC))) {
+                anchors.add(npc.getPosition());
+            }
+            for (Character c : new ArrayList<>(map.getCharacters())) {
+                if (c != bot) {
+                    anchors.add(c.getPosition());
+                }
+            }
+        }
+        if (!anchors.isEmpty()) {
+            Point anchor = anchors.get(ThreadLocalRandom.current().nextInt(anchors.size()));
+            return BotTravelManager.pickReachableApproachPoint(entry, bot, anchor,
+                    BotTravelManager.APPROACH_SPREAD_PX);
+        }
+        // No NPCs/characters to cluster on: keep the old sideways spread so bots still don't stack.
+        int spread = (150 + ThreadLocalRandom.current().nextInt(551))
+                * (ThreadLocalRandom.current().nextBoolean() ? 1 : -1);
+        return new Point(botPos.x + spread, botPos.y);
     }
 
     /** Say goodbye (chattiness-gated), leave the party, and disconnect after a short human-like beat.
@@ -4619,6 +4649,7 @@ public class BotManager {
             // releases. Yield to autopilot; BotManager's wait-anchor loiter still parks it at the portal.
             return false;
         }
+        maybeRecoverInertAutopilot(entry, bot);
         if (isSwimMap(entry) && entry.inAir && !entry.climbing) {
             BotMovementManager.tickSwimming(entry, null);
         } else if (entry.inAir) {
@@ -4632,6 +4663,32 @@ public class BotManager {
             }
         }
         return true;
+    }
+
+    /**
+     * Self-healing for inert autopilot. A self-owned/managed bot (no human owner to deliberately idle
+     * it) should always be autopiloting while online, but the destination can leak to OFF
+     * ({@code autopilotMapId == -1}) and never recover: a {@code start()} whose decision came back null
+     * (no reachable spot, or a swallowed exception) installs no plan and schedules no retry, and the
+     * {@link BotAutopilotManager#onDeathLoop} escape drops the pick too. Every re-decide path gates on
+     * {@code isActive}, so once off nothing turns it back on — the bot stands idle in town forever. This
+     * throttled retry (only fires for a fully-idle, self-owned, live, non-logging-out bot) re-runs the
+     * decision so it gets back out grinding. Reuses {@code autopilotNextDecisionAtMs} as the backoff
+     * clock — it's only consumed by maybeRedecide while ACTIVE, so it's free here, and {@code start()}
+     * resets it to nextDecisionAt() the moment a plan installs.
+     */
+    private void maybeRecoverInertAutopilot(BotEntry entry, Character bot) {
+        boolean selfOwned = entry.owner == null || entry.owner == entry.bot;
+        if (!selfOwned || entry.loggingOut || entry.deadUntil != 0
+                || entry.autopilotDecisionInFlight || BotAutopilotManager.isActive(entry)) {
+            return;
+        }
+        long now = System.currentTimeMillis();
+        if (now < entry.autopilotNextDecisionAtMs) {
+            return;
+        }
+        entry.autopilotNextDecisionAtMs = now + randMs(30_000, 60_000); // backoff; start() resets on success
+        BotAutopilotManager.start(entry, bot);
     }
 
     private boolean syncFollowMap(BotEntry entry, Character bot, Character followAnchor, boolean runAiTick) {
