@@ -519,6 +519,9 @@ public class BotEntry {
     // Human-like spacing and stagger — assigned at registration based on bot index
     int followOffsetX = 0;
     int skipDelayMs = ThreadLocalRandom.current().nextInt(0, 501);
+    // Login-loading pause: bot idles 2-7s after first spawn before acting (emulates client load).
+    // One-shot — ticked to 0 in tickCore, never reset by map-change teleports, so it fires once.
+    int spawnWarmupMs = 2_000 + ThreadLocalRandom.current().nextInt(0, 5_001);
     int aiTickAccumulatorMs = 0;
 
     // "Move here" target — bot navigates to this fixed point, then idles until cleared

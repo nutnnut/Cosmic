@@ -940,7 +940,7 @@ final class BotNavigationManager {
                                                         int startRegionId,
                                                         int targetRegionId,
                                                         Point targetPos) {
-        List<BotNavigationGraph.Edge> path = findPath(graph, bot.getMap(), bot.getPosition(), startRegionId, targetRegionId, targetPos);
+        List<BotNavigationGraph.Edge> path = findPath(graph, bot.getMap(), bot.getPosition(), startRegionId, targetRegionId, targetPos, null, routeSeed(bot));
         if (path.isEmpty()) {
             return null;
         }
@@ -952,7 +952,7 @@ final class BotNavigationManager {
                                                   int startRegionId,
                                                   int targetRegionId,
                                                   Point targetPos) {
-        return findPath(graph, bot.getMap(), bot.getPosition(), startRegionId, targetRegionId, targetPos);
+        return findPath(graph, bot.getMap(), bot.getPosition(), startRegionId, targetRegionId, targetPos, null, routeSeed(bot));
     }
 
     static List<BotNavigationGraph.Edge> findPath(BotNavigationGraph graph,
@@ -990,8 +990,19 @@ final class BotNavigationManager {
                                                           int targetRegionId,
                                                           Point targetPos,
                                                           String pathfindCaller) {
+        return findPath(graph, map, startPos, startRegionId, targetRegionId, targetPos, pathfindCaller, 0L);
+    }
+
+    private static List<BotNavigationGraph.Edge> findPath(BotNavigationGraph graph,
+                                                          MapleMap map,
+                                                          Point startPos,
+                                                          int startRegionId,
+                                                          int targetRegionId,
+                                                          Point targetPos,
+                                                          String pathfindCaller,
+                                                          long routeSeed) {
         return runSearch(graph, map, startPos, startRegionId, targetRegionId, targetPos,
-                pathfindCaller, useAdmissibleHeuristic, true).path();
+                pathfindCaller, useAdmissibleHeuristic, true, routeSeed).path();
     }
 
     /**
@@ -1009,9 +1020,15 @@ final class BotNavigationManager {
                                    Point targetPos,
                                    String pathfindCaller,
                                    boolean zeroHeuristic,
-                                   boolean instrument) {
+                                   boolean instrument,
+                                   long routeSeed) {
         long startedAt = System.nanoTime();
         PathfindProfile profile = null;
+        // routeSeed != 0 (per-bot) diversifies routes so 100 bots don't stack on one optimal
+        // path, and switches the search from h=0 Dijkstra (full-graph scan) to a per-bot
+        // weighted A* that prunes. Seed 0 = exact legacy behavior (probes/calibration/non-bot).
+        boolean randomized = routeSeed != 0;
+        double epsilon = randomized ? 1.0 + hashFrac(routeSeed, EPSILON_SALT) * EPSILON_SPAN : 0.0;
         try {
             PriorityQueue<SearchNode> open = new PriorityQueue<>(Comparator.comparingInt(node -> node.score));
             Map<SearchState, Integer> gScore = new HashMap<>();
@@ -1028,7 +1045,7 @@ final class BotNavigationManager {
             int openPeak = 1;
 
             gScore.put(startState, 0);
-            open.add(new SearchNode(startState, 0, zeroHeuristic ? 0 : heuristic(graph, startPos, targetPos)));
+            open.add(new SearchNode(startState, 0, hValue(graph, startPos, targetPos, zeroHeuristic, randomized, epsilon)));
 
             while (!open.isEmpty()) {
                 SearchNode current = open.poll();
@@ -1082,7 +1099,16 @@ final class BotNavigationManager {
                     Point landingPoint = straightDrop
                             ? new Point(approachPoint.x, edge.endPoint.y)
                             : edge.endPoint;
-                    int tentativeCost = current.cost + intraRegionTravelCost(graph, current.state.regionId, current.state.point, approachPoint) + edgeCost;
+                    int stepCost = intraRegionTravelCost(graph, current.state.regionId, current.state.point, approachPoint) + edgeCost;
+                    // Per-bot positive jitter, stable per (bot, edge): different bots perceive
+                    // different edges as slightly costlier and fan out onto distinct routes, while
+                    // a single bot re-plans the same route every tick (no fluttering). Positive-only
+                    // so reported cost never under-states true cost (keeps portal/direct-walk
+                    // comparisons conservative).
+                    if (randomized) {
+                        stepCost += (int) Math.round(stepCost * JITTER_FRAC * hashFrac(routeSeed, edgeKey(edge)));
+                    }
+                    int tentativeCost = current.cost + stepCost;
                     SearchState nextState = new SearchState(edge.toRegionId, landingPoint, isPortal);
                     if (tentativeCost >= gScore.getOrDefault(nextState, Integer.MAX_VALUE)) {
                         continue;
@@ -1092,7 +1118,7 @@ final class BotNavigationManager {
                     gScore.put(nextState, tentativeCost);
                     cameFrom.put(nextState, current.state);
                     cameByEdge.put(nextState, edge);
-                    int fScore = tentativeCost + (zeroHeuristic ? 0 : heuristic(graph, edge.endPoint, targetPos));
+                    int fScore = tentativeCost + hValue(graph, edge.endPoint, targetPos, zeroHeuristic, randomized, epsilon);
                     open.add(new SearchNode(nextState, tentativeCost, fScore));
                     openPeak = Math.max(openPeak, open.size());
                 }
@@ -1174,9 +1200,9 @@ final class BotNavigationManager {
                                             int targetRegionId,
                                             Point targetPos) {
         SearchOutcome current = runSearch(graph, map, startPos, startRegionId, targetRegionId, targetPos,
-                "measure", false, false);
+                "measure", false, false, 0L);
         SearchOutcome optimal = runSearch(graph, map, startPos, startRegionId, targetRegionId, targetPos,
-                "measure", true, false);
+                "measure", true, false, 0L);
         return new PathOptimality(current.cost(), optimal.cost(), current.usesPortal(),
                 optimal.usesPortal(), current.expandedNodes(), optimal.expandedNodes());
     }
@@ -1510,6 +1536,46 @@ final class BotNavigationManager {
 
     private static int heuristic(BotNavigationGraph graph, Point from, Point targetPos) {
         return intraRegionTravelCost(graph, from, targetPos);
+    }
+
+    // ponytail: route-diversification knobs — tune here if 100-bot stacking persists or routes look too lossy.
+    private static final double JITTER_FRAC = 0.25;    // per-edge cost perturbation 0..25%, stable per (bot, edge)
+    private static final double EPSILON_SPAN = 0.30;   // weighted-A* heuristic inflation: epsilon in [1.0, 1.3) per bot
+    private static final long EPSILON_SALT = 0xE95011L;
+
+    /** Heuristic value: zeroSeed callers keep h=0/legacy; per-bot search uses an inflated (weighted) admissible h to prune. */
+    private static int hValue(BotNavigationGraph graph, Point from, Point targetPos,
+                              boolean zeroHeuristic, boolean randomized, double epsilon) {
+        if (randomized) {
+            return (int) Math.round(epsilon * heuristic(graph, from, targetPos));
+        }
+        return zeroHeuristic ? 0 : heuristic(graph, from, targetPos);
+    }
+
+    /** Per-bot route seed; non-zero so the search takes the randomized branch. */
+    private static long routeSeed(Character bot) {
+        return mix64(bot.getId()) | 1L;
+    }
+
+    /** Stable identity for an edge so jitter is deterministic per (bot, edge), not per tick. */
+    private static long edgeKey(BotNavigationGraph.Edge edge) {
+        long k = edge.toRegionId;
+        k = k * 31 + edge.startPoint.x;
+        k = k * 31 + edge.startPoint.y;
+        k = k * 31 + edge.type.ordinal();
+        return k;
+    }
+
+    /** SplitMix64 finalizer mixing seed and key into a stable fraction in [0, 1). */
+    private static double hashFrac(long seed, long key) {
+        long h = mix64(seed ^ (key * 0x9E3779B97F4A7C15L));
+        return (h >>> 11) * 0x1.0p-53;
+    }
+
+    private static long mix64(long z) {
+        z = (z ^ (z >>> 30)) * 0xBF58476D1CE4E5B9L;
+        z = (z ^ (z >>> 27)) * 0x94D049BB133111EBL;
+        return z ^ (z >>> 31);
     }
 
     static boolean shouldUsePreciseWalkTarget(BotNavigationGraph.Edge edge) {

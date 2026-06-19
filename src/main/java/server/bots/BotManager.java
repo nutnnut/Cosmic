@@ -2848,6 +2848,10 @@ public class BotManager {
     private void tickCore(BotEntry entry, int ownerCharId, int botCharId) {
         if (entry == null) return;
         if (entry.airshowActive) return;
+        if (entry.spawnWarmupMs > 0) { // emulate client loading/login: idle 2-7s after spawn
+            entry.spawnWarmupMs = BotMovementManager.tickDown(entry.spawnWarmupMs);
+            return;
+        }
         if (entry.skipDelayMs > 0) {
             entry.skipDelayMs = BotMovementManager.tickDown(entry.skipDelayMs);
             return;
