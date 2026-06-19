@@ -49,6 +49,21 @@ class BotGrindAdvisorTest {
         assertEquals(0.0, BotGrindAdvisor.expectedImprovement(new double[0], 5.0), 1e-9);
     }
 
+    @Test
+    void levelDiscountScalesImprovementNotRollTotal() {
+        // The wait-discount must scale the IMPROVEMENT over the worn item, the way expectedAcquireGain
+        // now composes it (discount * E[max(0, roll*hitFactor - worn)]), NOT the roll total. Worn=100:
+        // a +10 drop 5 levels out must out-value a +5 wearable now, since (110-100)*0.9^5=5.90 > 5.00.
+        // Under the old roll*discount form the future drop clamped to 0 (110*0.59=64.9 < 100).
+        double futureBetter = BotGrindAdvisor.levelDiscount(5)
+                * BotGrindAdvisor.expectedImprovement(new double[]{110.0}, 1.0, 100.0);
+        double nowMarginal = BotGrindAdvisor.levelDiscount(0)
+                * BotGrindAdvisor.expectedImprovement(new double[]{105.0}, 1.0, 100.0);
+        assertTrue(futureBetter > 0.0, "the better future drop must not clamp to zero");
+        assertTrue(futureBetter > nowMarginal,
+                "better future drop must out-value a marginal wearable-now one: " + futureBetter + " vs " + nowMarginal);
+    }
+
     // ---- scroll prospects: pure EV, no tiering ----
 
     @Test

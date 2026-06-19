@@ -823,7 +823,12 @@ final class BotGrindAdvisor {
         double ownedScore = gearBar(bot, ii, itemId, slot, ownedBarCache);
         BotPerformanceMonitor.recordSince("grind.ownedbar", tBar);
         double[] samples = sampler.sample(bot, itemId, sampleCount);
-        return expectedImprovement(samples, levelDiscount(levelsToGo) * sampleScaleExtra, ownedScore);
+        // Discount the IMPROVEMENT over what the bot would wear, NOT the roll total. Applying the
+        // level discount to the roll (roll*discount - owned) made a strictly-better future drop
+        // decay below the worn item and clamp to 0 (a +10-att drop 5 levels out scored worse than a
+        // +5 wearable now). hitFactor still scales the roll (accuracy gear valued by effective DPS);
+        // the time discount applies once, to the resulting improvement.
+        return levelDiscount(levelsToGo) * expectedImprovement(samples, sampleScaleExtra, ownedScore);
     }
 
     /** Value of waiting: a thing usable in {@code levelsToGo} levels is worth a decayed
@@ -916,8 +921,12 @@ final class BotGrindAdvisor {
             if (levelsToGo < 0) {
                 continue;
             }
+            // Full value, NOT level-discounted: this is the baseline a candidate drop must beat, and
+            // by the time the drop is wearable the bot can wear this bagged piece too. Discounting it
+            // here would understate the bar and over-credit drops. (The drop's own wait is discounted
+            // on its improvement in expectedAcquireGain.)
             best = Math.max(best,
-                    levelDiscount(levelsToGo) * BotScrollManager.potentialValue(bot, ii, e)
+                    BotScrollManager.potentialValue(bot, ii, e)
                             * (slot == (short) -11 ? weaponSpeedFactor(e.getItemId()) : 1.0));
         }
         return best;
@@ -1054,9 +1063,10 @@ final class BotGrindAdvisor {
         return expectedImprovement(sampleScores, 1.0, currentScore);
     }
 
-    /** Like {@link #expectedImprovement(double[], double)} with each sample scaled first —
-     *  the level discount of a not-yet-wearable drop applies to the ROLL, not the improvement,
-     *  so a future drop competes symmetrically against future bagged items in the baseline. */
+    /** Like {@link #expectedImprovement(double[], double)} with each roll scaled first by
+     *  {@code sampleScale} — the accuracy hit-factor, valuing accuracy gear by the effective DPS it
+     *  unlocks (the worn bar stays at factor 1.0, the hit-factor's reference). The level/time discount
+     *  is NOT applied here; the caller applies it to the resulting improvement (see expectedAcquireGain). */
     static double expectedImprovement(double[] sampleScores, double sampleScale, double currentScore) {
         if (sampleScores == null || sampleScores.length == 0) {
             return 0.0;
