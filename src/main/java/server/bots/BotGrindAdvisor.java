@@ -105,6 +105,32 @@ final class BotGrindAdvisor {
             });
 
     private static volatile boolean cachesWarmed = false;
+    // Released when warmGrindData finishes. A cold full pass is ~16.5s and allocates heavily; if 60 bots
+    // fire decides on the single DECIDE_POOL thread BEFORE the warm completes, every pass pays the cold
+    // tax at once -> GC stop-the-world storms that freeze all cores (warm pass is ~40x cheaper, ~15ms).
+    // buildCandidates waits on this so the decide thread does the warm-dependent work only once warm.
+    private static final java.util.concurrent.CountDownLatch warmLatch =
+            new java.util.concurrent.CountDownLatch(1);
+    // ponytail: 60s cap so a failed/hung warm degrades to cold lazy-load instead of freezing decisions forever.
+    private static final long WARM_WAIT_CAP_MS = 60_000L;
+    private static volatile boolean warmWaitTimedOut = false;
+
+    /** Block the (single) decide thread until the boot cache warm finishes, so no decision pays the
+     *  cold tax while 60 bots compete. No-op when warm was never started (tests) or already done. */
+    private static void awaitWarm() {
+        if (!cachesWarmed || warmLatch.getCount() == 0 || warmWaitTimedOut) {
+            return;
+        }
+        try {
+            if (!warmLatch.await(WARM_WAIT_CAP_MS, java.util.concurrent.TimeUnit.MILLISECONDS)) {
+                warmWaitTimedOut = true; // give up waiting; fall back to the old cold lazy-load path
+                log.warn("Bot grind cache warm not done after {}ms; decisions fall back to cold lazy-load",
+                        WARM_WAIT_CAP_MS);
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
 
     /** Pre-build the WZ-derived caches off-thread so the first real decision doesn't pay them. */
     static void warmCachesAsync() {
@@ -204,6 +230,8 @@ final class BotGrindAdvisor {
                     equipsWarmed, scrollsWarmed);
         } catch (RuntimeException e) {
             log.warn("Bot grind cache warmup failed; decisions will lazy-load as before", e);
+        } finally {
+            warmLatch.countDown(); // release decides whether the warm fully succeeded or partially failed
         }
     }
 
@@ -271,6 +299,7 @@ final class BotGrindAdvisor {
 
     private static List<MobCandidate> buildCandidates(BotEntry entry, Character bot,
                                                       java.util.function.IntPredicate mapAllowed) {
+        awaitWarm(); // hold the decide thread until the boot warm is done — never run a cold pass under load
         ItemInformationProvider ii = ItemInformationProvider.getInstance();
         BotSpawnIndex.Index index = BotSpawnIndex.get();
         MonsterInformationProvider mi = MonsterInformationProvider.getInstance();

@@ -108,6 +108,13 @@ public final class BotPerformanceMonitor {
         notes.put("stuck-detect", "tickStuckDetection");
         notes.put("grind-loot-scan", "BotInventoryManager.findNearestGrindLootTarget");
         notes.put("auto-equip", "BotEquipManager.autoEquip (Pareto DP) triggered on equip pickup");
+        // Quest scan (runs on the tick thread when nextQuestScanAtMs fires; throttled 30-60s/bot)
+        notes.put("quest-scan", "BotQuestManager.tickScan piggyback path (turn-in scan + pickStartable)");
+        notes.put("quest-pickstartable", "BotQuestManager.pickStartable (scans every indexed quest, scores candidates via scoreQuest)");
+        notes.put("quest-reward-gain", "BotQuestManager.computeRewardGain (per reward item: Monte Carlo expectedAcquireGain + scrollGains)");
+        notes.put("quest-active-mobs", "BotQuestManager.activeQuestMobIds refresh (scans started quests, droppersOf lookups)");
+        notes.put("autopilot-recover", "BotManager.maybeRecoverInertAutopilot (re-decide gate for inert self-owned bots)");
+        notes.put("autopilot-decide", "BotAutopilotManager decide() on the single DECIDE_POOL thread (full grind/quest pass) — core~1.0 means pegged");
         SECTION_NOTES = notes;
     }
 
@@ -336,13 +343,18 @@ public final class BotPerformanceMonitor {
         }
 
         double intervalSeconds = Math.max(0.001, (now - lastLogAtMs) / 1000.0);
+        // Surface CUMULATIVE hogs, not just spiky ones: a section that's cheap per call but runs across
+        // all 60 bots (low max, high total) eats CPU while a max-only gate would hide it. Include a
+        // section if its single worst call is report-worthy OR its total CPU clears CUMULATIVE_FLOOR,
+        // and sort by total CPU (the right lens for a CPU-overload hunt).
+        long cumulativeFloorNs = (long) (CUMULATIVE_FLOOR_MS_PER_SEC * intervalSeconds * 1_000_000.0);
         List<Map.Entry<String, Stat>> reportSections = new ArrayList<>();
         for (Map.Entry<String, Stat> entry : statsBySection.entrySet()) {
-            if (entry.getValue().maxNs >= reportThresholdNs()) {
+            if (entry.getValue().maxNs >= reportThresholdNs() || entry.getValue().totalNs >= cumulativeFloorNs) {
                 reportSections.add(entry);
             }
         }
-        reportSections.sort(Comparator.comparingLong((Map.Entry<String, Stat> entry) -> entry.getValue().maxNs).reversed());
+        reportSections.sort(Comparator.comparingLong((Map.Entry<String, Stat> entry) -> entry.getValue().totalNs).reversed());
 
         if (reportSections.isEmpty()) {
             statsBySection.clear();
@@ -430,6 +442,10 @@ public final class BotPerformanceMonitor {
         }
         return "instrumented bot subsystem";
     }
+
+    /** A section using at least this much CPU (ms of work per wall-second) is reported even if no single
+     *  call was slow — catches cheap-per-call, high-frequency paths (e.g. a quest scan ×60 bots). */
+    private static final double CUMULATIVE_FLOOR_MS_PER_SEC = 5.0; // ~0.5% of one core
 
     private static long slowThresholdNs() {
         return (long) (Math.max(0.0, cfg.SLOW_SAMPLE_MS) * 1_000_000.0);

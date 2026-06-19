@@ -321,22 +321,28 @@ final class BotQuestManager {
         // Opportunistic free grab: start any indexed quest whose NPC the bot is already standing
         // next to (no detour, no overlap/worthwhile gate - it's free). Then keep the quest-mob cache
         // fresh so combat prefers what we accepted. Both run even mid-errand (grabbing is free).
+        long scanT0 = BotPerformanceMonitor.start();
         tickOpportunisticGrab(entry, bot);
         refreshActiveQuestMobs(entry, bot);
         if (entry.questErrandMapId != -1) {
+            BotPerformanceMonitor.recordSince("quest-scan", scanT0);
             return; // one errand at a time
         }
         // Already-started quest whose counts are met -> queue the turn-in errand.
         BotQuestIndex.QuestMeta turnin = readyToTurnIn(bot);
         if (turnin != null) {
             beginErrand(entry, bot, turnin, Phase.TURNIN, turnin.endNpc());
+            BotPerformanceMonitor.recordSince("quest-scan", scanT0);
             return;
         }
         // Otherwise look for a worthwhile new quest to start.
+        long pickT0 = BotPerformanceMonitor.start();
         BotQuestIndex.QuestMeta start = pickStartable(entry, bot);
+        BotPerformanceMonitor.recordSince("quest-pickstartable", pickT0);
         if (start != null) {
             beginErrand(entry, bot, start, Phase.START, start.startNpc());
         }
+        BotPerformanceMonitor.recordSince("quest-scan", scanT0);
     }
 
     /** A started, indexed quest whose every required mob count is met — ready to turn in. */
@@ -443,7 +449,9 @@ final class BotQuestManager {
     /** Refresh the bot's cached still-needed quest-mob set (read O(1) by combat target selection). */
     static void refreshActiveQuestMobs(BotEntry entry, Character bot) {
         if (entry != null) {
+            long t0 = BotPerformanceMonitor.start();
             entry.activeQuestMobIds = activeQuestMobIds(bot);
+            BotPerformanceMonitor.recordSince("quest-active-mobs", t0);
         }
     }
 
@@ -646,6 +654,15 @@ final class BotQuestManager {
         if (q.rewardItems().isEmpty()) {
             return new RewardGain(0.0, 0.0);
         }
+        long t0 = BotPerformanceMonitor.start();
+        try {
+            return computeRewardGainBody(bot, q);
+        } finally {
+            BotPerformanceMonitor.recordSince("quest-reward-gain", t0);
+        }
+    }
+
+    private static RewardGain computeRewardGainBody(Character bot, BotQuestIndex.QuestMeta q) {
         server.ItemInformationProvider ii = server.ItemInformationProvider.getInstance();
         java.util.Map<Short, Double> barCache = new java.util.HashMap<>();
         double bestEquipGain = 0.0;   // wear the single best reward equip

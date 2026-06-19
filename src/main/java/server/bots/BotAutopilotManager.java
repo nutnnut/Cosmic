@@ -270,6 +270,7 @@ final class BotAutopilotManager {
 
     static DecisionRunner decisionRunner = (compute, apply) -> BotGrindAdvisor.DECIDE_POOL.execute(() -> {
         Object result;
+        long decideT0 = BotPerformanceMonitor.start();
         try {
             result = compute.get();
         } catch (RuntimeException e) {
@@ -277,6 +278,8 @@ final class BotAutopilotManager {
             // masquerade as a legitimate "no spot" with no trace. Log it; the caller still degrades.
             log.warn("bot autopilot decision threw on DECIDE_POOL", e);
             result = null;
+        } finally {
+            BotPerformanceMonitor.recordSince("autopilot-decide", decideT0);
         }
         Object applied = result;
         BotManager.after(0L, () -> apply.accept(applied));

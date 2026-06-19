@@ -4688,7 +4688,9 @@ public class BotManager {
             return;
         }
         entry.autopilotNextDecisionAtMs = now + randMs(30_000, 60_000); // backoff; start() resets on success
-        BotAutopilotManager.start(entry, bot);
+        long t0 = BotPerformanceMonitor.start();
+        BotAutopilotManager.start(entry, bot); // schedules decide() off-thread; this only times the fire rate
+        BotPerformanceMonitor.recordSince("autopilot-recover", t0);
     }
 
     private boolean syncFollowMap(BotEntry entry, Character bot, Character followAnchor, boolean runAiTick) {
