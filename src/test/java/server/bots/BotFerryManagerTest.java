@@ -1,6 +1,8 @@
 package server.bots;
 
 import client.Character;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import server.maps.MapleMap;
 import server.maps.Portal;
@@ -22,6 +24,10 @@ class BotFerryManagerTest {
 
     private static final BotFerryManager.FerryRoute ELLINIA = BotFerryManager.ELLINIA_TO_ORBIS;
     private static final BotFerryManager.FerryRoute ORBIS = BotFerryManager.ORBIS_TO_ELLINIA;
+
+    // Fire NPC/portal actions on the in-range tick instead of waiting out the humanlike dwell pause.
+    @BeforeEach void instantDwell() { BotManager.dwellInstant = true; }
+    @AfterEach void resetDwell() { BotManager.dwellInstant = false; }
 
     private record Fixture(BotEntry entry, Character bot, MapleMap map) {}
 

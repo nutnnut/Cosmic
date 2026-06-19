@@ -1,6 +1,8 @@
 package server.bots;
 
 import client.Character;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import server.maps.MapleMap;
 import server.maps.Portal;
@@ -25,6 +27,10 @@ class BotTravelManagerTest {
 
     private static final int HENESYS = 100000000;
     private static final int HUNTING_GROUND = 100040000;
+
+    // Fire NPC/portal actions on the in-range tick instead of waiting out the humanlike dwell pause.
+    @BeforeEach void instantDwell() { BotManager.dwellInstant = true; }
+    @AfterEach void resetDwell() { BotManager.dwellInstant = false; }
 
     private static Portal portal(int id, int targetMapId, int type, String script, boolean open, Point pos) {
         Portal portal = mock(Portal.class);

@@ -300,7 +300,7 @@ final class BotTravelManager {
             }
             // Pause a beat before stepping through, and keep walking onto the portal centre while
             // the pause elapses so the bot enters from the middle, not the tolerance edge.
-            if (entry.portalEnterDwellUntilMs == 0L) {
+            if (!BotManager.dwellInstant && entry.portalEnterDwellUntilMs == 0L) {
                 entry.portalEnterDwellUntilMs =
                         now + BotManager.randMs(PORTAL_ENTER_DELAY_MIN_MS, PORTAL_ENTER_DELAY_MAX_MS);
             }

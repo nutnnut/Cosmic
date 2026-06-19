@@ -402,7 +402,15 @@ public class BotManager {
      * a jittered pause and returns false; returns true only once the pause elapses. Callers MUST call
      * {@link #npcDwellReset} on every not-yet-in-range tick so the timer re-arms fresh at the next NPC.
      */
+    // Test seam: the humanlike NPC/portal dwell pauses use wall-clock time, so unit tests that tick
+    // a flow once would have to sleep out the 2-7s pause. Tests set this true to fire NPC actions /
+    // portal entry on the in-range tick instead. Production default keeps the pause.
+    static boolean dwellInstant = false;
+
     static boolean npcDwellReady(BotEntry entry, int baseMs, int jitterMs) {
+        if (dwellInstant) {
+            return true;
+        }
         long now = System.currentTimeMillis();
         if (entry.npcDwellUntilMs == 0L) {
             entry.npcDwellUntilMs = now + baseMs + ThreadLocalRandom.current().nextInt(jitterMs);

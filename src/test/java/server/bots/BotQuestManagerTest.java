@@ -44,10 +44,13 @@ class BotQuestManagerTest {
         BotQuestManager.mapName = id -> "Map" + id;
         BotQuestManager.mobName = id -> "Mob" + id;
         BotQuestManager.itemNameLookup = id -> "Item" + id;
+        // Fire NPC actions on the in-range tick instead of waiting out the humanlike dwell pause.
+        BotManager.dwellInstant = true;
     }
 
     @AfterEach
     void restore() {
+        BotManager.dwellInstant = false;
         BotQuestManager.gate = prevGate;
         BotQuestManager.hopCount = prevHops;
         BotQuestManager.mapMobs = prevMobs;
@@ -463,7 +466,10 @@ class BotQuestManagerTest {
             BotQuestManager.reply = (e, s) -> replies.add(s);
 
             BotQuestManager.mapMobs = mapId -> Map.of(100100, 10); // bot is killing Green Snail here
-            BotQuestManager.hopCount = (from, to) -> 0;            // NPC on the grind map
+            // 0 hops only to the grind map (where NPC 2005 is stubbed present); everything else is far.
+            // Mirrors production's MAX_ERRAND_HOPS gate so a far talk quest (whose NPC resolves to its
+            // canonical map via the spawn index) can't out-rank 1019 by being falsely "0 hops" away.
+            BotQuestManager.hopCount = (from, to) -> to == 104040000 ? 0 : 99;
             stubScoringSeams(50.0, 30, 10.0); // cheap trip + overlap => clearly worthwhile
             RecordingGate g = new RecordingGate();
             g.canStart = true;
