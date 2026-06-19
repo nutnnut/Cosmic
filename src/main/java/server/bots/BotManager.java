@@ -128,8 +128,8 @@ public class BotManager {
         public int POPULATION_CHANNEL = 1;
         // Target ONLINE managed-bot count by server-local hour (0-23): quiet overnight, busy evening.
         public int[] POPULATION_CURVE = {
-                6, 5, 5, 4, 4, 3, 4, 5, 7, 9, 10, 12,        // 00-11
-                15, 15, 14, 14, 15, 14, 15, 16, 15, 12, 10, 7 // 12-23
+                10, 11, 12, 13, 14, 15, 14, 15, 15, 16, 17, 18,        // 00-11
+                19, 20, 21, 21, 20, 18, 16, 15, 13, 10, 10, 10 // 12-23
         };
         public int POPULATION_NOISE = 2;                   // +/- jitter on the hourly target
         public double POPULATION_MULTIPLIER = 3.0;         // scales the whole online target up/down, so bot
