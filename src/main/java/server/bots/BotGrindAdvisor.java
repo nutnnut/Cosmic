@@ -275,7 +275,7 @@ final class BotGrindAdvisor {
         BotSpawnIndex.Index index = BotSpawnIndex.get();
         MonsterInformationProvider mi = MonsterInformationProvider.getInstance();
 
-        double totalWornOffense = totalWornOffense(bot, ii);
+        double totalWornOffense = totalWornValue(bot, ii);
         Map<Short, Double> wornScoreBySlot = new HashMap<>();
         Map<Integer, double[]> rollScoreCache = new HashMap<>(); // per pass: same item drops from many mobs
         Map<Integer, Double> scrollGainCache = new HashMap<>();
@@ -1039,7 +1039,7 @@ final class BotGrindAdvisor {
             long t0 = prof ? System.nanoTime() : 0L;
             Equip rolled = roll.roll((Equip) ii.getEquipById(itemId));
             long t1 = prof ? System.nanoTime() : 0L;
-            out[i] = (BotScrollManager.offenseValue(bot, rolled)
+            out[i] = (BotScrollManager.equipValue(bot, rolled)
                     + BotScrollManager.scrollHeadroom(rolled.getUpgradeSlots(), evPerSlot)) * speed;
             if (prof) {
                 rollNs += t1 - t0;
@@ -1078,11 +1078,11 @@ final class BotGrindAdvisor {
         return sum / sampleScores.length;
     }
 
-    private static double totalWornOffense(Character bot, ItemInformationProvider ii) {
+    private static double totalWornValue(Character bot, ItemInformationProvider ii) {
         double total = 0.0;
         for (Item it : bot.getInventory(InventoryType.EQUIPPED).list()) {
             if (it instanceof Equip e && !ii.isCash(e.getItemId())) {
-                total += BotScrollManager.offenseValue(bot, e);
+                total += BotScrollManager.equipValue(bot, e); // same unit as the rolled-drop scores it normalizes
             }
         }
         return total;

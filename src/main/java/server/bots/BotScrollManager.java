@@ -55,6 +55,19 @@ final class BotScrollManager {
     private static final double MAIN_STAT_WEIGHT = 1.0;
     private static final double SECONDARY_STAT_WEIGHT = 0.3;
 
+    // Survivability / utility weights: small per-point worth so DEFENSIVE & utility gear (capes,
+    // shields, accessories — Old Raggedy Cape's +10 avoid, a +HP shield) isn't valued at 0. Kept well
+    // below ATT/main-stat on purpose: a point of weapon attack still dwarfs a point of WDEF, but a
+    // defensive piece is no longer worthless. ACC is intentionally NOT here — accuracy is owned by the
+    // aspirational-grind effective-DPS model (see project_bot_accuracy_aspirational_target), valuing it
+    // again per-item would double-count. ponytail: flat weights, tune if bots over/under-value tanky gear.
+    private static final double WDEF_WEIGHT = 0.05;
+    private static final double MDEF_WEIGHT = 0.04;
+    private static final double HP_WEIGHT = 0.02;
+    private static final double MP_WEIGHT = 0.01;
+    private static final double AVOID_WEIGHT = 0.2;
+    private static final double MOVE_WEIGHT = 0.1; // per point of speed or jump
+
     static final int SCROLL_ITEM_PREFIX = 204; // itemId / 10000 for scroll items
 
     /** Meso cost assumed for an owned scroll with no NPC-shop price (drop-only). Stub until the
@@ -947,6 +960,33 @@ final class BotScrollManager {
                 + SECONDARY_STAT_WEIGHT * st.getOrDefault(statKey(ms[1]), 0);
     }
 
+    /** Survivability/utility worth of an equip: WDEF/MDEF/HP/MP/avoid/move, each small-weighted so a
+     *  defensive piece registers without rivaling attack gear. The counterpart to {@link #offenseValue}
+     *  for the stats it ignores. */
+    static double survivalValue(Equip eq) {
+        return WDEF_WEIGHT * eq.getWdef() + MDEF_WEIGHT * eq.getMdef()
+                + HP_WEIGHT * eq.getHp() + MP_WEIGHT * eq.getMp()
+                + AVOID_WEIGHT * eq.getAvoid() + MOVE_WEIGHT * (eq.getSpeed() + eq.getJump());
+    }
+
+    static double survivalValueFromStats(Map<String, Integer> st) {
+        return WDEF_WEIGHT * st.getOrDefault("PDD", 0) + MDEF_WEIGHT * st.getOrDefault("MDD", 0)
+                + HP_WEIGHT * st.getOrDefault("MHP", 0) + MP_WEIGHT * st.getOrDefault("MMP", 0)
+                + AVOID_WEIGHT * st.getOrDefault("EVA", 0)
+                + MOVE_WEIGHT * (st.getOrDefault("Speed", 0) + st.getOrDefault("Jump", 0));
+    }
+
+    /** Total worth of an equip to this bot: offense + survivability. The SSOT for "how good is this
+     *  piece" in keep/sell/drop-vs-worn/quest-reward decisions (offense alone undervalued capes,
+     *  shields, accessories). {@link #offenseValue} stays the pure-DPS sub-metric for scroll EV. */
+    static double equipValue(Character bot, Equip eq) {
+        return offenseValue(bot, eq) + survivalValue(eq);
+    }
+
+    static double equipValueFromStats(Character bot, Map<String, Integer> st) {
+        return offenseValueFromStats(bot, st) + survivalValueFromStats(st);
+    }
+
     // ---- Scroll headroom: what an open upgrade slot is worth (used by grind planning) ----
 
     /** Fraction of the best per-slot scroll EV counted as an open slot's value. Below 1 on
@@ -1044,8 +1084,26 @@ final class BotScrollManager {
     /** An equip's worth INCLUDING its remaining upgrade slots — what drop-vs-worn comparisons
      *  should use, so a maxed-out item can lose to a weaker one that still scrolls higher. */
     static double potentialValue(Character bot, ItemInformationProvider ii, Equip eq) {
-        return offenseValue(bot, eq)
+        return equipValue(bot, eq)
                 + scrollHeadroom(eq.getUpgradeSlots(), bestScrollEvPerSlot(bot, ii, eq.getItemId()));
+    }
+
+    /** Expected offense gain from APPLYING this scroll item once (its stat value scaled by effective
+     *  success) — the worth of a scroll reward to a bot that will use it. 0 for a non-scroll, a
+     *  boom/meta scroll, or one with no usable offense stats. Reuses the same catalog-stat read as
+     *  {@link #bestScrollEvPerSlot}, just keyed on the scroll itself rather than a target slot. */
+    static double scrollRewardEv(Character bot, ItemInformationProvider ii, int scrollId) {
+        if (scrollId / 10000 != SCROLL_ITEM_PREFIX
+                || ItemConstants.isCleanSlate(scrollId) || ItemConstants.isModifierScroll(scrollId)
+                || scrollId == ItemId.WHITE_SCROLL) {
+            return 0.0;
+        }
+        Map<String, Integer> st = ii.getEquipStats(scrollId);
+        if (st == null || st.getOrDefault("success", 0) <= 0 || st.getOrDefault("cursed", 0) > 0) {
+            return 0.0;
+        }
+        return effectiveSuccessPct(st.getOrDefault("success", 0)) / 100.0
+                * offenseValueFromStats(bot, st);
     }
 
     /** Pure headroom core: discounted value of open upgrade slots at a per-slot scroll EV. */

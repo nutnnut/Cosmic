@@ -614,34 +614,46 @@ final class BotQuestManager {
         return uniqueRewardValue.applyAsDouble(bot, q);
     }
 
-    /** Production unique-reward valuation: take the best offense value among the quest's equip
-     *  rewards (a fresh roll), scaled to exp-equivalent by {@link #UNIQUE_REWARD_EXP_PER_OFFENSE}.
-     *  Equip rewards are rare among the indexed mob quests, so this is usually 0. */
+    /** Production unique-reward valuation, in exp-equivalent. Reward equips are valued through the
+     *  full equip SSOT {@link BotScrollManager#potentialValue} (offense + survivability + open upgrade
+     *  slots — so a defensive cape / a scrollable base is no longer worth 0); the bot wears the single
+     *  best one. Scroll rewards are valued by their applied offense EV ({@link BotScrollManager#scrollRewardEv})
+     *  and summed (you use them all). Other consumable (USE/ETC) rewards are valued at their shop price
+     *  via {@link #REWARD_EXP_PER_MESO}. Most indexed quests reward none of these, so this is often 0. */
     private static double computeUniqueRewardValue(Character bot, BotQuestIndex.QuestMeta q) {
         if (q.rewardItems().isEmpty()) {
             return 0.0;
         }
         server.ItemInformationProvider ii = server.ItemInformationProvider.getInstance();
-        double best = 0.0;
+        double bestEquip = 0.0;   // wear the single best equip reward
+        double scrollEv = 0.0;    // apply every scroll reward
+        double consumableMeso = 0.0;
         for (int itemId : q.rewardItems()) {
-            if (!constants.inventory.ItemConstants.isEquipment(itemId)) {
-                continue;
-            }
             try {
-                client.inventory.Item it = ii.getEquipById(itemId);
-                if (it instanceof client.inventory.Equip eq) {
-                    best = Math.max(best, BotScrollManager.offenseValue(bot, eq));
+                if (constants.inventory.ItemConstants.isEquipment(itemId)) {
+                    if (ii.getEquipById(itemId) instanceof client.inventory.Equip eq) {
+                        bestEquip = Math.max(bestEquip, BotScrollManager.potentialValue(bot, ii, eq));
+                    }
+                } else if (itemId / 10000 == BotScrollManager.SCROLL_ITEM_PREFIX) {
+                    scrollEv += BotScrollManager.scrollRewardEv(bot, ii, itemId);
+                } else {
+                    consumableMeso += Math.max(0, ii.getPrice(itemId, 1));
                 }
             } catch (RuntimeException ignored) {
                 // unresolvable reward — value it at 0 (conservative).
             }
         }
-        return best * UNIQUE_REWARD_EXP_PER_OFFENSE;
+        return (bestEquip + scrollEv) * UNIQUE_REWARD_EXP_PER_OFFENSE
+                + consumableMeso * REWARD_EXP_PER_MESO;
     }
 
-    /** Exp-equivalent weight of one point of equip offense value for a unique quest reward. A
-     *  visible knob: a strong reward equip should feel worth a few minutes of grind. */
+    /** Exp-equivalent weight of one point of equip/scroll offense-or-survival value for a unique quest
+     *  reward. A visible knob: a strong reward equip should feel worth a few minutes of grind. */
     static final double UNIQUE_REWARD_EXP_PER_OFFENSE = 50.0;
+    /** Exp-equivalent per meso of a plain consumable (USE/ETC) reward, valued at its shop price. Tiny
+     *  on purpose: a few potions barely move a quest's worth. ponytail: flat, tune via the economy
+     *  ledger when meso<->exp is modeled for real. */
+    static final double REWARD_EXP_PER_MESO = 0.01;
 
     // ---- errand state + travel/interaction tick (#4) -----------------------------------------
 
