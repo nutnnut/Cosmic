@@ -418,6 +418,7 @@ final class BotTravelManager {
         if (!entry.inAir && !entry.climbing && manhattan(botPos, npcPos) <= TAXI_TRIGGER_RADIUS_PX) {
             clearMoveTargetPin(entry);
             if (!BotManager.npcDwellReady(entry, BotManager.NPC_TALK_DELAY_MS, BotManager.NPC_TALK_JITTER_MS)) {
+                settleStandingDwell(entry); // stand (not walk-in-place) while waiting at the cab
                 return true; // pause a beat at the cab before paying the fare
             }
             BotWorldGraph.TaxiEdge taxi =
@@ -618,6 +619,7 @@ final class BotTravelManager {
         Point botPos = bot.getPosition();
         if (!entry.inAir && !entry.climbing && manhattan(botPos, npcPos) <= radiusPx) {
             clearMoveTargetPin(entry);
+            settleStandingDwell(entry);
             return ApproachStatus.ARRIVED;
         }
         pinMoveTarget(entry, npcPos);
@@ -645,6 +647,22 @@ final class BotTravelManager {
             entry.moveTargetPrecise = false;
         }
         entry.followTravelMoveTarget = null;
+    }
+
+    /**
+     * Settle a grounded bot to a standing stance on a dwell tick — it has arrived and is just
+     * "reading"/"talking" at an NPC, with no movement intent. Ticks ground physics with a null
+     * target so leftover walk momentum decays and the broadcast stance flips WALK->STAND. Without
+     * this the dwell consumes the tick WITHOUT stepping movement, so the client extrapolates the
+     * last walk packet and the bot visibly "walks in place" through the whole pause. Same idiom as
+     * BotManager.tickActionLocked (attack-lock) and the shop flow, which step every tick. The
+     * broadcast dedups, so the steady-state standing ticks send nothing.
+     */
+    static void settleStandingDwell(BotEntry entry) {
+        if (entry == null || entry.inAir || entry.climbing) {
+            return;
+        }
+        BotMovementManager.tickGrounded(entry, null);
     }
 
     private static int manhattan(Point a, Point b) {

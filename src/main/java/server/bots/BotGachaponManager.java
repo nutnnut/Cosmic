@@ -352,6 +352,7 @@ final class BotGachaponManager {
         // At the machine: pace the rolls so it reads as a human feeding tickets one at a time.
         long now = System.currentTimeMillis();
         if (now < entry.gachaNextRollAtMs) {
+            BotTravelManager.settleStandingDwell(entry); // stand at the machine, not walk-in-place
             return true; // mid-pace between rolls
         }
         if (!rollOnce(entry, bot)) {

@@ -629,9 +629,19 @@ final class BotQuestManager {
                 BotManager.npcDwellReset(entry);
                 return false; // travel gave up this tick — let the bot grind, errand retries/timeouts
             }
+            case TRAVELING -> {
+                // A hop is actively underway (tickTravel made legal progress — it has its own
+                // give-up windows, so sustained TRAVELING means the route is advancing). Reset the
+                // give-up clock so a long but legitimately-progressing multi-hop journey isn't
+                // dropped mid-route with "couldn't get to that quest". Genuine unreachability still
+                // times out: WALKING (on the NPC's map, can't close the last gap) does NOT reset.
+                entry.questErrandStartedAtMs = System.currentTimeMillis();
+                BotManager.npcDwellReset(entry);
+                return true;
+            }
             default -> {
                 BotManager.npcDwellReset(entry);
-                return true; // TRAVELING / WALKING — tick consumed
+                return true; // WALKING — on the NPC's map, walking within radius (tick consumed)
             }
         }
     }
