@@ -143,6 +143,23 @@ final class BotQuestManager {
         return m == null ? Map.of() : m.mobCounts();
     };
 
+    /** Mob ids that drop a quest fetch-item; seam over {@link server.life.MonsterInformationProvider}.
+     *  Empty = not mob-droppable (bought/crafted/gathered) -> the bot won't take that fetch quest. */
+    interface ItemDroppers {
+        List<Integer> droppersOf(int itemId);
+    }
+
+    static ItemDroppers itemDroppers =
+            itemId -> server.life.MonsterInformationProvider.getInstance().retrieveItemDroppers(itemId);
+
+    /** How many of an item the bot currently holds; seam over {@link Character#getItemQuantity}. Used
+     *  to tell when a fetch quest's delivery items are collected (turn-in readiness). */
+    interface ItemQuantity {
+        int held(Character bot, int itemId);
+    }
+
+    static ItemQuantity itemQuantity = (bot, itemId) -> bot.getItemQuantity(itemId, false);
+
     /** World-graph hop count between two maps; seam over {@link BotWorldGraph}. Integer.MAX_VALUE
      *  when unreachable within the bound. */
     interface HopCount {
@@ -330,6 +347,13 @@ final class BotQuestManager {
                 return false;
             }
         }
+        // Fetch quests are ready once the delivery items are in the bag (the passive-loot tick collects
+        // them while grinding; isStaleQuestItem protects them from the auto-sell while the quest runs).
+        for (Map.Entry<Integer, Integer> need : q.items().entrySet()) {
+            if (itemQuantity.held(bot, need.getKey()) < need.getValue()) {
+                return false;
+            }
+        }
         return true;
     }
 
@@ -383,13 +407,21 @@ final class BotQuestManager {
         }
         java.util.Set<Integer> out = new java.util.HashSet<>();
         for (BotQuestIndex.QuestMeta q : BotQuestIndex.get().byId().values()) {
-            if (q.mobs().isEmpty() || !gate.isStarted(bot, q.id())) {
+            if (!gate.isStarted(bot, q.id()) || (q.mobs().isEmpty() && q.items().isEmpty())) {
                 continue;
             }
             Map<Integer, Integer> progress = gate.currentProgress(bot, q.id());
             for (Map.Entry<Integer, Integer> need : q.mobs().entrySet()) {
                 if (progress.getOrDefault(need.getKey(), 0) < need.getValue()) {
                     out.add(need.getKey());
+                }
+            }
+            // Fetch quests: steer toward whatever drops the still-missing delivery item (same map-bias
+            // + combat-target bias as kill quests). Mob-droppable scope: droppersOf is empty for
+            // bought/crafted items, so those add nothing and the bot won't chase them.
+            for (Map.Entry<Integer, Integer> need : q.items().entrySet()) {
+                if (itemQuantity.held(bot, need.getKey()) < need.getValue()) {
+                    out.addAll(itemDroppers.droppersOf(need.getKey()));
                 }
             }
         }
@@ -427,16 +459,30 @@ final class BotQuestManager {
      *  the current map, or a TALK quest (no kills needed). Null when nothing here clears the bar. */
     private static BotQuestIndex.QuestMeta pickStartable(BotEntry entry, Character bot) {
         int mapId = bot.getMapId();
-        Map<Integer, Integer> here = mapMobs.mobsOn(mapId);
+        java.util.Set<Integer> hereMobs = mapMobs.mobsOn(mapId).keySet();
+        // The autopilot's chosen grind destination (when staging in town / in transit toward it). A
+        // quest whose targets overlap the DESTINATION can be grabbed BEFORE departing, instead of
+        // flying out, discovering the overlap on arrival, then flying BACK to the town NPC to start it
+        // (the round-trip the bot was doing). Empty once already on the grind map (dest == current).
+        java.util.Set<Integer> destMobs = java.util.Set.of();
+        if (BotAutopilotManager.isActive(entry) && entry.autopilotMapId > 0
+                && entry.autopilotMapId != mapId) {
+            destMobs = mapMobs.mobsOn(entry.autopilotMapId).keySet();
+        }
         BotQuestIndex.QuestMeta best = null;
         double bestScore = -1;
         for (BotQuestIndex.QuestMeta q : BotQuestIndex.get().byId().values()) {
             if (gate.isStarted(bot, q.id()) || entry.buggedQuestIds.contains(q.id())) {
                 continue; // already underway, or proven un-completable/unreachable — don't re-queue it
             }
-            // Mob quests are only worth a detour when their kills overlap what the bot already farms
-            // here (free exp). Talk quests have no kills, so this overlap gate doesn't apply to them.
-            if (!q.talk() && !overlaps(q.mobs().keySet(), here.keySet())) {
+            // Mob/fetch quests are only worth a detour when their targets overlap what the bot will
+            // farm (free exp / free drops). Talk quests have no targets, so the gate is skipped.
+            // effectiveTargetMobs folds in the mobs that drop a fetch item; empty for a fetch quest whose
+            // item isn't mob-droppable, which then fails the overlap gate (mob-droppable scope).
+            java.util.Set<Integer> targets = effectiveTargetMobs(q);
+            boolean overlapsHere = overlaps(targets, hereMobs);
+            boolean overlapsDest = !overlapsHere && overlaps(targets, destMobs);
+            if (!q.talk() && !overlapsHere && !overlapsDest) {
                 continue;
             }
             // Pre-check eligibility with the quest's OWN start npc id (legality is the walk, not the
@@ -447,7 +493,17 @@ final class BotQuestManager {
             // Reachability: the NPC's map must be on the current map or a few hops away. resolveNpcMap
             // finds where the NPC actually is (current map or its return-map town).
             int npcMap = resolveNpcMap(bot, q.startNpc());
-            if (npcMap == -1 || !worthwhile(entry, mapId, npcMap, q, bot)) {
+            if (npcMap == -1) {
+                continue;
+            }
+            // Pre-departure freebie: a quest matched ONLY via the destination is taken solely when its
+            // NPC is already on the map the bot is standing on — start it now, no extra hop. Skips the
+            // "0 grind baseline in town makes any quest look free" trap and any mid-transit backtrack;
+            // current-map-overlap quests keep the normal worthwhile-detour scoring below.
+            if (overlapsDest && npcMap != mapId) {
+                continue;
+            }
+            if (!worthwhile(entry, mapId, npcMap, q, bot)) {
                 continue;
             }
             // Rank by the slice-2 score (autopilot benefits from the upgraded model), not raw exp.
@@ -458,6 +514,21 @@ final class BotQuestManager {
             }
         }
         return best;
+    }
+
+    /** The mobs whose kills make progress on this quest: its kill targets, plus (for a fetch quest) the
+     *  mobs that drop a required delivery item. Empty for a fetch quest whose item isn't mob-droppable
+     *  — those are out of the bot's reach and get filtered by the overlap gate. Memoized DB lookups, so
+     *  the per-scan cost is a map hit after warm-up. */
+    static java.util.Set<Integer> effectiveTargetMobs(BotQuestIndex.QuestMeta q) {
+        if (q.items().isEmpty()) {
+            return q.mobs().keySet();
+        }
+        java.util.Set<Integer> out = new java.util.HashSet<>(q.mobs().keySet());
+        for (int itemId : q.items().keySet()) {
+            out.addAll(itemDroppers.droppersOf(itemId));
+        }
+        return out;
     }
 
     private static boolean overlaps(java.util.Set<Integer> a, java.util.Set<Integer> b) {

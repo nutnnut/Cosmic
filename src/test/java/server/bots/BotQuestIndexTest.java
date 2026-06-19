@@ -80,6 +80,51 @@ class BotQuestIndexTest {
                 false, false, scripted, List.of("npc"), true /*talk*/);
     }
 
+    // ---- fetch quests (obtain item -> deliver to NPC; usually a mob drop) ----
+
+    private static BotQuestIndex.QuestMeta fetchMeta(int startNpc, int endNpc,
+                                                     Map<Integer, Integer> items, boolean scripted,
+                                                     List<String> completeKeys) {
+        return new BotQuestIndex.QuestMeta(9999, startNpc, endNpc, 0, Map.of(), 30, List.of(),
+                false, false, scripted, completeKeys, false /*talk*/, items);
+    }
+
+    @Test
+    void shouldQualifyFetchQuestWithDeliveredItem() {
+        // complete = npc + item(4000000 x30): obtain 30 of an item, hand in. Not a mob quest.
+        var q = fetchMeta(100, 200, Map.of(4000000, 30), false, List.of("npc", "item"));
+        assertTrue(BotQuestIndex.qualifies(q));
+        assertTrue(BotQuestIndex.qualifiesFetch(q));
+        assertFalse(BotQuestIndex.qualifiesMob(q));
+    }
+
+    @Test
+    void shouldQualifyFetchQuestThatAlsoKillsMobs() {
+        // kill + collect: still a fetch shape (item present), gates allowed.
+        var q = fetchMeta(100, 200, Map.of(4000000, 5), false, List.of("npc", "mob", "item", "lvmin"));
+        assertTrue(BotQuestIndex.qualifiesFetch(q));
+    }
+
+    @Test
+    void shouldRejectScriptedFetchQuest() {
+        var q = fetchMeta(100, 200, Map.of(4000000, 30), true, List.of("npc", "item"));
+        assertFalse(BotQuestIndex.qualifies(q));
+    }
+
+    @Test
+    void shouldRejectFetchQuestWithMoneyOrPopReq() {
+        assertFalse(BotQuestIndex.qualifiesFetch(
+                fetchMeta(100, 200, Map.of(4000000, 30), false, List.of("npc", "item", "money"))));
+        assertFalse(BotQuestIndex.qualifiesFetch(
+                fetchMeta(100, 200, Map.of(4000000, 30), false, List.of("npc", "item", "pop"))));
+    }
+
+    @Test
+    void shouldNotQualifyAsFetchWithoutRequiredItem() {
+        var q = fetchMeta(100, 200, Map.of(), false, List.of("npc", "mob"));
+        assertFalse(BotQuestIndex.qualifiesFetch(q));
+    }
+
     @Test
     void shouldQualifyTalkQuest() {
         // A talk quest has no mobs but qualifies via the talk flag (e.g. 1031 Heena/Sera).
@@ -121,9 +166,8 @@ class BotQuestIndexTest {
      * WZ ground truth for the map-10000 tutorial talk line (verified against Quest.wz Check.img /
      * Act.img on 2026-06-16). 1031 Heena(2101)->Sera(2100), 5 exp; 1021 Roger's Apple(2000->2000),
      * scripted, item gift 2010007; 1032 Nina(2102)->Sen(2001), 7 exp — all pure talk quests and so
-     * indexed with talk=true. 1035 Todd's Hunting Method is NOT a talk quest (it requires killing
-     * Jr. Sentinel 9300018 and handing in item 4031802), so it is correctly absent from the
-     * bot-runnable index.
+     * indexed with talk=true. 1035 Todd's Hunting Method kills Jr. Sentinel 9300018 and hands in item
+     * 4031802 — a FETCH quest (obtain mob-drop, deliver), now bot-runnable and indexed with that item.
      */
     @org.junit.jupiter.api.Test
     void shouldIndexTheTutorialTalkQuests() {
@@ -147,8 +191,12 @@ class BotQuestIndexTest {
         org.junit.jupiter.api.Assertions.assertEquals(2102, q1032.startNpc());
         org.junit.jupiter.api.Assertions.assertEquals(2001, q1032.endNpc());
 
-        // 1035 needs a mob kill + a fetched item, so it is neither a talk nor a mob-only quest.
-        org.junit.jupiter.api.Assertions.assertNull(index.byId().get(1035),
-                "1035 (kill+item) is not bot-runnable here, must be absent");
+        // 1035 is a FETCH quest (kill Jr. Sentinel, deliver its drop 4031802) — now indexed.
+        BotQuestIndex.QuestMeta q1035 = index.byId().get(1035);
+        org.junit.jupiter.api.Assertions.assertNotNull(q1035, "1035 (kill+deliver) is a fetch quest, must index");
+        assertFalse(q1035.talk(), "1035 is not a pure talk quest");
+        org.junit.jupiter.api.Assertions.assertEquals(1, q1035.items().get(4031802),
+                "1035 delivers 1x item 4031802");
+        assertTrue(BotQuestIndex.qualifiesFetch(q1035), "1035 must qualify on the fetch shape");
     }
 }

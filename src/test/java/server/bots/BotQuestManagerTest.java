@@ -36,6 +36,8 @@ class BotQuestManagerTest {
     private final BotQuestManager.NameLookup prevItemName = BotQuestManager.itemNameLookup;
     private final java.util.function.BiConsumer<BotEntry, String> prevReply = BotQuestManager.reply;
     private final java.util.function.ObjIntConsumer<Character> prevGrant = BotQuestManager.grantItem;
+    private final BotQuestManager.ItemQuantity prevItemQty = BotQuestManager.itemQuantity;
+    private final BotQuestManager.ItemDroppers prevDroppers = BotQuestManager.itemDroppers;
     private final List<String> replies = new ArrayList<>();
 
     {
@@ -44,6 +46,11 @@ class BotQuestManagerTest {
         BotQuestManager.mapName = id -> "Map" + id;
         BotQuestManager.mobName = id -> "Mob" + id;
         BotQuestManager.itemNameLookup = id -> "Item" + id;
+        // Fetch-quest seams default to DB-free no-ops so index-wide scans (pickStartable over the real
+        // WZ index, which now holds fetch quests) don't reach MonsterInformationProvider's DB. Tests
+        // that exercise fetch behavior override these.
+        BotQuestManager.itemDroppers = id -> List.of();
+        BotQuestManager.itemQuantity = (bot, itemId) -> 0;
         // Fire NPC actions on the in-range tick instead of waiting out the humanlike dwell pause.
         BotManager.dwellInstant = true;
     }
@@ -65,6 +72,8 @@ class BotQuestManagerTest {
         BotQuestManager.itemNameLookup = prevItemName;
         BotQuestManager.reply = prevReply;
         BotQuestManager.grantItem = prevGrant;
+        BotQuestManager.itemQuantity = prevItemQty;
+        BotQuestManager.itemDroppers = prevDroppers;
     }
 
     /** Stub the scorer's WZ-backed seams to deterministic values so worthwhile/score is pure. */
@@ -145,6 +154,47 @@ class BotQuestManagerTest {
                 "map with a needed quest mob is boosted");
         assertEquals(1.0, BotQuestManager.questMapScoreBias(222, needed), 1e-9,
                 "map without any needed quest mob stays neutral");
+    }
+
+    // ---- fetch quests: ready when delivery items collected; targets = item droppers ----
+
+    private static BotQuestIndex.QuestMeta fetchQuest(int id, int startNpc, int endNpc, int rewardExp,
+                                                      Map<Integer, Integer> items) {
+        return new BotQuestIndex.QuestMeta(id, startNpc, endNpc, 0, Map.of(), rewardExp, List.of(),
+                false, false, false, List.of("npc", "item"), false /*talk*/, items);
+    }
+
+    @Test
+    void fetchQuestReadyOnlyWhenDeliveryItemsCollected() {
+        RecordingGate g = new RecordingGate();
+        g.progress = Map.of(); // no mob kills involved
+        BotQuestManager.gate = g;
+        var q = fetchQuest(5000, 100, 200, 50, Map.of(4000000, 30));
+
+        BotQuestManager.itemQuantity = (bot, itemId) -> 10; // short of 30
+        assertFalse(BotQuestManager.countsMet(mock(Character.class), q),
+                "not ready until the delivery item count is met");
+
+        BotQuestManager.itemQuantity = (bot, itemId) -> 30; // collected enough
+        assertTrue(BotQuestManager.countsMet(mock(Character.class), q),
+                "ready once the bag holds the required items");
+    }
+
+    @Test
+    void fetchQuestTargetsAreTheItemDroppers() {
+        // The bot grinds toward whatever drops the fetch item (active routing, same as kill quests).
+        BotQuestManager.itemDroppers = itemId -> itemId == 4000000 ? List.of(111, 222) : List.of();
+        var q = fetchQuest(5000, 100, 200, 50, Map.of(4000000, 30));
+        assertEquals(java.util.Set.of(111, 222), BotQuestManager.effectiveTargetMobs(q));
+    }
+
+    @Test
+    void fetchQuestWithNoDropperHasNoTargets() {
+        // Mob-droppable scope: a bought/crafted item resolves to no droppers -> empty target set,
+        // so the overlap gate filters the quest out (bot won't take what it can't grind for).
+        BotQuestManager.itemDroppers = itemId -> List.of();
+        var q = fetchQuest(5000, 100, 200, 50, Map.of(4000000, 30));
+        assertTrue(BotQuestManager.effectiveTargetMobs(q).isEmpty());
     }
 
     // ---- auto quests: drive start/complete only when the gates pass ----

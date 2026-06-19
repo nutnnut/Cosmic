@@ -57,6 +57,10 @@ public class MonsterInformationProvider {
     }
 
     private final Map<Integer, List<MonsterDropEntry>> drops = new HashMap<>();
+    // Reverse of `drops`: itemid -> mob ids that drop it. ConcurrentHashMap because the bot grind/quest
+    // threads warm it off the game loop (same pattern as mobNameCache). Memoized per item — quest fetch
+    // items are a handful, so the per-item DB hit is paid once.
+    private final Map<Integer, List<Integer>> itemDroppers = new java.util.concurrent.ConcurrentHashMap<>();
     private final List<MonsterGlobalDropEntry> globaldrops = new ArrayList<>();
     private final Map<Integer, List<MonsterGlobalDropEntry>> continentDrops = new HashMap<>();
 
@@ -177,6 +181,31 @@ public class MonsterInformationProvider {
         return ret;
     }
 
+    /** Mob ids that drop {@code itemId} (reverse of {@link #retrieveDrop}). The SSOT for "who do I
+     *  kill to get this item" — used by bot fetch-quest routing. Memoized; empty list = nothing drops
+     *  it (item is bought/crafted/gathered, not grind-obtainable). Mirrors the WZ-agnostic DB query
+     *  in {@code WhoDropsCommand}, but cached. */
+    public final List<Integer> retrieveItemDroppers(final int itemId) {
+        List<Integer> cached = itemDroppers.get(itemId);
+        if (cached != null) {
+            return cached;
+        }
+        final List<Integer> ret = new ArrayList<>();
+        try (Connection con = DatabaseConnection.getConnection();
+             PreparedStatement ps = con.prepareStatement("SELECT DISTINCT dropperid FROM drop_data WHERE itemid = ? AND chance > 0")) {
+            ps.setInt(1, itemId);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    ret.add(rs.getInt("dropperid"));
+                }
+            }
+        } catch (SQLException e) {
+            log.error("Error retrieving droppers for item {}", itemId, e);
+        }
+        itemDroppers.put(itemId, ret);
+        return ret;
+    }
+
     public final List<Integer> retrieveDropPool(final int monsterId) {  // ignores Quest and Party Quest items
         if (dropsChancePool.containsKey(monsterId)) {
             return dropsChancePool.get(monsterId);
@@ -284,6 +313,7 @@ public class MonsterInformationProvider {
 
     public final void clearDrops() {
         drops.clear();
+        itemDroppers.clear();
         hasNoMultiEquipDrops.clear();
         extraMultiEquipDrops.clear();
         dropsChancePool.clear();

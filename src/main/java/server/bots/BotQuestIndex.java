@@ -58,7 +58,10 @@ final class BotQuestIndex {
     // (which lacks the ITEMREQ rows) is rebuilt rather than loaded with an empty reverse map.
     // v3: indexes TALK quests too (talk NPC A -> talk NPC B). Bumped so a v2 cache (mob quests only,
     // no talk column) is rebuilt rather than loaded missing the talk-quest rows.
-    private static final int INDEX_VERSION = 3;
+    // v4: indexes FETCH quests (obtain item, deliver to NPC) — adds the required-items column and now
+    // persists the `scripted` flag (a v3 cache hardcoded scripted=false on read). Bumped so a v3 cache
+    // is rebuilt with the new columns rather than loaded missing fetch quests / mis-reporting scripted.
+    private static final int INDEX_VERSION = 4;
     private static final Path CACHE_FILE =
             Path.of("cache", "bot-quest", "v" + INDEX_VERSION, "quest-index.tsv");
     private static final Path SCRIPT_DIR = Path.of("scripts", "quest");
@@ -72,7 +75,16 @@ final class BotQuestIndex {
     record QuestMeta(int id, int startNpc, int endNpc, int lvmin,
                      Map<Integer, Integer> mobs, int rewardExp, List<Integer> rewardItems,
                      boolean autoStart, boolean autoComplete, boolean scripted,
-                     List<String> completeReqKeys, boolean talk) {
+                     List<String> completeReqKeys, boolean talk, Map<Integer, Integer> items) {
+        /** Back-compat 12-arg form (pre-fetch): a quest with no required-to-deliver items. */
+        QuestMeta(int id, int startNpc, int endNpc, int lvmin,
+                  Map<Integer, Integer> mobs, int rewardExp, List<Integer> rewardItems,
+                  boolean autoStart, boolean autoComplete, boolean scripted,
+                  List<String> completeReqKeys, boolean talk) {
+            this(id, startNpc, endNpc, lvmin, mobs, rewardExp, rewardItems,
+                    autoStart, autoComplete, scripted, completeReqKeys, talk, Map.of());
+        }
+
         /** Back-compat 11-arg form (pre-talk): builds a non-talk mob quest. Used by the slice-1/2
          *  unit tests and the cache-row reader, which never construct talk quests. */
         QuestMeta(int id, int startNpc, int endNpc, int lvmin,
@@ -131,7 +143,28 @@ final class BotQuestIndex {
      *  1/2) or a pure TALK quest (talk NPC A -> talk NPC B, no kills, no fetched items). Pure over
      *  {@link QuestMeta}; the WZ parse is elsewhere. */
     static boolean qualifies(QuestMeta q) {
-        return qualifiesMob(q) || q.talk();
+        return qualifiesMob(q) || q.talk() || qualifiesFetch(q);
+    }
+
+    /** The FETCH shape: walk to the start NPC, obtain the required item(s) (usually a mob drop the bot
+     *  collects while grinding), walk back and deliver. Qualifies when: not scripted, both NPCs, at
+     *  least one required complete-item, and every complete-req is a kill target, an item, or a
+     *  runtime-rechecked gate (no money/pop/pet). Whether the item is ACTUALLY mob-droppable is decided
+     *  at runtime (the index is WZ-pure; the drop table is DB-side) — see BotQuestManager. A fetch quest
+     *  may also list mobs (kill AND collect); that's allowed. */
+    static boolean qualifiesFetch(QuestMeta q) {
+        if (q.scripted() || q.startNpc() <= 0 || q.endNpc() <= 0) {
+            return false;
+        }
+        if (q.items().isEmpty()) {
+            return false;
+        }
+        for (String key : q.completeReqKeys()) {
+            if (!ALLOWED_COMPLETE_KEYS.contains(key) && !"item".equals(key)) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /** The original kill-and-turn-in shape: not scripted, both NPCs, at least one required mob, and
@@ -277,6 +310,7 @@ final class BotQuestIndex {
         int lvmin = start != null ? DataTool.getInt("lvmin", start, 0) : 0;
 
         Map<Integer, Integer> mobs = new LinkedHashMap<>();
+        Map<Integer, Integer> items = new LinkedHashMap<>();
         List<String> completeKeys = new ArrayList<>();
         boolean scripted = hasScriptMarker(start) || hasScriptMarker(complete)
                 || Files.exists(SCRIPT_DIR.resolve(id + ".js"));
@@ -291,6 +325,18 @@ final class BotQuestIndex {
                     int count = DataTool.getInt("count", m, 0);
                     if (mobId > 0 && count > 0) {
                         mobs.put(mobId, count);
+                    }
+                }
+            }
+            // Required items to DELIVER (count > 0). count <= 0 entries are tutorial "consume this"
+            // markers the runtime ItemRequirement treats as satisfied (see isTalkShape) — not a fetch.
+            Data itemNode = complete.getChildByPath("item");
+            if (itemNode != null) {
+                for (Data it : itemNode.getChildren()) {
+                    int itemId = DataTool.getInt("id", it, 0);
+                    int count = DataTool.getInt("count", it, 0);
+                    if (itemId > 0 && count > 0) {
+                        items.put(itemId, count);
                     }
                 }
             }
@@ -324,7 +370,7 @@ final class BotQuestIndex {
         boolean talk = isTalkShape(startNpc, endNpc, mobs, complete);
 
         return new QuestMeta(id, startNpc, endNpc, lvmin, mobs, rewardExp, rewardItems,
-                autoStart, autoComplete, scripted, completeKeys, talk);
+                autoStart, autoComplete, scripted, completeKeys, talk, items);
     }
 
     /** A TALK quest is the simplest bot-runnable shape: walk to the start NPC and press start, walk
@@ -442,7 +488,8 @@ final class BotQuestIndex {
         }
     }
 
-    /** Row: id \t startNpc \t endNpc \t lvmin \t rewardExp \t mob:count,... \t item,... \t talk(0/1) */
+    /** Row (v4): id \t startNpc \t endNpc \t lvmin \t rewardExp \t mob:count,... \t rewardItem,... \t
+     *  talk(0/1) \t reqItem:count,... \t scripted(0/1) */
     private static QuestMeta parseRow(String line) {
         String[] f = line.split("\t", -1);
         if (f.length < 7) {
@@ -456,23 +503,34 @@ final class BotQuestIndex {
                 mobs.put(Integer.parseInt(kv[0]), Integer.parseInt(kv[1]));
             }
         }
-        List<Integer> items = new ArrayList<>();
+        List<Integer> rewardItems = new ArrayList<>();
         if (!f[6].isBlank()) {
             for (String s : f[6].split(",")) {
-                items.add(Integer.parseInt(s));
+                rewardItems.add(Integer.parseInt(s));
             }
         }
         boolean talk = f.length > 7 && "1".equals(f[7]);
-        // Cached rows are already-qualified: mob quests have mob-only completes; talk quests have
-        // none. completeReqKeys is reconstructed enough to keep status/objective rendering correct.
-        List<String> completeKeys = talk
-                ? new ArrayList<>(List.of("npc"))
-                : new ArrayList<>(mobs.keySet().stream().map(x -> "mob").toList());
-        // scripted isn't persisted (it's only consulted at build-time qualify, which cache rows skip);
-        // pass false rather than mis-feeding `talk` into the scripted slot.
+        Map<Integer, Integer> reqItems = new LinkedHashMap<>();
+        if (f.length > 8 && !f[8].isBlank()) {
+            for (String pair : f[8].split(",")) {
+                String[] kv = pair.split(":");
+                reqItems.put(Integer.parseInt(kv[0]), Integer.parseInt(kv[1]));
+            }
+        }
+        boolean scripted = f.length > 9 && "1".equals(f[9]);
+        // Cached rows are already-qualified. completeReqKeys is reconstructed enough to keep
+        // status/objective rendering and the runtime fetch/mob branches correct: mob targets, an
+        // "item" marker when items are required, and "npc" for a pure talk quest.
+        List<String> completeKeys = new ArrayList<>(mobs.keySet().stream().map(x -> "mob").toList());
+        if (!reqItems.isEmpty()) {
+            completeKeys.add("item");
+        }
+        if (completeKeys.isEmpty()) {
+            completeKeys.add("npc");
+        }
         return new QuestMeta(id, Integer.parseInt(f[1]), Integer.parseInt(f[2]),
-                Integer.parseInt(f[3]), mobs, Integer.parseInt(f[4]), items,
-                false, false, false, completeKeys, talk);
+                Integer.parseInt(f[3]), mobs, Integer.parseInt(f[4]), rewardItems,
+                false, false, scripted, completeKeys, talk, reqItems);
     }
 
     private static void writeCache(Index idx) {
@@ -500,6 +558,16 @@ final class BotQuestIndex {
                     first = false;
                 }
                 sb.append('\t').append(q.talk() ? '1' : '0');
+                sb.append('\t');
+                first = true;
+                for (Map.Entry<Integer, Integer> e : q.items().entrySet()) {
+                    if (!first) {
+                        sb.append(',');
+                    }
+                    sb.append(e.getKey()).append(':').append(e.getValue());
+                    first = false;
+                }
+                sb.append('\t').append(q.scripted() ? '1' : '0');
                 sb.append('\n');
             }
             sb.append("AUTO\t");
