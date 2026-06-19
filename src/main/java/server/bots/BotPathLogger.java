@@ -615,13 +615,26 @@ final class BotPathLogger {
             sb.append("  unknown region  botRegion=").append(botRegionId)
                     .append(" targetRegion=").append(targetRegionId).append("\n");
         } else if (botRegionId == targetRegionId) {
-            sb.append("  same region - no inter-region path");
-            String surface = surfaceFlag(targetPos);
-            if (!surface.isEmpty()) {
-                sb.append("  <-- target").append(surface)
-                        .append("; same-region straight-line steer cannot reach it");
+            // Same region does NOT mean "direct walk reaches it" — a region can be two platforms
+            // split by a gap, where A* returns an intra-region detour (portal/jump loop out and
+            // back). Run the search and show that loop instead of claiming "no path"; an empty
+            // result means the straight-line walk genuinely wins.
+            List<BotNavigationGraph.Edge> path = BotNavigationManager.findPath(
+                    graph, entry.bot, botRegionId, targetRegionId, targetPos);
+            if (path.isEmpty()) {
+                sb.append("  same region - direct walk (no detour)");
+                String surface = surfaceFlag(targetPos);
+                if (!surface.isEmpty()) {
+                    sb.append("  <-- target").append(surface)
+                            .append("; same-region straight-line steer cannot reach it");
+                }
+                sb.append("\n");
+            } else {
+                sb.append("  same region - intra-region detour (platform split by gap):\n");
+                for (int i = 0; i < path.size(); i++) {
+                    sb.append("  ").append(i + 1).append(". ").append(edgeStr(path.get(i))).append("\n");
+                }
             }
-            sb.append("\n");
         } else {
             List<BotNavigationGraph.Edge> path = BotNavigationManager.findPath(
                     graph, entry.bot, botRegionId, targetRegionId, targetPos);

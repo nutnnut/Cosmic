@@ -425,13 +425,20 @@ final class BotNavigationManager {
             // bot), not by a region change — don't retire on region match.
             return null;
         }
-        // Once the resolved target is back in the bot's current region, any committed edge that
-        // would leave that region is stale. Keeping it causes follow/formation loops where the
-        // bot repeatedly runs toward an old jump/drop/portal after the live follow target has
-        // snapped back onto the current platform.
+        // Once the resolved target is back in the bot's current region, a committed edge that
+        // would leave that region is *usually* stale — follow/formation loops where the bot keeps
+        // running toward an old jump/drop/portal after the live follow target snapped back onto the
+        // current platform. But "same region" does NOT imply "direct walk reaches it": a region can
+        // be two platforms split by a gap (e.g. map 1020000 r11), where the only route to a target
+        // on the far platform genuinely loops out through a portal and back. A* commits that
+        // leave-region edge *for this same-region target* (previousTargetRegionId == targetRegionId);
+        // retiring it every tick made non-AI ticks revert to the raw pin (opposite direction) and the
+        // bot thrashed in place. Only treat it as stale when the target actually CHANGED region
+        // (the snap-back case) — then the edge was planned for a different target and is truly stale.
         if (!entry.inAir && !entry.climbing
                 && startRegionId >= 0 && startRegionId == targetRegionId
-                && edge.toRegionId != startRegionId) {
+                && edge.toRegionId != startRegionId
+                && previousTargetRegionId != targetRegionId) {
             return null;
         }
         if (startRegionId == edge.fromRegionId) {
