@@ -326,4 +326,19 @@ class BotGrindPlannerTest {
             assertEquals(10, plan.mapId(), "a crowded roomy map must lose the party to the emptier one");
         }
     }
+
+    @Test
+    void marginalUpgradeMustNotGateOutMuchHigherExp() {
+        // The old gear-first shortlist let ANY meaningful gear restrict the pool to gear-comparable
+        // maps, so a marginal upgrade on a low-exp map beat a 2x-exp map (the lv5 "Dangerous Forest"
+        // pile-up). With the unified exp+gear blend a small needGear leaves exp in charge.
+        GearProspect marginal = new GearProspect(1402000, "sword", 0.01, 6.0, 0.066); // ~6.6% dps, low desire
+        MobCandidate gearMarginalLowExp = mob(1, 80, 2.0, 10, 8, List.of(marginal));
+        MobCandidate highExpNoGear = mob(2, 160, 2.0, 20, 8, List.of());
+        for (int seed = 0; seed < 20; seed++) {
+            Recommendation rec = BotGrindPlanner.planBest(
+                    List.of(gearMarginalLowExp, highExpNoGear), new Random(seed));
+            assertEquals(20, rec.pick().mapId(), "marginal gear must not beat 2x exp (seed " + seed + ")");
+        }
+    }
 }

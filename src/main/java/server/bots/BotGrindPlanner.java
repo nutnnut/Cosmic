@@ -18,11 +18,11 @@ import java.util.function.IntToDoubleFunction;
  * gain over the bot's own currently-worn item (stat randomization is the caller's job — it feeds
  * the <em>expected</em> roll, godly mixture included), discounted by <em>attainability</em>: a
  * +30% DPS drop the bot can expect within a couple of hours is worth chasing; a 1-in-a-million
- * jackpot is noise. When any candidate carries meaningful attainable gear value, the pick is
- * restricted to candidates gear-comparable to the best ({@link #GEAR_POOL_FRACTION}) and exp
- * decides among those; with no attainable upgrade anywhere it falls back to pure exp ranking.
- * An optional per-map score weight discounts far-away maps (travel-time penalty, see
- * {@code BotTravelCost}).
+ * jackpot is noise. Exp and gear are put on ONE scale (each normalized to the best candidate) and
+ * blended by how gear-hungry the bot is ({@code needGear}): no meaningful upgrade anywhere => pure
+ * exp; a dominant upgrade => gear-led; in between => a continuous weighted sum, so a marginal drop
+ * can't gate out a much higher-exp map (and vice versa). An optional per-map score weight discounts
+ * far-away maps (travel-time penalty, see {@code BotTravelCost}).
  *
  * <p><b>Anti-clogging.</b> With many bots asking the same question, a deterministic argmax sends
  * everyone to the same map. {@link #planBest} samples among near-best candidates (within
@@ -52,14 +52,9 @@ final class BotGrindPlanner {
     static final double ATTAINABILITY_HORIZON_HOURS = 2.0;
     /** Candidates scoring within this fraction of the best join the weighted-random draw. */
     static final double NEAR_BEST_FRACTION = 0.85;
-    /** Gear progression is PRIMARY: an attainable upgrade of at least this desirability
-     *  (DPS-gain x attainability) anywhere in the pool switches planning to gear-first. */
+    /** A meaningful attainable upgrade (DPS-gain x attainability) anywhere in the pool; below this
+     *  the bot is treated as not gear-driven for reporting (the {@code gearFocused} flag). */
     static final double MEANINGFUL_GEAR_DESIRE = 0.02;
-    /** Gear-first shortlist: candidates within this fraction of the best gear-value/h stay in;
-     *  exp breaks the tie among them. */
-    static final double GEAR_POOL_FRACTION = 0.7;
-    /** Party blend: exp is a secondary tiebreaker next to the primary gear lens. */
-    static final double EXP_TIEBREAK_WEIGHT = 0.25;
 
     private BotGrindPlanner() {}
 
@@ -193,27 +188,21 @@ final class BotGrindPlanner {
         return planBest(shareForCrowd(candidates, 1.0, extraCompetitors), mapScoreWeight, rng);
     }
 
-    /** Gear-first pick: when meaningful attainable gear value exists anywhere, restrict to
-     *  candidates within {@link #GEAR_POOL_FRACTION} of the best gear-value/h and let exp
-     *  break the tie (near-best weighted draw); otherwise pure exp ranking as before.
-     *  {@code mapScoreWeight} discounts far maps (travel-time penalty, BotTravelCost). */
+    /** Unified pick: rank candidates by the blended exp+gear score ({@link #unifiedScores}) and draw
+     *  among the near-best weighted by score. {@code mapScoreWeight} discounts far maps (travel-time
+     *  penalty, BotTravelCost). */
     static Recommendation planBest(List<MobCandidate> candidates, IntToDoubleFunction mapScoreWeight,
                                    Random rng) {
         if (candidates == null || candidates.isEmpty()) {
             return null;
         }
         Lenses lenses = computeLenses(candidates, mapScoreWeight);
-        boolean gearFirst = lenses.gearFirst();
-        int picked;
-        if (gearFirst) {
-            picked = drawGearFirst(lenses, rng);
-        } else {
-            double bestExp = max(lenses.weightedExp());
-            if (bestExp <= 0.0) {
-                return null;
-            }
-            picked = drawNearBest(lenses.weightedExp(), bestExp, rng);
+        double[] unified = unifiedScores(lenses);
+        double best = max(unified);
+        if (best <= 0.0) {
+            return null;
         }
+        int picked = drawNearBest(unified, best, rng);
 
         MobCandidate pick = candidates.get(picked);
         double kph = killsPerHour(pick);
@@ -226,36 +215,29 @@ final class BotGrindPlanner {
                 wanted = g;
             }
         }
-        boolean gearFocused = gearFirst && wanted != null;
+        boolean gearFocused = lenses.gearFirst() && wanted != null;
         double wantedPerHour = wanted != null ? wanted.chancePerKill() * kph : 0.0;
-        double score = gearFirst ? lenses.weightedGear()[picked] : lenses.weightedExp()[picked];
+        double score = lenses.gearFirst() ? lenses.weightedGear()[picked] : lenses.weightedExp()[picked];
         return new Recommendation(pick, kph, lenses.expPerHour()[picked], gearFocused,
                 lenses.needGear(), wanted, wantedPerHour, score);
     }
 
-    /** Shortlist gear-comparable candidates, then let exp break the tie (weighted draw). */
-    private static int drawGearFirst(Lenses lenses, Random rng) {
-        double[] gear = lenses.weightedGear();
-        double bestGear = max(gear);
-        List<Integer> pool = new ArrayList<>();
-        for (int i = 0; i < gear.length; i++) {
-            if (gear[i] >= bestGear * GEAR_POOL_FRACTION) {
-                pool.add(i);
-            }
+    /** One score per candidate with exp and gear on the SAME [0,1] scale (each divided by the best
+     *  candidate's value in that lens), blended by how gear-hungry the bot is ({@code needGear}).
+     *  Replaces the old gear-first/exp lexicographic switch — which gated exp out the moment any
+     *  meaningful gear existed — so the two trade off continuously: needGear=0 -> pure exp,
+     *  needGear=1 -> pure gear, between -> weighted sum. SSOT for both solo and party picks. */
+    private static double[] unifiedScores(Lenses lenses) {
+        double bestExp = max(lenses.weightedExp());
+        double bestGear = max(lenses.weightedGear());
+        double need = lenses.needGear();
+        double[] out = new double[lenses.weightedExp().length];
+        for (int i = 0; i < out.length; i++) {
+            double exp = bestExp > 0 ? lenses.weightedExp()[i] / bestExp : 0.0;
+            double gear = bestGear > 0 ? lenses.weightedGear()[i] / bestGear : 0.0;
+            out[i] = (1.0 - need) * exp + need * gear;
         }
-        double[] poolExp = new double[pool.size()];
-        double[] poolGear = new double[pool.size()];
-        double bestPoolExp = 0.0;
-        for (int i = 0; i < pool.size(); i++) {
-            poolExp[i] = lenses.weightedExp()[pool.get(i)];
-            poolGear[i] = gear[pool.get(i)];
-            bestPoolExp = Math.max(bestPoolExp, poolExp[i]);
-        }
-        // Pool with no exp signal at all (e.g. farm-shaped data): draw by gear value itself.
-        int inPool = bestPoolExp > 0.0
-                ? drawNearBest(poolExp, bestPoolExp, rng)
-                : drawNearBest(poolGear, bestGear, rng);
-        return pool.get(inPool);
+        return out;
     }
 
     private static double max(double[] values) {
@@ -380,20 +362,10 @@ final class BotGrindPlanner {
                 new PartyPlan(pickedMapId, recs));
     }
 
-    /** One comparable number per candidate for the party sum, gear-first like solo planning:
-     *  when the member has meaningful attainable gear value anywhere, the normalized gear lens
-     *  is primary and exp only breaks ties ({@link #EXP_TIEBREAK_WEIGHT}); otherwise pure exp. */
+    /** One comparable number per candidate for the party sum: the same unified exp+gear blend the
+     *  solo pick uses ({@link #unifiedScores}), so members rank maps identically before summing. */
     private static double[] partyScores(List<MobCandidate> candidates, IntToDoubleFunction mapScoreWeight) {
-        Lenses lenses = computeLenses(candidates, mapScoreWeight);
-        double bestExp = max(lenses.weightedExp());
-        double bestGear = max(lenses.weightedGear());
-        double[] score = new double[candidates.size()];
-        for (int i = 0; i < score.length; i++) {
-            double exp = bestExp > 0 ? lenses.weightedExp()[i] / bestExp : 0.0;
-            double gear = bestGear > 0 ? lenses.weightedGear()[i] / bestGear : 0.0;
-            score[i] = lenses.gearFirst() ? gear + EXP_TIEBREAK_WEIGHT * exp : exp;
-        }
-        return score;
+        return unifiedScores(computeLenses(candidates, mapScoreWeight));
     }
 
     /**
