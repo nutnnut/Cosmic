@@ -1151,7 +1151,15 @@ final class BotAutopilotManager {
             clearWaitAnchor(entry); // arrived, or hop is non-walkable — plain hold + grind
             return;
         }
-        entry.autopilotWaitAnchor = portalPos;
+        // WZ portal positions sit at the sprite anchor, usually ABOVE the floor. Standing-wait must
+        // be a real foothold: loiterAtAnchor only settles (idleOnGround) within 8px of the anchor on
+        // BOTH axes and while grounded, so an above-floor anchor Y means a bot on the platform never
+        // settles, and a bot that reaches the portal's airborne Y is stuck inAir at its own target —
+        // frozen mid-air, passively loitering while mobs hit it. Snap to the ground below the portal.
+        MapleMap map = bot.getMap();
+        Point ground = map == null ? null
+                : BotPhysicsEngine.findGroundPoint(map, new Point(portalPos.x, portalPos.y - 1));
+        entry.autopilotWaitAnchor = ground != null ? ground : portalPos;
         entry.autopilotWaitAnchorMapId = bot.getMapId();
         entry.grinding = false;
     }
