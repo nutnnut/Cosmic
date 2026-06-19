@@ -160,6 +160,18 @@ final class BotQuestManager {
 
     static ItemQuantity itemQuantity = (bot, itemId) -> bot.getItemQuantity(itemId, false);
 
+    /** Quest-exp vs grind-exp server rate ratio = {@code questExpRate / expRate}. A quest's flat WZ
+     *  reward exp is scaled by this before scoring, because the grind baseline is UN-rated (raw exp):
+     *  only the quest/mob rate RATIO matters. >1 when the server boosts quest exp over mob exp (exp
+     *  rewards weigh more); &lt;1 when quest exp lags mob exp (exp rewards deflate, but the equip/scroll
+     *  reward terms are real utility and are intentionally NOT scaled, so a gear quest can still win).
+     *  Seam over {@link Character#getQuestExpRate()}/{@link Character#getExpRate()} so tests stay rate-free. */
+    interface ExpRateRatio {
+        double ratio(Character bot);
+    }
+
+    static ExpRateRatio expRateRatio = bot -> (double) bot.getQuestExpRate() / Math.max(1, bot.getExpRate());
+
     /** World-graph hop count between two maps; seam over {@link BotWorldGraph}. Integer.MAX_VALUE
      *  when unreachable within the bound. */
     interface HopCount {
@@ -568,12 +580,16 @@ final class BotQuestManager {
      *  trivial reward is not scored against a near-zero cost. */
     static double scoreQuest(BotEntry entry, Character bot, int grindMapId, int npcMapId,
                              BotQuestIndex.QuestMeta q, double baseline) {
+        // Reward exp competes against the un-rated grind baseline, so scale it by the server's
+        // quest/mob exp-rate ratio: a quest-exp-boosted server makes exp rewards weigh more, a
+        // quest-exp-starved one deflates them (while equip/scroll rewards, real utility, hold).
+        int rewardExp = (int) Math.round(q.rewardExp() * expRateRatio.ratio(bot));
         // Talk quests (no kills, no fetched items) score on a flat completion worth + reward vs the
         // NPC round-trip cost - there are no mobs to overlap or kill.
         if (q.talk()) {
             double travelT = travelSeconds.seconds(grindMapId, npcMapId);
             double uniqueT = uniqueRewardExpEquivalent(bot, q);
-            return BotQuestScorer.scoreTalk(q.rewardExp(), uniqueT, travelT, baseline);
+            return BotQuestScorer.scoreTalk(rewardExp, uniqueT, travelT, baseline);
         }
         // Overlap = required mobs the bot already kills on its current grind map (free exp).
         java.util.Set<Integer> here = mapMobs.mobsOn(grindMapId).keySet();
@@ -588,7 +604,7 @@ final class BotQuestManager {
         // Round trip: grind map -> NPC map -> back. resolveNpcMap already found npcMapId.
         double travel = travelSeconds.seconds(grindMapId, npcMapId);
         double uniqueBonus = uniqueRewardExpEquivalent(bot, q);
-        return BotQuestScorer.score(q.mobs(), q.rewardExp(), uniqueBonus, overlap, mobExp,
+        return BotQuestScorer.score(q.mobs(), rewardExp, uniqueBonus, overlap, mobExp,
                 killSecondsPerMob, travel, baseline);
     }
 

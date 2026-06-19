@@ -38,6 +38,7 @@ class BotQuestManagerTest {
     private final java.util.function.ObjIntConsumer<Character> prevGrant = BotQuestManager.grantItem;
     private final BotQuestManager.ItemQuantity prevItemQty = BotQuestManager.itemQuantity;
     private final BotQuestManager.ItemDroppers prevDroppers = BotQuestManager.itemDroppers;
+    private final BotQuestManager.ExpRateRatio prevExpRatio = BotQuestManager.expRateRatio;
     private final List<String> replies = new ArrayList<>();
 
     {
@@ -51,6 +52,8 @@ class BotQuestManagerTest {
         // that exercise fetch behavior override these.
         BotQuestManager.itemDroppers = id -> List.of();
         BotQuestManager.itemQuantity = (bot, itemId) -> 0;
+        // Default quest/mob exp-rate ratio to 1 (mock bots have no world) so scoring tests are rate-free.
+        BotQuestManager.expRateRatio = bot -> 1.0;
         // Fire NPC actions on the in-range tick instead of waiting out the humanlike dwell pause.
         BotManager.dwellInstant = true;
     }
@@ -74,6 +77,7 @@ class BotQuestManagerTest {
         BotQuestManager.grantItem = prevGrant;
         BotQuestManager.itemQuantity = prevItemQty;
         BotQuestManager.itemDroppers = prevDroppers;
+        BotQuestManager.expRateRatio = prevExpRatio;
     }
 
     /** Stub the scorer's WZ-backed seams to deterministic values so worthwhile/score is pure. */
@@ -195,6 +199,34 @@ class BotQuestManagerTest {
         BotQuestManager.itemDroppers = itemId -> List.of();
         var q = fetchQuest(5000, 100, 200, 50, Map.of(4000000, 30));
         assertTrue(BotQuestManager.effectiveTargetMobs(q).isEmpty());
+    }
+
+    // ---- server exp-rate ratio: quest exp reward scales, equip reward does not ----
+
+    @Test
+    void questExpRewardScalesWithRateRatioButEquipRewardDoesNot() {
+        BotEntry e = entry();
+        BotQuestManager.mapMobs = mapId -> Map.of();          // no overlap -> pure reward-exp value
+        BotQuestManager.travelSeconds = (from, to) -> 60.0;   // fixed opportunity cost
+        BotQuestManager.grindExpBaseline = (en, b) -> 1000.0; // un-rated grind baseline
+        BotQuestManager.uniqueRewardValue = (b, q) -> 0.0;    // exp-only quest
+
+        var expQuest = mobQuest(7000, 100, 200, 5000, Map.of(), List.of());
+        BotQuestManager.expRateRatio = b -> 1.0;
+        double base = BotQuestManager.scoreQuest(e, e.bot, 50000, 60000, expQuest);
+        BotQuestManager.expRateRatio = b -> 2.0;
+        double boosted = BotQuestManager.scoreQuest(e, e.bot, 50000, 60000, expQuest);
+        assertTrue(boosted > base * 1.99,
+                "doubling the quest/mob exp-rate ratio ~doubles an exp-reward quest's score");
+
+        // An equip-reward quest (no reward exp, value only from the unique reward) is ratio-invariant.
+        var gearQuest = mobQuest(7001, 100, 200, 0, Map.of(), List.of(1102053));
+        BotQuestManager.uniqueRewardValue = (b, q) -> 300.0;
+        BotQuestManager.expRateRatio = b -> 1.0;
+        double g1 = BotQuestManager.scoreQuest(e, e.bot, 50000, 60000, gearQuest);
+        BotQuestManager.expRateRatio = b -> 5.0;
+        double g5 = BotQuestManager.scoreQuest(e, e.bot, 50000, 60000, gearQuest);
+        assertEquals(g1, g5, 1e-9, "equip reward value does not scale with the exp-rate ratio");
     }
 
     // ---- auto quests: drive start/complete only when the gates pass ----
