@@ -699,6 +699,26 @@ public class Quest {
         }
     }
 
+    /** True when completing this quest is gated ONLY by an NPC end-script — no concrete,
+     *  server-verifiable requirement (item/mob/level/...) beyond the trivial npc/interval reqs.
+     *  {@link server.quest.requirements.ScriptRequirement#check} returns true unconditionally, so a
+     *  caller that can't run the script (an AI bot) and has no real condition to check would falsely
+     *  "complete" the quest and loop — e.g. quest 29400's hidden 1,000,000-kill count lives in
+     *  q29400e.js. Quests like 1021 (script + a real item requirement) return false and stay
+     *  completable through the generic flow. */
+    public boolean completeGatedOnlyByScript() {
+        if (!hasScriptRequirement(true)) {
+            return false;
+        }
+        for (QuestRequirementType t : completeReqs.keySet()) {
+            if (t != QuestRequirementType.SCRIPT && t != QuestRequirementType.NPC
+                    && t != QuestRequirementType.INTERVAL) {
+                return false; // has a concrete requirement the bot can actually verify
+            }
+        }
+        return true;
+    }
+
     public boolean hasNextQuestAction() {
         Map<QuestActionType, AbstractQuestAction> acts = completeActs;
         AbstractQuestAction mqa = acts.get(QuestActionType.NEXTQUEST);

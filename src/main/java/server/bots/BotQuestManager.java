@@ -95,7 +95,13 @@ final class BotQuestManager {
             return Quest.getInstance(questId).canStart(bot, npc);
         }
         @Override public boolean canComplete(Character bot, int questId, int npc) {
-            return Quest.getInstance(questId).canComplete(bot, npc);
+            // A quest whose completion is gated ONLY by an NPC end-script (e.g. 29400 "Veteran
+            // Hunter": its real 1,000,000-kill count lives in q29400e.js) can't be legally finished
+            // by the bot. ScriptRequirement.check() returns true unconditionally, so the generic
+            // canComplete would say "yes" and the bot would falsely complete it and loop. Defer those
+            // to the NPC dialogue. Quests with a real item/mob requirement (e.g. 1021) stay handled.
+            return !Quest.getInstance(questId).completeGatedOnlyByScript()
+                    && Quest.getInstance(questId).canComplete(bot, npc);
         }
         @Override public void start(Character bot, int questId, int npc) {
             Quest.getInstance(questId).start(bot, npc);
