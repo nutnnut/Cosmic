@@ -115,6 +115,13 @@ final class BotGrindAdvisor {
     private static final long WARM_WAIT_CAP_MS = 60_000L;
     private static volatile boolean warmWaitTimedOut = false;
 
+    /** Non-blocking "safe to pay the warm-dependent cost now?" check for callers on a game/tick thread
+     *  that must NOT block (unlike {@link #awaitWarm}). True when the warm is done, timed out, or was
+     *  never started (tests/disabled) — i.e. exactly the cases where {@link #awaitWarm} would not wait. */
+    static boolean isWarm() {
+        return !cachesWarmed || warmLatch.getCount() == 0 || warmWaitTimedOut;
+    }
+
     /** Block the (single) decide thread until the boot cache warm finishes, so no decision pays the
      *  cold tax while 60 bots compete. No-op when warm was never started (tests) or already done. */
     private static void awaitWarm() {
