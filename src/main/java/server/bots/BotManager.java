@@ -211,12 +211,18 @@ public class BotManager {
         public boolean GACHAPON_ENABLED = true;
         // Keep at least this much account NX in reserve - bots gamble only the surplus above it.
         public int GACHA_NX_RESERVE = 1_000;
-        // Tickets bought+rolled per trip cap (humanlike: a session at the machine, not infinite).
-        public int GACHA_TICKETS_PER_TRIP = 5;
-        // A town's net score (expected item value per roll minus ticket price and travel penalty,
-        // in NX-equivalent units) must clear this for the bot to make the trip - otherwise it hoards
-        // the NX for a better/closer pool. Positive so the pull must beat its own ticket cost.
+        // Ceiling on tickets per trip (humanlike: a session at the machine, not infinite). The ACTUAL
+        // rolls scale with saved NX (plannedRolls) and amortize travel - a far town only pays off once
+        // the bot has banked enough rolls, so saving up enables a longer session out of the way.
+        public int GACHA_TICKETS_PER_TRIP = 20;
+        // A town's net TRIP score (planned rolls x (roll value - ticket price), minus the travel
+        // penalty, in NX-equivalent units) must clear this for the bot to make the trip - otherwise it
+        // hoards the NX for a better/closer pool, or saves up to amortize a far one.
         public double GACHA_MIN_NET_EV = 50.0;
+        // Converts an equip's upgrade SCORE (the grind-advisor DPS-gain SSOT) to NX-equivalent so the
+        // "best gacha that suits self" signal is comparable to resale EV and the ticket price. Higher =
+        // the bot chases gear upgrades harder vs raw resale/uniques. (~one ticket per 160 score gain.)
+        public double GACHA_UPGRADE_NX_PER_SCORE = 5.0;
 
         // Autonomous (ownerless) 1st-job pick weights (BotBuildManager.pickWeightedJob). Relative
         // weights across the five explorer classes; uniform by default. A class absent from the map
@@ -2252,6 +2258,19 @@ public class BotManager {
                                                      Point combatTargetPos,
                                                      boolean crossRegionRetreatChecked,
                                                      boolean forceRetreat) {
+        return selectGrindNavigationTarget(entry, botPos, combatTargetPos, crossRegionRetreatChecked, forceRetreat, false);
+    }
+
+    // useSpacingHysteresis: when true, the spacing-retreat decision uses the enter/exit band
+    // (BotEntry.spacingRetreatActive) instead of the bare 80px threshold, and writes that state back.
+    // Only the grind spacing path passes true; the AoE-reposition and opportunity paths pass false so
+    // they never write the flag with a non-mob target (a reposition point / opportunity mob).
+    private static Point selectGrindNavigationTarget(BotEntry entry,
+                                                     Point botPos,
+                                                     Point combatTargetPos,
+                                                     boolean crossRegionRetreatChecked,
+                                                     boolean forceRetreat,
+                                                     boolean useSpacingHysteresis) {
         if (entry == null || botPos == null || combatTargetPos == null) {
             return combatTargetPos;
         }
@@ -2265,8 +2284,18 @@ public class BotManager {
         // forceRetreat (proactive danger-retreat) makes the bot back off even when it isn't yet
         // inside the spatial ranged-spacing band — the mob is dangerous on contact, so distance is
         // worth opening regardless of the normal spacing heuristic.
-        boolean retreatNeeded = forceRetreat || BotAttackExecutionProvider.shouldRetreatFromNearbyTarget(
-                BotAttackExecutionProvider.getEquippedWeaponType(bot), botPos, combatTargetPos);
+        WeaponType retreatWeaponType = BotAttackExecutionProvider.getEquippedWeaponType(bot);
+        boolean spacingRetreat;
+        if (useSpacingHysteresis) {
+            // Authoritative per-tick write of the enter/exit hysteresis state (mob target, same as the gate).
+            spacingRetreat = BotAttackExecutionProvider.isInSpacingRetreatBand(
+                    entry.spacingRetreatActive, retreatWeaponType, botPos, combatTargetPos);
+            entry.spacingRetreatActive = spacingRetreat;
+        } else {
+            spacingRetreat = BotAttackExecutionProvider.shouldRetreatFromNearbyTarget(
+                    retreatWeaponType, botPos, combatTargetPos);
+        }
+        boolean retreatNeeded = forceRetreat || spacingRetreat;
 
         // Surround-breakout commitment: once pincered, keep bursting the SAME way until the
         // bot is no longer flanked on both sides (or a safety timeout), re-issuing a forward
@@ -3452,8 +3481,11 @@ public class BotManager {
         // to a rope, and trying to sends the bot climbing DOWN away from a mob sitting on top of the
         // rope, then back up: endless oscillation. While climbing, never space-retreat; finish the
         // climb and fight on the platform (danger-retreat still applies — flee a lethal mob anywhere).
+        // Hysteretic band (enter 80px / exit 140px) keyed on the prior-tick spacing state, to stop the
+        // edge chatter. Read-only here; the movement path (selectGrindNavigationTarget, same tick, same
+        // target) writes entry.spacingRetreatActive, so gate and movement agree on one prior value.
         boolean rangedSpacingCrowded = !entry.climbing && !noAmmoMelee
-                && BotAttackExecutionProvider.shouldRetreatFromNearbyTarget(grindWeaponType, botPos, tp);
+                && BotAttackExecutionProvider.isInSpacingRetreatBand(entry.spacingRetreatActive, grindWeaponType, botPos, tp);
         // Anti-freeze: a spacing retreat that never opens distance (mob chases, blocked nav) loops
         // forever with the gate shut. Shared give-up watchdog forces a fight window — same escape
         // hatch the danger-retreat uses (see RetreatGiveUp).
@@ -3548,7 +3580,7 @@ public class BotManager {
                 ? crossRegionRetreatPos
                 : aoeRepositionPos != null
                 ? selectGrindNavigationTarget(entry, botPos, aoeRepositionPos)
-                : selectGrindNavigationTarget(entry, botPos, tp, shouldRetreatForRangedSpacing, proactiveDangerRetreat);
+                : selectGrindNavigationTarget(entry, botPos, tp, shouldRetreatForRangedSpacing, proactiveDangerRetreat, true);
         // Clear only once the bot has physically left the retreat zone, not after the
         // first retreat tick — otherwise the flag resets while the bot is still overlapping
         // and allowOneDegenerateAttack re-opens the attack gate next tick.

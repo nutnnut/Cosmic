@@ -160,6 +160,10 @@ class BotCombatManager {
         public int   RANGED_DEGENERATE_RANGE_X = 50;
         public int   RANGED_DEGENERATE_RANGE_Y = 50;
         public int   RANGED_RETREAT_THRESHOLD_X = 80;
+        // Enter/exit hysteresis on the spacing-retreat band: once retreating, keep retreating until the
+        // mob is THRESHOLD_X + this (80+60=140) away before re-engaging. Without the gap a mob hovering
+        // near the 80px edge flips retreat on/off every tick -> left-right jitter.
+        public int   RANGED_RETREAT_HYSTERESIS_X = 60;
         public int   RANGED_RETREAT_DISTANCE_X = 100;
         public int   BREAKOUT_MAX_MS = 3000; // cap on a committed surround-breakout run before re-deciding
 

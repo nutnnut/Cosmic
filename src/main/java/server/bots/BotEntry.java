@@ -142,7 +142,12 @@ public class BotEntry {
     // Ammo
     boolean noAmmo = false;
     boolean ammoWarnSent = false;
-    boolean degenAttackDone = false; // force retreat after an accidental close-range hit
+    // INTENTIONAL humanlike behavior — DO NOT remove/simplify. A ranged bot that gets a mob inside the
+    // point-blank degenerate band fires one close-range swing (emulating a player who reflexively
+    // attacks when a mob is on top of them and can't range), then this flag forces a back-off the next
+    // tick. It is character, not a bug or a chatter band-aid. Keep it through any spacing-retreat refactor.
+    boolean degenAttackDone = false; // force retreat after a deliberate point-blank close-range hit
+    boolean spacingRetreatActive = false; // hysteresis memory: are we mid spacing-retreat? (enter 80px / exit 140px)
     long retreatHoldUntilMs = 0L; // hysteresis: lock the local retreat goal for a short window
     Point retreatHoldPos = null;  // the locked retreat target — reused while hold is active
     long dangerRetreatUntilMs = 0L; // proactive self-preservation: keep disengaging a touch-dangerous mob until this expires (anti-flip-flop)
@@ -357,6 +362,7 @@ public class BotEntry {
     long gachaNextRollAtMs = 0L;         // humanlike pacing between rolls
     long nextGachaScanAtMs = 0L;
     long gachaNextRareChatAtMs = 0L;     // rate-limit the "got <rare>!" shout
+    boolean gachaUpgradeDriven = false;  // trip chosen for gear upgrades (not resale) -> pivot when satisfied
 
     // Supervised-mode quest AUTO-SUGGEST (Feature A): when the owner is online and the bot is at
     // their side, the bot occasionally SUGGESTS a standout nearby quest in chat (it never wanders
