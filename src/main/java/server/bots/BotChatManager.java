@@ -1498,6 +1498,12 @@ public class BotChatManager {
 
     // Status check — called on spawn, grind start, greeting, and level-up
     static void checkBotStatus(BotEntry entry, Character bot) {
+        // Liveness guard: this runs from a delayed/periodic scheduled task, not the bot tick, so the bot
+        // can be disconnected/removed (server shutdown, logout) between scheduling and firing. Acting on a
+        // torn-down character NPEs deep in the equip path (InventoryManipulator.equip: client player null).
+        if (bot.getMap() == null || !bot.isLoggedinWorld()) {
+            return;
+        }
         BotBuildManager.JobPrompt jobPrompt = BotBuildManager.buildJobPrompt(entry, bot);
         if (jobPrompt != null) queueBotReply(entry, jobPrompt.text(), jobPrompt.options());
         String spPrompt = BotBuildManager.buildSpVariantPrompt(entry, bot);
