@@ -464,7 +464,22 @@ final class BotShopManager {
      *  and bounce back forever. Used by BOTH errand triggers (reactive grind-stop in BotPotionManager
      *  and pre-travel in BotAutopilotManager). Selling is never gated by this — it earns the meso. */
     static boolean canAffordPotResupply(Character bot) {
-        return bot.getMeso() >= BotManager.cfg.RESUPPLY_MIN_MESO;
+        return bot.getMeso() >= BotManager.cfg.POT_SPEND_MIN_MESO;
+    }
+
+    /** True when the equipped weapon REQUIRES ammo but has none usable (no stars/bullets and no
+     *  infinite-ammo buff like Soul Arrow / Shadow Stars) - the bot literally cannot attack until it
+     *  restocks. Used to force a town resupply trip even when broke, since the visit sells trash to
+     *  fund the refill. ponytail: a fully-broke bot recovers over two visits (a visit sells trash at
+     *  its tail, the next recharges) - acceptable for this rare corner; the dagger thief build avoids
+     *  the ammo economy entirely. Best-effort: unreadable weapon/ammo reads as "not stranded". */
+    static boolean isOutOfUsableAmmo(Character bot) {
+        try {
+            WeaponType wt = BotAttackExecutionProvider.getEquippedWeaponType(bot);
+            return BotCombatManager.isRangedAmmoWeapon(wt) && BotCombatManager.countAmmo(bot, wt) <= 0;
+        } catch (RuntimeException ex) {
+            return false;
+        }
     }
 
     /** True when the bot needs to BUY a consumable (HP/MP potions or ammo) — i.e. the errand is a
@@ -482,7 +497,8 @@ final class BotShopManager {
             WeaponType wt = BotAttackExecutionProvider.getEquippedWeaponType(bot);
             int ammoThreshold = ammoTriggerThreshold();
             return needsRechargeForShop(bot, wt, ammoThreshold)
-                    || needsFixedAmmoForShop(bot, null, wt, ammoThreshold);
+                    || needsFixedAmmoForShop(bot, null, wt, ammoThreshold)
+                    || shouldBuyStarterAmmoSet(bot, wt);
         } catch (RuntimeException ex) {
             return false;
         }
@@ -512,6 +528,9 @@ final class BotShopManager {
         if (needsRechargeForShop(bot, wt, ammoTriggerThreshold())) {
             return true;
         }
+        if (shouldBuyStarterAmmoSet(bot, wt) && findAmmoItem(shop, wt) != null) {
+            return true;
+        }
         int[] pots = BotPotionManager.countPotions(bot);
         if (pots[0] < BotManager.cfg.POT_LOW_WARN * 5 && findPotionItem(shop, bot, true) != null) {
             return true;
@@ -531,6 +550,12 @@ final class BotShopManager {
         WeaponType wt = BotAttackExecutionProvider.getEquippedWeaponType(bot);
         List<PurchaseAction> actions = new ArrayList<>();
 
+        // Buy a fresh set FIRST if the bot owns none (recharge can only refill an existing stack); the
+        // recharge step below then tops the new set up to slot-max in the same visit.
+        if (shouldBuyStarterAmmoSet(bot, wt)) {
+            actions.add((sequence, shop) -> appendBuyReport(sequence, buyStarterAmmoSet(bot, shop, wt),
+                    wt == WeaponType.GUN ? "bullets" : "throwing stars"));
+        }
         if (shouldRechargeWhileShopping(bot, wt)) {
             actions.add((sequence, shop) -> {
                 BuyReport recharge = doRecharge(bot, shop, wt);
@@ -865,6 +890,25 @@ final class BotShopManager {
         return needsAmmo(bot, wt) && BotCombatManager.countAmmo(bot, wt) < ammoTargetThreshold();
     }
 
+    /** True when a rechargeable-ammo bot (claw/gun) owns NO set at all to recharge - it sold/used the
+     *  whole stack and must BUY a fresh set (recharge can only refill an existing stack). Without this a
+     *  thief that lost its stars could never re-arm. Ammo is top spend priority, so this is ungated by
+     *  the meso tiers; the cheapest star set is ~500 meso. */
+    static boolean shouldBuyStarterAmmoSet(Character bot, WeaponType wt) {
+        return isRechargeWeaponType(wt) && bestRechargeAmmoId(bot, wt) < 0
+                && BotCombatManager.countAmmo(bot, wt) < ammoTargetThreshold();
+    }
+
+    /** Buy one fresh set of the cheapest matching rechargeable ammo (a star/bullet stack). The
+     *  subsequent recharge step tops it up to slot-max within the same visit. */
+    private static BuyReport buyStarterAmmoSet(Character bot, Shop shop, WeaponType wt) {
+        ShopSlotItem ammo = findAmmoItem(shop, wt);
+        if (ammo == null) {
+            return new BuyReport(0, 0, 0, ShortfallReason.NONE);
+        }
+        return buyFixedCostItem(bot, shop, ammo, 1, 1);
+    }
+
     static boolean shouldBuyReturnScrollWhileShopping(Character bot) {
         return countReturnScrolls(bot) < RETURN_SCROLL_TARGET_QTY;
     }
@@ -885,6 +929,8 @@ final class BotShopManager {
             boolean matches = switch (wt) {
                 case BOW -> ItemConstants.isArrowForBow(id);
                 case CROSSBOW -> ItemConstants.isArrowForCrossBow(id);
+                case CLAW -> ItemConstants.isThrowingStar(id);
+                case GUN -> ItemConstants.isBullet(id);
                 default -> false;
             };
             if (matches && (best == null || si.getPrice() < best.shopItem.getPrice())) {
@@ -1022,7 +1068,7 @@ final class BotShopManager {
     private static PurchaseSequence evaluateAndBuyEquip(PurchaseSequence sequence, Shop shop) {
         Character bot = sequence.bot();
         // Surplus only: reserve the pot/ammo resupply floor, then cap the gear spend.
-        long budget = Math.min((long) EQUIP_BUY_MAX_MESO, (long) bot.getMeso() - BotManager.cfg.RESUPPLY_MIN_MESO);
+        long budget = Math.min((long) EQUIP_BUY_MAX_MESO, (long) bot.getMeso() - BotManager.cfg.AMMO_RESERVE_MESO);
         if (budget <= 0) {
             return sequence;
         }

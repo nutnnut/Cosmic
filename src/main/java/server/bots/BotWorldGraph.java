@@ -134,6 +134,12 @@ final class BotWorldGraph {
             new TaxiEdge(250000100, 2090005, 251000000, 500),
             new TaxiEdge(251000000, 2090005, 250000100, 500));
 
+    // NPCs whose "taxi" edge is a cross-continent scripted-warp ride with NO walking alternative
+    // (the block above): Shanks (Maple Island exit), Dolphin (Aqua Road), Pason (Florina Beach),
+    // Crane (Mu Lung <-> Herb Town). These stay available even to a poor bot; the Victoria cab edges
+    // (optional shortcuts between towns that ARE walkable) are gated by the taxi meso tier in expand().
+    private static final Set<Integer> CONTINENT_RIDE_NPCS = Set.of(22000, 2060009, 1002002, 2090005);
+
     private static final Map<Integer, List<TaxiEdge>> TAXI_BY_MAP = buildTaxiByMap();
 
     private static Map<Integer, List<TaxiEdge>> buildTaxiByMap() {
@@ -299,8 +305,13 @@ final class BotWorldGraph {
         }
         // Fares are gated per edge, not cumulatively along the route — the travel executor
         // re-checks meso at every ride, and a broke bot mid-route just falls back/re-plans.
+        // Spend policy: paid taxi SHORTCUTS (walkable town-to-town cabs) only when meso is above the
+        // taxi tier; below it the bot walks. Cross-continent rides (CONTINENT_RIDE_NPCS) have no walk
+        // alternative, so they're always allowed (still subject to the per-edge fare check).
+        boolean taxiShortcuts = options.meso() >= BotManager.cfg.TAXI_MIN_MESO;
         for (TaxiEdge taxi : TAXI_BY_MAP.getOrDefault(mapId, List.of())) {
-            if (options.meso() >= taxi.fare()) {
+            boolean continentRide = CONTINENT_RIDE_NPCS.contains(taxi.npcId());
+            if ((continentRide || taxiShortcuts) && options.meso() >= taxi.fare()) {
                 out.add(taxi.toMapId());
             }
         }

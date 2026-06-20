@@ -74,11 +74,27 @@ public class BotManager {
         public int   BASE_HP_RECOVERY = 10;
         public int   BASE_MP_RECOVERY = 3;
         public float AUTOPOT_HP_THRESH = 0.7f; // use HP pot when HP falls below this ratio
+
+        // Low-HP rest (no-pot survival, pairs with the strict pot spend tier): a broke bot that is out
+        // of HP pots parks on a safe spot and passive-regens instead of grinding itself to death.
+        // Hysteresis: start resting below ENTER, resume grinding once regen passes EXIT.
+        public float HP_REST_ENTER = 0.5f;
+        public float HP_REST_EXIT  = 0.85f;
         public float AUTOPOT_MP_THRESH = 0.5f; // use MP pot when MP falls below this ratio
         // Don't start a BUY-pots town errand below this much meso: a broke bot (e.g. a fresh lv1
         // ownerless spawn) would otherwise walk all the way to a shop, buy nothing on NOT_ENOUGH_MESO,
         // walk back, and repeat. The SELL-trash errand is NOT gated by this - selling earns the meso.
         public int RESUPPLY_MIN_MESO = 5000;
+
+        // Tiered self-economy spend policy (SSOT in BotShopManager). A poor bot prioritizes being able
+        // to FIGHT (ammo) over SURVIVE (pots) over saving TIME (taxi), so meso is reserved in that order:
+        //   < AMMO_RESERVE_MESO : protect-mode, spend only on ammo (a star recharge/set is cheap, <=10k)
+        //   < POT_SPEND_MIN_MESO: no pot buying (survive via passive regen + the existing low-HP retreat)
+        //   < TAXI_MIN_MESO     : no paid taxi shortcuts (walk instead; continent boat/dolphin rides,
+        //                         which have no walking alternative, are always allowed)
+        public int AMMO_RESERVE_MESO  = 10_000;
+        public int POT_SPEND_MIN_MESO = 20_000;
+        public int TAXI_MIN_MESO      = 50_000;
 
         // Follow stagger: each bot is offset this many px from the owner (index-based, alternating left/right)
         public int FOLLOW_STAGGER = 60;
@@ -753,13 +769,20 @@ public class BotManager {
     }
 
     private BotEntry registerBotInternal(int ownerCharId, Character owner, Character bot, boolean normalizeSpawnState) {
-        List<BotEntry> entries = bots.computeIfAbsent(ownerCharId, k -> new CopyOnWriteArrayList<>());
-        // Replace if same bot character is already registered (e.g. relog)
-        entries.removeIf(e -> {
-            if (e.bot.getId() == bot.getId()) { e.task.cancel(false); return true; }
-            return false;
-        });
         int botCharId = bot.getId();
+        // Global dedup: a bot character has exactly one runtime owner. Remove any prior entry for this
+        // bot under ANY owner key (relog, takeover, party re-register), not just ownerCharId — else the
+        // same character ends up with two BotEntry tick tasks driving it, which renders in-game as one
+        // bot teleporting between two positions and attacking from both. Cancels the stale task.
+        // ponytail: lock-free sweep matches surrounding style; not atomic vs a truly concurrent
+        // register of the same id — add per-bot locking only if that race is ever observed.
+        for (List<BotEntry> list : bots.values()) {
+            list.removeIf(e -> {
+                if (e.bot.getId() == botCharId) { e.task.cancel(false); return true; }
+                return false;
+            });
+        }
+        List<BotEntry> entries = bots.computeIfAbsent(ownerCharId, k -> new CopyOnWriteArrayList<>());
         // Capture the BotEntry directly in the tick lambda instead of re-resolving it from the
         // registry every tick (ConcurrentHashMap.get + linear CopyOnWriteArrayList scan). The
         // task is bound to exactly one entry and is cancelled on every removal/replace path, so
@@ -3242,6 +3265,17 @@ public class BotManager {
 
     private LocalOpportunityAttackResult tickGrindMode(BotEntry entry, Character bot, Point botPos,
             Point targetPos, boolean runAiTick) {
+        // Low-HP rest (no-pot survival): a broke bot out of HP pots parks on a safe no-grind spot to
+        // passive-regen instead of grinding itself to death. Same park machinery as idle-leech below
+        // (walkToOrIdleAt idles standing, which earns the standing-still HP regen bonus). Checked first
+        // so survival wins over leech/break.
+        if (BotAutopilotManager.updateHpRest(entry, bot)) {
+            entry.grindTarget = null;
+            if (entry.hpRestAnchor == null) {
+                entry.hpRestAnchor = resolveNoGrindTargetPosition(entry, botPos, bot.getMap());
+            }
+            return walkToOrIdleAt(entry, bot, botPos, entry.hpRestAnchor, runAiTick);
+        }
         // Party level-gap idle-leech: a member that has out-levelled the cohort stops dealing damage
         // and parks on a safe no-grind spot so the lower bots become the damage-dealers and keep full
         // exp share. Reuses the existing no-target idle resolver; no attack/target search runs.

@@ -286,8 +286,33 @@ final class BotGrindAdvisor {
                                     java.util.function.IntPredicate mapAllowed,
                                     java.util.function.IntToDoubleFunction mapScoreWeight,
                                     java.util.function.IntToDoubleFunction extraCompetitors) {
-        List<MobCandidate> candidates = buildCandidates(entry, bot, mapAllowed);
+        List<MobCandidate> candidates = filterDangerousWhenPoor(buildCandidates(entry, bot, mapAllowed), bot);
         return BotGrindPlanner.planBest(candidates, mapScoreWeight, extraCompetitors, ThreadLocalRandom.current());
+    }
+
+    /** How far above the bot's level a map's mobs may be before a meso-low bot treats it as too
+     *  touch-dangerous to grind (mirrors the 5-level party exp-range cutoff). */
+    private static final int POOR_DANGER_LEVEL_MARGIN = 5;
+
+    /**
+     * Danger-averse map filter for a meso-low bot. When the bot can't afford pots (strict spend tier),
+     * it can't pot through touch damage, so drop candidate maps whose mobs are well above its level -
+     * but ONLY if a safer option remains, so it never strands a poor bot with no map to grind. A
+     * solvent bot is unaffected (it can buy pots and tank the chip). Solo-decision path only; party
+     * cohort planning (candidatesFor) and deliberate item hunts (farm) keep the full pool.
+     */
+    private static List<MobCandidate> filterDangerousWhenPoor(List<MobCandidate> candidates, Character bot) {
+        if (candidates.size() < 2 || bot.getMeso() >= BotManager.cfg.POT_SPEND_MIN_MESO) {
+            return candidates;
+        }
+        int cap = bot.getLevel() + POOR_DANGER_LEVEL_MARGIN;
+        List<MobCandidate> safe = new ArrayList<>(candidates.size());
+        for (MobCandidate c : candidates) {
+            if (c.mobLevel() <= cap) {
+                safe.add(c);
+            }
+        }
+        return safe.isEmpty() ? candidates : safe; // never strand: keep all if nothing safer is reachable
     }
 
     /** Candidate pool for external planners (party autopilot). Same pool recommend() uses;

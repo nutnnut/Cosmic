@@ -7,6 +7,7 @@ import client.SkillFactory;
 import client.Stat;
 import client.processor.stat.AssignAPProcessor;
 import constants.game.GameConstants;
+import constants.skills.Rogue;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -326,7 +327,74 @@ class BotBuildManager {
                 }
             }
         }
+        // Thief safety: the trained 1st-job attack skill commits the weapon line, so never advance a
+        // Double-Stab (dagger) Rogue into Assassin or a Lucky-Seven (claw) Rogue into Bandit even if
+        // the stored plan was lost. Mirrors the weapon gate in BotEquipManager.isWeaponCompatible.
+        if (currentJob == Job.THIEF && entry != null && entry.bot != null) {
+            if (entry.bot.getSkillLevel(Rogue.DOUBLE_STAB) > 0) return Job.BANDIT;
+            if (entry.bot.getSkillLevel(Rogue.LUCKY_SEVEN) > 0) return Job.ASSASSIN;
+        }
         return pickWeightedJob(currentJob);
+    }
+
+    /** Dagger (Bandit) thief line. */
+    private static boolean isDaggerThiefJob(Job job) {
+        return job == Job.BANDIT || job == Job.CHIEFBANDIT || job == Job.SHADOWER;
+    }
+
+    /** Claw (Assassin) thief line. */
+    private static boolean isClawThiefJob(Job job) {
+        return job == Job.ASSASSIN || job == Job.HERMIT || job == Job.NIGHTLORD;
+    }
+
+    /**
+     * Resolve the thief claw/dagger build variant the first time SP is spent on a thief-tree bot,
+     * reusing {@code entry.spVariant} ("claw"/"dagger"). An already-trained 1st-job attack skill or a
+     * 2nd+-job class is authoritative (mid-career spawned bot); otherwise a fresh Rogue derives it
+     * from its planned 2nd job, and an unplanned Rogue rolls one and FORCES its planned 2nd job to
+     * match so build, eventual class, and procedural name stay aligned. The trained skill is the SSOT
+     * the weapon gate reads, so the variant must commit before any SP lands.
+     */
+    private static void resolveThiefVariantIfNeeded(BotEntry entry, Character bot) {
+        if (entry.spVariant != null) return;
+        Job job = bot.getJob();
+        if (job != Job.THIEF && !isDaggerThiefJob(job) && !isClawThiefJob(job)) return;
+
+        if (bot.getSkillLevel(Rogue.DOUBLE_STAB) > 0 || isDaggerThiefJob(job)) {
+            entry.spVariant = "dagger";
+            return;
+        }
+        if (bot.getSkillLevel(Rogue.LUCKY_SEVEN) > 0 || isClawThiefJob(job)) {
+            entry.spVariant = "claw";
+            return;
+        }
+        BotPersonality p = entry.personality;
+        Job planned2 = p != null ? p.plannedSecondJob() : null;
+        if (planned2 == Job.BANDIT) {
+            entry.spVariant = "dagger";
+        } else if (planned2 == Job.ASSASSIN) {
+            entry.spVariant = "claw";
+        } else {
+            // ponytail: 50/50 roll; add BotManager.cfg weights here if a specific claw/dagger mix is wanted.
+            boolean dagger = ThreadLocalRandom.current().nextBoolean();
+            entry.spVariant = dagger ? "dagger" : "claw";
+            tiePlannedSecondJob(entry, bot, dagger ? Job.BANDIT : Job.ASSASSIN);
+        }
+    }
+
+    /** Persist the rolled 2nd job onto the personality so lv30 advancement ({@link #plannedOrPicked})
+     *  and the weapon gate agree with the variant chosen here. Best-effort save; the in-memory plan is
+     *  authoritative this session even if the blob write fails. */
+    private static void tiePlannedSecondJob(BotEntry entry, Character bot, Job second) {
+        BotPersonality p = entry.personality;
+        if (p == null) return;
+        BotPersonality updated = p.withPlannedJobs(p.plannedFirstJob(), second);
+        entry.personality = updated;
+        try {
+            BotConfigService.getInstance().save(bot.getId(), updated.serialize());
+        } catch (RuntimeException ignored) {
+            // persistence best-effort
+        }
     }
 
     static Job weightedPick(List<Job> choices, Map<Job, Integer> weights) {
@@ -383,6 +451,7 @@ class BotBuildManager {
      */
     static void autoAssignSp(BotEntry entry, Character bot) {
         if (bot.getJob() == Job.HERO && entry.spVariant == null) return;
+        resolveThiefVariantIfNeeded(entry, bot);
 
         List<BuildStep> steps = getBuildOrder(bot.getJob(), entry.spVariant);
         if (steps == null) return;
@@ -483,6 +552,9 @@ class BotBuildManager {
             case ASSASSIN -> List.of(Job.THIEF, Job.ASSASSIN);
             case HERMIT -> List.of(Job.THIEF, Job.ASSASSIN, Job.HERMIT);
             case NIGHTLORD -> List.of(Job.THIEF, Job.ASSASSIN, Job.HERMIT, Job.NIGHTLORD);
+            case BANDIT -> List.of(Job.THIEF, Job.BANDIT);
+            case CHIEFBANDIT -> List.of(Job.THIEF, Job.BANDIT, Job.CHIEFBANDIT);
+            case SHADOWER -> List.of(Job.THIEF, Job.BANDIT, Job.CHIEFBANDIT, Job.SHADOWER);
             case PAGE -> List.of(Job.WARRIOR, Job.PAGE);
             case WHITEKNIGHT -> List.of(Job.WARRIOR, Job.PAGE, Job.WHITEKNIGHT);
             case SPEARMAN -> List.of(Job.WARRIOR, Job.SPEARMAN);
@@ -511,7 +583,7 @@ class BotBuildManager {
         if (bowmanBuild != null) {
             return bowmanBuild;
         }
-        List<BuildStep> thiefBuild = ThiefBuilds.getBuildOrder(job);
+        List<BuildStep> thiefBuild = ThiefBuilds.getBuildOrder(job, variant);
         if (thiefBuild != null) {
             return thiefBuild;
         }

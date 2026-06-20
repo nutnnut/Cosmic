@@ -492,8 +492,11 @@ final class BotAutopilotManager {
         // Affordability gate matches the reactive errand (BotPotionManager): a broke bot low on pots
         // shouldn't peel off to town to buy nothing. Bag-full (a SELL trip) stays ungated — it earns meso.
         boolean lowAndCanBuy = supplyLevel.lowOnSupplies(bot) && BotShopManager.canAffordPotResupply(bot);
+        // Out of ammo is combat-blocking and ungated by meso: a broke claw/gun bot still peels to town
+        // to sell trash and refill (otherwise it travels out, can't attack, and is stuck).
+        boolean ammoStranded = BotShopManager.isOutOfUsableAmmo(bot);
         if (entry.autopilotErrandMapId == -1 && !entry.autopilotReturningFromErrand
-                && (lowAndCanBuy || bagFull.bagFull(entry, bot))) {
+                && (lowAndCanBuy || ammoStranded || bagFull.bagFull(entry, bot))) {
             requestResupplyErrand(entry, bot);
             if (entry.autopilotErrandMapId != -1) {
                 destination = entry.autopilotErrandMapId; // head to town this tick, not the grind map
@@ -1031,6 +1034,63 @@ final class BotAutopilotManager {
                     : BotManager.randomReply(LEECH_EXIT_MSGS));
         }
         return now;
+    }
+
+    private static final List<String> HP_REST_ENTER_MSGS = List.of(
+            "low hp and no meso for pots, gonna rest a sec",
+            "outta pots and broke, catching my breath",
+            "resting up til my hp comes back");
+    private static final List<String> HP_REST_EXIT_MSGS = List.of(
+            "ok hp's back, grinding again",
+            "rested enough, back to it",
+            "good to go again");
+
+    /**
+     * Low-HP rest state (self-preservation for the strict no-pot spend tier): a broke bot that's out of
+     * HP pots stops grinding and parks on a safe spot to passive-regen instead of chipping itself to
+     * death. Only engages when neither autopot (no pots) nor an affordable resupply (broke) can help,
+     * so a stocked/solvent bot never rests. Hysteresis on {@link BotManager.Cfg#HP_REST_ENTER}/EXIT.
+     */
+    static boolean updateHpRest(BotEntry entry, Character bot) {
+        if (!isActive(entry) || bot == null) {
+            entry.hpResting = false;
+            entry.hpRestAnchor = null;
+            return false;
+        }
+        int maxHp = bot.getCurrentMaxHp();
+        // Cheap gate FIRST (this runs every grind tick): only a low-HP bot can be entering/continuing
+        // rest, so a healthy bot returns here WITHOUT the USE-inventory pot scan below. Hysteresis:
+        // compare against EXIT while resting, ENTER otherwise.
+        double ratio = maxHp > 0 ? (double) bot.getHp() / maxHp : 1.0;
+        double threshold = entry.hpResting ? BotManager.cfg.HP_REST_EXIT : BotManager.cfg.HP_REST_ENTER;
+        if (ratio >= threshold) {
+            return clearHpRest(entry); // recovered / healthy: stop resting if we were, no inventory scan
+        }
+        // HP is low enough to (keep) resting — only now do the heavier eligibility check. Rest only when
+        // neither autopot (no HP pots) nor an affordable restock (broke) can help; a stocked/solvent bot
+        // uses the normal HP path instead.
+        boolean now = BotPotionManager.countPotions(bot)[0] < BotManager.cfg.POT_STOP
+                && !BotShopManager.canAffordPotResupply(bot);
+        if (now != entry.hpResting) {
+            entry.hpResting = now;
+            if (!now) {
+                entry.hpRestAnchor = null;
+            }
+            reply.accept(entry, now
+                    ? BotManager.randomReply(HP_REST_ENTER_MSGS)
+                    : BotManager.randomReply(HP_REST_EXIT_MSGS));
+        }
+        return now;
+    }
+
+    /** Stop resting (if we were) and report the transition; returns false (not resting). */
+    private static boolean clearHpRest(BotEntry entry) {
+        if (entry.hpResting) {
+            entry.hpResting = false;
+            entry.hpRestAnchor = null;
+            reply.accept(entry, BotManager.randomReply(HP_REST_EXIT_MSGS));
+        }
+        return false;
     }
 
     /**
