@@ -830,6 +830,18 @@ final class BotGrindAdvisor {
                 ROLL_SAMPLES, wornScoreBySlot, hitFactor);
     }
 
+    /** Gacha reuse of the drop-valuation SSOT: expected UPGRADE score of PULLING {@code itemId} vs
+     *  what the bot would wear. A gacha pull is granted unscrolled (the {@code addById} base stats,
+     *  not a drop roll), so the sampler is the identity roll — the ensemble/level-discount/weapon-speed
+     *  bar logic is shared with farming, not duplicated. 0 for non-equips, downgrades, or reqs the bot
+     *  can never grow into. Share {@code barCache} across a pool/town pass so owned-bars compute once
+     *  per slot. DPS-score units (same scale as {@link #equipGain}); the caller converts to NX. */
+    static double catalogAcquireGain(Character bot, ItemInformationProvider ii, int itemId,
+                                     Map<Short, Double> barCache) {
+        return expectedAcquireGain(bot, ii, itemId,
+                (b, id, n) -> sampleEquipScores(b, id, n, base -> base), 1, barCache);
+    }
+
     /**
      * SSOT expected-acquire gain: the expected improvement of obtaining {@code itemId} — rolled by
      * {@code sampler} ({@code sampleCount} rolls) — over the best the bot already OWNS for the slot

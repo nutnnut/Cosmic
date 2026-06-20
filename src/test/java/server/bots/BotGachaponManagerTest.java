@@ -37,6 +37,8 @@ class BotGachaponManagerTest {
     private final BotGachaponManager.RollLookup prevRoll = BotGachaponManager.roll;
     private final BotGachaponManager.PoolLookup prevPool = BotGachaponManager.pool;
     private final BotGachaponManager.ValueLookup prevValue = BotGachaponManager.itemValue;
+    private final BotGachaponManager.UpgradeLookup prevUpgrade = BotGachaponManager.upgradeValue;
+    private final java.util.function.IntPredicate prevIsEquip = BotGachaponManager.isEquip;
     private final BotGachaponManager.NxBalance prevNx = BotGachaponManager.nxBalance;
     private final BotGachaponManager.TicketPrice prevPrice = BotGachaponManager.ticketPrice;
     private final BotGachaponManager.NxCharge prevCharge = BotGachaponManager.nxCharge;
@@ -54,6 +56,11 @@ class BotGachaponManagerTest {
         BotGachaponManager.reply = (e, t) -> replies.add(t);
         BotGachaponManager.itemNameLookup = id -> "Item" + id;
         BotGachaponManager.gachaLog = (b, id, m) -> { /* no WZ in tests */ };
+        // Need-aware upgrade EV is off by default (no WZ): resale drives, matching the legacy tests.
+        // Plenty of spare NX so plannedRolls() (now part of rankTowns) doesn't touch a mock CashShop.
+        BotGachaponManager.upgradeValue = (b, id, barCache) -> 0.0;
+        BotGachaponManager.isEquip = id -> false;
+        BotGachaponManager.nxBalance = b -> 1_000_000;
         // Fresh, deterministic config so test values don't depend on production defaults shifting.
         BotManager.cfg = new BotManager.Config();
         BotManager.cfg.GACHAPON_ENABLED = true;
@@ -67,6 +74,8 @@ class BotGachaponManagerTest {
         BotGachaponManager.roll = prevRoll;
         BotGachaponManager.pool = prevPool;
         BotGachaponManager.itemValue = prevValue;
+        BotGachaponManager.upgradeValue = prevUpgrade;
+        BotGachaponManager.isEquip = prevIsEquip;
         BotGachaponManager.nxBalance = prevNx;
         BotGachaponManager.ticketPrice = prevPrice;
         BotGachaponManager.nxCharge = prevCharge;
@@ -226,8 +235,9 @@ class BotGachaponManagerTest {
         assertFalse(ranked.isEmpty());
         assertEquals(constants.id.NpcId.GACHAPON_HENESYS, ranked.get(0).npcId(),
                 "the richest pool wins");
-        // Henesys EV ~= 0.9 * 5000 = 4500; net = 4500 - 800 - 10*0.5 = 3695.
-        assertTrue(ranked.get(0).netScore() > 3_000, "net score nets off ticket + travel");
+        // Henesys roll value ~= 0.9 * 5000 = 4500; with 20 planned rolls (1M NX / 800) the trip net is
+        // 20 * (4500 - 800) - 10*0.5 = 73990.
+        assertTrue(ranked.get(0).netScore() > 3_000, "trip net amortizes ticket + travel over rolls");
     }
 
     @Test
@@ -304,5 +314,74 @@ class BotGachaponManagerTest {
         assertEquals(constants.id.NpcId.GACHAPON_HENESYS, e.gachaErrandNpcId,
                 "autopilot heads to the best-EV town");
         assertEquals(constants.id.MapId.HENESYS, e.gachaErrandMapId);
+    }
+
+    // ---- roll-amortized travel ---------------------------------------------------------------
+
+    @Test
+    void savingUpFlipsTheChoiceFromNearPoolToFarRicherPool() {
+        Character bot = mock(Character.class);
+        BotGachaponManager.ticketPrice = () -> 800;
+        // Henesys near + modest (roll value 0.9*1000=900); Ellinia far + richer (0.9*1500=1350).
+        BotGachaponManager.pool = (npcId, tier) ->
+                tier == 0 ? new int[]{npcId == constants.id.NpcId.GACHAPON_HENESYS ? 1 : 2} : new int[0];
+        BotGachaponManager.itemValue = (b, id) -> id == 1 ? 1_000.0 : 1_500.0;
+        // Only the near (Henesys) and far (Ellinia) towns are reachable; near=5s, far=1000s.
+        BotGachaponManager.travelSeconds = (from, to) -> {
+            if (to == constants.id.MapId.HENESYS) return 5.0;
+            if (to == constants.id.MapId.ELLINIA) return 1_000.0;
+            return 99_999.0;
+        };
+
+        // Only one roll affordable: the 1000s travel to the far pool isn't worth +450/roll once.
+        BotGachaponManager.nxBalance = b -> 1_000 + 800; // reserve + exactly one ticket
+        List<BotGachaponManager.TownEv> few = BotGachaponManager.rankTowns(bot, 100000000);
+        assertEquals(constants.id.NpcId.GACHAPON_HENESYS, few.get(0).npcId(),
+                "with one roll, the near pool wins - far travel isn't amortized");
+
+        // Saved up: 20 rolls amortize the far travel, so the richer far pool now wins.
+        BotGachaponManager.nxBalance = b -> 1_000_000;
+        List<BotGachaponManager.TownEv> many = BotGachaponManager.rankTowns(bot, 100000000);
+        assertEquals(constants.id.NpcId.GACHAPON_ELLINIA, many.get(0).npcId(),
+                "saved up, the far richer pool out-earns the near one across the session");
+    }
+
+    @Test
+    void plannedRollsScalesWithSavedNxAndIsCappedAtCeiling() {
+        BotManager.cfg.GACHA_TICKETS_PER_TRIP = 20;
+        Character bot = mock(Character.class);
+        BotGachaponManager.nxBalance = b -> 1_000 + 800 * 3; // reserve + 3 tickets
+        assertEquals(3, BotGachaponManager.plannedRolls(bot, 800), "rolls = floor(spendable/price)");
+        BotGachaponManager.nxBalance = b -> 1_000_000;
+        assertEquals(20, BotGachaponManager.plannedRolls(bot, 800), "capped at the per-trip ceiling");
+    }
+
+    // ---- need-driven pivot -------------------------------------------------------------------
+
+    @Test
+    void upgradeDrivenTripPivotsWhenTheNeededUpgradeIsPulled() {
+        Character bot = mock(Character.class);
+        BotEntry e = entry(bot);
+        e.gachaErrandNpcId = constants.id.NpcId.GACHAPON_HENESYS;
+        e.gachaUpgradeDriven = true; // chosen for gear, so it should pivot once satisfied
+
+        double[] upgrade = {200.0}; // 0.9 * 200 * 5(NX/score) = 900 NX/roll > 800 price -> keep rolling
+        BotGachaponManager.ticketPrice = () -> 800;
+        BotGachaponManager.nxBalance = b -> 1_000_000;
+        BotGachaponManager.nxCharge = (b, nx) -> {};
+        BotGachaponManager.spaceCheck = (b, id, q) -> true;
+        BotGachaponManager.grantItem = (b, id, q) -> {};
+        BotGachaponManager.itemValue = (b, id) -> 0.0; // resale negligible -> upgrade is the only motive
+        BotGachaponManager.isEquip = id -> true; // the pull is an equip
+        BotGachaponManager.pool = (npcId, tier) -> tier == 0 ? new int[]{1302000} : new int[0];
+        BotGachaponManager.upgradeValue = (b, id, barCache) -> upgrade[0];
+        BotGachaponManager.roll = npc -> new Gachapon.GachaponItem(0, 1302000);
+
+        assertTrue(BotGachaponManager.rollOnce(e, bot), "still an upgrade to chase -> keeps rolling");
+
+        upgrade[0] = 0.0; // the upgrade is now worn: the pool's need-EV collapses
+        assertFalse(BotGachaponManager.rollOnce(e, bot), "need satisfied -> trip ends (pivot)");
+        assertTrue(replies.stream().anyMatch(s -> s.contains("got what i came for")),
+                "bot says it got what it came for");
     }
 }

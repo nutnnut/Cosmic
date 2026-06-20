@@ -18,7 +18,9 @@ import server.maps.MapleMap;
 
 import java.awt.Point;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Earn NX from loot, spend it on gachapon, chase uniques. Two halves:
@@ -133,6 +135,24 @@ final class BotGachaponManager {
             // f246e4322; targeting upgrades would need a best-possible-pull EV model, not an average.)
             ItemInformationProvider.getInstance().getPrice(itemId, 1);
 
+    /** Need-aware value of PULLING an equip: its upgrade gain to THIS bot over what it would wear,
+     *  via the grind-drop valuation SSOT ({@link BotGrindAdvisor#catalogAcquireGain}) - the SAME
+     *  scale the advisor picks farm maps on, NOT resale. 0 for non-equips/downgrades/unmet reqs.
+     *  {@code barCache} is shared across a pool/town pass so owned-bars compute once per slot.
+     *  DPS-score units; {@link #expectedUpgradePerRoll} converts to NX. Seamed (WZ-backed). */
+    @FunctionalInterface
+    interface UpgradeLookup {
+        double gain(Character bot, int itemId, Map<Short, Double> barCache);
+    }
+    static UpgradeLookup upgradeValue = (bot, itemId, barCache) -> {
+        try {
+            return BotGrindAdvisor.catalogAcquireGain(
+                    bot, ItemInformationProvider.getInstance(), itemId, barCache);
+        } catch (RuntimeException e) {
+            return 0.0; // invalid id / WZ unavailable - no upgrade signal, resale still drives
+        }
+    };
+
     /** Account NX balance (NX_CREDIT) - where looted NX cards land. Seam over {@link CashShop}. */
     @FunctionalInterface
     interface NxBalance {
@@ -209,17 +229,23 @@ final class BotGachaponManager {
 
     // ---- EV advisor --------------------------------------------------------------------------
 
-    /** A reachable gachapon town and its score (expected NX-equivalent value per roll, net of the
-     *  ticket price and amortized travel cost). */
+    /** A reachable gachapon town. {@code evPerRoll} = the per-roll NX value that drives it
+     *  (max of resale and need-upgrade EV); {@code netScore} = the whole-TRIP net (planned rolls x
+     *  (evPerRoll - price), minus travel) on which towns are ranked. */
     record TownEv(int npcId, int mapId, double evPerRoll, double netScore) {}
 
-    /** Expected item value of one roll at a town: sum over tiers of P(tier) * average pool item
-     *  value in that tier, drawing local+global uniformly (the exact {@code getItem} distribution).
-     *  Non-common pools are value-floored so cosmetic uniques are actually chased. */
-    static double expectedValuePerRoll(Character bot, int npcId) {
+    /** Per-(tier,item) valuator for {@link #expectedPerRoll}. */
+    @FunctionalInterface
+    private interface PoolItemValue {
+        double value(int tier, int itemId);
+    }
+
+    /** Tier-weighted expected value of one roll at a town: sum over tiers of P(tier) * average value
+     *  of that tier's pool, drawing local+global uniformly (the exact {@code getItem} distribution).
+     *  The per-item valuator is the only thing that varies between the resale and upgrade EVs. */
+    private static double expectedPerRoll(int npcId, PoolItemValue v) {
         double ev = 0.0;
         int[] weights = {TIER_COMMON, TIER_UNCOMMON, TIER_RARE};
-        double[] floors = {0.0, UNCOMMON_VALUE_FLOOR, RARE_VALUE_FLOOR};
         for (int tier = 0; tier < 3; tier++) {
             int[] items = pool.items(npcId, tier);
             if (items.length == 0) {
@@ -227,12 +253,29 @@ final class BotGachaponManager {
             }
             double sum = 0.0;
             for (int itemId : items) {
-                sum += Math.max(floors[tier], itemValue.value(bot, itemId));
+                sum += v.value(tier, itemId);
             }
-            double avg = sum / items.length;
-            ev += (weights[tier] / TIER_TOTAL) * avg;
+            ev += (weights[tier] / TIER_TOTAL) * (sum / items.length);
         }
         return ev;
+    }
+
+    /** Expected RESALE value of one roll (the "fun/meso/uniques" motive). Non-common pools are
+     *  value-floored so cosmetic uniques are actually chased. */
+    static double expectedValuePerRoll(Character bot, int npcId) {
+        double[] floors = {0.0, UNCOMMON_VALUE_FLOOR, RARE_VALUE_FLOOR};
+        return expectedPerRoll(npcId, (tier, id) -> Math.max(floors[tier], itemValue.value(bot, id)));
+    }
+
+    /** Expected UPGRADE NX of one roll for THIS bot (the "best gacha that suits self" motive): the
+     *  grind-advisor gear-upgrade SSOT averaged over the pool, converted to NX. Equip upgrades only;
+     *  cosmetics/dupes/downgrades score ~0. {@code itemGainCache} memoizes each item's gain across
+     *  towns (the shared GLOBAL pool is scored once); {@code barCache} memoizes owned-bars per slot. */
+    static double expectedUpgradePerRoll(Character bot, int npcId,
+            Map<Short, Double> barCache, Map<Integer, Double> itemGainCache) {
+        double scoreEv = expectedPerRoll(npcId,
+                (tier, id) -> itemGainCache.computeIfAbsent(id, k -> upgradeValue.gain(bot, k, barCache)));
+        return scoreEv * BotManager.cfg.GACHA_UPGRADE_NX_PER_SCORE;
     }
 
     /** The town-resolvable gachapon NPCs (the set {@code doGachapon}'s {@code maps[]} can place).
@@ -249,6 +292,11 @@ final class BotGachaponManager {
      *  bar. The ticket price is the same NX a real purchase costs, so EV is directly comparable. */
     static List<TownEv> rankTowns(Character bot, int fromMapId) {
         int price = ticketPrice.nx();
+        int rolls = plannedRolls(bot, price);
+        // Owned-bars (per slot) and per-item upgrade gains are bot-global, not town-specific, so one
+        // cache each spans the whole pass: the shared GLOBAL pool is scored once, not per town.
+        Map<Short, Double> barCache = new HashMap<>();
+        Map<Integer, Double> itemGainCache = new HashMap<>();
         List<TownEv> out = new ArrayList<>();
         for (int npcId : TOWN_GACHAPON_NPCS) {
             int mapId = gachaponTownMap(npcId);
@@ -259,11 +307,17 @@ final class BotGachaponManager {
             if (travel >= 99_999.0) {
                 continue; // unreachable within the hop cap
             }
-            double ev = expectedValuePerRoll(bot, npcId);
-            // Amortize travel as an NX-equivalent penalty per trip (TRAVEL_NX_PER_SECOND keeps it a
-            // tie-breaker between similar pools, not a dominant term).
-            double net = (ev - price) - travel * TRAVEL_NX_PER_SECOND;
-            out.add(new TownEv(npcId, mapId, ev, net));
+            // Whichever motive is stronger drives the roll - gear upgrades for THIS bot OR raw
+            // resale/uniques - both already in NX, so no scale mixing. The need-aware term is the
+            // grind-advisor's own gear-upgrade SSOT, so the bot values a pool the same way it values
+            // a farm map: by the upgrades it can actually use.
+            double rollValue = Math.max(expectedValuePerRoll(bot, npcId),
+                    expectedUpgradePerRoll(bot, npcId, barCache, itemGainCache));
+            // Amortize travel over the rolls the bot will ACTUALLY do this trip: a far town must
+            // out-earn a near one across the whole session, so cheap "I'm here anyway" trips stay
+            // local and only a saved-up bankroll justifies going out of the way.
+            double tripNet = rolls * (rollValue - price) - travel * TRAVEL_NX_PER_SECOND;
+            out.add(new TownEv(npcId, mapId, rollValue, tripNet));
         }
         out.sort((a, b) -> Double.compare(b.netScore(), a.netScore()));
         return out;
@@ -271,6 +325,23 @@ final class BotGachaponManager {
     // Per-second NX-equivalent travel penalty (visible knob). At ~0.5 NX/s a 60s round trip costs
     // 30 NX of "score" - enough to break ties toward nearer pools without overriding a richer one.
     static final double TRAVEL_NX_PER_SECOND = 0.5;
+
+    /** Rolls the bot can afford above the reserve, capped at the per-trip ceiling - the count travel
+     *  is amortized over, so saving up enables (and justifies) a longer / farther trip. */
+    static int plannedRolls(Character bot, int price) {
+        if (price <= 0) {
+            return 0;
+        }
+        int spendable = nxBalance.nx(bot) - BotManager.cfg.GACHA_NX_RESERVE;
+        return Math.max(0, Math.min(BotManager.cfg.GACHA_TICKETS_PER_TRIP, spendable / price));
+    }
+
+    /** True when a town is chosen for gear upgrades (need-EV beats resale-EV) - the trips that should
+     *  pivot away once the upgrade is pulled (resale trips never deplete, so they don't pivot). */
+    static boolean isUpgradeDriven(Character bot, int npcId) {
+        return expectedUpgradePerRoll(bot, npcId, new HashMap<>(), new HashMap<>())
+                > expectedValuePerRoll(bot, npcId);
+    }
 
     // ---- scan: decide whether to start a gacha trip ------------------------------------------
 
@@ -310,13 +381,49 @@ final class BotGachaponManager {
         beginErrand(entry, bot, best);
     }
 
+    /** Debug/GM force-start: kick off a gacha trip now, bypassing the scan gates (NX worthwhile bar,
+     *  cadence). npcId<=0 picks the best reachable town; a given npcId is used as-is. Returns a status
+     *  line for the operator. {@link #rollOnce} still honors the NX reserve, so this forces the TRIP,
+     *  not free rolls. */
+    static String forceErrand(BotEntry entry, Character bot, int npcId) {
+        if (!BotAutopilotManager.isActive(entry)) {
+            return bot.getName() + ": not on autopilot (errand tick won't run)";
+        }
+        int mapId;
+        if (npcId > 0) {
+            mapId = gachaponTownMap(npcId);
+            if (mapId < 0) {
+                return "npc " + npcId + " has no town map";
+            }
+        } else {
+            List<TownEv> ranked = rankTowns(bot, bot.getMapId());
+            if (ranked.isEmpty()) {
+                return "no reachable gachapon town from map " + bot.getMapId();
+            }
+            npcId = ranked.get(0).npcId();
+            mapId = ranked.get(0).mapId();
+        }
+        entry.questErrandMapId = -1; // gacha tick runs after quest tick; clear so it isn't shadowed
+        entry.gachaErrandNpcId = npcId;
+        entry.gachaErrandMapId = mapId;
+        entry.gachaErrandStartedAtMs = System.currentTimeMillis();
+        entry.gachaTicketsThisTrip = 0;
+        entry.gachaNextRollAtMs = 0L;
+        entry.gachaUpgradeDriven = isUpgradeDriven(bot, npcId);
+        reply.accept(entry, "console: forcing a gachapon trip to map " + mapId);
+        return bot.getName() + " -> gacha trip: npc " + npcId + " @ map " + mapId;
+    }
+
     private static void beginErrand(BotEntry entry, Character bot, TownEv town) {
         entry.gachaErrandNpcId = town.npcId();
         entry.gachaErrandMapId = town.mapId();
         entry.gachaErrandStartedAtMs = System.currentTimeMillis();
         entry.gachaTicketsThisTrip = 0;
         entry.gachaNextRollAtMs = 0L;
-        reply.accept(entry, "feeling lucky, gonna hit the gachapon");
+        entry.gachaUpgradeDriven = isUpgradeDriven(bot, town.npcId());
+        reply.accept(entry, entry.gachaUpgradeDriven
+                ? "saw some gear i want at the gachapon, heading over"
+                : "feeling lucky, gonna hit the gachapon");
     }
 
     // ---- errand tick: travel, walk to NPC, roll ----------------------------------------------
@@ -330,7 +437,9 @@ final class BotGachaponManager {
             return false;
         }
         if (System.currentTimeMillis() - entry.gachaErrandStartedAtMs > ERRAND_TIMEOUT_MS) {
-            finishErrand(entry, bot, "couldn't get to the gachapon, never mind");
+            boolean reachedTown = bot.getMapId() == entry.gachaErrandMapId;
+            finishErrand(entry, bot, "couldn't get to the gachapon (stuck on map " + bot.getMapId()
+                    + (reachedTown ? ", at town but not at NPC" : ", still in transit") + "), never mind");
             return false;
         }
         if (bot.getMapId() != entry.gachaErrandMapId) {
@@ -402,8 +511,32 @@ final class BotGachaponManager {
         short qty = (short) (item.getId() / 10000 == 200 ? 100 : 1);
         grantItem.grant(bot, item.getId(), qty);
         announceAndLog(entry, bot, item);
+        // Pivot: an upgrade-driven trip ends once the pull it came for is in the bag - that just-worn
+        // upgrade raises the owned-bar, collapsing this pool's need-EV. When a roll no longer beats its
+        // ticket price the trip stops; autopilot resumes and the next scan re-ranks toward a now-better
+        // pool ("got what i need, aim elsewhere"). Bounded to equip pulls so the recompute is rare.
+        // ponytail: pool recompute on the tick thread, only after an equip pull; move to DECIDE_POOL if
+        // a bot ever pulls equips fast enough for this to show on the perf monitor.
+        if (entry.gachaUpgradeDriven && isEquip.test(item.getId())) {
+            double rollValue = Math.max(expectedValuePerRoll(bot, entry.gachaErrandNpcId),
+                    expectedUpgradePerRoll(bot, entry.gachaErrandNpcId, new HashMap<>(), new HashMap<>()));
+            if (rollValue <= price) {
+                reply.accept(entry, "got what i came for, heading back");
+                return false;
+            }
+        }
         return true;
     }
+
+    /** True when an item id is an equip (has equip stats) - gates the pivot recompute to equip pulls.
+     *  Seamed (WZ-backed) so tests drive the pivot without the provider; WZ-unavailable reads false. */
+    static java.util.function.IntPredicate isEquip = itemId -> {
+        try {
+            return ItemInformationProvider.getInstance().getEquipStats(itemId) != null;
+        } catch (RuntimeException e) {
+            return false;
+        }
+    };
 
     /** Audit log of a pull; seam over {@link Gachapon#log} (WZ-backed name lookup) so the loop is
      *  test-free. */
@@ -460,6 +593,7 @@ final class BotGachaponManager {
         entry.gachaErrandStartedAtMs = 0L;
         entry.gachaTicketsThisTrip = 0;
         entry.gachaNextRollAtMs = 0L;
+        entry.gachaUpgradeDriven = false;
     }
 
     // ---- helpers -----------------------------------------------------------------------------

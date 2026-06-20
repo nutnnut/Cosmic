@@ -64,6 +64,7 @@ public final class BotOpsConsole {
             case "log", "botlog" -> log(gm, rest);
             case "unlog", "botunlog", "disconnect" -> unlog(gm);
             case "grind", "ap" -> grind(gm, rest);
+            case "gachapon", "gacha" -> gachapon(gm, rest);
             case "say", "chat" -> say(gm, rest);
             case "cmd" -> cmd(gm, rest);
             default -> print(gm, "unknown verb '" + verb + "' - try 'Console: help'");
@@ -78,6 +79,7 @@ public final class BotOpsConsole {
                 "log <name>            - stream that bot's live autopilot decisions here",
                 "unlog                 - stop streaming",
                 "grind <name>          - write the autopilot decision dump (path -> chat)",
+                "gachapon <name> [npc] - force a gacha trip now (watch it navigate + roll)",
                 "say <name> <text>     - drive the bot via its own chat commands",
                 "cmd <@command ...>    - run a GM command (output -> normal chat)"));
     }
@@ -135,6 +137,24 @@ public final class BotOpsConsole {
         }
         BotAutopilotDebug.exportPartyDecision(entry, entry.bot);
         print(gm, "writing " + entry.bot.getName() + "'s autopilot decision dump - file path will appear in chat");
+    }
+
+    private void gachapon(Character gm, String rest) {
+        int sp = rest.indexOf(' ');
+        String name = (sp < 0 ? rest : rest.substring(0, sp)).trim();
+        BotEntry entry = resolve(gm, name);
+        if (entry == null) {
+            return;
+        }
+        int npcId = 0;
+        if (sp >= 0) {
+            try {
+                npcId = Integer.parseInt(rest.substring(sp + 1).trim());
+            } catch (NumberFormatException ignored) {
+                // no/garbage npc id -> auto-pick the best reachable town
+            }
+        }
+        print(gm, BotGachaponManager.forceErrand(entry, entry.bot, npcId));
     }
 
     private void say(Character gm, String rest) {
