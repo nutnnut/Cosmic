@@ -10,6 +10,8 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.Mockito.mock;
@@ -297,6 +299,27 @@ class BotQuestManagerTest {
         assertEquals(List.of(29400), g.completesCalled, "must stop after the first failed complete, not loop");
         assertTrue(replies.stream().noneMatch(s -> s.contains("quest done")), "must not announce a quest that never registered");
         assertTrue(e.buggedQuestIds.contains(29400), "the un-completable quest must be suppressed");
+    }
+
+    @Test
+    void readyToTurnInSkipsQuestTheBotCannotLegallyComplete() {
+        // A started quest whose counts are met (true for any no-mob/item talk quest, e.g. 2232 "Find a
+        // Junior!", whose completion is gated ONLY by an NPC end-script) must NOT be queued for turn-in
+        // when gate.canComplete refuses it - else the bot travels to the NPC, hears "can't turn that in
+        // yet", and re-queues the same quest every scan forever. readyToTurnIn must defer to the gate.
+        RecordingGate g = new RecordingGate();
+        g.started = true;                                       // treat every indexed quest as started
+        g.progress = Map.of();                                  // no mob kills -> only talk quests pass countsMet
+        BotQuestManager.itemQuantity = (bot, id) -> 0;          // no fetch items held -> fetch quests fail countsMet
+        BotQuestManager.gate = g;
+
+        g.canComplete = false;                                  // server-side completion refused (script-gated)
+        assertNull(BotQuestManager.readyToTurnIn(mock(Character.class)),
+                "nothing is turn-in-ready while the bot can't legally complete it");
+
+        g.canComplete = true;                                   // a genuinely completable started talk quest
+        assertNotNull(BotQuestManager.readyToTurnIn(mock(Character.class)),
+                "a started, counts-met, completable quest IS ready to turn in");
     }
 
     // ---- worthwhile bar (slice-2 scorer: value vs grind-exp cost) ----

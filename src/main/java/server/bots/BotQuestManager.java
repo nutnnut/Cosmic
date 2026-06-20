@@ -335,7 +335,14 @@ final class BotQuestManager {
             BotPerformanceMonitor.recordSince("quest-scan", scanT0);
             return;
         }
-        // Otherwise look for a worthwhile new quest to start.
+        // Otherwise look for a worthwhile new quest to start. pickStartable scans every indexed quest
+        // and per-quest hits the DB-backed mob/dropper/reward/baseline memos the grind advisor warms;
+        // running it COLD across many bots stampedes mysqld and froze ticks for >2min (bot-perf CSV:
+        // 72% CPU share, 100s avg). Skip until those caches are warm — nextQuestScanAtMs retries soon.
+        if (!BotGrindAdvisor.isWarm()) {
+            BotPerformanceMonitor.recordSince("quest-scan", scanT0);
+            return;
+        }
         long pickT0 = BotPerformanceMonitor.start();
         BotQuestIndex.QuestMeta start = pickStartable(entry, bot);
         BotPerformanceMonitor.recordSince("quest-pickstartable", pickT0);
@@ -346,12 +353,20 @@ final class BotQuestManager {
     }
 
     /** A started, indexed quest whose every required mob count is met — ready to turn in. */
-    private static BotQuestIndex.QuestMeta readyToTurnIn(Character bot) {
+    static BotQuestIndex.QuestMeta readyToTurnIn(Character bot) {
         for (BotQuestIndex.QuestMeta q : BotQuestIndex.get().byId().values()) {
             if (!gate.isStarted(bot, q.id())) {
                 continue;
             }
-            if (countsMet(bot, q)) {
+            if (!countsMet(bot, q)) {
+                continue;
+            }
+            // Counts met by the client-tracked progress, but only queue the turn-in if the bot can
+            // actually finish it at the NPC. gate.canComplete refuses quests gated ONLY by an NPC
+            // end-script (e.g. 2232 family-junior, 29400 hidden kill count) - countsMet is trivially
+            // true for those (no mob/item req), so without this the bot queues a doomed errand every
+            // scan and loops "hm, can't turn that in yet" until timeout. Same SSOT the errand uses.
+            if (gate.canComplete(bot, q.id(), q.endNpc())) {
                 return q;
             }
         }
