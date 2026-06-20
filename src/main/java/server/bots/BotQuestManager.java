@@ -258,6 +258,17 @@ final class BotQuestManager {
         }
     };
 
+    /** Human quest name for bot chat (Quest already caches the instance + its name from QuestInfo.img,
+     *  so no extra cache here). Falls back to "quest <id>" when WZ has no name or can't load (tests). */
+    static NameLookup questName = questId -> {
+        try {
+            String n = Quest.getInstance(questId).getName();
+            return n == null || n.isEmpty() ? ("quest " + questId) : n;
+        } catch (RuntimeException e) {
+            return "quest " + questId;
+        }
+    };
+
     // ---- auto quests (#2 in the build) -------------------------------------------------------
 
     /** Run autoStart+autoComplete quests that pass canStart (then canComplete). No travel. Cheap
@@ -406,7 +417,7 @@ final class BotQuestManager {
         if (botPos == null || entry.inAir || entry.climbing) {
             return;
         }
-        boolean grabbed = false;
+        List<String> grabbed = new java.util.ArrayList<>();
         for (BotQuestIndex.QuestMeta q : BotQuestIndex.get().byId().values()) {
             if (gate.isStarted(bot, q.id()) || gate.isCompleted(bot, q.id())) {
                 continue;
@@ -423,11 +434,11 @@ final class BotQuestManager {
             }
             gate.start(bot, q.id(), q.startNpc());
             grantScriptedStartItem(bot, q.id());
-            grabbed = true;
+            grabbed.add(questName.name(q.id()));
         }
-        if (grabbed) {
+        if (!grabbed.isEmpty()) {
             refreshActiveQuestMobs(entry, bot);
-            reply.accept(entry, "grabbed a quest while i'm here");
+            reply.accept(entry, "grabbed " + String.join(", ", grabbed) + " while i'm here");
         }
     }
 
@@ -740,8 +751,8 @@ final class BotQuestManager {
             return;
         }
         entry.questErrandStartedAtMs = System.currentTimeMillis();
-        reply.accept(entry,
-                phase == Phase.START ? "gonna grab a quest real quick" : "lemme turn in this quest");
+        reply.accept(entry, (phase == Phase.START ? "gonna grab " : "lemme turn in ")
+                + questName.name(q.id()));
     }
 
     /** Find the map the NPC is on. The bot is grinding the map the quest mobs spawn on, and quest
@@ -856,7 +867,7 @@ final class BotQuestManager {
      *  Tells the owner once (autopilot bots with no owner online just suppress silently). */
     static void markQuestBugged(BotEntry entry, int questId, String why) {
         if (entry.buggedQuestIds.add(questId)) {
-            reply.accept(entry, "quest " + questId + " seems bugged (" + why + "), skipping it");
+            reply.accept(entry, questName.name(questId) + " seems bugged (" + why + "), skipping it");
         }
     }
 
@@ -982,7 +993,7 @@ final class BotQuestManager {
     static String describeRecommendation(Recommendation rec) {
         BotQuestIndex.QuestMeta q = rec.quest();
         StringBuilder sb = new StringBuilder();
-        sb.append("q").append(q.id())
+        sb.append(questName.name(q.id()))
           .append(" @ ").append(npcName.name(q.startNpc()))
           .append(" in ").append(mapName.name(rec.startNpcMap()))
           .append(": ").append(objectiveSummary(q))
@@ -1173,7 +1184,7 @@ final class BotQuestManager {
             if (shown > 0) {
                 sb.append("; ");
             }
-            sb.append(qs.getQuestID()).append(" ");
+            sb.append(questName.name((int) qs.getQuestID())).append(" ");
             boolean first = true;
             Map<Integer, Integer> progress = gate.currentProgress(bot, qs.getQuestID());
             for (Map.Entry<Integer, Integer> need : meta.mobs().entrySet()) {
@@ -1189,7 +1200,7 @@ final class BotQuestManager {
     }
 
     private static void announceDone(BotEntry entry, int questId) {
-        reply.accept(entry, "quest done: quest " + questId);
+        reply.accept(entry, "quest done: " + questName.name(questId));
     }
 
     private static int manhattan(Point a, Point b) {
