@@ -324,6 +324,93 @@ public final class BotPerformanceMonitor {
         }
     }
 
+    /** Share denominator: a section's % is measured against the per-bot-tick parent ({@code tick-total})
+     *  when present, else the summed section CPU. Off-tick sections (e.g. {@code autopilot-decide} on the
+     *  DECIDE_POOL thread) can exceed 100% — that's meaningful (their work dwarfs a single tick). Caller
+     *  must hold {@link #LOCK}. */
+    private static long shareDenomNs() {
+        Stat tickTotal = statsBySection.get("tick-total");
+        if (tickTotal != null && tickTotal.totalNs > 0) {
+            return tickTotal.totalNs;
+        }
+        long sum = 0;
+        for (Stat s : statsBySection.values()) {
+            sum += s.totalNs;
+        }
+        return Math.max(1L, sum);
+    }
+
+    /**
+     * On-demand export: write the CURRENTLY accumulated per-section stats (full set, untruncated, sorted
+     * by total CPU) to a timestamped CSV under {@code logs/bot-perf/} for offline analysis / heatmaps.
+     * Returns the written file, or null when nothing is accumulated (enable {@code !botperfdebug} first).
+     * Captures only the live window so far (since the last 15s report reset) — the returned interval lets
+     * callers report the sample size. Does not reset stats. The {@code share_pct} column is relative to
+     * {@code tick-total} (see {@link #shareDenomNs}).
+     */
+    public static java.nio.file.Path exportCsv() {
+        synchronized (LOCK) {
+            if (statsBySection.isEmpty()) {
+                return null;
+            }
+            long now = System.currentTimeMillis();
+            double intervalSeconds = Math.max(0.001, (now - lastLogAtMs) / 1000.0);
+            long denomNs = shareDenomNs();
+            List<Map.Entry<String, Stat>> rows = new ArrayList<>(statsBySection.entrySet());
+            rows.sort(Comparator.comparingLong((Map.Entry<String, Stat> e) -> e.getValue().totalNs).reversed());
+
+            StringBuilder sb = new StringBuilder(
+                    "section,cpu_core,cpu_ms_per_s,share_pct,avg_ms,max_ms,calls_per_s,count,slow_pct,slow_avg_ms,note\n");
+            for (Map.Entry<String, Stat> e : rows) {
+                Stat s = e.getValue();
+                double totalMs = s.totalNs / 1_000_000.0;
+                double cpuMsPerSec = totalMs / intervalSeconds;
+                double avgMs = s.totalNs / (double) Math.max(1L, s.count) / 1_000_000.0;
+                double slowPct = s.slowCount * 100.0 / Math.max(1L, s.count);
+                double slowAvgMs = s.slowTotalNs / (double) Math.max(1L, s.slowCount) / 1_000_000.0;
+                sb.append(csv(e.getKey())).append(',')
+                        .append(fmt6(cpuMsPerSec / 1000.0)).append(',')
+                        .append(fmt6(cpuMsPerSec)).append(',')
+                        .append(fmt6(100.0 * s.totalNs / denomNs)).append(',')
+                        .append(fmt6(avgMs)).append(',')
+                        .append(fmt6(s.maxNs / 1_000_000.0)).append(',')
+                        .append(fmt6(s.count / intervalSeconds)).append(',')
+                        .append(s.count).append(',')
+                        .append(fmt6(slowPct)).append(',')
+                        .append(fmt6(slowAvgMs)).append(',')
+                        .append(csv(noteFor(e.getKey())))
+                        .append('\n');
+            }
+            try {
+                java.nio.file.Path dir = java.nio.file.Path.of("logs", "bot-perf");
+                java.nio.file.Files.createDirectories(dir);
+                java.nio.file.Path file = dir.resolve("bot-perf-" + now + ".csv");
+                java.nio.file.Files.writeString(file, sb.toString());
+                log.info("bot-perf CSV exported: {} ({} sections, {}s window)",
+                        file, rows.size(), formatMs(intervalSeconds * 1000.0));
+                return file;
+            } catch (java.io.IOException ex) {
+                log.warn("bot-perf CSV export failed", ex);
+                return null;
+            }
+        }
+    }
+
+    private static String fmt6(double value) {
+        return String.format(Locale.ROOT, "%.6f", value);
+    }
+
+    /** RFC-4180 minimal CSV escaping (notes contain commas). */
+    private static String csv(String value) {
+        if (value == null) {
+            return "";
+        }
+        if (value.indexOf(',') >= 0 || value.indexOf('"') >= 0 || value.indexOf('\n') >= 0) {
+            return '"' + value.replace("\"", "\"\"") + '"';
+        }
+        return value;
+    }
+
     static void recordPathfind(long elapsedNs) {
         record("pathfind", elapsedNs);
     }
@@ -363,6 +450,7 @@ public final class BotPerformanceMonitor {
             return;
         }
 
+        long denomNs = shareDenomNs();
         StringBuilder line = new StringBuilder("bot-perf report>=")
                 .append(formatMs(cfg.REPORT_MAX_MS))
                 .append("ms")
@@ -400,6 +488,9 @@ public final class BotPerformanceMonitor {
                     .append("ms/s")
                     .append(" core=")
                     .append(formatCore(cpuCore))
+                    .append(" share=")
+                    .append(formatPct(100.0 * stat.totalNs / denomNs))
+                    .append("%")
                     .append(" max=")
                     .append(formatMs(maxMs))
                     .append("ms")

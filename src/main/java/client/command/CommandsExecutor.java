@@ -470,6 +470,7 @@ public class CommandsExecutor {
         addCommand("botstatus", 3, BotStatusCommand.class);
         addCommand("botpop", 3, client.command.commands.gm3.BotPopCommand.class);
         addCommand("botperfdebug", 3, BotPerfDebugCommand.class);
+        addCommand("botperflog", 3, client.command.commands.gm3.BotPerfLogCommand.class);
         addCommand("airshow", 3, AirshowCommand.class);
         addCommand("regennav", 3, RegenNavCommand.class);
         addCommand("mutemap", 3, MuteMapCommand.class);
