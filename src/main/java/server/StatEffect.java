@@ -2010,6 +2010,13 @@ public class StatEffect {
         return fixdamage;
     }
 
+    /** Warp target of a town-scroll effect: -1 = none, {@link MapId#NONE} = nearest town
+     *  (current map's returnMap), else the fixed town map id. Exposed so bots can pre-check
+     *  a return scroll's destination before consuming it. */
+    public int getMoveTo() {
+        return moveTo;
+    }
+
     public short getBulletCount() {
         return bulletCount;
     }

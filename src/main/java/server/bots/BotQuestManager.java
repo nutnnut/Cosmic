@@ -581,7 +581,8 @@ final class BotQuestManager {
      *  Drives the autopilot piggyback pick — autopilot benefits from the same upgraded scoring. */
     static boolean worthwhile(BotEntry entry, int grindMapId, int npcMapId,
                               BotQuestIndex.QuestMeta q, Character bot) {
-        if (hopCount.hops(grindMapId, npcMapId) > MAX_ERRAND_HOPS) {
+        if (hopCount.hops(grindMapId, npcMapId) > MAX_ERRAND_HOPS
+                || BotAutopilotManager.isDangerRegionBlocked(bot, npcMapId)) {
             return false;
         }
         return scoreQuest(entry, bot, grindMapId, npcMapId, q) >= BotQuestScorer.RECOMMEND_MIN_SCORE;
@@ -963,7 +964,8 @@ final class BotQuestManager {
                 continue;
             }
             int npcMap = resolveStartNpcMap(bot, q.startNpc());
-            if (npcMap == -1 || hopCount.hops(grindMap, npcMap) > MAX_ERRAND_HOPS) {
+            if (npcMap == -1 || hopCount.hops(grindMap, npcMap) > MAX_ERRAND_HOPS
+                    || BotAutopilotManager.isDangerRegionBlocked(bot, npcMap)) {
                 continue;
             }
             double score = scoreQuest(entry, bot, grindMap, npcMap, q, baseline);
@@ -1129,7 +1131,8 @@ final class BotQuestManager {
                 continue;
             }
             int npcMap = resolveStartNpcMap(bot, q.startNpc());
-            if (npcMap == -1 || hopCount.hops(grindMap, npcMap) > BotQuestScorer.AUTO_SUGGEST_MAX_HOPS) {
+            if (npcMap == -1 || hopCount.hops(grindMap, npcMap) > BotQuestScorer.AUTO_SUGGEST_MAX_HOPS
+                    || BotAutopilotManager.isDangerRegionBlocked(bot, npcMap)) {
                 continue;
             }
             double score = scoreQuest(entry, bot, grindMap, npcMap, q);

@@ -13,6 +13,7 @@ import client.inventory.WeaponType;
 import client.inventory.manipulator.InventoryManipulator;
 import client.keybind.KeyBinding;
 import constants.game.CharacterStance;
+import constants.id.MapId;
 import constants.inventory.ItemConstants;
 import constants.string.CharsetConstants;
 import net.server.Server;
@@ -4504,10 +4505,12 @@ public class BotManager {
     }
 
     /**
-     * Apply Return Scroll - Nearest Town (item 2030000) via StatEffect.applyTo.
-     * The standard scroll effect handles random-portal warp inside applyTo;
-     * we only need to remove the consumable afterwards (mirrors ScrollHandler).
-     * Returns false when no 2030000 is in the bot's USE inventory or applyTo failed.
+     * Use any town-return scroll the bot carries (2030000 nearest-town .. 2030006 town-specific),
+     * via the same StatEffect.applyTo warp path players use - we only remove the consumable after
+     * (mirrors ScrollHandler). Skips a scroll whose destination is danger-blocked for this bot
+     * (so a "Return to Sleepywood" never re-traps a low bot) or is a no-op (already there). This
+     * is the rescue a passing player enables by donating a scroll into a trapped bot's USE bag.
+     * Returns false when no usable scroll is found or the warp failed.
      */
     boolean tryUseReturnScroll(Character bot) {
         var use = bot.getInventory(InventoryType.USE);
@@ -4515,20 +4518,27 @@ public class BotManager {
             return false;
         }
         for (Item item : use.list()) {
-            if (item == null || item.getQuantity() <= 0) {
-                continue;
-            }
-            if (item.getItemId() != 2030000) {
+            if (item == null || item.getQuantity() <= 0 || !ItemConstants.isTownScroll(item.getItemId())) {
                 continue;
             }
             StatEffect effect;
             try {
-                effect = ItemInformationProvider.getInstance().getItemEffect(2030000);
+                effect = ItemInformationProvider.getInstance().getItemEffect(item.getItemId());
             } catch (Exception e) {
-                return false;
+                continue;
             }
-            if (effect == null || !effect.applyTo(bot)) {
-                return false;
+            if (effect == null) {
+                continue;
+            }
+            int dest = effect.getMoveTo();
+            if (dest == MapId.NONE) {
+                dest = bot.getMap().getReturnMapId(); // nearest-town scroll resolves to current map's returnMap
+            }
+            if (dest <= 0 || dest == bot.getMapId() || BotAutopilotManager.isDangerRegionBlocked(bot, dest)) {
+                continue; // no-op, unknown target, or would land back in a region this bot can't escape
+            }
+            if (!effect.applyTo(bot)) {
+                continue;
             }
             InventoryManipulator.removeFromSlot(bot.getClient(), InventoryType.USE, item.getPosition(), (short) 1, false);
             return true;

@@ -430,7 +430,7 @@ final class BotShopManager {
             // entered range, so the first shop hit is the closest. Early-return keeps map loading minimal.
             outer:
             for (int hops = 0; hops <= SHOP_SEARCH_MAX_HOPS; hops++) {
-                for (int mapId : BotWorldGraph.reachableWithin(from, hops)) {
+                for (int mapId : BotAutopilotManager.reachableForBot(bot, from, hops, BotWorldGraph.RouteOptions.PORTALS_ONLY)) {
                     if (!seen.add(mapId)) {
                         continue;
                     }

@@ -57,7 +57,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 final class BotWorldGraph {
 
     private static final Logger log = LoggerFactory.getLogger(BotWorldGraph.class);
-    private static final int GRAPH_VERSION = 2;
+    private static final int GRAPH_VERSION = 3;
     private static final Path CACHE_FILE =
             Path.of("cache", "bot-world", "v" + GRAPH_VERSION, "portal-graph.tsv");
     private static final int NO_TARGET_MAPID = 999999999; // tm of spawn points / doors
@@ -170,7 +170,8 @@ final class BotWorldGraph {
      * Directed adjacency: mapId → distinct portal target mapIds (sorted), plus the per-map
      * return-scroll shortcut (mapId → returnMap town) where it beats walking.
      */
-    record Index(Map<Integer, int[]> edges, Map<Integer, Integer> scrollTargets) {
+    record Index(Map<Integer, int[]> edges, Map<Integer, Integer> scrollTargets,
+                 Map<Integer, Integer> returnMaps) {
         int[] neighbors(int mapId) {
             return edges.getOrDefault(mapId, new int[0]);
         }
@@ -178,6 +179,11 @@ final class BotWorldGraph {
         /** Town a return scroll warps this map to, or -1 when the walk is short enough anyway. */
         int scrollTarget(int mapId) {
             return scrollTargets.getOrDefault(mapId, -1);
+        }
+
+        /** The map you're sent to on death/return-scroll from here (info/returnMap); itself when unset. */
+        int returnMap(int mapId) {
+            return returnMaps.getOrDefault(mapId, mapId);
         }
     }
 
@@ -199,6 +205,12 @@ final class BotWorldGraph {
         }
     }
 
+    /** The map you're dumped onto on death / nearest-town scroll from {@code mapId} (info/returnMap);
+     *  itself when unset. Used to keep a fragile bot off maps that return into a region it can't escape. */
+    static int returnMapOf(int mapId) {
+        return get().returnMap(mapId);
+    }
+
     /**
      * Shortest route from one map to another: the sequence of map ids to enter, ending
      * with {@code toMapId}. Empty when already there; null when unreachable within
@@ -211,11 +223,23 @@ final class BotWorldGraph {
 
     /** Like {@link #route(int, int, int)} but may spend a return scroll or taxi fare per options. */
     static List<Integer> route(int fromMapId, int toMapId, int maxHops, RouteOptions options) {
-        return route(get(), fromMapId, toMapId, maxHops, options);
+        return route(get(), fromMapId, toMapId, maxHops, options, m -> false);
+    }
+
+    /** Like {@link #route(int, int, int, RouteOptions)} but refuses to path INTO any map {@code blocked}
+     *  accepts — so a route that could only reach the target THROUGH a blocked map returns null. */
+    static List<Integer> route(int fromMapId, int toMapId, int maxHops, RouteOptions options,
+                               java.util.function.IntPredicate blocked) {
+        return route(get(), fromMapId, toMapId, maxHops, options, blocked);
     }
 
     /** Pure BFS over an explicit graph; see {@link #route(int, int, int, RouteOptions)}. */
     static List<Integer> route(Index graph, int fromMapId, int toMapId, int maxHops, RouteOptions options) {
+        return route(graph, fromMapId, toMapId, maxHops, options, m -> false);
+    }
+
+    static List<Integer> route(Index graph, int fromMapId, int toMapId, int maxHops, RouteOptions options,
+                               java.util.function.IntPredicate blocked) {
         if (fromMapId == toMapId) {
             return List.of();
         }
@@ -232,6 +256,9 @@ final class BotWorldGraph {
             for (int level = frontier.size(); level > 0; level--) {
                 int current = frontier.poll();
                 for (int next : expand(graph, current, options)) {
+                    if (blocked.test(next)) {
+                        continue; // never path into a blocked map -> any route through it is pruned
+                    }
                     if (cameFrom.putIfAbsent(next, current) != null) {
                         continue;
                     }
@@ -350,7 +377,8 @@ final class BotWorldGraph {
                 edges.values().stream().filter(targets -> targets.length > 0).count(),
                 scrollTargets.size(),
                 System.currentTimeMillis() - startedAt);
-        Index built = new Index(Collections.unmodifiableMap(edges), Collections.unmodifiableMap(scrollTargets));
+        Index built = new Index(Collections.unmodifiableMap(edges), Collections.unmodifiableMap(scrollTargets),
+                Collections.unmodifiableMap(returnMaps));
         writeCache(built);
         return built;
     }
@@ -469,7 +497,7 @@ final class BotWorldGraph {
      * over the finished portal graph — a depth-limited BFS per map is cheap.
      */
     static Map<Integer, Integer> computeScrollTargets(Map<Integer, int[]> edges, Map<Integer, Integer> returnMaps) {
-        Index portalsOnly = new Index(edges, Map.of());
+        Index portalsOnly = new Index(edges, Map.of(), Map.of());
         Map<Integer, Integer> scrollTargets = new HashMap<>();
         for (Map.Entry<Integer, Integer> e : returnMaps.entrySet()) {
             int mapId = e.getKey();
@@ -485,7 +513,7 @@ final class BotWorldGraph {
         return "Map/Map" + area + "/" + String.format("%09d", mapId) + ".img";
     }
 
-    // ---- disk cache: one row per map: mapId \t target,target,... \t scrollTarget ----
+    // ---- disk cache: one row per map: mapId \t target,target,... \t scrollTarget \t returnMap ----
 
     private static Index loadCache() {
         if (!Files.isRegularFile(CACHE_FILE)) {
@@ -494,6 +522,7 @@ final class BotWorldGraph {
         try {
             Map<Integer, int[]> edges = new HashMap<>();
             Map<Integer, Integer> scrollTargets = new HashMap<>();
+            Map<Integer, Integer> returnMaps = new HashMap<>();
             for (String line : Files.readAllLines(CACHE_FILE, StandardCharsets.US_ASCII)) {
                 if (line.isBlank()) {
                     continue;
@@ -514,9 +543,13 @@ final class BotWorldGraph {
                 if (cols.length > 2 && !cols[2].isEmpty()) {
                     scrollTargets.put(mapId, Integer.parseInt(cols[2]));
                 }
+                if (cols.length > 3 && !cols[3].isEmpty()) {
+                    returnMaps.put(mapId, Integer.parseInt(cols[3]));
+                }
             }
             return edges.isEmpty() ? null
-                    : new Index(Collections.unmodifiableMap(edges), Collections.unmodifiableMap(scrollTargets));
+                    : new Index(Collections.unmodifiableMap(edges), Collections.unmodifiableMap(scrollTargets),
+                            Collections.unmodifiableMap(returnMaps));
         } catch (IOException | RuntimeException e) {
             log.warn("Bot world graph: cache unreadable, rescanning WZ", e);
             return null;
@@ -541,6 +574,11 @@ final class BotWorldGraph {
                 if (scrollTarget != -1) {
                     sb.append(scrollTarget);
                 }
+                sb.append('\t');
+                int returnMap = built.returnMap(e.getKey());
+                if (returnMap != e.getKey()) { // omit self (the default); keeps the file lean
+                    sb.append(returnMap);
+                }
                 sb.append('\n');
             }
             Files.writeString(CACHE_FILE, sb.toString(), StandardCharsets.US_ASCII);
@@ -560,6 +598,6 @@ final class BotWorldGraph {
         for (Map.Entry<Integer, int[]> e : edges.entrySet()) {
             copy.put(e.getKey(), Arrays.copyOf(e.getValue(), e.getValue().length));
         }
-        return new Index(Collections.unmodifiableMap(copy), Map.copyOf(scrollTargets));
+        return new Index(Collections.unmodifiableMap(copy), Map.copyOf(scrollTargets), Map.of());
     }
 }

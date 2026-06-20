@@ -18,6 +18,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.function.BiConsumer;
+import java.util.function.IntPredicate;
 import java.util.function.IntToDoubleFunction;
 import java.util.function.IntToLongFunction;
 
@@ -56,6 +57,16 @@ final class BotAutopilotManager {
     private static final List<String> NO_SPOT_REPLIES = List.of(
             "can't find anywhere worth grinding that i can walk to, staying put",
             "hmm, nowhere walkable looks good rn");
+    // Stranded inside a region the bot is too low to walk out of (e.g. Sleepywood for a <15 bot).
+    // It can't legally leave on its own - a passing player has to donate a return scroll. ASCII only.
+    private static final List<String> STUCK_BEG_REPLIES = List.of(
+            "im stuck in here and cant walk out - a return scroll would save me if anyones passing",
+            "trapped in this dungeon, cant get out on my own. could use a return scroll",
+            "cant find a way out of here. a return scroll would get me back to town");
+    private static final List<String> SCROLL_ESCAPE_REPLIES = List.of(
+            "a return scroll, thanks! getting out of here",
+            "got a scroll, heading back to town",
+            "thanks for the rescue, leaving this place");
     private static final List<String> BACK_REPLIES = List.of(
             "back",
             "back, continuing",
@@ -78,8 +89,9 @@ final class BotAutopilotManager {
 
     static Advisor advisor = (entry, bot, fromMapId, maxHops, withFerry) -> {
         BotWorldGraph.RouteOptions options = travelOptions(bot, withFerry);
+        IntPredicate gate = routeBlockFor(bot);
         Set<Integer> reachable = BotWorldGraph.reachableWithin(fromMapId, maxHops, options,
-                m -> isAvoided(entry, m) || isDangerRegionBlocked(bot, m));
+                m -> isAvoided(entry, m) || gate.test(m));
         return BotGrindAdvisor.recommend(entry, bot, reachable::contains,
                 travelWeight(bot, fromMapId, maxHops, options, entry.activeQuestMobIds, rollWanderlust(entry)),
                 BotOccupancy.extraCompetitors(bot, BotManager.cfg.CROWD_PENALTY_FACTOR));
@@ -93,8 +105,9 @@ final class BotAutopilotManager {
 
     static FarmAdvisor farmAdvisor = (entry, bot, itemId, fromMapId, maxHops, withFerry) -> {
         BotWorldGraph.RouteOptions options = travelOptions(bot, withFerry);
+        IntPredicate gate = routeBlockFor(bot);
         Set<Integer> reachable = BotWorldGraph.reachableWithin(fromMapId, maxHops, options,
-                m -> isAvoided(entry, m) || isDangerRegionBlocked(bot, m));
+                m -> isAvoided(entry, m) || gate.test(m));
         return BotGrindAdvisor.recommendFarmItem(entry, bot, itemId, reachable::contains,
                 travelWeight(bot, fromMapId, maxHops, options, entry.activeQuestMobIds, rollWanderlust(entry)),
                 BotOccupancy.extraCompetitors(bot, BotManager.cfg.CROWD_PENALTY_FACTOR));
@@ -126,6 +139,52 @@ final class BotAutopilotManager {
     /** A region the bot is too low-level to safely traverse — pruned from route planning entirely. */
     static boolean isDangerRegionBlocked(Character bot, int mapId) {
         return bot.getLevel() < SLEEPYWOOD_REGION_MIN_LEVEL && isSleepywoodRegion(mapId);
+    }
+
+    /**
+     * SSOT route gate for a bot: the maps a low bot must not be sent into — the danger region itself,
+     * AND any map that dumps it there on death (returnMap). Every bot-aware route/reachable query funnels
+     * through {@link #reachableForBot}/{@link #routeForBot} so no caller can forget it; a >=15 bot gets an
+     * empty gate (no pruning).
+     */
+    static IntPredicate routeBlockFor(Character bot) {
+        return m -> isDangerRegionBlocked(bot, m) || isDangerRegionBlocked(bot, BotWorldGraph.returnMapOf(m));
+    }
+
+    /** Maps reachable for THIS bot — like {@link BotWorldGraph#reachableWithin} but always applies the
+     *  {@link #routeBlockFor} danger gate. Use this, never the raw graph call, for bot travel. */
+    static Set<Integer> reachableForBot(Character bot, int fromMapId, int maxHops,
+                                        BotWorldGraph.RouteOptions options) {
+        return BotWorldGraph.reachableWithin(fromMapId, maxHops, options, routeBlockFor(bot));
+    }
+
+    /** Shortest route for THIS bot, danger-gated; null when the target is only reachable through a
+     *  region this bot is walled out of (same as genuinely unreachable — caller stays put). */
+    static List<Integer> routeForBot(Character bot, int fromMapId, int toMapId, int maxHops,
+                                     BotWorldGraph.RouteOptions options) {
+        return BotWorldGraph.route(fromMapId, toMapId, maxHops, options, routeBlockFor(bot));
+    }
+
+    /**
+     * Last-ditch escape for a bot stranded inside a region it's too low to walk out of (the planner
+     * found nothing reachable worth grinding AND the bot is standing in a walled-off region). The
+     * only LEGAL way out is a return scroll — same as a real player, who'd need a rescue here too —
+     * so we try one ({@link BotManager#tryUseReturnScroll}, which skips any that would re-trap it).
+     * With no usable scroll the bot just asks for one and waits; a passing player donating a scroll
+     * into its USE bag lets the next pass self-rescue. Returns true when the bot was trapped (handled
+     * here, caller should stop), false when it's free to grind normally.
+     */
+    private static boolean escapeTrappedRegion(BotEntry entry, Character bot) {
+        if (bot.getMap() == null || !isDangerRegionBlocked(bot, bot.getMapId())) {
+            return false;
+        }
+        if (BotManager.getInstance().tryUseReturnScroll(bot)) {
+            reply.accept(entry, BotManager.randomReply(SCROLL_ESCAPE_REPLIES));
+            entry.autopilotNextDecisionAtMs = 0L; // re-plan from the town we just warped to, next tick
+            return true;
+        }
+        reply.accept(entry, BotManager.randomReply(STUCK_BEG_REPLIES));
+        return true;
     }
 
     /**
@@ -228,8 +287,7 @@ final class BotAutopilotManager {
         List<IntToDoubleFunction> weights = new ArrayList<>(members.size());
         for (BotEntry member : members) {
             BotWorldGraph.RouteOptions options = travelOptions(member.bot, ferryAllowed(member));
-            Set<Integer> reachable = BotWorldGraph.reachableWithin(
-                    member.bot.getMapId(), MAX_TRAVEL_HOPS, options);
+            Set<Integer> reachable = reachableForBot(member.bot, member.bot.getMapId(), MAX_TRAVEL_HOPS, options);
             weights.add(travelWeight(member.bot, member.bot.getMapId(), MAX_TRAVEL_HOPS, options,
                     member.activeQuestMobIds));
             if (common == null) {
@@ -336,6 +394,9 @@ final class BotAutopilotManager {
                 // Legitimate "nothing reachable worth grinding from here" (a non-null Decision with a
                 // null rec). Debug, not warn — an actual exception was already warn'd in decide().
                 log.debug("bot {} found no autopilot spot; will retry", bot.getName());
+                if (escapeTrappedRegion(entry, bot)) {
+                    return; // walled into a danger region: used a donated scroll, or begged for one
+                }
                 reply.accept(entry, BotManager.randomReply(NO_SPOT_REPLIES));
                 maybeTeaseFerry(entry, decision);
                 return;
@@ -402,6 +463,9 @@ final class BotAutopilotManager {
                 return;
             }
             if (rec == null) {
+                if (escapeTrappedRegion(entry, bot)) {
+                    return; // walled into a danger region: used a donated scroll, or begged for one
+                }
                 reply.accept(entry, "can't farm " + itemName + " - nothing i can reach drops it");
                 return;
             }
@@ -841,7 +905,11 @@ final class BotAutopilotManager {
             }
             maybeTeaseFerry(entry, decision);
             Recommendation rec = decision != null ? decision.rec() : null;
-            if (rec == null || rec.pick().mapId() == entry.autopilotMapId) {
+            if (rec == null) {
+                escapeTrappedRegion(entry, bot); // if walled into a danger region, scroll out / beg
+                return;
+            }
+            if (rec.pick().mapId() == entry.autopilotMapId) {
                 return; // current spot is still the call
             }
             installPlan(entry, rec, bot.getMapId());
