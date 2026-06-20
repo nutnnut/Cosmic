@@ -95,6 +95,11 @@ public class BotManager {
         public int AMMO_RESERVE_MESO  = 10_000;
         public int POT_SPEND_MIN_MESO = 20_000;
         public int TAXI_MIN_MESO      = 50_000;
+        // Below this a truly-broke ranged bot can't even buy the cheapest ammo set (~500 meso), so a
+        // resupply town trip would accomplish nothing. With no sellable trash either, it stops bouncing
+        // to town and farms in place with the degenerate close-range swing (claw punch / point-blank
+        // shot, no ammo) until meso/loot accrues enough to restock. Last-resort guardrail.
+        public int AMMO_BUY_FLOOR_MESO = 1_000;
 
         // Follow stagger: each bot is offset this many px from the owner (index-based, alternating left/right)
         public int FOLLOW_STAGGER = 60;
@@ -233,6 +238,13 @@ public class BotManager {
 
     // ownerCharId → list of owned bot entries (1:N)
     private final Map<Integer, List<BotEntry>> bots = new ConcurrentHashMap<>();
+    // Serializes the dedup-sweep + add in registerBotInternal so two threads registering the SAME bot
+    // character concurrently (overlapping @botpop fast-start sweeps on the multi-worker TimerManager
+    // pool) can't both survive the sweep and leave two tick tasks driving one character.
+    private final Object registryLock = new Object();
+    // charId currently mid-spawn: stops two concurrent spawnManagedBot calls for the same id from both
+    // loading the character (double PlayerStorage add) and registering before either is visible.
+    private final java.util.Set<Integer> spawningBotIds = ConcurrentHashMap.newKeySet();
     // ownerCharId → current formation (in-memory only, defaults to stagger)
     private final Map<Integer, FormationState> ownerFormations = new ConcurrentHashMap<>();
     // ownerCharId → cluster-anchor town position. First bot to warp picks a random
@@ -770,25 +782,14 @@ public class BotManager {
 
     private BotEntry registerBotInternal(int ownerCharId, Character owner, Character bot, boolean normalizeSpawnState) {
         int botCharId = bot.getId();
-        // Global dedup: a bot character has exactly one runtime owner. Remove any prior entry for this
-        // bot under ANY owner key (relog, takeover, party re-register), not just ownerCharId — else the
-        // same character ends up with two BotEntry tick tasks driving it, which renders in-game as one
-        // bot teleporting between two positions and attacking from both. Cancels the stale task.
-        // ponytail: lock-free sweep matches surrounding style; not atomic vs a truly concurrent
-        // register of the same id — add per-bot locking only if that race is ever observed.
-        for (List<BotEntry> list : bots.values()) {
-            list.removeIf(e -> {
-                if (e.bot.getId() == botCharId) { e.task.cancel(false); return true; }
-                return false;
-            });
-        }
-        List<BotEntry> entries = bots.computeIfAbsent(ownerCharId, k -> new CopyOnWriteArrayList<>());
         // Capture the BotEntry directly in the tick lambda instead of re-resolving it from the
         // registry every tick (ConcurrentHashMap.get + linear CopyOnWriteArrayList scan). The
         // task is bound to exactly one entry and is cancelled on every removal/replace path, so
         // the captured reference is always the live entry. The holder breaks the task<->entry
         // construction cycle (BotEntry.task is final); the only window where ref[0] is null is
         // before the assignment two lines below, which tickCore already tolerates.
+        // Build off-lock (personality/scroll/graph IO must not serialize spawns): the task self-guards
+        // on ref[0]==null until it's published below, so the tick can't act before the entry is live.
         BotEntry[] ref = new BotEntry[1];
         ScheduledFuture<?> task = TimerManager.getInstance().register(
                 () -> tick(ref[0], ownerCharId, botCharId), BotMovementManager.cfg.TICK_MS);
@@ -798,10 +799,25 @@ public class BotManager {
         entry.selfScrollEnabled = BotPrefsStore.loadSelfScroll(bot.getId());
         entry.personality = BotPersonality.loadOrCreate(botCharId);
         BotNavigationGraphProvider.warmGraphAsync(bot.getMap(), entry.movementProfile);
-        entries.add(entry);
-        FormationState fs = ownerFormations.getOrDefault(ownerCharId, FormationState.defaultStagger());
-        for (int i = 0; i < entries.size(); i++) {
-            entries.get(i).followOffsetX = fs.offsetFor(i, entries.size());
+        // Global dedup + atomic publish: a bot character has exactly one runtime owner. Remove any prior
+        // entry for this bot under ANY owner key (relog, takeover, party re-register), not just
+        // ownerCharId, then add ours — all under the lock so a concurrent register of the SAME id can't
+        // interleave. Without atomicity (observed via overlapping @botpop fast-start sweeps on the
+        // multi-worker TimerManager pool) each thread sweeps BEFORE the other adds, neither removes the
+        // other, and both tick tasks survive: one character driven from two positions, attacking from both.
+        synchronized (registryLock) {
+            for (List<BotEntry> list : bots.values()) {
+                list.removeIf(e -> {
+                    if (e.bot.getId() == botCharId) { e.task.cancel(false); return true; }
+                    return false;
+                });
+            }
+            List<BotEntry> entries = bots.computeIfAbsent(ownerCharId, k -> new CopyOnWriteArrayList<>());
+            entries.add(entry);
+            FormationState fs = ownerFormations.getOrDefault(ownerCharId, FormationState.defaultStagger());
+            for (int i = 0; i < entries.size(); i++) {
+                entries.get(i).followOffsetX = fs.offsetFor(i, entries.size());
+            }
         }
         if (normalizeSpawnState) {
             normalizeSpawnedBot(entry);
@@ -897,16 +913,24 @@ public class BotManager {
         if (getEntryByBotCharId(charId) != null) {
             return false; // already a live bot
         }
-        int world = cfg.POPULATION_WORLD;
-        int channel = cfg.POPULATION_CHANNEL;
-        var worldServer = Server.getInstance().getWorld(world);
-        if (worldServer == null) {
-            return false;
-        }
-        if (worldServer.getPlayerStorage().getCharacterById(charId) != null) {
-            return false; // online already (as a player or bot) — never double-load
+        // Atomic claim: overlapping fast-start sweeps run on separate TimerManager workers and would
+        // otherwise both pass the check above and double-load/register the same character. The loser bails.
+        if (!spawningBotIds.add(charId)) {
+            return false; // another thread is already bringing this exact bot online
         }
         try {
+            if (getEntryByBotCharId(charId) != null) {
+                return false; // raced in just after our first check — now claimed, recheck and bail
+            }
+            int world = cfg.POPULATION_WORLD;
+            int channel = cfg.POPULATION_CHANNEL;
+            var worldServer = Server.getInstance().getWorld(world);
+            if (worldServer == null) {
+                return false;
+            }
+            if (worldServer.getPlayerStorage().getCharacterById(charId) != null) {
+                return false; // online already (as a player or bot) — never double-load
+            }
             Character botChar = loadOfflineBot(charId, world, channel);
             BotEntry entry = registerSpawnedBot(charId, botChar, botChar); // self-owned: owner == bot
             ManagedBotService.ManagedBot mb = ManagedBotService.getInstance().get(charId);
@@ -917,6 +941,8 @@ public class BotManager {
         } catch (SQLException e) {
             log.warn("spawnManagedBot: failed to load charId={}", charId, e);
             return false;
+        } finally {
+            spawningBotIds.remove(charId);
         }
     }
 
@@ -3416,12 +3442,17 @@ public class BotManager {
         // Drives BOTH the attack gate (stop firing/swinging) and the retreat positioning below,
         // reusing the existing retreat/re-spacing machinery rather than new movement code.
         boolean proactiveDangerRetreat = computeProactiveDangerRetreat(entry, bot, target, now);
+        // Out of ammo with no way to refill right now: the basic attack falls back to a degenerate
+        // close-range swing (claw punch / point-blank shot), so the bot must CLOSE on the mob, not
+        // hold ranged spacing. Suppress the spacing retreat (danger retreat below still applies) so
+        // the swing can land. Lets a truly-broke bot farm its way back to affording ammo.
+        boolean noAmmoMelee = BotShopManager.isOutOfUsableAmmo(bot);
         boolean targetInDegenerateBand = BotAttackExecutionProvider.shouldDegenerateRangedAttack(grindWeaponType, botPos, tp);
         // Spacing retreat is a horizontal-ground maneuver — you cannot open distance while clinging
         // to a rope, and trying to sends the bot climbing DOWN away from a mob sitting on top of the
         // rope, then back up: endless oscillation. While climbing, never space-retreat; finish the
         // climb and fight on the platform (danger-retreat still applies — flee a lethal mob anywhere).
-        boolean rangedSpacingCrowded = !entry.climbing
+        boolean rangedSpacingCrowded = !entry.climbing && !noAmmoMelee
                 && BotAttackExecutionProvider.shouldRetreatFromNearbyTarget(grindWeaponType, botPos, tp);
         // Anti-freeze: a spacing retreat that never opens distance (mob chases, blocked nav) loops
         // forever with the gate shut. Shared give-up watchdog forces a fight window — same escape
@@ -3432,7 +3463,7 @@ public class BotManager {
                 && (!entry.degenAttackDone || rangedSpacingGaveUp) && rangedPriorityTarget == null
                 && !proactiveDangerRetreat;
         boolean shouldRetreatForRangedSpacing = proactiveDangerRetreat
-                || (!rangedSpacingGaveUp
+                || (!noAmmoMelee && !rangedSpacingGaveUp
                 && (entry.degenAttackDone
                 || (rangedSpacingCrowded && !allowOneDegenerateAttack)));
         // Opportunity attack: keep firing during retreat as long as the shot would land

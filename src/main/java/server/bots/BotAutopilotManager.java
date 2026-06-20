@@ -492,9 +492,11 @@ final class BotAutopilotManager {
         // Affordability gate matches the reactive errand (BotPotionManager): a broke bot low on pots
         // shouldn't peel off to town to buy nothing. Bag-full (a SELL trip) stays ungated — it earns meso.
         boolean lowAndCanBuy = supplyLevel.lowOnSupplies(bot) && BotShopManager.canAffordPotResupply(bot);
-        // Out of ammo is combat-blocking and ungated by meso: a broke claw/gun bot still peels to town
-        // to sell trash and refill (otherwise it travels out, can't attack, and is stuck).
-        boolean ammoStranded = BotShopManager.isOutOfUsableAmmo(bot);
+        // Out of ammo is combat-blocking: a broke claw/gun bot peels to town to sell trash and refill
+        // (otherwise it travels out, can't attack, and is stuck) - but only if the trip can actually
+        // re-arm it. A truly-broke bot with nothing to sell keeps grinding (degenerate close-range
+        // swing) to earn the meso first rather than bouncing to town forever.
+        boolean ammoStranded = BotShopManager.isOutOfUsableAmmo(bot) && BotShopManager.canRecoverAmmo(entry, bot);
         if (entry.autopilotErrandMapId == -1 && !entry.autopilotReturningFromErrand
                 && (lowAndCanBuy || ammoStranded || bagFull.bagFull(entry, bot))) {
             requestResupplyErrand(entry, bot);

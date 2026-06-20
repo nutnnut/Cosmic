@@ -482,6 +482,22 @@ final class BotShopManager {
         }
     }
 
+    /** Could a town trip actually re-arm an out-of-ammo bot RIGHT NOW — does it have enough meso to
+     *  buy the cheapest ammo set, or sellable trash to fund one? When false (truly broke, sold its
+     *  spare weapon, nothing left to sell), the resupply errand is pointless: the bot would just walk
+     *  to a shop, buy nothing, and bounce back forever. The callers instead let it keep grinding with
+     *  the degenerate close-range swing (no ammo) to earn the meso first — the final no-deadlock
+     *  guardrail. ponytail: bag-cramp is the sell signal we already have; an uncramped bot with junk
+     *  keeps farming and the cramp/meso threshold trips the errand soon enough. Bad reads -> recoverable
+     *  (keep the existing errand behavior rather than newly suppress it). */
+    static boolean canRecoverAmmo(BotEntry entry, Character bot) {
+        try {
+            return bot.getMeso() >= BotManager.cfg.AMMO_BUY_FLOOR_MESO || shouldAutoSellTrash(entry, bot);
+        } catch (RuntimeException ex) {
+            return true;
+        }
+    }
+
     /** True when the bot needs to BUY a consumable (HP/MP potions or ammo) — i.e. the errand is a
      *  supply run, not a pure sell-trash / bag-dump. Drives the errand-destination shop filter: a
      *  supply run must reach a potion-stocking shop (which also carries ammo), while a sell-only trip

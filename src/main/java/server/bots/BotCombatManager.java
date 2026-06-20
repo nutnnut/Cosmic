@@ -1341,7 +1341,11 @@ class BotCombatManager {
         if (entry.attackCooldownMs > 0) {
             return;
         }
-        if (entry.noAmmo) {
+        // No ammo blocks RANGED attacks (would consume stars/bullets we don't have), but NOT the
+        // degenerate close-range swing the basic attack falls back to (claw punch / point-blank shot,
+        // CLOSE route, consumes no ammo). Letting CLOSE through is the last-resort guardrail so a
+        // truly-broke bot can still farm its way back to affording ammo instead of standing inert.
+        if (entry.noAmmo && attackPlan.route != AttackRoute.CLOSE) {
             return;
         }
         if (attackPlan.skillId != 0 && !canUseSkill(bot, attackPlan.skillId, attackPlan.skillLevel)) {
@@ -2976,7 +2980,8 @@ class BotCombatManager {
             return;
         }
 
-        if (ammo <= 0 && entry.noAmmo && entry.grinding && BotAutopilotManager.isActive(entry)) {
+        if (ammo <= 0 && entry.noAmmo && entry.grinding && BotAutopilotManager.isActive(entry)
+                && BotShopManager.canRecoverAmmo(entry, bot)) {
             BotAutopilotManager.requestResupplyErrand(entry, bot);
             return;
         }
@@ -2985,7 +2990,10 @@ class BotCombatManager {
             entry.noAmmo = true;
             if (entry.grinding) {
                 BotAmmoManager.requestLowAmmoShare(entry, bot, false);
-                if (BotAutopilotManager.requestResupplyErrand(entry, bot)) {
+                // Only run the resupply errand if a town trip can re-arm us; otherwise fall through
+                // and keep grinding with the degenerate close-range swing to earn the meso first.
+                if (BotShopManager.canRecoverAmmo(entry, bot)
+                        && BotAutopilotManager.requestResupplyErrand(entry, bot)) {
                     return;
                 }
                 if (BotManager.canWalkToOwner(entry)) {

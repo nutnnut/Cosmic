@@ -439,10 +439,12 @@ final class BotPotionManager {
             // Mages can be combat-stopped by zero MP pots; give them the same autopilot
             // resupply path after the party/owner grace request has had a chance to land.
         } else if (BotAutopilotManager.isActive(entry) && BotShopManager.isOutOfUsableAmmo(bot)
+                && BotShopManager.canRecoverAmmo(entry, bot)
                 && BotAutopilotManager.requestResupplyErrand(entry, bot)) {
-            // Out of throwing stars/bullets -> can't attack at all. Force a town trip even when broke
-            // (ungated by meso, like the sell branch): the visit sells trash to fund the refill. A
-            // fully-broke bot recovers over two visits.
+            // Out of throwing stars/bullets -> can't attack at all. Force a town trip when broke
+            // (ungated by pot-meso, like the sell branch): the visit sells trash to fund the refill.
+            // But only if the trip can actually re-arm us (canRecoverAmmo) - a truly-broke bot with
+            // nothing to sell stays and farms with the degenerate close-range swing to earn meso first.
         } else if (pots[0] < BotManager.cfg.POT_STOP && bot.getHp() < bot.getMaxHp() * 0.4f
                 && BotManager.canWalkToOwner(entry)) {
             // canWalkToOwner is false for autopilot / self-owned / owner-offline bots, so an
