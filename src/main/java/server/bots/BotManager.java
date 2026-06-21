@@ -172,7 +172,7 @@ public class BotManager {
         public int POPULATION_NOISE = 2;                   // +/- jitter on the hourly target
         public double POPULATION_MULTIPLIER = 3.0;         // scales the whole online target up/down, so bot
                                                            // count is adjustable without editing the curve/noise
-        public int MANAGED_POOL_MAX = 150;                 // backstop cap on the non-retired bot roster. NOT
+        public int MANAGED_POOL_MAX = 1000;                 // backstop cap on the non-retired bot roster. NOT
                                                            // the online count (that's the curve x multiplier);
                                                            // autogen only fires under deficit, so the pool
                                                            // self-limits near peak target. Set comfortably
