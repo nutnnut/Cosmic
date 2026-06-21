@@ -8566,6 +8566,10 @@ public class Character extends AbstractCharacterObject {
 
         Server.getInstance().updateCharacterEntry(this);
 
+        // ponytail: shutdown disconnects save chars in parallel (PlayerStorage.disconnectAll), so
+        // concurrent DELETE+INSERT on inventoryitems deadlock in InnoDB. MySQL says retry the txn.
+        // The save is rebuilt from in-memory state (idempotent), so a bounded retry is safe.
+        for (int attempt = 1; ; attempt++) {
         try (Connection con = DatabaseConnection.getConnection()) {
             con.setAutoCommit(false);
             con.setTransactionIsolation(Connection.TRANSACTION_READ_UNCOMMITTED);
@@ -8962,8 +8966,16 @@ public class Character extends AbstractCharacterObject {
                 con.setTransactionIsolation(Connection.TRANSACTION_REPEATABLE_READ);
                 con.setAutoCommit(true);
             }
+        } catch (java.sql.SQLTransactionRollbackException e) {
+            if (attempt < 3) {
+                log.warn("Deadlock saving chr {} (attempt {}), retrying", name, attempt);
+                continue;
+            }
+            log.error("Error saving chr {}, level: {}, job: {} after {} attempts", name, level, job.getId(), attempt, e);
         } catch (Exception e) {
             log.error("Error saving chr {}, level: {}, job: {}", name, level, job.getId(), e);
+        }
+        break;
         }
     }
 
