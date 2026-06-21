@@ -41,7 +41,7 @@ final class BotSpawnIndex {
     private static final Logger log = LoggerFactory.getLogger(BotSpawnIndex.class);
     // v3: also records the NPC ids placed on each map (life type "n") and a reverse npc->maps table,
     // so the bot can resolve where a quest NPC stands and walk to it (BotQuestManager.resolveNpcMap).
-    private static final int INDEX_VERSION = 3;
+    private static final int INDEX_VERSION = 4;
     private static final Path CACHE_FILE =
             Path.of("cache", "bot-spawn", "v" + INDEX_VERSION, "spawn-index.tsv");
 
@@ -203,6 +203,13 @@ final class BotSpawnIndex {
                 }
                 if ("m".equals(type)) {
                     if (DataTool.getInt("hide", entry, 0) == 1) {
+                        continue;
+                    }
+                    // mobTime == -1 spawns the mob ONCE with no respawn (MapFactory.loadLifeRaw) - once
+                    // killed the spot is empty forever. Counting these as grindable made the advisor pick
+                    // maps that empty out after a while (a bot "grinding" a mob-less map overnight), so
+                    // only count genuinely respawning spawn points. Default 0 = immediate respawn.
+                    if (DataTool.getInt("mobTime", entry, 0) == -1) {
                         continue;
                     }
                     try {

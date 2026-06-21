@@ -742,6 +742,12 @@ final class BotAutopilotManager {
         if (entry == null || bot == null) {
             return "not sure where i am rn";
         }
+        // Scheduled session-end: the bot has retreated to town and is lingering before it disconnects
+        // (autopilot was cleared, so without this it misreads as the inert-leak "idle rn"). Checked
+        // first — it outranks every play state.
+        if (entry.loggingOut) {
+            return "im at " + currentMap + ", logging off for a bit";
+        }
         // Transient sub-states sit on top of grind mode (entry.grinding stays true), so report them
         // first — otherwise a town break or level-gap idle-leech misreads as "grinding here".
         if (System.currentTimeMillis() < entry.breakUntilMs) {

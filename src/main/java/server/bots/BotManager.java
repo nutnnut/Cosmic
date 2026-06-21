@@ -5303,6 +5303,12 @@ public class BotManager {
             if (town != -1) {
                 reviveMapId = town;
                 escapedLoop = true;
+                // onDeathLoop drops the autopilot pick (autopilotMapId=-1) but the bot is still
+                // grinding=true from before it died. That inconsistent inert+grinding state makes
+                // tickIdleEntry's guard skip maybeRecoverInertAutopilot, so the bot never re-decides
+                // and stands SILENTLY in town forever (never reaching the "no spot -> ask for scroll"
+                // path). clearMode restores a consistent idle state so recovery re-decides on arrival.
+                clearMode(entry);
             }
         }
         bot.respawn(reviveMapId);

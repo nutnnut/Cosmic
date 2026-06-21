@@ -279,6 +279,13 @@ final class BotPathLogger {
                 .append("  shopVisitPending=").append(entry.shopVisitPending).append("\n");
         appendCohesionState(sb, entry);
         appendTravelState(sb, entry);
+        if (entry.loggingOut || entry.breakUntilMs > 0L) {
+            // Disambiguates an intentional idle (scheduled logout / in-session break) from the
+            // inert-autopilot leak — all three look like "idle in town" without this.
+            sb.append("Lifecycle:  loggingOut=").append(entry.loggingOut)
+                    .append("  lingerUntilMs=").append(entry.logoutLingerUntilMs)
+                    .append("  breakUntilMs=").append(entry.breakUntilMs).append("\n");
+        }
         if (entry.debugCommanderId > 0) {
             sb.append("AdminBind:  commanderId=").append(entry.debugCommanderId)
                     .append("  untilMs=").append(entry.debugCommanderUntilMs).append("\n");
