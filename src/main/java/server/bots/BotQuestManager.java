@@ -794,7 +794,7 @@ final class BotQuestManager {
         // Travel to the NPC's map, then walk within the interaction radius (shared SSOT stepper).
         BotTravelManager.ApproachStatus status = BotTravelManager.tickApproachNpc(
                 entry, bot, entry.questErrandMapId, entry.questErrandNpcId,
-                BotAutopilotManager.MAX_TRAVEL_HOPS, runAiTick, NPC_TRIGGER_RADIUS_PX);
+                BotAutopilotManager.MAX_TRAVEL_HOPS, runAiTick, false, NPC_TRIGGER_RADIUS_PX); // quests are nearby (MAX_ERRAND_HOPS), no ferry
         entry.questErrandProgress.record(bot, status == BotTravelManager.ApproachStatus.TRAVELING, now);
         switch (status) {
             case NPC_GONE -> {

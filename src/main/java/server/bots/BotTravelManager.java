@@ -681,13 +681,13 @@ final class BotTravelManager {
      * {@link #movementStep}/{@link #pinMoveTarget} for the on-map walk — no reimplemented travel.
      */
     static ApproachStatus tickApproachNpc(BotEntry entry, Character bot, int targetMapId, int npcId,
-                                          int maxHops, boolean runAiTick, int radiusPx) {
+                                          int maxHops, boolean runAiTick, boolean allowFerry, int radiusPx) {
         if (bot.getMapId() != targetMapId) {
             clearNpcApproach(entry); // not on the NPC's map yet — any cached spot is for another map
             // Propagate tickTravel's verdict: it returns false in its give-up window (no movement for
             // up to ~45s), and the caller must release the tick then so the bot grinds instead of
             // standing frozen until the errand's own timeout. (Pre-extraction tickErrand returned this.)
-            boolean moved = tickTravel(entry, bot, targetMapId, maxHops, runAiTick, false);
+            boolean moved = tickTravel(entry, bot, targetMapId, maxHops, runAiTick, allowFerry);
             return moved ? ApproachStatus.TRAVELING : ApproachStatus.TRAVEL_YIELDED;
         }
         server.life.NPC npc = bot.getMap() == null ? null : bot.getMap().getNPCById(npcId);

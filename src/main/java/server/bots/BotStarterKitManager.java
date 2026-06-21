@@ -224,7 +224,7 @@ final class BotStarterKitManager {
         boolean forceFallback = BotManager.cfg.JOB_CHANGE_FALLBACK_ANYWHERE;
         BotTravelManager.ApproachStatus status = BotTravelManager.tickApproachNpc(
                 entry, bot, entry.jobErrandMapId, entry.jobErrandNpcId,
-                BotAutopilotManager.MAX_TRAVEL_HOPS, runAiTick, NPC_TRIGGER_RADIUS_PX);
+                BotAutopilotManager.MAX_TRAVEL_HOPS, runAiTick, true, NPC_TRIGGER_RADIUS_PX); // ferry: instructor may be cross-continent
         long now = System.currentTimeMillis();
         entry.jobErrandProgress.record(bot, status == BotTravelManager.ApproachStatus.TRAVELING, now);
         boolean noProgressTooLong = forceFallback && entry.jobErrandProgress.stalled(now, ERRAND_NO_PROGRESS_MS);
@@ -290,8 +290,12 @@ final class BotStarterKitManager {
             return;
         }
         entry.jobErrandLastWarnMs = now;
+        // Match what the errand travel can actually do: ferry-allowed, gated by the bot's meso (a broke
+        // bot that can't afford a fare genuinely can't route there), so the log doesn't falsely claim
+        // unreachable for a cross-continent instructor the bot could ferry to.
         boolean reachable = BotWorldGraph.route(
-                bot.getMapId(), entry.jobErrandMapId, BotAutopilotManager.MAX_TRAVEL_HOPS) != null;
+                bot.getMapId(), entry.jobErrandMapId, BotAutopilotManager.MAX_TRAVEL_HOPS,
+                new BotWorldGraph.RouteOptions(false, bot.getMeso(), true)) != null;
         log.error("Bot '{}' stuck trying to job-advance to {} ({}): instructor npc {} on map {}, bot on "
                         + "map {}, route-reachable={}. Staying put and retrying (set "
                         + "JOB_CHANGE_FALLBACK_ANYWHERE=true to force-advance instead).",
