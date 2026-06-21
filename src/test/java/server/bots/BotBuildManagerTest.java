@@ -563,6 +563,29 @@ class BotBuildManagerTest {
     }
 
     @Test
+    void aboutOnePercentOfBotsAreLockedLifelongBeginners() {
+        int locked = 0;
+        long lockedSeed = 0;
+        for (long s = 1; s <= 50_000; s++) {
+            if (BotPersonality.random(s).permanentBeginner()) {
+                locked++;
+                if (lockedSeed == 0) {
+                    lockedSeed = s;
+                }
+            }
+        }
+        assertTrue(locked > 300 && locked < 700, "locked rate should be ~1%, was " + locked + "/50000");
+
+        // A locked bot never auto-advances, even long past a milestone.
+        Character bot = mock(Character.class);
+        BotEntry entry = new BotEntry(bot, mock(Character.class), mock(ScheduledFuture.class));
+        entry.personality = BotPersonality.random(lockedSeed);
+        when(bot.getJob()).thenReturn(Job.WARRIOR);
+        when(bot.getLevel()).thenReturn(50);
+        assertNull(BotBuildManager.autoAdvanceTarget(entry, bot), "locked beginner must never advance");
+    }
+
+    @Test
     void magicianFirstJobIsEligibleAtLevel8ButOthersAtLevel10() {
         Character bot = mock(Character.class);
         BotEntry entry = new BotEntry(bot, mock(Character.class), mock(ScheduledFuture.class));

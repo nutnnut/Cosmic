@@ -145,6 +145,14 @@ public record BotPersonality(
         return career == Archetype.HARDCORE || careerLenDays >= HARDCORE_FOREVER;
     }
 
+    /** ~1% of managed bots are lifelong Beginners that never job-advance (flavor: the eternal beginner).
+     *  Derived deterministically from the seed (salted so it doesn't correlate with the trait rolls), so
+     *  it's stable across restarts with no extra stored field. {@code seed == 0} (neutral/non-managed
+     *  defaults) is never locked. */
+    public boolean permanentBeginner() {
+        return seed != 0 && new Random(seed ^ 0x9E3779B97F4A7C15L).nextDouble() < 0.01;
+    }
+
     /**
      * Engagement decay: as a bot levels up it loses interest and logs in less, so not every bot grinds
      * to max. Returns a 0..1 multiplier on the daily-online chance. Hardcore bots barely decay.

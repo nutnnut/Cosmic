@@ -730,6 +730,9 @@ class BotBuildManager {
      *  or null. 3rd/4th are deterministic; 1st/2nd honor the creation-time plan else an autonomous pick.
      *  SSOT shared by the level-up trigger ({@link #buildJobPrompt}) and the resume reconciliation. */
     static Job autoAdvanceTarget(BotEntry entry, Character bot) {
+        if (lockedBeginner(entry)) {
+            return null; // lifelong Beginner: never auto-advance
+        }
         int lvl = bot.getLevel();
         Job job = bot.getJob();
         if (job == Job.BEGINNER) {
@@ -828,8 +831,17 @@ class BotBuildManager {
      */
     record JobPrompt(String text, List<String> options) {}
 
+    /** ~1% of bots are locked lifelong Beginners (see {@link BotPersonality#permanentBeginner}) — they
+     *  never job-advance, by prompt or autopilot. */
+    private static boolean lockedBeginner(BotEntry entry) {
+        return entry.personality != null && entry.personality.permanentBeginner();
+    }
+
     /** Returns the next job-advancement prompt, or null if none is pending. */
     static JobPrompt buildJobPrompt(BotEntry entry, Character bot) {
+        if (lockedBeginner(entry)) {
+            return null; // lifelong Beginner: never prompt to advance
+        }
         int lvl = bot.getLevel();
         Job job = bot.getJob();
         int prompted = entry.jobPromptSent;
