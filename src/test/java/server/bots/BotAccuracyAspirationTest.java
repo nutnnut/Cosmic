@@ -61,7 +61,7 @@ class BotAccuracyAspirationTest {
     }
 
     private static BotGrindAdvisor.MobProfile mob(int id, int exp, double rawKill) {
-        return new BotGrindAdvisor.MobProfile(id, "m" + id, 10, 5, exp, rawKill, rawKill, java.util.List.of());
+        return new BotGrindAdvisor.MobProfile(id, "m" + id, 10, 5, exp, rawKill, rawKill, 0.0, java.util.List.of());
     }
 
     @Test

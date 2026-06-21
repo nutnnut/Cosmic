@@ -81,6 +81,14 @@ public class BotManager {
         // Hysteresis: start resting below ENTER, resume grinding once regen passes EXIT.
         public float HP_REST_ENTER = 0.5f;
         public float HP_REST_EXIT  = 0.85f;
+
+        // Touch-danger map penalty: a broke bot (can't pot through chip damage) discounts a grind map's
+        // score by 1/(1 + expectedHpLossPerHit * mesoScaler), where mesoScaler ramps with how broke it is
+        // (rich bots barely care; flat-broke bots heavily avoid hard-hitting maps). expectedHpLossPerHit is
+        // the real-combat SSOT (avoid + defense), see BotDefenseDataProvider.expectedTouchHpLossFraction.
+        public double DANGER_MESO_SCALER_MAX = 10.0;     // at 0 meso
+        public double DANGER_MESO_SCALER_MIN = 0.1;      // at/above the cap
+        public int    DANGER_MESO_CAP        = 100_000;  // meso at which danger barely matters
         public float AUTOPOT_MP_THRESH = 0.5f; // use MP pot when MP falls below this ratio
         // Don't start a BUY-pots town errand below this much meso: a broke bot (e.g. a fresh lv1
         // ownerless spawn) would otherwise walk all the way to a shop, buy nothing on NOT_ENOUGH_MESO,
@@ -2807,6 +2815,113 @@ public class BotManager {
         return resolveNoGrindTargetPosition(entry, botPos, map);
     }
 
+    /** Max |y| gap (px) between a mob and a ground region's foothold to count the mob as standing
+     *  IN that region — beyond this it's airborne / on another platform and isn't attributed. */
+    private static final int IDLE_REGION_Y_BAND = 60;
+
+    /**
+     * Safe idle/rest region on the bot's CURRENT map — SSOT for all three idle states (out-of-pot
+     * HP-rest, party catch-up leech, in-session break). Ranks the map's ground regions by the summed
+     * REAL touch-danger of the live mobs standing in each (avoid + defense SSOT,
+     * {@link server.bots.combat.BotDefenseDataProvider#expectedTouchHpLossFraction}) and parks in a
+     * mob-free / lowest-danger one — a whole region with no mobs beats "farthest spot in a mobby room".
+     * {@code spread=false} (HP-rest, survival): take the single safest region and stand farthest from
+     * any mob. {@code spread=true} (leech/break): randomize among the equally-safe regions so multiple
+     * idlers don't pile on one spot (anchor is cached by the caller, so the pick is stable). Falls back
+     * to the plain no-grind wander without a graph.
+     */
+    static Point resolveSafeIdleRegion(BotEntry entry, Character bot, Point botPos, boolean spread) {
+        MapleMap map = bot != null ? bot.getMap() : null;
+        if (entry == null || botPos == null || map == null) {
+            return resolveNoGrindTargetPosition(entry, botPos, map);
+        }
+        BotNavigationGraph graph = BotNavigationGraphProvider.peekBestGraph(map, entry.movementProfile);
+        if (graph == null || graph.regions.isEmpty()) {
+            return resolveNoGrindTargetPosition(entry, botPos, map);
+        }
+        var defense = server.bots.combat.BotDefenseDataProvider.getInstance();
+        Map<Integer, Double> dangerByRegion = new java.util.HashMap<>();
+        List<Point> mobPts = new ArrayList<>();
+        for (Monster m : map.getAllMonsters()) {
+            if (m == null || !m.isAlive()) {
+                continue;
+            }
+            mobPts.add(m.getPosition());
+            BotNavigationGraph.Region r = idleRegionAt(graph, m.getPosition());
+            if (r != null) {
+                dangerByRegion.merge(r.id, defense.expectedTouchHpLossFraction(bot, m), Double::sum);
+            }
+        }
+        List<BotNavigationGraph.Region> ground = new ArrayList<>();
+        for (BotNavigationGraph.Region r : graph.regions) {
+            if (!r.isRopeRegion && r.width() > 0) {
+                ground.add(r);
+            }
+        }
+        if (ground.isEmpty()) {
+            return resolveNoGrindTargetPosition(entry, botPos, map);
+        }
+        double minDanger = Double.MAX_VALUE;
+        for (BotNavigationGraph.Region r : ground) {
+            minDanger = Math.min(minDanger, dangerByRegion.getOrDefault(r.id, 0.0));
+        }
+        List<BotNavigationGraph.Region> safest = new ArrayList<>();
+        for (BotNavigationGraph.Region r : ground) {
+            if (dangerByRegion.getOrDefault(r.id, 0.0) <= minDanger + 1e-9) {
+                safest.add(r);
+            }
+        }
+        BotNavigationGraph.Region pick = spread
+                ? safest.get(ThreadLocalRandom.current().nextInt(safest.size()))
+                : safest.get(0);
+        if (spread) {
+            return pick.pointAt(ThreadLocalRandom.current().nextInt(pick.minX, pick.maxX + 1));
+        }
+        int span = pick.width();
+        int samples = Math.min(12, Math.max(2, span / 50 + 1));
+        List<Point> candidates = new ArrayList<>(samples);
+        for (int i = 0; i < samples; i++) {
+            candidates.add(pick.pointAt(pick.minX + (span * i) / Math.max(1, samples - 1)));
+        }
+        Point safe = pickFarthestFromMobs(candidates, mobPts);
+        return safe != null ? safe : pick.centerPoint();
+    }
+
+    /** The ground region a mob is standing in (x within span, foothold y within {@link #IDLE_REGION_Y_BAND}),
+     *  or null when it's airborne / off-platform. */
+    private static BotNavigationGraph.Region idleRegionAt(BotNavigationGraph graph, Point p) {
+        BotNavigationGraph.Region best = null;
+        int bestDy = Integer.MAX_VALUE;
+        for (BotNavigationGraph.Region r : graph.regions) {
+            if (r.isRopeRegion || r.width() <= 0 || p.x < r.minX || p.x > r.maxX) {
+                continue;
+            }
+            int dy = Math.abs(r.pointAt(p.x).y - p.y);
+            if (dy < bestDy) {
+                bestDy = dy;
+                best = r;
+            }
+        }
+        return bestDy <= IDLE_REGION_Y_BAND ? best : null;
+    }
+
+    /** Of {@code candidates}, the one whose nearest {@code mob} is farthest (max-min clearance). */
+    static Point pickFarthestFromMobs(List<Point> candidates, List<Point> mobs) {
+        Point best = null;
+        double bestClearance = -1;
+        for (Point cand : candidates) {
+            double nearest = Double.MAX_VALUE;
+            for (Point mob : mobs) {
+                nearest = Math.min(nearest, mob.distanceSq(cand));
+            }
+            if (nearest > bestClearance) {
+                bestClearance = nearest;
+                best = cand;
+            }
+        }
+        return best;
+    }
+
     private static Point activeGrindLootPosition(BotEntry entry, Point botPos) {
         MapItem loot = entry.grindLootTarget;
         if (loot == null || botPos == null) {
@@ -3328,7 +3443,7 @@ public class BotManager {
         if (BotAutopilotManager.updateHpRest(entry, bot)) {
             entry.grindTarget = null;
             if (entry.hpRestAnchor == null) {
-                entry.hpRestAnchor = resolveNoGrindTargetPosition(entry, botPos, bot.getMap());
+                entry.hpRestAnchor = resolveSafeIdleRegion(entry, bot, botPos, false); // survival: safest region
             }
             return walkToOrIdleAt(entry, bot, botPos, entry.hpRestAnchor, runAiTick);
         }
@@ -3340,7 +3455,7 @@ public class BotManager {
             // Pick a personal idle spot ONCE and hold it: re-resolving every tick made leechers drift
             // and pile onto the same point. Independent one-shot in-region picks spread them out.
             if (entry.leechIdleAnchor == null) {
-                entry.leechIdleAnchor = resolveNoGrindTargetPosition(entry, botPos, bot.getMap());
+                entry.leechIdleAnchor = resolveSafeIdleRegion(entry, bot, botPos, true); // spread among safe regions
             }
             return walkToOrIdleAt(entry, bot, botPos, entry.leechIdleAnchor, runAiTick);
         }
@@ -3352,7 +3467,7 @@ public class BotManager {
         if (BotBreakManager.onBreak(entry, breakNow)) {
             entry.grindTarget = null;
             if (entry.breakIdleAnchor == null) {
-                entry.breakIdleAnchor = resolveNoGrindTargetPosition(entry, botPos, bot.getMap());
+                entry.breakIdleAnchor = resolveSafeIdleRegion(entry, bot, botPos, true); // spread among safe regions
             }
             return walkToOrIdleAt(entry, bot, botPos, entry.breakIdleAnchor, runAiTick);
         } else if (entry.breakUntilMs != 0L) {

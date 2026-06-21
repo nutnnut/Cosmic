@@ -754,6 +754,15 @@ class BotManagerTest {
     }
 
     @Test
+    void pickFarthestFromMobsPicksMaxClearanceSpot() {
+        java.util.List<Point> candidates = java.util.List.of(
+                new Point(100, 100), new Point(500, 100), new Point(900, 100));
+        java.util.List<Point> mobs = java.util.List.of(new Point(120, 100), new Point(150, 100));
+        // x=900 is farthest from the mob cluster near x=120-150.
+        assertEquals(new Point(900, 100), BotManager.pickFarthestFromMobs(candidates, mobs));
+    }
+
+    @Test
     void shouldReuseWanderDirectionWhenGrindHasNoTarget() {
         Character bot = mockMovingBot(new Point(100, 100), createEmptyTestMap(910000030));
         BotEntry entry = new BotEntry(bot, mock(Character.class), null);

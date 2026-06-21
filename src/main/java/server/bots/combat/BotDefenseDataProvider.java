@@ -162,15 +162,49 @@ public final class BotDefenseDataProvider {
         if (!server.combat.CombatFormulaProvider.getInstance().doesMobHit(bot, mob)) {
             return 0;
         }
+        double randomFactor = ThreadLocalRandom.current().nextDouble(MIN_DAMAGE_FACTOR, Math.nextUp(MAX_DAMAGE_FACTOR));
+        return physicalTouchDamage(bot, physicalAttackDamage, mob.getLevel(), randomFactor);
+    }
 
+    /** Expected touch damage ON A LANDED HIT (mean damage factor, no hit roll) — the score-side
+     *  companion to {@link #rollPhysicalTouchDamage}. Stat-based (no live {@link Monster} needed) so
+     *  the grind advisor can value maps it isn't standing on. */
+    public int expectedPhysicalTouchDamageOnHit(Character bot, int mobPADamage, int mobLevel) {
+        int pad = Math.max(0, mobPADamage);
+        if (pad <= 0) {
+            return 1;
+        }
+        double meanFactor = (MIN_DAMAGE_FACTOR + MAX_DAMAGE_FACTOR) / 2.0;
+        return physicalTouchDamage(bot, pad, mobLevel, meanFactor);
+    }
+
+    /**
+     * Expected fraction of the bot's max HP lost per mob touch-attack ATTEMPT: P(mob lands) x
+     * E[damage | hit] / maxHp. The SSOT "how dangerous is this mob to me" primitive — reuses the real
+     * avoid (CombatFormulaProvider) and defense (this provider's damage curve) formulas, so grind-map
+     * valuation and safe-rest/idle region picking agree with what actually happens in combat.
+     */
+    public double expectedTouchHpLossFraction(Character bot, int mobPADamage, int mobLevel, int mobAccuracy) {
+        int maxHp = Math.max(1, bot.getCurrentMaxHp());
+        var formulas = server.combat.CombatFormulaProvider.getInstance();
+        double pHit = formulas.calculateBotAvoidChance(
+                mobAccuracy, mobLevel, bot.getLevel(), formulas.getTotalAvoidability(bot));
+        int dmg = expectedPhysicalTouchDamageOnHit(bot, mobPADamage, mobLevel);
+        return pHit * dmg / maxHp;
+    }
+
+    /** Live-mob convenience for the SSOT danger primitive. */
+    public double expectedTouchHpLossFraction(Character bot, Monster mob) {
+        return expectedTouchHpLossFraction(bot, mob.getPADamage(), mob.getLevel(), mob.getAccuracy());
+    }
+
+    private int physicalTouchDamage(Character bot, int physicalAttackDamage, int mobLevel, double factor) {
         int standardPdd = getStandardPdd(bot.getJob(), bot.getLevel());
         int wdef = Math.max(0, bot.getTotalWdef());
         double c = computeC(bot);
         double a = c + 0.28d;
-        double b = computeB(bot, mob, c, wdef, standardPdd);
-        double randomFactor = ThreadLocalRandom.current().nextDouble(MIN_DAMAGE_FACTOR, Math.nextUp(MAX_DAMAGE_FACTOR));
-
-        double damage = (physicalAttackDamage * (double) physicalAttackDamage * randomFactor)
+        double b = computeB(bot, mobLevel, c, wdef, standardPdd);
+        double damage = (physicalAttackDamage * (double) physicalAttackDamage * factor)
                 - (wdef * a)
                 - ((wdef - standardPdd) * b);
         return Math.max(1, (int) Math.floor(damage));
@@ -204,14 +238,14 @@ public final class BotDefenseDataProvider {
                 + bot.getTotalLuk() / 3200.0d;
     }
 
-    private double computeB(Character bot, Monster mob, double c, int wdef, int standardPdd) {
+    private double computeB(Character bot, int mobLevel, double c, int wdef, int standardPdd) {
         if (wdef >= standardPdd) {
             return (c * 28.0d / 45.0d)
                     + (bot.getLevel() * 7.0d / 13000.0d)
                     + 0.196d;
         }
 
-        return computeLevelFactor(bot.getLevel(), mob.getLevel())
+        return computeLevelFactor(bot.getLevel(), mobLevel)
                 * (c + (bot.getLevel() / 550.0d) + 0.28d);
     }
 

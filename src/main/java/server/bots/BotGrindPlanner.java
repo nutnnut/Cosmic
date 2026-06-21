@@ -71,12 +71,20 @@ final class BotGrindPlanner {
      *  back to spawn count alone). */
     record MobCandidate(int mobId, String mobName, int mobLevel, int exp, double killSeconds,
                         int mapId, String mapName, int spawnPoints, int mapAreaPx,
-                        List<GearProspect> gearDrops) {
-        /** Area-less convenience (tests, legacy callers): density from spawn count only. */
+                        double touchDanger, List<GearProspect> gearDrops) {
+        /** With area, no danger (tests, farm pick): touch-danger defaults to 0 (unweighted). */
+        MobCandidate(int mobId, String mobName, int mobLevel, int exp, double killSeconds,
+                     int mapId, String mapName, int spawnPoints, int mapAreaPx,
+                     List<GearProspect> gearDrops) {
+            this(mobId, mobName, mobLevel, exp, killSeconds, mapId, mapName, spawnPoints, mapAreaPx,
+                    0.0, gearDrops);
+        }
+
+        /** Area-less convenience (tests, legacy callers): density from spawn count only, no danger. */
         MobCandidate(int mobId, String mobName, int mobLevel, int exp, double killSeconds,
                      int mapId, String mapName, int spawnPoints, List<GearProspect> gearDrops) {
             this(mobId, mobName, mobLevel, exp, killSeconds, mapId, mapName, spawnPoints, 0,
-                    gearDrops);
+                    0.0, gearDrops);
         }
     }
 
@@ -417,7 +425,7 @@ final class BotGrindPlanner {
     private static MobCandidate withSpawnShare(MobCandidate c, double competitors) {
         int shared = Math.max(1, (int) Math.round(c.spawnPoints() / Math.max(1.0, competitors)));
         return new MobCandidate(c.mobId(), c.mobName(), c.mobLevel(), c.exp(), c.killSeconds(),
-                c.mapId(), c.mapName(), shared, c.mapAreaPx(), c.gearDrops());
+                c.mapId(), c.mapName(), shared, c.mapAreaPx(), c.touchDanger(), c.gearDrops());
     }
 
     /** Spawn-share every candidate for crowding: divisor = {@code base} (1 solo / party size) plus the

@@ -44,6 +44,29 @@ class BotGrindAdvisorTest {
     }
 
     @Test
+    void dangerMesoScalerRampsFromBrokeToRich() {
+        // 0 meso -> max aversion; at/above the cap -> min; linear midpoint.
+        assertEquals(BotManager.cfg.DANGER_MESO_SCALER_MAX, BotGrindAdvisor.dangerMesoScaler(0), 1e-9);
+        assertEquals(BotManager.cfg.DANGER_MESO_SCALER_MIN, BotGrindAdvisor.dangerMesoScaler(BotManager.cfg.DANGER_MESO_CAP), 1e-9);
+        assertEquals(BotManager.cfg.DANGER_MESO_SCALER_MIN, BotGrindAdvisor.dangerMesoScaler(BotManager.cfg.DANGER_MESO_CAP * 10L), 1e-9);
+        double mid = (BotManager.cfg.DANGER_MESO_SCALER_MAX + BotManager.cfg.DANGER_MESO_SCALER_MIN) / 2.0;
+        assertEquals(mid, BotGrindAdvisor.dangerMesoScaler(BotManager.cfg.DANGER_MESO_CAP / 2), 1e-9);
+    }
+
+    @Test
+    void dangerMapWeightDiscountsDangerousMapsForBrokeBot() {
+        client.Character broke = org.mockito.Mockito.mock(client.Character.class);
+        org.mockito.Mockito.when(broke.getMeso()).thenReturn(0);
+        // A mob expected to deal 20% HP/hit on a 0-meso bot: 1/(1 + 0.20*10) = 1/3.
+        var dangerous = new BotGrindPlanner.MobCandidate(1, "m", 30, 100, 2.0, 10, "map10", 8, 0, 0.20, java.util.List.of());
+        var safe = new BotGrindPlanner.MobCandidate(2, "m", 30, 100, 2.0, 20, "map20", 8, 0, 0.0, java.util.List.of());
+        var weight = BotGrindAdvisor.dangerMapWeight(broke, java.util.List.of(dangerous, safe));
+        assertEquals(1.0 / 3.0, weight.applyAsDouble(10), 1e-9);
+        assertEquals(1.0, weight.applyAsDouble(20), 1e-9);     // mobless map: undiscounted
+        assertEquals(1.0, weight.applyAsDouble(999), 1e-9);    // unknown map: identity
+    }
+
+    @Test
     void shouldBeZeroOnMissingOrEmptySamples() {
         assertEquals(0.0, BotGrindAdvisor.expectedImprovement(null, 5.0), 1e-9);
         assertEquals(0.0, BotGrindAdvisor.expectedImprovement(new double[0], 5.0), 1e-9);
@@ -187,7 +210,7 @@ class BotGrindAdvisorTest {
     private static BotGrindAdvisor.MobProfile profile(int mobId, String name, int exp,
                                                       double killSeconds,
                                                       BotGrindPlanner.GearProspect... drops) {
-        return new BotGrindAdvisor.MobProfile(mobId, name, 10, 0, exp, killSeconds, killSeconds,
+        return new BotGrindAdvisor.MobProfile(mobId, name, 10, 0, exp, killSeconds, killSeconds, 0.0,
                 java.util.List.of(drops));
     }
 

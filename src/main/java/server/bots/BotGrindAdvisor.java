@@ -324,33 +324,57 @@ final class BotGrindAdvisor {
                                     java.util.function.IntPredicate mapAllowed,
                                     java.util.function.IntToDoubleFunction mapScoreWeight,
                                     java.util.function.IntToDoubleFunction extraCompetitors) {
-        List<MobCandidate> candidates = filterDangerousWhenPoor(buildCandidates(entry, bot, mapAllowed), bot);
-        return BotGrindPlanner.planBest(candidates, mapScoreWeight, extraCompetitors, ThreadLocalRandom.current());
+        List<MobCandidate> candidates = filterUnsurvivableWhenPoor(buildCandidates(entry, bot, mapAllowed), bot);
+        java.util.function.IntToDoubleFunction dangerWeight = dangerMapWeight(bot, candidates);
+        java.util.function.IntToDoubleFunction weighted =
+                mapId -> mapScoreWeight.applyAsDouble(mapId) * dangerWeight.applyAsDouble(mapId);
+        return BotGrindPlanner.planBest(candidates, weighted, extraCompetitors, ThreadLocalRandom.current());
     }
 
-    /** How far above the bot's level a map's mobs may be before a meso-low bot treats it as too
-     *  touch-dangerous to grind (mirrors the 5-level party exp-range cutoff). */
-    private static final int POOR_DANGER_LEVEL_MARGIN = 5;
+    /** Expected HP-loss fraction per hit above which a broke bot treats a map as unsurvivable (a mob
+     *  ~3-shots it) and won't grind there at all — the floor net under the graded danger multiplier. */
+    private static final double POOR_UNSURVIVABLE_HPLOSS = 0.34;
 
     /**
-     * Danger-averse map filter for a meso-low bot. When the bot can't afford pots (strict spend tier),
-     * it can't pot through touch damage, so drop candidate maps whose mobs are well above its level -
-     * but ONLY if a safer option remains, so it never strands a poor bot with no map to grind. A
-     * solvent bot is unaffected (it can buy pots and tank the chip). Solo-decision path only; party
-     * cohort planning (candidatesFor) and deliberate item hunts (farm) keep the full pool.
+     * Survival-floor map filter for a meso-low bot. When the bot can't afford pots (strict spend tier),
+     * it can't pot through touch damage, so drop maps whose expected chip per hit is outright lethal
+     * (a mob would ~3-shot it) - but ONLY if a safer option remains, so it never strands a poor bot
+     * with no map to grind. A solvent bot is unaffected. The softer danger-vs-reward tradeoff above this
+     * floor is handled continuously by {@link #dangerMapWeight}. Solo-decision path only; party cohort
+     * planning and deliberate item hunts (farm) keep the full pool.
      */
-    private static List<MobCandidate> filterDangerousWhenPoor(List<MobCandidate> candidates, Character bot) {
+    private static List<MobCandidate> filterUnsurvivableWhenPoor(List<MobCandidate> candidates, Character bot) {
         if (candidates.size() < 2 || bot.getMeso() >= BotManager.cfg.POT_SPEND_MIN_MESO) {
             return candidates;
         }
-        int cap = bot.getLevel() + POOR_DANGER_LEVEL_MARGIN;
         List<MobCandidate> safe = new ArrayList<>(candidates.size());
         for (MobCandidate c : candidates) {
-            if (c.mobLevel() <= cap) {
+            if (c.touchDanger() < POOR_UNSURVIVABLE_HPLOSS) {
                 safe.add(c);
             }
         }
         return safe.isEmpty() ? candidates : safe; // never strand: keep all if nothing safer is reachable
+    }
+
+    /** Per-map score multiplier discounting touch-dangerous maps: {@code 1 / (1 + hpLossPerHit *
+     *  mesoScaler)}, in (0,1]. The meso scaler ramps the aversion with how broke the bot is (rich =>
+     *  ~0.1x, ignores danger; flat-broke => 10x, heavily avoids hard-hitting maps). Composes with the
+     *  caller's travel-time weight. SSOT danger input = {@link MobCandidate#touchDanger}. */
+    static java.util.function.IntToDoubleFunction dangerMapWeight(Character bot, List<MobCandidate> candidates) {
+        double scaler = dangerMesoScaler(bot.getMeso());
+        Map<Integer, Double> byMap = new HashMap<>();
+        for (MobCandidate c : candidates) {
+            byMap.put(c.mapId(), 1.0 / (1.0 + c.touchDanger() * scaler));
+        }
+        return mapId -> byMap.getOrDefault(mapId, 1.0);
+    }
+
+    /** Danger aversion strength from meso: linear from {@code DANGER_MESO_SCALER_MAX} at 0 meso down to
+     *  {@code DANGER_MESO_SCALER_MIN} at/above {@code DANGER_MESO_CAP}. */
+    static double dangerMesoScaler(long meso) {
+        BotManager.Config cfg = BotManager.cfg;
+        double t = Math.min(1.0, Math.max(0L, meso) / (double) Math.max(1, cfg.DANGER_MESO_CAP));
+        return cfg.DANGER_MESO_SCALER_MAX + (cfg.DANGER_MESO_SCALER_MIN - cfg.DANGER_MESO_SCALER_MAX) * t;
     }
 
     /** Candidate pool for external planners (party autopilot). Same pool recommend() uses;
@@ -412,7 +436,7 @@ final class BotGrindAdvisor {
                                 totalWornOffense, asp, baseHit, botAcc));
                 BotPerformanceMonitor.recordSince("grind.gear", tGear);
                 pointsByMob.put(new MobProfile(p.mobId(), p.mobName(), p.level(), p.avoid(), p.exp(),
-                        p.killSeconds(), p.rawKillSeconds(), gear), e.getValue());
+                        p.killSeconds(), p.rawKillSeconds(), p.touchDanger(), gear), e.getValue());
             }
             if (totalPoints(pointsByMob) < MIN_SPAWN_POINTS) {
                 continue;
@@ -507,7 +531,7 @@ final class BotGrindAdvisor {
      *  exp?"). {@code avoid} is the mob's avoidability, carried so the AP accuracy floor can aim at
      *  this mob without re-loading it. */
     record MobProfile(int mobId, String mobName, int level, int avoid, int exp, double killSeconds,
-                      double rawKillSeconds, List<GearProspect> prospects) {}
+                      double rawKillSeconds, double touchDanger, List<GearProspect> prospects) {}
 
     /**
      * The bot's blended grind exp-per-minute on the map it is currently standing on — the
@@ -593,8 +617,10 @@ final class BotGrindAdvisor {
         if (kp == null || kp[0] <= 0) {
             return null;
         }
+        double touchDanger = server.bots.combat.BotDefenseDataProvider.getInstance()
+                .expectedTouchHpLossFraction(bot, mob);
         return new MobProfile(mobId, mobName(mi, mobId), stats.getLevel(), Math.max(0, mob.getAvoidability()),
-                stats.getExp() * bot.getExpRate(), kp[0], kp[1], List.of());
+                stats.getExp() * bot.getExpRate(), kp[0], kp[1], touchDanger, List.of());
     }
 
     /** Below this many swings to kill, a mob is "trivial" — the bot one-/two-shots it, so it's not
@@ -645,6 +671,7 @@ final class BotGrindAdvisor {
         int totalPoints = totalPoints(pointsByMob);
         double killSeconds = 0.0;
         double exp = 0.0;
+        double touchDanger = 0.0;
         MobProfile face = null;
         int facePoints = -1;
         Map<Integer, GearProspect> gearByItem = new LinkedHashMap<>();
@@ -653,6 +680,7 @@ final class BotGrindAdvisor {
             double share = e.getValue() / (double) totalPoints;
             killSeconds += share * p.killSeconds();
             exp += share * p.exp();
+            touchDanger += share * p.touchDanger(); // spawn-weighted mean: the chip you eat on this map
             for (GearProspect g : p.prospects()) {
                 GearProspect diluted = new GearProspect(g.itemId(), g.itemName(),
                         g.chancePerKill() * share, g.scoreGain(), g.dpsGainFraction());
@@ -668,7 +696,7 @@ final class BotGrindAdvisor {
         }
         return new MobCandidate(face.mobId(), face.mobName(), face.level(),
                 (int) Math.round(exp), killSeconds, mapId, mapName, totalPoints, mapAreaPx,
-                List.copyOf(gearByItem.values()));
+                touchDanger, List.copyOf(gearByItem.values()));
     }
 
     private static int totalPoints(Map<MobProfile, Integer> pointsByMob) {
