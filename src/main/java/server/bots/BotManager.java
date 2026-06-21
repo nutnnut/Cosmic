@@ -74,6 +74,14 @@ public class BotManager {
         public int   MP_RECOVERY_INTERVAL_MS = 10_000;
         public int   BASE_HP_RECOVERY = 10;
         public int   BASE_MP_RECOVERY = 3;
+        // Improved MP Recovery (Magician passive 2000000) has no WZ x value — the v83 client computes
+        // it internally as MP-per-character-level rising with skill level. Modeled as
+        //   bonus = charLevel * skillLevel / IMPROVED_MP_RECOVERY_DIVISOR
+        // Calibrated to a captured HEAL_OVER_TIME packet (lv65 mage, Improved MP Recovery 16 -> 107
+        // MP/10s = BASE_MP_RECOVERY 3 + 104): 65*16/10 = 104. Matches the packet exactly and keeps the
+        // community-reported "MP per character level scales with skill" shape (their flat 2/level at
+        // max slightly overshoots what the client actually sends).
+        public int   IMPROVED_MP_RECOVERY_DIVISOR = 10;
         public float AUTOPOT_HP_THRESH = 0.7f; // use HP pot when HP falls below this ratio
 
         // Low-HP rest (no-pot survival, pairs with the strict pot spend tier): a broke bot that is out
@@ -3131,7 +3139,7 @@ public class BotManager {
         BotScrollManager.tickAutoScroll(entry, bot, nowMs);
         BotMakerManager.tickAutoCraft(entry, bot, nowMs);
 
-        if (owner == null && !BotAutopilotManager.isActive(entry)) {
+        if (owner == null && !BotAutopilotManager.isActive(entry) && !entry.loggingOut) {
             entry.following = false;
             if (groundAfterMapChange(entry, bot)) {
                 return;
@@ -3192,16 +3200,22 @@ public class BotManager {
             return;
         }
 
-        boolean idleConsumed;
-        if (!perf) {
-            idleConsumed = tickIdleEntry(entry, bot);
-        } else {
-            long tIdle = System.nanoTime();
-            idleConsumed = tickIdleEntry(entry, bot);
-            BotPerformanceMonitor.record("tick-idle", System.nanoTime() - tIdle);
-        }
-        if (idleConsumed) {
-            return;
+        // A scheduled logout must reach the tickLogout branch below even when the bot is otherwise
+        // idle. The idle fast-path consumes the tick and returns, so without this guard a logging-out
+        // bot that has gone idle (e.g. arrived in town between autopilot decisions) never runs the
+        // linger/disconnect and stands online forever past its deadline.
+        if (!entry.loggingOut) {
+            boolean idleConsumed;
+            if (!perf) {
+                idleConsumed = tickIdleEntry(entry, bot);
+            } else {
+                long tIdle = System.nanoTime();
+                idleConsumed = tickIdleEntry(entry, bot);
+                BotPerformanceMonitor.record("tick-idle", System.nanoTime() - tIdle);
+            }
+            if (idleConsumed) {
+                return;
+            }
         }
 
         // On any map change (legacy warp landing, travel portal hop, NPC-triggered portal):

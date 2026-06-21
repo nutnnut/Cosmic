@@ -2955,11 +2955,20 @@ class BotCombatManager {
                 entry.ammoWarnSent = false;
                 return;
             }
+            // Out of MP pots: a mage with no MP can't cast and stands frozen in attack range, so MP
+            // pots ARE the mage's ammo. Mirror the ranged-ammo recovery below: run a resupply errand
+            // while dry (the errand self-throttles), gated by canRecoverAmmo so the same meso floor
+            // reserved for ammo also funds MP pots. Truly broke -> fall through and keep farming.
+            if (entry.noAmmo && entry.grinding && BotAutopilotManager.isActive(entry)
+                    && BotShopManager.canRecoverAmmo(entry, bot)) {
+                BotAutopilotManager.requestResupplyErrand(entry, bot);
+                return;
+            }
             if (!entry.noAmmo) {
                 entry.noAmmo = true;
                 if (entry.grinding) {
-                    if (BotAutopilotManager.isActive(entry)) {
-                        BotManager.getInstance().botSay(bot, BotManager.randomReply(MP_POTS_OUT_MSGS));
+                    if (BotShopManager.canRecoverAmmo(entry, bot)
+                            && BotAutopilotManager.requestResupplyErrand(entry, bot)) {
                         return;
                     }
                     if (BotManager.canWalkToOwner(entry)) {

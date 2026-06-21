@@ -726,7 +726,8 @@ final class BotPotionManager {
         if (level <= 0) {
             return 0;
         }
-        return Math.max(0, (bot.getInt() / 10) * level);
+        int divisor = Math.max(1, BotManager.cfg.IMPROVED_MP_RECOVERY_DIVISOR);
+        return Math.max(0, (bot.getLevel() * level) / divisor);
     }
 
 }

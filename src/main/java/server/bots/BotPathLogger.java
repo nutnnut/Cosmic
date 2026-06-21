@@ -309,7 +309,9 @@ final class BotPathLogger {
         var bot = entry.bot;
         var wt = BotAttackExecutionProvider.getEquippedWeaponType(bot);
         sb.append("Combat:     weapon=").append(wt == null ? "none" : wt.name())
-                .append("  hp=").append(bot.getHp()).append("/").append(bot.getCurrentMaxHp()).append("\n");
+                .append("  hp=").append(bot.getHp()).append("/").append(bot.getCurrentMaxHp())
+                .append("  mp=").append(bot.getMp()).append("/").append(bot.getCurrentMaxMp())
+                .append("  noAmmo=").append(entry.noAmmo).append("\n");
         var mob = entry.grindTarget;
         if (mob == null || !mob.isAlive()) {
             sb.append("            grindTarget=<none — searching/wandering>\n");
