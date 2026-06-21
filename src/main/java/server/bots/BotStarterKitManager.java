@@ -94,14 +94,16 @@ final class BotStarterKitManager {
 
     // ---- job-change NPC errand (autopilot only) ----------------------------------------------
 
-    /** A class instructor: the town NPC that handles 1st+2nd job advancement, and the map it sits on. */
+    /** A job instructor: the NPC that advances a tier, and the map it sits on. */
     record JobChangeNpc(int npcId, int mapId, String townName) {}
 
-    // SSOT for "which instructor advances each explorer branch". Keyed by branch = id/100 (the
-    // shared first digit of every job in a class line). Each branch's TOWN instructor handles BOTH
-    // 1st and 2nd job (the 1072xxx 2nd-job test-map instructors are unreachable, so abstracted away).
-    // Verified vs Map.wz life data + handbook/NPC.txt.
-    private static final Map<Integer, JobChangeNpc> JOB_CHANGE_NPC = Map.of(
+    // SSOT for "which NPC advances each explorer branch", keyed by branch = id/100 (the shared first
+    // digit of every job in a class line). One table per advancement tier (the ones digit of the job
+    // id: 0 = 1st/2nd, 1 = 3rd, 2 = 4th). Verified vs Map.wz life data + handbook/NPC.txt.
+
+    // 1st + 2nd job: the TOWN instructor handles BOTH (a real player starts both at this same NPC;
+    // the 1072xxx 2nd-job test-map instructors are unreachable, so abstracted away).
+    private static final Map<Integer, JobChangeNpc> FIRST_SECOND_JOB_NPC = Map.of(
             1, new JobChangeNpc(1022000, 102000003, "Perion"),    // Warrior  - Dances with Balrog
             2, new JobChangeNpc(1032001, 101000003, "Ellinia"),   // Magician - Grendel the Really Old
             3, new JobChangeNpc(1012100, 100000201, "Henesys"),   // Bowman   - Athena Pierce
@@ -109,30 +111,59 @@ final class BotStarterKitManager {
             5, new JobChangeNpc(1090000, 120000101, "Nautilus")   // Pirate   - Kyrin
     );
 
-    /** The instructor NPC for a 1st/2nd-job advancement target, or null when the target is not a
-     *  routed advancement: 3rd-job ids end in 1, 4th in 2 (their El Nath/Leafre NPCs are
-     *  unverified/unreachable, so those advance instantly), and any non-explorer branch is absent. */
+    // 3rd job: the same NPC 1061009 "Door of Dimension" sits in each branch's hidden dungeon map.
+    private static final int THIRD_JOB_NPC = 1061009;
+    private static final Map<Integer, JobChangeNpc> THIRD_JOB_NPC_BY_BRANCH = Map.of(
+            1, new JobChangeNpc(THIRD_JOB_NPC, 105070001, "Ant Tunnel Park"),     // Warrior
+            2, new JobChangeNpc(THIRD_JOB_NPC, 100040106, "Forest of Evil II"),   // Magician
+            3, new JobChangeNpc(THIRD_JOB_NPC, 105040305, "Sleepy Dungeon V"),    // Bowman
+            4, new JobChangeNpc(THIRD_JOB_NPC, 107000402, "Monkey Swamp II"),     // Thief
+            5, new JobChangeNpc(THIRD_JOB_NPC, 105070200, "Cave of Evil Eye II")  // Pirate
+    );
+
+    // 4th job: per-branch master, all in Leafre - Forest of the Priest (240010501).
+    private static final int FOURTH_JOB_MAP = 240010501;
+    private static final Map<Integer, JobChangeNpc> FOURTH_JOB_NPC_BY_BRANCH = Map.of(
+            1, new JobChangeNpc(2081100, FOURTH_JOB_MAP, "Leafre"),  // Warrior  - Harmonia
+            2, new JobChangeNpc(2081200, FOURTH_JOB_MAP, "Leafre"),  // Magician - Gritto
+            3, new JobChangeNpc(2081300, FOURTH_JOB_MAP, "Leafre"),  // Bowman   - Legor
+            4, new JobChangeNpc(2081400, FOURTH_JOB_MAP, "Leafre"),  // Thief    - Hellin
+            5, new JobChangeNpc(2081500, FOURTH_JOB_MAP, "Leafre")   // Pirate   - Samuel
+    );
+
+    /** The instructor NPC for an explorer advancement target, or null for Beginner / non-explorer.
+     *  Tier = the ones digit of the job id: 0 = 1st/2nd job, 1 = 3rd, 2 = 4th. */
     static JobChangeNpc jobChangeNpcFor(Job target) {
-        if (!routesThroughNpc(target)) {
+        if (target == null) {
             return null;
         }
-        return JOB_CHANGE_NPC.get(target.getId() / 100);
+        int id = target.getId();
+        int branch = id / 100;
+        if (id <= 0 || branch < 1 || branch > 5) {
+            return null;
+        }
+        return switch (id % 10) {
+            case 0 -> FIRST_SECOND_JOB_NPC.get(branch);
+            case 1 -> THIRD_JOB_NPC_BY_BRANCH.get(branch);
+            case 2 -> FOURTH_JOB_NPC_BY_BRANCH.get(branch);
+            default -> null;
+        };
     }
 
-    /** True when advancing to {@code target} should WALK to an instructor first: explorer 1st/2nd
-     *  job only (ids ending in 0). 3rd (…1) and 4th (…2) advance instantly. */
+    /** True when advancing to {@code target} should WALK to an instructor first (every explorer
+     *  1st-4th job advancement). */
     static boolean routesThroughNpc(Job target) {
-        if (target == null) {
-            return false;
-        }
-        int id = target.getId();
-        return id > 0 && id % 10 == 0 && JOB_CHANGE_NPC.containsKey(id / 100);
+        return jobChangeNpcFor(target) != null;
     }
 
     /** Within this many px of the instructor counts as "talked to it" — matches the quest/cab radius. */
     static final int NPC_TRIGGER_RADIUS_PX = 500;
-    /** Give up an instructor walk that can't arrive in time so the errand state can't wedge. */
+    /** With the fallback ON, give up an instructor walk that can't arrive in time so it force-advances
+     *  instead of wedging. With the fallback OFF there is no give-up: the bot stays committed and
+     *  keeps retrying until it reaches the instructor (see {@link #tickJobErrand}). */
     static final long ERRAND_TIMEOUT_MS = 90_000L;
+    /** Throttle for the "can't reach instructor" error log while a fallback-off bot is stuck retrying. */
+    static final long ERRAND_WARN_INTERVAL_MS = 30_000L;
 
     /** Begin an instructor-walk errand for an autopilot bot instead of advancing instantly. */
     static void beginJobErrand(BotEntry entry, Job target) {
@@ -153,24 +184,34 @@ final class BotStarterKitManager {
         entry.jobErrandNpcId = 0;
         entry.jobErrandMapId = -1;
         entry.jobErrandStartedAtMs = 0L;
+        entry.jobErrandLastWarnMs = 0L;
     }
 
     /**
      * Drives an active job-change errand: travel to the instructor's town, walk within radius, then
-     * advance on arrival. Returns true while the tick is consumed (traveling/walking), false once
-     * the errand is done or dropped. Called from {@link BotAutopilotManager#tick} BEFORE combat so
-     * the bot does not grind (and over-level) en route. Reuses the shared
+     * advance on arrival. Returns true while the tick is consumed (so the caller doesn't grind), false
+     * only once the errand is done or force-advanced. Called from {@link BotAutopilotManager#tick}
+     * BEFORE combat so the bot does not grind (and over-level) en route. Reuses the shared
      * {@link BotTravelManager#tickApproachNpc} stepper (no reimplemented travel).
+     *
+     * <p>When it can't reach the instructor the behavior depends on
+     * {@link BotManager.Config#JOB_CHANGE_FALLBACK_ANYWHERE}:
+     * <ul>
+     *   <li><b>ON</b> (legacy): a 90s timeout / missing-NPC force-advances on the spot.</li>
+     *   <li><b>OFF</b> (default): the bot stays committed and keeps retrying forever — it never falls
+     *       back to grinding/autopilot — and logs a throttled error WITH reachability so the block is
+     *       debuggable.</li>
+     * </ul>
      */
     static boolean tickJobErrand(BotEntry entry, Character bot, boolean runAiTick) {
         if (entry.jobErrandMapId == -1 || entry.jobErrandTarget == null) {
             return false;
         }
-        if (System.currentTimeMillis() - entry.jobErrandStartedAtMs > ERRAND_TIMEOUT_MS) {
-            // Couldn't get there — advance on the spot rather than wedge or stay under-leveled.
+        boolean forceFallback = BotManager.cfg.JOB_CHANGE_FALLBACK_ANYWHERE;
+        if (forceFallback && System.currentTimeMillis() - entry.jobErrandStartedAtMs > ERRAND_TIMEOUT_MS) {
             Job target = entry.jobErrandTarget;
             clearJobErrand(entry);
-            advanceJob(entry, target);
+            advanceJob(entry, target); // couldn't get there in time — advance on the spot
             return false;
         }
         BotTravelManager.ApproachStatus status = BotTravelManager.tickApproachNpc(
@@ -178,11 +219,14 @@ final class BotStarterKitManager {
                 BotAutopilotManager.MAX_TRAVEL_HOPS, runAiTick, NPC_TRIGGER_RADIUS_PX);
         switch (status) {
             case NPC_GONE -> {
-                // Instructor not on the map (shouldn't happen for town NPCs) — advance anyway.
-                Job target = entry.jobErrandTarget;
-                clearJobErrand(entry);
-                advanceJob(entry, target);
-                return false;
+                if (forceFallback) {
+                    Job target = entry.jobErrandTarget;
+                    clearJobErrand(entry);
+                    advanceJob(entry, target); // NPC missing — advance anyway
+                    return false;
+                }
+                warnJobErrandStuck(entry, bot, "instructor not on the resolved map");
+                return true; // stay committed — don't drop back to grinding
             }
             case ARRIVED -> {
                 if (!BotManager.npcDwellReady(entry, BotManager.NPC_READ_DELAY_MS, BotManager.NPC_READ_JITTER_MS)) {
@@ -195,13 +239,38 @@ final class BotStarterKitManager {
             }
             case TRAVEL_YIELDED -> {
                 BotManager.npcDwellReset(entry);
-                return false; // travel gave up this tick — release it (errand retries / times out)
+                if (forceFallback) {
+                    return false; // legacy: release the tick (errand retries / eventually times out)
+                }
+                warnJobErrandStuck(entry, bot, "travel gave up reaching instructor");
+                return true; // keep retrying, stuck here until it gets through — never grind
             }
             default -> {
                 BotManager.npcDwellReset(entry);
                 return true; // TRAVELING / WALKING — tick consumed
             }
         }
+    }
+
+    /**
+     * The bot can't reach its job instructor and the fallback is OFF, so it's staying put and retrying.
+     * Logs a throttled error WITH reachability for debugging; the errand is NOT cleared (the bot remains
+     * committed and never falls back to grinding). {@code route()} is null when no portal path reaches
+     * the instructor's map within the hop budget (boat-gated, other continent, or genuinely no route).
+     */
+    private static void warnJobErrandStuck(BotEntry entry, Character bot, String reason) {
+        long now = System.currentTimeMillis();
+        if (now - entry.jobErrandLastWarnMs < ERRAND_WARN_INTERVAL_MS) {
+            return;
+        }
+        entry.jobErrandLastWarnMs = now;
+        boolean reachable = BotWorldGraph.route(
+                bot.getMapId(), entry.jobErrandMapId, BotAutopilotManager.MAX_TRAVEL_HOPS) != null;
+        log.error("Bot '{}' stuck trying to job-advance to {} ({}): instructor npc {} on map {}, bot on "
+                        + "map {}, route-reachable={}. Staying put and retrying (set "
+                        + "JOB_CHANGE_FALLBACK_ANYWHERE=true to force-advance instead).",
+                bot.getName(), entry.jobErrandTarget, reason, entry.jobErrandNpcId,
+                entry.jobErrandMapId, bot.getMapId(), reachable);
     }
 
     // Job-topology SSOT for the autonomous (ownerless) job picker in BotBuildManager. Unlike the

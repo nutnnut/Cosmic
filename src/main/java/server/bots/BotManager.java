@@ -127,6 +127,12 @@ public class BotManager {
         public boolean AUTO_QUESTS = true;
         public boolean QUEST_PIGGYBACK = true;
 
+        // Job advancement fallback: when an autopilot bot can't reach its job instructor (3rd/4th-job
+        // NPCs live in deep dungeon / Leafre maps that may be unroutable), force the advance on the
+        // spot anyway. Off = log an error WITH reachability instead and leave the job unchanged, so
+        // failures are debuggable rather than silently papered over. See BotStarterKitManager.
+        public boolean JOB_CHANGE_FALLBACK_ANYWHERE = false;
+
         // Owner inactivity (offline or dead) before bot scrolls/warps to nearest town and idles.
         public long OWNER_INACTIVE_TOWN_RETURN_MS = 5L * 60_000L;
         // Hard stop for explicitly-ordered autopilot bots playing on while the owner is

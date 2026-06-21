@@ -130,14 +130,25 @@ class BotStarterKitManagerTest {
     }
 
     @Test
-    void thirdAndFourthJobAndNonExplorerDoNotRouteThroughAnInstructor() {
-        // 3rd job ids end in 1, 4th in 2 -> advance instantly (null), routesThroughNpc false.
-        for (Job j : List.of(Job.CRUSADER, Job.PRIEST, Job.HERMIT,   // 3rd
-                Job.HERO, Job.BISHOP, Job.NIGHTLORD,                 // 4th
-                Job.BEGINNER)) {
-            assertNull(BotStarterKitManager.jobChangeNpcFor(j), j + " should advance instantly");
-            assertFalse(BotStarterKitManager.routesThroughNpc(j), j + " should not route");
-        }
+    void thirdAndFourthJobRouteToTheirVerifiedInstructor() {
+        // 3rd job: Door of Dimension (1061009) in each branch's hidden dungeon map.
+        assertJobNpc(Job.CRUSADER, 1061009, 105070001);    // Warrior  - Ant Tunnel Park
+        assertJobNpc(Job.FP_MAGE, 1061009, 100040106);     // Magician - Forest of Evil II
+        assertJobNpc(Job.RANGER, 1061009, 105040305);      // Bowman   - Sleepy Dungeon V
+        assertJobNpc(Job.HERMIT, 1061009, 107000402);      // Thief    - Monkey Swamp II
+        assertJobNpc(Job.MARAUDER, 1061009, 105070200);    // Pirate   - Cave of Evil Eye II
+        // 4th job: per-branch master in Leafre - Forest of the Priest (240010501).
+        assertJobNpc(Job.HERO, 2081100, 240010501);        // Harmonia
+        assertJobNpc(Job.BISHOP, 2081200, 240010501);      // Gritto
+        assertJobNpc(Job.BOWMASTER, 2081300, 240010501);   // Legor
+        assertJobNpc(Job.NIGHTLORD, 2081400, 240010501);   // Hellin
+        assertJobNpc(Job.BUCCANEER, 2081500, 240010501);   // Samuel
+    }
+
+    @Test
+    void beginnerAndNullDoNotRouteThroughAnInstructor() {
+        assertNull(BotStarterKitManager.jobChangeNpcFor(Job.BEGINNER), "Beginner should not route");
+        assertFalse(BotStarterKitManager.routesThroughNpc(Job.BEGINNER));
         assertNull(BotStarterKitManager.jobChangeNpcFor(null));
         assertFalse(BotStarterKitManager.routesThroughNpc(null));
     }

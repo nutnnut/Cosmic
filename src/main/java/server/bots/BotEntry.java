@@ -356,6 +356,7 @@ public class BotEntry {
     int jobErrandNpcId = 0;
     int jobErrandMapId = -1;
     long jobErrandStartedAtMs = 0L;    // abort the walk if it can't reach the instructor in time
+    long jobErrandLastWarnMs = 0L;     // throttle the "can't reach instructor" error log while stuck
 
     // Gachapon errand (BotGachaponManager): autopilot-only. When the bot has spare account NX (from
     // looted NX cards), it picks the best-EV reachable gachapon town, travels to the NPC, buys

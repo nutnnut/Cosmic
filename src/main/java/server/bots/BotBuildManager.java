@@ -712,9 +712,9 @@ class BotBuildManager {
      *  BotStarterKitManager.advanceJob (changeJob + handleJobAdvance award SP/AP); no quest. */
     private static void scheduleAutoAdvance(BotEntry entry, Job target) {
         BotManager.after(BotManager.randMs(900, 1100), () -> {
-            // 1st/2nd job on autopilot: walk to the class-town instructor first (advances on arrival),
-            // so the bot is physically present and doesn't grind/over-level en route. 3rd/4th job
-            // (and supervised/owner-following bots) advance instantly as before.
+            // Every explorer job on autopilot: walk to the job instructor first (advances on arrival),
+            // so the bot is physically present and doesn't grind/over-level en route. Supervised/
+            // owner-following bots (and any unrouted target) advance instantly.
             if (BotStarterKitManager.jobChangeNpcFor(target) != null && BotAutopilotManager.isActive(entry)) {
                 BotStarterKitManager.beginJobErrand(entry, target);
             } else {
