@@ -977,6 +977,9 @@ public class Server {
         // BotManager.cfg.POPULATION_SCHED_ENABLED (default OFF), so this is a no-op until enabled.
         server.bots.BotScheduler.getInstance().start();
 
+        // Localhost-only web view of the bot world graph + live per-map character occupancy.
+        server.bots.BotWorldGraphWebServer.start();
+
         OpcodeConstants.generateOpcodeNames();
         CommandsExecutor.getInstance();
 

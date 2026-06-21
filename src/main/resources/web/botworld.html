@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Bot World Graph</title>
+<script src="https://unpkg.com/cytoscape@3.30.2/dist/cytoscape.min.js"></script>
+<style>
+  html,body{margin:0;height:100%;font:13px system-ui,sans-serif;background:#10141c;color:#cdd6e4}
+  #cy{position:absolute;top:0;left:0;right:280px;bottom:0}
+  #side{position:absolute;top:0;right:0;bottom:0;width:280px;box-sizing:border-box;
+        padding:12px;background:#171c26;border-left:1px solid #283143;overflow:auto}
+  h1{font-size:15px;margin:0 0 8px}
+  .stat{display:flex;justify-content:space-between;padding:2px 0;border-bottom:1px solid #222a38}
+  .stat b{color:#fff}
+  label{display:block;margin:10px 0}
+  button{background:#2a3346;color:#cdd6e4;border:1px solid #3a4761;border-radius:4px;
+         padding:5px 9px;cursor:pointer}
+  button:hover{background:#34405a}
+  #detail{margin-top:12px}
+  #detail h2{font-size:13px;margin:0 0 4px;color:#fff}
+  .who{padding:1px 0;color:#bcd}
+  .who.bot{color:#ffc16b}
+  .muted{color:#67748c}
+</style>
+</head>
+<body>
+<div id="cy"></div>
+<div id="side">
+  <h1>Bot World Graph</h1>
+  <div class="stat"><span>Maps</span><b id="s-maps">-</b></div>
+  <div class="stat"><span>Occupied</span><b id="s-occ">-</b></div>
+  <div class="stat"><span>Players online</span><b id="s-players">-</b></div>
+  <div class="stat"><span>Bots online</span><b id="s-bots">-</b></div>
+  <label><input type="checkbox" id="occOnly"> occupied maps only</label>
+  <button id="relayout">Re-layout</button>
+  <div id="detail"><div class="muted">Click a map for who's on it.</div></div>
+</div>
+<script>
+const COLD = '#3a4761';            // empty map
+function heat(n){                   // occupancy -> colour
+  if(n<=0) return COLD;
+  const t = Math.min(1, Math.log2(n+1)/5);
+  const r = Math.round(120+135*t), g = Math.round(120-60*t), b = Math.round(60-40*t);
+  return `rgb(${r},${g},${b})`;
+}
+
+let cy, live = {maps:{}};
+let occOnly = false;
+
+(async function init(){
+  const g = await (await fetch('/api/graph')).json();
+  cy = cytoscape({
+    container: document.getElementById('cy'),
+    elements: [
+      ...g.nodes.map(m => ({data:{id:'m'+m.id, mid:m.id, name:m.name, occ:0}})),
+      ...g.edges.map(([a,b]) => ({data:{id:a+'_'+b, source:'m'+a, target:'m'+b}})),
+    ],
+    style: [
+      {selector:'node', style:{
+        'background-color':COLD,
+        'width':8,'height':8,'label':'','font-size':9,'color':'#dbe4f4',
+        'text-outline-color':'#10141c','text-outline-width':2,'min-zoomed-font-size':7}},
+      {selector:'node.busy', style:{
+        'label':'data(label)','width':'data(sz)','height':'data(sz)',
+        'background-color':'data(bg)','z-index':10}},
+      {selector:'node:selected', style:{'border-color':'#fff','border-width':2}},
+      {selector:'edge', style:{'width':1,'line-color':'#222d40','curve-style':'haystack','opacity':0.6}},
+    ],
+    wheelSensitivity:0.2,
+  });
+  document.getElementById('s-maps').textContent = g.nodes.length;
+  cy.on('tap','node', e => showDetail(e.target.data('mid')));
+  cy.on('tap', e => { if(e.target===cy) clearDetail(); });
+  runLayout();
+  refresh();
+  setInterval(refresh, 2000);
+})();
+
+function runLayout(){
+  const eles = occOnly ? cy.elements(':visible') : cy.elements();
+  // ponytail: cose on the full ~1500-node graph is a one-time few-second cost; live ticks
+  // only restyle. If it ever drags, default occupied-only ON or swap to fcose.
+  eles.layout({name:'cose', animate:false, nodeRepulsion:8000, idealEdgeLength:40,
+               numIter:600, fit:true, padding:30}).run();
+}
+
+async function refresh(){
+  try { live = await (await fetch('/api/live')).json(); } catch(e){ return; }
+  let players=0, bots=0, occ=0;
+  cy.batch(()=>{
+    cy.nodes().forEach(n=>{
+      const d = live.maps[n.data('mid')];
+      const p = d ? d.players.length : 0;
+      const b = d ? d.bots.length : 0;
+      const total = p+b;
+      n.data('occ', total);
+      if(total>0){
+        n.data('label', n.data('name')+' ('+total+')');
+        n.data('bg', heat(total));
+        n.data('sz', Math.min(46, 12 + total*4));
+        n.addClass('busy');
+      } else {
+        n.removeClass('busy');
+      }
+    });
+    players += sumOver('players'); bots += sumOver('bots');
+  });
+  occ = Object.keys(live.maps).length;
+  document.getElementById('s-occ').textContent = occ;
+  document.getElementById('s-players').textContent = players;
+  document.getElementById('s-bots').textContent = bots;
+  applyMode();
+  if(selected) showDetail(selected);  // keep panel fresh
+}
+
+function sumOver(key){ let s=0; for(const id in live.maps) s += live.maps[id][key].length; return s; }
+
+function applyMode(){
+  cy.batch(()=>{
+    cy.nodes().forEach(n=>{
+      n.style('display', (!occOnly || n.data('occ')>0) ? 'element':'none');
+    });
+    cy.edges().forEach(e=>{
+      const show = !occOnly || (e.source().data('occ')>0 && e.target().data('occ')>0);
+      e.style('display', show?'element':'none');
+    });
+  });
+}
+
+let selected = null;
+function showDetail(mid){
+  selected = mid;
+  const node = cy.getElementById('m'+mid);
+  const d = live.maps[mid] || {players:[],bots:[]};
+  const rows = [
+    ...d.bots.map(n=>`<div class="who bot">${esc(n)} <span class="muted">bot</span></div>`),
+    ...d.players.map(n=>`<div class="who">${esc(n)}</div>`),
+  ];
+  document.getElementById('detail').innerHTML =
+    `<h2>${esc(node.data('name'))}</h2>`
+    + `<div class="muted">map ${mid} &middot; ${d.bots.length} bots, ${d.players.length} players</div>`
+    + (rows.length ? rows.join('') : '<div class="muted">empty</div>');
+}
+function clearDetail(){ selected=null; document.getElementById('detail').innerHTML =
+  '<div class="muted">Click a map for who\'s on it.</div>'; }
+function esc(s){ return String(s).replace(/[&<>]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+
+document.getElementById('occOnly').onchange = e => { occOnly = e.target.checked; applyMode(); runLayout(); };
+document.getElementById('relayout').onclick = runLayout;
+</script>
+</body>
+</html>
