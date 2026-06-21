@@ -282,11 +282,11 @@ public class BotNameGenerator {
      * Apply 0–3 random transforms. Most names are plain (real players aren't all
      * stylized); the rare 3-stack lets full looks like "xXR4ngerXx" appear (~0.6%
      * of names) without making styling repetitive.
-     * Weights: 0 = 60% (plain), 1 = 22% (light), 2 = 12%, 3 = 6% (heavy stack).
+     * Weights: 0 = 80% (plain), 1 = 12% (light), 2 = 6%, 3 = 2% (heavy stack).
      */
     static String stylize(String root, ThreadLocalRandom rng) {
         int roll = rng.nextInt(100);
-        int transforms = roll < 60 ? 0 : roll < 82 ? 1 : roll < 94 ? 2 : 3;
+        int transforms = roll < 80 ? 0 : roll < 92 ? 1 : roll < 98 ? 2 : 3;
 
         String name = root;
         if (transforms == 0) {
