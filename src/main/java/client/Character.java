@@ -287,6 +287,11 @@ public class Character extends AbstractCharacterObject {
     private final List<WeakReference<MapleMap>> lastVisitedMaps = new LinkedList<>();
     private WeakReference<MapleMap> ownedMap = new WeakReference<>(null);
     private final Map<Short, QuestStatus> quests;
+    // Content signature of the quests/questprogress/medalmaps state at the last successful save (or at
+    // load). saveCharToDB skips the quest write (a delete-all + per-quest re-insert that dominates the
+    // save for quest-heavy bots) when the current signature matches. null => unknown => always write,
+    // so a missed change can never be silently dropped (the skip is opt-in on an exact content match).
+    private String savedQuestSignature = null;
     private final Set<Monster> controlled = new LinkedHashSet<>();
     private final Map<Integer, String> entered = new LinkedHashMap<>();
     private final Set<MapObject> visibleMapObjects = Collections.newSetFromMap(new ConcurrentHashMap<>());
@@ -4848,6 +4853,39 @@ public class Character extends AbstractCharacterObject {
         }
     }
 
+    /** Deterministic signature of everything the quest block of {@link #saveCharToDB} persists
+     *  (queststatus + questprogress + medalmaps). Sorted by quest/mob id so identical state always
+     *  yields the same string; compared against {@link #savedQuestSignature} to skip an unchanged
+     *  re-write. Built from in-memory state only (no DB), so it's cheap relative to the writes it saves. */
+    private String computeQuestSignature() {
+        List<QuestStatus> qs = getQuests();
+        qs.sort(Comparator.comparingInt(q -> q.getQuest().getId()));
+        StringBuilder sb = new StringBuilder(qs.size() * 24);
+        for (QuestStatus q : qs) {
+            sb.append(q.getQuest().getId()).append(':')
+              .append(q.getStatus().getId()).append(':')
+              .append(q.getCompletionTime()).append(':')
+              .append(q.getExpirationTime()).append(':')
+              .append(q.getForfeited()).append(':')
+              .append(q.getCompleted());
+            Map<Integer, String> prog = q.getProgress();
+            if (!prog.isEmpty()) {
+                List<Integer> keys = new ArrayList<>(prog.keySet());
+                Collections.sort(keys);
+                sb.append('p');
+                for (int k : keys) {
+                    sb.append(k).append('=').append(prog.get(k)).append(',');
+                }
+            }
+            List<Integer> medals = q.getMedalMaps();
+            if (!medals.isEmpty()) {
+                sb.append('m').append(medals);
+            }
+            sb.append(';');
+        }
+        return sb.toString();
+    }
+
     public final List<QuestStatus> getCompletedQuests() {
         List<QuestStatus> ret = new LinkedList<>();
         for (QuestStatus qs : getQuests()) {
@@ -7431,6 +7469,9 @@ public class Character extends AbstractCharacterObject {
                         }
                     }
                 }
+                // Seed the save-skip baseline to the just-loaded quest state, so a char that never
+                // changes a quest this session skips its quest write entirely (incl. the shutdown save).
+                ret.savedQuestSignature = ret.computeQuestSignature();
 
                 loadedQuestStatus.clear();
 
@@ -8837,9 +8878,15 @@ public class Character extends AbstractCharacterObject {
                     psEvent.executeBatch();
                 }
 
+                // Quests and medals. Skip the whole delete-all + per-quest re-insert when the quest
+                // state is byte-for-byte what we last persisted (or loaded) - the dominant per-save cost
+                // for quest-heavy bots, and pure waste when a grind tick changed nothing about quests.
+                // questSig is committed to savedQuestSignature only after con.commit() below succeeds.
+                String questSig = computeQuestSignature();
+                boolean questsChanged = !questSig.equals(savedQuestSignature);
+                if (questsChanged) {
                 deleteQuestProgressWhereCharacterId(con, id);
 
-                // Quests and medals
                 try (PreparedStatement psStatus = con.prepareStatement("INSERT INTO queststatus (`queststatusid`, `characterid`, `quest`, `status`, `time`, `expires`, `forfeited`, `completed`) VALUES (DEFAULT, ?, ?, ?, ?, ?, ?, ?)", Statement.RETURN_GENERATED_KEYS);
                      PreparedStatement psProgress = con.prepareStatement("INSERT INTO questprogress VALUES (DEFAULT, ?, ?, ?, ?)");
                      PreparedStatement psMedal = con.prepareStatement("INSERT INTO medalmaps VALUES (DEFAULT, ?, ?, ?)")) {
@@ -8875,6 +8922,7 @@ public class Character extends AbstractCharacterObject {
                         }
                     }
                 }
+                } // end if (questsChanged)
 
                 FamilyEntry familyEntry = getFamilyEntry(); //save family rep
                 if (familyEntry != null) {
@@ -8906,6 +8954,7 @@ public class Character extends AbstractCharacterObject {
                 }
 
                 con.commit();
+                savedQuestSignature = questSig; // commit succeeded: this quest state is now persisted
             } catch (Exception e) {
                 con.rollback();
                 throw e;
