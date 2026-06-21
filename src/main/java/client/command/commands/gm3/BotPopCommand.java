@@ -34,7 +34,7 @@ import java.util.List;
  */
 public class BotPopCommand extends Command {
     {
-        setDescription("Living-server bot population: status / on / off / list / sweep / clear / add <name> / remove <name> / crew <id|none> <name...> / wipe [confirm].");
+        setDescription("Living-server bot population: status / on / off / <multiplier> / list / sweep / clear / add <name> / remove <name> / crew <id|none> <name...> / wipe [confirm].");
     }
 
     @Override
@@ -81,7 +81,27 @@ public class BotPopCommand extends Command {
                 }
             }
             case "wipe" -> wipe(player, params);
-            default -> print(player, scheduler.statusLines());
+            default -> {
+                Double mult = parseMultiplier(verb);
+                if (mult != null) {
+                    scheduler.setMultiplier(mult);
+                    player.yellowMessage("Bot population multiplier set to " + mult + "x"
+                            + (mult == 0.0 ? " (no bots will be scheduled)." : "."));
+                    print(player, scheduler.statusLines());
+                } else {
+                    print(player, scheduler.statusLines());
+                }
+            }
+        }
+    }
+
+    /** Parse a bare numeric arg (e.g. "0", "1", "3", "2.5") as a non-negative multiplier; null if not numeric. */
+    private static Double parseMultiplier(String s) {
+        try {
+            double v = Double.parseDouble(s);
+            return v >= 0 ? v : null;
+        } catch (NumberFormatException e) {
+            return null;
         }
     }
 

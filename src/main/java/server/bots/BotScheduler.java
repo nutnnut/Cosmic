@@ -95,6 +95,15 @@ public final class BotScheduler {
         return Math.max(0, (int) Math.round(base * BotManager.cfg.POPULATION_MULTIPLIER));
     }
 
+    /** Set the population multiplier (0 = no bots, 1 = 1x curve, 3 = 3x, ...). Clamped >= 0. */
+    public void setMultiplier(double mult) {
+        BotManager.cfg.POPULATION_MULTIPLIER = Math.max(0.0, mult);
+    }
+
+    public double getMultiplier() {
+        return BotManager.cfg.POPULATION_MULTIPLIER;
+    }
+
     public List<String> statusLines() {
         int hour = LocalTime.now().getHour();
         int target = scaledTarget(hour, 0, 0.5);
@@ -112,6 +121,7 @@ public final class BotScheduler {
         return List.of(
                 "scheduler: " + (BotManager.cfg.POPULATION_SCHED_ENABLED ? "ON" : "OFF")
                         + " (autogen " + (BotManager.cfg.POPULATION_AUTOGEN ? "on" : "off") + ")",
+                "multiplier: " + BotManager.cfg.POPULATION_MULTIPLIER + "x",
                 "hour " + hour + ": target=" + target + "  live=" + live,
                 "managed pool: " + managed.size() + " (" + schedulable + " schedulable)");
     }
