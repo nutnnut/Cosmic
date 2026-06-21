@@ -5187,16 +5187,9 @@ public class Character extends AbstractCharacterObject {
         return YamlConfig.config.server.USE_ENFORCE_NOVICE_EXPRATE && isBeginnerJob() && level < 11;
     }
 
-    public boolean hasFirstJobExpRate() {
-        return level < 30;
-    }
-
     public int getExpRate() {
         World w = getWorldServer();
         if (hasNoviceExpRate()) {
-            return Math.min(w.getExpRate(), 5);
-        }
-        if (hasFirstJobExpRate()) {
             return Math.min(w.getExpRate(), 5);
         }
 
@@ -5268,9 +5261,6 @@ public class Character extends AbstractCharacterObject {
         World w = getWorldServer();
         if (hasNoviceExpRate()) {
             return Math.min(w.getExpRate(), 2);
-        }
-        if (hasFirstJobExpRate()) {
-            return Math.min(w.getExpRate(), 5) * w.getQuestRate();
         }
 
         return w.getExpRate() * w.getQuestRate();
