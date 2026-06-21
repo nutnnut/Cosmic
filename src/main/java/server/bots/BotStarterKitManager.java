@@ -158,10 +158,12 @@ final class BotStarterKitManager {
 
     /** Within this many px of the instructor counts as "talked to it" — matches the quest/cab radius. */
     static final int NPC_TRIGGER_RADIUS_PX = 500;
-    /** With the fallback ON, give up an instructor walk that can't arrive in time so it force-advances
-     *  instead of wedging. With the fallback OFF there is no give-up: the bot stays committed and
-     *  keeps retrying until it reaches the instructor (see {@link #tickJobErrand}). */
-    static final long ERRAND_TIMEOUT_MS = 90_000L;
+    /** With the fallback ON, give up after this long WITHOUT PROGRESS (no map hop and not actively
+     *  traveling) so it force-advances instead of wedging. It is a no-progress deadline, NOT a total
+     *  trip budget — a legal cross-continent route (incl. boat waits longer than this) keeps refreshing
+     *  it on every hop / travel tick, so only a genuine single-map wedge trips it. With the fallback
+     *  OFF there is no give-up: the bot stays committed and keeps retrying (see {@link #tickJobErrand}). */
+    static final long ERRAND_NO_PROGRESS_MS = 90_000L;
     /** Throttle for the "can't reach instructor" error log while a fallback-off bot is stuck retrying. */
     static final long ERRAND_WARN_INTERVAL_MS = 30_000L;
 
@@ -174,7 +176,8 @@ final class BotStarterKitManager {
         entry.jobErrandTarget = target;
         entry.jobErrandNpcId = instructor.npcId();
         entry.jobErrandMapId = instructor.mapId();
-        entry.jobErrandStartedAtMs = System.currentTimeMillis();
+        entry.jobErrandProgressMapId = -1; // first tick records the starting map as progress
+        entry.jobErrandProgressMs = System.currentTimeMillis();
         reply.accept(entry, "heading to " + instructor.townName() + " to change job");
     }
 
@@ -183,7 +186,8 @@ final class BotStarterKitManager {
         entry.jobErrandTarget = null;
         entry.jobErrandNpcId = 0;
         entry.jobErrandMapId = -1;
-        entry.jobErrandStartedAtMs = 0L;
+        entry.jobErrandProgressMapId = -1;
+        entry.jobErrandProgressMs = 0L;
         entry.jobErrandLastWarnMs = 0L;
     }
 
@@ -208,21 +212,24 @@ final class BotStarterKitManager {
             return false;
         }
         boolean forceFallback = BotManager.cfg.JOB_CHANGE_FALLBACK_ANYWHERE;
-        if (forceFallback && System.currentTimeMillis() - entry.jobErrandStartedAtMs > ERRAND_TIMEOUT_MS) {
-            Job target = entry.jobErrandTarget;
-            clearJobErrand(entry);
-            advanceJob(entry, target); // couldn't get there in time — advance on the spot
-            return false;
-        }
         BotTravelManager.ApproachStatus status = BotTravelManager.tickApproachNpc(
                 entry, bot, entry.jobErrandMapId, entry.jobErrandNpcId,
                 BotAutopilotManager.MAX_TRAVEL_HOPS, runAiTick, NPC_TRIGGER_RADIUS_PX);
+        long now = System.currentTimeMillis();
+        // Progress = a completed map hop OR active cross-map travel. TRAVELING also covers ferry waits/
+        // legs and the dock-gate wait, which tickTravel/BotFerryManager surface as TRAVELING — so a legal
+        // 30-min cross-continent route (incl. boat waits longer than the deadline) keeps refreshing the
+        // deadline. Only a genuine single-map wedge (can't hop off, or can't reach the NPC) accumulates.
+        if (bot.getMapId() != entry.jobErrandProgressMapId
+                || status == BotTravelManager.ApproachStatus.TRAVELING) {
+            entry.jobErrandProgressMapId = bot.getMapId();
+            entry.jobErrandProgressMs = now;
+        }
+        boolean noProgressTooLong = forceFallback && now - entry.jobErrandProgressMs > ERRAND_NO_PROGRESS_MS;
         switch (status) {
             case NPC_GONE -> {
                 if (forceFallback) {
-                    Job target = entry.jobErrandTarget;
-                    clearJobErrand(entry);
-                    advanceJob(entry, target); // NPC missing — advance anyway
+                    forceAdvance(entry, bot, "instructor not on the resolved map");
                     return false;
                 }
                 warnJobErrandStuck(entry, bot, "instructor not on the resolved map");
@@ -240,16 +247,33 @@ final class BotStarterKitManager {
             case TRAVEL_YIELDED -> {
                 BotManager.npcDwellReset(entry);
                 if (forceFallback) {
-                    return false; // legacy: release the tick (errand retries / eventually times out)
+                    if (noProgressTooLong) {
+                        forceAdvance(entry, bot, "no travel progress toward instructor");
+                        return false;
+                    }
+                    return false; // legacy: release the tick so travel retries / grind fills the gap
                 }
                 warnJobErrandStuck(entry, bot, "travel gave up reaching instructor");
                 return true; // keep retrying, stuck here until it gets through — never grind
             }
             default -> {
                 BotManager.npcDwellReset(entry);
+                if (noProgressTooLong) { // WALKING but can't reach the NPC on its own map
+                    forceAdvance(entry, bot, "no progress reaching instructor on its map");
+                    return false;
+                }
                 return true; // TRAVELING / WALKING — tick consumed
             }
         }
+    }
+
+    /** Force the advance on the spot (fallback ON), logging why for parity with the OFF-path warn. */
+    private static void forceAdvance(BotEntry entry, Character bot, String reason) {
+        Job target = entry.jobErrandTarget;
+        log.warn("Bot '{}' force-advancing to {} ({}): JOB_CHANGE_FALLBACK_ANYWHERE is on.",
+                bot != null ? bot.getName() : "?", target, reason);
+        clearJobErrand(entry);
+        advanceJob(entry, target);
     }
 
     /**

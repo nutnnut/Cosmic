@@ -355,7 +355,8 @@ public class BotEntry {
     client.Job jobErrandTarget = null;
     int jobErrandNpcId = 0;
     int jobErrandMapId = -1;
-    long jobErrandStartedAtMs = 0L;    // abort the walk if it can't reach the instructor in time
+    int jobErrandProgressMapId = -1;   // last map counted as progress; the no-progress deadline refreshes on change
+    long jobErrandProgressMs = 0L;     // time of last travel progress (map hop / active travel incl. ferry waits)
     long jobErrandLastWarnMs = 0L;     // throttle the "can't reach instructor" error log while stuck
 
     // Gachapon errand (BotGachaponManager): autopilot-only. When the bot has spare account NX (from
