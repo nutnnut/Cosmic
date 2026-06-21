@@ -160,6 +160,10 @@ class BotWorldGraphTest {
         assertEquals("jobin00", BotWorldGraph.scriptedEntrancePortal(101000000, 101000003)); // Magician (Grendel)
         assertEquals("in02", BotWorldGraph.scriptedEntrancePortal(100000200, 100000201));     // Bowman (Athena)
         assertEquals("in00", BotWorldGraph.scriptedEntrancePortal(240010500, 240010501));     // 4th job (Leafre)
+        // Return legs of one-way regions (Lith-anchored symmetry audit).
+        assertEquals("east00", BotWorldGraph.scriptedEntrancePortal(140020200, 140020300));   // Snow Island -> Puro dock
+        assertEquals("west00", BotWorldGraph.scriptedEntrancePortal(222010300, 222010200));   // KFT Fox Ridge return
+        assertEquals("out00", BotWorldGraph.scriptedEntrancePortal(240040700, 240040600));    // Leafre Cave of Life return
         assertNull(BotWorldGraph.scriptedEntrancePortal(101000000, 100000201)); // wrong dest for that map
         assertNull(BotWorldGraph.scriptedEntrancePortal(100000000, 100000201)); // not the entrance map
     }

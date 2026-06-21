@@ -383,11 +383,15 @@ final class BotWorldGraph {
         return withScriptedEntrances(built);
     }
 
-    /** A job-instructor hidden street reachable only by a SCRIPTED portal (tm=999999999) the WZ scan
-     *  can't follow, leaving the map a forward-unreachable island. {@code fromMap} has a portal named
-     *  {@code portalName} whose own script warps to {@code destMap}; we just teach the nav layer that
-     *  destination so routing AND the live portal-finder treat it as a normal portal (the bot walks it
-     *  and {@code GenericPortal.enterPortal} runs the real warp). Verified vs Map.wz + scripts/portal. */
+    /** A map reachable only by a SCRIPTED portal (tm=999999999) the WZ scan can't follow — either a
+     *  forward-unreachable hidden street (job instructors) or the return leg of a one-way region (you
+     *  can walk IN by portal but only walk OUT via a scripted portal, so the region is a can't-return
+     *  trap). {@code fromMap} has a portal named {@code portalName} whose own script warps to
+     *  {@code destMap}; we teach the nav layer that destination so routing AND the live portal-finder
+     *  treat it as a normal portal (the bot walks it and {@code GenericPortal.enterPortal} runs the real
+     *  warp). The return entries were found by a Lith-Harbor-anchored symmetry audit (every map Lith can
+     *  reach must reach back); each is the reverse of an existing graph exit, with the scripted portal's
+     *  questless default == destMap. Verified vs Map.wz + scripts/portal. */
     record ScriptedEntrance(int fromMap, String portalName, int destMap) {}
 
     static final List<ScriptedEntrance> SCRIPTED_ENTRANCES = List.of(
@@ -396,7 +400,15 @@ final class BotWorldGraph {
             // 1st-job Bowman: Henesys school lobby -> Bowman Instructional School (Athena), script enterAchter
             new ScriptedEntrance(100000200, "in02", 100000201),
             // 4th job: Leafre -> Forest of the Priest 4th-job room, script minar_job4
-            new ScriptedEntrance(240010500, "in00", 240010501)
+            new ScriptedEntrance(240010500, "in00", 240010501),
+            // Return legs (one-way regions, Lith-anchored audit) -----------------------------------------
+            // Snow Island: Dangerous Forest field -> Puro's boat dock 140020300, script enterPort (then
+            // the Puro ferry returns to Lith). Without this the whole Rien/Snow Island is a can't-return trap.
+            new ScriptedEntrance(140020200, "east00", 140020300),
+            // Korean Folk Town: Fox Ridge -> KFT-side return map 222010200, script foxLaidy_map
+            new ScriptedEntrance(222010300, "west00", 222010200),
+            // Leafre: Cave of Life entrance -> Leafre field 240040600, script hontale_morph2
+            new ScriptedEntrance(240040700, "out00", 240040600)
     );
 
     /** The scripted-entrance portal name to walk for a {@code fromMap -> destMap} hop, or null when that
@@ -544,6 +556,55 @@ final class BotWorldGraph {
             out[i++] = target;
         }
         edges.put(mapId, out);
+    }
+
+    /** One outgoing portal: where it leads and its in-map pixel position. */
+    record PortalLink(int toMapId, int x, int y) {}
+
+    /**
+     * The walkable portals of one map WITH their positions — same {@code info/link} / door / script
+     * rules as the edge scan ({@link #readMap}), but it keeps the x/y the cached edge graph throws
+     * away. Read on demand (uncached) by the world-graph web view to lay maps out by portal direction;
+     * routing never needs positions, so they stay out of the Index/cache.
+     */
+    static List<PortalLink> portalLinks(int mapId) {
+        DataProvider mapSource = DataProviderFactory.getDataProvider(WZFiles.MAP);
+        Data mapData = mapSource.getData(mapImgPath(mapId / 100000000, mapId));
+        if (mapData == null) {
+            return List.of();
+        }
+        Data info = mapData.getChildByPath("info");
+        String link = info != null ? DataTool.getString("link", info, "") : "";
+        if (!link.isEmpty()) {
+            try {
+                int linkId = Integer.parseInt(link);
+                mapData = mapSource.getData(mapImgPath(linkId / 100000000, linkId));
+                if (mapData == null) {
+                    return List.of();
+                }
+            } catch (NumberFormatException ignored) {
+                // malformed link — read the map as-is
+            }
+        }
+        Data portals = mapData.getChildByPath("portal");
+        if (portals == null) {
+            return List.of();
+        }
+        List<PortalLink> out = new ArrayList<>();
+        for (Data portal : portals) {
+            int tm = DataTool.getInt("tm", portal, NO_TARGET_MAPID);
+            if (tm == NO_TARGET_MAPID || tm == mapId) {
+                continue;
+            }
+            if (DataTool.getInt("pt", portal, 0) == Portal.DOOR_PORTAL) {
+                continue;
+            }
+            if (!DataTool.getString("script", portal, "").isEmpty()) {
+                continue;
+            }
+            out.add(new PortalLink(tm, DataTool.getInt("x", portal, 0), DataTool.getInt("y", portal, 0)));
+        }
+        return out;
     }
 
     /**
