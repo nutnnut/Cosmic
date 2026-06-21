@@ -406,7 +406,7 @@ final class BotGachaponManager {
         entry.questErrandMapId = -1; // gacha tick runs after quest tick; clear so it isn't shadowed
         entry.gachaErrandNpcId = npcId;
         entry.gachaErrandMapId = mapId;
-        entry.gachaErrandStartedAtMs = System.currentTimeMillis();
+        entry.gachaErrandProgress.begin(System.currentTimeMillis());
         entry.gachaTicketsThisTrip = 0;
         entry.gachaNextRollAtMs = 0L;
         entry.gachaUpgradeDriven = isUpgradeDriven(bot, npcId);
@@ -417,7 +417,7 @@ final class BotGachaponManager {
     private static void beginErrand(BotEntry entry, Character bot, TownEv town) {
         entry.gachaErrandNpcId = town.npcId();
         entry.gachaErrandMapId = town.mapId();
-        entry.gachaErrandStartedAtMs = System.currentTimeMillis();
+        entry.gachaErrandProgress.begin(System.currentTimeMillis());
         entry.gachaTicketsThisTrip = 0;
         entry.gachaNextRollAtMs = 0L;
         entry.gachaUpgradeDriven = isUpgradeDriven(bot, town.npcId());
@@ -436,15 +436,18 @@ final class BotGachaponManager {
         if (entry.gachaErrandMapId == -1) {
             return false;
         }
-        if (System.currentTimeMillis() - entry.gachaErrandStartedAtMs > ERRAND_TIMEOUT_MS) {
+        long now = System.currentTimeMillis();
+        if (entry.gachaErrandProgress.stalled(now, ERRAND_TIMEOUT_MS)) {
             boolean reachedTown = bot.getMapId() == entry.gachaErrandMapId;
             finishErrand(entry, bot, "couldn't get to the gachapon (stuck on map " + bot.getMapId()
                     + (reachedTown ? ", at town but not at NPC" : ", still in transit") + "), never mind");
             return false;
         }
         if (bot.getMapId() != entry.gachaErrandMapId) {
-            return BotTravelManager.tickTravel(entry, bot, entry.gachaErrandMapId,
+            boolean moved = BotTravelManager.tickTravel(entry, bot, entry.gachaErrandMapId,
                     BotAutopilotManager.MAX_TRAVEL_HOPS, runAiTick, false);
+            entry.gachaErrandProgress.record(bot, moved, now); // hop/ferry progress refreshes the deadline
+            return moved;
         }
         NPC npc = bot.getMap().getNPCById(entry.gachaErrandNpcId);
         if (npc == null) {
@@ -458,8 +461,9 @@ final class BotGachaponManager {
             BotTravelManager.movementStep.step(entry, npcPos, runAiTick);
             return true;
         }
-        // At the machine: pace the rolls so it reads as a human feeding tickets one at a time.
-        long now = System.currentTimeMillis();
+        // At the machine: rolling is legit progress, so keep the no-progress deadline from firing
+        // mid-trip. Pace the rolls so it reads as a human feeding tickets one at a time.
+        entry.gachaErrandProgress.touch(now);
         if (now < entry.gachaNextRollAtMs) {
             BotTravelManager.settleStandingDwell(entry); // stand at the machine, not walk-in-place
             return true; // mid-pace between rolls
@@ -590,7 +594,7 @@ final class BotGachaponManager {
         BotTravelManager.clearMoveTargetPin(entry);
         entry.gachaErrandMapId = -1;
         entry.gachaErrandNpcId = 0;
-        entry.gachaErrandStartedAtMs = 0L;
+        entry.gachaErrandProgress.clear();
         entry.gachaTicketsThisTrip = 0;
         entry.gachaNextRollAtMs = 0L;
         entry.gachaUpgradeDriven = false;

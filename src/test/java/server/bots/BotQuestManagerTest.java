@@ -658,7 +658,7 @@ class BotQuestManagerTest {
         e.questErrandNpcId = 2005;
         e.questErrandQuestId = 1019;
         e.questErrandPhase = BotQuestManager.Phase.START;
-        e.questErrandStartedAtMs = System.currentTimeMillis();
+        e.questErrandProgress.begin(System.currentTimeMillis());
 
         boolean consumed = BotQuestManager.tickErrand(e, bot, false);
 
@@ -675,7 +675,7 @@ class BotQuestManagerTest {
         e.questErrandMapId = 999999999; // unreachable
         e.questErrandNpcId = 2005;
         e.questErrandPhase = BotQuestManager.Phase.START;
-        e.questErrandStartedAtMs = System.currentTimeMillis() - BotQuestManager.ERRAND_TIMEOUT_MS - 1;
+        e.questErrandProgress.begin(System.currentTimeMillis() - BotQuestManager.ERRAND_TIMEOUT_MS - 1);
 
         boolean consumed = BotQuestManager.tickErrand(e, bot, false);
 
@@ -748,7 +748,7 @@ class BotQuestManagerTest {
         e.questErrandNpcId = 2000;
         e.questErrandQuestId = 1021;
         e.questErrandPhase = BotQuestManager.Phase.START;
-        e.questErrandStartedAtMs = System.currentTimeMillis();
+        e.questErrandProgress.begin(System.currentTimeMillis());
 
         BotQuestManager.tickErrand(e, bot, false);
 

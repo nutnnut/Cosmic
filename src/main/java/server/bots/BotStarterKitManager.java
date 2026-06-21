@@ -176,8 +176,7 @@ final class BotStarterKitManager {
         entry.jobErrandTarget = target;
         entry.jobErrandNpcId = instructor.npcId();
         entry.jobErrandMapId = instructor.mapId();
-        entry.jobErrandProgressMapId = -1; // first tick records the starting map as progress
-        entry.jobErrandProgressMs = System.currentTimeMillis();
+        entry.jobErrandProgress.begin(System.currentTimeMillis());
         reply.accept(entry, "heading to " + instructor.townName() + " to change job");
     }
 
@@ -186,8 +185,7 @@ final class BotStarterKitManager {
         entry.jobErrandTarget = null;
         entry.jobErrandNpcId = 0;
         entry.jobErrandMapId = -1;
-        entry.jobErrandProgressMapId = -1;
-        entry.jobErrandProgressMs = 0L;
+        entry.jobErrandProgress.clear();
         entry.jobErrandLastWarnMs = 0L;
     }
 
@@ -216,16 +214,8 @@ final class BotStarterKitManager {
                 entry, bot, entry.jobErrandMapId, entry.jobErrandNpcId,
                 BotAutopilotManager.MAX_TRAVEL_HOPS, runAiTick, NPC_TRIGGER_RADIUS_PX);
         long now = System.currentTimeMillis();
-        // Progress = a completed map hop OR active cross-map travel. TRAVELING also covers ferry waits/
-        // legs and the dock-gate wait, which tickTravel/BotFerryManager surface as TRAVELING — so a legal
-        // 30-min cross-continent route (incl. boat waits longer than the deadline) keeps refreshing the
-        // deadline. Only a genuine single-map wedge (can't hop off, or can't reach the NPC) accumulates.
-        if (bot.getMapId() != entry.jobErrandProgressMapId
-                || status == BotTravelManager.ApproachStatus.TRAVELING) {
-            entry.jobErrandProgressMapId = bot.getMapId();
-            entry.jobErrandProgressMs = now;
-        }
-        boolean noProgressTooLong = forceFallback && now - entry.jobErrandProgressMs > ERRAND_NO_PROGRESS_MS;
+        entry.jobErrandProgress.record(bot, status == BotTravelManager.ApproachStatus.TRAVELING, now);
+        boolean noProgressTooLong = forceFallback && entry.jobErrandProgress.stalled(now, ERRAND_NO_PROGRESS_MS);
         switch (status) {
             case NPC_GONE -> {
                 if (forceFallback) {

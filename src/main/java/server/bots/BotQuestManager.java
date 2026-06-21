@@ -750,7 +750,7 @@ final class BotQuestManager {
             clearQuestErrand(entry);
             return;
         }
-        entry.questErrandStartedAtMs = System.currentTimeMillis();
+        entry.questErrandProgress.begin(System.currentTimeMillis());
         reply.accept(entry, (phase == Phase.START ? "gonna grab " : "lemme turn in ")
                 + questName.name(q.id()));
     }
@@ -784,8 +784,10 @@ final class BotQuestManager {
         }
         // Abort an errand that can't reach the NPC in time (portal closed, death-respawn elsewhere,
         // route gone). Without this the "one errand at a time" scan guard would block all future
-        // piggyback for this bot forever. Mirrors autopilot's unreachable-errand giveup.
-        if (System.currentTimeMillis() - entry.questErrandStartedAtMs > ERRAND_TIMEOUT_MS) {
+        // piggyback for this bot forever. No-progress deadline (SSOT), so a legal long route isn't
+        // dropped mid-journey; only a genuine single-map wedge trips it.
+        long now = System.currentTimeMillis();
+        if (entry.questErrandProgress.stalled(now, ERRAND_TIMEOUT_MS)) {
             finishErrand(entry, bot, "couldn't get to that quest, dropping it");
             return false;
         }
@@ -793,6 +795,7 @@ final class BotQuestManager {
         BotTravelManager.ApproachStatus status = BotTravelManager.tickApproachNpc(
                 entry, bot, entry.questErrandMapId, entry.questErrandNpcId,
                 BotAutopilotManager.MAX_TRAVEL_HOPS, runAiTick, NPC_TRIGGER_RADIUS_PX);
+        entry.questErrandProgress.record(bot, status == BotTravelManager.ApproachStatus.TRAVELING, now);
         switch (status) {
             case NPC_GONE -> {
                 finishErrand(entry, bot, "huh, npc's gone, never mind");
@@ -810,12 +813,8 @@ final class BotQuestManager {
                 return false; // travel gave up this tick — let the bot grind, errand retries/timeouts
             }
             case TRAVELING -> {
-                // A hop is actively underway (tickTravel made legal progress — it has its own
-                // give-up windows, so sustained TRAVELING means the route is advancing). Reset the
-                // give-up clock so a long but legitimately-progressing multi-hop journey isn't
-                // dropped mid-route with "couldn't get to that quest". Genuine unreachability still
-                // times out: WALKING (on the NPC's map, can't close the last gap) does NOT reset.
-                entry.questErrandStartedAtMs = System.currentTimeMillis();
+                // A hop is actively underway; record() above already refreshed the no-progress deadline
+                // (WALKING — can't close the last gap on the NPC's map — does NOT, so it still times out).
                 BotManager.npcDwellReset(entry);
                 return true;
             }
@@ -927,7 +926,7 @@ final class BotQuestManager {
         entry.questErrandQuestId = 0;
         entry.questErrandPhase = Phase.NONE;
         entry.questErrandReturnMapId = -1;
-        entry.questErrandStartedAtMs = 0L;
+        entry.questErrandProgress.clear();
     }
 
     // ---- quest recommendations (Feature A) ---------------------------------------------------

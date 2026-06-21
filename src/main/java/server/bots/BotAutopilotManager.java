@@ -748,8 +748,8 @@ final class BotAutopilotManager {
         if (entry.loggingOut) {
             return "im at " + currentMap + ", logging off for a bit";
         }
-        // Job-change errand: committed to walking to the instructor (grinding is suppressed en route),
-        // so it outranks the grind/break states below.
+        // Long-travel errands: the bot is committed to walking to an NPC (grinding is suppressed en
+        // route), so they outrank the grind/break states below.
         if (entry.jobErrandMapId != -1 && entry.jobErrandTarget != null) {
             BotStarterKitManager.JobChangeNpc instructor =
                     BotStarterKitManager.jobChangeNpcFor(entry.jobErrandTarget);
@@ -757,6 +757,16 @@ final class BotAutopilotManager {
             return bot.getMapId() == entry.jobErrandMapId
                     ? "im at " + currentMap + ", walking to the instructor to job advance"
                     : "im at " + currentMap + ", going to " + town + " to job advance";
+        }
+        if (entry.questErrandMapId != -1) {
+            return bot.getMapId() == entry.questErrandMapId
+                    ? "im at " + currentMap + ", talking to a quest npc"
+                    : "im at " + currentMap + ", heading out for a quest";
+        }
+        if (entry.gachaErrandMapId != -1) {
+            return bot.getMapId() == entry.gachaErrandMapId
+                    ? "im at " + currentMap + ", at the gachapon"
+                    : "im at " + currentMap + ", heading to the gachapon";
         }
         // Transient sub-states sit on top of grind mode (entry.grinding stays true), so report them
         // first — otherwise a town break or level-gap idle-leech misreads as "grinding here".

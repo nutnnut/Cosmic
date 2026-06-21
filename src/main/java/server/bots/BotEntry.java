@@ -335,7 +335,7 @@ public class BotEntry {
     int questErrandQuestId = 0;
     BotQuestManager.Phase questErrandPhase = BotQuestManager.Phase.NONE;
     int questErrandReturnMapId = -1;     // grind map to resume after the errand
-    long questErrandStartedAtMs = 0L;    // abort the errand if it can't reach the NPC in time
+    final BotTravelManager.ErrandProgress questErrandProgress = new BotTravelManager.ErrandProgress(); // abort if it can't reach the NPC
     long nextQuestScanAtMs = 0L;
     // Quests this bot has proven it can't finish — the upstream quest didn't register as completed even
     // after a legal complete() call (bugged data/script, e.g. complete() is a no-op), or its NPC is on
@@ -355,8 +355,7 @@ public class BotEntry {
     client.Job jobErrandTarget = null;
     int jobErrandNpcId = 0;
     int jobErrandMapId = -1;
-    int jobErrandProgressMapId = -1;   // last map counted as progress; the no-progress deadline refreshes on change
-    long jobErrandProgressMs = 0L;     // time of last travel progress (map hop / active travel incl. ferry waits)
+    final BotTravelManager.ErrandProgress jobErrandProgress = new BotTravelManager.ErrandProgress();
     long jobErrandLastWarnMs = 0L;     // throttle the "can't reach instructor" error log while stuck
 
     // Gachapon errand (BotGachaponManager): autopilot-only. When the bot has spare account NX (from
@@ -365,7 +364,7 @@ public class BotEntry {
     // active. Reset in clearGachaErrand() (called from BotAutopilotManager.clear).
     int gachaErrandMapId = -1;
     int gachaErrandNpcId = 0;
-    long gachaErrandStartedAtMs = 0L;    // abort the trip if it can't reach the NPC in time
+    final BotTravelManager.ErrandProgress gachaErrandProgress = new BotTravelManager.ErrandProgress(); // abort if it can't reach the NPC
     int gachaTicketsThisTrip = 0;        // capped by GACHA_TICKETS_PER_TRIP
     long gachaNextRollAtMs = 0L;         // humanlike pacing between rolls
     long nextGachaScanAtMs = 0L;

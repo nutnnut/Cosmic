@@ -609,6 +609,54 @@ final class BotTravelManager {
     }
 
     /**
+     * SSOT no-progress deadline for any long-travel errand (job / quest / gacha). A NO-PROGRESS timer,
+     * NOT a trip budget: {@link #record} refreshes it on every map hop and on any active-travel tick
+     * (TRAVELING also covers ferry waits/legs and the dock-gate wait, which {@code tickTravel} surfaces
+     * as TRAVELING / a {@code moved} hop). So a legal cross-continent route — even one with boat waits
+     * longer than the deadline — never trips it; only a genuinely wedged single map accumulates. Each
+     * errand owns one instance on {@link BotEntry}; the caller picks the threshold and what to do when
+     * {@link #stalled} returns true.
+     */
+    static final class ErrandProgress {
+        private int mapId = -1;
+        private long lastProgressMs = 0L;
+
+        /** Arm at errand start: the progress clock runs from {@code nowMs}. */
+        void begin(long nowMs) {
+            mapId = -1; // forces the first record() to latch the starting map as progress
+            lastProgressMs = nowMs;
+        }
+
+        void clear() {
+            mapId = -1;
+            lastProgressMs = 0L;
+        }
+
+        /** True once the errand has gone {@code thresholdMs} with no progress. Pure read — feed it with
+         *  {@link #record} each tick. Check this BEFORE doing travel work so a wedged errand drops early. */
+        boolean stalled(long nowMs, long thresholdMs) {
+            return nowMs - lastProgressMs > thresholdMs;
+        }
+
+        /** Feed one tick's outcome: a map change or {@code traveling} (a hop/ferry wait actively
+         *  underway) refreshes the deadline; a wedged single map does not. */
+        void record(Character bot, boolean traveling, long nowMs) {
+            if ((bot != null && bot.getMapId() != mapId) || traveling) {
+                if (bot != null) {
+                    mapId = bot.getMapId();
+                }
+                lastProgressMs = nowMs;
+            }
+        }
+
+        /** Mark the errand as actively progressing without a hop (e.g. rolling at the gachapon), so a
+         *  legitimately-busy on-map phase can't time out. */
+        void touch(long nowMs) {
+            lastProgressMs = nowMs;
+        }
+    }
+
+    /**
      * Shared "travel to a map, then walk within {@code radiusPx} of an NPC" stepper, the SSOT
      * for the errand approach loop both {@link BotQuestManager#tickErrand} and
      * {@link BotStarterKitManager#tickJobErrand} drive. Pure routing/positioning — it does NOT
