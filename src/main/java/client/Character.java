@@ -8601,7 +8601,9 @@ public class Character extends AbstractCharacterObject {
     // they deadlock in InnoDB. Gate the DB write so few enough overlap that the bounded retry reliably
     // wins. Permits = the deadlock/throughput knob: drop to 1 for guaranteed zero deadlock (saves
     // serialize). SSOT - covers autosave, bot logout, shutdown and despawn.
-    private static final java.util.concurrent.Semaphore SAVE_GATE = new java.util.concurrent.Semaphore(4, true);
+    // ponytail: 1 permit = guaranteed zero deadlock (saves serialize). 4 still deadlocked past the
+    // retry budget under bot-logout storms; bump back up only if save throughput becomes the bottleneck.
+    private static final java.util.concurrent.Semaphore SAVE_GATE = new java.util.concurrent.Semaphore(1, true);
 
     public void saveCharToDB() {
         if (YamlConfig.config.server.USE_AUTOSAVE) {
