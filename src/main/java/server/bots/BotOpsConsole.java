@@ -52,7 +52,7 @@ public final class BotOpsConsole {
         if (input == null) {
             return false;
         }
-        String line = input.trim();
+        String line = stripNamePrefix(gm, input);
         String low = line.toLowerCase();
         if (low.equals("mmc connect") || low.equals("mmc")) {
             connect(gm);
@@ -67,6 +67,20 @@ public final class BotOpsConsole {
         }
         dispatch(gm, line);
         return true;
+    }
+
+    /** The messenger packet delivers the line as "{@code <name> : <text>}"; strip the speaker's own
+     *  "{@code name :}" prefix so the verb matches. Leaves a bare line (no prefix) untouched. */
+    private static String stripNamePrefix(Character gm, String input) {
+        String s = input.trim();
+        String name = gm.getName();
+        if (name != null && !name.isEmpty() && s.regionMatches(true, 0, name, 0, name.length())) {
+            String rest = s.substring(name.length()).trim();
+            if (rest.startsWith(":")) {
+                return rest.substring(1).trim();
+            }
+        }
+        return s;
     }
 
     private void connect(Character gm) {
