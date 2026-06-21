@@ -1374,6 +1374,39 @@ public class BotManager {
         return out;
     }
 
+    /** Chat report for the "crew" command: the bot's crewmates (or that it's a soloist) plus its current
+     *  party status. Crew = same {@code crewGroupId} (SSOT, see {@link #crewMatesOnMap}); ASCII only. */
+    String crewReport(BotEntry entry) {
+        Character bot = entry == null ? null : entry.bot;
+        if (bot == null) {
+            return "not sure who i am rn";
+        }
+        StringBuilder sb = new StringBuilder();
+        Integer gid = entry.crewGroupId;
+        if (gid == null) {
+            sb.append("im a solo player, no crew");
+        } else {
+            List<String> mates = new ArrayList<>();
+            for (BotEntry e : allEntries()) {
+                if (e != entry && gid.equals(e.crewGroupId) && e.bot != null) {
+                    mates.add(e.bot.getName());
+                }
+            }
+            sb.append(mates.isEmpty()
+                    ? "im in a crew but no crewmates are online rn"
+                    : "my crew: " + String.join(", ", mates));
+        }
+        net.server.world.Party party = bot.getParty();
+        if (party == null) {
+            sb.append("; not in a party");
+        } else {
+            boolean leader = party.getLeaderId() == bot.getId();
+            sb.append("; in a party of ").append(party.getMembers().size())
+                    .append(leader ? " (im the leader)" : "");
+        }
+        return sb.toString();
+    }
+
     /** Supply/gear share candidates for {@code needyEntry}: the owner's stable (by {@code ownerId}) PLUS,
      *  for a self-owned CREW bot, its same-map crewmates. SSOT used by the potion/ammo share donor picks
      *  so crews share like an owned party while solo/dynamic bots (owner stable = just themselves) don't. */

@@ -204,6 +204,9 @@ public class BotChatManager {
     private static final Pattern HELP_PATTERN = Pattern.compile(
             "\\b(help|commands?|what\\s+can\\s+you\\s+do|how\\s+do\\s+i\\s+use\\s+you)\\b",
             Pattern.CASE_INSENSITIVE);
+    private static final Pattern CREW_PATTERN = Pattern.compile(
+            "(your\\s+)?crew(mates?)?(\\s+(status|info))?|who.?s?\\s+(in\\s+)?your\\s+crew",
+            Pattern.CASE_INSENSITIVE);
     private static final Pattern RECOMMENDED_GEAR_PATTERN = Pattern.compile(
             "\\b(any\\s+upgrades?|better\\s+gear|recommended\\s+gear|gear\\s+recommendations?|"
             + "any\\s+(better|recommended)\\s+(gear|equips?|equipment))\\b",
@@ -850,6 +853,11 @@ public class BotChatManager {
         if (isLocationStatusQuery(message)) {
             BotManager.after(BotManager.randMs(500, 700), () ->
                     BotManager.getInstance().botReply(entry, BotAutopilotManager.statusReport(entry, entry.bot)));
+            return;
+        }
+        if (matchesWholeCommand(CREW_PATTERN, message)) {
+            BotManager.after(BotManager.randMs(500, 700), () ->
+                    BotManager.getInstance().botReply(entry, BotManager.getInstance().crewReport(entry)));
             return;
         }
         if (NEED_HP_POT_PATTERN.matcher(message).find()) {
