@@ -733,7 +733,13 @@ class BotBuildManager {
         int lvl = bot.getLevel();
         Job job = bot.getJob();
         if (job == Job.BEGINNER) {
-            return lvl >= 10 ? plannedOrPicked(entry, Job.BEGINNER) : null;
+            if (lvl < 8) {
+                return null;
+            }
+            Job target = plannedOrPicked(entry, Job.BEGINNER);
+            // Magician is the lv8 exception; every other 1st job needs lv10.
+            int minLevel = target == Job.MAGICIAN ? 8 : 10;
+            return target != null && lvl >= minLevel ? target : null;
         }
         int id = job.getId();
         if (id < 100 || id >= 600) {
@@ -768,6 +774,15 @@ class BotBuildManager {
         boolean choiceTier = job == Job.BEGINNER || job.getId() % 100 == 0; // 1st/2nd job is the owner's choice
         if (choiceTier && !isOwnerless(entry)) {
             return; // supervised bot waits for the owner to pick (parkIfAutopilot owns the prompt)
+        }
+        // Lock the 1st-job pick as soon as it's decidable (lv8) so the magician-only lv8 advance is
+        // deterministic — without this, a non-magician pick that isn't eligible until lv10 returns null
+        // below and the per-tick reconciliation re-rolls plannedOrPicked, possibly flipping to magician.
+        if (job == Job.BEGINNER && bot.getLevel() >= 8) {
+            Job pick = plannedOrPicked(entry, Job.BEGINNER);
+            if (pick != null) {
+                persistPlannedChoice(entry, bot, Job.BEGINNER, pick);
+            }
         }
         Job target = autoAdvanceTarget(entry, bot);
         if (target == null) {

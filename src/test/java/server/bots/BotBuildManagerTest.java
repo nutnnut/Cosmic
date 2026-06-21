@@ -561,4 +561,27 @@ class BotBuildManagerTest {
         when(skill.isFourthJob()).thenReturn(fourthJob);
         return skill;
     }
+
+    @Test
+    void magicianFirstJobIsEligibleAtLevel8ButOthersAtLevel10() {
+        Character bot = mock(Character.class);
+        BotEntry entry = new BotEntry(bot, mock(Character.class), mock(ScheduledFuture.class));
+        when(bot.getJob()).thenReturn(Job.BEGINNER);
+
+        // Magician is the lv8 exception.
+        entry.personality = BotPersonality.defaults().withPlannedJobs(Job.MAGICIAN, null);
+        when(bot.getLevel()).thenReturn(7);
+        assertNull(BotBuildManager.autoAdvanceTarget(entry, bot));
+        when(bot.getLevel()).thenReturn(8);
+        assertEquals(Job.MAGICIAN, BotBuildManager.autoAdvanceTarget(entry, bot));
+
+        // Every other 1st job must wait until lv10.
+        entry.personality = BotPersonality.defaults().withPlannedJobs(Job.WARRIOR, null);
+        when(bot.getLevel()).thenReturn(8);
+        assertNull(BotBuildManager.autoAdvanceTarget(entry, bot));
+        when(bot.getLevel()).thenReturn(9);
+        assertNull(BotBuildManager.autoAdvanceTarget(entry, bot));
+        when(bot.getLevel()).thenReturn(10);
+        assertEquals(Job.WARRIOR, BotBuildManager.autoAdvanceTarget(entry, bot));
+    }
 }
