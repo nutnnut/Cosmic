@@ -225,6 +225,7 @@ public final class BotPerformanceMonitor {
         if (elapsedNs < (long) (STALL_WARN_MS * 1_000_000.0)) {
             return;
         }
+        maybeAutoExportOnStall(elapsedNs);
         long now = System.currentTimeMillis();
         long next = stallNextWarnAtMs.get();
         if (now < next || !stallNextWarnAtMs.compareAndSet(next, now + STALL_WARN_COOLDOWN_MS)) {
@@ -246,6 +247,26 @@ public final class BotPerformanceMonitor {
             log.warn("Bot tick stall: {} on map {} took {} ms{}",
                     botName, mapId, formatMs(elapsedNs / 1_000_000.0), formatStallPhases());
         }
+    }
+
+    /** A tick stalling at least this long auto-dumps the accumulated perf window to CSV (throttled), so
+     *  the bad window is captured without anyone running !botperflog at the right moment. Only writes
+     *  when monitoring is on (!botperfdebug) - otherwise no stats are accumulated and exportCsv no-ops. */
+    private static final double STALL_EXPORT_MS = 2000.0;
+    private static final long STALL_EXPORT_COOLDOWN_MS = 60_000L;
+    private static final java.util.concurrent.atomic.AtomicLong stallNextExportAtMs =
+            new java.util.concurrent.atomic.AtomicLong();
+
+    private static void maybeAutoExportOnStall(long elapsedNs) {
+        if (elapsedNs < (long) (STALL_EXPORT_MS * 1_000_000.0)) {
+            return;
+        }
+        long now = System.currentTimeMillis();
+        long next = stallNextExportAtMs.get();
+        if (now < next || !stallNextExportAtMs.compareAndSet(next, now + STALL_EXPORT_COOLDOWN_MS)) {
+            return; // already dumped recently - one CSV per cooldown, not one per stall in a storm
+        }
+        exportCsv();
     }
 
     private static int smallestPhaseSlot(StallPhaseTrace trace) {

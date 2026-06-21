@@ -1982,6 +1982,10 @@ public class Server {
         if (getWorlds() == null) {
             return;//already shutdown
         }
+        // Stop the population scheduler before the mass-disconnect: no point logging bots in while
+        // everyone is being saved + dropped, and it keeps extra bot-logout saves from racing the
+        // disconnect sweep. (Matches the "never silently spawn" default; re-enable via @botpop.)
+        server.bots.BotScheduler.getInstance().setEnabled(false);
         for (World w : getWorlds()) {
             w.shutdown();
         }

@@ -8606,6 +8606,13 @@ public class Character extends AbstractCharacterObject {
         return false;
     }
 
+    // ponytail: char saves wipe-and-reinsert their rows on shared tables (inventoryitems, skills,
+    // savedlocations); run in parallel (shutdown disconnect loop + periodic autosave + bot logouts)
+    // they deadlock in InnoDB. Gate the DB write so few enough overlap that the bounded retry reliably
+    // wins. Permits = the deadlock/throughput knob: drop to 1 for guaranteed zero deadlock (saves
+    // serialize). SSOT - covers autosave, bot logout, shutdown and despawn.
+    private static final java.util.concurrent.Semaphore SAVE_GATE = new java.util.concurrent.Semaphore(4, true);
+
     public void saveCharToDB() {
         if (YamlConfig.config.server.USE_AUTOSAVE) {
             Runnable r = new Runnable() {
@@ -8633,6 +8640,17 @@ public class Character extends AbstractCharacterObject {
 
         Server.getInstance().updateCharacterEntry(this);
 
+        // Throttle concurrent saves (see SAVE_GATE) then retry the txn on the residual deadlock -
+        // MySQL says restart it, and the save rebuilds from in-memory state (idempotent) so it's safe.
+        try {
+            SAVE_GATE.acquire();
+        } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
+            log.error("Interrupted before saving chr {}, level: {}, job: {}", name, level, job.getId());
+            return;
+        }
+        try {
+        for (int attempt = 1; ; attempt++) {
         try (Connection con = DatabaseConnection.getConnection()) {
             con.setAutoCommit(false);
             con.setTransactionIsolation(Connection.TRANSACTION_READ_UNCOMMITTED);
@@ -9036,8 +9054,29 @@ public class Character extends AbstractCharacterObject {
                 con.setTransactionIsolation(Connection.TRANSACTION_REPEATABLE_READ);
                 con.setAutoCommit(true);
             }
+        } catch (java.sql.SQLTransactionRollbackException e) {
+            // Deadlock victim. Back off a jittered, growing delay so the retry desyncs from the
+            // colliding transaction instead of re-colliding (livelock). InnoDB always rolls back
+            // exactly one side, so the other commits and a few tries reliably let everyone through.
+            if (attempt < 6) {
+                log.warn("Deadlock saving chr {} (attempt {}), retrying", name, attempt);
+                try {
+                    Thread.sleep(java.util.concurrent.ThreadLocalRandom.current().nextLong(20L * attempt, 60L * attempt));
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    log.error("Interrupted retrying save for chr {}, level: {}, job: {}", name, level, job.getId(), e);
+                    break;
+                }
+                continue;
+            }
+            log.error("Error saving chr {}, level: {}, job: {} after {} attempts", name, level, job.getId(), attempt, e);
         } catch (Exception e) {
             log.error("Error saving chr {}, level: {}, job: {}", name, level, job.getId(), e);
+        }
+        break;
+        }
+        } finally {
+            SAVE_GATE.release();
         }
     }
 
