@@ -280,6 +280,23 @@ class BotInventoryManager {
         return nearest;
     }
 
+    /** A peer bot may auto-join an incoming trade from another bot it shares a stable with: same human
+     *  owner (owned stable) OR same crew. Crew bots are SELF-owned (owner == self), so the owner check
+     *  fails for them — the crewGroupId is the SSOT relationship. Without the crew arm, crewmate-to-
+     *  crewmate trades stalled: the recipient never joined and the donor timed out. See
+     *  {@link BotManager#crewMatesOnMap} and kb_bot_self_owned_owner_assumptions. */
+    private static boolean isPeerTradePartner(BotEntry entry, Character partnerBot) {
+        if (entry.owner != null
+                && BotOwnershipService.getInstance().isAuthorizedOwner(partnerBot.getId(), entry.owner.getId())) {
+            return true;
+        }
+        if (entry.crewGroupId != null) {
+            BotEntry partnerEntry = BotManager.getInstance().getEntryByBotCharId(partnerBot.getId());
+            return partnerEntry != null && entry.crewGroupId.equals(partnerEntry.crewGroupId);
+        }
+        return false;
+    }
+
     static void tickManualTrade(BotEntry entry, Character bot) {
         if (entry.pendingTradeCategory != null) return;
 
@@ -315,11 +332,10 @@ class BotInventoryManager {
                 && commanderTrade.getPartner() == trade
                 && commander.getId() == commanderTrade.getChr().getId();
         if (!isCommanderTrade) {
-            // Handle peer-bot trade: same-owner bot offering an item to this bot
+            // Handle peer-bot trade: a bot in the same stable offering an item to this bot
             boolean isPeerBotTrade = partner != null
                     && partner.getChr().getClient() instanceof client.BotClient
-                    && entry.owner != null
-                    && BotOwnershipService.getInstance().isAuthorizedOwner(partner.getChr().getId(), entry.owner.getId());
+                    && isPeerTradePartner(entry, partner.getChr());
             if (!isPeerBotTrade) {
                 manualTradeGreetingSent.remove(bot.getId());
                 return;
