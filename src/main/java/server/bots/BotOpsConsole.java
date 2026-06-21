@@ -34,6 +34,9 @@ public final class BotOpsConsole {
     /** GM ids currently in console mode (their messenger lines are commands, not chat). */
     private final Set<Integer> connected = ConcurrentHashMap.newKeySet();
 
+    /** GM id -> the messenger slot the synthetic "Console" member occupies (for clean removal). */
+    private final java.util.Map<Integer, Integer> consoleSlot = new ConcurrentHashMap<>();
+
     public static BotOpsConsole getInstance() {
         return instance;
     }
@@ -85,12 +88,14 @@ public final class BotOpsConsole {
 
     private void connect(Character gm) {
         connected.add(gm.getId());
+        showConsoleMember(gm); // the client only renders messenger chat from a real member slot
         print(gm, List.of("console connected - every line you type here is now a command.",
                 "type 'help' for verbs, 'mmc disconnect' to leave."));
     }
 
     private void disconnect(Character gm) {
         boolean was = connected.remove(gm.getId());
+        hideConsoleMember(gm);
         if (BotConsoleTap.isOperator(gm)) {
             BotConsoleTap.unsubscribe();
         }
@@ -102,8 +107,29 @@ public final class BotOpsConsole {
     /** Tear down console mode + any active stream (called on messenger close / logout). */
     public void onMessengerClosed(Character gm) {
         connected.remove(gm.getId());
+        consoleSlot.remove(gm.getId()); // window is gone; no remove packet needed
         if (BotConsoleTap.isOperator(gm)) {
             BotConsoleTap.unsubscribe();
+        }
+    }
+
+    /** Inject a CLIENT-ONLY synthetic "Console" member into the GM's messenger window so it renders
+     *  the participant and accepts its chat lines. Not registered in the server-side Messenger - it's
+     *  purely a packet to this one client. Reuses the GM's own look for the avatar (any valid look
+     *  works; only the member slot matters). Sits in a slot the GM doesn't occupy. */
+    private void showConsoleMember(Character gm) {
+        if (gm.getMessenger() == null) {
+            return;
+        }
+        int slot = gm.getMessengerPosition() == 2 ? 1 : 2;
+        consoleSlot.put(gm.getId(), slot);
+        gm.sendPacket(PacketCreator.addMessengerPlayer("Console", gm, slot, gm.getClient().getChannel()));
+    }
+
+    private void hideConsoleMember(Character gm) {
+        Integer slot = consoleSlot.remove(gm.getId());
+        if (slot != null && gm.getMessenger() != null) {
+            gm.sendPacket(PacketCreator.removeMessengerPlayer(slot));
         }
     }
 
