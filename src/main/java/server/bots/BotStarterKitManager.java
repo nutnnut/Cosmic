@@ -98,17 +98,28 @@ final class BotStarterKitManager {
     record JobChangeNpc(int npcId, int mapId, String townName) {}
 
     // SSOT for "which NPC advances each explorer branch", keyed by branch = id/100 (the shared first
-    // digit of every job in a class line). One table per advancement tier (the ones digit of the job
-    // id: 0 = 1st/2nd, 1 = 3rd, 2 = 4th). Verified vs Map.wz life data + handbook/NPC.txt.
+    // digit of every job in a class line). One table per advancement tier. Verified vs Map.wz life data
+    // + handbook/NPC.txt.
 
-    // 1st + 2nd job: the TOWN instructor handles BOTH (a real player starts both at this same NPC;
-    // the 1072xxx 2nd-job test-map instructors are unreachable, so abstracted away).
-    private static final Map<Integer, JobChangeNpc> FIRST_SECOND_JOB_NPC = Map.of(
+    // 1st job: the town instructor (Magician/Bowman sit in scripted hidden streets reached via
+    // BotWorldGraph.SCRIPTED_ENTRANCES; the rest are plain-reachable).
+    private static final Map<Integer, JobChangeNpc> FIRST_JOB_NPC = Map.of(
             1, new JobChangeNpc(1022000, 102000003, "Perion"),    // Warrior  - Dances with Balrog
             2, new JobChangeNpc(1032001, 101000003, "Ellinia"),   // Magician - Grendel the Really Old
             3, new JobChangeNpc(1012100, 100000201, "Henesys"),   // Bowman   - Athena Pierce
             4, new JobChangeNpc(1052001, 103000003, "Kerning"),   // Thief    - Dark Lord
             5, new JobChangeNpc(1090000, 120000101, "Nautilus")   // Pirate   - Kyrin
+    );
+
+    // 2nd job: the distinct field "Job Instructor" NPCs (1072xxx) — NOT the same as 1st job, and in
+    // plain-reachable field maps (the old "unreachable test map" assumption was wrong). Pirate reuses
+    // Kyrin. Verified reachable vs the portal graph + Map.wz life data + handbook/NPC.txt.
+    private static final Map<Integer, JobChangeNpc> SECOND_JOB_NPC = Map.of(
+            1, new JobChangeNpc(1072000, 102020300, "West Rocky Mountain IV"),         // Warrior Job Instructor
+            2, new JobChangeNpc(1072001, 101020000, "the Forest North of Ellinia"),    // Magician Job Instructor
+            3, new JobChangeNpc(1072002, 106010000, "the Road to the Dungeon"),        // Bowman Job Instructor
+            4, new JobChangeNpc(1072003, 102040000, "the Construction Site N of Kerning"), // Thief Job Instructor
+            5, new JobChangeNpc(1090000, 120000101, "Nautilus")                        // Pirate - Kyrin
     );
 
     // 3rd job: the same NPC 1061009 "Door of Dimension" sits in each branch's hidden dungeon map.
@@ -132,7 +143,8 @@ final class BotStarterKitManager {
     );
 
     /** The instructor NPC for an explorer advancement target, or null for Beginner / non-explorer.
-     *  Tier = the ones digit of the job id: 0 = 1st/2nd job, 1 = 3rd, 2 = 4th. */
+     *  Ones digit of the job id = tier: 0 = 1st/2nd job, 1 = 3rd, 2 = 4th; within tier 0, id%100==0 is
+     *  1st job (town instructor) and the rest are 2nd job (distinct field Job Instructor). */
     static JobChangeNpc jobChangeNpcFor(Job target) {
         if (target == null) {
             return null;
@@ -143,7 +155,7 @@ final class BotStarterKitManager {
             return null;
         }
         return switch (id % 10) {
-            case 0 -> FIRST_SECOND_JOB_NPC.get(branch);
+            case 0 -> (id % 100 == 0) ? FIRST_JOB_NPC.get(branch) : SECOND_JOB_NPC.get(branch);
             case 1 -> THIRD_JOB_NPC_BY_BRANCH.get(branch);
             case 2 -> FOURTH_JOB_NPC_BY_BRANCH.get(branch);
             default -> null;

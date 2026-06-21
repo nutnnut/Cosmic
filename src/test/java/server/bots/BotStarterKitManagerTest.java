@@ -111,16 +111,17 @@ class BotStarterKitManagerTest {
     void jobChangeNpcForRoutesEachBranchTo_ItsVerifiedTownInstructor() {
         // Branch = job id / 100. Each 1st-job (X00) and a 2nd-job (X10/X20/X30) maps to the same
         // town instructor (npc, map). Verified vs Map.wz + handbook/NPC.txt.
+        // 1st job -> town instructor; 2nd job -> the distinct field Job Instructor (1072xxx).
         assertJobNpc(Job.WARRIOR, 1022000, 102000003);   // 1st
-        assertJobNpc(Job.FIGHTER, 1022000, 102000003);   // 2nd, same branch instructor
+        assertJobNpc(Job.FIGHTER, 1072000, 102020300);   // 2nd: Warrior Job Instructor @ West Rocky Mountain IV
         assertJobNpc(Job.MAGICIAN, 1032001, 101000003);
-        assertJobNpc(Job.CLERIC, 1032001, 101000003);
+        assertJobNpc(Job.CLERIC, 1072001, 101020000);    // 2nd: Magician Job Instructor
         assertJobNpc(Job.BOWMAN, 1012100, 100000201);
-        assertJobNpc(Job.HUNTER, 1012100, 100000201);
+        assertJobNpc(Job.HUNTER, 1072002, 106010000);    // 2nd: Bowman Job Instructor
         assertJobNpc(Job.THIEF, 1052001, 103000003);
-        assertJobNpc(Job.ASSASSIN, 1052001, 103000003);
+        assertJobNpc(Job.ASSASSIN, 1072003, 102040000);  // 2nd: Thief Job Instructor
         assertJobNpc(Job.PIRATE, 1090000, 120000101);
-        assertJobNpc(Job.BRAWLER, 1090000, 120000101);
+        assertJobNpc(Job.BRAWLER, 1090000, 120000101);   // 2nd Pirate reuses Kyrin
     }
 
     private static void assertJobNpc(Job target, int npcId, int mapId) {
