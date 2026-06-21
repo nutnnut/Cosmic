@@ -117,4 +117,13 @@
         <sqlFile path="db/tables/028-perf-indexes.sql"/>
     </changeSet>
 
+    <changeSet id="29" author="Claude">
+        <preConditions onFail="MARK_RAN">
+            <not>
+                <indexExists tableName="drop_data" indexName="itemid"/>
+            </not>
+        </preConditions>
+        <sqlFile path="db/tables/029-drop-itemid-index.sql"/>
+    </changeSet>
+
 </databaseChangeLog>
