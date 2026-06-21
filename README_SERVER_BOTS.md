@@ -254,6 +254,22 @@ Verbs: `trade [me] <type/name>`, `give [me] <type/name>`, `drop <type/name>`, `p
 | `@botstatus` | (GM) Private listing of every bot on the map |
 | `@autosell` | (GM) Preview/run the bot sell pipeline on your own character |
 
+### GM Ops Console (Maple Messenger)
+
+A private GM console for driving/inspecting bots without spamming map chat. Open a **Maple Messenger** window and type `mmc connect` — a `Console` member joins and from then on every line you type is a command (not chat). Type `mmc disconnect` (or close the window) to leave.
+
+| Type | Effect |
+|---|---|
+| `mmc connect` / `mmc disconnect` | Enter / leave console mode |
+| `help` | List console verbs |
+| `list` | All spawned bots (name, map, job/lv) |
+| `status [name]` | Bot status (one bot, or all on your map) |
+| `log <name>` / `unlog` | Live-stream that bot's autopilot decisions here / stop |
+| `grind <name>` | Write the bot's autopilot decision dump (path -> chat) |
+| `gachapon <name> [npcId]` | Force a gacha trip now (watch it navigate + roll) |
+| `say <name> <text>` | Drive the bot via its own chat commands |
+| `cmd <@command ...>` | Run a GM command |
+
 ### Living-server population (`@botpop`)
 
 A background scheduler can keep a population of **server-generated** bots logging in and out on their
