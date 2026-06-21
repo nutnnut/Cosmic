@@ -223,6 +223,12 @@ public class BotEntry {
     // Deliberately NOT cleared on death: the bot revives in town and walks back.
     int autopilotMapId = -1;            // chosen grind map; travel destination while != current map
     long autopilotNextDecisionAtMs = 0L; // when to re-run the grind advisor
+    // Post-mortem for "idle in town overnight": the LAST decision the advisor resolved and when, so
+    // @botstatus can self-diagnose a stranding after the fact (the live decision stream is no use for
+    // something that happened at 3am). Set at every resolution point in BotAutopilotManager
+    // (recordDecision): install-plan success and the "no reachable spot" branches. 0 = never decided.
+    long autopilotLastDecisionAtMs = 0L;
+    String autopilotLastDecisionReason = "";
     String autopilotDestinationName = "";
     String autopilotObjectiveSummary = "";
     // Why this plan won, in plain words ("good exp", "could be a real upgrade for me") —

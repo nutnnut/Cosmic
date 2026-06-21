@@ -394,6 +394,9 @@ final class BotAutopilotManager {
                 // Legitimate "nothing reachable worth grinding from here" (a non-null Decision with a
                 // null rec). Debug, not warn — an actual exception was already warn'd in decide().
                 log.debug("bot {} found no autopilot spot; will retry", bot.getName());
+                recordDecision(entry, decision == null
+                        ? "decide failed (see warn log)"
+                        : "no reachable grind spot from " + currentMapName(bot));
                 if (escapeTrappedRegion(entry, bot)) {
                     return; // walled into a danger region: used a donated scroll, or begged for one
                 }
@@ -749,9 +752,10 @@ final class BotAutopilotManager {
         }
         if (!isActive(entry)) {
             String activity = nonAutopilotActivity(entry);
-            return activity.isEmpty()
+            String base = activity.isEmpty()
                     ? "im at " + currentMap + ", idle rn"
                     : "im at " + currentMap + ", " + activity;
+            return base + lastDecisionSuffix(entry);
         }
 
         String destination = entry.autopilotDestinationName == null || entry.autopilotDestinationName.isBlank()
@@ -791,6 +795,18 @@ final class BotAutopilotManager {
                     + ", waiting" + where + " for the party to catch up";
         }
         return "im at " + currentMap + ", heading to " + destination + " to " + objective + reasonSuffix(entry);
+    }
+
+    /** Post-mortem tag for an idle bot: " (last decided 6h ago: no reachable grind spot ...)". */
+    private static String lastDecisionSuffix(BotEntry entry) {
+        if (entry.autopilotLastDecisionAtMs <= 0L) {
+            return "";
+        }
+        long ms = System.currentTimeMillis() - entry.autopilotLastDecisionAtMs;
+        String ago = ms < 60_000 ? (ms / 1000) + "s"
+                : ms < 3_600_000 ? (ms / 60_000) + "m"
+                : (ms / 3_600_000) + "h";
+        return " (last decided " + ago + " ago: " + entry.autopilotLastDecisionReason + ")";
     }
 
     private static String reasonSuffix(BotEntry entry) {
@@ -906,6 +922,9 @@ final class BotAutopilotManager {
             maybeTeaseFerry(entry, decision);
             Recommendation rec = decision != null ? decision.rec() : null;
             if (rec == null) {
+                recordDecision(entry, decision == null
+                        ? "decide failed (see warn log)"
+                        : "no reachable grind spot from " + currentMapName(bot) + " (re-decide)");
                 escapeTrappedRegion(entry, bot); // if walled into a danger region, scroll out / beg
                 return;
             }
@@ -1545,6 +1564,14 @@ final class BotAutopilotManager {
         // Already on the picked map: announcePlan's "this map works" covers it — a separate
         // "arrived" line right after would be redundant chatter.
         entry.autopilotArrivalAnnounced = pick.mapId() == fromMapId;
+        recordDecision(entry, "grind " + entry.autopilotDestinationName + " ("
+                + entry.autopilotObjectiveSummary + ")");
+    }
+
+    /** Stamp the last-decision post-mortem ({@link BotEntry#autopilotLastDecisionReason}) for @botstatus. */
+    private static void recordDecision(BotEntry entry, String reason) {
+        entry.autopilotLastDecisionAtMs = System.currentTimeMillis();
+        entry.autopilotLastDecisionReason = reason;
     }
 
     private static String destinationName(MobCandidate pick) {
