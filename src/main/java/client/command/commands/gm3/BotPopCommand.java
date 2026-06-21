@@ -173,7 +173,7 @@ public class BotPopCommand extends Command {
     /**
      * Permanently delete EVERY managed bot (the {@code managed_bot} set only — real players are never
      * touched unless a GM explicitly @botpop-added them). Bare {@code @botpop wipe} previews the roster
-     * (name, level, job; level high->low); {@code @botpop wipe confirm} executes. Each bot is stopped,
+     * (name, level, job; level low->high); {@code @botpop wipe confirm} executes. Each bot is stopped,
      * logged out of the world, then deleted via the SSOT path ({@link CharacterDeletionService}, which
      * clears inventory/equips/pets/rings and all per-char rows the FK cascade misses), and its now-empty
      * bot account is removed. A bot marked managed on an account that holds OTHER characters is skipped
@@ -191,11 +191,11 @@ public class BotPopCommand extends Command {
             ids.add(mb.botCharId());
         }
         List<BotRow> roster = loadRoster(ids);
-        roster.sort(Comparator.comparingInt(BotRow::level).reversed());
+        roster.sort(Comparator.comparingInt(BotRow::level));
 
         boolean confirm = params.length >= 2 && params[1].equalsIgnoreCase("confirm");
         if (!confirm) {
-            player.yellowMessage("Managed bots to wipe (" + roster.size() + "), Lv high->low:");
+            player.yellowMessage("Managed bots to wipe (" + roster.size() + "), Lv low->high:");
             for (BotRow r : roster) {
                 player.yellowMessage("  Lv" + r.level() + "  " + r.name() + "  (" + Job.getById(r.jobId()) + ")");
             }
