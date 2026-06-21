@@ -365,7 +365,7 @@ final class BotWorldGraph {
         Index loaded = loadCache();
         if (loaded != null) {
             log.info("Bot world graph: loaded {} maps from cache", loaded.edges().size());
-            return loaded;
+            return withScriptedEntrances(loaded);
         }
         long startedAt = System.currentTimeMillis();
         Map<Integer, int[]> edges = new ConcurrentHashMap<>(); // scanWz fans out per file
@@ -379,8 +379,48 @@ final class BotWorldGraph {
                 System.currentTimeMillis() - startedAt);
         Index built = new Index(Collections.unmodifiableMap(edges), Collections.unmodifiableMap(scrollTargets),
                 Collections.unmodifiableMap(returnMaps));
-        writeCache(built);
-        return built;
+        writeCache(built); // cache stays pure-WZ; the scripted entrances are re-added in-memory below
+        return withScriptedEntrances(built);
+    }
+
+    // Job-instructor hidden streets whose TOWN-side entrance is a SCRIPTED portal (tm=999999999): the
+    // WZ portal scan can't see it, so the map is a forward-unreachable island (you can only walk OUT).
+    // Verified vs Map.wz portal data + the cached portal graph (each has exactly one tm-exit back toward
+    // the reachable world). Magic Library / Bowman Instructional School handle 1st AND 2nd job; the
+    // Leafre room handles 4th. 3rd-job maps are already reachable, so none here.
+    private static final int[] INSTRUCTOR_ISLAND_MAPS = {
+            100000201, // Bowman Instructional School (Athena Pierce) — exits to Henesys lobby 100000200
+            101000003, // Magic Library (Grendel) — exits to Ellinia 101000000
+            240010501, // Leafre Forest of the Priest 4th-job room — exits to 240010500
+    };
+
+    /** Re-add the missing scripted entrance to each {@link #INSTRUCTOR_ISLAND_MAPS} island by REVERSING
+     *  its existing exit edge(s) (exit→island ⇒ also island-enterable). Returns a new Index; never
+     *  mutates {@code base}. No-op for an island with no graph exit. */
+    private static Index withScriptedEntrances(Index base) {
+        Map<Integer, int[]> edges = new HashMap<>(base.edges());
+        for (int island : INSTRUCTOR_ISLAND_MAPS) {
+            for (int exit : base.neighbors(island)) {
+                int[] cur = edges.getOrDefault(exit, new int[0]);
+                if (arrayContains(cur, island)) {
+                    continue;
+                }
+                int[] next = new int[cur.length + 1];
+                System.arraycopy(cur, 0, next, 0, cur.length);
+                next[cur.length] = island;
+                edges.put(exit, next);
+            }
+        }
+        return new Index(Collections.unmodifiableMap(edges), base.scrollTargets(), base.returnMaps());
+    }
+
+    private static boolean arrayContains(int[] a, int v) {
+        for (int x : a) {
+            if (x == v) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static void scanWz(Map<Integer, int[]> edges, Map<Integer, Integer> returnMaps) {
