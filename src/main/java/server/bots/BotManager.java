@@ -144,7 +144,7 @@ public class BotManager {
         // Living-server population scheduler (BotScheduler). DEFAULT OFF — it auto logs managed bots
         // in/out (and, when enabled, auto-generates fresh ones) to track a target online-count curve,
         // so a server start never silently spawns a crowd. Enable via @botpop or by flipping this.
-        public boolean POPULATION_SCHED_ENABLED = false;
+        public boolean POPULATION_SCHED_ENABLED = true;
         public long POPULATION_SWEEP_MS = 60_000L;         // reconcile cadence
         public int POPULATION_WORLD = 0;                   // world/channel scheduled bots spawn into
         public int POPULATION_CHANNEL = 1;
