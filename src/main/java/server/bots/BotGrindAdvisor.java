@@ -210,31 +210,62 @@ final class BotGrindAdvisor {
             // The dominant cold cost of the first gear scan is building the catalog-scroll index
             // (parses every scroll's stats/reqs once). Prime it here via the shared SSOT builder.
             BotScrollManager.warmScrollCatalog(ii);
-            int equipsWarmed = 0;
-            int scrollsWarmed = 0;
+            // The droppable gear catalog (one ~7ms WZ parse per id) was the BULK of the cold warm.
+            // Dedup first — the same id drops off many mobs, so parse each once — then fan the parses
+            // across a small pool: every ii cache on this path (equipStatsCache / equipCache /
+            // equipmentSlotCache / equipLevelReqCache / untradeableCache) is a ConcurrentHashMap, so
+            // parallel warming is safe. Cuts the serial long pole (~14s) near-linearly with cores.
+            Set<Integer> equipIds = new LinkedHashSet<>();
+            Set<Integer> scrollIds = new LinkedHashSet<>();
             for (List<int[]> drops : gearDropsByMob().values()) {
                 for (int[] drop : drops) {
                     int id = drop[0];
-                    try {
-                        if (id >= 1_000_000 && id <= 1_999_999) {
-                            // The gear scan walks the (uncached) WZ item directory once per equip
-                            // through these three: getEquipById (stats + untradeable via its stat
-                            // loop), getEquipmentSlot (primarySlot), getEquipLevelReq (wearable check).
-                            ii.getEquipById(id);
-                            ii.getEquipmentSlot(id);
-                            ii.getEquipLevelReq(id);
-                            equipsWarmed++;
-                        } else if (id >= 2_040_000 && id <= 2_049_999) {
-                            ii.getEquipStats(id);  // scrolls: getEquipById is equip-only
-                            scrollsWarmed++;
-                        }
-                    } catch (RuntimeException ignored) {
-                        // one corrupt id must not abort the warm — it just stays lazy
+                    if (id >= 1_000_000 && id <= 1_999_999) {
+                        equipIds.add(id);
+                    } else if (id >= 2_040_000 && id <= 2_049_999) {
+                        scrollIds.add(id);
                     }
                 }
             }
-            log.info("Bot grind cache warmup: warmed {} equip + {} scroll catalog entries (droppable set)",
-                    equipsWarmed, scrollsWarmed);
+            int workers = Math.max(2, Math.min(8, Runtime.getRuntime().availableProcessors() - 2));
+            java.util.concurrent.ExecutorService pool = java.util.concurrent.Executors.newFixedThreadPool(
+                    workers, r -> {
+                        Thread t = new Thread(r, "bot-gear-warmup");
+                        t.setDaemon(true);
+                        t.setPriority(Thread.MIN_PRIORITY); // never steal CPU from boot or live ticks
+                        return t;
+                    });
+            for (int id : equipIds) {
+                pool.execute(() -> {
+                    try {
+                        // The gear scan walks the (uncached) WZ item directory once per equip through
+                        // these three: getEquipById (stats + untradeable via its stat loop),
+                        // getEquipmentSlot (primarySlot), getEquipLevelReq (wearable check).
+                        ii.getEquipById(id);
+                        ii.getEquipmentSlot(id);
+                        ii.getEquipLevelReq(id);
+                    } catch (RuntimeException ignored) {
+                        // one corrupt id must not abort the warm — it just stays lazy
+                    }
+                });
+            }
+            for (int id : scrollIds) {
+                pool.execute(() -> {
+                    try {
+                        ii.getEquipStats(id);  // scrolls: getEquipById is equip-only
+                    } catch (RuntimeException ignored) {
+                    }
+                });
+            }
+            pool.shutdown();
+            try {
+                pool.awaitTermination(2, java.util.concurrent.TimeUnit.MINUTES);
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+                pool.shutdownNow();
+            }
+            log.info("Bot grind cache warmup: warmed {} equip + {} scroll catalog entries (droppable set, {} workers)",
+                    equipIds.size(), scrollIds.size(), workers);
         } catch (RuntimeException e) {
             log.warn("Bot grind cache warmup failed; decisions will lazy-load as before", e);
         } finally {
