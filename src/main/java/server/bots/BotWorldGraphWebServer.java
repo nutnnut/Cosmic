@@ -20,6 +20,7 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -27,23 +28,32 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
+import java.util.TreeSet;
 import java.util.concurrent.Executors;
 
 /**
- * Localhost-only read-only web view of the {@link BotWorldGraph} (maps as nodes, portal
- * adjacency as edges) overlaid with live per-map occupancy of every online character — bots
- * and real players alike. Open {@code http://127.0.0.1:8089/} in a browser.
+ * Localhost-only read-only web view of the {@link BotWorldGraph} (maps as nodes, portal/taxi/ferry
+ * adjacency as edges) overlaid with live per-map occupancy of every online character — bots and
+ * real players alike. Open {@code http://127.0.0.1:8089/} in a browser.
  *
- * <p>Deliberately dependency-free: the JDK's built-in {@link HttpServer}, hand-rolled JSON
- * (the payloads are flat), and a single static page that polls {@code /api/live} every ~2s.
- * Map-level only — no in-map coordinates. Started from {@code Server.init()} next to the
- * other bot-subsystem boot hooks.
+ * <p>Only the maps a bot can legally reach from spawn ({@link #START_MAP}, the tutorial island) are
+ * shown, and node positions are computed once on the server by a deterministic directional walk (a
+ * neighbour is placed in the direction of the portal that leads to it), so the graph never reshuffles
+ * when live data changes — the browser draws it with a fixed {@code preset} layout and only restyles
+ * on poll. Maps reachable from {@link #RETURN_ANCHOR} (Lith Harbor) but unable to get back to it are
+ * flagged as one-way-in traps — the bug class this view exists to surface.
+ *
+ * <p>Dependency-free: the JDK's built-in {@link HttpServer} and hand-rolled JSON.
  */
 public final class BotWorldGraphWebServer {
 
     private static final Logger log = LoggerFactory.getLogger(BotWorldGraphWebServer.class);
     // ponytail: fixed localhost port; promote to a cfg knob only if it ever clashes.
     private static final int PORT = 8089;
+    private static final int START_MAP = 10000;        // spawn/tutorial area — graph root + layout origin
+    private static final int RETURN_ANCHOR = 104000000; // Lith Harbor — the hub maps must be able to return to
+    private static final double STEP = 120.0;     // graph distance one portal hop covers
+    private static final double CELL = 80.0;       // collision grid pitch; < STEP so neighbours rarely share a cell
 
     private static volatile HttpServer server;
     private static volatile String graphJsonCache; // graph is static for the server's lifetime
@@ -95,7 +105,7 @@ public final class BotWorldGraphWebServer {
     private static void serveGraph(HttpExchange ex) throws IOException {
         String json = graphJsonCache;
         if (json == null) {
-            json = graphJson(BotWorldGraph.get().edges(), mapNames());
+            json = buildGraphJson();
             graphJsonCache = json;
         }
         send(ex, 200, "application/json", json.getBytes(StandardCharsets.UTF_8));
@@ -105,7 +115,216 @@ public final class BotWorldGraphWebServer {
         send(ex, 200, "application/json", liveJson(onlineCharacters()).getBytes(StandardCharsets.UTF_8));
     }
 
-    // --- data gathering ---
+    // --- graph (reachable subgraph + deterministic directional layout, built once) ---
+
+    record GNode(int id, String name, double x, double y, boolean danger) {
+    }
+
+    private static String buildGraphJson() {
+        long t0 = System.currentTimeMillis();
+        BotWorldGraph.Index idx = BotWorldGraph.get();
+        // Maps a bot can legally reach from spawn: portals + boarding taxis + ferries, fares assumed
+        // affordable so we get the whole traversable world (SSOT: BotWorldGraph's own flood).
+        Set<Integer> reachable = BotWorldGraph.reachableWithin(START_MAP, 1000,
+                new BotWorldGraph.RouteOptions(false, Integer.MAX_VALUE, true));
+        Map<Integer, double[]> pos = layout(idx, reachable);
+        Map<Integer, String> names = mapNames();
+        Set<Integer> danger = unreturnable(reachable); // reachable from Lith but can't get back to it
+
+        List<GNode> nodes = new ArrayList<>(reachable.size());
+        for (int id : reachable) {
+            double[] p = pos.getOrDefault(id, new double[]{0, 0});
+            nodes.add(new GNode(id, names.getOrDefault(id, String.valueOf(id)), p[0], p[1], danger.contains(id)));
+        }
+
+        Set<Long> seen = new HashSet<>();
+        List<int[]> edges = new ArrayList<>();
+        for (int a : reachable) {
+            for (int b : idx.neighbors(a)) {
+                tryEdge(a, b, reachable, seen, edges);
+            }
+            for (BotWorldGraph.TaxiEdge t : BotWorldGraph.taxiEdgesFrom(a)) {
+                tryEdge(a, t.toMapId(), reachable, seen, edges);
+            }
+            for (BotFerryManager.FerryRoute f : BotFerryManager.routesBoardingAt(a)) {
+                tryEdge(a, f.destinationMapId(), reachable, seen, edges);
+            }
+        }
+        log.info("Bot world-graph web view: {} reachable maps ({} unreturnable), {} edges, laid out in {} ms",
+                nodes.size(), danger.size(), edges.size(), System.currentTimeMillis() - t0);
+        return graphJson(nodes, edges);
+    }
+
+    /**
+     * Maps reachable FROM {@link #RETURN_ANCHOR} (Lith Harbor) that cannot get BACK to it by any legal
+     * bot means (portals, taxis, ferries, or a return scroll) — one-way-in traps. The gate on
+     * "reachable from Lith" keeps the deliberately one-way tutorial island (spawn → boat → Lith) out of
+     * the danger set. The bug class this view exists to surface; see the Sleepywood trap rescue work.
+     *
+     * <p>ponytail: one route() flood per shown map. Fine one-time + cached; if it ever drags, swap for a
+     * single reverse-reachability BFS from the anchor.
+     */
+    private static Set<Integer> unreturnable(Set<Integer> shown) {
+        Set<Integer> fromAnchor = BotWorldGraph.reachableWithin(RETURN_ANCHOR, 1000,
+                new BotWorldGraph.RouteOptions(false, Integer.MAX_VALUE, true));
+        BotWorldGraph.RouteOptions back = new BotWorldGraph.RouteOptions(true, Integer.MAX_VALUE, true);
+        Set<Integer> danger = new HashSet<>();
+        for (int m : shown) {
+            if (m != RETURN_ANCHOR && fromAnchor.contains(m)
+                    && BotWorldGraph.route(m, RETURN_ANCHOR, 1000, back) == null) {
+                danger.add(m);
+            }
+        }
+        return danger;
+    }
+
+    private static void tryEdge(int a, int b, Set<Integer> reach, Set<Long> seen, List<int[]> out) {
+        if (a == b || !reach.contains(a) || !reach.contains(b)) {
+            return;
+        }
+        int lo = Math.min(a, b);
+        int hi = Math.max(a, b);
+        if (seen.add(((long) lo << 32) | (hi & 0xFFFFFFFFL))) {
+            out.add(new int[]{lo, hi});
+        }
+    }
+
+    /**
+     * Deterministic positions by a BFS from START_MAP: a neighbour B of an already-placed map A is put
+     * one STEP away in the direction of A's portal that leads to B (relative to A's portal centroid),
+     * snapped to the nearest free grid cell so nodes never overlap. Taxi/ferry neighbours have no
+     * in-map geometry, so they fan downward.
+     *
+     * <p>ponytail: honours the outgoing-portal direction only; it does not average in B's reverse
+     * portal back toward A. Add that relaxation pass if the rough headings aren't enough.
+     */
+    private static Map<Integer, double[]> layout(BotWorldGraph.Index idx, Set<Integer> reachable) {
+        Map<Integer, double[]> pos = new HashMap<>();
+        Set<Long> occupied = new HashSet<>();
+        ArrayDeque<Integer> queue = new ArrayDeque<>();
+        pos.put(START_MAP, new double[]{0, 0});
+        occupied.add(cellKey(0, 0));
+        queue.add(START_MAP);
+
+        while (!queue.isEmpty()) {
+            int a = queue.poll();
+            double[] pa = pos.get(a);
+
+            List<BotWorldGraph.PortalLink> links = BotWorldGraph.portalLinks(a);
+            double cx = 0;
+            double cy = 0;
+            for (BotWorldGraph.PortalLink l : links) {
+                cx += l.x();
+                cy += l.y();
+            }
+            if (!links.isEmpty()) {
+                cx /= links.size();
+                cy /= links.size();
+            }
+            // accumulate a unit direction per neighbour (multiple portals to the same map average out)
+            Map<Integer, double[]> dir = new HashMap<>();
+            for (BotWorldGraph.PortalLink l : links) {
+                if (l.toMapId() == a || !reachable.contains(l.toMapId())) {
+                    continue;
+                }
+                double dx = l.x() - cx;
+                double dy = l.y() - cy;
+                double len = Math.hypot(dx, dy);
+                double[] d = dir.computeIfAbsent(l.toMapId(), k -> new double[2]);
+                if (len > 1e-6) {
+                    d[0] += dx / len;
+                    d[1] += dy / len;
+                }
+            }
+
+            TreeSet<Integer> neighbours = new TreeSet<>(); // sorted -> deterministic placement order
+            for (int n : idx.neighbors(a)) {
+                if (reachable.contains(n)) {
+                    neighbours.add(n);
+                }
+            }
+            for (BotWorldGraph.TaxiEdge t : BotWorldGraph.taxiEdgesFrom(a)) {
+                if (reachable.contains(t.toMapId())) {
+                    neighbours.add(t.toMapId());
+                }
+            }
+            for (BotFerryManager.FerryRoute f : BotFerryManager.routesBoardingAt(a)) {
+                if (reachable.contains(f.destinationMapId())) {
+                    neighbours.add(f.destinationMapId());
+                }
+            }
+
+            int fallback = 0;
+            for (int b : neighbours) {
+                if (pos.containsKey(b)) {
+                    continue;
+                }
+                double[] d = dir.get(b);
+                double ang;
+                if (d != null && (d[0] != 0 || d[1] != 0)) {
+                    ang = Math.atan2(d[1], d[0]);
+                } else {
+                    ang = Math.PI / 2 + (fallback++ - 1) * 0.6; // no geometry: fan downward
+                }
+                double tx = pa[0] + STEP * Math.cos(ang);
+                double ty = pa[1] + STEP * Math.sin(ang);
+                long free = nearestFreeCell(occupied, (int) Math.round(tx / CELL), (int) Math.round(ty / CELL));
+                occupied.add(free);
+                pos.put(b, new double[]{(int) (free >> 32) * CELL, (int) free * CELL});
+                queue.add(b);
+            }
+        }
+        return pos;
+    }
+
+    static long cellKey(int gx, int gy) {
+        return ((long) gx << 32) | (gy & 0xFFFFFFFFL);
+    }
+
+    /** The cell at (gx,gy) if free, else the nearest free cell searched in deterministic ring order. */
+    static long nearestFreeCell(Set<Long> occupied, int gx, int gy) {
+        if (!occupied.contains(cellKey(gx, gy))) {
+            return cellKey(gx, gy);
+        }
+        for (int r = 1; r < 5000; r++) {
+            for (int dx = -r; dx <= r; dx++) {
+                for (int dy = -r; dy <= r; dy++) {
+                    if (Math.max(Math.abs(dx), Math.abs(dy)) != r) {
+                        continue; // ring perimeter only
+                    }
+                    long k = cellKey(gx + dx, gy + dy);
+                    if (!occupied.contains(k)) {
+                        return k;
+                    }
+                }
+            }
+        }
+        return cellKey(gx, gy); // pathological; never hit in practice
+    }
+
+    /** {@code {"nodes":[{"id":..,"name":"..","x":..,"y":..}],"edges":[[lo,hi],..]}} */
+    static String graphJson(List<GNode> nodes, List<int[]> edges) {
+        StringBuilder n = new StringBuilder();
+        for (GNode g : nodes) {
+            if (n.length() > 0) {
+                n.append(',');
+            }
+            n.append("{\"id\":").append(g.id()).append(",\"name\":").append(jsonStr(g.name()))
+                    .append(",\"x\":").append(Math.round(g.x())).append(",\"y\":").append(Math.round(g.y()))
+                    .append(",\"danger\":").append(g.danger())
+                    .append('}');
+        }
+        StringBuilder e = new StringBuilder();
+        for (int[] ed : edges) {
+            if (e.length() > 0) {
+                e.append(',');
+            }
+            e.append('[').append(ed[0]).append(',').append(ed[1]).append(']');
+        }
+        return "{\"nodes\":[" + n + "],\"edges\":[" + e + "]}";
+    }
+
+    // --- live occupancy ---
 
     /** Every character currently online across all worlds/channels (bots included). */
     private static List<Character> onlineCharacters() {
@@ -118,73 +337,6 @@ public final class BotWorldGraphWebServer {
         return out;
     }
 
-    /** mapId -> display name, read once from {@code String.wz/Map.img} (same path as MapSearchHelper). */
-    private static Map<Integer, String> mapNames() {
-        Map<Integer, String> out = new HashMap<>();
-        try {
-            DataProvider dp = DataProviderFactory.getDataProvider(WZFiles.STRING);
-            Data mapData = dp.getData("Map.img");
-            for (Data dir : mapData.getChildren()) {
-                for (Data m : dir.getChildren()) {
-                    String name = DataTool.getString(m.getChildByPath("mapName"), "");
-                    if (name.isEmpty()) {
-                        continue;
-                    }
-                    try {
-                        out.put(Integer.parseInt(m.getName()), name);
-                    } catch (NumberFormatException ignore) {
-                        // non-numeric leaf, skip
-                    }
-                }
-            }
-        } catch (Exception e) {
-            log.warn("Bot world-graph: map name load failed, falling back to ids: {}", e.toString());
-        }
-        return out;
-    }
-
-    // --- JSON builders (pure, package-private for the self-check) ---
-
-    /** {@code {"nodes":[{"id":..,"name":".."}],"edges":[[lo,hi],..]}} — edges undirected & deduped. */
-    static String graphJson(Map<Integer, int[]> edges, Map<Integer, String> names) {
-        Set<Integer> nodes = new HashSet<>(edges.keySet());
-        for (int[] tos : edges.values()) {
-            for (int to : tos) {
-                nodes.add(to);
-            }
-        }
-
-        StringBuilder n = new StringBuilder();
-        for (int id : nodes) {
-            if (n.length() > 0) {
-                n.append(',');
-            }
-            String name = names.getOrDefault(id, String.valueOf(id));
-            n.append("{\"id\":").append(id).append(",\"name\":").append(jsonStr(name)).append('}');
-        }
-
-        Set<Long> seen = new HashSet<>();
-        StringBuilder e = new StringBuilder();
-        for (Map.Entry<Integer, int[]> en : edges.entrySet()) {
-            int from = en.getKey();
-            for (int to : en.getValue()) {
-                if (from == to) {
-                    continue;
-                }
-                int lo = Math.min(from, to);
-                int hi = Math.max(from, to);
-                if (!seen.add(((long) lo << 32) | (hi & 0xFFFFFFFFL))) {
-                    continue;
-                }
-                if (e.length() > 0) {
-                    e.append(',');
-                }
-                e.append('[').append(lo).append(',').append(hi).append(']');
-            }
-        }
-        return "{\"nodes\":[" + n + "],\"edges\":[" + e + "]}";
-    }
-
     /** {@code {"maps":{"<id>":{"players":[..],"bots":[..]}}}} for maps that have anyone on them. */
     static String liveJson(List<Character> online) {
         Map<Integer, List<String>> players = new TreeMap<>();
@@ -194,7 +346,7 @@ public final class BotWorldGraphWebServer {
             bucket.computeIfAbsent(chr.getMapId(), k -> new ArrayList<>()).add(chr.getName());
         }
 
-        Set<Integer> maps = new java.util.TreeSet<>();
+        Set<Integer> maps = new TreeSet<>();
         maps.addAll(players.keySet());
         maps.addAll(bots.keySet());
 
@@ -210,6 +362,8 @@ public final class BotWorldGraphWebServer {
         }
         return sb.append("}}").toString();
     }
+
+    // --- JSON helpers ---
 
     // ponytail: hand-rolled JSON, flat payloads only; reach for a lib only if the shape grows.
     private static String jsonArr(List<String> xs) {
@@ -246,6 +400,30 @@ public final class BotWorldGraphWebServer {
             }
         }
         return b.append('"').toString();
+    }
+
+    private static Map<Integer, String> mapNames() {
+        Map<Integer, String> out = new HashMap<>();
+        try {
+            DataProvider dp = DataProviderFactory.getDataProvider(WZFiles.STRING);
+            Data mapData = dp.getData("Map.img");
+            for (Data dir : mapData.getChildren()) {
+                for (Data m : dir.getChildren()) {
+                    String name = DataTool.getString(m.getChildByPath("mapName"), "");
+                    if (name.isEmpty()) {
+                        continue;
+                    }
+                    try {
+                        out.put(Integer.parseInt(m.getName()), name);
+                    } catch (NumberFormatException ignore) {
+                        // non-numeric leaf, skip
+                    }
+                }
+            }
+        } catch (Exception e) {
+            log.warn("Bot world-graph: map name load failed, falling back to ids: {}", e.toString());
+        }
+        return out;
     }
 
     private static void send(HttpExchange ex, int code, String contentType, byte[] body) throws IOException {

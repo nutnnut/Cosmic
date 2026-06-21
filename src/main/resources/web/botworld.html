@@ -9,9 +9,11 @@
   #cy{position:absolute;top:0;left:0;right:280px;bottom:0}
   #side{position:absolute;top:0;right:0;bottom:0;width:280px;box-sizing:border-box;
         padding:12px;background:#171c26;border-left:1px solid #283143;overflow:auto}
-  h1{font-size:15px;margin:0 0 8px}
+  h1{font-size:15px;margin:0 0 2px}
+  .sub{color:#67748c;margin:0 0 8px;font-size:11px}
   .stat{display:flex;justify-content:space-between;padding:2px 0;border-bottom:1px solid #222a38}
   .stat b{color:#fff}
+  .stat.danger b{color:#ff6b6b}
   label{display:block;margin:10px 0}
   button{background:#2a3346;color:#cdd6e4;border:1px solid #3a4761;border-radius:4px;
          padding:5px 9px;cursor:pointer}
@@ -21,123 +23,128 @@
   .who{padding:1px 0;color:#bcd}
   .who.bot{color:#ffc16b}
   .muted{color:#67748c}
+  .warn{color:#ff6b6b}
 </style>
 </head>
 <body>
 <div id="cy"></div>
 <div id="side">
   <h1>Bot World Graph</h1>
-  <div class="stat"><span>Maps</span><b id="s-maps">-</b></div>
+  <p class="sub">from spawn (10000) &middot; &#9888; = reachable from Lith Harbor but can't return</p>
+  <div class="stat"><span>Reachable maps</span><b id="s-maps">-</b></div>
+  <div class="stat danger"><span>&#9888; Unreturnable</span><b id="s-danger">-</b></div>
   <div class="stat"><span>Occupied</span><b id="s-occ">-</b></div>
   <div class="stat"><span>Players online</span><b id="s-players">-</b></div>
   <div class="stat"><span>Bots online</span><b id="s-bots">-</b></div>
-  <label><input type="checkbox" id="occOnly"> occupied maps only</label>
-  <button id="relayout">Re-layout</button>
+  <label><input type="checkbox" id="occOnly" checked> occupied maps only (&#9888; always shown)</label>
+  <button id="fit">Fit view</button>
   <div id="detail"><div class="muted">Click a map for who's on it.</div></div>
 </div>
 <script>
-const COLD = '#3a4761';            // empty map
-function heat(n){                   // occupancy -> colour
-  if(n<=0) return COLD;
-  const t = Math.min(1, Math.log2(n+1)/5);
-  const r = Math.round(120+135*t), g = Math.round(120-60*t), b = Math.round(60-40*t);
-  return `rgb(${r},${g},${b})`;
-}
+const GREY = '#3a4761', GREEN = '#39d353', ORANGE = '#ffa033';
+// fill = who's there: players make it green, bots-only orange, empty grey.
+function fill(p, b){ return p>0 ? GREEN : (b>0 ? ORANGE : GREY); }
 
-let cy, live = {maps:{}};
-let occOnly = false;
+// red warning triangle, drawn in the middle of unreturnable maps.
+const WARN = 'data:image/svg+xml;utf8,' + encodeURIComponent(
+  '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">'
+  + '<path d="M12 2 L23 21 H1 Z" fill="#ff3b3b" stroke="#5a0000" stroke-width="1.5" stroke-linejoin="round"/>'
+  + '<rect x="11" y="8" width="2" height="7" fill="#fff"/><rect x="11" y="16.5" width="2" height="2" fill="#fff"/>'
+  + '</svg>');
+
+let cy, live = {maps:{}}, occOnly = true, fitted = false, selected = null;
 
 (async function init(){
   const g = await (await fetch('/api/graph')).json();
   cy = cytoscape({
     container: document.getElementById('cy'),
     elements: [
-      ...g.nodes.map(m => ({data:{id:'m'+m.id, mid:m.id, name:m.name, occ:0}})),
+      ...g.nodes.map(m => ({data:{id:'m'+m.id, mid:m.id, name:m.name, occ:0, bg:GREY},
+                            position:{x:m.x, y:m.y}, classes: m.danger ? 'danger' : ''})),
       ...g.edges.map(([a,b]) => ({data:{id:a+'_'+b, source:'m'+a, target:'m'+b}})),
     ],
+    layout: {name:'preset'},   // server already placed every node; never re-lay-out (so it can't jump)
     style: [
       {selector:'node', style:{
-        'background-color':COLD,
-        'width':8,'height':8,'label':'','font-size':9,'color':'#dbe4f4',
+        'background-color':'data(bg)','width':8,'height':8,'label':'','font-size':9,'color':'#dbe4f4',
+        'text-valign':'bottom','text-margin-y':3,
         'text-outline-color':'#10141c','text-outline-width':2,'min-zoomed-font-size':7}},
       {selector:'node.busy', style:{
-        'label':'data(label)','width':'data(sz)','height':'data(sz)',
-        'background-color':'data(bg)','z-index':10}},
+        'label':'data(label)','width':'data(sz)','height':'data(sz)','z-index':10}},
+      {selector:'node.danger', style:{  // after .busy so the marker + size win on trap maps
+        'label':'data(label)','width':24,'height':24,'border-color':'#ff3b3b','border-width':2,
+        'background-image':WARN,'background-fit':'none','background-width':'80%','background-height':'80%',
+        'z-index':20}},
       {selector:'node:selected', style:{'border-color':'#fff','border-width':2}},
       {selector:'edge', style:{'width':1,'line-color':'#222d40','curve-style':'haystack','opacity':0.6}},
     ],
     wheelSensitivity:0.2,
   });
   document.getElementById('s-maps').textContent = g.nodes.length;
+  document.getElementById('s-danger').textContent = g.nodes.filter(n=>n.danger).length;
   cy.on('tap','node', e => showDetail(e.target.data('mid')));
   cy.on('tap', e => { if(e.target===cy) clearDetail(); });
-  runLayout();
-  refresh();
+  await refresh();
   setInterval(refresh, 2000);
 })();
 
-function runLayout(){
-  const eles = occOnly ? cy.elements(':visible') : cy.elements();
-  // ponytail: cose on the full ~1500-node graph is a one-time few-second cost; live ticks
-  // only restyle. If it ever drags, default occupied-only ON or swap to fcose.
-  eles.layout({name:'cose', animate:false, nodeRepulsion:8000, idealEdgeLength:40,
-               numIter:600, fit:true, padding:30}).run();
-}
-
 async function refresh(){
   try { live = await (await fetch('/api/live')).json(); } catch(e){ return; }
-  let players=0, bots=0, occ=0;
+  let players=0, bots=0, occOnGraph=0;
   cy.batch(()=>{
     cy.nodes().forEach(n=>{
       const d = live.maps[n.data('mid')];
-      const p = d ? d.players.length : 0;
-      const b = d ? d.bots.length : 0;
-      const total = p+b;
+      const p = d ? d.players.length : 0, b = d ? d.bots.length : 0, total = p+b;
       n.data('occ', total);
+      n.data('bg', fill(p, b));
       if(total>0){
         n.data('label', n.data('name')+' ('+total+')');
-        n.data('bg', heat(total));
-        n.data('sz', Math.min(46, 12 + total*4));
+        n.data('sz', Math.min(40, 12 + total*3));
         n.addClass('busy');
+        occOnGraph++;
       } else {
         n.removeClass('busy');
+        n.data('label', n.data('name'));  // danger nodes still want their name
       }
     });
-    players += sumOver('players'); bots += sumOver('bots');
   });
-  occ = Object.keys(live.maps).length;
-  document.getElementById('s-occ').textContent = occ;
+  for(const id in live.maps){ players += live.maps[id].players.length; bots += live.maps[id].bots.length; }
+  document.getElementById('s-occ').textContent = occOnGraph;
   document.getElementById('s-players').textContent = players;
   document.getElementById('s-bots').textContent = bots;
   applyMode();
-  if(selected) showDetail(selected);  // keep panel fresh
+  if(!fitted){ fitted = true; fitView(); }   // positions are fixed, so this only happens once
+  if(selected) showDetail(selected);
 }
 
-function sumOver(key){ let s=0; for(const id in live.maps) s += live.maps[id][key].length; return s; }
-
+// occupied-only toggles visibility only (never moves nodes). Danger maps are ALWAYS shown.
+function shown(n){ return !occOnly || n.data('occ')>0 || n.hasClass('danger'); }
 function applyMode(){
   cy.batch(()=>{
-    cy.nodes().forEach(n=>{
-      n.style('display', (!occOnly || n.data('occ')>0) ? 'element':'none');
-    });
-    cy.edges().forEach(e=>{
-      const show = !occOnly || (e.source().data('occ')>0 && e.target().data('occ')>0);
-      e.style('display', show?'element':'none');
-    });
+    cy.nodes().forEach(n => n.style('display', shown(n) ? 'element':'none'));
+    cy.edges().forEach(e => e.style('display', (shown(e.source()) && shown(e.target())) ? 'element':'none'));
   });
 }
 
-let selected = null;
+function fitView(){
+  const focus = cy.nodes('.busy, .danger');
+  const target = focus.nonempty() ? focus : cy.nodes(':visible');
+  if(target.nonempty()) cy.fit(target, 60);
+}
+
 function showDetail(mid){
   selected = mid;
   const node = cy.getElementById('m'+mid);
   const d = live.maps[mid] || {players:[],bots:[]};
+  const danger = node.nonempty() && node.hasClass('danger');
   const rows = [
     ...d.bots.map(n=>`<div class="who bot">${esc(n)} <span class="muted">bot</span></div>`),
     ...d.players.map(n=>`<div class="who">${esc(n)}</div>`),
   ];
+  const name = node.nonempty() ? node.data('name') : ('map '+mid);
   document.getElementById('detail').innerHTML =
-    `<h2>${esc(node.data('name'))}</h2>`
+    `<h2>${esc(name)}</h2>`
+    + (danger ? '<div class="warn">&#9888; reachable from Lith Harbor but cannot return</div>' : '')
     + `<div class="muted">map ${mid} &middot; ${d.bots.length} bots, ${d.players.length} players</div>`
     + (rows.length ? rows.join('') : '<div class="muted">empty</div>');
 }
@@ -145,8 +152,8 @@ function clearDetail(){ selected=null; document.getElementById('detail').innerHT
   '<div class="muted">Click a map for who\'s on it.</div>'; }
 function esc(s){ return String(s).replace(/[&<>]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
 
-document.getElementById('occOnly').onchange = e => { occOnly = e.target.checked; applyMode(); runLayout(); };
-document.getElementById('relayout').onclick = runLayout;
+document.getElementById('occOnly').onchange = e => { occOnly = e.target.checked; applyMode(); fitView(); };
+document.getElementById('fit').onclick = fitView;
 </script>
 </body>
 </html>
