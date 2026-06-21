@@ -500,6 +500,13 @@ final class BotAutopilotManager {
                     || entry.autopilotErrandMapId != -1 || entry.jobErrandMapId != -1)) {
             clearWaitAnchor(entry);
         }
+        // Re-entrant job-advance reconciliation: buildJobPrompt only fires on a level-up edge, so an
+        // errand that was never started, interrupted (a follow command), or lost to a relog mid-walk
+        // would otherwise never restart and the overdue bot would just farm. Restart it here when no
+        // errand is in flight; the block below then drives it this same tick.
+        if (entry.jobErrandMapId == -1) {
+            BotBuildManager.maybeStartOverdueJobAdvance(entry, bot);
+        }
         // Job-change errand takes precedence: walk to the class-town instructor and advance on
         // arrival. Consumes the tick (no grinding/attacking en route, so the bot doesn't over-level
         // past the advancement). Its own state (jobErrandMapId), like the quest/gacha errands.

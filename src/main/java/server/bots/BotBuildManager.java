@@ -712,6 +712,9 @@ class BotBuildManager {
      *  BotStarterKitManager.advanceJob (changeJob + handleJobAdvance award SP/AP); no quest. */
     private static void scheduleAutoAdvance(BotEntry entry, Job target) {
         BotManager.after(BotManager.randMs(900, 1100), () -> {
+            if (entry.jobErrandMapId != -1) {
+                return; // the per-tick reconciliation already started this errand — don't double-begin
+            }
             // Every explorer job on autopilot: walk to the job instructor first (advances on arrival),
             // so the bot is physically present and doesn't grind/over-level en route. Supervised/
             // owner-following bots (and any unrouted target) advance instantly.
@@ -721,6 +724,86 @@ class BotBuildManager {
                 BotStarterKitManager.advanceJob(entry, target);
             }
         });
+    }
+
+    /** The job an autopilot bot is currently OVERDUE to advance into (level past its tier's milestone),
+     *  or null. 3rd/4th are deterministic; 1st/2nd honor the creation-time plan else an autonomous pick.
+     *  SSOT shared by the level-up trigger ({@link #buildJobPrompt}) and the resume reconciliation. */
+    static Job autoAdvanceTarget(BotEntry entry, Character bot) {
+        int lvl = bot.getLevel();
+        Job job = bot.getJob();
+        if (job == Job.BEGINNER) {
+            return lvl >= 10 ? plannedOrPicked(entry, Job.BEGINNER) : null;
+        }
+        int id = job.getId();
+        if (id < 100 || id >= 600) {
+            return null; // non-explorer numbering (Cygnus/Aran/Evan): leave alone
+        }
+        if (id % 100 == 0) {
+            return lvl >= 30 ? plannedOrPicked(entry, job) : null;            // 1st -> 2nd (a choice)
+        }
+        int tier = id % 10;
+        if (tier == 0) {
+            return lvl >= 70 ? BotStarterKitManager.thirdJobOf(job) : null;   // 2nd -> 3rd
+        }
+        if (tier == 1) {
+            return lvl >= 120 ? BotStarterKitManager.fourthJobOf(job) : null; // 3rd -> 4th
+        }
+        return null; // 4th job: done
+    }
+
+    /**
+     * Re-entrant autopilot job-advance reconciliation. Unlike {@link #buildJobPrompt} (edge-triggered on
+     * a level-up and gated by jobPromptSent), this restarts a job errand that was never started, got
+     * interrupted (e.g. a follow command), or was lost to a relog mid-walk — so the bot resumes heading
+     * to the instructor instead of silently farming on. Caller guarantees no errand is in flight
+     * (jobErrandMapId == -1). No-op when not autopilot, not overdue, or at a 1st/2nd-job choice an owner
+     * still owns.
+     */
+    static void maybeStartOverdueJobAdvance(BotEntry entry, Character bot) {
+        if (!BotManager.isAutopilotActive(entry)) {
+            return;
+        }
+        Job job = bot.getJob();
+        boolean choiceTier = job == Job.BEGINNER || job.getId() % 100 == 0; // 1st/2nd job is the owner's choice
+        if (choiceTier && !isOwnerless(entry)) {
+            return; // supervised bot waits for the owner to pick (parkIfAutopilot owns the prompt)
+        }
+        Job target = autoAdvanceTarget(entry, bot);
+        if (target == null) {
+            return;
+        }
+        if (choiceTier) {
+            persistPlannedChoice(entry, bot, job, target); // lock the pick so a restart re-targets the same job
+        }
+        if (BotStarterKitManager.jobChangeNpcFor(target) != null) {
+            BotStarterKitManager.beginJobErrand(entry, target);
+        } else {
+            BotStarterKitManager.advanceJob(entry, target); // unrouted tier: advance in place
+        }
+    }
+
+    /** Persist a re-derived 1st/2nd job choice so an interrupted-and-restarted errand re-targets the
+     *  same job (plannedOrPicked otherwise re-rolls pickWeightedJob). Best-effort, mirrors
+     *  {@link #tiePlannedSecondJob}. */
+    private static void persistPlannedChoice(BotEntry entry, Character bot, Job currentJob, Job target) {
+        BotPersonality p = entry.personality;
+        if (p == null) {
+            return;
+        }
+        boolean firstChoice = currentJob == null || currentJob == Job.BEGINNER;
+        if ((firstChoice ? p.plannedFirstJob() : p.plannedSecondJob()) == target) {
+            return; // already locked to this job
+        }
+        BotPersonality updated = firstChoice
+                ? p.withPlannedJobs(target, p.plannedSecondJob())
+                : p.withPlannedJobs(p.plannedFirstJob(), target);
+        entry.personality = updated;
+        try {
+            BotConfigService.getInstance().save(bot.getId(), updated.serialize());
+        } catch (RuntimeException ignored) {
+            // persistence best-effort; in-memory plan is authoritative this session
+        }
     }
 
     /**
