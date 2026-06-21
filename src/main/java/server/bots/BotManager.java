@@ -913,7 +913,11 @@ public class BotManager {
         for (Character bot : online) {
             removeBotByCharId(bot.getId());          // cancel tick + drop the entry
             if (bot.getClient() != null) {
-                bot.getClient().disconnect(false, false); // leave the world (with a final save)
+                // forceDisconnect saves + leaves the world SYNCHRONOUSLY (on this thread), one bot at a
+                // time. The async disconnect() instead fans every bot's saveCharToDB across ThreadManager,
+                // and those concurrent DELETE+INSERTs on the shared item tables deadlock in InnoDB. This
+                // is the admin "clear the world now" hard path, so serial is fine.
+                bot.getClient().forceDisconnect();
             }
         }
         return online.size();

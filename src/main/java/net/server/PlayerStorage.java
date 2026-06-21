@@ -23,23 +23,17 @@ package net.server;
 
 import client.Character;
 import client.Client;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 public class PlayerStorage {
-    private static final Logger log = LoggerFactory.getLogger(PlayerStorage.class);
     private final Map<Integer, Character> storage = new LinkedHashMap<>();
     private final Map<String, Character> nameStorage = new LinkedHashMap<>();
     private final Lock rlock;
@@ -111,45 +105,10 @@ public class PlayerStorage {
             rlock.unlock();
         }
 
-        // Each forceDisconnect() saves the char to the DB - a chunk of synchronous writes - so done
-        // one at a time this dominates shutdown once hundreds of bots are online. Fan it across a
-        // bounded pool: the save is per-char (saveCharToDB is synchronized on the Character and writes
-        // only that char's own rows) and lives in a finally, and disconnectAll is shutdown-only (no
-        // live gameplay to race). Bounded by the HikariCP pool (max 10), so cap the workers near it.
-        if (chrList.size() <= 1) {
-            for (Character mc : chrList) {
-                Client client = mc.getClient();
-                if (client != null) {
-                    client.forceDisconnect();
-                }
-            }
-        } else {
-            int workers = Math.min(8, chrList.size());
-            ExecutorService pool = Executors.newFixedThreadPool(workers, r -> {
-                Thread t = new Thread(r, "shutdown-save");
-                t.setDaemon(true);
-                return t;
-            });
-            for (Character mc : chrList) {
-                pool.execute(() -> {
-                    try {
-                        Client client = mc.getClient();
-                        if (client != null) {
-                            client.forceDisconnect();
-                        }
-                    } catch (RuntimeException e) {
-                        log.error("Failed to disconnect/save chr {} during shutdown", mc.getId(), e);
-                    }
-                });
-            }
-            pool.shutdown();
-            try {
-                if (!pool.awaitTermination(2, TimeUnit.MINUTES)) {
-                    log.warn("Shutdown save did not finish within 2 min; {} chars may not have saved",
-                            chrList.size());
-                }
-            } catch (InterruptedException ie) {
-                Thread.currentThread().interrupt();
+        for (Character mc : chrList) {
+            Client client = mc.getClient();
+            if (client != null) {
+                client.forceDisconnect();
             }
         }
 
