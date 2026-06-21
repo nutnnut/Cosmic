@@ -249,7 +249,7 @@ final class BotTravelManager {
             // Direct hop when the owner's map is adjacent; otherwise take the first hop of the
             // shortest world-graph route. Each landing re-plans, so only the next hop matters.
             int nextHopMapId = targetMapId;
-            portal = findAdjacentPortal(map.getPortals(), targetMapId, bot.getPosition());
+            portal = adjacentOrScriptedPortal(map, targetMapId, bot.getPosition());
             if (portal == null) {
                 BotWorldGraph.RouteOptions options = new BotWorldGraph.RouteOptions(
                         returnScrollCount.applyAsInt(bot) > 0, bot.getMeso(), allowFerry);
@@ -259,7 +259,7 @@ final class BotTravelManager {
                 }
                 routePrewarm.prewarm(entry, bot, route);
                 nextHopMapId = route.get(0);
-                portal = findAdjacentPortal(map.getPortals(), nextHopMapId, bot.getPosition());
+                portal = adjacentOrScriptedPortal(map, nextHopMapId, bot.getPosition());
                 if (portal == null) {
                     return tryConsumableHop(entry, bot, map, targetMapId, nextHopMapId, now, runAiTick);
                 }
@@ -481,6 +481,22 @@ final class BotTravelManager {
             }
         }
         return portal.getPosition();
+    }
+
+    /**
+     * A plain adjacent portal to {@code targetMapId}, or — when none — the scripted hidden-street
+     * entrance portal for that hop (a job-instructor map reachable only by a scripted portal; see
+     * {@link BotWorldGraph#SCRIPTED_ENTRANCES}). From the bot's perspective the scripted portal is just
+     * a normal portal to {@code targetMapId}: it walks to it and {@link Portal#enterPortal} runs the
+     * portal's own warp script. Returns null when neither exists.
+     */
+    static Portal adjacentOrScriptedPortal(MapleMap map, int targetMapId, Point fromPos) {
+        Portal portal = findAdjacentPortal(map.getPortals(), targetMapId, fromPos);
+        if (portal != null) {
+            return portal;
+        }
+        String scripted = BotWorldGraph.scriptedEntrancePortal(map.getId(), targetMapId);
+        return scripted == null ? null : map.getPortal(scripted);
     }
 
     static Portal findAdjacentPortal(Collection<Portal> portals, int targetMapId, Point fromPos) {

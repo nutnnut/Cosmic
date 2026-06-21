@@ -152,4 +152,15 @@ class BotWorldGraphTest {
         assertEquals(1002002, florina.npcId());
         assertEquals(1500, florina.fare());
     }
+
+    @Test
+    void scriptedEntrancePortalResolvesEachInstructorHiddenStreet() {
+        // The bot treats these scripted portals as a normal portal to the instructor map; the lookup
+        // feeds both routing (graph edge) and the live portal-finder. Verified vs Map.wz + scripts/portal.
+        assertEquals("jobin00", BotWorldGraph.scriptedEntrancePortal(101000000, 101000003)); // Magician (Grendel)
+        assertEquals("in02", BotWorldGraph.scriptedEntrancePortal(100000200, 100000201));     // Bowman (Athena)
+        assertEquals("in00", BotWorldGraph.scriptedEntrancePortal(240010500, 240010501));     // 4th job (Leafre)
+        assertNull(BotWorldGraph.scriptedEntrancePortal(101000000, 100000201)); // wrong dest for that map
+        assertNull(BotWorldGraph.scriptedEntrancePortal(100000000, 100000201)); // not the entrance map
+    }
 }

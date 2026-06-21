@@ -383,33 +383,48 @@ final class BotWorldGraph {
         return withScriptedEntrances(built);
     }
 
-    // Job-instructor hidden streets whose TOWN-side entrance is a SCRIPTED portal (tm=999999999): the
-    // WZ portal scan can't see it, so the map is a forward-unreachable island (you can only walk OUT).
-    // Verified vs Map.wz portal data + the cached portal graph (each has exactly one tm-exit back toward
-    // the reachable world). Magic Library / Bowman Instructional School handle 1st AND 2nd job; the
-    // Leafre room handles 4th. 3rd-job maps are already reachable, so none here.
-    private static final int[] INSTRUCTOR_ISLAND_MAPS = {
-            100000201, // Bowman Instructional School (Athena Pierce) — exits to Henesys lobby 100000200
-            101000003, // Magic Library (Grendel) — exits to Ellinia 101000000
-            240010501, // Leafre Forest of the Priest 4th-job room — exits to 240010500
-    };
+    /** A job-instructor hidden street reachable only by a SCRIPTED portal (tm=999999999) the WZ scan
+     *  can't follow, leaving the map a forward-unreachable island. {@code fromMap} has a portal named
+     *  {@code portalName} whose own script warps to {@code destMap}; we just teach the nav layer that
+     *  destination so routing AND the live portal-finder treat it as a normal portal (the bot walks it
+     *  and {@code GenericPortal.enterPortal} runs the real warp). Verified vs Map.wz + scripts/portal. */
+    record ScriptedEntrance(int fromMap, String portalName, int destMap) {}
 
-    /** Re-add the missing scripted entrance to each {@link #INSTRUCTOR_ISLAND_MAPS} island by REVERSING
-     *  its existing exit edge(s) (exit→island ⇒ also island-enterable). Returns a new Index; never
-     *  mutates {@code base}. No-op for an island with no graph exit. */
+    static final List<ScriptedEntrance> SCRIPTED_ENTRANCES = List.of(
+            // 1st-job Magician: Ellinia -> Magic Library (Grendel), script enterMagiclibrar
+            new ScriptedEntrance(101000000, "jobin00", 101000003),
+            // 1st-job Bowman: Henesys school lobby -> Bowman Instructional School (Athena), script enterAchter
+            new ScriptedEntrance(100000200, "in02", 100000201),
+            // 4th job: Leafre -> Forest of the Priest 4th-job room, script minar_job4
+            new ScriptedEntrance(240010500, "in00", 240010501)
+    );
+
+    /** The scripted-entrance portal name to walk for a {@code fromMap -> destMap} hop, or null when that
+     *  hop isn't a known scripted entrance. The travel executor enters it like a normal portal; its own
+     *  script does the warp. */
+    static String scriptedEntrancePortal(int fromMap, int destMap) {
+        for (ScriptedEntrance e : SCRIPTED_ENTRANCES) {
+            if (e.fromMap() == fromMap && e.destMap() == destMap) {
+                return e.portalName();
+            }
+        }
+        return null;
+    }
+
+    /** Add each {@link #SCRIPTED_ENTRANCES} edge ({@code fromMap -> destMap}) so routing can reach the
+     *  islanded instructor map; live traversal then walks the real scripted portal. Returns a new Index;
+     *  never mutates {@code base}. */
     private static Index withScriptedEntrances(Index base) {
         Map<Integer, int[]> edges = new HashMap<>(base.edges());
-        for (int island : INSTRUCTOR_ISLAND_MAPS) {
-            for (int exit : base.neighbors(island)) {
-                int[] cur = edges.getOrDefault(exit, new int[0]);
-                if (arrayContains(cur, island)) {
-                    continue;
-                }
-                int[] next = new int[cur.length + 1];
-                System.arraycopy(cur, 0, next, 0, cur.length);
-                next[cur.length] = island;
-                edges.put(exit, next);
+        for (ScriptedEntrance e : SCRIPTED_ENTRANCES) {
+            int[] cur = edges.getOrDefault(e.fromMap(), new int[0]);
+            if (arrayContains(cur, e.destMap())) {
+                continue;
             }
+            int[] next = new int[cur.length + 1];
+            System.arraycopy(cur, 0, next, 0, cur.length);
+            next[cur.length] = e.destMap();
+            edges.put(e.fromMap(), next);
         }
         return new Index(Collections.unmodifiableMap(edges), base.scrollTargets(), base.returnMaps());
     }
