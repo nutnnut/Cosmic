@@ -4,17 +4,21 @@ import client.Character;
 import client.command.CommandsExecutor;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import tools.PacketCreator;
 
 /**
  * Hidden in-game operator console for driving/inspecting bots without spamming party/map chat.
  *
- * <p>A GM opens the Maple Messenger window and types {@code Console: <verb> <args>}. The
- * messenger chat handler ({@code MessengerHandler} case {@code 0x06}) routes such lines here
- * (gated on {@link Character#isGM()}) instead of broadcasting them, and output is rendered back
- * into the GM's own messenger window. The window gives a persistent, scrollable pane separate
- * from normal chat — ideal for the one capability chat lacks: live-tailing a bot's autopilot
- * decisions (see {@link BotConsoleTap}).
+ * <p>A GM opens the Maple Messenger window and types {@code mmc connect} to enter console mode
+ * (modelled on SoloMapling's MMC). While connected, EVERY line the GM types is parsed as a console
+ * command instead of broadcast as chat; {@code mmc disconnect} (or closing the window) leaves. The
+ * replies render as {@code Console : ...} in the GM's own messenger window — a persistent, scrollable
+ * pane separate from normal chat, ideal for the one capability chat lacks: live-tailing a bot's
+ * autopilot decisions (see {@link BotConsoleTap}). There is no command prefix: the connect handshake,
+ * not a per-line marker, is what tells chat from commands (a plain {@code Console:} prefix never
+ * matched real messenger lines — those arrive as the GM's own raw text).
  *
  * <p>This is a thin front-end: every verb DELEGATES to an existing manager. It does not
  * reimplement command parsing or replace the file-based loggers ({@code BotPathLogger}, inv/
@@ -25,8 +29,10 @@ import tools.PacketCreator;
  */
 public final class BotOpsConsole {
 
-    private static final String PREFIX = "Console:";
     private static final BotOpsConsole instance = new BotOpsConsole();
+
+    /** GM ids currently in console mode (their messenger lines are commands, not chat). */
+    private final Set<Integer> connected = ConcurrentHashMap.newKeySet();
 
     public static BotOpsConsole getInstance() {
         return instance;
@@ -34,21 +40,61 @@ public final class BotOpsConsole {
 
     private BotOpsConsole() {}
 
-    /** True when a messenger line is addressed to the console (case-insensitive {@code Console:} prefix). */
-    public boolean isConsoleLine(String input) {
-        return input != null && input.regionMatches(true, 0, PREFIX, 0, PREFIX.length());
+    /**
+     * Route one messenger chat line from a GM. Returns {@code true} when the console consumed it (the
+     * caller must NOT broadcast it as chat), {@code false} to let it broadcast normally.
+     *
+     * <p>The {@code mmc connect}/{@code mmc disconnect} handshake works whether or not already
+     * connected; any other line is a command only while connected, so a GM can still chat normally
+     * until they opt in.
+     */
+    public boolean handleMessengerLine(Character gm, String input) {
+        if (input == null) {
+            return false;
+        }
+        String line = input.trim();
+        String low = line.toLowerCase();
+        if (low.equals("mmc connect") || low.equals("mmc")) {
+            connect(gm);
+            return true;
+        }
+        if (low.equals("mmc disconnect") || low.equals("mmc quit")) {
+            disconnect(gm);
+            return true;
+        }
+        if (!connected.contains(gm.getId())) {
+            return false; // not in console mode -> let it broadcast as normal messenger chat
+        }
+        dispatch(gm, line);
+        return true;
     }
 
-    /** Tear down any active stream owned by this operator (called on messenger close / logout). */
+    private void connect(Character gm) {
+        connected.add(gm.getId());
+        print(gm, List.of("console connected - every line you type here is now a command.",
+                "type 'help' for verbs, 'mmc disconnect' to leave."));
+    }
+
+    private void disconnect(Character gm) {
+        boolean was = connected.remove(gm.getId());
+        if (BotConsoleTap.isOperator(gm)) {
+            BotConsoleTap.unsubscribe();
+        }
+        if (was) {
+            print(gm, "console disconnected - messenger is normal chat again.");
+        }
+    }
+
+    /** Tear down console mode + any active stream (called on messenger close / logout). */
     public void onMessengerClosed(Character gm) {
+        connected.remove(gm.getId());
         if (BotConsoleTap.isOperator(gm)) {
             BotConsoleTap.unsubscribe();
         }
     }
 
-    /** Parse and dispatch a {@code Console: ...} line. Must already be GM-gated and prefix-matched. */
-    public void handle(Character gm, String raw) {
-        String body = raw.substring(raw.indexOf(':') + 1).trim();
+    /** Parse and dispatch one console command line (already GM-gated and connected). */
+    private void dispatch(Character gm, String body) {
         if (body.isEmpty()) {
             help(gm);
             return;
@@ -67,13 +113,13 @@ public final class BotOpsConsole {
             case "gachapon", "gacha" -> gachapon(gm, rest);
             case "say", "chat" -> say(gm, rest);
             case "cmd" -> cmd(gm, rest);
-            default -> print(gm, "unknown verb '" + verb + "' - try 'Console: help'");
+            default -> print(gm, "unknown verb '" + verb + "' - try 'help'");
         }
     }
 
     private void help(Character gm) {
         print(gm, List.of(
-                "=== bot ops console ===",
+                "=== bot ops console === (mmc disconnect to leave)",
                 "list                  - all spawned bots (name, map, job/lv)",
                 "status [name]         - bot status (one bot, or all on your map)",
                 "log <name>            - stream that bot's live autopilot decisions here",
@@ -121,7 +167,7 @@ public final class BotOpsConsole {
             return;
         }
         BotConsoleTap.subscribe(gm, entry.bot.getId());
-        print(gm, "streaming " + entry.bot.getName() + "'s decisions (Console: unlog to stop)");
+        print(gm, "streaming " + entry.bot.getName() + "'s decisions (unlog to stop)");
     }
 
     private void unlog(Character gm) {
@@ -160,7 +206,7 @@ public final class BotOpsConsole {
     private void say(Character gm, String rest) {
         int sp = rest.indexOf(' ');
         if (sp < 0) {
-            print(gm, "usage: Console: say <name> <text>");
+            print(gm, "usage: say <name> <text>");
             return;
         }
         BotEntry entry = resolve(gm, rest.substring(0, sp));
@@ -174,7 +220,7 @@ public final class BotOpsConsole {
 
     private void cmd(Character gm, String rest) {
         if (rest.isEmpty()) {
-            print(gm, "usage: Console: cmd <@command ...>");
+            print(gm, "usage: cmd <@command ...>");
             return;
         }
         // Output of GM commands goes to the operator's normal chat, not this window.
@@ -217,13 +263,14 @@ public final class BotOpsConsole {
         return null;
     }
 
+    // Render output as the "Console" speaker (matches SoloMapling's named-bot look) in the GM's window.
     private void print(Character gm, String line) {
-        gm.sendPacket(PacketCreator.messengerChat(line));
+        gm.sendPacket(PacketCreator.messengerChat("Console : " + line));
     }
 
     private void print(Character gm, List<String> lines) {
         for (String line : lines) {
-            gm.sendPacket(PacketCreator.messengerChat(line));
+            print(gm, line);
         }
     }
 }
