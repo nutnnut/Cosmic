@@ -292,6 +292,9 @@ public class Character extends AbstractCharacterObject {
     // save for quest-heavy bots) when the current signature matches. null => unknown => always write,
     // so a missed change can never be silently dropped (the skip is opt-in on an exact content match).
     private String savedQuestSignature = null;
+    // Same skip-when-unchanged trick for the main inventory write (a delete-all + per-slot re-insert -
+    // the dominant cost of an idle bot's save). null => always write, so a missed change is never dropped.
+    private String savedInventorySignature = null;
     private final Set<Monster> controlled = new LinkedHashSet<>();
     private final Map<Integer, String> entered = new LinkedHashMap<>();
     private final Set<MapObject> visibleMapObjects = Collections.newSetFromMap(new ConcurrentHashMap<>());
@@ -4886,6 +4889,59 @@ public class Character extends AbstractCharacterObject {
         return sb.toString();
     }
 
+    /** Deterministic signature of everything {@link client.inventory.ItemFactory} persists for the main
+     *  inventory (inventoryitems + inventoryequipment), used to skip the DELETE + re-INSERT in
+     *  {@link #saveCharToDB} when nothing changed. Built from the same item list the save writes, so it
+     *  can't drift from the data - but it MUST list every column ItemFactory writes; if you add one
+     *  there, add it here too, or an unchanged-signature save would silently drop the new field. */
+    static String computeInventorySignature(List<Pair<Item, InventoryType>> items) {
+        List<Pair<Item, InventoryType>> sorted = new ArrayList<>(items);
+        sorted.sort(Comparator
+                .comparingInt((Pair<Item, InventoryType> p) -> p.getRight().getType())
+                .thenComparingInt(p -> p.getLeft().getPosition()));
+        StringBuilder sb = new StringBuilder(sorted.size() * 48);
+        for (Pair<Item, InventoryType> p : sorted) {
+            Item it = p.getLeft();
+            InventoryType mit = p.getRight();
+            sb.append(mit.getType()).append('|')
+              .append(it.getItemId()).append('|')
+              .append(it.getPosition()).append('|')
+              .append(it.getQuantity()).append('|')
+              .append(it.getOwner()).append('|')
+              .append(it.getPetId()).append('|')
+              .append(it.getFlag()).append('|')
+              .append(it.getExpiration()).append('|')
+              .append(it.getGiftFrom());
+            if (mit == InventoryType.EQUIP || mit == InventoryType.EQUIPPED) {
+                Equip eq = (Equip) it;
+                sb.append('E')
+                  .append(eq.getUpgradeSlots()).append(',')
+                  .append(eq.getLevel()).append(',')
+                  .append(eq.getStr()).append(',')
+                  .append(eq.getDex()).append(',')
+                  .append(eq.getInt()).append(',')
+                  .append(eq.getLuk()).append(',')
+                  .append(eq.getHp()).append(',')
+                  .append(eq.getMp()).append(',')
+                  .append(eq.getWatk()).append(',')
+                  .append(eq.getMatk()).append(',')
+                  .append(eq.getWdef()).append(',')
+                  .append(eq.getMdef()).append(',')
+                  .append(eq.getAcc()).append(',')
+                  .append(eq.getAvoid()).append(',')
+                  .append(eq.getHands()).append(',')
+                  .append(eq.getSpeed()).append(',')
+                  .append(eq.getJump()).append(',')
+                  .append(eq.getVicious()).append(',')
+                  .append(eq.getItemLevel()).append(',')
+                  .append(eq.getItemExp()).append(',')
+                  .append(eq.getRingId());
+            }
+            sb.append(';');
+        }
+        return sb.toString();
+    }
+
     public final List<QuestStatus> getCompletedQuests() {
         List<QuestStatus> ret = new LinkedList<>();
         for (QuestStatus qs : getQuests()) {
@@ -7472,6 +7528,17 @@ public class Character extends AbstractCharacterObject {
                 // Seed the save-skip baseline to the just-loaded quest state, so a char that never
                 // changes a quest this session skips its quest write entirely (incl. the shutdown save).
                 ret.savedQuestSignature = ret.computeQuestSignature();
+                // Same for inventory, but only on the channel server - the login server loads EQUIPPED
+                // only (see the loadItems(..., !channelserver) above), so its list would be incomplete.
+                if (channelserver) {
+                    List<Pair<Item, InventoryType>> loaded = new ArrayList<>();
+                    for (Inventory iv : ret.inventory) {
+                        for (Item it : iv.list()) {
+                            loaded.add(new Pair<>(it, iv.getType()));
+                        }
+                    }
+                    ret.savedInventorySignature = computeInventorySignature(loaded);
+                }
 
                 loadedQuestStatus.clear();
 
@@ -8779,8 +8846,14 @@ public class Character extends AbstractCharacterObject {
                     }
                 }
 
-                // Items
-                ItemFactory.INVENTORY.saveItems(itemsWithType, id, con);
+                // Items - skip the full delete + per-slot re-insert when the inventory is byte-for-byte
+                // what we last persisted. invSig is committed to savedInventorySignature only after the
+                // con.commit() below succeeds (mirrors the quest skip above).
+                String invSig = computeInventorySignature(itemsWithType);
+                boolean inventoryChanged = !invSig.equals(savedInventorySignature);
+                if (inventoryChanged) {
+                    ItemFactory.INVENTORY.saveItems(itemsWithType, id, con);
+                }
 
                 // Skills
                 try (PreparedStatement psSkill = con.prepareStatement("REPLACE INTO skills (characterid, skillid, skilllevel, masterlevel, expiration) VALUES (?, ?, ?, ?, ?)")) {
@@ -8955,6 +9028,7 @@ public class Character extends AbstractCharacterObject {
 
                 con.commit();
                 savedQuestSignature = questSig; // commit succeeded: this quest state is now persisted
+                savedInventorySignature = invSig; // ditto for the inventory write skip
             } catch (Exception e) {
                 con.rollback();
                 throw e;

@@ -228,6 +228,9 @@ public enum ItemFactory {
                         psItem.executeUpdate();
 
                         if (mit.equals(InventoryType.EQUIP) || mit.equals(InventoryType.EQUIPPED)) {
+                            // NOTE: any column added below must also be added to
+                            // Character.computeInventorySignature, or the unchanged-save skip there
+                            // would silently stop persisting it.
                             try (PreparedStatement psEquip = con.prepareStatement("INSERT INTO `inventoryequipment` VALUES (DEFAULT, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")) {
                                 try (ResultSet rs = psItem.getGeneratedKeys()) {
                                     if (!rs.next()) {
