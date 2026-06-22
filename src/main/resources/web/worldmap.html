@@ -6,9 +6,18 @@
 <script src="https://unpkg.com/konva@9/konva.min.js"></script>
 <style>
   html,body{margin:0;height:100%;font:13px system-ui,sans-serif;background:#10141c;color:#cdd6e4;overflow:hidden}
-  #c{position:absolute;top:0;left:0;right:300px;bottom:0}
+  #c{position:absolute;top:0;left:280px;right:300px;bottom:0}
+  #left{position:absolute;top:0;left:0;bottom:0;width:280px;box-sizing:border-box;padding:12px;
+        background:#171c26;border-right:1px solid #283143;overflow:auto}
   #side{position:absolute;top:0;right:0;bottom:0;width:300px;box-sizing:border-box;padding:12px;
         background:#171c26;border-left:1px solid #283143;overflow:auto}
+  #roster{margin-top:8px}
+  .rosterItem{padding:4px 6px;border-radius:4px;cursor:pointer}
+  .rosterItem:hover{background:#222a38}
+  .meta{color:#67748c;font-size:11px}
+  #tip{position:absolute;display:none;pointer-events:none;background:#0d1017;border:1px solid #3a4761;
+       border-radius:4px;padding:6px 8px;font-size:11px;line-height:1.45;z-index:10;max-width:240px;
+       box-shadow:0 2px 8px rgba(0,0,0,.5)}
   h1{font-size:15px;margin:0 0 2px}
   .sub{color:#67748c;font-size:11px;margin:0 0 10px}
   button{background:#2a3346;color:#cdd6e4;border:1px solid #3a4761;border-radius:4px;padding:5px 9px;cursor:pointer;margin:2px 0}
@@ -25,10 +34,18 @@
 </head>
 <body>
 <div id="c"></div>
+<div id="left">
+  <h1>Online</h1>
+  <p class="sub" id="rosterHead">loading...</p>
+  <input id="search" placeholder="filter name (contains)">
+  <button id="searchBtn">Search</button>
+  <button id="centerBtn">Center</button>
+  <div id="roster"></div>
+</div>
 <div id="side">
   <h1>Bot World Map</h1>
-  <p class="sub"><a href="/">graph view</a> &middot; drag map to move &middot; click map to resize &middot; scroll to zoom</p>
-  <input id="search" placeholder="search player / bot name">
+  <p class="sub"><a href="/">graph view</a> &middot; drag map to move &middot; click map to resize &middot; scroll to zoom<br>
+     click node: detail &middot; right-click node: custom anchor (relative/absolute)</p>
   <button id="export">Export positions</button>
   <button id="fit">Reset view</button>
   <div class="legend">
@@ -37,10 +54,12 @@
          <span style="background:#3a4658;margin-left:8px"></span>empty</div>
     <div style="margin-top:3px"><span style="background:#6b7a99;border:2px solid #c08bff"></span>hub (town others return to)
          <span style="background:#3a4658;border:2px solid #ff5555;margin-left:8px"></span>unreturnable &#9888;</div>
+    <div style="margin-top:3px"><span style="background:#23262e;border:2px dashed #7a8290"></span>unreachable by bot &#8856;</div>
   </div>
   <div id="status">loading...</div>
   <div id="detail"></div>
 </div>
+<div id="tip"></div>
 <script>
 const host = document.getElementById('c');
 const stage = new Konva.Stage({container:'c', width:host.clientWidth, height:host.clientHeight, draggable:true});
@@ -64,22 +83,34 @@ stage.on('wheel', e => {
 });
 
 const wmImg = {};       // wmId -> Konva.Image
-const nodes = {};       // mapId -> [instance,...]  (dup maps have >1)
-const edgesByWm = {};   // wmId -> [edge,...]
-let edges = [];         // {a,b,type,line}
+const nodes = {};       // mapId / nodeId -> [instance,...]  (registered under id + every constituent map)
+const allInst = [];     // every node instance once (iterate this; nodes{} is multi-keyed for lookups)
+const edgesByWm = {};   // wmId -> [edgeLine,...]
+let edgeLines = [];     // {ia, ib, line}  — one drawn line per connected instance pair
 let live = {};          // mapId -> {players:[{n,l,j}], bots:[...]}
 let query = '';
 
 const wmAbs = (img, lx, ly) => { const s = img.scaleX(); return {x: img.x()+s*lx, y: img.y()+s*ly}; };
 
-// ring priority: danger(red) > hub(purple) > dup(amber) > spot(light) > plain(dark)
+// occupancy aggregates over a node's constituent maps (a merged node can cover several)
+function instOccupants(inst){
+  const out = [];
+  for(const m of inst.maps){ const o = live[m]; if(!o) continue;
+    for(const c of o.players) out.push(['P',c]); for(const c of o.bots) out.push(['B',c]); }
+  return out;
+}
+// ring priority: unreachable(grey) > danger(red) > custom(cyan) > hub(purple) > dup(amber) > spot(light) > plain
 function styleNode(inst){
-  const o = live[inst.map];
-  inst.circle.fill(o && o.players.length ? '#39d353'
-                 : o && o.bots.length    ? '#ff9d4d'
-                 : inst.anchor           ? '#6b7a99' : '#3a4658');
-  inst.circle.dash([]);
+  inst.circle.dash([]); inst.circle.opacity(1);
+  if(inst.unreachable){ // worldmap location no bot can reach — exists in WZ, not in the bot graph
+    inst.circle.fill('#23262e'); inst.circle.stroke('#7a8290'); inst.circle.strokeWidth(1.6);
+    inst.circle.dash([2,2]); inst.circle.opacity(0.55); return;
+  }
+  let hasP=false, hasB=false;
+  for(const m of inst.maps){ const o=live[m]; if(o){ if(o.players.length)hasP=true; if(o.bots.length)hasB=true; } }
+  inst.circle.fill(hasP ? '#39d353' : hasB ? '#ff9d4d' : inst.anchor ? '#6b7a99' : '#3a4658');
   if(inst.danger){ inst.circle.stroke('#ff5555'); inst.circle.strokeWidth(2.2); }
+  else if(inst.custom){ inst.circle.stroke('#22d3ee'); inst.circle.strokeWidth(2.6); inst.circle.dash(inst.absolute?[4,3]:[]); }
   else if(inst.hub){ inst.circle.stroke('#c08bff'); inst.circle.strokeWidth(2.4); }
   else if(inst.dup){ inst.circle.stroke('#ffcf8a'); inst.circle.strokeWidth(2); inst.circle.dash([3,3]); }
   else if(inst.anchor){ inst.circle.stroke('#46577a'); inst.circle.strokeWidth(1.4); }
@@ -87,11 +118,10 @@ function styleNode(inst){
 }
 function matches(inst){
   if(!query) return false;
-  const o = live[inst.map]; if(!o) return false;
-  return [...o.players, ...o.bots].some(c => c.n.toLowerCase().includes(query));
+  return instOccupants(inst).some(([k,c]) => c.n.toLowerCase().includes(query));
 }
 function applyStyle(){
-  for(const map in nodes) for(const inst of nodes[map]){
+  for(const inst of allInst){
     styleNode(inst);
     const hit = matches(inst);
     inst.circle.shadowColor('#ffe14d');
@@ -101,52 +131,161 @@ function applyStyle(){
   dotLayer.batchDraw();
 }
 
+function searchMatches(){
+  return allInst.filter(matches);
+}
+// radar ping on the current matches for 3s — attention only, never moves the screen
+let pingAnim = null, pingRings = [], pingTargets = [];
+function stopPing(){
+  if(pingAnim){ pingAnim.stop(); pingAnim = null; }
+  pingRings.forEach(r => r.destroy()); pingRings = []; pingTargets = [];
+  dotLayer.batchDraw();
+}
+function pingInstances(targets){
+  stopPing();
+  if(!targets || !targets.length) return;
+  pingTargets = targets;
+  pingRings = targets.map(inst => {
+    const ring = new Konva.Circle({x:inst.circle.x(), y:inst.circle.y(), radius:6,
+      stroke:'#ffe14d', strokeWidth:2.5, listening:false});
+    dotLayer.add(ring); return ring;
+  });
+  pingAnim = new Konva.Animation(frame => {
+    if(frame.time > 3000){ stopPing(); return; }
+    const phase = (frame.time % 1000) / 1000;   // expand + fade once per second
+    const rad = 6 + phase * 24, op = 1 - phase;
+    pingRings.forEach((ring, i) => {
+      ring.position(pingTargets[i].circle.position()); ring.radius(rad); ring.opacity(op);
+    });
+  }, dotLayer);
+  pingAnim.start();
+}
+function startPing(){
+  if(!query){ document.getElementById('status').textContent = 'type a name first'; return; }
+  const m = searchMatches();
+  if(!m.length){ document.getElementById('status').textContent = 'no match for "'+query+'"'; return; }
+  document.getElementById('status').textContent = m.length + ' match(es) for "'+query+'"';
+  pingInstances(m);
+}
+// for a map with duplicates, prefer the unmerged (single-map) node, then a non-dup one, else the first
+function pickInstance(mapId){
+  const arr = nodes[mapId]; if(!arr || !arr.length) return null;
+  return arr.find(i => i.maps.length===1 && !i.dup) || arr.find(i => i.maps.length===1)
+      || arr.find(i => !i.dup) || arr[0];
+}
+function centerOnMap(mapId){    // global: roster items call this from inline onclick
+  const inst = pickInstance(mapId);
+  if(!inst){ document.getElementById('status').textContent = 'map '+mapId+' not on screen'; return; }
+  const p = inst.circle.position(), s = stage.scaleX();
+  stage.position({x: host.clientWidth/2 - p.x*s, y: host.clientHeight/2 - p.y*s});
+  stage.batchDraw();
+  pingInstances([inst]);
+}
+function centerOnMatch(){
+  const m = searchMatches();
+  if(!m.length){ document.getElementById('status').textContent = 'no match to center'; return; }
+  centerOnMap(m[0].id);
+}
+// right-click cycles a node: none -> relative (rides its worldmap) -> absolute (independent) -> none
+function cycleCustom(inst){
+  if(!inst.custom){ inst.custom = true; inst.absolute = false; }
+  else if(!inst.absolute){ inst.absolute = true; const p = inst.circle.position(); inst.absX = p.x; inst.absY = p.y; }
+  else { inst.custom = false; inst.absolute = false; inst.lx = inst.lx0; inst.ly = inst.ly0;
+         const im = wmImg[inst.wm]; if(im) inst.circle.position(wmAbs(im, inst.lx, inst.ly)); }
+  inst.circle.draggable(inst.custom);
+  document.getElementById('status').textContent = inst.name + ': '
+    + (inst.custom ? (inst.absolute ? 'absolute custom anchor (independent)' : 'relative custom anchor (rides worldmap)') : 'normal');
+  styleNode(inst); drawEdges(inst.wm); dotLayer.batchDraw();
+}
+
 // reposition one worldmap's nodes (constant radius — they are not children of the scaled image)
 function recomputeWm(wmId){
   const img = wmImg[wmId]; if(!img) return;
-  for(const map in nodes) for(const inst of nodes[map]){
-    if(inst.wm !== wmId) continue;
+  for(const inst of allInst){
+    if(inst.wm !== wmId || inst.absolute) continue;   // absolute custom anchors stay put
     const a = wmAbs(img, inst.lx, inst.ly);
     inst.circle.position(a);
-    if(inst.warn) inst.warn.position({x:a.x-4, y:a.y-16});
+    if(inst.mark) inst.mark.position({x:a.x-4, y:a.y-16});
   }
   drawEdges(wmId);
   dotLayer.batchDraw();
 }
 
-// for a dup endpoint pick the instance closest to the other end (prefers same-worldmap)
-function pickEnds(e){
-  const A = nodes[e.a], B = nodes[e.b]; if(!A || !B) return null;
-  let best=null, bd=Infinity;
-  for(const a of A) for(const b of B){
-    const dx=a.circle.x()-b.circle.x(), dy=a.circle.y()-b.circle.y(), d=dx*dx+dy*dy;
-    if(d<bd){ bd=d; best=[a,b]; }
-  }
-  return best;
-}
-function drawOne(e){
-  const ends = pickEnds(e);
-  if(!ends){ e.line.visible(false); return; }
-  e.line.visible(true);
-  e.line.points([ends[0].circle.x(), ends[0].circle.y(), ends[1].circle.x(), ends[1].circle.y()]);
+function drawOne(el){
+  el.line.points([el.ia.circle.x(), el.ia.circle.y(), el.ib.circle.x(), el.ib.circle.y()]);
 }
 function drawEdges(wmId){
-  const list = wmId==null ? edges : (edgesByWm[wmId]||[]);
+  const list = wmId==null ? edgeLines : (edgesByWm[wmId]||[]);
   list.forEach(drawOne);
   edgeLayer.batchDraw();
 }
 
+const esc = s => String(s).replace(/[&<>]/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[ch]));
+const occLine = (k,c) => (k==='P'?'&#128100; ':'&#129302; ')+esc(c.n)+'  Lv'+c.l+' '+esc(c.j);
+const occupants = map => { const o = live[map]; return o ? [...o.players.map(c=>['P',c]), ...o.bots.map(c=>['B',c])] : []; };
+
+let selectedMap = null;
 function showDetail(inst){
-  const o = live[inst.map];
-  const occ = o ? [...o.players.map(c=>['P',c]), ...o.bots.map(c=>['B',c])] : [];
+  selectedMap = inst.id;
   const flags = [inst.hub?'hub':null, inst.anchor?'worldmap spot':null, inst.dup?'on multiple worldmaps':null,
-                 inst.danger?'UNRETURNABLE':null, inst.leaf?'dead-end':null].filter(Boolean).join(' &middot; ');
+                 inst.danger?'UNRETURNABLE':null, inst.unreachable?'UNREACHABLE BY BOT':null,
+                 inst.leaf?'dead-end':null].filter(Boolean).join(' &middot; ');
+  // one container per constituent map (merged nodes preview them all)
+  const boxes = inst.maps.map((m,i) =>
+    '<div id="mb'+m+'" style="margin-top:8px;border-top:1px solid #283143;padding-top:6px">'
+    + '<b>'+esc(inst.names[i])+'</b> ('+m+')<div class="meta" style="margin-top:4px">loading…</div></div>').join('');
   document.getElementById('detail').innerHTML =
-    '<b>'+inst.name+'</b> ('+inst.map+')<br>'
-    + 'WorldMap'+inst.wm + (flags?'<br>'+flags:'')
-    + '<div class="occ" style="margin-top:6px">'
-    + (occ.length ? occ.map(([k,c]) => (k==='P'?'&#128100; ':'&#129302; ')+c.n+'  Lv'+c.l+' '+c.j).join('<br>')
-                  : 'nobody here') + '</div>';
+    '<b>'+esc(inst.name)+'</b><br>WorldMap'+inst.wm + (flags?'<br>'+flags:'') + boxes;
+  inst.maps.forEach(m => fetchMapInfo(m, inst.id));
+}
+function fetchMapInfo(mapId, token){
+  fetch('/api/mapinfo?id='+mapId).then(r=>r.json()).then(d=>{
+    if(selectedMap !== token) return;          // a newer node was clicked while this was loading
+    const box = document.getElementById('mb'+mapId); if(!box) return;
+    const occ = occupants(mapId);
+    const occHtml = occ.length ? occ.map(([k,c]) => occLine(k,c)).join('<br>') : 'nobody here';
+    const mobs = d.mobs.length
+      ? d.mobs.map(m => esc(m.name)+' Lv'+m.level+(m.spawns>1 ? ' x'+m.spawns : '')).join('<br>') : 'no mob spawns';
+    const bots = d.bots.length
+      ? '<br><br><b>Bots</b><br>'+d.bots.map(b => '&#129302; '+esc(b.name)+': '+esc(b.status)).join('<br>') : '';
+    const chat = (d.chat && d.chat.length)
+      ? '<br><br><b>Chat</b><br>'+d.chat.map(c => '<span class="meta">'+c.t+'</span> '+esc(c.n)+': '+esc(c.m)).join('<br>') : '';
+    box.querySelector('.meta').innerHTML = occHtml + '<br><br><b>Mobs</b><br>'+mobs+bots+chat;
+  }).catch(()=>{ const box=document.getElementById('mb'+mapId); if(box) box.querySelector('.meta').textContent='failed to load'; });
+}
+
+// hover tooltip: just the characters on the node (class+level) — no mob/status preview
+function showTip(inst, evt){
+  const occ = instOccupants(inst);
+  const tip = document.getElementById('tip');
+  tip.innerHTML = '<b>'+esc(inst.name)+'</b><br>' + (occ.length ? occ.map(([k,c]) => occLine(k,c)).join('<br>') : '(empty)');
+  tip.style.display = 'block';
+  tip.style.left = (evt.clientX + 14) + 'px';
+  tip.style.top  = (evt.clientY + 14) + 'px';
+}
+function hideTip(){ document.getElementById('tip').style.display = 'none'; }
+
+// left-panel roster of everyone online; click -> center their map. ponytail: rebuilds full innerHTML
+// each poll; fine to a few thousand, add windowing if it ever janks.
+function renderRoster(){
+  const items = [];
+  for(const map in live){
+    const o = live[map];
+    for(const c of o.players) items.push({c, map:+map, bot:false});
+    for(const c of o.bots)    items.push({c, map:+map, bot:true});
+  }
+  const filt = query ? items.filter(it => it.c.n.toLowerCase().includes(query)) : items;
+  filt.sort((a,b) => (a.bot-b.bot) || a.c.n.localeCompare(b.c.n));   // players first, then by name
+  const players = items.filter(it => !it.bot).length, bots = items.length - players;
+  document.getElementById('rosterHead').textContent =
+    (query ? filt.length+' shown · ' : '') + players + ' online + ' + bots + ' bots';
+  document.getElementById('roster').innerHTML = filt.map(it => {
+    const inst = pickInstance(it.map);
+    const nm = inst ? inst.name : ('map '+it.map);
+    return '<div class="rosterItem" onclick="centerOnMap('+it.map+')">'
+      + (it.bot?'&#129302; ':'&#128100; ') + esc(it.c.n) + ' <span class="meta">Lv'+it.c.l+' '+esc(it.c.j)+'</span>'
+      + '<br><span class="meta">'+esc(nm)+'</span></div>';
+  }).join('');
 }
 
 (async function init(){
@@ -173,33 +312,64 @@ function showDetail(inst){
       const a = wmAbs(kimg, nd.x, nd.y);
       const r = nd.hub ? 5.5 : nd.anchor ? 4 : (nd.leaf ? 2.6 : 3.2);
       const circle = new Konva.Circle({x:a.x, y:a.y, radius:r});
-      const inst = {map:nd.map, wm:wm.id, lx:nd.x, ly:nd.y, anchor:nd.anchor, hub:nd.hub, dup:nd.dup,
-                    danger:nd.danger, leaf:nd.leaf, name:nd.name, circle, warn:null};
-      circle.on('mouseover', () => { document.body.style.cursor='pointer';
-        document.getElementById('status').textContent = nd.name+' ('+nd.map+')'; });
-      circle.on('mouseout', () => { document.body.style.cursor='default'; });
+      const inst = {id:nd.id, maps:nd.maps, names:nd.names, name:nd.names.join(' / '),
+                    wm:wm.id, lx:nd.x, ly:nd.y, lx0:nd.x, ly0:nd.y,
+                    anchor:nd.anchor, hub:nd.hub, dup:nd.dup, danger:nd.danger, leaf:nd.leaf,
+                    unreachable:nd.unreachable, custom:false, absolute:false, absX:0, absY:0,
+                    circle, mark:null};
+      circle.on('mouseover', e => { document.body.style.cursor='pointer';
+        document.getElementById('status').textContent = inst.name+' ('+nd.maps.join(', ')+')'; showTip(inst, e.evt); });
+      circle.on('mousemove', e => showTip(inst, e.evt));
+      circle.on('mouseout', () => { document.body.style.cursor='default'; hideTip(); });
       circle.on('click tap', e => { e.cancelBubble = true; showDetail(inst); });
+      circle.on('contextmenu', e => { e.evt.preventDefault(); e.cancelBubble = true; cycleCustom(inst); });
+      circle.on('dragmove', () => { const p = inst.circle.position();
+        if(inst.mark) inst.mark.position({x:p.x-4, y:p.y-16}); drawEdges(inst.wm); });
+      circle.on('dragend', () => {
+        if(!inst.custom) return;
+        const p = inst.circle.position();
+        if(inst.absolute){ inst.absX = p.x; inst.absY = p.y; }
+        else { const im = wmImg[inst.wm], s = im.scaleX(); inst.lx = (p.x-im.x())/s; inst.ly = (p.y-im.y())/s; }
+        drawEdges(inst.wm);
+      });
       dotLayer.add(circle);
-      if(nd.danger){
-        inst.warn = new Konva.Text({x:a.x-4, y:a.y-16, text:'⚠', fontSize:13, fill:'#ff5555'});
-        inst.warn.listening(false); dotLayer.add(inst.warn);
+      const markText = nd.danger ? '⚠' : nd.unreachable ? '⊘' : null;
+      if(markText){
+        inst.mark = new Konva.Text({x:a.x-4, y:a.y-16, text:markText, fontSize:13,
+                                    fill: nd.danger ? '#ff5555' : '#9aa3b0'});
+        inst.mark.listening(false); dotLayer.add(inst.mark);
       }
-      (nodes[nd.map] = nodes[nd.map] || []).push(inst);
+      allInst.push(inst);
+      new Set([nd.id, ...nd.maps]).forEach(k => (nodes[k] = nodes[k] || []).push(inst));
       styleNode(inst);
       nodeCount++;
     });
   });
 
-  (data.edges || []).forEach(([a,b,t]) => {
+  const addLine = (ia, ib, t) => {
     const line = new Konva.Line({points:[0,0,0,0], stroke: t==='t' ? '#6cc6ff' : '#3a4761',
                                  strokeWidth: t==='t' ? 1.2 : 0.7, opacity:0.8});
-    const e = {a, b, type:t, line};
-    edgeLayer.add(line); edges.push(e);
-    const wmsOf = new Set([...(nodes[a]||[]), ...(nodes[b]||[])].map(i => i.wm));
-    wmsOf.forEach(w => (edgesByWm[w] = edgesByWm[w] || []).push(e));
+    edgeLayer.add(line);
+    const el = {ia, ib, line}; edgeLines.push(el);
+    new Set([ia.wm, ib.wm]).forEach(w => (edgesByWm[w] = edgesByWm[w] || []).push(el));
+  };
+  (data.edges || []).forEach(([a,b,t]) => {
+    const A = nodes[a], B = nodes[b]; if(!A || !B) return;
+    const wmsA = new Set(A.map(i => i.wm));
+    const shared = [...new Set(B.map(i => i.wm))].filter(w => wmsA.has(w));
+    if(shared.length){                 // draw inside every worldmap holding both ends -> no bare dup nodes
+      shared.forEach(w => addLine(A.find(i=>i.wm===w), B.find(i=>i.wm===w), t));
+    } else {                           // no shared worldmap: a single closest cross-worldmap link
+      let best=null, bd=Infinity;
+      for(const ia of A) for(const ib of B){
+        const dx=ia.circle.x()-ib.circle.x(), dy=ia.circle.y()-ib.circle.y(), d=dx*dx+dy*dy;
+        if(d<bd){ bd=d; best=[ia,ib]; }
+      }
+      if(best) addLine(best[0], best[1], t);
+    }
   });
 
-  document.getElementById('status').textContent = wms.length + ' worldmaps, ' + nodeCount + ' nodes, ' + edges.length + ' edges';
+  document.getElementById('status').textContent = wms.length + ' worldmaps, ' + nodeCount + ' nodes, ' + edgeLines.length + ' links';
   drawEdges(null);
   imageLayer.batchDraw(); dotLayer.batchDraw();
 
@@ -215,18 +385,27 @@ async function poll(){
     const d = await (await fetch('/api/live')).json();
     live = {};
     for(const id in d.maps) live[id] = d.maps[id];
-    applyStyle();
+    applyStyle(); renderRoster();
   } catch(e){ /* keep last */ }
   setTimeout(poll, 2000);
 }
 
-document.getElementById('search').addEventListener('input', e => { query = e.target.value.trim().toLowerCase(); applyStyle(); });
+document.getElementById('search').addEventListener('input', e => { query = e.target.value.trim().toLowerCase(); applyStyle(); renderRoster(); });
+document.getElementById('search').addEventListener('keydown', e => { if(e.key==='Enter'){ e.preventDefault(); startPing(); } });
+document.getElementById('searchBtn').onclick = startPing;
+document.getElementById('centerBtn').onclick = centerOnMatch;
 document.getElementById('export').onclick = () => {
   const lines = imageLayer.find('Image').map(im =>
     '        wm.put("' + im.getAttr('wmid') + '", new double[]{'
     + Math.round(im.x()) + ', ' + Math.round(im.y()) + ', ' + im.scaleX().toFixed(3) + '});').sort();
-  const text = lines.join('\n');
-  document.getElementById('status').textContent = 'WORLDMAP_LAYOUT (' + lines.length + ') copied';
+  const customs = [];
+  for(const inst of allInst) if(inst.custom){
+    customs.push(inst.absolute
+      ? '        // custom abs  node ' + inst.id + '  ' + Math.round(inst.absX) + ', ' + Math.round(inst.absY)
+      : '        // custom rel  node ' + inst.id + '  wm' + inst.wm + '  ' + Math.round(inst.lx) + ', ' + Math.round(inst.ly));
+  }
+  const text = lines.join('\n') + (customs.length ? '\n\n        // custom anchors\n' + customs.join('\n') : '');
+  document.getElementById('status').textContent = 'WORLDMAP_LAYOUT (' + lines.length + ') + ' + customs.length + ' custom copied';
   let ta = document.getElementById('out');
   if(!ta){ ta = document.createElement('textarea'); ta.id='out'; ta.readOnly=true; document.getElementById('side').appendChild(ta); }
   ta.value = text; ta.focus(); ta.select();

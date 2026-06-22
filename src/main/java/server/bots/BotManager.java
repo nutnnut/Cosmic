@@ -5539,7 +5539,9 @@ public class BotManager {
     // -------------------------------------------------------------------------
 
     void botSay(Character bot, String text) {
-        bot.getMap().broadcastMessage(PacketCreator.getChatText(bot.getId(), sanitizeChat(text), false, 0));
+        String s = sanitizeChat(text);
+        bot.getMap().broadcastMessage(PacketCreator.getChatText(bot.getId(), s, false, 0));
+        BotWorldGraphWebServer.recordChat(bot.getMapId(), bot.getName(), s);
     }
 
     // Common typographic chars an LLM/source string may slip in; the v83 client chat
