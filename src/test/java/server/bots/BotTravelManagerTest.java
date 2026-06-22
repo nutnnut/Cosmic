@@ -296,6 +296,32 @@ class BotTravelManagerTest {
     }
 
     @Test
+    void shouldHailCabFromHereWhenApproachBudgetLapses() {
+        int lith = 104000000;
+        Fixture f = fixture(HENESYS, lith, new Point(0, 0), List.of());
+        Character bot = f.bot();
+        when(bot.getMeso()).thenReturn(5000);
+
+        try (MovementRecorder movement = new MovementRecorder();
+             ConsumableSeams seams = new ConsumableSeams();
+             RouteStub route = new RouteStub((from, to, maxHops, options, blocked) -> List.of(lith))) {
+            BotTravelManager.taxiNpcLocator = (map, npcId) -> npcId == 1012000 ? new Point(800, 0) : null;
+
+            // First tick seeds the taxi hop; the bot is 800px from the cab, so it just walks (no ride).
+            assertTrue(BotTravelManager.tickFollowTravel(f.entry(), bot, f.anchor(), true));
+            assertEquals(1012000, f.entry().followTravelTaxiNpcId);
+            assertTrue(seams.rides.isEmpty());
+
+            // Approach budget lapses while still far from the cab (a foothold the nav can't stand on):
+            // hail it from here instead of failing the errand. A town cab is clickable map-wide.
+            f.entry().followTravelDeadlineMs = System.currentTimeMillis() - 1;
+            assertTrue(BotTravelManager.tickFollowTravel(f.entry(), bot, f.anchor(), true));
+            assertEquals(1, seams.rides.size());
+            assertEquals(lith, seams.rides.get(0).toMapId());
+        }
+    }
+
+    @Test
     void shouldStartFerryBoardingOnlyWhenFerriesAreAllowed() {
         int elliniaStation = 101000300;
         int orbisStation = 200000100;

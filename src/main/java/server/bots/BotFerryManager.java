@@ -288,6 +288,30 @@ final class BotFerryManager {
         return BOARDING_MAP_TO_ROUTES.getOrDefault(mapId, List.of());
     }
 
+    /** One-line ferry-leg diagnostic for the path log. A ferry "deadline" give-up otherwise can't be
+     *  told apart from a legitimate scheduled wait: this shows whether the bot is ON the ride (waiting
+     *  for the boat), waiting at a CLOSED gate (legit — the deadline is being re-armed), or has fallen
+     *  OFF the boarding chain entirely (the real can't-reach failure). */
+    static String describeLeg(BotEntry entry, Character bot) {
+        if (bot == null) {
+            return "no-bot";
+        }
+        int map = bot.getMapId();
+        FerryRoute transit = TRANSIT_MAP_TO_ROUTE.get(map);
+        if (transit != null) {
+            return "onRide(map=" + map + " -> " + transit.destinationMapId() + ") waiting for the boat";
+        }
+        FerryRoute route = findFerryEdge(map, entry.followTravelNextHopMapId);
+        if (route == null) {
+            return "OFF the boarding chain (map=" + map + " is not a boarding/transit map of this hop)"
+                    + " -> can't-reach failure, not a wait";
+        }
+        boolean gateOpen = route.eventName().isEmpty() || gateCheck.entryOpen(bot, route.eventName());
+        return "boardingMap=" + map + " gateOpen=" + gateOpen
+                + (route.eventName().isEmpty() ? "" : " event=" + route.eventName())
+                + (gateOpen ? "" : " [legit wait — deadline re-armed each tick]");
+    }
+
     /** The ferry edge from one map to a specific destination, or null when no line sails that way. */
     static FerryRoute findFerryEdge(int fromMapId, int toMapId) {
         for (FerryRoute route : routesBoardingAt(fromMapId)) {

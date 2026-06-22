@@ -248,6 +248,13 @@ final class BotPathLogger {
         sb.append("Nav target: ").append(navTargetSummary(entry))
                 .append("  targetRegion=").append(entry.navTargetRegionId).append("\n");
         sb.append("Last nav decision: ").append(entry.lastNavDecision);
+        if ("no-ai".equals(entry.lastNavDecision)) {
+            // "no-ai" just means runAiTick was false this tick — by itself it looks like a freeze.
+            // Name the cause so a logging-out/break linger isn't mistaken for a stuck bot.
+            sb.append(entry.loggingOut ? "  (AI step suppressed: logging out / lingering)"
+                    : entry.breakUntilMs > System.currentTimeMillis() ? "  (AI step suppressed: on break)"
+                    : "  (no AI step this tick: between AI-cadence ticks — normal)");
+        }
         if (entry.lastEdgeBlockReason != null) {
             sb.append("  [blocked: ").append(entry.lastEdgeBlockReason).append("]");
         }
@@ -552,9 +559,21 @@ final class BotPathLogger {
                     .append(" fromMap=").append(entry.followTravelFromMapId);
             if (entry.followTravelTaxiNpcId != 0) {
                 sb.append(" taxiNpc=").append(entry.followTravelTaxiNpcId);
+                // Live cab geometry: a taxi "deadline" almost always means the bot is near the cab but
+                // never goes grounded-in-range (cab on a foothold it can't stand on). distToCab vs the
+                // 500px hail radius + grounded state shows exactly that; deadlineInMs<0 => hailing from here.
+                Point cab = entry.followTravelTaxiPos;
+                Point bp = bot.getPosition();
+                if (cab != null && bp != null) {
+                    int dist = Math.abs(bp.x - cab.x) + Math.abs(bp.y - cab.y);
+                    sb.append(" cab=(").append(cab.x).append(",").append(cab.y).append(")")
+                            .append(" distToCab=").append(dist).append(dist <= 500 ? "" : " (>500 hail radius)")
+                            .append(" grounded=").append(!entry.inAir && !entry.climbing)
+                            .append(entry.inAir ? " inAir" : "").append(entry.climbing ? " climbing" : "");
+                }
             }
             if (entry.followTravelFerry) {
-                sb.append(" ferry");
+                sb.append(" ferry: ").append(BotFerryManager.describeLeg(entry, bot));
             }
             if (entry.followTravelEnteredAtMs > 0) {
                 sb.append(" enteredAgoMs=").append(now - entry.followTravelEnteredAtMs);
