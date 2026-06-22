@@ -103,7 +103,7 @@ function instOccupants(inst){
     for(const c of o.players) out.push(['P',c]); for(const c of o.bots) out.push(['B',c]); }
   return out;
 }
-// ring priority: unreachable(grey) > danger(red) > custom(cyan) > hub(purple) > dup(amber) > spot(light) > plain
+// ring priority: unreachable(grey) > danger(red) > custom(cyan) > hub(purple) > spot(light) > plain
 function styleNode(inst){
   inst.circle.dash([]); inst.circle.opacity(1);
   if(inst.unreachable){ // worldmap location no bot can reach — exists in WZ, not in the bot graph
@@ -116,7 +116,6 @@ function styleNode(inst){
   if(inst.danger){ inst.circle.stroke('#ff5555'); inst.circle.strokeWidth(2.2); }
   else if(inst.custom){ inst.circle.stroke('#22d3ee'); inst.circle.strokeWidth(2.6); inst.circle.dash(inst.absolute?[4,3]:[]); }
   else if(inst.hub){ inst.circle.stroke('#c08bff'); inst.circle.strokeWidth(2.4); }
-  else if(inst.dup){ inst.circle.stroke('#ffcf8a'); inst.circle.strokeWidth(2); inst.circle.dash([3,3]); }
   else if(inst.anchor){ inst.circle.stroke('#46577a'); inst.circle.strokeWidth(1.4); }
   else { inst.circle.stroke('#0d1017'); inst.circle.strokeWidth(1); }
 }
@@ -209,7 +208,7 @@ function recomputeWm(wmId){
     if(inst.absolute) continue;   // absolute custom anchors stay put
     const a = wmAbs(img, inst.lx, inst.ly);
     inst.circle.position(a);
-    if(inst.mark) inst.mark.position({x:a.x, y:a.y - 12});
+    if(inst.mark) inst.mark.position({x:a.x, y:a.y});
   }
   drawEdges(wmId);
   dotLayer.batchDraw();
@@ -234,28 +233,36 @@ function showDetail(inst){
   const flags = [inst.hub?'hub':null, inst.anchor?'worldmap spot':null, inst.dup?'on multiple worldmaps':null,
                  inst.danger?'UNRETURNABLE':null, inst.unreachable?'UNREACHABLE BY BOT':null,
                  inst.leaf?'dead-end':null].filter(Boolean).join(' &middot; ');
-  // one container per constituent map (merged nodes preview them all)
+  const merged = inst.maps.length > 1;
+  // single node -> one merged section (no repeated sub-header / divider); merged -> a section per map
   const boxes = inst.maps.map((m,i) =>
-    '<div id="mb'+m+'" style="margin-top:8px;border-top:1px solid #283143;padding-top:6px">'
-    + '<b>'+esc(inst.names[i])+'</b> ('+m+')<div class="meta" style="margin-top:4px">loading…</div></div>').join('');
+    '<div id="mb'+m+'" style="margin-top:8px">'
+    + (merged ? '<b>'+esc(inst.names[i])+' ('+m+')</b>' : '')
+    + '<div class="body" style="margin-top:4px">loading…</div></div>').join('');
   document.getElementById('detail').innerHTML =
-    '<b>'+esc(inst.name)+'</b><br>WorldMap'+inst.wm + (flags?'<br>'+flags:'') + boxes;
+    '<b>'+esc(inst.name)+' ('+inst.maps.join(', ')+')</b><br>WorldMap'+inst.wm + (flags?'<br>'+flags:'') + boxes;
   inst.maps.forEach(m => fetchMapInfo(m, inst.id));
 }
 function fetchMapInfo(mapId, token){
   fetch('/api/mapinfo?id='+mapId).then(r=>r.json()).then(d=>{
     if(selectedMap !== token) return;          // a newer node was clicked while this was loading
     const box = document.getElementById('mb'+mapId); if(!box) return;
-    const occ = occupants(mapId);
-    const occHtml = occ.length ? occ.map(([k,c]) => occLine(k,c)).join('<br>') : 'nobody here';
-    const mobs = d.mobs.length
-      ? d.mobs.map(m => esc(m.name)+' Lv'+m.level+(m.spawns>1 ? ' x'+m.spawns : '')).join('<br>') : 'no mob spawns';
-    const bots = d.bots.length
-      ? '<br><br><b>Bots</b><br>'+d.bots.map(b => '&#129302; '+esc(b.name)+': '+esc(b.status)).join('<br>') : '';
+    const statusOf = {}; (d.bots||[]).forEach(b => statusOf[b.name] = b.status);
+    // players first, then bots; each bot's @botstatus inline directly under it
+    const lines = occupants(mapId).map(([k,c]) => {
+      const head = (k==='P'?'&#128100; ':'&#129302; ') + esc(c.n) + ' Lv'+c.l+' ' + esc(c.j);
+      return (k==='B' && statusOf[c.n])
+        ? head + '<br><span class="meta" style="margin-left:16px">'+esc(statusOf[c.n])+'</span>'
+        : head;
+    });
+    const occHtml = lines.length ? lines.join('<br>') : 'nobody here';
+    const mobs = d.mobs.length                                  // skip the section entirely when no spawns
+      ? '<br><br><b>Mobs</b><br>'+d.mobs.map(m => esc(m.name)+' Lv'+m.level+(m.spawns>1 ? ' x'+m.spawns : '')).join('<br>')
+      : '';
     const chat = (d.chat && d.chat.length)
       ? '<br><br><b>Chat</b><br>'+d.chat.map(c => '<span class="meta">'+c.t+'</span> '+esc(c.n)+': '+esc(c.m)).join('<br>') : '';
-    box.querySelector('.meta').innerHTML = occHtml + '<br><br><b>Mobs</b><br>'+mobs+bots+chat;
-  }).catch(()=>{ const box=document.getElementById('mb'+mapId); if(box) box.querySelector('.meta').textContent='failed to load'; });
+    box.querySelector('.body').innerHTML = occHtml + mobs + chat;
+  }).catch(()=>{ const box=document.getElementById('mb'+mapId); if(box){ const b=box.querySelector('.body'); if(b) b.textContent='failed to load'; } });
 }
 
 // hover tooltip: just the characters on the node (class+level) — no mob/status preview
@@ -337,7 +344,7 @@ function renderRoster(){
       circle.on('click tap', e => { e.cancelBubble = true; showDetail(inst); });
       circle.on('contextmenu', e => { e.evt.preventDefault(); e.cancelBubble = true; cycleCustom(inst); });
       circle.on('dragmove', () => { const p = inst.circle.position();
-        if(inst.mark) inst.mark.position({x:p.x, y:p.y - 12}); drawEdges(inst.wm); });
+        if(inst.mark) inst.mark.position({x:p.x, y:p.y}); drawEdges(inst.wm); });
       circle.on('dragend', () => {
         if(!inst.custom) return;
         const p = inst.circle.position();
@@ -351,7 +358,7 @@ function renderRoster(){
         inst.mark = new Konva.Text({text:markText, fontSize:12, listening:false,
                                     fill: nd.danger ? '#ff5555' : '#9aa3b0'});
         inst.mark.offset({x:inst.mark.width()/2, y:inst.mark.height()/2}); // center the glyph on the node
-        inst.mark.position({x:a.x, y:a.y - 12});                           // sit just above it
+        inst.mark.position({x:a.x, y:a.y});                                // overlay it on the node
         dotLayer.add(inst.mark);
       }
       allInst.push(inst);
@@ -374,7 +381,10 @@ function renderRoster(){
     const wmsA = new Set(A.map(i => i.wm));
     const shared = [...new Set(B.map(i => i.wm))].filter(w => wmsA.has(w));
     if(shared.length){                 // draw inside every worldmap holding both ends -> no bare dup nodes
-      shared.forEach(w => addLine(A.find(i=>i.wm===w), B.find(i=>i.wm===w), t));
+      shared.forEach(w => {
+        const ia = A.find(i=>i.wm===w), ib = B.find(i=>i.wm===w);
+        if(ia !== ib) addLine(ia, ib, t);   // same dot here (merged together on this worldmap) -> skip
+      });
     } else {                           // no shared worldmap: a single closest cross-worldmap link
       let best=null, bd=Infinity;
       for(const ia of A) for(const ib of B){

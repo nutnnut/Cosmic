@@ -158,6 +158,13 @@ final class BotFerryManager {
             200090070, 200090070, 200090070,
             List.of(140020300), "");
 
+    // TODO(bot-graph): inter-continent gateways NOT modeled, so these regions are unreachable (they surface
+    // as UNREACHABLE worldmap spots in the world-graph web view). Intra-region taxis exist; only the Orbis
+    // boarding leg is missing. Add FerryRoutes once the station NPC/platform/event ids are verified:
+    //   - Orbis <-> El Nath (211000000): the whole El Nath / Dead Mine / Orbis Tower side.
+    //   - Orbis <-> Mu Lung (250000000) & Aqua Road (230000000): Mu Lung<->Herb Town<->Aquarium taxis are
+    //     present, but the cluster has no link to spawn without the Orbis boat.
+    // (Orbis <-> Ereve/Ludibrium/Leafre/Ariant/Ellinia and Lith <-> Rien ARE modeled.)
     private static final List<FerryRoute> ROUTES = List.of(
             ELLINIA_TO_ORBIS, ORBIS_TO_ELLINIA,
             ORBIS_TO_LUDIBRIUM, ORBIS_TO_LEAFRE, ORBIS_TO_ARIANT,

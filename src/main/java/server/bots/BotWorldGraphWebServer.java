@@ -264,14 +264,11 @@ public final class BotWorldGraphWebServer {
     private record WorldSpot(List<Integer> maps, double x, double y) {
     }
 
-    /** WorldMap spots in image-local pixels. {@code alias} maps every constituent map id to its merge
-     *  group's canonical id (entries sharing a map are one node); {@code occur} counts worldmaps per map. */
+    /** WorldMap spots in image-local pixels. A dot may stand for several maps (merged mapNo); merging is
+     *  per-worldmap-entry (NOT global), so a map can be merged on an overview yet separate on its detail.
+     *  {@code spotMaps} = every map that belongs to some entry; {@code occur} counts worldmaps per map. */
     private record WorldSpots(List<String> wmIds, Map<String, List<WorldSpot>> byWm,
-                              Map<Integer, Integer> occur, Map<Integer, Integer> alias) {
-    }
-
-    private static int canon(WorldSpots ws, int map) {
-        return ws.alias().getOrDefault(map, map);
+                              Map<Integer, Integer> occur, Set<Integer> spotMaps) {
     }
 
     /** Follow parentMap links to the top-level (overview) worldmap; detail worldmaps share their parent's root. */
@@ -287,37 +284,11 @@ public final class BotWorldGraphWebServer {
         return cur;
     }
 
-    private static int ufFind(Map<Integer, Integer> uf, int x) {
-        int r = x;
-        while (uf.getOrDefault(r, r) != r) {
-            r = uf.get(r);
-        }
-        while (uf.getOrDefault(x, x) != x) {
-            int next = uf.get(x);
-            uf.put(x, r);
-            x = next;
-        }
-        return r;
-    }
-
-    private static void ufUnion(Map<Integer, Integer> uf, int a, int b) {
-        int ra = ufFind(uf, a);
-        int rb = ufFind(uf, b);
-        if (ra != rb) {
-            if (ra < rb) {
-                uf.put(rb, ra); // root = smaller id, deterministic
-            } else {
-                uf.put(ra, rb);
-            }
-        }
-    }
-
     private static WorldSpots scanWorldMapSpots() {
         DataProvider dp = DataProviderFactory.getDataProvider(WZFiles.MAP);
         List<String> wmIds = new ArrayList<>();
         Map<String, List<WorldSpot>> byWm = new TreeMap<>();
         Map<Integer, Integer> occur = new HashMap<>(); // mapId -> # of distinct ROOT worldmaps showing it
-        Map<Integer, Integer> uf = new HashMap<>();     // union-find over maps sharing a MapList entry
         Map<String, String> wmParent = new HashMap<>(); // child worldmap id -> parent (overview) worldmap id
         Map<String, Set<Integer>> wmMaps = new HashMap<>(); // worldmap id -> the maps it shows
         for (String id : worldMapIds()) {
@@ -354,9 +325,6 @@ public final class BotWorldGraphWebServer {
                     continue;
                 }
                 spots.add(new WorldSpot(List.copyOf(maps), origin.x + spot.x, origin.y + spot.y));
-                for (int i = 1; i < maps.size(); i++) {
-                    ufUnion(uf, maps.get(0), maps.get(i)); // merge a multi-mapNo entry into one node
-                }
                 onThisWm.addAll(maps);
             }
             wmIds.add(id);
@@ -375,21 +343,18 @@ public final class BotWorldGraphWebServer {
         for (Map.Entry<Integer, Set<String>> e : rootsByMap.entrySet()) {
             occur.put(e.getKey(), e.getValue().size());
         }
-        Map<Integer, Integer> alias = new HashMap<>();
-        for (List<WorldSpot> spots : byWm.values()) {
-            for (WorldSpot s : spots) {
-                for (int m : s.maps()) {
-                    alias.put(m, ufFind(uf, m));
-                }
-            }
+        Set<Integer> spotMaps = new HashSet<>();
+        for (Set<Integer> ms : wmMaps.values()) {
+            spotMaps.addAll(ms);
         }
-        return new WorldSpots(wmIds, byWm, occur, alias);
+        return new WorldSpots(wmIds, byWm, occur, spotMaps);
     }
 
     /**
      * {@code {"worldmaps":[{"id":"000","x":,"y":,"scale":,"nodes":[{id,maps,names,x,y,anchor,hub,dup,danger,
-     * leaf,unreachable}]}],"edges":[[id,id,"p"|"t"]]}} — node x/y are image-local pixels; a node may stand
-     * for several maps (merged {@code mapNo}) and edges use the node's canonical id.
+     * leaf,unreachable}]}],"edges":[[mapA,mapB,"p"|"t"]]}} — node x/y are image-local pixels; a node may
+     * stand for several maps (merged {@code mapNo}). Edges are raw map ids; the client connects, per
+     * worldmap, the dot holding each endpoint (so a detail keeps edges its overview merges into one dot).
      */
     private static String worldGraphJson() {
         GraphData g = graphData();
@@ -422,39 +387,34 @@ public final class BotWorldGraphWebServer {
             StringBuilder nodes = new StringBuilder();
             for (WorldSpot s : spots) {
                 boolean dup = ws.occur().getOrDefault(s.maps().get(0), 1) > 1;
-                appendWorldNode(nodes, g, ws, s.maps(), s.x(), s.y(), true, dup);
+                appendWorldNode(nodes, g, s.maps(), s.x(), s.y(), true, dup);
             }
             for (int m : naByWm.getOrDefault(wm, List.of())) {
                 double[] p = naLocal.get(m);
-                appendWorldNode(nodes, g, ws, List.of(m), p[0], p[1], false, false);
+                appendWorldNode(nodes, g, List.of(m), p[0], p[1], false, false);
             }
             wmsOut.add("{\"id\":\"" + wm + "\",\"x\":" + Math.round(tx) + ",\"y\":" + Math.round(ty)
                     + ",\"scale\":" + ts + ",\"nodes\":[" + nodes + "]}");
         }
-        // Edges over every source map (entry constituents + non-anchors) aliased to its node's canonical id,
-        // from the full portal graph — including unreachable worldmap spots, so nothing floats bare.
+        // Raw map-id edges over every source (entry maps + non-anchors) from the full portal graph —
+        // including unreachable worldmap spots. NOT collapsed by merge: the client connects, per worldmap,
+        // the dot holding each endpoint, so a detail worldmap keeps edges its overview merges into one dot.
         BotWorldGraph.Index idx = BotWorldGraph.get();
-        Set<Integer> sources = new HashSet<>(ws.alias().keySet());
-        sources.addAll(naLocal.keySet());
-        Set<Integer> renderedCanon = new HashSet<>();
-        for (int m : sources) {
-            renderedCanon.add(canon(ws, m));
-        }
+        Set<Integer> rendered = new HashSet<>(ws.spotMaps());
+        rendered.addAll(naLocal.keySet());
         Set<Long> seen = new HashSet<>();
         StringBuilder es = new StringBuilder();
-        for (int a : sources) {                           // portals first (type p = walkable)
-            int ca = canon(ws, a);
+        for (int a : rendered) {                           // portals first (type p = walkable)
             for (int b : idx.neighbors(a)) {
-                appendWorldEdge(es, ca, canon(ws, b), 'p', renderedCanon, seen);
+                appendWorldEdge(es, a, b, 'p', rendered, seen);
             }
         }
-        for (int a : sources) {                           // taxi/ferry NPC rides (type t)
-            int ca = canon(ws, a);
+        for (int a : rendered) {                           // taxi/ferry NPC rides (type t)
             for (BotWorldGraph.TaxiEdge t : BotWorldGraph.taxiEdgesFrom(a)) {
-                appendWorldEdge(es, ca, canon(ws, t.toMapId()), 't', renderedCanon, seen);
+                appendWorldEdge(es, a, t.toMapId(), 't', rendered, seen);
             }
             for (BotFerryManager.FerryRoute f : BotFerryManager.routesBoardingAt(a)) {
-                appendWorldEdge(es, ca, canon(ws, f.destinationMapId()), 't', renderedCanon, seen);
+                appendWorldEdge(es, a, f.destinationMapId(), 't', rendered, seen);
             }
         }
         return "{\"worldmaps\":[" + String.join(",", wmsOut) + "],\"edges\":[" + es + "]}";
@@ -478,7 +438,7 @@ public final class BotWorldGraphWebServer {
 
     /** Emit one node for a (possibly merged) set of maps; flags aggregate over the constituents
      *  (hub/danger/leaf if ANY is; unreachable only if NONE is reachable). */
-    private static void appendWorldNode(StringBuilder sb, GraphData g, WorldSpots ws, List<Integer> maps,
+    private static void appendWorldNode(StringBuilder sb, GraphData g, List<Integer> maps,
                                         double x, double y, boolean anchor, boolean dup) {
         boolean hub = false;
         boolean danger = false;
@@ -501,7 +461,7 @@ public final class BotWorldGraphWebServer {
         if (sb.length() > 0) {
             sb.append(',');
         }
-        sb.append("{\"id\":").append(canon(ws, maps.get(0)))
+        sb.append("{\"id\":").append(maps.get(0))
                 .append(",\"maps\":[").append(mapsArr).append(']')
                 .append(",\"names\":[").append(names).append(']')
                 .append(",\"x\":").append(Math.round(x))
@@ -553,7 +513,7 @@ public final class BotWorldGraphWebServer {
             }
             centroid.put(wm, new double[]{sx / sp.size(), sy / sp.size()});
         }
-        Set<Integer> spots = ws.alias().keySet(); // every map id that belongs to a worldmap entry
+        Set<Integer> spots = ws.spotMaps(); // every map id that belongs to a worldmap entry
         ArrayDeque<double[]> q = new ArrayDeque<>(); // {map, wmIdx, lx, ly, inAngle, sector}
         for (int wi = 0; wi < wmIds.size(); wi++) {
             List<WorldSpot> sp = ws.byWm().get(wmIds.get(wi));
