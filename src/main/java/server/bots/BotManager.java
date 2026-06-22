@@ -4504,7 +4504,6 @@ public class BotManager {
     }
 
     // ---- Operator RTS commands (BotWorldGraphWebServer console) ----------------------------------
-    private static final int OPERATOR_IDLE_SPREAD_PX = 150;
     private static final long OPERATOR_MOVE_STALL_MS = 90_000L; // no-progress (ferry-wait-safe) -> stuck
     static final long OPERATOR_CMD_WINDOW_MS = 30 * 60_000L;    // command persists 30 min, then autopilot
     private static final List<String> CHEER_LINES = List.of(
@@ -4568,6 +4567,12 @@ public class BotManager {
     /** One operator-command tick. Returns true when it consumed the tick; false only for MOVE that
      *  should ride the normal pipeline (traveling, or arrived on a map with mobs to grind). */
     private boolean tickOperatorCommand(BotEntry entry, Character bot, Point botPos, long now, boolean runAiTick) {
+        // Just changed maps (travel hop / arrival): the operator gate runs BEFORE tickCore's map-change
+        // block, so footholds/ground aren't rebuilt yet. Defer one tick — otherwise movement runs on a
+        // stale foothold index and the bot freezes airborne / walks in place on arrival.
+        if (entry.lastMapId != bot.getMapId()) {
+            return false;
+        }
         switch (entry.operatorCmd) {
             case IDLE -> { tickIdleEntry(entry, bot); return true; }
             case FIDGET -> { return tickOperatorIdleAtSpot(entry, bot, botPos, now, runAiTick, null); }
@@ -4579,7 +4584,10 @@ public class BotManager {
                     if (operatorMapHasMobs(entry.operatorMoveMapId)) {
                         return false; // arrived with mobs: let the normal grind flow run (map pinned)
                     }
-                    return tickOperatorIdleAtSpot(entry, bot, botPos, now, runAiTick, null); // no mobs -> idle at a spot
+                    if (entry.grinding) {
+                        issueStop(entry); // mobless map (e.g. a town): drop the grind baseline so it idles, not "grinding at Perion"
+                    }
+                    return tickOperatorIdleAtSpot(entry, bot, botPos, now, runAiTick, null); // no mobs -> idle at a random spot
                 }
                 if (entry.operatorStuck || entry.operatorMoveProgress.stalled(now, OPERATOR_MOVE_STALL_MS)) {
                     if (!entry.operatorStuck) {
@@ -4598,26 +4606,28 @@ public class BotManager {
         }
     }
 
-    /** Walk to a cached random reachable spot (ferry idle SSOT, {@link BotTravelManager#pickReachableApproachPoint})
-     *  and fidget there; force {@code mode} when non-null (Dance/Jump), else the varied humanlike fidget. */
+    /** Walk to a random reachable spot near a town NPC/character (the AFK/town-idle SSOT,
+     *  {@link #pickTownLoiterAnchor}) and idle/fidget there. Airborne-safe: walks/falls via
+     *  stepMovementCore until grounded near the spot (mirrors {@link #loiterAtAnchor}), then fidgets
+     *  (forced mode for Dance/Jump, else the varied humanlike standing fidget). */
     private boolean tickOperatorIdleAtSpot(BotEntry entry, Character bot, Point botPos, long now,
                                            boolean runAiTick, BotFidgetMode forced) {
         if (entry.operatorSpot == null || entry.operatorSpotMapId != bot.getMapId()) {
-            entry.operatorSpot = BotTravelManager.pickReachableApproachPoint(entry, bot, botPos, OPERATOR_IDLE_SPREAD_PX);
+            entry.operatorSpot = pickTownLoiterAnchor(entry, bot, botPos);
             entry.operatorSpotMapId = bot.getMapId();
         }
         Point spot = entry.operatorSpot != null ? entry.operatorSpot : botPos;
-        if (!isNear(botPos, spot, 8) && !entry.inAir && !entry.climbing) {
-            entry.moveTarget = spot;
-            entry.moveTargetPrecise = true;
-            entry.moveTargetSource = "operator-idle";
-            stepMovementCore(entry, spot, runAiTick);
+        if (isNear(botPos, spot, 8) && !entry.inAir && !entry.climbing) {   // arrived & grounded -> fidget in place
+            if (forced != null && entry.fidgetMode == BotFidgetMode.NONE) {
+                BotFidgetManager.startFidget(entry, forced, now, (int) randMs(3000, 6000));
+            }
+            BotFidgetManager.tickStandingFidget(entry, spot, now, runAiTick);
             return true;
         }
-        if (forced != null && entry.fidgetMode == BotFidgetMode.NONE) {
-            BotFidgetManager.startFidget(entry, forced, now, (int) randMs(3000, 6000));
-        }
-        BotFidgetManager.tickStandingFidget(entry, spot, now, runAiTick);
+        entry.moveTarget = spot;                                            // not there yet (or airborne) -> walk/fall
+        entry.moveTargetPrecise = true;
+        entry.moveTargetSource = "operator-idle";
+        stepMovementCore(entry, spot, runAiTick);
         return true;
     }
 
