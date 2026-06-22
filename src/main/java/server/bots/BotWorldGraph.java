@@ -558,55 +558,6 @@ final class BotWorldGraph {
         edges.put(mapId, out);
     }
 
-    /** One outgoing portal: where it leads and its in-map pixel position. */
-    record PortalLink(int toMapId, int x, int y) {}
-
-    /**
-     * The walkable portals of one map WITH their positions — same {@code info/link} / door / script
-     * rules as the edge scan ({@link #readMap}), but it keeps the x/y the cached edge graph throws
-     * away. Read on demand (uncached) by the world-graph web view to lay maps out by portal direction;
-     * routing never needs positions, so they stay out of the Index/cache.
-     */
-    static List<PortalLink> portalLinks(int mapId) {
-        DataProvider mapSource = DataProviderFactory.getDataProvider(WZFiles.MAP);
-        Data mapData = mapSource.getData(mapImgPath(mapId / 100000000, mapId));
-        if (mapData == null) {
-            return List.of();
-        }
-        Data info = mapData.getChildByPath("info");
-        String link = info != null ? DataTool.getString("link", info, "") : "";
-        if (!link.isEmpty()) {
-            try {
-                int linkId = Integer.parseInt(link);
-                mapData = mapSource.getData(mapImgPath(linkId / 100000000, linkId));
-                if (mapData == null) {
-                    return List.of();
-                }
-            } catch (NumberFormatException ignored) {
-                // malformed link — read the map as-is
-            }
-        }
-        Data portals = mapData.getChildByPath("portal");
-        if (portals == null) {
-            return List.of();
-        }
-        List<PortalLink> out = new ArrayList<>();
-        for (Data portal : portals) {
-            int tm = DataTool.getInt("tm", portal, NO_TARGET_MAPID);
-            if (tm == NO_TARGET_MAPID || tm == mapId) {
-                continue;
-            }
-            if (DataTool.getInt("pt", portal, 0) == Portal.DOOR_PORTAL) {
-                continue;
-            }
-            if (!DataTool.getString("script", portal, "").isEmpty()) {
-                continue;
-            }
-            out.add(new PortalLink(tm, DataTool.getInt("x", portal, 0), DataTool.getInt("y", portal, 0)));
-        }
-        return out;
-    }
-
     /**
      * The maps whose return scroll is worth an edge: walking to their returnMap town would take
      * {@link #RETURN_SCROLL_MIN_HOPS}+ portal hops (or isn't possible at all). Computed once

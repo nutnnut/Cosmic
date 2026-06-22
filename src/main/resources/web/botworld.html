@@ -31,17 +31,25 @@
 <div id="side">
   <h1>Bot World Graph</h1>
   <p class="sub">from spawn (10000) &middot; &#9888; = reachable from Lith Harbor but can't return</p>
+  <input id="search" placeholder="find player / bot..." autocomplete="off"
+         style="width:100%;box-sizing:border-box;margin:6px 0;padding:5px;background:#0d1017;color:#cdd6e4;
+                border:1px solid #3a4761;border-radius:4px">
   <div class="stat"><span>Reachable maps</span><b id="s-maps">-</b></div>
+  <div class="stat"><span>Dead ends</span><b id="s-leaf">-</b></div>
   <div class="stat danger"><span>&#9888; Unreturnable</span><b id="s-danger">-</b></div>
   <div class="stat"><span>Occupied</span><b id="s-occ">-</b></div>
   <div class="stat"><span>Players online</span><b id="s-players">-</b></div>
   <div class="stat"><span>Bots online</span><b id="s-bots">-</b></div>
   <label><input type="checkbox" id="occOnly" checked> occupied maps only (&#9888; always shown)</label>
   <button id="fit">Fit view</button>
+  <button id="relayout">Rearrange</button>
+  <button id="export">Export anchors</button>
+  <p class="sub">drag purple hubs &middot; right-click a map = steering pin &middot; Rearrange to preview &middot; Export to save</p>
   <div id="detail"><div class="muted">Click a map for who's on it.</div></div>
 </div>
 <script>
 const GREY = '#3a4761', GREEN = '#39d353', ORANGE = '#ffa033';
+const WARP_R = 320;   // steering-pin influence radius (matches the server)
 // fill = who's there: players make it green, bots-only orange, empty grey.
 function fill(p, b){ return p>0 ? GREEN : (b>0 ? ORANGE : GREY); }
 
@@ -52,16 +60,17 @@ const WARN = 'data:image/svg+xml;utf8,' + encodeURIComponent(
   + '<rect x="11" y="8" width="2" height="7" fill="#fff"/><rect x="11" y="16.5" width="2" height="2" fill="#fff"/>'
   + '</svg>');
 
-let cy, live = {maps:{}}, occOnly = true, fitted = false, selected = null;
+let cy, live = {maps:{}}, occOnly = true, fitted = false, selected = null, query = '', warpSnap = null;
 
 (async function init(){
   const g = await (await fetch('/api/graph')).json();
   cy = cytoscape({
     container: document.getElementById('cy'),
     elements: [
-      ...g.nodes.map(m => ({data:{id:'m'+m.id, mid:m.id, name:m.name, occ:0, bg:GREY},
-                            position:{x:m.x, y:m.y}, classes: m.danger ? 'danger' : ''})),
-      ...g.edges.map(([a,b]) => ({data:{id:a+'_'+b, source:'m'+a, target:'m'+b}})),
+      ...g.nodes.map(m => ({data:{id:'m'+m.id, mid:m.id, name:m.name, occ:0, bg:GREY, label:m.name},
+                            position:{x:m.x, y:m.y},
+                            classes: (m.danger?'danger ':'') + (m.leaf?'leaf ':'') + (m.anchor?'anchor':'')})),
+      ...g.edges.map(([a,b,t]) => ({data:{id:a+'_'+b, source:'m'+a, target:'m'+b, etype:t}})),
     ],
     layout: {name:'preset'},   // server already placed every node; never re-lay-out (so it can't jump)
     style: [
@@ -69,21 +78,37 @@ let cy, live = {maps:{}}, occOnly = true, fitted = false, selected = null;
         'background-color':'data(bg)','width':8,'height':8,'label':'','font-size':9,'color':'#dbe4f4',
         'text-valign':'bottom','text-margin-y':3,
         'text-outline-color':'#10141c','text-outline-width':2,'min-zoomed-font-size':7}},
-      {selector:'node.busy', style:{
-        'label':'data(label)','width':'data(sz)','height':'data(sz)','z-index':10}},
-      {selector:'node.danger', style:{  // after .busy so the marker + size win on trap maps
-        'label':'data(label)','width':24,'height':24,'border-color':'#ff3b3b','border-width':2,
+      {selector:'node.leaf', style:{'width':5,'height':5,'opacity':0.5}},  // dead end: small & faint
+      {selector:'node.anchor', style:{ // region hub town: bold purple ring, label always on
+        'label':'data(label)','border-color':'#c08bff','border-width':3,'opacity':1,
+        'width':14,'height':14,'font-size':11,'font-weight':'bold','min-zoomed-font-size':0,'z-index':15}},
+      {selector:'node.custom', style:{ // custom steering pin (non-hub): cyan dashed ring, not purple
+        'border-color':'#3fd0d0','border-style':'dashed','border-width':3,'opacity':1,
+        'width':12,'height':12,'z-index':16}},
+      {selector:'node.busy', style:{   // after .leaf so an occupied dead end still shows up
+        'label':'data(label)','width':'data(sz)','height':'data(sz)','opacity':1,'z-index':10}},
+      {selector:'node.danger', style:{  // after .leaf/.busy so the trap marker + size always win
+        'label':'data(label)','width':24,'height':24,'border-color':'#ff3b3b','border-width':2,'opacity':1,
         'background-image':WARN,'background-fit':'none','background-width':'80%','background-height':'80%',
         'z-index':20}},
+      {selector:'node.found', style:{ // search hit: bright yellow halo, on top of everything
+        'border-color':'#ffe14d','border-width':5,'opacity':1,'z-index':30}},
       {selector:'node:selected', style:{'border-color':'#fff','border-width':2}},
       {selector:'edge', style:{'width':1,'line-color':'#222d40','curve-style':'haystack','opacity':0.6}},
+      {selector:'edge[etype="t"]', style:{'line-color':'#6cc6ff','width':3,'opacity':0.95}}, // taxi/ferry NPC ride
     ],
     wheelSensitivity:0.2,
   });
   document.getElementById('s-maps').textContent = g.nodes.length;
+  document.getElementById('s-leaf').textContent = g.nodes.filter(n=>n.leaf).length;
   document.getElementById('s-danger').textContent = g.nodes.filter(n=>n.danger).length;
+  cy.nodes().forEach(n => { if(!n.hasClass('anchor')) n.ungrabify(); });  // only hubs/pins are draggable
   cy.on('tap','node', e => showDetail(e.target.data('mid')));
   cy.on('tap', e => { if(e.target===cy) clearDetail(); });
+  cy.on('cxttap','node', e => toggleCustom(e.target));   // right-click toggles a steering pin
+  cy.on('grab','node.custom', onWarpGrab);
+  cy.on('drag','node.custom', onWarpDrag);
+  cy.on('free','node.custom', () => { warpSnap = null; });
   await refresh();
   setInterval(refresh, 2000);
 })();
@@ -113,12 +138,13 @@ async function refresh(){
   document.getElementById('s-players').textContent = players;
   document.getElementById('s-bots').textContent = bots;
   applyMode();
+  applySearch(false);   // keep the highlight following matched characters as they move maps
   if(!fitted){ fitted = true; fitView(); }   // positions are fixed, so this only happens once
-  if(selected) showDetail(selected);
+  if(!query && selected) showDetail(selected);
 }
 
 // occupied-only toggles visibility only (never moves nodes). Danger maps are ALWAYS shown.
-function shown(n){ return !occOnly || n.data('occ')>0 || n.hasClass('danger'); }
+function shown(n){ return !occOnly || n.data('occ')>0 || n.hasClass('danger') || n.hasClass('anchor') || n.hasClass('custom'); }
 function applyMode(){
   cy.batch(()=>{
     cy.nodes().forEach(n => n.style('display', shown(n) ? 'element':'none'));
@@ -138,8 +164,8 @@ function showDetail(mid){
   const d = live.maps[mid] || {players:[],bots:[]};
   const danger = node.nonempty() && node.hasClass('danger');
   const rows = [
-    ...d.bots.map(n=>`<div class="who bot">${esc(n)} <span class="muted">bot</span></div>`),
-    ...d.players.map(n=>`<div class="who">${esc(n)}</div>`),
+    ...d.bots.map(c=>`<div class="who bot">${esc(c.n)} <span class="muted">Lv${c.l} ${esc(c.j)} &middot; bot</span></div>`),
+    ...d.players.map(c=>`<div class="who">${esc(c.n)} <span class="muted">Lv${c.l} ${esc(c.j)}</span></div>`),
   ];
   const name = node.nonempty() ? node.data('name') : ('map '+mid);
   document.getElementById('detail').innerHTML =
@@ -154,6 +180,97 @@ function esc(s){ return String(s).replace(/[&<>]/g, c=>({'&':'&amp;','<':'&lt;',
 
 document.getElementById('occOnly').onchange = e => { occOnly = e.target.checked; applyMode(); fitView(); };
 document.getElementById('fit').onclick = fitView;
+document.getElementById('export').onclick = exportAnchors;
+document.getElementById('search').oninput = e => {
+  query = e.target.value.trim().toLowerCase();
+  if(query){ applySearch(true); }
+  else { cy.nodes('.found').removeClass('found'); clearDetail(); }
+};
+
+// Highlight every map holding an online player/bot whose name matches the query; follows them live.
+function applySearch(doFit){
+  cy.nodes('.found').removeClass('found');
+  if(!query) return;
+  const hits = [];
+  for(const id in live.maps){
+    const d = live.maps[id];
+    const who = [...d.players, ...d.bots].filter(c => c.n.toLowerCase().includes(query));
+    if(who.length){
+      const node = cy.getElementById('m'+id);
+      if(node.nonempty()) node.addClass('found');
+      hits.push({id, who});
+    }
+  }
+  if(doFit){
+    const found = cy.nodes('.found');
+    if(found.nonempty()) cy.fit(found, 80);
+    document.getElementById('detail').innerHTML = hits.length
+      ? '<h2>Search: '+esc(query)+'</h2>' + hits.map(h => {
+          const node = cy.getElementById('m'+h.id);
+          const nm = node.nonempty() ? node.data('name') : ('map '+h.id);
+          const who = h.who.map(c => esc(c.n)+' <span class="muted">Lv'+c.l+' '+esc(c.j)+'</span>').join(', ');
+          return '<div class="who">'+who+' <span class="muted">@ '+esc(nm)+' ('+h.id+')</span></div>';
+        }).join('')
+      : '<div class="muted">no online character matches "'+esc(query)+'"</div>';
+  }
+}
+
+// Dump current hub + steering-pin positions as ready-to-paste entries (drag them first); copy to clipboard.
+function exportAnchors(){
+  const fmt = n => { const p=n.position();
+    return '        a.put(' + n.data('mid') + ', new double[]{' + Math.round(p.x) + ', ' + Math.round(p.y)
+         + '});   // ' + n.data('name'); };
+  const hubs = cy.nodes('.anchor').map(fmt).sort();
+  const custom = cy.nodes('.custom').map(fmt).sort();
+  const text = '// ANCHORS (hubs)\n' + hubs.join('\n')
+    + (custom.length ? '\n\n// CUSTOM_ANCHORS (steering pins)\n' + custom.join('\n') : '');
+  document.getElementById('detail').innerHTML =
+    '<h2>Anchor positions</h2><div class="muted">copy back to bake ('
+    + hubs.length + ' hubs, ' + custom.length + ' pins)</div>'
+    + '<textarea id="anchorOut" style="width:100%;height:240px;margin-top:6px;background:#0d1017;'
+    + 'color:#cdd6e4;border:1px solid #283143;font:11px monospace" readonly></textarea>';
+  const ta = document.getElementById('anchorOut');
+  ta.value = text; ta.focus(); ta.select();
+  try { navigator.clipboard.writeText(text); } catch(e){}
+}
+
+// right-click toggles a non-hub map into a steering pin (cyan, draggable, warps nearby maps)
+function toggleCustom(n){
+  if(n.hasClass('anchor')) return;   // hubs are already anchors
+  if(n.hasClass('custom')){ n.removeClass('custom'); n.ungrabify(); }
+  else { n.addClass('custom'); n.grabify(); }
+}
+function onWarpGrab(e){
+  const a = e.target, ap = a.position(), snap = [];
+  cy.nodes().forEach(n => {
+    if(n.id()===a.id() || n.hasClass('anchor') || n.hasClass('custom')) return;  // anchors stay put
+    const d = Math.hypot(n.position().x-ap.x, n.position().y-ap.y);
+    if(d < WARP_R) snap.push({node:n, x:n.position().x, y:n.position().y, w:1-d/WARP_R});
+  });
+  warpSnap = {sx:ap.x, sy:ap.y, nodes:snap};
+}
+function onWarpDrag(e){
+  if(!warpSnap) return;
+  const p = e.target.position(), dx = p.x-warpSnap.sx, dy = p.y-warpSnap.sy;
+  warpSnap.nodes.forEach(s => s.node.position({x:s.x+dx*s.w, y:s.y+dy*s.w}));
+}
+
+// Ask the server to recompute the whole layout using the CURRENT hub + pin positions, then snap to it.
+async function relayout(){
+  const enc = sel => cy.nodes(sel).map(n => { const p=n.position();
+    return n.data('mid')+':'+Math.round(p.x)+':'+Math.round(p.y); }).join(',');
+  const url = '/api/relayout?a='+encodeURIComponent(enc('.anchor'))+'&c='+encodeURIComponent(enc('.custom'));
+  let data;
+  try { data = await (await fetch(url)).json(); } catch(e){ return; }
+  cy.batch(()=>{
+    for(const id in data.pos){
+      const n = cy.getElementById('m'+id);
+      if(n.nonempty()) n.position({x:data.pos[id][0], y:data.pos[id][1]});
+    }
+  });
+  fitView();
+}
+document.getElementById('relayout').onclick = relayout;
 </script>
 </body>
 </html>
