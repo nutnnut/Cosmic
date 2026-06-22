@@ -296,11 +296,19 @@ final class BotStarterKitManager {
         boolean reachable = BotAutopilotManager.routeForBot(bot,
                 bot.getMapId(), entry.jobErrandMapId, BotAutopilotManager.MAX_TRAVEL_HOPS,
                 new BotWorldGraph.RouteOptions(false, bot.getMeso(), true)) != null;
+        // Surface WHY travel actually gave up (deadline / taxi-fare-fail / ferry-board-fail / portal-closed
+        // / route-null) plus the failed hop and the bot's meso — "route-reachable=true" alone hides the
+        // execution-side cause (e.g. couldn't afford/reach the cab, or a hop the executor can't walk).
+        String lastGiveUp = entry.followTravelGiveUpReason == null
+                ? "none"
+                : entry.followTravelGiveUpReason + " [" + entry.followTravelGiveUpHop
+                        + " failedMap=" + entry.followTravelGiveUpTargetMapId
+                        + " agoMs=" + (now - entry.followTravelGiveUpAtMs) + "]";
         log.error("Bot '{}' stuck trying to job-advance to {} ({}): instructor npc {} on map {}, bot on "
-                        + "map {}, route-reachable={}. Staying put and retrying (set "
+                        + "map {}, meso={}, route-reachable={}, lastGiveUp={}. Staying put and retrying (set "
                         + "JOB_CHANGE_FALLBACK_ANYWHERE=true to force-advance instead).",
                 bot.getName(), entry.jobErrandTarget, reason, entry.jobErrandNpcId,
-                entry.jobErrandMapId, bot.getMapId(), reachable);
+                entry.jobErrandMapId, bot.getMapId(), bot.getMeso(), reachable, lastGiveUp);
     }
 
     // Job-topology SSOT for the autonomous (ownerless) job picker in BotBuildManager. Unlike the

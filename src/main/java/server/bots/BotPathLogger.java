@@ -522,6 +522,19 @@ final class BotPathLogger {
             sb.append("  route=<err:").append(e).append(">");
         }
         sb.append("\n");
+        // Meso gates taxi/ferry hops, so surface it next to the route. Also call out the active errand —
+        // a job/quest/gacha errand drives travel to ITS target, not the grind dest shown above, so the two
+        // legitimately differ (the common "why is it heading the wrong way" confusion).
+        sb.append("            meso=").append(bot.getMeso());
+        if (entry.jobErrandMapId != -1) {
+            sb.append("  ACTIVE ERRAND=job->").append(entry.jobErrandMapId)
+                    .append(" npc=").append(entry.jobErrandNpcId).append(" (drives travel, not the grind dest)");
+        } else if (entry.questErrandMapId != -1) {
+            sb.append("  ACTIVE ERRAND=quest->").append(entry.questErrandMapId);
+        } else if (entry.gachaErrandMapId != -1) {
+            sb.append("  ACTIVE ERRAND=gacha->").append(entry.gachaErrandMapId);
+        }
+        sb.append("\n");
         try {
             java.awt.Point portal = BotTravelManager.nextHopPortalPosition(
                     entry, bot, dest, BotAutopilotManager.MAX_TRAVEL_HOPS);
@@ -557,7 +570,17 @@ final class BotPathLogger {
         if (now < entry.followTravelGiveUpUntilMs) {
             sb.append("            give-up window: ").append(entry.followTravelGiveUpUntilMs - now)
                     .append("ms left  reason=").append(entry.followTravelGiveUpReason == null ? "?" : entry.followTravelGiveUpReason)
+                    .append("  hop=[").append(entry.followTravelGiveUpHop).append("]")
+                    .append(" failedMap=").append(entry.followTravelGiveUpTargetMapId)
                     .append("  (travel paused; retries the real hop when it lapses)\n");
+        } else if (entry.followTravelGiveUpReason != null) {
+            // Not currently paused, but show the LAST give-up so an oscillating "plan -> fail -> replan"
+            // loop (the bot that never makes a hop) is visible even between windows.
+            sb.append("            last give-up: reason=").append(entry.followTravelGiveUpReason)
+                    .append("  hop=[").append(entry.followTravelGiveUpHop).append("]")
+                    .append(" failedMap=").append(entry.followTravelGiveUpTargetMapId)
+                    .append(" agoMs=").append(entry.followTravelGiveUpAtMs > 0 ? (now - entry.followTravelGiveUpAtMs) : -1)
+                    .append("\n");
         }
     }
 

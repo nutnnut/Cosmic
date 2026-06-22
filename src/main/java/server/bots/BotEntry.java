@@ -208,6 +208,8 @@ public class BotEntry {
     long followTravelGiveUpUntilMs = 0L; // after a failed attempt, warp directly for a while
     int followTravelGiveUpTargetMapId = -1; // the DESTINATION that failed: the give-up only blocks retravel to THIS map, so a doomed errand (e.g. an unreachable quest NPC) can't poison another consumer's travel to a different map
     String followTravelGiveUpReason = null; // why the last give-up fired (deadline/portal-closed/...) — path-log only
+    String followTravelGiveUpHop = null; // the hop that failed (nextHop + taxi/ferry/portal + fromMap), for the stuck log/pathlog
+    long followTravelGiveUpAtMs = 0L; // when the last give-up fired — so the log can show how recent it was
     int followTravelBestDist = Integer.MAX_VALUE; // closest manhattan to the hop portal so far; resets the deadline on progress
     Point followTravelMoveTarget = null; // the exact moveTarget instance travel pinned (identity-checked on clear)
     int followTravelTaxiNpcId = 0;       // != 0: current hop is a cab ride — walk to this NPC, pay, warp

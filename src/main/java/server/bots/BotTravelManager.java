@@ -607,10 +607,19 @@ final class BotTravelManager {
 
     private static void giveUp(BotEntry entry, long now, String reason) {
         int failedDest = entry.followTravelTargetMapId; // capture before clear() wipes it
+        // Snapshot the failed hop's shape too, so the stuck-bot log/pathlog can say WHICH leg failed
+        // (a walk portal, a taxi the bot couldn't reach/afford, or a ferry that wouldn't board).
+        String hop = "nextHop=" + entry.followTravelNextHopMapId
+                + (entry.followTravelTaxiNpcId != 0 ? " viaTaxi=" + entry.followTravelTaxiNpcId : "")
+                + (entry.followTravelFerry ? " viaFerry" : "")
+                + (entry.followTravelPortalId > 0 ? " viaPortal=" + entry.followTravelPortalId : "")
+                + " fromMap=" + entry.followTravelFromMapId;
         clear(entry);
         entry.followTravelGiveUpUntilMs = now + GIVE_UP_WARP_WINDOW_MS;
         entry.followTravelGiveUpTargetMapId = failedDest;
         entry.followTravelGiveUpReason = reason;
+        entry.followTravelGiveUpHop = hop;
+        entry.followTravelGiveUpAtMs = now;
     }
 
     /** Walk budget = give-up window for reaching a portal/NPC, scaled by manhattan distance. */
