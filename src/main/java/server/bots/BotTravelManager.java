@@ -402,6 +402,7 @@ final class BotTravelManager {
             // Reachable spot near the cab NPC, not the exact pixel: warp NPCs (e.g. Shanks at
             // Southperry) are major chokepoints where every bot piles on the same spot and freezes.
             entry.followTravelTaxiPos = pickReachableApproachPoint(entry, bot, npcPos, APPROACH_SPREAD_PX);
+            entry.followTravelBestDist = Integer.MAX_VALUE; // fresh hop — tickTaxiHop seeds progress
             entry.followTravelDeadlineMs = now + travelBudgetMs(manhattan(bot.getPosition(), npcPos));
             return tickTaxiHop(entry, bot, now, runAiTick);
         }
@@ -428,7 +429,15 @@ final class BotTravelManager {
             giveUp(entry, now, "taxi-npc-missing");
             return false;
         }
-        if (!entry.inAir && !entry.climbing && manhattan(botPos, npcPos) <= TAXI_TRIGGER_RADIUS_PX) {
+        // Progress-aware deadline, same as the portal hop: the walk/climb to a town cab can take longer than
+        // the manhattan budget (Ellinia's rope-tree, Perion's cliffs), so push the deadline out while the bot
+        // is still closing on the cab. Only NET progress resets it, so a genuinely stranded bot still times out.
+        int distToCab = manhattan(botPos, npcPos);
+        if (distToCab < entry.followTravelBestDist) {
+            entry.followTravelBestDist = distToCab;
+            entry.followTravelDeadlineMs = now + travelBudgetMs(distToCab);
+        }
+        if (!entry.inAir && !entry.climbing && distToCab <= TAXI_TRIGGER_RADIUS_PX) {
             clearMoveTargetPin(entry);
             if (!BotManager.npcDwellReady(entry, BotManager.NPC_TALK_DELAY_MS, BotManager.NPC_TALK_JITTER_MS)) {
                 settleStandingDwell(entry); // stand (not walk-in-place) while waiting at the cab
@@ -613,7 +622,10 @@ final class BotTravelManager {
                 + (entry.followTravelTaxiNpcId != 0 ? " viaTaxi=" + entry.followTravelTaxiNpcId : "")
                 + (entry.followTravelFerry ? " viaFerry" : "")
                 + (entry.followTravelPortalId > 0 ? " viaPortal=" + entry.followTravelPortalId : "")
-                + " fromMap=" + entry.followTravelFromMapId;
+                + " fromMap=" + entry.followTravelFromMapId
+                // closest the bot got to the hop target: small = reached it but ran out of budget; large/absent
+                // = never made progress (nav can't reach it), a deeper routing problem than a short deadline.
+                + (entry.followTravelBestDist != Integer.MAX_VALUE ? " bestDist=" + entry.followTravelBestDist : "");
         clear(entry);
         entry.followTravelGiveUpUntilMs = now + GIVE_UP_WARP_WINDOW_MS;
         entry.followTravelGiveUpTargetMapId = failedDest;
