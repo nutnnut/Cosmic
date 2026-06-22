@@ -14,7 +14,9 @@
   #roster{margin-top:8px}
   .rosterItem{padding:4px 6px;border-radius:4px;cursor:pointer}
   .rosterItem:hover{background:#222a38}
-  .meta{color:#67748c;font-size:11px}
+  .meta{color:#67748c;font-size:0.85em}
+  #fontRow{font-size:11px;color:#8a99b3;margin-bottom:8px}
+  #fontRow input{width:130px;margin:0 0 0 6px;padding:0;vertical-align:middle}
   #tip{position:absolute;display:none;pointer-events:none;background:#0d1017;border:1px solid #3a4761;
        border-radius:4px;padding:6px 8px;font-size:11px;line-height:1.45;z-index:10;max-width:240px;
        box-shadow:0 2px 8px rgba(0,0,0,.5)}
@@ -25,7 +27,7 @@
   a{color:#6cc6ff}
   input{width:100%;box-sizing:border-box;background:#0d1017;color:#cdd6e4;border:1px solid #283143;border-radius:4px;padding:5px 7px;margin:4px 0}
   #status{margin-top:8px;color:#9fb0c8}
-  #detail{margin-top:10px;font-size:12px;line-height:1.5;border-top:1px solid #283143;padding-top:8px;min-height:40px}
+  #detail{margin-top:10px;line-height:1.5;border-top:1px solid #283143;padding-top:8px;min-height:40px}
   #detail .occ{color:#9fb0c8}
   .legend{margin-top:10px;font-size:11px;color:#8a99b3}
   .legend span{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:4px;vertical-align:middle}
@@ -43,6 +45,7 @@
   <div id="roster"></div>
 </div>
 <div id="side">
+  <div id="fontRow">font size<input id="fontSlider" type="range" min="10" max="22" value="13"></div>
   <h1>Bot World Map</h1>
   <p class="sub"><a href="/">graph view</a> &middot; drag map to move &middot; click map to resize &middot; scroll to zoom<br>
      click node: detail &middot; right-click node: custom anchor (relative/absolute)</p>
@@ -85,6 +88,7 @@ stage.on('wheel', e => {
 const wmImg = {};       // wmId -> Konva.Image
 const nodes = {};       // mapId / nodeId -> [instance,...]  (registered under id + every constituent map)
 const allInst = [];     // every node instance once (iterate this; nodes{} is multi-keyed for lookups)
+const instByWm = {};    // wmId -> [instance,...]  (fast per-worldmap recompute on drag/resize)
 const edgesByWm = {};   // wmId -> [edgeLine,...]
 let edgeLines = [];     // {ia, ib, line}  — one drawn line per connected instance pair
 let live = {};          // mapId -> {players:[{n,l,j}], bots:[...]}
@@ -201,11 +205,11 @@ function cycleCustom(inst){
 // reposition one worldmap's nodes (constant radius — they are not children of the scaled image)
 function recomputeWm(wmId){
   const img = wmImg[wmId]; if(!img) return;
-  for(const inst of allInst){
-    if(inst.wm !== wmId || inst.absolute) continue;   // absolute custom anchors stay put
+  for(const inst of (instByWm[wmId]||[])){
+    if(inst.absolute) continue;   // absolute custom anchors stay put
     const a = wmAbs(img, inst.lx, inst.ly);
     inst.circle.position(a);
-    if(inst.mark) inst.mark.position({x:a.x-4, y:a.y-16});
+    if(inst.mark) inst.mark.position({x:a.x, y:a.y - 12});
   }
   drawEdges(wmId);
   dotLayer.batchDraw();
@@ -265,8 +269,15 @@ function showTip(inst, evt){
 }
 function hideTip(){ document.getElementById('tip').style.display = 'none'; }
 
-// left-panel roster of everyone online; click -> center their map. ponytail: rebuilds full innerHTML
-// each poll; fine to a few thousand, add windowing if it ever janks.
+// name of one specific map (a merged node shows its constituents' names aligned to maps)
+function mapName(mapId){
+  const arr = nodes[mapId];
+  if(arr && arr.length){ const i = arr[0].maps.indexOf(mapId); return i>=0 ? arr[0].names[i] : arr[0].name; }
+  return 'map '+mapId;
+}
+// left-panel roster of everyone online; click -> center their map. Rebuild skipped when unchanged
+// (keeps scroll); add windowing if a few thousand rows ever jank.
+let rosterSig = '';
 function renderRoster(){
   const items = [];
   for(const map in live){
@@ -279,13 +290,15 @@ function renderRoster(){
   const players = items.filter(it => !it.bot).length, bots = items.length - players;
   document.getElementById('rosterHead').textContent =
     (query ? filt.length+' shown · ' : '') + players + ' online + ' + bots + ' bots';
-  document.getElementById('roster').innerHTML = filt.map(it => {
-    const inst = pickInstance(it.map);
-    const nm = inst ? inst.name : ('map '+it.map);
-    return '<div class="rosterItem" onclick="centerOnMap('+it.map+')">'
-      + (it.bot?'&#129302; ':'&#128100; ') + esc(it.c.n) + ' <span class="meta">Lv'+it.c.l+' '+esc(it.c.j)+'</span>'
-      + '<br><span class="meta">'+esc(nm)+'</span></div>';
-  }).join('');
+  const sig = query + '#' + filt.map(it => it.c.n+'@'+it.map+'/'+it.c.l).join('|');
+  if(sig === rosterSig) return;               // unchanged -> skip rebuild (keeps scroll position, saves work)
+  rosterSig = sig;
+  const el = document.getElementById('roster'), scroll = el.scrollTop;
+  el.innerHTML = filt.map(it =>
+    '<div class="rosterItem" onclick="centerOnMap('+it.map+')">'
+    + (it.bot?'&#129302; ':'&#128100; ') + esc(it.c.n) + ' <span class="meta">Lv'+it.c.l+' '+esc(it.c.j)+'</span>'
+    + '<br><span class="meta">'+esc(mapName(it.map))+'</span></div>').join('');  // bot's actual map, not merged
+  el.scrollTop = scroll;
 }
 
 (async function init(){
@@ -324,7 +337,7 @@ function renderRoster(){
       circle.on('click tap', e => { e.cancelBubble = true; showDetail(inst); });
       circle.on('contextmenu', e => { e.evt.preventDefault(); e.cancelBubble = true; cycleCustom(inst); });
       circle.on('dragmove', () => { const p = inst.circle.position();
-        if(inst.mark) inst.mark.position({x:p.x-4, y:p.y-16}); drawEdges(inst.wm); });
+        if(inst.mark) inst.mark.position({x:p.x, y:p.y - 12}); drawEdges(inst.wm); });
       circle.on('dragend', () => {
         if(!inst.custom) return;
         const p = inst.circle.position();
@@ -335,11 +348,14 @@ function renderRoster(){
       dotLayer.add(circle);
       const markText = nd.danger ? '⚠' : nd.unreachable ? '⊘' : null;
       if(markText){
-        inst.mark = new Konva.Text({x:a.x-4, y:a.y-16, text:markText, fontSize:13,
+        inst.mark = new Konva.Text({text:markText, fontSize:12, listening:false,
                                     fill: nd.danger ? '#ff5555' : '#9aa3b0'});
-        inst.mark.listening(false); dotLayer.add(inst.mark);
+        inst.mark.offset({x:inst.mark.width()/2, y:inst.mark.height()/2}); // center the glyph on the node
+        inst.mark.position({x:a.x, y:a.y - 12});                           // sit just above it
+        dotLayer.add(inst.mark);
       }
       allInst.push(inst);
+      (instByWm[wm.id] = instByWm[wm.id] || []).push(inst);
       new Set([nd.id, ...nd.maps]).forEach(k => (nodes[k] = nodes[k] || []).push(inst));
       styleNode(inst);
       nodeCount++;
@@ -394,6 +410,7 @@ document.getElementById('search').addEventListener('input', e => { query = e.tar
 document.getElementById('search').addEventListener('keydown', e => { if(e.key==='Enter'){ e.preventDefault(); startPing(); } });
 document.getElementById('searchBtn').onclick = startPing;
 document.getElementById('centerBtn').onclick = centerOnMatch;
+document.getElementById('fontSlider').addEventListener('input', e => { document.getElementById('side').style.fontSize = e.target.value + 'px'; });
 document.getElementById('export').onclick = () => {
   const lines = imageLayer.find('Image').map(im =>
     '        wm.put("' + im.getAttr('wmid') + '", new double[]{'

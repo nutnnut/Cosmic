@@ -274,6 +274,19 @@ public final class BotWorldGraphWebServer {
         return ws.alias().getOrDefault(map, map);
     }
 
+    /** Follow parentMap links to the top-level (overview) worldmap; detail worldmaps share their parent's root. */
+    private static String rootWorldMap(Map<String, String> parent, String wm) {
+        String cur = wm;
+        for (int i = 0; i < 32; i++) {
+            String p = parent.get(cur);
+            if (p == null || p.equals(cur)) {
+                break;
+            }
+            cur = p;
+        }
+        return cur;
+    }
+
     private static int ufFind(Map<Integer, Integer> uf, int x) {
         int r = x;
         while (uf.getOrDefault(r, r) != r) {
@@ -303,8 +316,10 @@ public final class BotWorldGraphWebServer {
         DataProvider dp = DataProviderFactory.getDataProvider(WZFiles.MAP);
         List<String> wmIds = new ArrayList<>();
         Map<String, List<WorldSpot>> byWm = new TreeMap<>();
-        Map<Integer, Integer> occur = new HashMap<>(); // mapId -> # of distinct worldmaps showing it
+        Map<Integer, Integer> occur = new HashMap<>(); // mapId -> # of distinct ROOT worldmaps showing it
         Map<Integer, Integer> uf = new HashMap<>();     // union-find over maps sharing a MapList entry
+        Map<String, String> wmParent = new HashMap<>(); // child worldmap id -> parent (overview) worldmap id
+        Map<String, Set<Integer>> wmMaps = new HashMap<>(); // worldmap id -> the maps it shows
         for (String id : worldMapIds()) {
             Data wm = dp.getData("WorldMap/WorldMap" + id + ".img");
             if (wm == null) {
@@ -315,9 +330,13 @@ public final class BotWorldGraphWebServer {
             if (mapList == null) {
                 continue;
             }
+            String pm = DataTool.getString("parentMap", wm, null); // detail worldmaps point at their overview
+            if (pm != null && pm.startsWith("WorldMap")) {
+                wmParent.put(id, pm.substring("WorldMap".length()));
+            }
             List<WorldSpot> spots = new ArrayList<>();
             Set<Integer> primaries = new HashSet<>();  // dedup repeated entries within this worldmap
-            Set<Integer> onThisWm = new HashSet<>();    // distinct maps on this worldmap (for occur)
+            Set<Integer> onThisWm = new HashSet<>();    // distinct maps on this worldmap
             for (Data entry : mapList.getChildren()) {
                 Point spot = DataTool.getPoint("spot", entry, null);
                 Data mapNo = entry.getChildByPath("mapNo");
@@ -342,9 +361,19 @@ public final class BotWorldGraphWebServer {
             }
             wmIds.add(id);
             byWm.put(id, spots);
-            for (int m : onThisWm) {
-                occur.merge(m, 1, Integer::sum);
+            wmMaps.put(id, onThisWm);
+        }
+        // dup = a map shown on more than one INDEPENDENT worldmap; an overview and its zoomed detail
+        // (linked by parentMap) collapse to a single root, so they don't count as duplicates.
+        Map<Integer, Set<String>> rootsByMap = new HashMap<>();
+        for (Map.Entry<String, Set<Integer>> e : wmMaps.entrySet()) {
+            String root = rootWorldMap(wmParent, e.getKey());
+            for (int m : e.getValue()) {
+                rootsByMap.computeIfAbsent(m, k -> new HashSet<>()).add(root);
             }
+        }
+        for (Map.Entry<Integer, Set<String>> e : rootsByMap.entrySet()) {
+            occur.put(e.getKey(), e.getValue().size());
         }
         Map<Integer, Integer> alias = new HashMap<>();
         for (List<WorldSpot> spots : byWm.values()) {
@@ -638,8 +667,20 @@ public final class BotWorldGraphWebServer {
         send(ex, 200, "image/png", Files.readAllBytes(file));
     }
 
+    private static volatile String liveJsonCache;
+    private static volatile long liveJsonAt;
+
     private static void serveLive(HttpExchange ex) throws IOException {
-        send(ex, 200, "application/json", liveJson(onlineCharacters()).getBytes(StandardCharsets.UTF_8));
+        // ponytail: 750ms cache coalesces concurrent viewers (the only per-2s-per-client endpoint); still
+        // fresher than the 2s client poll. One enumeration of all online chars per window, not per request.
+        long now = System.currentTimeMillis();
+        String json = liveJsonCache;
+        if (json == null || now - liveJsonAt > 750) {
+            json = liveJson(onlineCharacters());
+            liveJsonCache = json;
+            liveJsonAt = now;
+        }
+        send(ex, 200, "application/json", json.getBytes(StandardCharsets.UTF_8));
     }
 
     /** Per-map detail for a clicked node: the mobs that spawn there (name, level, spawn-point count) and
