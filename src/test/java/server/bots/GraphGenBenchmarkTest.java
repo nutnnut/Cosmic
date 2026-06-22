@@ -18,6 +18,30 @@ class GraphGenBenchmarkTest {
         benchmark(101000000); // Ellinia — user-reported dozens of seconds
     }
 
+    /** Region/edge counts for the descent-fix benchmark — run before/after the fall-sim cap change.
+     *  Edge counts must INCREASE (longer falls now find a landing -> more DROP/JUMP edges), never drop. */
+    @Test
+    void benchmarkDescentMaps() throws Exception {
+        for (int mapId : new int[]{101010103, 106010000, 101000000, 105040300, 100000000}) {
+            MapleMap map = BotNavigationMapLoader.loadMapGeometry(mapId);
+            BotNavigationGraphProvider.rebuildGraph(map, BotMovementProfile.base());
+            Object r = BotNavigationGraphProvider.getLastBuildReport(mapId, BotMovementProfile.base());
+            System.out.println("BENCH " + mapId
+                    + " regions=" + field(r, "regionCount")
+                    + " edges=" + field(r, "totalEdgeCount")
+                    + " drop=" + field(r, "dropEdgeCount")
+                    + " jump=" + field(r, "jumpEdgeCount")
+                    + " walk=" + field(r, "walkEdgeCount")
+                    + " portal=" + field(r, "portalEdgeCount"));
+        }
+    }
+
+    private static Object field(Object report, String name) throws Exception {
+        Field f = report.getClass().getDeclaredField(name);
+        f.setAccessible(true);
+        return f.get(report);
+    }
+
     private static void benchmark(int mapId) throws Exception {
         MapleMap map = BotNavigationMapLoader.loadMapGeometry(mapId);
         long startedAt = System.nanoTime();

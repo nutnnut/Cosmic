@@ -247,6 +247,22 @@ final class BotPhysicsEngine {
         return cfg.MAX_FALL_PXS * tickS();
     }
 
+    // Fall integrators (simulateLanding / simulateRopeGrabCore) run until they land/grab OR the bot
+    // falls past the map floor ({@link #mapFloorY}). This big tick cap is only a runaway backstop (a
+    // wall/ceiling bounce that never makes vertical progress); normal termination is the map-bound
+    // early-exit. Sized large so a tall in-bounds shaft (the ~2100px Ellinia tree) always reaches the
+    // floor — the old flat 1500ms (~1000px at terminal velocity) cut long single-falls short, so no
+    // landing was found and no DROP/JUMP/ROPE edge was generated, leaving the bot unable to descend.
+    private static final int FALL_SIM_TICK_CAP = 2000;
+
+    /** Lowest Y a fall can keep going before it has certainly left the map (VR bottom + slack for the
+     *  odd foothold placed just under the boundary). {@code Integer.MAX_VALUE} when the map has no VR
+     *  bounds, so the tick cap alone backstops. */
+    private static int mapFloorY(MapleMap map) {
+        java.awt.Rectangle area = map == null ? null : map.getMapArea();
+        return area != null && area.height > 0 ? area.y + area.height + 600 : Integer.MAX_VALUE;
+    }
+
     static float jumpForcePerTick() {
         return cfg.JUMP_SPEED_PXS * tickS();
     }
@@ -2611,8 +2627,9 @@ final class BotPhysicsEngine {
         long remainingLandingGraceMs = Math.max(0L, landingGraceMs);
         final float gravity = gravityPerTick();
         final float maxFall = maxFallPerTick();
+        final int floorY = mapFloorY(map);
 
-        for (int tick = 0; tick < (1500 / cfg.TICK_MS); tick++) {
+        for (int tick = 0; tick < FALL_SIM_TICK_CAP; tick++) {
             Point current = new Point((int) Math.round(physX), (int) Math.round(physY));
             if (canGrabRopeAtPoint(current, targetRope)) {
                 return new RopeGrabResult(new Point(targetRope.x(), current.y), tick);
@@ -2649,6 +2666,9 @@ final class BotPhysicsEngine {
                 return null;
             }
 
+            if (intY > floorY) {
+                return null; // fell past the map floor — no rope to grab below
+            }
             previousIntY = intY;
         }
 
@@ -2693,8 +2713,9 @@ final class BotPhysicsEngine {
         long remainingLandingGraceMs = Math.max(0L, landingGraceMs);
         final float gravity = gravityPerTick();
         final float maxFall = maxFallPerTick();
+        final int floorY = mapFloorY(map);
 
-        for (int tick = 0; tick < (1500 / cfg.TICK_MS); tick++) {
+        for (int tick = 0; tick < FALL_SIM_TICK_CAP; tick++) {
             if (remainingLandingGraceMs > 0L) {
                 remainingLandingGraceMs = Math.max(0L, remainingLandingGraceMs - cfg.TICK_MS);
             }
@@ -2728,6 +2749,9 @@ final class BotPhysicsEngine {
                         nextPoint.x - previousPoint.x, nextPoint.y - previousPoint.y, tick + 1);
             }
 
+            if (intY > floorY) {
+                return null; // fell past the map floor — no foothold exists below
+            }
             previousIntY = intY;
         }
 
