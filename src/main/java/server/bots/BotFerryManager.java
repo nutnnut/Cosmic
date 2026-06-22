@@ -335,6 +335,13 @@ final class BotFerryManager {
         boolean invaded(Character bot, String eventName);
     }
 
+    @FunctionalInterface
+    interface CrewLookup {
+        java.util.List<BotEntry> matesOnMap(Character bot);
+    }
+
+    static CrewLookup crewLookup = bot -> BotManager.getInstance().crewMatesOnMap(bot);
+
     static TicketCheck ticketCheck = (bot, ticketItemId) -> bot.haveItem(ticketItemId);
 
     static TicketShop ticketShop = (bot, route) -> {
@@ -405,12 +412,18 @@ final class BotFerryManager {
             return false;
         }
         long now = System.currentTimeMillis();
+        boolean movingForCabin = false;
         if (bot.getMapId() == route.deckMapId()
                 && (threatCheck.invaded(bot, route.eventName()) || targetMapId == route.cabinMapId())) {
             enterAdjacentPortal(entry, bot, route.cabinMapId(), now, runAiTick);
+            movingForCabin = true;
         } else if (bot.getMapId() == route.cabinMapId()
                 && targetMapId == route.deckMapId() && !threatCheck.invaded(bot, route.eventName())) {
             enterAdjacentPortal(entry, bot, route.deckMapId(), now, runAiTick);
+            movingForCabin = true;
+        }
+        if (!movingForCabin) {
+            tickFerryStanding(entry, bot, now, runAiTick, null); // mill about the deck / waiting room
         }
         return true; // the boat decides when this ends, not the travel deadline
     }
@@ -495,12 +508,15 @@ final class BotFerryManager {
                 return false; // ticket gone mid-walk — fall back, a re-plan walks back to the seller
             }
             if (!gateCheck.entryOpen(bot, route.eventName())) {
-                // Stand at the gate until the boat docks; the wait is legitimate, so keep
-                // the travel deadline from giving up under us.
+                // Wait near the gate until the boat docks; the wait is legitimate, so keep the travel
+                // deadline from giving up under us. Mill about + fidget (crew holds formation) instead
+                // of freezing on the usher's pixel; the board step below walks back when the gate opens.
                 if (entry.followTravelDeadlineMs < now + LEG_BUDGET_MS) {
                     entry.followTravelDeadlineMs = now + LEG_BUDGET_MS;
                 }
-                return walkToNpcThenAct(entry, bot, route.usherNpcId(), now, runAiTick, () -> true);
+                Point usherPos = BotTravelManager.taxiNpcLocator.locate(bot.getMap(), route.usherNpcId());
+                tickFerryStanding(entry, bot, now, runAiTick, usherPos);
+                return true;
             }
             return walkToNpcThenAct(entry, bot, route.usherNpcId(), now, runAiTick,
                     () -> boardAction.board(bot, route));
@@ -540,5 +556,89 @@ final class BotFerryManager {
             return false;
         }
         return BotTravelManager.walkToPortalAndEnter(entry, bot, portal, now, runAiTick);
+    }
+
+    // --- Humanlike standing while waiting for / riding a ferry -----------------------------------------
+    // Bots don't freeze on the deck: each loiters at a random reachable spot and fidgets there on a
+    // jittered, desynced timer (so a crowd doesn't twitch in unison). In a crew only the leader (lowest
+    // char id on the map) picks a spot; the rest hold a stagger formation behind it, reusing the same
+    // follow-formation offsets. Pure in-map movement — it never throws a bot off the boat.
+
+    private static final int FERRY_STAND_SPREAD_PX = 110; // how far a loiter spot can wander from the anchor
+    private static final int FERRY_ARRIVE_PX = 18;        // "settled at my spot" tolerance
+    private static final int FERRY_REPICK_MIN_MS = 9_000; // wander to a new spot every ~9-22s, jittered
+    private static final int FERRY_REPICK_MAX_MS = 22_000;
+
+    /**
+     * One idle tick of standing on a ferry (waiting platform or ride deck). Crew followers hold a stagger
+     * formation behind the leader; the leader / a soloist loiters at a self-picked reachable spot and
+     * fidgets there. {@code anchorPos} centres the loiter (the usher while waiting at the gate, else null
+     * to centre on the bot's own footing on the deck).
+     */
+    static void tickFerryStanding(BotEntry entry, Character bot, long now, boolean runAiTick, Point anchorPos) {
+        if (bot.getMap() == null) {
+            return;
+        }
+        if (entry.ferryStandMapId != bot.getMapId()) { // crossed onto a new ferry map — old spot is stale
+            entry.ferryStandSpot = null;
+            entry.ferryStandRepickAtMs = 0L;
+            entry.ferryStandMapId = bot.getMapId();
+            BotFidgetManager.clear(entry);
+        }
+        if (stepCrewFormation(entry, bot, runAiTick)) {
+            return; // a follower: mirror the leader, no spot of our own
+        }
+
+        Point center = anchorPos != null ? anchorPos : bot.getPosition();
+        Point spot = entry.ferryStandSpot;
+        if (runAiTick && (spot == null || now >= entry.ferryStandRepickAtMs)) {
+            spot = BotTravelManager.pickReachableApproachPoint(entry, bot, center, FERRY_STAND_SPREAD_PX);
+            entry.ferryStandSpot = spot;
+            entry.ferryStandRepickAtMs = now + BotManager.randMs(FERRY_REPICK_MIN_MS, FERRY_REPICK_MAX_MS);
+        }
+        if (spot == null) {
+            return;
+        }
+
+        Point botPos = bot.getPosition();
+        if (Math.abs(botPos.x - spot.x) + Math.abs(botPos.y - spot.y) > FERRY_ARRIVE_PX) {
+            BotTravelManager.pinMoveTarget(entry, spot);
+            BotTravelManager.movementStep.step(entry, spot, runAiTick);
+            return;
+        }
+        BotTravelManager.clearMoveTargetPin(entry);
+        BotFidgetManager.tickStandingFidget(entry, spot, now, runAiTick);
+    }
+
+    /**
+     * If {@code bot} is a non-leader member of a crew sharing this map, step it onto its stagger slot behind
+     * the crew leader (lowest char id) and return true. Returns false for soloists and the leader itself,
+     * which then loiter on their own.
+     */
+    private static boolean stepCrewFormation(BotEntry entry, Character bot, boolean runAiTick) {
+        java.util.List<BotEntry> mates = crewLookup.matesOnMap(bot);
+        if (mates.isEmpty()) {
+            return false;
+        }
+        java.util.List<BotEntry> crew = new ArrayList<>(mates);
+        crew.add(entry);
+        crew.sort(java.util.Comparator.comparingInt(e -> e.bot.getId()));
+        if (crew.get(0) == entry) {
+            return false; // we're the leader — loiter normally
+        }
+        java.util.List<BotEntry> followers = crew.subList(1, crew.size());
+        int slot = followers.indexOf(entry);
+        int offsetX = BotManager.FormationState.defaultStagger().offsetFor(slot, followers.size());
+        Point leaderPos = crew.get(0).bot.getPosition();
+        Point target = new Point(leaderPos.x + offsetX, leaderPos.y);
+
+        Point botPos = bot.getPosition();
+        if (Math.abs(botPos.x - target.x) + Math.abs(botPos.y - target.y) > FERRY_ARRIVE_PX) {
+            BotTravelManager.pinMoveTarget(entry, target);
+            BotTravelManager.movementStep.step(entry, target, runAiTick);
+        } else {
+            BotTravelManager.clearMoveTargetPin(entry);
+        }
+        return true;
     }
 }

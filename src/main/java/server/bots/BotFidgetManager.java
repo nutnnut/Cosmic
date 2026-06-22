@@ -67,6 +67,53 @@ final class BotFidgetManager {
         return handleActiveTick(entry, botPos, targetPos, now);
     }
 
+    /**
+     * In-place fidgeting for a FREE-STANDING bot that has no follow owner (e.g. milling about on a ferry
+     * deck or platform). Reuses the full fidget repertoire and the per-bot jittered roll timer so a crowd
+     * doesn't twitch in lockstep, but leashes to {@code originPos} (the bot's chosen standing spot) instead
+     * of a follow target and skips the follow-eligibility gate. Drift is corrected by the caller re-walking
+     * to its spot, so the AUTO_FOLLOW trigger is used (no moveTarget return-to-origin side effect).
+     */
+    static boolean tickStandingFidget(BotEntry entry, Point originPos, long now, boolean runAiTick) {
+        if (entry == null || entry.bot == null || originPos == null) {
+            return false;
+        }
+        Point botPos = entry.bot.getPosition();
+        if (entry.fidgetMode != BotFidgetMode.NONE) {
+            if (now >= entry.fidgetUntilMs || entry.climbing
+                    || (entry.inAir && !isJumpFidget(entry.fidgetMode))) {
+                finishFidget(entry, botPos);
+                return false;
+            }
+            return handleActiveTick(entry, botPos, originPos, now);
+        }
+        if (entry.inAir || entry.climbing) {
+            return false;
+        }
+        if (runAiTick) {
+            maybeRollStandingFidget(entry, now);
+        }
+        if (entry.fidgetMode == BotFidgetMode.NONE) {
+            return false;
+        }
+        return handleActiveTick(entry, botPos, originPos, now);
+    }
+
+    private static void maybeRollStandingFidget(BotEntry entry, long now) {
+        if (entry.nextIdleFidgetRollAtMs == 0L) {
+            entry.nextIdleFidgetRollAtMs = now + BotManager.randMs(20_000, 45_000);
+            return;
+        }
+        if (now < entry.nextIdleFidgetRollAtMs) {
+            return;
+        }
+        entry.nextIdleFidgetRollAtMs = now + BotManager.randMs(20_000, 45_000);
+        if (ThreadLocalRandom.current().nextInt(100) >= 40) {
+            return;
+        }
+        startRandomFidget(entry, now, (int) BotManager.randMs(2000, 8000), BotFidgetTrigger.AUTO_FOLLOW);
+    }
+
     static void clear(BotEntry entry) {
         if (entry == null) {
             return;

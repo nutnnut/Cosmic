@@ -13,6 +13,7 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
@@ -69,6 +70,7 @@ class BotFerryManagerTest {
         boolean gateOpen = false;
         boolean invaded = false;
         boolean instanceStartable = true;
+        List<BotEntry> crewMates = List.of();
         Point npcPos = null;
 
         private final BotFerryManager.TicketCheck prevTicketCheck = BotFerryManager.ticketCheck;
@@ -76,6 +78,7 @@ class BotFerryManagerTest {
         private final BotFerryManager.BoardAction prevBoard = BotFerryManager.boardAction;
         private final BotFerryManager.GuideAction prevGuide = BotFerryManager.guideAction;
         private final BotFerryManager.StartInstanceAction prevStart = BotFerryManager.startInstanceAction;
+        private final BotFerryManager.CrewLookup prevCrew = BotFerryManager.crewLookup;
         private final BotFerryManager.GateCheck prevGate = BotFerryManager.gateCheck;
         private final BotFerryManager.ThreatCheck prevThreat = BotFerryManager.threatCheck;
         private final BotTravelManager.MovementStep prevMovement = BotTravelManager.movementStep;
@@ -102,6 +105,7 @@ class BotFerryManagerTest {
                 startedRides.add(route.destinationMapId());
                 return true;
             };
+            BotFerryManager.crewLookup = bot -> crewMates;
             BotFerryManager.gateCheck = (bot, eventName) -> gateOpen;
             BotFerryManager.threatCheck = (bot, eventName) -> invaded;
             BotTravelManager.movementStep = (entry, targetPos, runAiTick) -> steps.add(new Point(targetPos));
@@ -115,6 +119,7 @@ class BotFerryManagerTest {
             BotFerryManager.boardAction = prevBoard;
             BotFerryManager.guideAction = prevGuide;
             BotFerryManager.startInstanceAction = prevStart;
+            BotFerryManager.crewLookup = prevCrew;
             BotFerryManager.gateCheck = prevGate;
             BotFerryManager.threatCheck = prevThreat;
             BotTravelManager.movementStep = prevMovement;
@@ -362,5 +367,64 @@ class BotFerryManagerTest {
         assertTrue(BotFerryManager.findFerryEdge(222020200, 222020100) == BotFerryManager.HELIOS_DOWN);
         // The Kerning City hall boards two lines now (NLC subway + Kerning Square train).
         assertTrue(BotFerryManager.routesBoardingAt(103000100).size() >= 2);
+    }
+
+    @Test
+    void soloShouldWalkToItsRandomFerryStandSpotThenSettle() {
+        Fixture f = fixture(200090010, new Point(0, 0)); // a ride deck
+        Point anchor = new Point(300, 0); // footholds null in the mock -> the picker returns the anchor
+
+        try (Seams seams = new Seams()) {
+            BotFerryManager.tickFerryStanding(f.entry(), f.bot(), 0L, true, anchor);
+            assertEquals(List.of(new Point(300, 0)), seams.steps); // wandered toward the spot
+            assertEquals(new Point(300, 0), f.entry().ferryStandSpot);
+            assertTrue(f.entry().ferryStandRepickAtMs > 0L); // jittered re-pick timer armed (desync)
+
+            // Once standing on the spot it stops walking and arms the fidget roll instead.
+            seams.steps.clear();
+            when(f.bot().getPosition()).thenReturn(new Point(300, 0));
+            BotFerryManager.tickFerryStanding(f.entry(), f.bot(), 1L, true, anchor);
+            assertTrue(seams.steps.isEmpty());
+            assertTrue(f.entry().nextIdleFidgetRollAtMs > 0L);
+        }
+    }
+
+    @Test
+    void crewFollowerShouldHoldFormationBehindTheLeaderAndNotPickItsOwnSpot() {
+        Character leaderBot = mock(Character.class);
+        when(leaderBot.getId()).thenReturn(1);
+        when(leaderBot.getPosition()).thenReturn(new Point(100, 0));
+        BotEntry leader = new BotEntry(leaderBot, null, null);
+
+        Fixture f = fixture(200090010, new Point(0, 0));
+        when(f.bot().getId()).thenReturn(2); // higher id -> follower
+
+        try (Seams seams = new Seams()) {
+            seams.crewMates = List.of(leader);
+
+            BotFerryManager.tickFerryStanding(f.entry(), f.bot(), 0L, true, null);
+            // STAGGER slot 0 of 1 follower = +FOLLOW_STAGGER (60) from the leader.
+            assertEquals(List.of(new Point(160, 0)), seams.steps);
+            assertNull(f.entry().ferryStandSpot); // a follower never loiters on its own
+        }
+    }
+
+    @Test
+    void crewLeaderShouldLoiterRatherThanFollowItsLowerMembers() {
+        Character mateBot = mock(Character.class);
+        when(mateBot.getId()).thenReturn(9); // higher id -> the follower
+        BotEntry mate = new BotEntry(mateBot, null, null);
+
+        Fixture f = fixture(200090010, new Point(0, 0));
+        when(f.bot().getId()).thenReturn(1); // lowest id -> the leader
+        Point anchor = new Point(250, 0);
+
+        try (Seams seams = new Seams()) {
+            seams.crewMates = List.of(mate);
+
+            BotFerryManager.tickFerryStanding(f.entry(), f.bot(), 0L, true, anchor);
+            assertEquals(new Point(250, 0), f.entry().ferryStandSpot); // leader picks a spot of its own
+            assertEquals(List.of(new Point(250, 0)), seams.steps);
+        }
     }
 }

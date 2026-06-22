@@ -637,6 +637,9 @@ public class BotEntry {
     long nextFidgetJumpAtMs = 0L;
     Point fidgetOriginPos = null;
     long nextFidgetVisualAtMs = 0L;
+    Point ferryStandSpot = null;         // loitering spot while waiting/riding a ferry (leader/solo only)
+    long ferryStandRepickAtMs = 0L;      // jittered timer to wander to a new ferry spot
+    int ferryStandMapId = -1;            // map the loiter spot belongs to; reset on map change
     long nextGearSuggestionAt = 0L;
     boolean spawnUpgradeCheckDone = false;
     final Set<Integer> requestedUpgradeItemIds = ConcurrentHashMap.newKeySet();
