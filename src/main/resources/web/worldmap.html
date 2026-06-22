@@ -240,7 +240,7 @@ function showDetail(inst){
     + (merged ? '<b>'+esc(inst.names[i])+' ('+m+')</b>' : '')
     + '<div class="body" style="margin-top:4px">loading…</div></div>').join('');
   document.getElementById('detail').innerHTML =
-    '<b>'+esc(inst.name)+' ('+inst.maps.join(', ')+')</b><br>WorldMap'+inst.wm + (flags?'<br>'+flags:'') + boxes;
+    'WorldMap'+inst.wm + (flags?'<br>'+flags:'') + boxes;   // node name omitted — already shown on hover
   inst.maps.forEach(m => fetchMapInfo(m, inst.id));
 }
 function fetchMapInfo(mapId, token){
