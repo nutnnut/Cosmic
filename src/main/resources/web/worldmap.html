@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Bot World Map (stage 1)</title>
+<title>Bot World Map</title>
 <script src="https://unpkg.com/konva@9/konva.min.js"></script>
 <style>
   html,body{margin:0;height:100%;font:13px system-ui,sans-serif;background:#10141c;color:#cdd6e4;overflow:hidden}
@@ -14,31 +14,46 @@
   button{background:#2a3346;color:#cdd6e4;border:1px solid #3a4761;border-radius:4px;padding:5px 9px;cursor:pointer;margin:2px 0}
   button:hover{background:#34405a}
   a{color:#6cc6ff}
+  input{width:100%;box-sizing:border-box;background:#0d1017;color:#cdd6e4;border:1px solid #283143;border-radius:4px;padding:5px 7px;margin:4px 0}
   #status{margin-top:8px;color:#9fb0c8}
-  textarea{width:100%;height:300px;margin-top:8px;background:#0d1017;color:#cdd6e4;border:1px solid #283143;font:11px monospace}
+  #detail{margin-top:10px;font-size:12px;line-height:1.5;border-top:1px solid #283143;padding-top:8px;min-height:40px}
+  #detail .occ{color:#9fb0c8}
+  .legend{margin-top:10px;font-size:11px;color:#8a99b3}
+  .legend span{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:4px;vertical-align:middle}
+  textarea{width:100%;height:240px;margin-top:8px;background:#0d1017;color:#cdd6e4;border:1px solid #283143;font:11px monospace}
 </style>
 </head>
 <body>
 <div id="c"></div>
 <div id="side">
   <h1>Bot World Map</h1>
-  <p class="sub">stage 1 &middot; <a href="/">graph view</a><br>drag map to move &middot; click to resize (corner handles) &middot; scroll to zoom</p>
+  <p class="sub"><a href="/">graph view</a> &middot; drag map to move &middot; click map to resize &middot; scroll to zoom</p>
+  <input id="search" placeholder="search player / bot name">
   <button id="export">Export positions</button>
   <button id="fit">Reset view</button>
+  <div class="legend">
+    <div><span style="background:#39d353"></span>player here
+         <span style="background:#ff9d4d;margin-left:8px"></span>bots only
+         <span style="background:#3a4658;margin-left:8px"></span>empty</div>
+    <div style="margin-top:3px"><span style="background:#6b7a99;border:2px solid #c08bff"></span>hub (town others return to)
+         <span style="background:#3a4658;border:2px solid #ff5555;margin-left:8px"></span>unreturnable &#9888;</div>
+  </div>
   <div id="status">loading...</div>
+  <div id="detail"></div>
 </div>
 <script>
 const host = document.getElementById('c');
 const stage = new Konva.Stage({container:'c', width:host.clientWidth, height:host.clientHeight, draggable:true});
-const layer = new Konva.Layer();
-stage.add(layer);
+const imageLayer = new Konva.Layer();   // worldmap PNGs (draggable, resizable)
+const edgeLayer  = new Konva.Layer({listening:false}); // portal/taxi links, over the maps, under the dots
+const dotLayer   = new Konva.Layer();   // map nodes, constant screen size
+stage.add(imageLayer); stage.add(edgeLayer); stage.add(dotLayer);
 const tr = new Konva.Transformer({keepRatio:true, rotateEnabled:false, anchorStroke:'#c08bff', borderStroke:'#c08bff'});
-layer.add(tr);
+imageLayer.add(tr);
 window.addEventListener('resize', () => stage.size({width:host.clientWidth, height:host.clientHeight}));
 
-// pan = drag background; deselect on empty click
-stage.on('click tap', e => { if(e.target===stage) tr.nodes([]); });
-// wheel zoom around pointer
+// pan = drag background; deselect + clear detail on empty click
+stage.on('click tap', e => { if(e.target===stage){ tr.nodes([]); imageLayer.batchDraw(); } });
 stage.on('wheel', e => {
   e.evt.preventDefault();
   const old = stage.scaleX(), p = stage.getPointerPosition();
@@ -48,46 +63,170 @@ stage.on('wheel', e => {
   stage.position({x:p.x-to.x*ns, y:p.y-to.y*ns});
 });
 
+const wmImg = {};       // wmId -> Konva.Image
+const nodes = {};       // mapId -> [instance,...]  (dup maps have >1)
+const edgesByWm = {};   // wmId -> [edge,...]
+let edges = [];         // {a,b,type,line}
+let live = {};          // mapId -> {players:[{n,l,j}], bots:[...]}
+let query = '';
+
+const wmAbs = (img, lx, ly) => { const s = img.scaleX(); return {x: img.x()+s*lx, y: img.y()+s*ly}; };
+
+// ring priority: danger(red) > hub(purple) > dup(amber) > spot(light) > plain(dark)
+function styleNode(inst){
+  const o = live[inst.map];
+  inst.circle.fill(o && o.players.length ? '#39d353'
+                 : o && o.bots.length    ? '#ff9d4d'
+                 : inst.anchor           ? '#6b7a99' : '#3a4658');
+  inst.circle.dash([]);
+  if(inst.danger){ inst.circle.stroke('#ff5555'); inst.circle.strokeWidth(2.2); }
+  else if(inst.hub){ inst.circle.stroke('#c08bff'); inst.circle.strokeWidth(2.4); }
+  else if(inst.dup){ inst.circle.stroke('#ffcf8a'); inst.circle.strokeWidth(2); inst.circle.dash([3,3]); }
+  else if(inst.anchor){ inst.circle.stroke('#46577a'); inst.circle.strokeWidth(1.4); }
+  else { inst.circle.stroke('#0d1017'); inst.circle.strokeWidth(1); }
+}
+function matches(inst){
+  if(!query) return false;
+  const o = live[inst.map]; if(!o) return false;
+  return [...o.players, ...o.bots].some(c => c.n.toLowerCase().includes(query));
+}
+function applyStyle(){
+  for(const map in nodes) for(const inst of nodes[map]){
+    styleNode(inst);
+    const hit = matches(inst);
+    inst.circle.shadowColor('#ffe14d');
+    inst.circle.shadowBlur(hit ? 22 : 0);
+    inst.circle.shadowOpacity(hit ? 1 : 0);
+  }
+  dotLayer.batchDraw();
+}
+
+// reposition one worldmap's nodes (constant radius — they are not children of the scaled image)
+function recomputeWm(wmId){
+  const img = wmImg[wmId]; if(!img) return;
+  for(const map in nodes) for(const inst of nodes[map]){
+    if(inst.wm !== wmId) continue;
+    const a = wmAbs(img, inst.lx, inst.ly);
+    inst.circle.position(a);
+    if(inst.warn) inst.warn.position({x:a.x-4, y:a.y-16});
+  }
+  drawEdges(wmId);
+  dotLayer.batchDraw();
+}
+
+// for a dup endpoint pick the instance closest to the other end (prefers same-worldmap)
+function pickEnds(e){
+  const A = nodes[e.a], B = nodes[e.b]; if(!A || !B) return null;
+  let best=null, bd=Infinity;
+  for(const a of A) for(const b of B){
+    const dx=a.circle.x()-b.circle.x(), dy=a.circle.y()-b.circle.y(), d=dx*dx+dy*dy;
+    if(d<bd){ bd=d; best=[a,b]; }
+  }
+  return best;
+}
+function drawOne(e){
+  const ends = pickEnds(e);
+  if(!ends){ e.line.visible(false); return; }
+  e.line.visible(true);
+  e.line.points([ends[0].circle.x(), ends[0].circle.y(), ends[1].circle.x(), ends[1].circle.y()]);
+}
+function drawEdges(wmId){
+  const list = wmId==null ? edges : (edgesByWm[wmId]||[]);
+  list.forEach(drawOne);
+  edgeLayer.batchDraw();
+}
+
+function showDetail(inst){
+  const o = live[inst.map];
+  const occ = o ? [...o.players.map(c=>['P',c]), ...o.bots.map(c=>['B',c])] : [];
+  const flags = [inst.hub?'hub':null, inst.anchor?'worldmap spot':null, inst.dup?'on multiple worldmaps':null,
+                 inst.danger?'UNRETURNABLE':null, inst.leaf?'dead-end':null].filter(Boolean).join(' &middot; ');
+  document.getElementById('detail').innerHTML =
+    '<b>'+inst.name+'</b> ('+inst.map+')<br>'
+    + 'WorldMap'+inst.wm + (flags?'<br>'+flags:'')
+    + '<div class="occ" style="margin-top:6px">'
+    + (occ.length ? occ.map(([k,c]) => (k==='P'?'&#128100; ':'&#129302; ')+c.n+'  Lv'+c.l+' '+c.j).join('<br>')
+                  : 'nobody here') + '</div>';
+}
+
 (async function init(){
   let data;
   try { data = await (await fetch('/api/worldmaps')).json(); }
   catch(e){ document.getElementById('status').textContent = 'failed to load /api/worldmaps'; return; }
   const wms = data.worldmaps;
-  const cols = Math.ceil(Math.sqrt(wms.length)), CELL = 480, S = 0.45;
-  let totalSpots = 0;
+  let nodeCount = 0;
+
   wms.forEach((wm, i) => {
-    const g = new Konva.Group({
-      x:(i % cols) * CELL, y:Math.floor(i / cols) * CELL,
-      scaleX:S, scaleY:S, draggable:true});
-    g.setAttr('wmid', wm.id);
-    // spots first (drawn over the image once it loads)
-    wm.spots.forEach(s => {
-      const dot = new Konva.Circle({x:s.x, y:s.y, radius:5, fill:'#39d353', stroke:'#0d1017', strokeWidth:1.5});
-      dot.setAttr('map', s.map);
-      dot.on('mouseover', () => { document.getElementById('status').textContent = 'WorldMap'+wm.id+'  map '+s.map; });
-      g.add(dot);
-    });
-    totalSpots += wm.spots.length;
     const imgEl = new Image();
-    imgEl.onload = () => {
-      const img = new Konva.Image({image:imgEl, x:0, y:0, listening:true});
-      g.add(img); img.moveToBottom(); layer.batchDraw();
-    };
-    imgEl.onerror = () => layer.batchDraw();
+    const kimg = new Konva.Image({x:wm.x, y:wm.y, scaleX:wm.scale, scaleY:wm.scale, image:imgEl, draggable:true});
+    kimg.setAttr('wmid', wm.id);
+    wmImg[wm.id] = kimg;
+    imageLayer.add(kimg); kimg.moveToBottom();
+    imgEl.onload  = () => imageLayer.batchDraw();
+    imgEl.onerror = () => imageLayer.batchDraw();
     imgEl.src = '/wm/' + wm.id + '.png';
-    g.on('click tap', e => { e.cancelBubble = true; tr.nodes([g]); layer.batchDraw(); });
-    layer.add(g);
+
+    kimg.on('click tap', e => { e.cancelBubble = true; tr.nodes([kimg]); imageLayer.batchDraw(); });
+    kimg.on('dragmove', () => recomputeWm(wm.id));
+
+    wm.nodes.forEach(nd => {
+      const a = wmAbs(kimg, nd.x, nd.y);
+      const r = nd.hub ? 5.5 : nd.anchor ? 4 : (nd.leaf ? 2.6 : 3.2);
+      const circle = new Konva.Circle({x:a.x, y:a.y, radius:r});
+      const inst = {map:nd.map, wm:wm.id, lx:nd.x, ly:nd.y, anchor:nd.anchor, hub:nd.hub, dup:nd.dup,
+                    danger:nd.danger, leaf:nd.leaf, name:nd.name, circle, warn:null};
+      circle.on('mouseover', () => { document.body.style.cursor='pointer';
+        document.getElementById('status').textContent = nd.name+' ('+nd.map+')'; });
+      circle.on('mouseout', () => { document.body.style.cursor='default'; });
+      circle.on('click tap', e => { e.cancelBubble = true; showDetail(inst); });
+      dotLayer.add(circle);
+      if(nd.danger){
+        inst.warn = new Konva.Text({x:a.x-4, y:a.y-16, text:'⚠', fontSize:13, fill:'#ff5555'});
+        inst.warn.listening(false); dotLayer.add(inst.warn);
+      }
+      (nodes[nd.map] = nodes[nd.map] || []).push(inst);
+      styleNode(inst);
+      nodeCount++;
+    });
   });
-  document.getElementById('status').textContent = wms.length + ' worldmaps, ' + totalSpots + ' spots';
-  layer.batchDraw();
+
+  (data.edges || []).forEach(([a,b,t]) => {
+    const line = new Konva.Line({points:[0,0,0,0], stroke: t==='t' ? '#6cc6ff' : '#3a4761',
+                                 strokeWidth: t==='t' ? 1.2 : 0.7, opacity:0.8});
+    const e = {a, b, type:t, line};
+    edgeLayer.add(line); edges.push(e);
+    const wmsOf = new Set([...(nodes[a]||[]), ...(nodes[b]||[])].map(i => i.wm));
+    wmsOf.forEach(w => (edgesByWm[w] = edgesByWm[w] || []).push(e));
+  });
+
+  document.getElementById('status').textContent = wms.length + ' worldmaps, ' + nodeCount + ' nodes, ' + edges.length + ' edges';
+  drawEdges(null);
+  imageLayer.batchDraw(); dotLayer.batchDraw();
+
+  // resize: positions scale with the worldmap, dot size stays constant; recompute live during the drag
+  tr.on('transform', () => { const im = tr.nodes()[0]; if(im) recomputeWm(im.getAttr('wmid')); });
+  tr.on('transformend', () => { const im = tr.nodes()[0]; if(im) recomputeWm(im.getAttr('wmid')); });
+
+  poll();
 })();
 
+async function poll(){
+  try {
+    const d = await (await fetch('/api/live')).json();
+    live = {};
+    for(const id in d.maps) live[id] = d.maps[id];
+    applyStyle();
+  } catch(e){ /* keep last */ }
+  setTimeout(poll, 2000);
+}
+
+document.getElementById('search').addEventListener('input', e => { query = e.target.value.trim().toLowerCase(); applyStyle(); });
 document.getElementById('export').onclick = () => {
-  const lines = layer.find('Group').map(g =>
-    '        wm.put("' + g.getAttr('wmid') + '", new double[]{'
-    + Math.round(g.x()) + ', ' + Math.round(g.y()) + ', ' + g.scaleX().toFixed(3) + '});').sort();
+  const lines = imageLayer.find('Image').map(im =>
+    '        wm.put("' + im.getAttr('wmid') + '", new double[]{'
+    + Math.round(im.x()) + ', ' + Math.round(im.y()) + ', ' + im.scaleX().toFixed(3) + '});').sort();
   const text = lines.join('\n');
-  document.getElementById('status').innerHTML = 'WORLDMAP_LAYOUT (' + lines.length + ')';
+  document.getElementById('status').textContent = 'WORLDMAP_LAYOUT (' + lines.length + ') copied';
   let ta = document.getElementById('out');
   if(!ta){ ta = document.createElement('textarea'); ta.id='out'; ta.readOnly=true; document.getElementById('side').appendChild(ta); }
   ta.value = text; ta.focus(); ta.select();

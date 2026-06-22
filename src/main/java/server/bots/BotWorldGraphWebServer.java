@@ -71,6 +71,10 @@ public final class BotWorldGraphWebServer {
     // being a region hub. Captured like ANCHORS (mark in the web view, drag, export). Empty until baked.
     private static final Map<Integer, double[]> CUSTOM_ANCHORS = new HashMap<>();
 
+    // Worldmap panel transforms for the /map view (worldmap id -> {x, y, scale}), captured by dragging the
+    // worldmaps into a real-world arrangement and exporting. Worldmaps not listed fall back to a grid.
+    private static final Map<String, double[]> WORLDMAP_LAYOUT = buildWorldMapLayout();
+
     private static Map<Integer, double[]> buildAnchors() {
         Map<Integer, double[]> a = new HashMap<>();
         a.put(10000, new double[]{-1773, 379});       // Mushroom Town
@@ -115,6 +119,53 @@ public final class BotWorldGraphWebServer {
         return a;
     }
 
+    private static Map<String, double[]> buildWorldMapLayout() {
+        Map<String, double[]> m = new HashMap<>();
+        m.put("000", new double[]{-406, -517, 0.347});
+        m.put("010", new double[]{323, -231, 0.997});
+        m.put("011", new double[]{729, 238, 0.270});
+        m.put("012", new double[]{497, -454, 0.450});
+        m.put("013", new double[]{86, -468, 0.450});
+        m.put("014", new double[]{182, 243, 0.469});
+        m.put("020", new double[]{1945, -728, 1.206});
+        m.put("021", new double[]{2768, -326, 1.161});
+        m.put("030", new double[]{1964, 355, 1.003});
+        m.put("031", new double[]{2144, 819, 0.450});
+        m.put("040", new double[]{1962, -135, 1.004});
+        m.put("050", new double[]{793, 540, 1.054});
+        m.put("051", new double[]{2977, 2102, 0.450});
+        m.put("060", new double[]{2695, 279, 1.075});
+        m.put("070", new double[]{1623, 1045, 1.394});
+        m.put("080", new double[]{317, 677, 0.731});
+        m.put("090", new double[]{897, -787, 0.450});
+        m.put("100", new double[]{-462, -204, 0.450});
+        m.put("140", new double[]{-457, 80, 0.450});
+        m.put("141", new double[]{-14, -19, 0.450});
+        m.put("142", new double[]{-13, -250, 0.450});
+        m.put("143", new double[]{1549, 2323, 0.450});
+        m.put("144", new double[]{314, 1033, 0.721});
+        m.put("145", new double[]{2959, -877, 1.092});
+        m.put("146", new double[]{1890, 2346, 0.450});
+        m.put("147", new double[]{2251, 2325, 0.450});
+        m.put("148", new double[]{2638, 2375, 0.450});
+        m.put("149", new double[]{3030, 2485, 0.450});
+        m.put("150", new double[]{938, 3026, 0.450});
+        m.put("151", new double[]{1275, 3012, 0.450});
+        m.put("152", new double[]{1599, 3000, 0.450});
+        m.put("153", new double[]{1945, 2991, 0.450});
+        m.put("154", new double[]{2326, 2991, 0.450});
+        m.put("155", new double[]{2698, 2984, 0.450});
+        m.put("156", new double[]{3056, 2946, 0.450});
+        m.put("157", new double[]{963, 3326, 0.450});
+        m.put("158", new double[]{1296, 3323, 0.450});
+        m.put("159", new double[]{1625, 3291, 0.450});
+        m.put("160", new double[]{1961, 3257, 0.450});
+        m.put("161", new double[]{2312, 3272, 0.450});
+        m.put("162", new double[]{2682, 3304, 0.450});
+        m.put("163", new double[]{3031, 3354, 0.450});
+        return m;
+    }
+
     private static volatile HttpServer server;
     private static volatile String graphJsonCache; // graph is static for the server's lifetime
 
@@ -127,7 +178,9 @@ public final class BotWorldGraphWebServer {
             return;
         }
         try {
-            HttpServer s = HttpServer.create(new InetSocketAddress("127.0.0.1", PORT), 0);
+            // ponytail: bound to all interfaces for LAN access (http://<server-lan-ip>:8089/). No auth —
+            // exposes online player/bot names+locations to anyone on the LAN; fine on a private server LAN.
+            HttpServer s = HttpServer.create(new InetSocketAddress(PORT), 0);
             s.createContext("/", BotWorldGraphWebServer::servePage);
             s.createContext("/map", BotWorldGraphWebServer::serveWorldMapPage);
             s.createContext("/api/graph", BotWorldGraphWebServer::serveGraph);
@@ -142,7 +195,7 @@ public final class BotWorldGraphWebServer {
             }));
             s.start();
             server = s;
-            log.info("Bot world-graph web view: http://127.0.0.1:{}/", PORT);
+            log.info("Bot world-graph web view: http://127.0.0.1:{}/ (LAN: http://<this-host-ip>:{}/)", PORT, PORT);
         } catch (IOException e) {
             log.warn("Bot world-graph web view failed to start on port {}: {}", PORT, e.toString());
         }
@@ -188,36 +241,43 @@ public final class BotWorldGraphWebServer {
     }
 
     // --- WorldMap.wz overlay: each numbered WorldMap img has a BaseImg + MapList of spots (in-image
-    // pixel = BaseImg origin + spot) tagging real map ids. First worldmap to claim a map id wins. ---
+    // pixel = BaseImg origin + spot) tagging real map ids. A map may legitimately appear on several
+    // continent worldmaps (kept as separate dots, flagged dup). Spots are the anchors; every other
+    // reachable map (non-anchor) is grown off its nearest spot, in that worldmap's local space, so it
+    // rides along when the worldmap is dragged. ---
 
-    private static volatile String worldMapsJsonCache;
+    private static volatile String worldGraphJsonCache;
 
     private static void serveWorldMaps(HttpExchange ex) throws IOException {
-        String json = worldMapsJsonCache;
+        String json = worldGraphJsonCache;
         if (json == null) {
-            json = worldMapsJson();
-            worldMapsJsonCache = json;
+            json = worldGraphJson();
+            worldGraphJsonCache = json;
         }
         send(ex, 200, "application/json", json.getBytes(StandardCharsets.UTF_8));
     }
 
-    /** {@code {"worldmaps":[{"id":"000","spots":[{"map":,"x":,"y":}]}]}} — x/y are pixels on that
-     *  worldmap's BaseImg (top-left = 0,0). */
-    private static String worldMapsJson() {
+    /** A worldmap's spots in image-local pixels (top-left = 0,0), gathered from the WZ data. */
+    private record WorldSpots(List<String> wmIds, Map<String, TreeMap<Integer, double[]>> byWm,
+                              Map<Integer, Integer> occur) {
+    }
+
+    private static WorldSpots scanWorldMapSpots() {
         DataProvider dp = DataProviderFactory.getDataProvider(WZFiles.MAP);
-        Set<Integer> claimed = new HashSet<>(); // first worldmap to list a map id keeps it
-        List<String> wms = new ArrayList<>();
+        List<String> wmIds = new ArrayList<>();
+        Map<String, TreeMap<Integer, double[]>> byWm = new TreeMap<>();
+        Map<Integer, Integer> occur = new HashMap<>(); // mapId -> # of distinct worldmaps showing it
         for (String id : worldMapIds()) {
             Data wm = dp.getData("WorldMap/WorldMap" + id + ".img");
             if (wm == null) {
                 continue;
             }
-            Point origin = DataTool.getPoint("BaseImg/origin", wm, new Point(0, 0));
+            Point origin = DataTool.getPoint("BaseImg/0/origin", wm, new Point(0, 0)); // canvas is named "0"
             Data mapList = wm.getChildByPath("MapList");
             if (mapList == null) {
                 continue;
             }
-            StringBuilder spots = new StringBuilder();
+            TreeMap<Integer, double[]> spots = new TreeMap<>();
             for (Data entry : mapList.getChildren()) {
                 Point spot = DataTool.getPoint("spot", entry, null);
                 Data mapNo = entry.getChildByPath("mapNo");
@@ -226,20 +286,214 @@ public final class BotWorldGraphWebServer {
                 }
                 for (Data mn : mapNo.getChildren()) {
                     int mapId = DataTool.getInt(mn, -1);
-                    if (mapId < 0 || !claimed.add(mapId)) {
-                        continue;
+                    if (mapId < 0 || spots.containsKey(mapId)) {
+                        continue; // dedup within this worldmap only
                     }
-                    if (spots.length() > 0) {
-                        spots.append(',');
-                    }
-                    spots.append("{\"map\":").append(mapId)
-                            .append(",\"x\":").append(origin.x + spot.x)
-                            .append(",\"y\":").append(origin.y + spot.y).append('}');
+                    spots.put(mapId, new double[]{origin.x + spot.x, origin.y + spot.y});
                 }
             }
-            wms.add("{\"id\":\"" + id + "\",\"spots\":[" + spots + "]}");
+            wmIds.add(id);
+            byWm.put(id, spots);
+            for (Integer mapId : spots.keySet()) {
+                occur.merge(mapId, 1, Integer::sum);
+            }
         }
-        return "{\"worldmaps\":[" + String.join(",", wms) + "]}";
+        return new WorldSpots(wmIds, byWm, occur);
+    }
+
+    /**
+     * {@code {"worldmaps":[{"id":"000","nodes":[{map,x,y,anchor,dup,danger,leaf,name}]}],"edges":[[a,b,"p"|"t"]]}}
+     * — node x/y are image-local pixels for that worldmap. Anchors sit on their spot; non-anchors are
+     * laid out by {@link #worldMapLayout} relative to the worldmap they hang off.
+     */
+    private static String worldGraphJson() {
+        GraphData g = graphData();
+        WorldSpots ws = scanWorldMapSpots();
+        Map<Integer, double[]> naLocal = new HashMap<>(); // non-anchor map -> image-local pos
+        Map<Integer, String> naWm = new HashMap<>();       // non-anchor map -> owning worldmap
+        worldMapLayout(g, ws, naLocal, naWm);
+
+        Map<String, List<Integer>> naByWm = new HashMap<>();
+        for (Map.Entry<Integer, String> e : naWm.entrySet()) {
+            naByWm.computeIfAbsent(e.getValue(), k -> new ArrayList<>()).add(e.getKey());
+        }
+        for (List<Integer> l : naByWm.values()) {
+            Collections.sort(l);
+        }
+
+        int cols = (int) Math.ceil(Math.sqrt(Math.max(1, ws.wmIds().size())));
+        List<String> wmsOut = new ArrayList<>();
+        int gi = 0; // grid index for worldmaps not in the baked layout
+        for (String wm : ws.wmIds()) {
+            TreeMap<Integer, double[]> spots = ws.byWm().get(wm);
+            if (spots == null) {
+                continue;
+            }
+            double[] t = WORLDMAP_LAYOUT.get(wm);
+            double tx = t != null ? t[0] : (gi % cols) * 480.0;
+            double ty = t != null ? t[1] : (gi / cols) * 480.0;
+            double ts = t != null ? t[2] : 0.45;
+            gi++;
+            StringBuilder nodes = new StringBuilder();
+            for (Map.Entry<Integer, double[]> e : spots.entrySet()) {
+                appendWorldNode(nodes, g, e.getKey(), e.getValue(), true, ws.occur().get(e.getKey()) > 1);
+            }
+            for (int m : naByWm.getOrDefault(wm, List.of())) {
+                appendWorldNode(nodes, g, m, naLocal.get(m), false, false);
+            }
+            wmsOut.add("{\"id\":\"" + wm + "\",\"x\":" + Math.round(tx) + ",\"y\":" + Math.round(ty)
+                    + ",\"scale\":" + ts + ",\"nodes\":[" + nodes + "]}");
+        }
+        StringBuilder es = new StringBuilder();
+        for (int[] ed : g.edges()) {
+            if (!worldRendered(ed[0], ws, naLocal) || !worldRendered(ed[1], ws, naLocal)) {
+                continue;
+            }
+            if (es.length() > 0) {
+                es.append(',');
+            }
+            es.append('[').append(ed[0]).append(',').append(ed[1]).append(",\"")
+                    .append(ed[2] == 1 ? 't' : 'p').append("\"]");
+        }
+        return "{\"worldmaps\":[" + String.join(",", wmsOut) + "],\"edges\":[" + es + "]}";
+    }
+
+    private static boolean worldRendered(int map, WorldSpots ws, Map<Integer, double[]> naLocal) {
+        return ws.occur().containsKey(map) || naLocal.containsKey(map);
+    }
+
+    private static void appendWorldNode(StringBuilder sb, GraphData g, int map, double[] p,
+                                        boolean anchor, boolean dup) {
+        if (sb.length() > 0) {
+            sb.append(',');
+        }
+        sb.append("{\"map\":").append(map)
+                .append(",\"x\":").append(Math.round(p[0]))
+                .append(",\"y\":").append(Math.round(p[1]))
+                .append(",\"anchor\":").append(anchor)
+                .append(",\"hub\":").append(isHub(g, map))
+                .append(",\"dup\":").append(dup)
+                .append(",\"danger\":").append(g.danger().contains(map))
+                .append(",\"leaf\":").append(g.leaves().contains(map))
+                .append(",\"name\":").append(jsonStr(g.names().getOrDefault(map, String.valueOf(map))))
+                .append('}');
+    }
+
+    /** A hub = a return-map root that some OTHER reachable map returns to (a town maps cluster on), as
+     *  opposed to a map that merely returns to itself. Only hubs get the purple ring. */
+    private static boolean isHub(GraphData g, int map) {
+        List<Integer> members = g.regionMembers().get(map);
+        if (members == null) {
+            return false;
+        }
+        for (int m : members) {
+            if (m != map) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Multi-source BFS in each worldmap's local pixel space: every non-anchor (reachable map that is not
+     * a worldmap spot) is grown {@link #EDGE_LEN} out from its nearest spot — so dungeon chains trail off
+     * their town — and assigned to that spot's worldmap so it rides along on drag. Leaves tuck under their
+     * parent via {@link #childSlot}. Maps no spot can reach stack below the first worldmap.
+     */
+    private static void worldMapLayout(GraphData g, WorldSpots ws,
+                                       Map<Integer, double[]> naLocal, Map<Integer, String> naWm) {
+        List<String> wmIds = ws.wmIds();
+        Map<String, double[]> centroid = new HashMap<>(); // worldmap spot centroid -> outward direction
+        for (String wm : wmIds) {
+            TreeMap<Integer, double[]> sp = ws.byWm().get(wm);
+            if (sp == null || sp.isEmpty()) {
+                continue;
+            }
+            double sx = 0;
+            double sy = 0;
+            for (double[] p : sp.values()) {
+                sx += p[0];
+                sy += p[1];
+            }
+            centroid.put(wm, new double[]{sx / sp.size(), sy / sp.size()});
+        }
+        Set<Integer> spots = ws.occur().keySet(); // map ids that are an anchor on some worldmap
+        ArrayDeque<double[]> q = new ArrayDeque<>(); // {map, wmIdx, lx, ly, inAngle, sector}
+        for (int wi = 0; wi < wmIds.size(); wi++) {
+            TreeMap<Integer, double[]> sp = ws.byWm().get(wmIds.get(wi));
+            if (sp == null) {
+                continue;
+            }
+            double[] c = centroid.getOrDefault(wmIds.get(wi), new double[]{0, 0});
+            for (Map.Entry<Integer, double[]> e : sp.entrySet()) {
+                double[] p = e.getValue();
+                double ang = Math.atan2(p[1] - c[1], p[0] - c[0]);
+                if (!Double.isFinite(ang)) {
+                    ang = -Math.PI / 2;
+                }
+                q.add(new double[]{e.getKey(), wi, p[0], p[1], ang, Math.PI}); // root fans a half-circle outward
+            }
+        }
+        Map<Integer, Integer> leafCount = new HashMap<>(); // per-parent dead-end slot index
+        while (!q.isEmpty()) {
+            double[] cur = q.poll();
+            int n = (int) cur[0];
+            int wi = (int) cur[1];
+            double lx = cur[2];
+            double ly = cur[3];
+            double inAngle = cur[4];
+            double sector = cur[5];
+            List<Integer> kids = new ArrayList<>();
+            for (int b : g.adj().getOrDefault(n, List.of())) {
+                if (!spots.contains(b) && !naLocal.containsKey(b)) {
+                    kids.add(b);
+                }
+            }
+            if (kids.isEmpty()) {
+                continue;
+            }
+            Collections.sort(kids);
+            String wm = wmIds.get(wi);
+            double w = Math.min(sector, CONE);
+            double step = w / kids.size();
+            double base = inAngle - w / 2;
+            for (int i = 0; i < kids.size(); i++) {
+                int c = kids.get(i);
+                if (naLocal.containsKey(c)) {
+                    continue; // claimed by a sibling already placed this pop
+                }
+                if (g.leaves().contains(c)) {
+                    double[] cp = childSlot(new double[]{lx, ly}, leafCount.merge(n, 1, Integer::sum) - 1);
+                    naLocal.put(c, cp);
+                    naWm.put(c, wm);
+                } else {
+                    double ang = base + (i + 0.5) * step;
+                    double[] cp = new double[]{lx + EDGE_LEN * Math.cos(ang), ly + EDGE_LEN * Math.sin(ang)};
+                    naLocal.put(c, cp);
+                    naWm.put(c, wm);
+                    q.add(new double[]{c, wi, cp[0], cp[1], ang, step});
+                }
+            }
+        }
+        if (!wmIds.isEmpty()) { // orphans: reachable but no spot reached them — stack below worldmap 0
+            String wm0 = wmIds.get(0);
+            List<Integer> orphans = new ArrayList<>();
+            for (int m : g.reachable()) {
+                if (!spots.contains(m) && !naLocal.containsKey(m)) {
+                    orphans.add(m);
+                }
+            }
+            Collections.sort(orphans);
+            int oi = 0;
+            for (int m : orphans) {
+                naLocal.put(m, new double[]{(oi % 20) * 40, 1200 + (oi / 20) * 40});
+                naWm.put(m, wm0);
+                oi++;
+            }
+            if (!orphans.isEmpty()) {
+                log.info("Bot world-graph web view: {} non-anchor maps unreached by any worldmap spot", orphans.size());
+            }
+        }
     }
 
     /** Numbered WorldMap img ids ("000","010",...), sorted, scanned from the WZ folder. */
