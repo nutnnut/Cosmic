@@ -15,6 +15,8 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -62,15 +64,18 @@ class BotFerryManagerTest {
         final List<Integer> ticketsBought = new ArrayList<>();
         final List<Integer> boarded = new ArrayList<>();
         final List<Integer> guided = new ArrayList<>();
+        final List<Integer> startedRides = new ArrayList<>();
         boolean hasTicket = false;
         boolean gateOpen = false;
         boolean invaded = false;
+        boolean instanceStartable = true;
         Point npcPos = null;
 
         private final BotFerryManager.TicketCheck prevTicketCheck = BotFerryManager.ticketCheck;
         private final BotFerryManager.TicketShop prevTicketShop = BotFerryManager.ticketShop;
         private final BotFerryManager.BoardAction prevBoard = BotFerryManager.boardAction;
         private final BotFerryManager.GuideAction prevGuide = BotFerryManager.guideAction;
+        private final BotFerryManager.StartInstanceAction prevStart = BotFerryManager.startInstanceAction;
         private final BotFerryManager.GateCheck prevGate = BotFerryManager.gateCheck;
         private final BotFerryManager.ThreatCheck prevThreat = BotFerryManager.threatCheck;
         private final BotTravelManager.MovementStep prevMovement = BotTravelManager.movementStep;
@@ -90,6 +95,13 @@ class BotFerryManagerTest {
                 guided.add(route.guideTargetMapId());
                 return true;
             };
+            BotFerryManager.startInstanceAction = (bot, route) -> {
+                if (!instanceStartable) {
+                    return false;
+                }
+                startedRides.add(route.destinationMapId());
+                return true;
+            };
             BotFerryManager.gateCheck = (bot, eventName) -> gateOpen;
             BotFerryManager.threatCheck = (bot, eventName) -> invaded;
             BotTravelManager.movementStep = (entry, targetPos, runAiTick) -> steps.add(new Point(targetPos));
@@ -102,6 +114,7 @@ class BotFerryManagerTest {
             BotFerryManager.ticketShop = prevTicketShop;
             BotFerryManager.boardAction = prevBoard;
             BotFerryManager.guideAction = prevGuide;
+            BotFerryManager.startInstanceAction = prevStart;
             BotFerryManager.gateCheck = prevGate;
             BotFerryManager.threatCheck = prevThreat;
             BotTravelManager.movementStep = prevMovement;
@@ -267,5 +280,87 @@ class BotFerryManagerTest {
         assertTrue(BotFerryManager.findFerryEdge(200000161, 130000210) == BotFerryManager.ORBIS_TO_EREVE);
         assertTrue(BotFerryManager.findFerryEdge(104000000, 140020300) == BotFerryManager.LITH_TO_RIEN);
         assertTrue(BotFerryManager.findFerryEdge(140020300, 104000000) == BotFerryManager.RIEN_TO_LITH);
+    }
+
+    @Test
+    void shouldStartFreeTrainInstanceAtTheTicketGate() {
+        Fixture f = fixture(103000100, new Point(0, 0));
+        when(f.bot().getMeso()).thenReturn(0);
+
+        try (Seams seams = new Seams()) {
+            seams.npcPos = new Point(100, 0);
+
+            assertTrue(BotFerryManager.tickBoarding(f.entry(), f.bot(), BotFerryManager.KC_TO_KSQUARE, 0L, true));
+            assertEquals(List.of(103000310), seams.startedRides); // boarded the train to Kerning Square
+            verify(f.bot(), never()).gainMeso(anyInt(), anyBoolean()); // the train is free
+        }
+    }
+
+    @Test
+    void shouldPayFareThenStartTheCraneInstance() {
+        Fixture f = fixture(200000141, new Point(0, 0));
+        when(f.bot().getMeso()).thenReturn(1500);
+
+        try (Seams seams = new Seams()) {
+            seams.npcPos = new Point(100, 0);
+
+            assertTrue(BotFerryManager.tickBoarding(f.entry(), f.bot(), BotFerryManager.ORBIS_TO_MULUNG, 0L, true));
+            assertEquals(List.of(250000100), seams.startedRides);
+            verify(f.bot()).gainMeso(-1500, false); // pay only once the crane actually departs
+        }
+    }
+
+    @Test
+    void shouldNotChargeFareWhenTheCraneLobbyIsFull() {
+        Fixture f = fixture(200000141, new Point(0, 0));
+        when(f.bot().getMeso()).thenReturn(1500);
+
+        try (Seams seams = new Seams()) {
+            seams.npcPos = new Point(100, 0);
+            seams.instanceStartable = false;
+
+            assertFalse(BotFerryManager.tickBoarding(f.entry(), f.bot(), BotFerryManager.ORBIS_TO_MULUNG, 0L, true));
+            verify(f.bot(), never()).gainMeso(anyInt(), anyBoolean());
+        }
+    }
+
+    @Test
+    void shouldNotBoardTheCraneWithoutTheFare() {
+        Fixture f = fixture(200000141, new Point(0, 0));
+        when(f.bot().getMeso()).thenReturn(1499);
+
+        try (Seams seams = new Seams()) {
+            seams.npcPos = new Point(100, 0);
+            assertFalse(BotFerryManager.tickBoarding(f.entry(), f.bot(), BotFerryManager.ORBIS_TO_MULUNG, 0L, true));
+        }
+    }
+
+    @Test
+    void shouldEnterTheScriptedBoardingPortalForTheReturnTrain() {
+        Fixture f = fixture(103000310, new Point(0, 0));
+        Portal out00 = mock(Portal.class);
+        when(out00.getPosition()).thenReturn(new Point(0, 0));
+        when(f.map().getPortal("out00")).thenReturn(out00);
+        long now = System.currentTimeMillis();
+
+        try (Seams seams = new Seams()) {
+            assertTrue(BotFerryManager.tickBoarding(f.entry(), f.bot(), BotFerryManager.KSQUARE_TO_KC, now, true));
+            verify(out00).enterPortal(any()); // its own script runs startInstance / the warp
+            assertTrue(f.entry().followTravelDeadlineMs > now); // waiting for the ride keeps the budget alive
+        }
+    }
+
+    @Test
+    void shouldResolveTheNewEventManagerTransitEdges() {
+        assertTrue(BotFerryManager.findFerryEdge(103000100, 600010001) == BotFerryManager.KC_TO_NLC);
+        assertTrue(BotFerryManager.findFerryEdge(600010001, 103000100) == BotFerryManager.NLC_TO_KC);
+        assertTrue(BotFerryManager.findFerryEdge(103000100, 103000310) == BotFerryManager.KC_TO_KSQUARE);
+        assertTrue(BotFerryManager.findFerryEdge(103000310, 103000100) == BotFerryManager.KSQUARE_TO_KC);
+        assertTrue(BotFerryManager.findFerryEdge(200000141, 250000100) == BotFerryManager.ORBIS_TO_MULUNG);
+        assertTrue(BotFerryManager.findFerryEdge(250000100, 200000141) == BotFerryManager.MULUNG_TO_ORBIS);
+        assertTrue(BotFerryManager.findFerryEdge(222020100, 222020200) == BotFerryManager.HELIOS_UP);
+        assertTrue(BotFerryManager.findFerryEdge(222020200, 222020100) == BotFerryManager.HELIOS_DOWN);
+        // The Kerning City hall boards two lines now (NLC subway + Kerning Square train).
+        assertTrue(BotFerryManager.routesBoardingAt(103000100).size() >= 2);
     }
 }

@@ -76,10 +76,9 @@ final class BotWorldGraph {
     // Victoria cab rides, mirrored from the NPC scripts (scripts/npc/<npcId>.js): each cab
     // warps to portal 0 of the destination for the listed fare. The 10k VIP cabs go to the
     // Ant Tunnel park. Beginner discounts are ignored — bots always have a job.
-    // TODO(bot-graph): Kerning City (103000000) <-> New Leaf City (600000000) subway is NOT modeled (no
-    // portal/taxi/ferry), so the whole NLC region is an unreachable island in the world-graph web view.
-    // Add the subway hop once the station/NPC ids are verified. See BotFerryManager for the missing Orbis
-    // ferries (El Nath, Mu Lung/Aqua Road) that strand those regions the same way.
+    // Kerning City <-> NLC subway and Kerning City <-> Kerning Square train are modeled as EventManager
+    // "ferry" rides in BotFerryManager (Subway/KerningTrain), as is Orbis <-> Mu Lung (Hak). El Nath / Aqua
+    // Road are still the remaining stranded Orbis regions - see the TODO in BotFerryManager.
     private static final List<TaxiEdge> TAXI_EDGES = List.of(
             // Lith Harbor 104000000 — Regular Cab 1002007, VIP Cab 1002004
             new TaxiEdge(104000000, 1002007, 100000000, 1000),

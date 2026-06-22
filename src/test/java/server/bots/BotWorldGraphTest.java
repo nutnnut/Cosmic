@@ -100,6 +100,30 @@ class BotWorldGraphTest {
     }
 
     @Test
+    void shouldConnectEventManagerTransitLinksWhenOptedIn() {
+        // Stations only, no portal edges: the EventManager rides (subway/train/crane/elevator) must carry
+        // the cross-region edge exactly like the boats. Verified ids in BotFerryManager.
+        BotWorldGraph.Index graph = BotWorldGraph.indexOf(Map.of(
+                103000100, new int[0], 600010001, new int[0], 103000310, new int[0],
+                200000141, new int[0], 250000100, new int[0],
+                222020100, new int[0], 222020200, new int[0]));
+        BotWorldGraph.RouteOptions ferryRich = new BotWorldGraph.RouteOptions(false, 30000, true);
+
+        // Kerning City subway to NLC (5k) and the free train to Kerning Square — same hall boards both.
+        assertEquals(List.of(600010001), BotWorldGraph.route(graph, 103000100, 600010001, 4, ferryRich));
+        assertEquals(List.of(103000310), BotWorldGraph.route(graph, 103000100, 103000310, 4, ferryRich));
+        // Orbis cabin -> Mu Lung crane (1500).
+        assertEquals(List.of(250000100), BotWorldGraph.route(graph, 200000141, 250000100, 4, ferryRich));
+        // Helios elevator 2F <-> 99F (free, intra-tower).
+        assertEquals(List.of(222020200), BotWorldGraph.route(graph, 222020100, 222020200, 4, ferryRich));
+        assertEquals(List.of(222020100), BotWorldGraph.route(graph, 222020200, 222020100, 4, ferryRich));
+
+        // Gated like the boats: a broke bot can't afford the subway, and follow mode (no ferry) sees no edge.
+        assertNull(BotWorldGraph.route(graph, 103000100, 600010001, 4, new BotWorldGraph.RouteOptions(false, 4999, true)));
+        assertNull(BotWorldGraph.route(graph, 200000141, 250000100, 4, new BotWorldGraph.RouteOptions(false, 30000, false)));
+    }
+
+    @Test
     void shouldBuildWorldGraphFromWz() {
         BotWorldGraph.Index graph = BotWorldGraph.get();
 

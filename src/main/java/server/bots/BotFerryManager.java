@@ -44,7 +44,19 @@ final class BotFerryManager {
                       int usherNpcId, int usherNpcMapId,
                       int guideNpcId, int guideMapId, int guideTargetMapId,
                       int waitingMapId, int deckMapId, int cabinMapId,
-                      List<Integer> boardingMapIds, String eventName) {
+                      List<Integer> boardingMapIds, String eventName, String boardingPortal) {
+
+        /** Convenience ctor for NPC/ferry rides (no scripted boarding portal). */
+        FerryRoute(int destinationMapId, int ticketItemId, int ticketCost,
+                   int ticketNpcId, int ticketNpcMapId,
+                   int usherNpcId, int usherNpcMapId,
+                   int guideNpcId, int guideMapId, int guideTargetMapId,
+                   int waitingMapId, int deckMapId, int cabinMapId,
+                   List<Integer> boardingMapIds, String eventName) {
+            this(destinationMapId, ticketItemId, ticketCost, ticketNpcId, ticketNpcMapId,
+                    usherNpcId, usherNpcMapId, guideNpcId, guideMapId, guideTargetMapId,
+                    waitingMapId, deckMapId, cabinMapId, boardingMapIds, eventName, "");
+        }
     }
 
     // Ellinia station 101000300: seller 1032007 (4031045, 5k) and usher 1032008 in one map.
@@ -158,18 +170,92 @@ final class BotFerryManager {
             200090070, 200090070, 200090070,
             List.of(140020300), "");
 
-    // TODO(bot-graph): inter-continent gateways NOT modeled, so these regions are unreachable (they surface
-    // as UNREACHABLE worldmap spots in the world-graph web view). Intra-region taxis exist; only the Orbis
-    // boarding leg is missing. Add FerryRoutes once the station NPC/platform/event ids are verified:
-    //   - Orbis <-> El Nath (211000000): the whole El Nath / Dead Mine / Orbis Tower side.
-    //   - Orbis <-> Mu Lung (250000000) & Aqua Road (230000000): Mu Lung<->Herb Town<->Aquarium taxis are
-    //     present, but the cluster has no link to spawn without the Orbis boat.
-    // (Orbis <-> Ereve/Ludibrium/Leafre/Ariant/Ellinia and Lith <-> Rien ARE modeled.)
+    // EventManager rides (subway/train/crane/elevator) the WZ scan can't see. Same stateless boarding/transit
+    // machinery as the ferries; three boarding flavours:
+    //   - ticket+gate (Subway): identical to the Orbis lines - buy ticket, hand to usher, ride the gate event.
+    //   - NPC start-instance (KerningTrain forward / Hak): walk to the NPC, pay (if any), call em.startInstance.
+    //   - portal start-instance/gated (Depart_ToKerning / elevator): walk the real scripted boarding portal and
+    //     enter it; its own script runs the gate/startInstance/warp (boardingPortal != "").
+    // Verified vs scripts/npc/{1052007,9201057,9201068,2090005} + scripts/event/{Subway,KerningTrain,Hak} +
+    // scripts/portal/{elevator,Depart_ToKerning} + Map.wz portals/life.
+
+    // Kerning City <-> New Leaf City subway (Subway event, ticket 4031711 KC / 4031713 NLC, 5k each way).
+    static final FerryRoute KC_TO_NLC = new FerryRoute(
+            600010001, 4031711, 5000,
+            9201057, 103000100,
+            1052007, 103000100,
+            0, -1, -1,
+            600010004, 600010005, 600010005,
+            List.of(103000100), "Subway");
+
+    static final FerryRoute NLC_TO_KC = new FerryRoute(
+            103000100, 4031713, 5000,
+            9201057, 600010001,
+            9201068, 600010001,
+            0, -1, -1,
+            600010002, 600010003, 600010003,
+            List.of(600010001), "Subway");
+
+    // Kerning City <-> Kerning Square (KerningTrain event). KC->Square boards at the ticket gate 1052007
+    // (free); Square->KC boards at the scripted portal out00 (Depart_ToKerning). Lands at the station, a
+    // plain enter00 portal then reaches the Kerning Square town 103040000.
+    static final FerryRoute KC_TO_KSQUARE = new FerryRoute(
+            103000310, 0, 0,
+            1052007, 103000100,
+            0, -1, 0, -1, -1,
+            103000301, 103000301, 103000301,
+            List.of(103000100), "KerningTrain");
+
+    static final FerryRoute KSQUARE_TO_KC = new FerryRoute(
+            103000100, 0, 0,
+            0, 103000310,
+            0, -1, 0, -1, -1,
+            103000302, 103000302, 103000302,
+            List.of(103000310), "KerningTrain", "out00");
+
+    // Orbis <-> Mu Lung (Hak crane event, 1500 meso). Orbis side boards at the cabin 200000141 (reached from
+    // Orbis station 200000100 by plain portals 200000100->200000140->200000141); Mu Lung side boards at the
+    // temple 250000100 (west00 -> Mu Lung town 250000000).
+    static final FerryRoute ORBIS_TO_MULUNG = new FerryRoute(
+            250000100, 0, 1500,
+            2090005, 200000141,
+            0, -1, 0, -1, -1,
+            200090300, 200090300, 200090300,
+            List.of(200000141), "Hak");
+
+    static final FerryRoute MULUNG_TO_ORBIS = new FerryRoute(
+            200000141, 0, 1500,
+            2090005, 250000100,
+            0, -1, 0, -1, -1,
+            200090310, 200090310, 200090310,
+            List.of(250000100), "Hak");
+
+    // Helios Tower 2nd floor <-> 99th floor (Elevator event, no npc/ticket/meso). Boards by walking the
+    // scripted elevator portal in00; its script warps onto the waiting map when the gate is open and the
+    // event delivers to the far floor. Intra-tower convenience link.
+    static final FerryRoute HELIOS_UP = new FerryRoute(
+            222020200, 0, 0,
+            0, 222020100,
+            0, -1, 0, -1, -1,
+            222020110, 222020111, 222020111,
+            List.of(222020100), "Elevator", "in00");
+
+    static final FerryRoute HELIOS_DOWN = new FerryRoute(
+            222020100, 0, 0,
+            0, 222020200,
+            0, -1, 0, -1, -1,
+            222020210, 222020211, 222020211,
+            List.of(222020200), "Elevator", "in00");
+
+    // TODO(bot-graph): Orbis <-> El Nath (211000000) still NOT modeled - the El Nath / Dead Mine / Orbis Tower
+    // side stays unreachable until its station NPC/platform/event ids are verified.
     private static final List<FerryRoute> ROUTES = List.of(
             ELLINIA_TO_ORBIS, ORBIS_TO_ELLINIA,
             ORBIS_TO_LUDIBRIUM, ORBIS_TO_LEAFRE, ORBIS_TO_ARIANT,
             LUDIBRIUM_TO_ORBIS, LEAFRE_TO_ORBIS, ARIANT_TO_ORBIS,
-            ORBIS_TO_EREVE, EREVE_TO_ORBIS, LITH_TO_RIEN, RIEN_TO_LITH);
+            ORBIS_TO_EREVE, EREVE_TO_ORBIS, LITH_TO_RIEN, RIEN_TO_LITH,
+            KC_TO_NLC, NLC_TO_KC, KC_TO_KSQUARE, KSQUARE_TO_KC,
+            ORBIS_TO_MULUNG, MULUNG_TO_ORBIS, HELIOS_UP, HELIOS_DOWN);
 
     // A hub map (Orbis 200000100) carries SEVERAL ferry lines, so each boarding map maps to a LIST.
     private static final Map<Integer, List<FerryRoute>> BOARDING_MAP_TO_ROUTES = buildBoardingIndex();
@@ -235,6 +321,11 @@ final class BotFerryManager {
     }
 
     @FunctionalInterface
+    interface StartInstanceAction {
+        boolean start(Character bot, FerryRoute route);
+    }
+
+    @FunctionalInterface
     interface GateCheck {
         boolean entryOpen(Character bot, String eventName);
     }
@@ -276,6 +367,13 @@ final class BotFerryManager {
         }
         bot.changeMap(walkway, walkway.getPortal("west00"));
         return true;
+    };
+
+    static StartInstanceAction startInstanceAction = (bot, route) -> {
+        // Mirrors the NPC script: start a per-player event instance (KerningTrain/Hak), which warps the bot
+        // onto the ride map and schedules the drop-off. Returns false when the lobby is full.
+        EventManager em = bot.getClient().getChannelServer().getEventSM().getEventManager(route.eventName());
+        return em != null && em.startInstance(bot);
     };
 
     static GateCheck gateCheck = (bot, eventName) -> "true".equals(eventProperty(bot, eventName, "entry"));
@@ -326,12 +424,38 @@ final class BotFerryManager {
     static boolean tickBoarding(BotEntry entry, Character bot, FerryRoute route, long now, boolean runAiTick) {
         int mapId = bot.getMapId();
 
-        // Solo ride (ticketItemId 0: Ereve / Rien sky-whale ferries): no ticket item, no usher, no gate.
-        // Walk to the boat NPC, pay the meso fare, and it warps the bot onto the ride map - whose coded
-        // onUserEnter timer (MapleMap, runs for bots too) then delivers it to the destination station.
+        // Scripted-portal boarding (Kerning Square return / Helios elevator): walk the real boarding portal
+        // and enter it; the portal's own script runs the gate check / startInstance / warp onto the ride map.
+        // Keep the travel deadline alive while we wait for the gate (the elevator cycles on a timer).
+        if (!route.boardingPortal().isEmpty()) {
+            Portal portal = bot.getMap() == null ? null : bot.getMap().getPortal(route.boardingPortal());
+            if (portal == null) {
+                return false;
+            }
+            if (entry.followTravelDeadlineMs < now + LEG_BUDGET_MS) {
+                entry.followTravelDeadlineMs = now + LEG_BUDGET_MS;
+            }
+            return BotTravelManager.walkToPortalAndEnter(entry, bot, portal, now, runAiTick);
+        }
+
+        // Solo ride (ticketItemId 0): no ticket item, no usher, no gate. Walk to the boat NPC, pay the meso
+        // fare, and board. Two delivery models: the Ereve/Rien sky-whales warp onto a ride map whose coded
+        // onUserEnter timer delivers it; the KerningTrain/Hak rides (eventName set) start a per-player event
+        // instance that warps the bot onto the ride map and schedules the drop-off.
         if (route.ticketItemId() == 0) {
             if (mapId != route.ticketNpcMapId() || bot.getMeso() < route.ticketCost()) {
                 return false;
+            }
+            if (!route.eventName().isEmpty()) {
+                return walkToNpcThenAct(entry, bot, route.ticketNpcId(), now, runAiTick, () -> {
+                    if (!startInstanceAction.start(bot, route)) {
+                        return false; // lobby full -> normal failed hop, the caller re-plans
+                    }
+                    if (route.ticketCost() > 0) {
+                        bot.gainMeso(-route.ticketCost(), false);
+                    }
+                    return true;
+                });
             }
             return walkToNpcThenAct(entry, bot, route.ticketNpcId(), now, runAiTick, () -> {
                 MapleMap ride = bot.getClient().getChannelServer().getMapFactory().getMap(route.waitingMapId());
