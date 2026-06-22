@@ -42,6 +42,12 @@
   #moveBtn.armed{background:#3a3320;border-color:#ffd54a;color:#ffe7a0}
   .rosterItem.sel{background:#3a3320;outline:1px solid #ffd54a}
   #selbox{position:fixed;display:none;border:1px solid #ffd54a;background:rgba(255,213,74,.12);z-index:9;pointer-events:none}
+  #followBtn.armed{background:#26333f;border-color:#6cc6ff;color:#bfe4ff}
+  #picker{position:fixed;display:none;z-index:30;background:#0d1017;border:1px solid #3a4761;border-radius:6px;
+          padding:4px;font-size:12px;box-shadow:0 4px 14px rgba(0,0,0,.6);max-width:260px}
+  #picker .pickHead{color:#8a99b3;font-size:11px;padding:2px 6px 4px}
+  #picker .pickRow{padding:5px 8px;border-radius:4px;cursor:pointer;white-space:nowrap}
+  #picker .pickRow:hover{background:#222a38}
   .grp{border:1px solid #2a3346;border-radius:6px;padding:3px 4px;margin:5px 0}
   .grp.party{border-color:#46577a}
   .grp.crew{border-color:#3a5a4a;margin:4px 0 4px 8px}
@@ -75,6 +81,7 @@
     <button data-cmd="fidget">Fidget</button>
     <button id="moveBtn">Move</button>
     <button id="moveAtkBtn">Move+atk</button>
+    <button id="followBtn">Follow</button>
     <button data-cmd="resume">Resume</button>
     <button data-cmd="dance">Dance</button>
     <button data-cmd="jump">Jump</button>
@@ -82,6 +89,7 @@
     <button id="clearSel">Clear</button>
   </div>
   <div id="status"></div>
+  <button id="sortBtn">Sort: name</button>
   <div id="roster"></div>
 </div>
 <div id="side">
@@ -103,6 +111,7 @@
   <div id="detail"></div>
 </div>
 <div id="tip"></div>
+<div id="picker"></div>
 <div id="selbox"></div>
 <button id="tLeft" title="roster">&#9776;</button>
 <button id="tRight" title="detail">&#9432;</button>
@@ -125,7 +134,7 @@ window.addEventListener('resize', fitStage);
 window.addEventListener('orientationchange', () => setTimeout(fitStage, 200));
 
 // pan = drag background; deselect + clear detail on empty click
-stage.on('click tap', e => { if(e.target===stage){ tr.nodes([]); imageLayer.batchDraw(); } });
+stage.on('click tap', e => { hidePicker(); if(e.target===stage){ tr.nodes([]); imageLayer.batchDraw(); } });
 stage.on('wheel', e => {
   e.evt.preventDefault();
   const old = stage.scaleX(), p = stage.getPointerPosition();
@@ -144,6 +153,8 @@ let edgeLines = [];     // {ia, ib, line}  — one drawn line per connected inst
 let live = {};          // mapId -> {players:[{id,n,l,j,c}], bots:[...]}  (c=1 -> managed/commandable)
 let query = '';
 let rtsMode = false, moveArmed = false, moveCmd = 'move';   // RTS mode + "click a destination" arming (quiet vs attack)
+let followArm = false;    // "pick a follow target" mode: next node/roster click chooses whom to follow
+let sortMode = 'name';    // roster sort within each type: 'name' (A-Z) or 'level' (high->low)
 let locked = true;        // maps/nodes frozen by default (panning/zoom still work); toggle to edit layout
 const selected = new Set();               // selected commandable (managed) bot char ids
 let boxStart = null;                       // box-select drag origin (stage coords)
@@ -388,7 +399,7 @@ function renderRoster(){
   for(const it of items){ if(!it.bot) players++; else if(it.c.c) managed++; else companion++; }
   document.getElementById('rosterHead').textContent =
     (query ? filt.length+' shown · ' : '') + players + ' online + ' + managed + ' managed + ' + companion + ' companion';
-  const sig = query+'#'+rtsMode+'#'+[...selected].join(',')+'#'
+  const sig = query+'#'+rtsMode+'#'+sortMode+'#'+[...selected].join(',')+'#'
     + filt.map(it => it.c.n+'@'+it.map+'/'+it.c.l+'/'+(it.c.p||0)+'/'+(it.c.g||0)).join('|');
   if(sig === rosterSig) return;               // unchanged -> skip rebuild (keeps scroll position, saves work)
   rosterSig = sig;
@@ -397,7 +408,15 @@ function renderRoster(){
   el.innerHTML = query ? sortRows(filt).map(rowHtml).join('') : renderGrouped(filt);  // flat while filtering
   el.scrollTop = scroll;
 }
-function sortRows(arr){ return arr.slice().sort((a,b) => (a.bot-b.bot) || a.c.n.localeCompare(b.c.n)); }
+// type rank: player(0) -> companion bot(1) -> managed bot(2); then name A-Z, or level high->low
+function rankOf(it){ return it.bot ? (it.c.c ? 2 : 1) : 0; }
+function cmpRows(a,b){
+  const r = rankOf(a) - rankOf(b);
+  if(r) return r;
+  if(sortMode === 'level') return (b.c.l - a.c.l) || a.c.n.localeCompare(b.c.n);
+  return a.c.n.localeCompare(b.c.n);
+}
+function sortRows(arr){ return arr.slice().sort(cmpRows); }
 function rowHtml(it){
   const sel = it.bot && selected.has(it.c.id);
   return '<div class="rosterItem'+(sel?' sel':'')+'" onclick="rosterClick(event,'+it.c.id+','+it.map+','+(it.bot?1:0)+','+(it.c.c?1:0)+')">'
@@ -436,6 +455,7 @@ function groupBox(type, label, members, innerHtml){
 function selectGroup(ev, key){ applySel(rosterGroups[key]||[], ev); }   // plain = replace, shift = add/remove
 // roster click: in RTS mode select that managed bot (shift toggles); otherwise center its map
 function rosterClick(ev, id, map, bot, c){
+  if(rtsMode && followArm){ pickFollowTarget(id); return; }   // pick whom the selection follows
   if(rtsMode && bot && c) applySel([id], ev);
   else centerOnMap(map);
 }
@@ -475,7 +495,8 @@ function rosterClick(ev, id, map, bot, c){
       circle.on('mousemove', e => showTip(inst, e.evt));
       circle.on('mouseout', () => { document.body.style.cursor='default'; hideTip(); });
       circle.on('click tap', e => { e.cancelBubble = true;
-        if(rtsMode && moveArmed){ sendCmd(moveCmd, inst.maps); armMove(false); return; } // pick destination node
+        if(rtsMode && followArm){ handleFollowPick(inst, e.evt); return; }                // pick whom to follow
+        if(rtsMode && moveArmed){ sendCmd(moveCmd, inst.maps); armMove(false); return; }  // pick destination node
         if(rtsMode){ applySel(nodeBotIds(inst), e.evt); return; }                         // RTS: click selects the node's bots
         showDetail(inst);
       });
@@ -579,8 +600,9 @@ document.getElementById('fit').onclick = () => { stage.scale({x:1,y:1}); stage.p
 function updateSel(){
   document.getElementById('rtsHead').textContent =
     selected.size + ' selected'
-    + (moveArmed ? ' · click destination (' + (moveCmd==='moveattack'?'attack':'quiet') + ')'
-                 : ' · click/box = select · shift = add/remove');
+    + (followArm ? ' · click a character (node/roster) to follow'
+       : moveArmed ? ' · click destination (' + (moveCmd==='moveattack'?'attack':'quiet') + ')'
+       : ' · click/box = select · shift = add/remove');
   applyStyle(); renderRoster();
 }
 function nodeBotIds(inst){
@@ -595,22 +617,51 @@ function applySel(ids, ev){
   else { selected.clear(); ids.forEach(id => selected.add(id)); }
   updateSel();
 }
+// move-destination / follow-target arming are mutually exclusive; disarm clears both + the picker
+function disarm(){
+  moveArmed = false; followArm = false; hidePicker();
+  ['moveBtn','moveAtkBtn','followBtn'].forEach(id => document.getElementById(id).classList.remove('armed'));
+}
 function armMove(on, which){
-  moveArmed = on; if(which) moveCmd = which;
-  document.getElementById('moveBtn').classList.toggle('armed', on && moveCmd==='move');
-  document.getElementById('moveAtkBtn').classList.toggle('armed', on && moveCmd==='moveattack');
+  disarm();
+  if(on){ moveArmed = true; if(which) moveCmd = which;
+          document.getElementById(moveCmd==='moveattack'?'moveAtkBtn':'moveBtn').classList.add('armed'); }
   updateSel();
 }
-async function sendCmd(cmd, maps){
+function armFollow(on){
+  disarm();
+  if(on){ followArm = true; document.getElementById('followBtn').classList.add('armed'); }
+  updateSel();
+}
+// follow target picker: one character -> pick directly; several -> a small chooser (like the hover preview)
+function handleFollowPick(inst, evt){
+  const occ = instOccupants(inst);                       // [['P'|'B', c], ...]
+  if(!occ.length){ status('no one here to follow'); return; }
+  if(occ.length === 1){ pickFollowTarget(occ[0][1].id); return; }
+  showFollowPicker(occ, evt);
+}
+function showFollowPicker(occ, evt){
+  const el = document.getElementById('picker');
+  el.innerHTML = '<div class="pickHead">Follow whom?</div>' + occ.map(([k,c]) =>
+    '<div class="pickRow" onclick="pickFollowTarget('+c.id+')">'
+    + (k==='P'?'&#128100; ':'&#129302; ') + esc(c.n) + ' <span class="meta">Lv'+c.l+' '+esc(c.j)+'</span></div>').join('');
+  el.style.display = 'block';
+  el.style.left = Math.min(evt.clientX + 12, window.innerWidth - 250) + 'px';
+  el.style.top  = Math.min(evt.clientY + 12, window.innerHeight - 30 - occ.length*24) + 'px';
+}
+function hidePicker(){ const el = document.getElementById('picker'); if(el) el.style.display = 'none'; }
+function pickFollowTarget(id){ hidePicker(); sendCmd('follow', null, id); }   // selected bots follow this char
+
+async function sendCmd(cmd, maps, target){
   const ids = [...selected];
   if(!ids.length){ status('select bots first'); return; }
-  const body = {cmd, ids}; if(maps) body.maps = maps;
+  const body = {cmd, ids}; if(maps) body.maps = maps; if(target) body.target = target;
   try {
     const r = await (await fetch('/api/command',
       {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)})).json();
     status(cmd + ': applied ' + r.applied + (r.skipped && r.skipped.length ? ' · skipped ' + r.skipped.length : ''));
   } catch(e){ status(cmd + ': command failed'); return; }
-  selected.clear(); armMove(false);
+  selected.clear(); disarm(); updateSel();
 }
 
 function selboxRect(p){
@@ -655,7 +706,7 @@ document.getElementById('rtsToggle').onclick = () => {
   t.textContent = 'RTS mode: ' + (rtsMode ? 'on' : 'off'); t.classList.toggle('on', rtsMode);
   document.getElementById('rts').style.display = rtsMode ? 'block' : 'none';
   stage.draggable(!rtsMode);                                   // free the drag gesture for box-select
-  if(!rtsMode){ selected.clear(); moveArmed = false; selboxHide(); }
+  if(!rtsMode){ selected.clear(); disarm(); selboxHide(); }
   updateDraggable();                                           // RTS also freezes map/node editing
   updateSel();
 };
@@ -675,7 +726,13 @@ function armMoveBtn(which){
 }
 document.getElementById('moveBtn').onclick = () => armMoveBtn('move');
 document.getElementById('moveAtkBtn').onclick = () => armMoveBtn('moveattack');
-document.getElementById('clearSel').onclick = () => { selected.clear(); armMove(false); };
+document.getElementById('followBtn').onclick = () => { if(!selected.size){ status('select bots first'); return; } armFollow(!followArm); };
+document.getElementById('clearSel').onclick = () => { selected.clear(); disarm(); updateSel(); };
+document.getElementById('sortBtn').onclick = () => {
+  sortMode = sortMode === 'name' ? 'level' : 'name';
+  document.getElementById('sortBtn').textContent = 'Sort: ' + sortMode;
+  renderRoster();
+};
 
 // ---- mobile: panel toggles + pinch-zoom -----------------------------------------------------------
 document.getElementById('tLeft').onclick  = () => document.getElementById('left').classList.toggle('open');

@@ -4504,7 +4504,7 @@ public class BotManager {
     }
 
     // ---- Operator RTS commands (BotWorldGraphWebServer console) ----------------------------------
-    private static final long OPERATOR_MOVE_STALL_MS = 90_000L; // no-progress (ferry-wait-safe) -> stuck
+    private static final long OPERATOR_MOVE_STALL_MS = 270_000L; // no-progress (ferry-wait-safe) -> stuck; generous so genuinely huge maps / long walks aren't cut short
     static final long OPERATOR_CMD_WINDOW_MS = 30 * 60_000L;    // command persists 30 min, then autopilot
     private static final List<String> CHEER_LINES = List.of(
             "woohoo!", "let's go!", "yeah!", "gg", "nice!", "wheee");
@@ -4512,11 +4512,12 @@ public class BotManager {
     /** Apply an operator command (HTTP thread): set the simple field cluster and publish operatorCmd
      *  LAST. Heavy combat-state init is deferred to the bot tick (initOperatorCommand) so multi-field
      *  state is never mutated cross-thread. {@code moveMapId} is the already-resolved MOVE destination. */
-    public void applyOperatorCommand(BotEntry entry, BotEntry.OperatorCmd cmd, int moveMapId) {
+    public void applyOperatorCommand(BotEntry entry, BotEntry.OperatorCmd cmd, int moveMapId, int followTargetId) {
         if (entry == null || cmd == null) {
             return;
         }
         entry.operatorMoveMapId = moveMapId;
+        entry.operatorFollowTargetId = followTargetId;
         entry.operatorCmdUntilMs = System.currentTimeMillis() + OPERATOR_CMD_WINDOW_MS;
         entry.operatorStuck = false;
         entry.operatorCmdPending = true;
@@ -4534,10 +4535,12 @@ public class BotManager {
         entry.operatorCmd = null;
         entry.operatorCmdPending = false;
         entry.operatorMoveMapId = -1;
+        entry.operatorFollowTargetId = 0;
         entry.operatorStuck = false;
         entry.operatorSpot = null;
         entry.operatorSpotMapId = -1;
         entry.operatorMoveProgress.clear();
+        entry.following = false;               // a follow command ends here; don't keep trailing a target
         BotFidgetManager.clear(entry);
         entry.autopilotNextDecisionAtMs = 0L; // let autopilot re-decide and take back over immediately
     }
@@ -4549,7 +4552,7 @@ public class BotManager {
         entry.operatorSpotMapId = -1;
         BotFidgetManager.clear(entry);
         switch (entry.operatorCmd) {
-            case IDLE, FIDGET, DANCE, JUMP -> issueStop(entry);
+            case IDLE, FIDGET, DANCE, JUMP, FOLLOW -> issueStop(entry); // FOLLOW gate re-asserts following each tick
             case CHEER -> {
                 issueStop(entry);
                 botSay(bot, randomReply(CHEER_LINES));
@@ -4575,6 +4578,7 @@ public class BotManager {
         }
         switch (entry.operatorCmd) {
             case IDLE -> { tickIdleEntry(entry, bot); return true; }
+            case FOLLOW -> { return tickOperatorFollow(entry, bot, botPos, now, runAiTick); }
             case FIDGET -> { return tickOperatorIdleAtSpot(entry, bot, botPos, now, runAiTick, null); }
             case DANCE -> { return tickOperatorIdleAtSpot(entry, bot, botPos, now, runAiTick, BotFidgetMode.SPAM_SIDEWAYS); }
             case JUMP -> { return tickOperatorIdleAtSpot(entry, bot, botPos, now, runAiTick, BotFidgetMode.JUMP); }
@@ -4634,6 +4638,26 @@ public class BotManager {
     private static boolean operatorMapHasMobs(int mapId) {
         BotSpawnIndex.MapSpawns sp = BotSpawnIndex.get().byMap().get(mapId);
         return sp != null && !sp.mobCounts().isEmpty();
+    }
+
+    /** Follow a chosen online character (any player/bot, resolved per tick): cross-map via the shared
+     *  follow-travel ({@link #syncFollowMap}), same-map by walking near its live position with the loiter
+     *  SSOT (which also opportunity-attacks). Target gone/offline -> stand down at a spot. */
+    private boolean tickOperatorFollow(BotEntry entry, Character bot, Point botPos, long now, boolean runAiTick) {
+        Character target = bot.getWorldServer() != null
+                ? bot.getWorldServer().getPlayerStorage().getCharacterById(entry.operatorFollowTargetId) : null;
+        if (target == null || target == bot || !target.isLoggedinWorld() || target.getPosition() == null) {
+            return tickOperatorIdleAtSpot(entry, bot, botPos, now, runAiTick, null); // target gone -> idle (window still expires)
+        }
+        entry.following = true; // enable the cross-map follow-travel gate in syncFollowMap
+        if (bot.getMapId() != target.getMapId()) {
+            if (!syncFollowMap(entry, bot, target, runAiTick)) {
+                tickIdleEntry(entry, bot); // no route this tick (give-up window) -> settle, retry next tick
+            }
+            return true;
+        }
+        loiterAtAnchor(entry, bot, botPos, new Point(target.getPosition()), runAiTick); // walk near + opportunity-attack
+        return true;
     }
 
     /**

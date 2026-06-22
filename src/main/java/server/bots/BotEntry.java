@@ -288,11 +288,12 @@ public class BotEntry {
     // self-owned bots are commandable. The HTTP thread sets the int/long fields first and the volatile
     // operatorCmd LAST (safe publication); the bot tick reads operatorCmd first and runs init on its own
     // thread (operatorCmdPending) so multi-field combat state is never mutated cross-thread.
-    enum OperatorCmd { IDLE, FIDGET, MOVE, MOVE_ATTACK, DANCE, JUMP, CHEER } // MOVE = quiet travel; MOVE_ATTACK fights en route
+    enum OperatorCmd { IDLE, FIDGET, MOVE, MOVE_ATTACK, FOLLOW, DANCE, JUMP, CHEER } // MOVE = quiet travel; MOVE_ATTACK fights en route
     volatile OperatorCmd operatorCmd = null;       // null = no operator command
     volatile boolean operatorCmdPending = false;   // set by HTTP thread; tick thread runs init then clears
     volatile long operatorCmdUntilMs = 0L;         // window deadline; >= this -> revert to autopilot
     volatile int operatorMoveMapId = -1;           // MOVE destination (already per-bot resolved by the server)
+    volatile int operatorFollowTargetId = 0;       // FOLLOW target character id (0 = none)
     boolean operatorStuck = false;                 // MOVE gave up (logged) -> idle for the rest of the window
     Point operatorSpot = null;                     // cached random idle/fidget spot (ferry SSOT)
     int operatorSpotMapId = -1;

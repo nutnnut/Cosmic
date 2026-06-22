@@ -896,6 +896,7 @@ public final class BotWorldGraphWebServer {
         List<Integer> maps = jsonIntArray(body, "maps");
         boolean resume = "resume".equalsIgnoreCase(cmdStr);
         BotEntry.OperatorCmd cmd = parseCmd(cmdStr);
+        int followTarget = jsonInt(body, "target");
         BotManager mgr = BotManager.getInstance();
         int applied = 0;
         List<String> skipped = new ArrayList<>();
@@ -922,7 +923,11 @@ public final class BotWorldGraphWebServer {
                     continue;
                 }
             }
-            mgr.applyOperatorCommand(e, cmd, moveMap);
+            if (cmd == BotEntry.OperatorCmd.FOLLOW && (followTarget <= 0 || followTarget == id)) {
+                skipped.add(String.valueOf(id)); // need a target, and a bot can't follow itself
+                continue;
+            }
+            mgr.applyOperatorCommand(e, cmd, moveMap, followTarget);
             applied++;
         }
         String json = "{\"ok\":true,\"applied\":" + applied + ",\"skipped\":" + rawArr(skipped) + "}";
@@ -938,6 +943,7 @@ public final class BotWorldGraphWebServer {
             case "fidget" -> BotEntry.OperatorCmd.FIDGET;
             case "move" -> BotEntry.OperatorCmd.MOVE;               // quiet travel (no en-route attacks)
             case "moveattack" -> BotEntry.OperatorCmd.MOVE_ATTACK;  // fight on the way
+            case "follow" -> BotEntry.OperatorCmd.FOLLOW;           // follow a chosen character
             case "dance" -> BotEntry.OperatorCmd.DANCE;
             case "jump" -> BotEntry.OperatorCmd.JUMP;
             case "cheer" -> BotEntry.OperatorCmd.CHEER;
@@ -1041,6 +1047,31 @@ public final class BotWorldGraphWebServer {
         }
         int end = body.indexOf('"', i + 1);
         return end < 0 ? null : body.substring(i + 1, end);
+    }
+
+    private static int jsonInt(String body, String key) {
+        String pat = "\"" + key + "\"";
+        int k = body.indexOf(pat);
+        if (k < 0) {
+            return -1;
+        }
+        int colon = body.indexOf(':', k + pat.length());
+        if (colon < 0) {
+            return -1;
+        }
+        int i = colon + 1;
+        while (i < body.length() && java.lang.Character.isWhitespace(body.charAt(i))) {
+            i++;
+        }
+        int j = i;
+        while (j < body.length() && (java.lang.Character.isDigit(body.charAt(j)) || (j == i && body.charAt(j) == '-'))) {
+            j++;
+        }
+        try {
+            return Integer.parseInt(body.substring(i, j));
+        } catch (NumberFormatException e) {
+            return -1;
+        }
     }
 
     // ponytail: lenient extractor for the known flat {cmd,ids,maps} shape; LAN-only, trusted input.
