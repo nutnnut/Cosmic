@@ -42,6 +42,7 @@
   <input id="search" placeholder="filter name (contains)">
   <button id="searchBtn">Search</button>
   <button id="centerBtn">Center</button>
+  <div id="status"></div>
   <div id="roster"></div>
 </div>
 <div id="side">
@@ -59,7 +60,6 @@
          <span style="background:#3a4658;border:2px solid #ff5555;margin-left:8px"></span>unreturnable &#9888;</div>
     <div style="margin-top:3px"><span style="background:#23262e;border:2px dashed #7a8290"></span>unreachable by bot &#8856;</div>
   </div>
-  <div id="status">loading...</div>
   <div id="detail"></div>
 </div>
 <div id="tip"></div>
@@ -123,9 +123,23 @@ function matches(inst){
   if(!query) return false;
   return instOccupants(inst).some(([k,c]) => c.n.toLowerCase().includes(query));
 }
+// center label: occupant count when anyone is here, else the danger/unreachable marker (or nothing)
+function updateCenter(inst){
+  if(!inst.center) return;
+  const n = instOccupants(inst).length;
+  let txt = '', fill = '#0d1017';
+  if(n > 0){ txt = String(n); }
+  else if(inst.danger){ txt = '⚠'; fill = '#ff5555'; }
+  else if(inst.unreachable){ txt = '⊘'; fill = '#9aa3b0'; }
+  inst.center.text(txt);
+  inst.center.fill(fill);
+  inst.center.offset({x:inst.center.width()/2, y:inst.center.height()/2}); // re-center on text change
+  inst.center.position(inst.circle.position());
+}
 function applyStyle(){
   for(const inst of allInst){
     styleNode(inst);
+    updateCenter(inst);
     const hit = matches(inst);
     inst.circle.shadowColor('#ffe14d');
     inst.circle.shadowBlur(hit ? 22 : 0);
@@ -208,7 +222,7 @@ function recomputeWm(wmId){
     if(inst.absolute) continue;   // absolute custom anchors stay put
     const a = wmAbs(img, inst.lx, inst.ly);
     inst.circle.position(a);
-    if(inst.mark) inst.mark.position({x:a.x, y:a.y});
+    if(inst.center) inst.center.position(a);
   }
   drawEdges(wmId);
   dotLayer.batchDraw();
@@ -336,15 +350,14 @@ function renderRoster(){
                     wm:wm.id, lx:nd.x, ly:nd.y, lx0:nd.x, ly0:nd.y,
                     anchor:nd.anchor, hub:nd.hub, dup:nd.dup, danger:nd.danger, leaf:nd.leaf,
                     unreachable:nd.unreachable, custom:false, absolute:false, absX:0, absY:0,
-                    circle, mark:null};
-      circle.on('mouseover', e => { document.body.style.cursor='pointer';
-        document.getElementById('status').textContent = inst.name+' ('+nd.maps.join(', ')+')'; showTip(inst, e.evt); });
+                    circle, center:null};
+      circle.on('mouseover', e => { document.body.style.cursor='pointer'; showTip(inst, e.evt); });
       circle.on('mousemove', e => showTip(inst, e.evt));
       circle.on('mouseout', () => { document.body.style.cursor='default'; hideTip(); });
       circle.on('click tap', e => { e.cancelBubble = true; showDetail(inst); });
       circle.on('contextmenu', e => { e.evt.preventDefault(); e.cancelBubble = true; cycleCustom(inst); });
       circle.on('dragmove', () => { const p = inst.circle.position();
-        if(inst.mark) inst.mark.position({x:p.x, y:p.y}); drawEdges(inst.wm); });
+        if(inst.center) inst.center.position(p); drawEdges(inst.wm); });
       circle.on('dragend', () => {
         if(!inst.custom) return;
         const p = inst.circle.position();
@@ -353,14 +366,10 @@ function renderRoster(){
         drawEdges(inst.wm);
       });
       dotLayer.add(circle);
-      const markText = nd.danger ? '⚠' : nd.unreachable ? '⊘' : null;
-      if(markText){
-        inst.mark = new Konva.Text({text:markText, fontSize:12, listening:false,
-                                    fill: nd.danger ? '#ff5555' : '#9aa3b0'});
-        inst.mark.offset({x:inst.mark.width()/2, y:inst.mark.height()/2}); // center the glyph on the node
-        inst.mark.position({x:a.x, y:a.y});                                // overlay it on the node
-        dotLayer.add(inst.mark);
-      }
+      inst.center = new Konva.Text({text:'', fontSize:11, fontStyle:'bold', listening:false});
+      inst.center.position({x:a.x, y:a.y});
+      dotLayer.add(inst.center);
+      updateCenter(inst);
       allInst.push(inst);
       (instByWm[wm.id] = instByWm[wm.id] || []).push(inst);
       new Set([nd.id, ...nd.maps]).forEach(k => (nodes[k] = nodes[k] || []).push(inst));
