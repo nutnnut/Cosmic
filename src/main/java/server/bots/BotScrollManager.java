@@ -499,13 +499,21 @@ final class BotScrollManager {
             // candidate this equals its own stop-now; for a bag piece it's the rival it must beat.
             Equip worn = wornInSlot(bot, ii, slot);
             double wornRivalValue = worn == null ? 0.0 : reproValueNow(pc, bot, ii, worn);
-            // dominatedByWorn: this is a BAG spare strictly out-classed by the worn copy (worn better
-            // as-is AND worn has >= upgrade slots), so even fully scrolled it can't beat what's worn —
-            // never worth scrolling (don't burn scrolls on inferior duplicates of equipped gear). A
-            // spare with MORE slots than the worn is NOT flagged (its scrolled ceiling can still win).
+            // dominatedByWorn: this is a BAG spare whose full COMBAT ceiling (current offense + the best
+            // owned per-slot scroll gain * free slots) still can't reach what the worn copy scores NOW —
+            // so scrolling it can never make it the better piece to fight with; never worth scrolling.
+            // Compared on combat score, NOT reproduction-meso value: a rarer/pricier base inflates the
+            // meso curve but is irrelevant to which piece the bot should actually wear. (Was a slot-count
+            // proxy: `worn.slots >= eq.slots`, which passed a weaker base purely for having one more slot
+            // — that let a 60-score Hall Staff out-rank the worn 87-score Maple Wisdom Staff. See
+            // scroll-debug-Mage.txt; the extra slot is worthless when the base is too weak to catch up.)
+            double maxScrollGain = 0.0;
+            for (BotScrollPlanner.ScrollOption op : options) {
+                maxScrollGain = Math.max(maxScrollGain, op.statGain());
+            }
+            double scrollCeiling = value + maxScrollGain * eq.getUpgradeSlots();
             boolean dominatedByWorn = worn != null && worn != eq
-                    && offenseValue(bot, worn) > value
-                    && worn.getUpgradeSlots() >= eq.getUpgradeSlots();
+                    && offenseValue(bot, worn) >= scrollCeiling;
             // slotsRemaining = free upgrade slots = the DP horizon; totalSlots = catalog tuc, so
             // (totalSlots - slotsRemaining) = slots already consumed (the profit-decay exponent).
             BotScrollPlanner.EquipCandidate c = new BotScrollPlanner.EquipCandidate(
