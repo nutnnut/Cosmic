@@ -293,7 +293,7 @@ final class BotStarterKitManager {
         // Match what the errand travel can actually do: ferry-allowed, gated by the bot's meso (a broke
         // bot that can't afford a fare genuinely can't route there), so the log doesn't falsely claim
         // unreachable for a cross-continent instructor the bot could ferry to.
-        boolean reachable = BotWorldGraph.route(
+        boolean reachable = BotAutopilotManager.routeForBot(bot,
                 bot.getMapId(), entry.jobErrandMapId, BotAutopilotManager.MAX_TRAVEL_HOPS,
                 new BotWorldGraph.RouteOptions(false, bot.getMeso(), true)) != null;
         log.error("Bot '{}' stuck trying to job-advance to {} ({}): instructor npc {} on map {}, bot on "

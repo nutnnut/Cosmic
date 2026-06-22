@@ -178,7 +178,7 @@ class BotTravelManagerTest {
         Fixture f = fixture(HUNTING_GROUND, HENESYS, new Point(0, 0), List.of(unrelated));
 
         try (MovementRecorder movement = new MovementRecorder();
-             RouteStub route = new RouteStub((from, to, maxHops, options) -> null)) {
+             RouteStub route = new RouteStub((from, to, maxHops, options, blocked) -> null)) {
             assertFalse(BotTravelManager.tickFollowTravel(f.entry(), f.bot(), f.anchor(), true));
             assertEquals(-1, f.entry().followTravelTargetMapId);
             assertTrue(movement.steps.isEmpty());
@@ -193,7 +193,7 @@ class BotTravelManagerTest {
         Fixture f = fixture(startMap, HENESYS, new Point(0, 0), List.of(toHunting));
 
         try (MovementRecorder movement = new MovementRecorder();
-             RouteStub route = new RouteStub((from, to, maxHops, options) ->
+             RouteStub route = new RouteStub((from, to, maxHops, options, blocked) ->
                      from == startMap && to == HENESYS ? List.of(HUNTING_GROUND, HENESYS) : null)) {
             assertTrue(BotTravelManager.tickFollowTravel(f.entry(), f.bot(), f.anchor(), true));
             assertEquals(HENESYS, f.entry().followTravelTargetMapId);
@@ -224,7 +224,7 @@ class BotTravelManagerTest {
 
         try (MovementRecorder movement = new MovementRecorder();
              ConsumableSeams seams = new ConsumableSeams();
-             RouteStub route = new RouteStub((from, to, maxHops, options) -> List.of(HUNTING_GROUND, HENESYS))) {
+             RouteStub route = new RouteStub((from, to, maxHops, options, blocked) -> List.of(HUNTING_GROUND, HENESYS))) {
             assertFalse(BotTravelManager.tickFollowTravel(f.entry(), f.bot(), f.anchor(), true));
             assertEquals(-1, f.entry().followTravelTargetMapId);
             assertTrue(movement.steps.isEmpty());
@@ -238,7 +238,7 @@ class BotTravelManagerTest {
 
         try (MovementRecorder movement = new MovementRecorder();
              ConsumableSeams seams = new ConsumableSeams();
-             RouteStub route = new RouteStub((from, to, maxHops, options) ->
+             RouteStub route = new RouteStub((from, to, maxHops, options, blocked) ->
                      options.withReturnScroll() ? List.of(HENESYS) : null)) {
             BotTravelManager.scrollTargetLookup = mapId -> mapId == deepMap ? HENESYS : -1;
             BotTravelManager.returnScrollCount = bot -> 1;
@@ -257,7 +257,7 @@ class BotTravelManagerTest {
 
         try (MovementRecorder movement = new MovementRecorder();
              ConsumableSeams seams = new ConsumableSeams();
-             RouteStub route = new RouteStub((from, to, maxHops, options) ->
+             RouteStub route = new RouteStub((from, to, maxHops, options, blocked) ->
                      options.withReturnScroll() ? List.of(HENESYS) : null)) {
             BotTravelManager.scrollTargetLookup = mapId -> mapId == deepMap ? HENESYS : -1;
 
@@ -276,7 +276,7 @@ class BotTravelManagerTest {
 
         try (MovementRecorder movement = new MovementRecorder();
              ConsumableSeams seams = new ConsumableSeams();
-             RouteStub route = new RouteStub((from, to, maxHops, options) -> List.of(lith))) {
+             RouteStub route = new RouteStub((from, to, maxHops, options, blocked) -> List.of(lith))) {
             BotTravelManager.taxiNpcLocator = (map, npcId) -> npcId == 1012000 ? new Point(800, 0) : null;
 
             // Too far from the cab: walk toward it.
@@ -304,7 +304,7 @@ class BotTravelManagerTest {
 
         try (MovementRecorder movement = new MovementRecorder();
              ConsumableSeams seams = new ConsumableSeams();
-             RouteStub route = new RouteStub((from, to, maxHops, options) ->
+             RouteStub route = new RouteStub((from, to, maxHops, options, blocked) ->
                      options.withFerry() ? List.of(orbisStation) : null)) {
             BotTravelManager.taxiNpcLocator = (map, npcId) -> npcId == 1032007 ? new Point(800, 0) : null;
 
@@ -343,7 +343,7 @@ class BotTravelManagerTest {
 
         try (MovementRecorder movement = new MovementRecorder();
              ConsumableSeams seams = new ConsumableSeams();
-             RouteStub route = new RouteStub((from, to, maxHops, options) -> List.of(lith))) {
+             RouteStub route = new RouteStub((from, to, maxHops, options, blocked) -> List.of(lith))) {
             BotTravelManager.taxiNpcLocator = (map, npcId) -> new Point(800, 0);
 
             assertFalse(BotTravelManager.tickFollowTravel(f.entry(), f.bot(), f.anchor(), true));
@@ -461,7 +461,7 @@ class BotTravelManagerTest {
         Fixture f = fixture(startMap, HENESYS, new Point(0, 0), List.of(toHunting));
 
         try (ConsumableSeams seams = new ConsumableSeams();
-             RouteStub route = new RouteStub((from, to, maxHops, options) ->
+             RouteStub route = new RouteStub((from, to, maxHops, options, blocked) ->
                      from == startMap && to == HENESYS ? List.of(HUNTING_GROUND, HENESYS) : null)) {
             Point pos = BotTravelManager.nextHopPortalPosition(f.entry(), f.bot(), HENESYS, 4);
             assertEquals(new Point(400, 0), pos); // stand at the hop portal, not the final destination
@@ -475,7 +475,7 @@ class BotTravelManagerTest {
         Fixture f = fixture(999999, HENESYS, new Point(0, 0), List.of(scripted));
 
         try (ConsumableSeams seams = new ConsumableSeams();
-             RouteStub route = new RouteStub((from, to, maxHops, options) -> List.of(HUNTING_GROUND, HENESYS))) {
+             RouteStub route = new RouteStub((from, to, maxHops, options, blocked) -> List.of(HUNTING_GROUND, HENESYS))) {
             assertNull(BotTravelManager.nextHopPortalPosition(f.entry(), f.bot(), HENESYS, 4));
         }
     }
@@ -485,7 +485,7 @@ class BotTravelManagerTest {
         Fixture f = fixture(999999, HENESYS, new Point(0, 0), List.of());
 
         try (ConsumableSeams seams = new ConsumableSeams();
-             RouteStub route = new RouteStub((from, to, maxHops, options) -> null)) {
+             RouteStub route = new RouteStub((from, to, maxHops, options, blocked) -> null)) {
             assertNull(BotTravelManager.nextHopPortalPosition(f.entry(), f.bot(), HENESYS, 4));
         }
     }

@@ -88,7 +88,8 @@ final class BotTravelManager {
 
     @FunctionalInterface
     interface RouteLookup {
-        List<Integer> route(int fromMapId, int toMapId, int maxHops, BotWorldGraph.RouteOptions options);
+        List<Integer> route(int fromMapId, int toMapId, int maxHops, BotWorldGraph.RouteOptions options,
+                            java.util.function.IntPredicate blocked);
     }
 
     @FunctionalInterface
@@ -253,7 +254,8 @@ final class BotTravelManager {
             if (portal == null) {
                 BotWorldGraph.RouteOptions options = new BotWorldGraph.RouteOptions(
                         returnScrollCount.applyAsInt(bot) > 0, bot.getMeso(), allowFerry);
-                List<Integer> route = routeLookup.route(bot.getMapId(), targetMapId, maxHops, options);
+                List<Integer> route = routeLookup.route(bot.getMapId(), targetMapId, maxHops, options,
+                        BotAutopilotManager.routeBlockFor(bot)); // SSOT danger gate: no <15 route through Sleepywood
                 if (route == null || route.isEmpty()) {
                     return false; // too far or unreachable by walking — warp fallback
                 }
@@ -471,7 +473,8 @@ final class BotTravelManager {
         if (portal == null) {
             BotWorldGraph.RouteOptions options = new BotWorldGraph.RouteOptions(
                     returnScrollCount.applyAsInt(bot) > 0, bot.getMeso(), false);
-            List<Integer> route = routeLookup.route(bot.getMapId(), targetMapId, maxHops, options);
+            List<Integer> route = routeLookup.route(bot.getMapId(), targetMapId, maxHops, options,
+                    BotAutopilotManager.routeBlockFor(bot)); // SSOT danger gate: no <15 route through Sleepywood
             if (route == null || route.isEmpty()) {
                 return null;
             }
