@@ -215,10 +215,12 @@ final class BotTravelManager {
             clear(entry);
             active = false;
         }
-        if (active && now > entry.followTravelDeadlineMs && entry.followTravelTaxiNpcId == 0) {
-            // Taxi hops own their deadline (see tickTaxiHop): a town cab is clickable map-wide in the
-            // real client, so rather than fail the errand beside a cab the nav can't stand exactly on
-            // (Ellinia's rope-tree, a fenced dock), the hop hails it from wherever the bot ended up.
+        if (active && now > entry.followTravelDeadlineMs
+                && entry.followTravelTaxiNpcId == 0 && !entry.followTravelFerry) {
+            // Taxi and ferry hops own their deadline (tickTaxiHop / BotFerryManager.walkToNpcThenAct):
+            // their NPCs are clickable map-wide in the real client, so rather than fail the errand beside
+            // a cab/dock NPC the nav can't stand exactly on (Ellinia's rope-tree, the Ariant Genie pier),
+            // the hop hails from wherever the bot ended up once the approach budget lapses.
             giveUp(entry, now, "deadline");
             return false;
         }
@@ -449,7 +451,7 @@ final class BotTravelManager {
         // but the cab sits on a foothold it can't stand on, so it never goes grounded-in-range or stationary.
         // A real player clicks a town cab from anywhere on the map, so hail it from here instead of failing
         // the whole errand within sight of it. The walk above still runs for the full budget first.
-        boolean deadlineHail = now >= entry.followTravelDeadlineMs;
+        boolean deadlineHail = entry.followTravelDeadlineMs > 0 && now >= entry.followTravelDeadlineMs;
         if (inRangeGrounded || stuckNearCab || deadlineHail) {
             clearMoveTargetPin(entry);
             if (!BotManager.npcDwellReady(entry, BotManager.NPC_TALK_DELAY_MS, BotManager.NPC_TALK_JITTER_MS)) {

@@ -148,6 +148,22 @@ class BotFerryManagerTest {
     }
 
     @Test
+    void shouldHailSellerFromHereWhenApproachBudgetLapses() {
+        Fixture f = fixture(101000300, new Point(0, 0));
+        when(f.bot().getMeso()).thenReturn(5000);
+
+        try (Seams seams = new Seams()) {
+            seams.npcPos = new Point(800, 0);
+            // Budget lapsed (deadline set and now past it) while still 800px from the seller on a dock
+            // ledge the nav can't stand on: buy from here instead of failing the ferry hop. The seller
+            // NPC is clickable map-wide in the real client.
+            f.entry().followTravelDeadlineMs = 100L;
+            assertTrue(BotFerryManager.tickBoarding(f.entry(), f.bot(), ELLINIA, 200L, true));
+            assertEquals(List.of(4031045), seams.ticketsBought);
+        }
+    }
+
+    @Test
     void shouldNotStartBuyingWithoutTicketMoney() {
         Fixture f = fixture(101000300, new Point(0, 0));
         when(f.bot().getMeso()).thenReturn(4999);

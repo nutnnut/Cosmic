@@ -564,7 +564,13 @@ final class BotFerryManager {
         // than timing out on the pier (the "deadline" boarding failures from Ariant et al.).
         boolean stuckNearNpc = BotTravelManager.stuckNear(
                 entry.travelApproachStuck, botPos, npcPos, now, NPC_TRIGGER_RADIUS_PX);
-        if (inRange || stuckNearNpc) {
+        // Last resort once the approach budget lapses: a ferry seller/usher is clickable map-wide in the
+        // real client (the script just warps/sells on click), so rather than fail the ferry hop beside a
+        // dock NPC the nav can't stand on (the Ariant Genie pier), interact from here. Mirrors the town-cab
+        // hail in tickTaxiHop; ferry hops are exempt from the generic deadline give-up so this is reached.
+        // ponytail: the walk above still runs the full budget first — hail only fires after it lapses.
+        boolean deadlineHail = entry.followTravelDeadlineMs > 0 && now >= entry.followTravelDeadlineMs;
+        if (inRange || stuckNearNpc || deadlineHail) {
             BotTravelManager.clearMoveTargetPin(entry);
             if (!BotManager.npcDwellReady(entry, BotManager.NPC_TALK_DELAY_MS, BotManager.NPC_TALK_JITTER_MS)) {
                 return true; // pause a beat at the NPC before buying/boarding
