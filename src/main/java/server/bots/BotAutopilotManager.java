@@ -935,6 +935,9 @@ final class BotAutopilotManager {
     }
 
     private static void maybeRedecide(BotEntry entry, Character bot) {
+        if (entry.operatorCmd != null) {
+            return; // an operator command pins the destination; never let the advisor re-pick under it
+        }
         long now = System.currentTimeMillis();
         if (now < entry.autopilotNextDecisionAtMs || entry.autopilotDecisionInFlight) {
             return;

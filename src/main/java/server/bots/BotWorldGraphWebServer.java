@@ -133,6 +133,7 @@ public final class BotWorldGraphWebServer {
             s.createContext("/wm/", BotWorldGraphWebServer::serveWorldMapImg);
             s.createContext("/api/live", BotWorldGraphWebServer::serveLive);
             s.createContext("/api/mapinfo", BotWorldGraphWebServer::serveMapInfo);
+            s.createContext("/api/command", BotWorldGraphWebServer::serveCommand);
             s.setExecutor(Executors.newCachedThreadPool(r -> {
                 Thread t = new Thread(r, "bot-worldmap-web");
                 t.setDaemon(true);
@@ -847,8 +848,225 @@ public final class BotWorldGraphWebServer {
 
     private static String charJson(Character chr) {
         Job j = chr.getJob();
-        return "{\"n\":" + jsonStr(chr.getName()) + ",\"l\":" + chr.getLevel()
-                + ",\"j\":" + jsonStr(j == null ? "" : j.toString()) + "}";
+        boolean bot = chr.getClient() instanceof BotClient;
+        // c = commandable: MANAGED bot (self-owned/ownerless -> RTS-controllable) vs COMPANION (following
+        // an online player owner). g = persistent crew id (0 = none). p = game party id (0 = solo). The
+        // roster nests party (outer) > crew (inner) > loose; commands target managed bots only.
+        int commandable = 0, crew = 0;
+        if (bot) {
+            BotEntry e = lookupBotEntry(chr.getId());
+            if (e != null) {
+                commandable = commandableEntry(e) ? 1 : 0;
+                crew = e.crewGroupId != null ? e.crewGroupId : 0;
+            }
+        }
+        int party = Math.max(0, chr.getPartyId());
+        return "{\"id\":" + chr.getId() + ",\"n\":" + jsonStr(chr.getName()) + ",\"l\":" + chr.getLevel()
+                + ",\"j\":" + jsonStr(j == null ? "" : j.toString())
+                + ",\"c\":" + commandable + ",\"p\":" + party + ",\"g\":" + crew + "}";
+    }
+
+    private static BotEntry lookupBotEntry(int botCharId) {
+        try {
+            return BotManager.getInstance().getEntryByBotCharId(botCharId);
+        } catch (Throwable t) {
+            return null; // degrade safely (e.g. registry not up) — server still re-checks on /api/command
+        }
+    }
+
+    /** A managed (RTS-commandable) bot: ownerless, self-owned, or whose player owner is offline. */
+    private static boolean commandableEntry(BotEntry e) {
+        Character o = e.owner;
+        return o == null || o == e.bot || !o.isLoggedin();
+    }
+
+    // --- RTS command endpoint (write) ---
+
+    /** POST {@code {"cmd":"idle|fidget|move|resume|dance|jump|cheer","ids":[..],"maps":[..]}}.
+     *  Applies the command to each commandable bot id; MOVE resolves its destination per bot from the
+     *  clicked node's {@code maps} (hub-first, else nearest). Returns {@code {ok,applied,skipped[]}}. */
+    private static void serveCommand(HttpExchange ex) throws IOException {
+        if (!"POST".equals(ex.getRequestMethod())) {
+            send(ex, 405, "application/json", "{\"error\":\"POST only\"}".getBytes(StandardCharsets.UTF_8));
+            return;
+        }
+        String body = new String(ex.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+        String cmdStr = jsonField(body, "cmd");
+        List<Integer> ids = jsonIntArray(body, "ids");
+        List<Integer> maps = jsonIntArray(body, "maps");
+        boolean resume = "resume".equalsIgnoreCase(cmdStr);
+        BotEntry.OperatorCmd cmd = parseCmd(cmdStr);
+        BotManager mgr = BotManager.getInstance();
+        int applied = 0;
+        List<String> skipped = new ArrayList<>();
+        for (int id : ids) {
+            BotEntry e = mgr.getEntryByBotCharId(id);
+            if (e == null || !commandableEntry(e)) {
+                skipped.add(String.valueOf(id));
+                continue;
+            }
+            if (resume) {
+                mgr.resumeFromOperatorCommand(e);
+                applied++;
+                continue;
+            }
+            if (cmd == null) {
+                skipped.add(String.valueOf(id));
+                continue;
+            }
+            int moveMap = -1;
+            if (cmd == BotEntry.OperatorCmd.MOVE || cmd == BotEntry.OperatorCmd.MOVE_ATTACK) {
+                moveMap = resolveMoveTarget(e, maps);
+                if (moveMap <= 0) {
+                    skipped.add(String.valueOf(id));
+                    continue;
+                }
+            }
+            mgr.applyOperatorCommand(e, cmd, moveMap);
+            applied++;
+        }
+        String json = "{\"ok\":true,\"applied\":" + applied + ",\"skipped\":" + rawArr(skipped) + "}";
+        send(ex, 200, "application/json", json.getBytes(StandardCharsets.UTF_8));
+    }
+
+    private static BotEntry.OperatorCmd parseCmd(String s) {
+        if (s == null) {
+            return null;
+        }
+        return switch (s.toLowerCase()) {
+            case "idle" -> BotEntry.OperatorCmd.IDLE;
+            case "fidget" -> BotEntry.OperatorCmd.FIDGET;
+            case "move" -> BotEntry.OperatorCmd.MOVE;               // quiet travel (no en-route attacks)
+            case "moveattack" -> BotEntry.OperatorCmd.MOVE_ATTACK;  // fight on the way
+            case "dance" -> BotEntry.OperatorCmd.DANCE;
+            case "jump" -> BotEntry.OperatorCmd.JUMP;
+            case "cheer" -> BotEntry.OperatorCmd.CHEER;
+            default -> null; // includes "resume" (handled separately) and unknown verbs
+        };
+    }
+
+    /** Per-bot MOVE destination from a clicked node's constituent {@code maps}: prefer a hub, else the
+     *  map nearest to the bot's current map by graph hops. */
+    private static int resolveMoveTarget(BotEntry e, List<Integer> maps) {
+        if (maps == null || maps.isEmpty()) {
+            return -1;
+        }
+        if (maps.size() == 1) {
+            return maps.get(0);
+        }
+        GraphData g = graphData();
+        Set<Integer> hubs = new HashSet<>();
+        for (int m : maps) {
+            if (isHub(g, m)) {
+                hubs.add(m);
+            }
+        }
+        int from = e.bot != null ? e.bot.getMapId() : -1;
+        return resolveMoveTargetFrom(g.adj(), hubs, from, maps);
+    }
+
+    /** Testable core of the merged-node rule: hub-first, then nearest-by-hops from {@code from}. */
+    static int resolveMoveTargetFrom(Map<Integer, List<Integer>> adj, Set<Integer> hubs, int from,
+                                     List<Integer> maps) {
+        if (maps == null || maps.isEmpty()) {
+            return -1;
+        }
+        if (maps.size() == 1) {
+            return maps.get(0);
+        }
+        List<Integer> pool = new ArrayList<>();
+        for (int m : maps) {
+            if (hubs.contains(m)) {
+                pool.add(m);
+            }
+        }
+        if (pool.isEmpty()) {
+            pool = maps;
+        }
+        int best = pool.get(0);
+        int bestDist = Integer.MAX_VALUE;
+        for (int m : pool) {
+            int d = hopDistance(adj, from, m);
+            if (d < bestDist) {
+                bestDist = d;
+                best = m;
+            }
+        }
+        return best;
+    }
+
+    private static int hopDistance(Map<Integer, List<Integer>> adj, int from, int to) {
+        if (from == to) {
+            return 0;
+        }
+        if (from < 0 || adj == null) {
+            return Integer.MAX_VALUE;
+        }
+        java.util.Deque<Integer> q = new java.util.ArrayDeque<>();
+        Map<Integer, Integer> dist = new HashMap<>();
+        q.add(from);
+        dist.put(from, 0);
+        while (!q.isEmpty()) {
+            int cur = q.poll();
+            int dc = dist.get(cur);
+            for (int nb : adj.getOrDefault(cur, List.of())) {
+                if (nb == to) {
+                    return dc + 1;
+                }
+                if (!dist.containsKey(nb)) {
+                    dist.put(nb, dc + 1);
+                    q.add(nb);
+                }
+            }
+        }
+        return Integer.MAX_VALUE;
+    }
+
+    private static String jsonField(String body, String key) {
+        String pat = "\"" + key + "\"";
+        int k = body.indexOf(pat);
+        if (k < 0) {
+            return null;
+        }
+        int colon = body.indexOf(':', k + pat.length());
+        if (colon < 0) {
+            return null;
+        }
+        int i = colon + 1;
+        while (i < body.length() && java.lang.Character.isWhitespace(body.charAt(i))) {
+            i++;
+        }
+        if (i >= body.length() || body.charAt(i) != '"') {
+            return null;
+        }
+        int end = body.indexOf('"', i + 1);
+        return end < 0 ? null : body.substring(i + 1, end);
+    }
+
+    // ponytail: lenient extractor for the known flat {cmd,ids,maps} shape; LAN-only, trusted input.
+    private static List<Integer> jsonIntArray(String body, String key) {
+        List<Integer> out = new ArrayList<>();
+        int k = body.indexOf("\"" + key + "\"");
+        if (k < 0) {
+            return out;
+        }
+        int lb = body.indexOf('[', k);
+        int rb = lb < 0 ? -1 : body.indexOf(']', lb);
+        if (lb < 0 || rb < 0) {
+            return out;
+        }
+        for (String tok : body.substring(lb + 1, rb).split(",")) {
+            tok = tok.trim();
+            if (tok.isEmpty()) {
+                continue;
+            }
+            try {
+                out.add(Integer.parseInt(tok));
+            } catch (NumberFormatException ignore) {
+                // skip non-numeric token
+            }
+        }
+        return out;
     }
 
     // --- JSON helpers ---

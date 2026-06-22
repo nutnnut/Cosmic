@@ -3178,6 +3178,25 @@ public class BotManager {
         BotScrollManager.tickAutoScroll(entry, bot, nowMs);
         BotMakerManager.tickAutoCraft(entry, bot, nowMs);
 
+        // Operator RTS command (BotWorldGraphWebServer console): for its window this overrides
+        // autopilot/idle/follow. Placed before the owner-null and idle fast-paths so it intercepts
+        // them; MOVE returns false to fall through to the normal travel/grind pipeline (map-change
+        // grounding + autopilot travel), with re-decide/recover suppressed while the command is live.
+        if (entry.operatorCmd != null) {
+            if (nowMs >= entry.operatorCmdUntilMs) {
+                clearOperatorCmd(entry); // window elapsed -> resume autopilot below
+            } else {
+                if (entry.operatorCmdPending) {
+                    initOperatorCommand(entry, bot, nowMs);
+                    entry.operatorCmdPending = false;
+                }
+                if (entry.operatorCmd != null
+                        && tickOperatorCommand(entry, bot, bot.getPosition(), nowMs, runAiTick)) {
+                    return;
+                }
+            }
+        }
+
         if (owner == null && !BotAutopilotManager.isActive(entry) && !entry.loggingOut) {
             entry.following = false;
             if (groundAfterMapChange(entry, bot)) {
@@ -3311,7 +3330,15 @@ public class BotManager {
         // Autopilot: owner-ordered independent play. Consumes the tick while walking a
         // travel hop toward its chosen grind map; on site it lets the grind flow run.
         long tAutopilotTrace = BotPerformanceMonitor.startStallPhase();
-        if (BotAutopilotManager.tick(entry, bot, runAiTick)) {
+        boolean autopilotConsumed = BotAutopilotManager.tick(entry, bot, runAiTick);
+        // Feed the operator-MOVE no-progress clock with the travel outcome: a map hop OR an actively-
+        // underway hop/ferry wait (autopilotConsumed) refreshes it; a wedged single map accumulates and
+        // trips tickOperatorCommand's stall check next tick (-> log + idle for the rest of the window).
+        if ((entry.operatorCmd == BotEntry.OperatorCmd.MOVE || entry.operatorCmd == BotEntry.OperatorCmd.MOVE_ATTACK)
+                && bot.getMapId() != entry.operatorMoveMapId) {
+            entry.operatorMoveProgress.record(bot, autopilotConsumed, nowMs);
+        }
+        if (autopilotConsumed) {
             BotPerformanceMonitor.recordStallPhase("tick-autopilot", tAutopilotTrace);
             return;
         }
@@ -3950,6 +3977,9 @@ public class BotManager {
         if (entry == null || bot == null || entry.noAmmo || entry.inAir || entry.climbing) {
             return false;
         }
+        if (entry.operatorCmd == BotEntry.OperatorCmd.MOVE) {
+            return false; // operator "Move" (quiet): travel without fighting; "Move+attack" (MOVE_ATTACK) does
+        }
         Point botPos = bot.getPosition();
         if (botPos == null) {
             return false;
@@ -4473,6 +4503,129 @@ public class BotManager {
         entry.moveTargetPrecise = false;
     }
 
+    // ---- Operator RTS commands (BotWorldGraphWebServer console) ----------------------------------
+    private static final int OPERATOR_IDLE_SPREAD_PX = 150;
+    private static final long OPERATOR_MOVE_STALL_MS = 90_000L; // no-progress (ferry-wait-safe) -> stuck
+    static final long OPERATOR_CMD_WINDOW_MS = 30 * 60_000L;    // command persists 30 min, then autopilot
+    private static final List<String> CHEER_LINES = List.of(
+            "woohoo!", "let's go!", "yeah!", "gg", "nice!", "wheee");
+
+    /** Apply an operator command (HTTP thread): set the simple field cluster and publish operatorCmd
+     *  LAST. Heavy combat-state init is deferred to the bot tick (initOperatorCommand) so multi-field
+     *  state is never mutated cross-thread. {@code moveMapId} is the already-resolved MOVE destination. */
+    public void applyOperatorCommand(BotEntry entry, BotEntry.OperatorCmd cmd, int moveMapId) {
+        if (entry == null || cmd == null) {
+            return;
+        }
+        entry.operatorMoveMapId = moveMapId;
+        entry.operatorCmdUntilMs = System.currentTimeMillis() + OPERATOR_CMD_WINDOW_MS;
+        entry.operatorStuck = false;
+        entry.operatorCmdPending = true;
+        entry.operatorCmd = cmd; // volatile, published last (safe publication of the fields above)
+    }
+
+    /** Operator "resume autopilot": end any command now and let autopilot re-decide. */
+    public void resumeFromOperatorCommand(BotEntry entry) {
+        if (entry != null) {
+            clearOperatorCmd(entry);
+        }
+    }
+
+    private void clearOperatorCmd(BotEntry entry) {
+        entry.operatorCmd = null;
+        entry.operatorCmdPending = false;
+        entry.operatorMoveMapId = -1;
+        entry.operatorStuck = false;
+        entry.operatorSpot = null;
+        entry.operatorSpotMapId = -1;
+        entry.operatorMoveProgress.clear();
+        BotFidgetManager.clear(entry);
+        entry.autopilotNextDecisionAtMs = 0L; // let autopilot re-decide and take back over immediately
+    }
+
+    /** Heavy init for a freshly-issued command, run on the bot tick thread. */
+    private void initOperatorCommand(BotEntry entry, Character bot, long now) {
+        entry.operatorStuck = false;
+        entry.operatorSpot = null;
+        entry.operatorSpotMapId = -1;
+        BotFidgetManager.clear(entry);
+        switch (entry.operatorCmd) {
+            case IDLE, FIDGET, DANCE, JUMP -> issueStop(entry);
+            case CHEER -> {
+                issueStop(entry);
+                botSay(bot, randomReply(CHEER_LINES));
+                clearOperatorCmd(entry); // one-shot: cheer, then resume autopilot
+            }
+            case MOVE, MOVE_ATTACK -> {                           // quiet vs fight-en-route; same setup
+                issueGrind(entry);                                // combat baseline; clears autopilot
+                entry.autopilotMapId = entry.operatorMoveMapId;   // ...destination AFTER (mirror start())
+                entry.autopilotNextDecisionAtMs = Long.MAX_VALUE; // pin (maybeRedecide also gated on operatorCmd)
+                entry.operatorMoveProgress.begin(now);
+            }
+        }
+    }
+
+    /** One operator-command tick. Returns true when it consumed the tick; false only for MOVE that
+     *  should ride the normal pipeline (traveling, or arrived on a map with mobs to grind). */
+    private boolean tickOperatorCommand(BotEntry entry, Character bot, Point botPos, long now, boolean runAiTick) {
+        switch (entry.operatorCmd) {
+            case IDLE -> { tickIdleEntry(entry, bot); return true; }
+            case FIDGET -> { return tickOperatorIdleAtSpot(entry, bot, botPos, now, runAiTick, null); }
+            case DANCE -> { return tickOperatorIdleAtSpot(entry, bot, botPos, now, runAiTick, BotFidgetMode.SPAM_SIDEWAYS); }
+            case JUMP -> { return tickOperatorIdleAtSpot(entry, bot, botPos, now, runAiTick, BotFidgetMode.JUMP); }
+            case MOVE, MOVE_ATTACK -> {
+                if (bot.getMapId() == entry.operatorMoveMapId) {
+                    entry.operatorStuck = false;
+                    if (operatorMapHasMobs(entry.operatorMoveMapId)) {
+                        return false; // arrived with mobs: let the normal grind flow run (map pinned)
+                    }
+                    return tickOperatorIdleAtSpot(entry, bot, botPos, now, runAiTick, null); // no mobs -> idle at a spot
+                }
+                if (entry.operatorStuck || entry.operatorMoveProgress.stalled(now, OPERATOR_MOVE_STALL_MS)) {
+                    if (!entry.operatorStuck) {
+                        entry.operatorStuck = true;
+                        String reason = entry.followTravelGiveUpReason != null
+                                ? entry.followTravelGiveUpReason : "no route / no progress";
+                        log.info("operator-move: bot {} can't reach map {} ({}); idling until the command expires",
+                                bot.getName(), entry.operatorMoveMapId, reason);
+                        issueStop(entry); // drop the wedged travel and stand down
+                    }
+                    return tickOperatorIdleAtSpot(entry, bot, botPos, now, runAiTick, null);
+                }
+                return false; // keep traveling via the normal autopilot pipeline
+            }
+            default -> { return false; }
+        }
+    }
+
+    /** Walk to a cached random reachable spot (ferry idle SSOT, {@link BotTravelManager#pickReachableApproachPoint})
+     *  and fidget there; force {@code mode} when non-null (Dance/Jump), else the varied humanlike fidget. */
+    private boolean tickOperatorIdleAtSpot(BotEntry entry, Character bot, Point botPos, long now,
+                                           boolean runAiTick, BotFidgetMode forced) {
+        if (entry.operatorSpot == null || entry.operatorSpotMapId != bot.getMapId()) {
+            entry.operatorSpot = BotTravelManager.pickReachableApproachPoint(entry, bot, botPos, OPERATOR_IDLE_SPREAD_PX);
+            entry.operatorSpotMapId = bot.getMapId();
+        }
+        Point spot = entry.operatorSpot != null ? entry.operatorSpot : botPos;
+        if (!isNear(botPos, spot, 8) && !entry.inAir && !entry.climbing) {
+            entry.moveTarget = spot;
+            entry.moveTargetPrecise = true;
+            entry.moveTargetSource = "operator-idle";
+            stepMovementCore(entry, spot, runAiTick);
+            return true;
+        }
+        if (forced != null && entry.fidgetMode == BotFidgetMode.NONE) {
+            BotFidgetManager.startFidget(entry, forced, now, (int) randMs(3000, 6000));
+        }
+        BotFidgetManager.tickStandingFidget(entry, spot, now, runAiTick);
+        return true;
+    }
+
+    private static boolean operatorMapHasMobs(int mapId) {
+        BotSpawnIndex.MapSpawns sp = BotSpawnIndex.get().byMap().get(mapId);
+        return sp != null && !sp.mobCounts().isEmpty();
+    }
+
     /**
      * Public hook for map scripts: drop up to {@code quantity} from the first
      * stack of {@code itemId}. Use {@code quantity <= 0} to drop the whole stack.
@@ -4957,6 +5110,9 @@ public class BotManager {
      * resets it to nextDecisionAt() the moment a plan installs.
      */
     private void maybeRecoverInertAutopilot(BotEntry entry, Character bot) {
+        if (entry.operatorCmd != null) {
+            return; // an operator command (e.g. IDLE/FIDGET) deliberately holds the bot off autopilot
+        }
         boolean selfOwned = entry.owner == null || entry.owner == entry.bot;
         if (!selfOwned || entry.loggingOut || entry.deadUntil != 0
                 || entry.autopilotDecisionInFlight || BotAutopilotManager.isActive(entry)) {

@@ -276,6 +276,22 @@ public class BotEntry {
     // maps the bot keeps dying on/through and re-decides a safer target. Both managed in respawnBot.
     int autopilotDeathStreak = 0;
     final java.util.Map<Integer, Long> autopilotAvoidMapUntilMs = new java.util.HashMap<>();
+
+    // Operator RTS command (BotWorldGraphWebServer console): a temporary owner-override issued from the
+    // web map. For its window the bot ignores autopilot/idle/follow and does exactly this; when the
+    // window elapses (or "resume autopilot" is issued) it reverts to normal autopilot. Only managed /
+    // self-owned bots are commandable. The HTTP thread sets the int/long fields first and the volatile
+    // operatorCmd LAST (safe publication); the bot tick reads operatorCmd first and runs init on its own
+    // thread (operatorCmdPending) so multi-field combat state is never mutated cross-thread.
+    enum OperatorCmd { IDLE, FIDGET, MOVE, MOVE_ATTACK, DANCE, JUMP, CHEER } // MOVE = quiet travel; MOVE_ATTACK fights en route
+    volatile OperatorCmd operatorCmd = null;       // null = no operator command
+    volatile boolean operatorCmdPending = false;   // set by HTTP thread; tick thread runs init then clears
+    volatile long operatorCmdUntilMs = 0L;         // window deadline; >= this -> revert to autopilot
+    volatile int operatorMoveMapId = -1;           // MOVE destination (already per-bot resolved by the server)
+    boolean operatorStuck = false;                 // MOVE gave up (logged) -> idle for the rest of the window
+    Point operatorSpot = null;                     // cached random idle/fidget spot (ferry SSOT)
+    int operatorSpotMapId = -1;
+    final BotTravelManager.ErrandProgress operatorMoveProgress = new BotTravelManager.ErrandProgress();
     // Party autopilot cohesion: while in transit a follower rides the regular follow pipeline
     // behind the leader bot (formation offsets, legal portal-follow, warp catch-up for free)
     // instead of traveling independently; grind mode is restored on arrival. The leader's
