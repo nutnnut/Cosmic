@@ -437,7 +437,12 @@ final class BotTravelManager {
             entry.followTravelBestDist = distToCab;
             entry.followTravelDeadlineMs = now + travelBudgetMs(distToCab);
         }
-        if (!entry.inAir && !entry.climbing && distToCab <= TAXI_TRIGGER_RADIUS_PX) {
+        // Normal: standing grounded within hailing range. Fallback: the cab sits atop a rope/ledge the walk
+        // can reach but not stand exactly on (Ellinia tree), so once the bot stops progressing near it, hail
+        // from here instead of timing out beside it (shop-visit SSOT).
+        boolean inRangeGrounded = !entry.inAir && !entry.climbing && distToCab <= TAXI_TRIGGER_RADIUS_PX;
+        boolean stuckNearCab = stuckNear(entry.travelApproachStuck, botPos, npcPos, now, TAXI_TRIGGER_RADIUS_PX);
+        if (inRangeGrounded || stuckNearCab) {
             clearMoveTargetPin(entry);
             if (!BotManager.npcDwellReady(entry, BotManager.NPC_TALK_DELAY_MS, BotManager.NPC_TALK_JITTER_MS)) {
                 settleStandingDwell(entry); // stand (not walk-in-place) while waiting at the cab
@@ -596,6 +601,7 @@ final class BotTravelManager {
         entry.followTravelTaxiNpcId = 0;
         entry.followTravelTaxiPos = null;
         entry.followTravelFerry = false;
+        entry.travelApproachStuck.reset(); // fresh hop -> fresh "stuck near the transport NPC" tracking
         // NOTE: followTravelGiveUpUntilMs is intentionally NOT reset here — the internal retry loop
         // calls clear() every tick during the give-up window and must keep that cooldown. Deliberate
         // mode changes use resetForModeChange() to also drop the cooldown.
@@ -637,6 +643,40 @@ final class BotTravelManager {
     /** Walk budget = give-up window for reaching a portal/NPC, scaled by manhattan distance. */
     private static long travelBudgetMs(int manhattanDist) {
         return Math.min(TRAVEL_BUDGET_MAX_MS, TRAVEL_BUDGET_BASE_MS + TRAVEL_BUDGET_PER_PX_MS * manhattanDist);
+    }
+
+    // "Got close, act from where you stand" — the SSOT robustness behind the shop visit, taxi, ferry and
+    // instructor approaches. A cab atop Ellinia's rope-tree, a shopkeeper in a fenced booth, a ferry usher
+    // on a ledge: the direct approach walk can get the bot near but not exactly onto the spot, so it would
+    // otherwise stand within sight of the NPC and time out. Once the bot has stopped making progress
+    // (moved <= 2px) for ~1s while within {@code fallbackDist} of the target, treat it as arrived.
+    static final class ApproachStuck {
+        private Point pos;
+        private long atMs;
+        void reset() { pos = null; atMs = 0L; }
+    }
+
+    private static final int APPROACH_STUCK_MOVE_PX = 2;
+    private static final long APPROACH_STUCK_MS = 1_000L;
+
+    static boolean stuckNear(ApproachStuck st, Point botPos, Point targetPos, long now, int fallbackDist) {
+        if (st == null || targetPos == null || botPos == null) {
+            return false;
+        }
+        if (st.pos == null
+                || botPos.distanceSq(st.pos) > (long) APPROACH_STUCK_MOVE_PX * APPROACH_STUCK_MOVE_PX) {
+            if (st.pos == null) {
+                st.pos = new Point(botPos);
+            } else {
+                st.pos.setLocation(botPos);
+            }
+            st.atMs = now;
+            return false;
+        }
+        if (now - st.atMs < APPROACH_STUCK_MS) {
+            return false;
+        }
+        return manhattan(botPos, targetPos) <= fallbackDist;
     }
 
     /** Outcome of one {@link #tickApproachNpc} step. */
@@ -736,6 +776,15 @@ final class BotTravelManager {
             entry.npcApproachNpcId = npcId;
         }
         Point walkTarget = entry.npcApproachPos != null ? entry.npcApproachPos : npcPos;
+        // Stuck-near fallback (shop-visit SSOT): the NPC may sit behind a rail/ledge the approach walk can't
+        // stand exactly on — if the bot got near and stopped progressing, count it as arrived rather than
+        // looping at the obstacle until the errand times out.
+        if (stuckNear(entry.npcApproachStuck, botPos, npcPos, System.currentTimeMillis(), radiusPx)) {
+            clearMoveTargetPin(entry);
+            settleStandingDwell(entry);
+            clearNpcApproach(entry);
+            return ApproachStatus.ARRIVED;
+        }
         pinMoveTarget(entry, walkTarget);
         movementStep.step(entry, walkTarget, runAiTick);
         return ApproachStatus.WALKING;
@@ -744,6 +793,7 @@ final class BotTravelManager {
     static void clearNpcApproach(BotEntry entry) {
         entry.npcApproachPos = null;
         entry.npcApproachNpcId = 0;
+        entry.npcApproachStuck.reset();
     }
 
     /**

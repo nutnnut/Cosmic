@@ -189,8 +189,13 @@ public class BotEntry {
     // bumped whenever a new player directive resets scripted state (follow/stop/move/farm/patrol/grind);
     // background batches (Maker crafting / disassembly) capture it and self-interrupt when it changes
     volatile int activityEpoch = 0;
-    Point shopStuckCheckPos = null;
-    long shopStuckCheckAtMs = 0L;
+    // "stuck near the NPC -> act from where you stand" trackers (BotTravelManager.stuckNear SSOT): one per
+    // independent approach so they don't reset each other (a travel hop runs while the instructor approach
+    // is dormant, etc.). travelApproachStuck = taxi/ferry transport NPC; npcApproachStuck = the destination
+    // instructor/quest/gacha NPC; shopApproachStuck = the shop counter.
+    final BotTravelManager.ApproachStuck travelApproachStuck = new BotTravelManager.ApproachStuck();
+    final BotTravelManager.ApproachStuck npcApproachStuck = new BotTravelManager.ApproachStuck();
+    final BotTravelManager.ApproachStuck shopApproachStuck = new BotTravelManager.ApproachStuck();
     // Cached equip trade classification (BotInventoryManager): the reserve check is ~150ms for a
     // full bag, so a cramped bot re-classifying every tick melts a timer thread. Volatile so a
     // trade running on a timer thread and the bot tick read one consistent immutable holder.

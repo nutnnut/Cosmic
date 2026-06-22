@@ -533,8 +533,14 @@ final class BotFerryManager {
             return false;
         }
         Point botPos = bot.getPosition();
-        if (!entry.inAir && !entry.climbing
-                && Math.abs(botPos.x - npcPos.x) + Math.abs(botPos.y - npcPos.y) <= NPC_TRIGGER_RADIUS_PX) {
+        boolean inRange = !entry.inAir && !entry.climbing
+                && Math.abs(botPos.x - npcPos.x) + Math.abs(botPos.y - npcPos.y) <= NPC_TRIGGER_RADIUS_PX;
+        // Stuck-near fallback (shop-visit SSOT): a ferry ticket/usher NPC can sit on a dock ledge the walk
+        // can't stand exactly on — if the bot got near and stopped progressing, interact from here rather
+        // than timing out on the pier (the "deadline" boarding failures from Ariant et al.).
+        boolean stuckNearNpc = BotTravelManager.stuckNear(
+                entry.travelApproachStuck, botPos, npcPos, now, NPC_TRIGGER_RADIUS_PX);
+        if (inRange || stuckNearNpc) {
             BotTravelManager.clearMoveTargetPin(entry);
             if (!BotManager.npcDwellReady(entry, BotManager.NPC_TALK_DELAY_MS, BotManager.NPC_TALK_JITTER_MS)) {
                 return true; // pause a beat at the NPC before buying/boarding

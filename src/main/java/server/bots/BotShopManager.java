@@ -62,8 +62,6 @@ final class BotShopManager {
     // Idle gate, not a total cap: every executed shop step refreshes shopSequenceStartedAtMs,
     // so long multi-item hauls keep going — only a sequence whose next step never fires aborts.
     private static final long SHOP_SEQUENCE_IDLE_TIMEOUT_MS = 45_000L;
-    private static final long SHOP_STUCK_FALLBACK_MS = 1000L;
-    private static final int SHOP_STUCK_MOVE_TOLERANCE_PX = 2;
     private static final int POT_TRIGGER_THRESHOLD = 4; // 80% of target (5) for early trigger
     private static final int POT_TARGET_THRESHOLD = 5; // full target when buying at shop
     private static final int AMMO_TRIGGER_THRESHOLD = 8;
@@ -331,24 +329,8 @@ final class BotShopManager {
     }
 
     private static boolean isStuckNearNpc(BotEntry entry, Point botPos, long now) {
-        if (entry.shopNpcPos == null) {
-            return false;
-        }
-        if (entry.shopStuckCheckPos == null) {
-            entry.shopStuckCheckPos = new Point(botPos);
-            entry.shopStuckCheckAtMs = now;
-            return false;
-        }
-        if (botPos.distanceSq(entry.shopStuckCheckPos)
-                > (long) SHOP_STUCK_MOVE_TOLERANCE_PX * SHOP_STUCK_MOVE_TOLERANCE_PX) {
-            entry.shopStuckCheckPos.setLocation(botPos);
-            entry.shopStuckCheckAtMs = now;
-            return false;
-        }
-        if (now - entry.shopStuckCheckAtMs < SHOP_STUCK_FALLBACK_MS) {
-            return false;
-        }
-        return manhattan(botPos, entry.shopNpcPos) <= SHOP_FALLBACK_DIST;
+        // SSOT: shared with the taxi/ferry/instructor approaches (same 2px/1s/within-fallback rule).
+        return BotTravelManager.stuckNear(entry.shopApproachStuck, botPos, entry.shopNpcPos, now, SHOP_FALLBACK_DIST);
     }
 
     private static int manhattan(Point a, Point b) {
@@ -1318,8 +1300,7 @@ final class BotShopManager {
         entry.shopSequenceStartedAtMs = 0L;
         entry.shopSellTrashPending = false;
         entry.shopTargetGraphChecked = false;
-        entry.shopStuckCheckPos = null;
-        entry.shopStuckCheckAtMs = 0L;
+        entry.shopApproachStuck.reset();
     }
 
     private static long stepDelayMs() {

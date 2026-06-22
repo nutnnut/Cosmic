@@ -550,4 +550,26 @@ class BotTravelManagerTest {
             assertTrue(f.entry().followTravelDeadlineMs >= beforeMs);   // deadline refreshed from 'now'
         }
     }
+
+    @Test
+    void stuckNearActsOnlyWhenStationaryAndWithinRange() {
+        // SSOT "got close, act from where you stand" fallback shared by the taxi/ferry/instructor/shop
+        // approaches: a cab atop Ellinia's tree the walk can't stand exactly on must still be hailed.
+        BotTravelManager.ApproachStuck st = new BotTravelManager.ApproachStuck();
+        Point npc = new Point(0, 0);
+        // First sighting only arms the clock — never fires immediately.
+        assertFalse(BotTravelManager.stuckNear(st, new Point(100, 0), npc, 0L, 500));
+        // Held within the 2px move tolerance, but <1s elapsed.
+        assertFalse(BotTravelManager.stuckNear(st, new Point(101, 0), npc, 500L, 500));
+        // Stationary >=1s AND within fallback distance -> arrived-from-here.
+        assertTrue(BotTravelManager.stuckNear(st, new Point(101, 0), npc, 1500L, 500));
+        // A real move resets the clock.
+        assertFalse(BotTravelManager.stuckNear(st, new Point(300, 0), npc, 1600L, 500));
+        assertFalse(BotTravelManager.stuckNear(st, new Point(300, 0), npc, 2000L, 500)); // <1s since reset
+
+        // Stationary but beyond the fallback radius never fires (it isn't "near" the NPC).
+        BotTravelManager.ApproachStuck far = new BotTravelManager.ApproachStuck();
+        assertFalse(BotTravelManager.stuckNear(far, new Point(900, 0), npc, 0L, 500));
+        assertFalse(BotTravelManager.stuckNear(far, new Point(900, 0), npc, 9000L, 500));
+    }
 }
