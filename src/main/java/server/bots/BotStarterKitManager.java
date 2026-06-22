@@ -293,9 +293,10 @@ final class BotStarterKitManager {
         // Match what the errand travel can actually do: ferry-allowed, gated by the bot's meso (a broke
         // bot that can't afford a fare genuinely can't route there), so the log doesn't falsely claim
         // unreachable for a cross-continent instructor the bot could ferry to.
-        boolean reachable = BotAutopilotManager.routeForBot(bot,
+        java.util.List<Integer> liveRoute = BotAutopilotManager.routeForBot(bot,
                 bot.getMapId(), entry.jobErrandMapId, BotAutopilotManager.MAX_TRAVEL_HOPS,
-                new BotWorldGraph.RouteOptions(false, bot.getMeso(), true)) != null;
+                new BotWorldGraph.RouteOptions(false, bot.getMeso(), true));
+        boolean reachable = liveRoute != null;
         // Surface WHY travel actually gave up (deadline / taxi-fare-fail / ferry-board-fail / portal-closed
         // / route-null) plus the failed hop and the bot's meso — "route-reachable=true" alone hides the
         // execution-side cause (e.g. couldn't afford/reach the cab, or a hop the executor can't walk).
@@ -304,11 +305,25 @@ final class BotStarterKitManager {
                 : entry.followTravelGiveUpReason + " [" + entry.followTravelGiveUpHop
                         + " failedMap=" + entry.followTravelGiveUpTargetMapId
                         + " agoMs=" + (now - entry.followTravelGiveUpAtMs) + "]";
+        // The give-up sometimes shows a degenerate self-hop (nextHop==fromMap==current map) that the route
+        // function never produces from a clean state — almost always a SECOND travel consumer (autopilot
+        // grind-travel) clobbering the errand's hop on the same entry. Log the freshly-computed route from
+        // here + the grind dest + the live hop so the next stuck log says which: liveRoute[0]==current ⇒
+        // routing; grindDest != jobMap with a live hop toward grindDest ⇒ contention.
+        String liveRouteStr = liveRoute == null ? "null"
+                : (liveRoute.isEmpty() ? "[]" : "first=" + liveRoute.get(0) + " " + liveRoute);
+        String hopState = "target=" + entry.followTravelTargetMapId
+                + " nextHop=" + entry.followTravelNextHopMapId
+                + " fromMap=" + entry.followTravelFromMapId
+                + " following=" + entry.following + " followTargetId=" + entry.followTargetId
+                + " transitFollow=" + entry.autopilotTransitFollow;
         log.error("Bot '{}' stuck trying to job-advance to {} ({}): instructor npc {} on map {}, bot on "
-                        + "map {}, meso={}, route-reachable={}, lastGiveUp={}. Staying put and retrying (set "
-                        + "JOB_CHANGE_FALLBACK_ANYWHERE=true to force-advance instead).",
+                        + "map {}, meso={}, route-reachable={}, lastGiveUp={}, liveRoute={}, grindDest={}, "
+                        + "liveHop=[{}]. Staying put and retrying (set JOB_CHANGE_FALLBACK_ANYWHERE=true to "
+                        + "force-advance instead).",
                 bot.getName(), entry.jobErrandTarget, reason, entry.jobErrandNpcId,
-                entry.jobErrandMapId, bot.getMapId(), bot.getMeso(), reachable, lastGiveUp);
+                entry.jobErrandMapId, bot.getMapId(), bot.getMeso(), reachable, lastGiveUp,
+                liveRouteStr, entry.autopilotMapId, hopState);
     }
 
     // Job-topology SSOT for the autonomous (ownerless) job picker in BotBuildManager. Unlike the
