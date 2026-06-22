@@ -248,7 +248,7 @@ class BotGachaponManagerTest {
         BotGachaponManager.itemValue = (b, id) -> 5_000.0;
         // Only Henesys is reachable; everything else is at the unreachable sentinel.
         BotGachaponManager.travelSeconds = (from, to) ->
-                to == constants.id.MapId.HENESYS ? 10.0 : 99_999.0;
+                to == BotGachaponManager.gachaponTownMap(constants.id.NpcId.GACHAPON_HENESYS) ? 10.0 : 99_999.0;
 
         List<BotGachaponManager.TownEv> ranked = BotGachaponManager.rankTowns(bot, 100000000);
         assertEquals(1, ranked.size(), "unreachable towns are dropped");
@@ -263,7 +263,7 @@ class BotGachaponManagerTest {
         BotGachaponManager.itemValue = (b, id) -> 5_000.0;
         // Identical pools; Ellinia is far, Henesys near -> the travel penalty breaks the tie.
         BotGachaponManager.travelSeconds = (from, to) ->
-                to == constants.id.MapId.HENESYS ? 5.0 : 600.0;
+                to == BotGachaponManager.gachaponTownMap(constants.id.NpcId.GACHAPON_HENESYS) ? 5.0 : 600.0;
 
         List<BotGachaponManager.TownEv> ranked = BotGachaponManager.rankTowns(bot, 100000000);
         assertEquals(constants.id.NpcId.GACHAPON_HENESYS, ranked.get(0).npcId(),
@@ -313,7 +313,7 @@ class BotGachaponManagerTest {
 
         assertEquals(constants.id.NpcId.GACHAPON_HENESYS, e.gachaErrandNpcId,
                 "autopilot heads to the best-EV town");
-        assertEquals(constants.id.MapId.HENESYS, e.gachaErrandMapId);
+        assertEquals(BotGachaponManager.gachaponTownMap(constants.id.NpcId.GACHAPON_HENESYS), e.gachaErrandMapId);
     }
 
     // ---- roll-amortized travel ---------------------------------------------------------------
@@ -328,7 +328,7 @@ class BotGachaponManagerTest {
         BotGachaponManager.itemValue = (b, id) -> id == 1 ? 1_000.0 : 1_500.0;
         // Only the near (Henesys) and far (Ellinia) towns are reachable; near=5s, far=1000s.
         BotGachaponManager.travelSeconds = (from, to) -> {
-            if (to == constants.id.MapId.HENESYS) return 5.0;
+            if (to == BotGachaponManager.gachaponTownMap(constants.id.NpcId.GACHAPON_HENESYS)) return 5.0;
             if (to == constants.id.MapId.ELLINIA) return 1_000.0;
             return 99_999.0;
         };
