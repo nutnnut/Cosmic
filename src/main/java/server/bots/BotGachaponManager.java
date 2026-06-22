@@ -602,19 +602,21 @@ final class BotGachaponManager {
 
     // ---- helpers -----------------------------------------------------------------------------
 
-    /** The town map a gachapon NPC lives on. Mirrors the {@code maps[]} index in
-     *  {@code NPCConversationManager.doGachapon} (Ludibrium/El Nath have no town map there - they
-     *  return -1 and are skipped, matching the script which only resolves the listed towns). */
+    /** The map a gachapon NPC actually STANDS on — the bot travels here to roll, so it must be the NPC's
+     *  real life-map, not the town's "main" map. Most sit in the town hub, but a couple live in a side
+     *  room (Henesys Market, Nautilus mid-floor); using the town hub there sent the bot to an empty map
+     *  ("no gachapon machine here"). Verified vs Map.wz life data per NPC. Ludibrium/El Nath have no
+     *  bot-resolvable gachapon here and return -1 (skipped). */
     static int gachaponTownMap(int npcId) {
         return switch (npcId) {
-            case NpcId.GACHAPON_HENESYS -> constants.id.MapId.HENESYS;
+            case NpcId.GACHAPON_HENESYS -> 100000100; // Henesys Market (NOT 100000000 Henesys main)
             case NpcId.GACHAPON_ELLINIA -> constants.id.MapId.ELLINIA;
             case NpcId.GACHAPON_PERION -> constants.id.MapId.PERION;
             case NpcId.GACHAPON_KERNING -> constants.id.MapId.KERNING_CITY;
             case NpcId.GACHAPON_SLEEPYWOOD -> constants.id.MapId.SLEEPYWOOD;
             case NpcId.GACHAPON_MUSHROOM_SHRINE -> constants.id.MapId.MUSHROOM_SHRINE;
             case NpcId.GACHAPON_NLC -> constants.id.MapId.NEW_LEAF_CITY;
-            case NpcId.GACHAPON_NAUTILUS -> constants.id.MapId.NAUTILUS_HARBOR;
+            case NpcId.GACHAPON_NAUTILUS -> 120000200; // Nautilus mid-floor (NOT 120000000 harbor main)
             default -> -1; // Showa (instanced), Ludibrium, El Nath: not town-resolvable here
         };
     }
