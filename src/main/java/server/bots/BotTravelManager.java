@@ -782,7 +782,10 @@ final class BotTravelManager {
         // reach (the raw pos froze bots that couldn't path to it, then dropped the errand). Cached
         // per npcId so the random pick is stable across ticks.
         if (entry.npcApproachPos == null || entry.npcApproachNpcId != npcId) {
-            entry.npcApproachPos = pickReachableApproachPoint(entry, bot, npcPos, APPROACH_SPREAD_PX);
+            // Search the close de-stack ring first, but widen up to the interaction radius for NPCs on
+            // off-graph spots (high platforms/docks) so the bot stands at the nearest reachable foothold
+            // within reach instead of looping at an unreachable sprite pixel.
+            entry.npcApproachPos = pickReachableApproachPoint(entry, bot, npcPos, APPROACH_SPREAD_PX, radiusPx);
             entry.npcApproachNpcId = npcId;
         }
         Point walkTarget = entry.npcApproachPos != null ? entry.npcApproachPos : npcPos;
@@ -815,10 +818,62 @@ final class BotTravelManager {
      * job / taxi(warp) NPC approaches.
      */
     static Point pickReachableApproachPoint(BotEntry entry, Character bot, Point targetPos, int spreadPx) {
+        return pickReachableApproachPoint(entry, bot, targetPos, spreadPx, spreadPx);
+    }
+
+    /**
+     * As above, with a WIDEN step for NPCs that sit off the nav graph (high platforms, docks, treetops —
+     * many do). {@code destackPx} = the close de-stack ring searched first (a random reachable foothold,
+     * so converging bots don't pile on one pixel). When NOTHING is reachable within destackPx, widen the
+     * hunt to {@code maxPx} and take the NEAREST reachable foothold (de-stacked within that nearest
+     * cluster). Callers set maxPx to the NPC interaction radius so the bot still stops close enough to
+     * interact — the missing piece that left bots looping "walking to the instructor" at unreachable
+     * 2nd-job instructor platforms (e.g. 102040000 NPC 1072003: nearest reachable ~262px > the old 150px
+     * ring, < the 500px trigger radius). The widen is one-shot per approach (result cached on the entry).
+     */
+    static Point pickReachableApproachPoint(BotEntry entry, Character bot, Point targetPos, int destackPx, int maxPx) {
         MapleMap map = bot.getMap();
         if (map == null || map.getFootholds() == null) {
             return targetPos;
         }
+        BotMovementProfile profile = entry.movementProfile != null
+                ? entry.movementProfile : BotMovementProfile.fromCharacter(bot);
+        BotNavigationGraph graph = BotNavigationGraphProvider.peekBestGraph(map, profile);
+        Point botPos = bot.getPosition();
+        int startRegionId = graph != null
+                ? BotNavigationManager.resolveCurrentRegionId(graph, entry, map, botPos) : -1;
+        // Close de-stack ring first: a random reachable foothold within destackPx (unchanged behavior).
+        List<Point> near = approachCandidates(entry, bot, map, graph, startRegionId, botPos, targetPos, destackPx);
+        if (!near.isEmpty()) {
+            return near.get(ThreadLocalRandom.current().nextInt(near.size()));
+        }
+        // Nothing reachable close — the NPC is off the graph. Widen to maxPx and take the NEAREST
+        // reachable foothold (with a destack band around it) so the bot still lands within reach.
+        if (maxPx > destackPx) {
+            List<Point> wide = approachCandidates(entry, bot, map, graph, startRegionId, botPos, targetPos, maxPx);
+            if (!wide.isEmpty()) {
+                long best = Long.MAX_VALUE;
+                for (Point p : wide) {
+                    best = Math.min(best, manhattan(p, targetPos));
+                }
+                long band = best + destackPx;
+                List<Point> nearest = new ArrayList<>();
+                for (Point p : wide) {
+                    if (manhattan(p, targetPos) <= band) {
+                        nearest.add(p);
+                    }
+                }
+                return nearest.get(ThreadLocalRandom.current().nextInt(nearest.size()));
+            }
+        }
+        return targetPos;
+    }
+
+    /** Standable footholds within {@code radiusPx} (Manhattan) of {@code targetPos}, restricted to
+     *  nav-reachable ones when a graph + start region are available (else all within radius — the
+     *  graph-less fallback the old code used). */
+    private static List<Point> approachCandidates(BotEntry entry, Character bot, MapleMap map,
+            BotNavigationGraph graph, int startRegionId, Point botPos, Point targetPos, int radiusPx) {
         List<Point> candidates = new ArrayList<>();
         for (Foothold fh : map.getFootholds().getAllFootholds()) {
             int fx1 = fh.getX1(), fy1 = fh.getY1(), fx2 = fh.getX2(), fy2 = fh.getY2();
@@ -830,39 +885,27 @@ final class BotTravelManager {
             for (int x = xMin; x <= xMax; x += step) {
                 double t = (double) (x - fx1) / (fx2 - fx1);
                 int y = (int) (fy1 + t * (fy2 - fy1));
-                if (Math.abs(x - targetPos.x) + Math.abs(y - targetPos.y) <= spreadPx) {
+                if (Math.abs(x - targetPos.x) + Math.abs(y - targetPos.y) <= radiusPx) {
                     candidates.add(new Point(x, y));
                 }
             }
         }
-        if (candidates.isEmpty()) {
-            return targetPos;
+        if (graph == null || startRegionId < 0) {
+            return candidates; // no graph to verify against -> all within radius
         }
-        BotMovementProfile profile = entry.movementProfile != null
-                ? entry.movementProfile : BotMovementProfile.fromCharacter(bot);
-        BotNavigationGraph graph = BotNavigationGraphProvider.peekBestGraph(map, profile);
-        if (graph != null) {
-            Point botPos = bot.getPosition();
-            int startRegionId = BotNavigationManager.resolveCurrentRegionId(graph, entry, map, botPos);
-            if (startRegionId >= 0) {
-                List<Point> reachable = new ArrayList<>();
-                for (Point candidate : candidates) {
-                    int targetRegionId = BotNavigationManager.resolveTargetRegionId(graph, entry, map, candidate);
-                    if (targetRegionId < 0) {
-                        continue;
-                    }
-                    if (startRegionId == targetRegionId
-                            || !BotNavigationManager.findPath(graph, map, botPos,
-                                    startRegionId, targetRegionId, candidate).isEmpty()) {
-                        reachable.add(candidate);
-                    }
-                }
-                if (!reachable.isEmpty()) {
-                    candidates = reachable;
-                }
+        List<Point> reachable = new ArrayList<>();
+        for (Point candidate : candidates) {
+            int targetRegionId = BotNavigationManager.resolveTargetRegionId(graph, entry, map, candidate);
+            if (targetRegionId < 0) {
+                continue;
+            }
+            if (startRegionId == targetRegionId
+                    || !BotNavigationManager.findPath(graph, map, botPos,
+                            startRegionId, targetRegionId, candidate).isEmpty()) {
+                reachable.add(candidate);
             }
         }
-        return candidates.get(ThreadLocalRandom.current().nextInt(candidates.size()));
+        return reachable;
     }
 
     // moveTarget makes the movement stack treat the portal as a precise destination (exact
