@@ -47,6 +47,11 @@ public final class BotScheduler {
         // free — flipping POPULATION_SCHED_ENABLED at runtime then just works.
         TimerManager.getInstance().register(this::sweep, BotManager.cfg.POPULATION_SWEEP_MS,
                 ThreadLocalRandom.current().nextLong(5_000L));
+        // Familiarity tracking runs regardless of the population scheduler (players can party bots by
+        // hand). 30s sampling bounds only the time-together granularity, which is plenty.
+        TimerManager.getInstance().register(
+                () -> BotFamiliarityManager.getInstance().sample(System.currentTimeMillis()),
+                30_000L, ThreadLocalRandom.current().nextLong(5_000L));
     }
 
     void sweep() {
@@ -179,7 +184,9 @@ public final class BotScheduler {
                 continue;
             }
             long since = onlineSince.computeIfAbsent(m.botCharId(), k -> now);
-            if (BotScheduleMath.sessionElapsed(since, sessionMs(e), now)) {
+            // Stay-online QoL: a bot grouped with a real player keeps playing past its session end.
+            if (BotScheduleMath.sessionElapsed(since, sessionMs(e), now)
+                    && !BotManager.partyHasRealPlayer(e.bot)) {
                 bm.logoutManagedBot(m.botCharId());
                 onlineSince.remove(m.botCharId());
             } else {
@@ -243,7 +250,12 @@ public final class BotScheduler {
             long since = crewOnlineSince.computeIfAbsent(gid, k -> now);
             BotPersonality leaderP = BotPersonality.parse(
                     BotConfigService.getInstance().load(crewLeader(members)));
-            if (BotScheduleMath.sessionElapsed(since, sessionMsOf(leaderP), now)) {
+            // Stay-online QoL: keep the whole crew online if any member is partied with a real player.
+            boolean crewWithPlayer = members.stream().anyMatch(m -> {
+                BotEntry me = bm.getEntryByBotCharId(m.botCharId());
+                return me != null && BotManager.partyHasRealPlayer(me.bot);
+            });
+            if (BotScheduleMath.sessionElapsed(since, sessionMsOf(leaderP), now) && !crewWithPlayer) {
                 for (ManagedBot m : members) {
                     if (bm.getEntryByBotCharId(m.botCharId()) != null) {
                         bm.logoutManagedBot(m.botCharId());
@@ -473,6 +485,9 @@ public final class BotScheduler {
         List<Candidate> ranked = new ArrayList<>();
         for (int charId : live) {
             BotEntry e = bm.getEntryByBotCharId(charId);
+            if (e != null && BotManager.partyHasRealPlayer(e.bot)) {
+                continue; // stay-online QoL: don't thin a bot grouped with a real player
+            }
             BotPersonality p = e != null && e.personality != null ? e.personality : BotPersonality.defaults();
             ranked.add(new Candidate(charId, BotScheduleMath.onlineDesire(p, hour, 1, epochDay)));
         }

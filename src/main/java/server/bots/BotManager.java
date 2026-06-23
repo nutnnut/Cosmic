@@ -741,6 +741,24 @@ public class BotManager {
         return true;
     }
 
+    /**
+     * True when {@code bot} is in a party that contains at least one online REAL (non-bot) player.
+     * The stay-online QoL guard: while a bot is grouped with a human, it skips schedule-driven
+     * logout/break/thinning so the player's session isn't disrupted by bots winking out.
+     */
+    public static boolean partyHasRealPlayer(Character bot) {
+        if (bot == null || bot.getParty() == null) {
+            return false;
+        }
+        for (Character member : bot.getPartyMembersOnline()) {
+            if (member != null && member.getId() != bot.getId()
+                    && !(member.getClient() instanceof BotClient)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     public Character loadOfflineBot(int charId, int world, int channel) throws SQLException {
         BotClient botClient = new BotClient(world, channel);
         Character botChar = Character.loadCharFromDB(charId, botClient, true);
@@ -1722,6 +1740,14 @@ public class BotManager {
                 }
                 return;
             }
+        }
+
+        // NON-OWNER SOCIAL: a nearby player who doesn't own the bot can still ask a self-owned bot to
+        // party ("pt"/"party") or answer its Flow-1 "wanna party?" with a "yes". Placed before the
+        // owner-scoped fetch below so it reaches map-local self-owned bots; these keywords aren't owner
+        // commands, so owner routing is undisturbed.
+        if (BotSocialManager.maybeHandlePartyChat(owner, message)) {
+            return;
         }
 
         List<BotEntry> entries = bots.get(owner.getId());

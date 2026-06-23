@@ -335,6 +335,12 @@ public class BotEntry {
     // Ad-hoc party-up (BotSocialManager): throttles how often a solo bot considers offering to party,
     // and stops a bot just offered-to from immediately re-offering.
     long nextSocialAtMs = 0L;
+    // Flow 1 (ask-then-wait): a chatty bot asked this player to party and is waiting for an
+    // affirmative reply until the deadline; the invite only fires once they say yes in-window.
+    int pendingPartyAskPlayerId = 0;
+    long pendingPartyAskUntilMs = 0L;
+    // Flow 3 throttle: don't let one player spam "party" into a burst of invites from this bot.
+    long nextPlayerPartyReplyAtMs = 0L;
     // A scheduled logout is mid-flight: the bot said goodbye + left its party and will disconnect after
     // a short delay. Guards against the scheduler re-triggering the goodbye sequence on the next sweep.
     volatile boolean loggingOut = false;

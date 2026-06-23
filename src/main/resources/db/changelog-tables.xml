@@ -126,4 +126,8 @@
         <sqlFile path="db/tables/029-drop-itemid-index.sql"/>
     </changeSet>
 
+    <changeSet id="30" author="Claude">
+        <sqlFile path="db/tables/030-bot-familiarity.sql"/>
+    </changeSet>
+
 </databaseChangeLog>

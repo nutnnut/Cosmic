@@ -11,6 +11,7 @@ import tools.PacketCreator;
 
 import java.util.List;
 import java.util.concurrent.ThreadLocalRandom;
+import java.util.regex.Pattern;
 
 /**
  * Ad-hoc bot party-up (P4 dynamic). Once in a while a SOLO self-owned autopilot bot, co-located with
@@ -27,6 +28,21 @@ import java.util.concurrent.ThreadLocalRandom;
 final class BotSocialManager {
 
     private static final long SOCIAL_COOLDOWN_MS = 3 * 60_000L;
+    /** Flow 1: how long a bot waits for the asked player to say "yes" before the offer lapses. */
+    private static final long ASK_WINDOW_MS = 15_000L;
+    /** Flow 3: per-bot throttle so a player spamming "party" can't trigger a burst of invites. */
+    private static final long PLAYER_REPLY_COOLDOWN_MS = 8_000L;
+
+    // ponytail: fixed alias regex (known ceiling — no fuzzy/LLM parse). US-ASCII only.
+    private static final Pattern PARTY_REQUEST_PATTERN = Pattern.compile(
+            "^\\s*(pt|party|party\\s*up|p2|lfp|lf\\s*party|lfg|invite\\s*me|inv\\s*me|invite|inv|"
+                    + "join|join\\s*you|can\\s*i\\s*join|lemme\\s*join|let\\s*me\\s*join|group|group\\s*up)"
+                    + "\\s*[?!.]*\\s*$",
+            Pattern.CASE_INSENSITIVE);
+    private static final Pattern AFFIRMATIVE_PATTERN = Pattern.compile(
+            "^\\s*(yes|ya|yea|yeah|yep|yup|sure|ok|okay|k|y|im\\s*in|i'?m\\s*in|lets\\s*go|let'?s\\s*go|"
+                    + "sounds\\s*good|sg|down)\\s*[?!.]*\\s*$",
+            Pattern.CASE_INSENSITIVE);
 
     private static final List<String> OFFER_MSGS = List.of(
             "hey %s, wanna party?", "%s party up?", "yo %s wanna duo?", "%s lets team up", "wanna group %s?");
@@ -60,8 +76,37 @@ final class BotSocialManager {
         } else if (BotManager.cfg.SOCIAL_INVITE_PLAYERS) {
             Character player = findPlayerCandidate(bot);
             if (player != null) {
-                inviteRealPlayer(entry, bot, player);
+                offerToPlayer(entry, bot, player);
             }
+        }
+    }
+
+    /**
+     * Proactive overture to a real player, mode chosen by personality:
+     * <ul>
+     *   <li><b>Flow 1 (ask-then-wait)</b> — a sociable, chatty bot says "wanna party?" and waits for
+     *       an affirmative reply (handled in {@link #completeAskedInvite}); the invite fires only on
+     *       a "yes" within {@link #ASK_WINDOW_MS}.</li>
+     *   <li><b>Flow 2 (unprompted)</b> — a quieter bot just sends the party invite (optional flavor
+     *       line), no waiting.</li>
+     * </ul>
+     */
+    private static void offerToPlayer(BotEntry entry, Character bot, Character player) {
+        BotPersonality p = personality(entry);
+        double askMode = p.sociability() * p.chattiness();
+        if (ThreadLocalRandom.current().nextDouble() < askMode) {
+            // Flow 1: ask first, invite only once they say yes.
+            BotManager.getInstance().botSay(bot,
+                    String.format(BotManager.randomReply(INVITE_PLAYER_MSGS), player.getName()));
+            entry.pendingPartyAskPlayerId = player.getId();
+            entry.pendingPartyAskUntilMs = System.currentTimeMillis() + ASK_WINDOW_MS;
+        } else {
+            // Flow 2: unprompted invite (speak only if chatty enough).
+            if (ThreadLocalRandom.current().nextDouble() < p.chattiness()) {
+                BotManager.getInstance().botSay(bot,
+                        String.format(BotManager.randomReply(INVITE_PLAYER_MSGS), player.getName()));
+            }
+            sendPartyInvite(bot, player);
         }
     }
 
@@ -104,34 +149,167 @@ final class BotSocialManager {
     }
 
     /**
-     * Proactively invite a co-located real player to party: a chattiness-gated chat line plus a REAL
-     * party invite the player accepts/declines through the normal UI (never auto-joined — players are
-     * never force-grouped). The bot creates a party to host the invite; if it's not taken, a delayed
-     * cleanup disbands the lone party so a declined invite doesn't strand the bot out of "solo" state.
+     * Send a REAL party invite from {@code bot} to {@code player} (the player accepts/declines through
+     * the normal UI — never auto-joined). Reuses the bot's party if it has room, else creates one; an
+     * un-taken freshly-created party is disbanded by {@link #scheduleLonePartyCleanup} so a declined
+     * invite doesn't strand the bot out of "solo" state. Shared by Flow 1 (ask-then-yes), Flow 2
+     * (unprompted), and Flow 3 (player-requested). Returns whether an invite was sent.
      */
-    private static void inviteRealPlayer(BotEntry entry, Character bot, Character player) {
-        BotManager bm = BotManager.getInstance();
-        if (ThreadLocalRandom.current().nextDouble() < personality(entry).chattiness()) {
-            bm.botSay(bot, String.format(BotManager.randomReply(INVITE_PLAYER_MSGS), player.getName()));
-        }
-        if (bot.getClient() == null) {
-            return;
+    private static boolean sendPartyInvite(Character bot, Character player) {
+        if (bot.getClient() == null || player.getParty() != null) {
+            return false;
         }
         Party party = bot.getParty();
         if (party == null) {
             if (!Party.createParty(bot, true)) {
-                return;
+                return false;
             }
             party = bot.getParty();
         }
         if (party == null || party.getMembers().size() >= 6) {
-            return;
+            return false;
         }
         int partyId = party.getId();
         if (InviteCoordinator.createInvite(InviteType.PARTY, bot, partyId, player.getId())) {
             player.sendPacket(PacketCreator.partyInvite(bot));
             scheduleLonePartyCleanup(bot, partyId);
+            return true;
         }
+        return false;
+    }
+
+    /**
+     * Non-owner party-chat chokepoint, called from {@link BotManager#handleChat} before the
+     * owner-scoped routing (so a nearby player who doesn't OWN the bot can still reach it). Two cases:
+     * <ol>
+     *   <li>an affirmative reply that completes a bot's pending Flow-1 ask to this speaker, or</li>
+     *   <li>a fresh party request ("pt"/"party"/"invite me") → Flow 3.</li>
+     * </ol>
+     * Returns true if it consumed the message (so the caller stops). Self-owned bots only; gated by
+     * {@code SOCIAL_PARTY_ENABLED}.
+     */
+    static boolean maybeHandlePartyChat(Character speaker, String message) {
+        if (!BotManager.cfg.SOCIAL_PARTY_ENABLED || speaker == null || message == null
+                || speaker.getClient() instanceof BotClient || speaker.getMap() == null) {
+            return false;
+        }
+        if (isAffirmative(message) && completeAskedInvite(speaker)) {
+            return true;
+        }
+        if (isPartyRequest(message)) {
+            return handlePlayerPartyRequest(speaker);
+        }
+        return false;
+    }
+
+    /** "pt"/"party"/"invite me"/... — a player asking to join (Flow 3 trigger). */
+    static boolean isPartyRequest(String message) {
+        return message != null && PARTY_REQUEST_PATTERN.matcher(message).matches();
+    }
+
+    /** "yes"/"ok"/"sure"/... — an affirmative completing a bot's Flow-1 ask. */
+    static boolean isAffirmative(String message) {
+        return message != null && AFFIRMATIVE_PATTERN.matcher(message).matches();
+    }
+
+    /**
+     * Flow 1 completion: if a co-located self-owned bot asked this speaker to party and is still inside
+     * its ask window, the "yes" fires the actual invite. Clears the pending ask either way. Returns
+     * whether an ask was matched (so a generic "ok" isn't swallowed when no bot is waiting on it).
+     */
+    private static boolean completeAskedInvite(Character speaker) {
+        MapleMap map = speaker.getMap();
+        long now = System.currentTimeMillis();
+        for (Character c : map.getCharacters()) {
+            if (c == speaker || !(c.getClient() instanceof BotClient)) {
+                continue;
+            }
+            BotEntry e = BotManager.getInstance().getEntryByBotCharId(c.getId());
+            if (e == null || e.pendingPartyAskPlayerId != speaker.getId()) {
+                continue;
+            }
+            boolean live = now < e.pendingPartyAskUntilMs;
+            e.pendingPartyAskPlayerId = 0;
+            e.pendingPartyAskUntilMs = 0L;
+            if (live && (e.owner == null || e.owner == c)) {
+                sendPartyInvite(c, speaker);
+            }
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * Flow 3: a real player asked to party. Pick the nearest eligible self-owned bot on their map and
+     * let personality decide — ACCEPT sends a real invite (+ optional flavor line), DECLINE speaks a
+     * refusal, IGNORE stays silent. "Any self-owned bot" includes one already partied WITH ROOM (it
+     * invites the player into its existing party). A short per-bot cooldown throttles spam. Returns
+     * true once a bot has taken the request (even on decline/ignore) so the chat is consumed.
+     */
+    private static boolean handlePlayerPartyRequest(Character player) {
+        if (player.getParty() != null) {
+            return false; // already partied — they'd invite the bot via the UI instead
+        }
+        BotEntry chosen = nearestEligibleBot(player);
+        if (chosen == null) {
+            return false;
+        }
+        Character bot = chosen.bot;
+        long now = System.currentTimeMillis();
+        chosen.nextPlayerPartyReplyAtMs = now + PLAYER_REPLY_COOLDOWN_MS;
+
+        int levelGap = Math.abs(bot.getLevel() - player.getLevel());
+        int shareWindow = YamlConfig.config.server.EXP_SPLIT_LEECH_INTERVAL;
+        ThreadLocalRandom rng = ThreadLocalRandom.current();
+        BotSocialMath.Response resp = BotSocialMath.respondToOffer(personality(chosen), levelGap,
+                shareWindow, rng.nextDouble(), rng.nextDouble(), rng.nextDouble());
+
+        BotManager bm = BotManager.getInstance();
+        if (resp == BotSocialMath.Response.ACCEPT) {
+            BotManager.after(BotManager.randMs(600, 1200), () -> {
+                if (ThreadLocalRandom.current().nextDouble() < personality(chosen).chattiness()) {
+                    bm.botSay(bot, BotManager.randomReply(ACCEPT_MSGS));
+                }
+                sendPartyInvite(bot, player);
+            });
+        } else if (resp == BotSocialMath.Response.DECLINE) {
+            BotManager.after(BotManager.randMs(600, 1200),
+                    () -> bm.botSay(bot, BotManager.randomReply(DECLINE_MSGS)));
+        }
+        return true;
+    }
+
+    /** Nearest off-cooldown self-owned autopilot bot in the player's exp-share level window with party
+     *  room (solo, or partied with < 6), or null. */
+    private static BotEntry nearestEligibleBot(Character player) {
+        MapleMap map = player.getMap();
+        int shareWindow = YamlConfig.config.server.EXP_SPLIT_LEECH_INTERVAL;
+        long now = System.currentTimeMillis();
+        BotEntry best = null;
+        double bestDist = Double.MAX_VALUE;
+        for (Character c : map.getCharacters()) {
+            if (c == player || !(c.getClient() instanceof BotClient)) {
+                continue;
+            }
+            BotEntry e = BotManager.getInstance().getEntryByBotCharId(c.getId());
+            if (e == null || (e.owner != null && e.owner != c) || !BotAutopilotManager.isActive(e)
+                    || now < e.nextPlayerPartyReplyAtMs) {
+                continue;
+            }
+            Party party = c.getParty();
+            if (party != null && party.getMembers().size() >= 6) {
+                continue;
+            }
+            if (Math.abs(c.getLevel() - player.getLevel()) > shareWindow) {
+                continue;
+            }
+            double d = c.getPosition().distanceSq(player.getPosition());
+            if (d < bestDist) {
+                bestDist = d;
+                best = e;
+            }
+        }
+        return best;
     }
 
     /** Disband the bot's just-created party if the player never joined, so the bot returns to solo. */

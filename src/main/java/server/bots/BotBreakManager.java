@@ -55,6 +55,10 @@ final class BotBreakManager {
         if (onBreak(entry, now) || entry.restErrand || now < entry.nextBreakRollAtMs) {
             return;
         }
+        // Stay-online QoL: a bot grouped with a real player doesn't wander off on a break.
+        if (BotManager.partyHasRealPlayer(bot)) {
+            return;
+        }
         entry.nextBreakRollAtMs = now + 60_000L;
         BotPersonality p = entry.personality != null ? entry.personality : BotPersonality.defaults();
         if (!startsBreak(p.breakFreqPerHour(), p.farmIdleRatio(), ThreadLocalRandom.current().nextDouble())) {
