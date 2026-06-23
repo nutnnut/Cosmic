@@ -341,6 +341,25 @@ final class BotPathLogger {
                     .append(" dy=").append(Math.abs(mp.y - botPos.y))
                     .append("  touchDanger=").append(touchDanger)
                     .append(" (hitsToKill=").append(BotCombatManager.cfg.TOUCH_HITS_TO_KILL).append(")\n");
+            // FIRE PATH — recompute the plan live against this target and show which gate blocks the
+            // shot. The SSOT for "standing next to a mob but won't attack": plan=NULL (no usable attack
+            // this tick), inRange=false (the plan's hitbox misses — facing/reach/vertical), atkCooling,
+            // or canUseNow=false. "SHOULD FIRE" here while the mob lives => the freeze is downstream
+            // (movement/nav never parks the bot in this firing pose long enough to act).
+            BotCombatManager.AttackPlan plan = BotCombatManager.planAttack(entry, bot, mob);
+            boolean inRange = BotCombatManager.isTargetInAttackRange(plan, bot, mob);
+            boolean canUseNow = BotCombatManager.canUseAttackPlanNow(entry, wt, plan);
+            boolean cooling = entry.attackSkillId != 0 && bot.skillIsCooling(entry.attackSkillId);
+            sb.append("            firePath: plan=")
+                    .append(plan == null ? "NULL"
+                            : plan.route + " skill=" + plan.skillId + " hitBox=" + (plan.hasHitBox() ? "yes" : "no"))
+                    .append("  inRange=").append(inRange)
+                    .append("  canUseNow=").append(canUseNow)
+                    .append("  atkCooling=").append(cooling)
+                    .append("  cdLeftMs=").append(Math.max(0, entry.attackCooldownMs))
+                    .append(plan != null && inRange && canUseNow && entry.dbgAttackGateOpen
+                            ? "  => SHOULD FIRE (freeze is downstream in movement/nav)" : "  => NO FIRE")
+                    .append("\n");
         }
         if (entry.dbgCombatDecisionAtMs == 0L) {
             sb.append("            decision=<no grind-combat tick recorded yet>\n");
