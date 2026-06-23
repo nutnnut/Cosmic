@@ -283,10 +283,16 @@ final class BotScrollManager {
     static void scheduleScrollPlan(BotEntry entry, Character bot, java.util.function.BiConsumer<BotEntry, Resolved> apply) {
         BotGrindAdvisor.DECIDE_POOL.execute(() -> {
             Resolved resolved;
+            // The plan walks the whole inventory with WZ lookups and shares the single DECIDE_POOL with
+            // grind/party decides; time it under "scroll-scan" so the perf monitor can show its cost and
+            // how often it fires (now gated to town-breaks, so far rarer than the old 90-180s cadence).
+            long t0 = BotPerformanceMonitor.start();
             try {
                 resolved = buildBestPlan(entry, bot, ItemInformationProvider.getInstance());
             } catch (RuntimeException e) {
                 return; // WZ/inventory hiccup off-thread — skip this scan, the timer re-arms
+            } finally {
+                BotPerformanceMonitor.recordSince("scroll-scan", t0);
             }
             final Resolved r = resolved; // may be null (no worthwhile play) — apply decides what to do
             BotManager.after(0, () -> apply.accept(entry, r));
