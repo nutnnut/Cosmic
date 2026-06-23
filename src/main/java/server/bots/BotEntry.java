@@ -270,6 +270,11 @@ public class BotEntry {
     // mid-grind. -1 = none. The shop visit triggers on arrival; afterwards travel resumes
     // toward autopilotMapId. NextErrandAtMs rate-limits errands (survives clear()).
     int autopilotErrandMapId = -1;
+    // Town-break trip (self-scroll bots): a break taken in a town instead of in place — travel out
+    // (reusing the errand machinery), let the arrival shop visit sell trash + resupply, then linger for
+    // a 10-30min rest window (grind-tick break-idle) while self-scrolling gear, then return to grind.
+    // The in-town rest clock reuses breakUntilMs, started on arrival.
+    boolean restErrand = false;
     long autopilotNextErrandAtMs = 0L;
     long autopilotLastErrandLogAtMs = 0L; // throttle for the "couldn't start errand" diagnostic log
     long sellBlockLogAtMs = 0L; // throttle for the cramped-bag "why isn't it selling" diagnostic log

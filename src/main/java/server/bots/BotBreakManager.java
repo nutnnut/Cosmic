@@ -42,22 +42,39 @@ final class BotBreakManager {
         return Math.round(meanMin * 60_000L * factor);
     }
 
+    /** A town-break lingers 10-30 min in town (sell/resupply + self-scroll), longer than an in-place break. */
+    static long townBreakDurationMs() {
+        return 10 * 60_000L + (long) (ThreadLocalRandom.current().nextDouble() * 20 * 60_000L);
+    }
+
     /**
      * Roll (at most once a minute) whether a grinding bot should start a break; if so, arm
      * {@code breakUntilMs} and announce. No-op while already on a break or off cooldown.
      */
     static void maybeStartBreak(BotEntry entry, Character bot, long now) {
-        if (onBreak(entry, now) || now < entry.nextBreakRollAtMs) {
+        if (onBreak(entry, now) || entry.restErrand || now < entry.nextBreakRollAtMs) {
             return;
         }
         entry.nextBreakRollAtMs = now + 60_000L;
         BotPersonality p = entry.personality != null ? entry.personality : BotPersonality.defaults();
-        if (startsBreak(p.breakFreqPerHour(), p.farmIdleRatio(), ThreadLocalRandom.current().nextDouble())) {
+        if (!startsBreak(p.breakFreqPerHour(), p.farmIdleRatio(), ThreadLocalRandom.current().nextDouble())) {
+            return;
+        }
+        // Self-scroll bots on autopilot take their break in a TOWN (sell trash + resupply + tinker with
+        // gear there); already in a town -> rest right here. Everyone else keeps the in-place break.
+        if (entry.selfScrollEnabled && BotAutopilotManager.isActive(entry) && bot.getMap() != null) {
+            if (bot.getMap().isTown()) {
+                entry.breakUntilMs = now + townBreakDurationMs();
+                entry.breakIdleAnchor = null;
+            } else {
+                entry.restErrand = true; // autopilot routes to a town; the rest clock starts on arrival
+            }
+        } else {
             entry.breakUntilMs = now + breakDurationMs(p.breakLenMeanMin());
             entry.breakIdleAnchor = null;
-            if (ThreadLocalRandom.current().nextDouble() < p.chattiness()) {
-                BotManager.getInstance().botSay(bot, BotManager.randomReply(BREAK_MSGS));
-            }
+        }
+        if (ThreadLocalRandom.current().nextDouble() < p.chattiness()) {
+            BotManager.getInstance().botSay(bot, BotManager.randomReply(BREAK_MSGS));
         }
     }
 

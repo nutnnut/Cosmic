@@ -360,6 +360,7 @@ final class BotAutopilotManager {
         entry.autopilotFarmItemId = 0;
         entry.autopilotFerryApproved = false;
         entry.autopilotErrandMapId = -1;
+        entry.restErrand = false;
         entry.autopilotReturningFromErrand = false;
         entry.autopilotTransitFollow = false;
         entry.autopilotCohortMember = false;
@@ -525,6 +526,9 @@ final class BotAutopilotManager {
         if (entry.gachaErrandMapId != -1 && BotGachaponManager.tickErrand(entry, bot, runAiTick)) {
             return true;
         }
+        if (entry.restErrand && entry.autopilotErrandMapId == -1) {
+            resolveTownRestDestination(entry, bot); // pick the rest town (or abort restErrand) before travel
+        }
         int destination = entry.autopilotErrandMapId != -1 ? entry.autopilotErrandMapId : entry.autopilotMapId;
         if (bot.getMapId() == destination) {
             if (entry.autopilotTransitFollow) {
@@ -537,7 +541,23 @@ final class BotAutopilotManager {
             clearWaitAnchor(entry);
             if (entry.autopilotErrandMapId != -1) {
                 if (entry.shopVisitPending) {
-                    return false; // shopping; the visit flow owns the tick
+                    return false; // shopping (sells trash + resupplies); the visit flow owns the tick
+                }
+                if (entry.restErrand) {
+                    // Town-break: shop done -> linger to rest + self-scroll for the 10-30min window.
+                    long nowRest = System.currentTimeMillis();
+                    if (entry.breakUntilMs == 0L) {
+                        entry.breakUntilMs = nowRest + BotBreakManager.townBreakDurationMs();
+                        entry.breakIdleAnchor = null;
+                    }
+                    if (nowRest < entry.breakUntilMs) {
+                        return false; // resting in town: grind-tick break-idle + self-scroll run this tick
+                    }
+                    entry.restErrand = false; // rest over -> head back to the grind map
+                    entry.autopilotErrandMapId = -1;
+                    entry.autopilotReturningFromErrand = true;
+                    reply.accept(entry, BotManager.randomReply(BACK_REPLIES));
+                    return false;
                 }
                 // The auto shop visit (triggered by the map change) is over or never fired —
                 // errand done either way, head back to the grind map.
@@ -632,6 +652,26 @@ final class BotAutopilotManager {
      * errand can't help (not autopiloting, no distinct return map) — caller falls back to
      * the legacy walk-to-owner.
      */
+    /** Pick the town for a self-scroll bot's town-break: a nearby shop-town (so the arrival visit sells
+     *  trash + resupplies, same picker as a resupply errand) when reachable, else the return-map town.
+     *  Sets autopilotErrandMapId; aborts restErrand when there's nowhere to go (already in town / none). */
+    private static void resolveTownRestDestination(BotEntry entry, Character bot) {
+        if (bot.getMap() == null) {
+            entry.restErrand = false;
+            return;
+        }
+        Integer shopMap = BotShopManager.findNearestShopMap(bot, !BotShopManager.needsToBuySupplies(bot));
+        int town = shopMap != null && shopMap != bot.getMapId()
+                ? shopMap
+                : (bot.getMap().getReturnMap() != null ? bot.getMap().getReturnMap().getId() : -1);
+        if (town == -1 || town == bot.getMapId()) {
+            entry.restErrand = false; // nowhere worth resting -> keep grinding
+            return;
+        }
+        entry.autopilotErrandMapId = town;
+        reply.accept(entry, "heading to town for a breather");
+    }
+
     static boolean requestResupplyErrand(BotEntry entry, Character bot) {
         if (!isActive(entry) || bot.getMap() == null) {
             logErrandBlock(entry, bot, bot.getMap() == null ? "no-map" : "not-autopilot");
