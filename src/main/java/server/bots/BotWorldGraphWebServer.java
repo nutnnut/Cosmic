@@ -127,6 +127,8 @@ public final class BotWorldGraphWebServer {
             // ponytail: bound to all interfaces for LAN access (http://<server-lan-ip>:8089/). No auth —
             // exposes online player/bot names+locations to anyone on the LAN; fine on a private server LAN.
             HttpServer s = HttpServer.create(new InetSocketAddress(PORT), 0);
+            // This createContext list is the SSOT for routes. When you add/change/remove a route or its
+            // JSON shape, update docs/bot/web-endpoints.md (project rule).
             s.createContext("/", BotWorldGraphWebServer::servePage);
             s.createContext("/map", BotWorldGraphWebServer::serveWorldMapPage);
             s.createContext("/api/worldmaps", BotWorldGraphWebServer::serveWorldMaps);

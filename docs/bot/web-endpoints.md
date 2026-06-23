@@ -1,0 +1,66 @@
+# Bot web endpoints
+
+Served by `server.bots.BotWorldGraphWebServer` (started from `Server` boot). Bound to all
+interfaces on **port 8089**, **no auth** — exposes online player/bot names + locations to anyone on
+the LAN (accepted: private game-server LAN). Open `http://<server-lan-ip>:8089/`.
+
+> **Keep this in sync.** The `createContext(...)` list in `BotWorldGraphWebServer.start()` is the
+> SSOT for routes. When you add/change/remove a route or its JSON shape, update this file. Exact
+> field sets live in the code (`charJson`, `mapInfoJson`, `botDebugJson`, `serveCommand`); this doc is
+> the map, not the schema of record.
+
+## Pages
+
+| Route | Method | Purpose |
+|-------|--------|---------|
+| `/` | GET | Legacy bot world-graph page (`botworld.html`). |
+| `/map` | GET | RTS world map (`worldmap.html`): graph over WorldMap continent images, live positions, RTS control, collapsible per-map detail. |
+| `/wm/{worldmapId}.png` | GET | A WorldMap continent background image. |
+
+## Read APIs (JSON, GET)
+
+### `/api/worldmaps`
+The world graph laid out over the WorldMap images: per worldmap `{id, x, y, scale, nodes[], edges}`;
+each node `{id, maps[], names[], x, y, hub, anchor, dup, danger, leaf, unreachable}`. A node may merge
+several maps (`maps[]`). Drives the map page. (See `serveWorldMaps`/`worldmapsJson` for exact fields.)
+
+### `/api/live`
+Live occupancy of every online character, bucketed by map. Cached ~750 ms.
+```
+{"maps":{"<mapId>":{
+   "players":[{"id","n","l","j","c","p","g"}, ...],
+   "bots":[{"id","n","l","j","c","p","g"}, ...]
+}}}
+```
+`n`=name, `l`=level, `j`=job, `c`=commandable (1 = managed/RTS-controllable bot), `p`=party id (0=none),
+`g`=crew id (0=none).
+
+### `/api/mapinfo?id=<mapId>`
+On-demand detail for one map.
+```
+{"mobs":[{"name","level","spawns"}, ...],     // spawns = WZ spawn-point count
+ "bots":[{"name","status"}, ...],             // status = the @botstatus line
+ "chat":[{"t","n","m"}, ...]}                 // recent map chat: time, name, message
+```
+
+### `/api/botdebug`
+Read-only per-bot autopilot internals for live debugging (party cohesion, follow, travel). No cache.
+```
+{"bots":[{
+  "id","n","map","lvl",
+  "party","crew","owner",          // owner: "null" | "self" | <human name>
+  "apParty","dst","errand",        // apParty = party-autopilot on; dst = travel target map; errand = resupply map (-1 none)
+  "grinding","following","followTo","transit","waiting",
+  "op",                            // operator override command name ("" = none)
+  "status"                         // the @botstatus line
+}, ...]}
+```
+
+## Write API
+
+### `/api/command` (POST)
+RTS control. Body `{"cmd","ids":[botCharId,...],"maps":[mapId,...]?,"target":charId?}`.
+`cmd` ∈ `idle | fidget | move | moveattack | follow | resume | dance | jump | cheer`. Applies to each
+commandable bot id; `move`/`moveattack` resolve a per-bot destination from `maps[]` (clicked node:
+hub-first, else nearest); `follow` needs `target`. Returns `{"ok","applied","skipped":[ids...]}`.
+Commands persist ~30 min, then revert to autopilot.
