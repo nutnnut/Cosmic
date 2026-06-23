@@ -449,6 +449,55 @@ final class BotAutopilotManager {
         });
     }
 
+    /**
+     * Group-synced break for a party cohort: only the leader (first cohort member) rolls, once a minute,
+     * on the AVERAGE of the members' break traits. When it fires the whole cohort breaks together — each
+     * member takes its own town-break (sell/resupply + rest + self-scroll) EXCEPT low-cluster members
+     * ({@code >= PARTY_LEECH_GAP_TRIGGER} below the pack), which keep grinding to catch up. Returns true
+     * when this member's break is group-managed (caller skips the per-member solo roll); false for a solo
+     * bot (cohort &lt; 2), handled by the normal {@link BotBreakManager#maybeStartBreak}.
+     * ponytail: calls members() per grind tick for party bots — cheap party iteration; revisit only if
+     * the perf monitor flags it.
+     */
+    static boolean maybeStartGroupBreak(BotEntry entry, Character bot) {
+        if (!entry.autopilotParty) {
+            return false; // not party-grinding -> solo break path
+        }
+        List<BotEntry> cohort = partyMembers.members(entry);
+        if (cohort.size() < 2) {
+            return false;
+        }
+        if (cohort.get(0) != entry) {
+            return true; // a follower: breaks only when the leader triggers the group (no self-roll)
+        }
+        long now = System.currentTimeMillis();
+        if (BotBreakManager.onBreak(entry, now) || entry.restErrand || now < entry.nextBreakRollAtMs) {
+            return true; // a group break is already running / just rolled
+        }
+        entry.nextBreakRollAtMs = now + 60_000L;
+        double avgFreq = 0, avgIdle = 0;
+        for (BotEntry m : cohort) {
+            BotPersonality p = m.personality != null ? m.personality : BotPersonality.defaults();
+            avgFreq += p.breakFreqPerHour();
+            avgIdle += p.farmIdleRatio();
+        }
+        avgFreq /= cohort.size();
+        avgIdle /= cohort.size();
+        if (!BotBreakManager.startsBreak(avgFreq, avgIdle, ThreadLocalRandom.current().nextDouble())) {
+            return true;
+        }
+        // Group break! Low-level catch-up members keep grinding; everyone else takes a town-break.
+        int[] levels = cohort.stream().filter(m -> m.bot != null).mapToInt(m -> m.bot.getLevel()).sorted().toArray();
+        int trigger = BotManager.cfg.PARTY_LEECH_GAP_TRIGGER;
+        for (BotEntry m : cohort) {
+            if (m.bot == null || BotBreakManager.catchUpSplit(m.bot.getLevel(), levels, trigger)) {
+                continue; // behind the pack -> skip the break, grind solo to catch up
+            }
+            BotBreakManager.startTownBreak(m, m.bot, now);
+        }
+        return true;
+    }
+
     /** Owner ordered "farm <item>": same autopilot, objective pinned to the item. */
     static void startFarmItem(BotEntry entry, Character bot, int itemId, String itemName) {
         if (entry == null || bot == null || bot.getMap() == null) {

@@ -43,4 +43,36 @@ class BotBreakManagerTest {
                     "break length should be 0.5x..1.5x the mean, got " + ms);
         }
     }
+
+    // --- catch-up split: which cohort members skip a group break to grind up to the pack ---
+
+    @Test
+    void noLevelGap_nobodySplits() {
+        int[] levels = {12, 13, 14, 15}; // 3 total spread, but no single >= 3 jump
+        for (int lv : levels) {
+            assertFalse(BotBreakManager.catchUpSplit(lv, levels, 3), "lv " + lv);
+        }
+    }
+
+    @Test
+    void lowClusterBelowTheGap_allSplit() {
+        int[] levels = {10, 11, 20, 21}; // 11 -> 20 is a 9-level wall
+        assertTrue(BotBreakManager.catchUpSplit(10, levels, 3));
+        assertTrue(BotBreakManager.catchUpSplit(11, levels, 3)); // the whole low pair catches up
+        assertFalse(BotBreakManager.catchUpSplit(20, levels, 3));
+        assertFalse(BotBreakManager.catchUpSplit(21, levels, 3));
+    }
+
+    @Test
+    void singleLowOutlier_splits() {
+        int[] levels = {10, 15, 16, 17};
+        assertTrue(BotBreakManager.catchUpSplit(10, levels, 3));
+        assertFalse(BotBreakManager.catchUpSplit(15, levels, 3));
+    }
+
+    @Test
+    void degenerateInputs_noSplit() {
+        assertFalse(BotBreakManager.catchUpSplit(10, new int[] {10}, 3));     // solo
+        assertFalse(BotBreakManager.catchUpSplit(10, new int[] {10, 20}, 0)); // trigger 0
+    }
 }

@@ -3548,7 +3548,10 @@ public class BotManager {
         // profiles have breakFreqPerHour 0). Parks at a held spot like idle-leech, so it isn't farming
         // 24/7. Pots/heals still run (potion tick); no attack/target search while on break.
         long breakNow = System.currentTimeMillis();
-        BotBreakManager.maybeStartBreak(entry, bot, breakNow);
+        // A party cohort breaks together (leader-driven, avg traits); only a solo bot self-rolls.
+        if (!BotAutopilotManager.maybeStartGroupBreak(entry, bot)) {
+            BotBreakManager.maybeStartBreak(entry, bot, breakNow);
+        }
         if (BotBreakManager.onBreak(entry, breakNow)) {
             entry.grindTarget = null;
             if (entry.breakIdleAnchor == null) {

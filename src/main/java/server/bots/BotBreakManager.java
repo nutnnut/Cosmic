@@ -63,12 +63,7 @@ final class BotBreakManager {
         // Self-scroll bots on autopilot take their break in a TOWN (sell trash + resupply + tinker with
         // gear there); already in a town -> rest right here. Everyone else keeps the in-place break.
         if (entry.selfScrollEnabled && BotAutopilotManager.isActive(entry) && bot.getMap() != null) {
-            if (bot.getMap().isTown()) {
-                entry.breakUntilMs = now + townBreakDurationMs();
-                entry.breakIdleAnchor = null;
-            } else {
-                entry.restErrand = true; // autopilot routes to a town; the rest clock starts on arrival
-            }
+            startTownBreak(entry, bot, now);
         } else {
             entry.breakUntilMs = now + breakDurationMs(p.breakLenMeanMin());
             entry.breakIdleAnchor = null;
@@ -76,6 +71,38 @@ final class BotBreakManager {
         if (ThreadLocalRandom.current().nextDouble() < p.chattiness()) {
             BotManager.getInstance().botSay(bot, BotManager.randomReply(BREAK_MSGS));
         }
+    }
+
+    /** Begin a town-break for one bot: rest in place if already in a town, else flag a rest errand so
+     *  the autopilot routes it to a town (the in-town rest clock starts on arrival). Shared by the solo
+     *  break roll and the leader-driven group break. */
+    static void startTownBreak(BotEntry entry, Character bot, long now) {
+        if (bot.getMap() != null && bot.getMap().isTown()) {
+            entry.breakUntilMs = now + townBreakDurationMs();
+            entry.breakIdleAnchor = null;
+        } else {
+            entry.restErrand = true;
+        }
+    }
+
+    /**
+     * Whether a cohort member should SKIP a group break and keep grinding to catch up: it sits in the
+     * low-level cluster, separated from the pack by a gap of at least {@code trigger} levels. Members at
+     * or below the first {@code >= trigger} jump from the bottom of the sorted cohort levels split off
+     * (so a low pair like 10,11 below a 20,21 pack both split); no qualifying gap -> nobody splits.
+     */
+    static boolean catchUpSplit(int memberLevel, int[] sortedAscLevels, int trigger) {
+        if (sortedAscLevels.length < 2 || trigger <= 0) {
+            return false;
+        }
+        int lowClusterMax = sortedAscLevels[0];
+        for (int i = 1; i < sortedAscLevels.length; i++) {
+            if (sortedAscLevels[i] - sortedAscLevels[i - 1] >= trigger) {
+                break; // first gap from the bottom: lowClusterMax is the level just below it
+            }
+            lowClusterMax = sortedAscLevels[i];
+        }
+        return lowClusterMax < sortedAscLevels[sortedAscLevels.length - 1] && memberLevel <= lowClusterMax;
     }
 
     /** Called when a break ends to clear state and optionally announce the resume. */
