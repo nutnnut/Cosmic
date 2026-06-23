@@ -303,6 +303,12 @@ public class BotEntry {
     // instead of traveling independently; grind mode is restored on arrival. The leader's
     // straggler check is rate-limited and its last verdict cached between checks.
     boolean autopilotTransitFollow = false;
+    // Embark cohort gate (set in applyPartyPlan when the party heads out): true only for members that
+    // were on the leader's map at embark. Off-cohort members travel INDEPENDENTLY to the shared
+    // destination and the leader never waits for them — bots scatter for many reasons (resupply, job
+    // advance, fresh login/restart), and a cross-map member must not stall the co-located cohort.
+    // Re-snapshotted on each new party destination; off-cohort members reconverge at the destination.
+    boolean autopilotCohortMember = false;
     // Party level-gap idle-leech: this (higher-level) member stops dealing damage and idles so the
     // lower cohort members become the damage-dealers and keep getting full exp share. Hysteresis
     // state (BotAutopilotManager.updateIdleLeech); cleared when the gap closes.

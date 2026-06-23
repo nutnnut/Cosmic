@@ -362,6 +362,7 @@ final class BotAutopilotManager {
         entry.autopilotErrandMapId = -1;
         entry.autopilotReturningFromErrand = false;
         entry.autopilotTransitFollow = false;
+        entry.autopilotCohortMember = false;
         entry.autopilotWaitingForStragglers = false;
         entry.autopilotNextStragglerCheckAtMs = 0L;
         entry.autopilotWaitAnchor = null;
@@ -1324,6 +1325,13 @@ final class BotAutopilotManager {
             clearWaitAnchor(entry); // caught up — resume travel and enter the portal together
             return null;
         }
+        if (!entry.autopilotCohortMember) {
+            // Not co-located with the leader at embark: travel independently to the shared destination
+            // rather than chasing the leader's transit position. Rejoins at the destination map, and
+            // the next embark (new group destination) re-snapshots it into the cohort.
+            exitTransitFollow(entry);
+            return null;
+        }
         if (entry.owner == null) {
             // Owner offline strips `following` every tick and the follow anchor can't resolve,
             // so the follow pipeline is dead — travel independently until the owner returns.
@@ -1427,8 +1435,8 @@ final class BotAutopilotManager {
         String reason = null; // captured for the pathlog: which member tripped the hold, and how
         for (BotEntry member : members) {
             if (member == entry || member.bot == null || member.bot.getMap() == null
-                    || member.autopilotErrandMapId != -1) {
-                continue; // a resupplying member runs its own town trip; never wait on it
+                    || member.autopilotErrandMapId != -1 || !member.autopilotCohortMember) {
+                continue; // resupplying OR not in the embark cohort -> never wait on it (travels solo)
             }
             int memberHops = hopDistance.hops(member.bot.getMapId(), bot.getMapId());
             if (memberHops > BotManager.cfg.STRAGGLER_WAIT_HOPS
@@ -1487,6 +1495,7 @@ final class BotAutopilotManager {
             }
         }
         long baseDecisionAt = nextDecisionAt();
+        int leaderMapId = members.get(0).bot.getMapId(); // embark anchor: who's co-located heads out together
         for (int i = 0; i < members.size(); i++) {
             BotEntry member = members.get(i);
             BotManager.getInstance().issueGrind(member); // combat baseline + clears old autopilot
@@ -1501,6 +1510,9 @@ final class BotAutopilotManager {
                 member.autopilotArrivalAnnounced = true;
             }
             member.autopilotParty = true;
+            // Only members on the leader's map at embark join the travel cohort (formation-follow +
+            // leader waits for them). The rest travel independently to the shared destination.
+            member.autopilotCohortMember = member.bot.getMapId() == leaderMapId;
             // Leader (first member) re-decides for the group; trailing offsets keep member
             // timers from ever firing first.
             member.autopilotNextDecisionAtMs = baseDecisionAt + i * 2_000L;
