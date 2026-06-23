@@ -234,9 +234,10 @@ public class BotManager {
         public boolean GACHAPON_ENABLED = true;
         // Keep at least this much account NX in reserve - bots gamble only the surplus above it.
         public int GACHA_NX_RESERVE = 1_000;
-        // Ceiling on tickets per trip (humanlike: a session at the machine, not infinite). The ACTUAL
-        // rolls scale with saved NX (plannedRolls) and amortize travel - a far town only pays off once
-        // the bot has banked enough rolls, so saving up enables a longer session out of the way.
+        // EV planning horizon: how many rolls a trip is assumed to do when ranking towns (plannedRolls,
+        // amortizes travel - a far town only pays off once enough rolls are banked). The ACTUAL spend is
+        // now bounded per bot by a personality fraction of spare NX (BotPersonality.gachaSpendFrac), not
+        // by this count, so individual bots gamble differently. Kept as the ranking horizon only.
         public int GACHA_TICKETS_PER_TRIP = 20;
         // A town's net TRIP score (planned rolls x (roll value - ticket price), minus the travel
         // penalty, in NX-equivalent units) must clear this for the bot to make the trip - otherwise it

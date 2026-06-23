@@ -6,8 +6,10 @@
 package server.bots;
 
 import client.Character;
+import client.inventory.Item;
 import client.inventory.manipulator.InventoryManipulator;
 import constants.id.NpcId;
+import net.server.Server;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import server.CashShop;
@@ -15,12 +17,14 @@ import server.ItemInformationProvider;
 import server.gachapon.Gachapon;
 import server.life.NPC;
 import server.maps.MapleMap;
+import tools.PacketCreator;
 
 import java.awt.Point;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ThreadLocalRandom;
 
 /**
  * Earn NX from loot, spend it on gachapon, chase uniques. Two halves:
@@ -59,6 +63,9 @@ final class BotGachaponManager {
 
     /** Within this many px of the gachapon NPC counts as "at the machine" - matches cab/shop/quest. */
     static final int NPC_TRIGGER_RADIUS_PX = 500;
+
+    /** "Settled at my own stand spot" tolerance (mirrors BotFerryManager.FERRY_ARRIVE_PX). */
+    private static final int STAND_ARRIVE_PX = 18;
 
     // Tier weights mirrored from Gachapon.GachaponType (90/8/2 common/uncommon/rare, identical on
     // every town so they don't discriminate; visible here so the EV math is self-contained).
@@ -226,6 +233,17 @@ final class BotGachaponManager {
     /** Bot chat output, behind a seam so tests capture replies without the BotManager singleton. */
     static java.util.function.BiConsumer<BotEntry, String> reply =
             (entry, text) -> BotManager.getInstance().botReply(entry, text);
+
+    /** Server-wide "got a(n) <item>" notice for a notable (tier>0) pull - the exact broadcast a real
+     *  player triggers in {@code NPCConversationManager.doGachapon}. Seamed so the loop test doesn't
+     *  need the Server singleton / packet layer. */
+    @FunctionalInterface
+    interface RareBroadcast {
+        void announce(Character bot, Item displayItem, String town);
+    }
+    static RareBroadcast rareBroadcast = (bot, displayItem, town) ->
+            Server.getInstance().broadcastMessage(bot.getWorld(),
+                    PacketCreator.gachaponMessage(displayItem, town, bot));
 
     // ---- EV advisor --------------------------------------------------------------------------
 
@@ -407,19 +425,30 @@ final class BotGachaponManager {
         entry.gachaErrandNpcId = npcId;
         entry.gachaErrandMapId = mapId;
         entry.gachaErrandProgress.begin(System.currentTimeMillis());
-        entry.gachaTicketsThisTrip = 0;
-        entry.gachaNextRollAtMs = 0L;
+        resetTripCounters(entry, bot);
         entry.gachaUpgradeDriven = isUpgradeDriven(bot, npcId);
         reply.accept(entry, "console: forcing a gachapon trip to map " + mapId);
         return bot.getName() + " -> gacha trip: npc " + npcId + " @ map " + mapId;
+    }
+
+    /** Reset per-trip counters and compute this trip's NX budget = a personality fraction of spare NX
+     *  (above the reserve). The budget replaces the old flat per-trip ticket cap as the real spend limit.
+     *  Shared by the scan-start and the GM force-start paths. */
+    private static void resetTripCounters(BotEntry entry, Character bot) {
+        entry.gachaTicketsThisTrip = 0;
+        entry.gachaNextRollAtMs = 0L;
+        entry.gachaSpentThisTrip = 0;
+        entry.gachaStandSpot = null;
+        BotPersonality p = entry.personality != null ? entry.personality : BotPersonality.defaults();
+        long spare = nxBalance.nx(bot) - BotManager.cfg.GACHA_NX_RESERVE;
+        entry.gachaTripBudgetNx = Math.max(0L, Math.round(spare * p.gachaSpendFrac()));
     }
 
     private static void beginErrand(BotEntry entry, Character bot, TownEv town) {
         entry.gachaErrandNpcId = town.npcId();
         entry.gachaErrandMapId = town.mapId();
         entry.gachaErrandProgress.begin(System.currentTimeMillis());
-        entry.gachaTicketsThisTrip = 0;
-        entry.gachaNextRollAtMs = 0L;
+        resetTripCounters(entry, bot);
         entry.gachaUpgradeDriven = isUpgradeDriven(bot, town.npcId());
         reply.accept(entry, entry.gachaUpgradeDriven
                 ? "saw some gear i want at the gachapon, heading over"
@@ -456,9 +485,17 @@ final class BotGachaponManager {
         }
         Point npcPos = npc.getPosition();
         Point botPos = bot.getPosition();
-        if (entry.inAir || entry.climbing || manhattan(botPos, npcPos) > NPC_TRIGGER_RADIUS_PX) {
-            BotTravelManager.pinMoveTarget(entry, npcPos);
-            BotTravelManager.movementStep.step(entry, npcPos, runAiTick);
+        // Each bot stands at its own jittered reachable foothold near the machine instead of all walking
+        // onto the exact NPC pixel (which piled them on one spot). Picked once on arrival; widened to the
+        // trigger radius so an off-graph machine is still reachable (same util as taxi/job approaches).
+        if (entry.gachaStandSpot == null) {
+            entry.gachaStandSpot = BotTravelManager.pickReachableApproachPoint(
+                    entry, bot, npcPos, BotTravelManager.APPROACH_SPREAD_PX, NPC_TRIGGER_RADIUS_PX);
+        }
+        Point stand = entry.gachaStandSpot;
+        if (entry.inAir || entry.climbing || manhattan(botPos, stand) > STAND_ARRIVE_PX) {
+            BotTravelManager.pinMoveTarget(entry, stand);
+            BotTravelManager.movementStep.step(entry, stand, runAiTick);
             return true;
         }
         // At the machine: rolling is legit progress, so keep the no-progress deadline from firing
@@ -482,16 +519,20 @@ final class BotGachaponManager {
     // one per inventory type - the same shape gachapon.js uses (1302000/2000000/3010001/4000000).
     private static final int[] FREE_SLOT_PROBE_IDS = {1302000, 2000000, 3010001, 4000000};
 
-    /** Buy + roll one ticket. Returns true to keep rolling, false when the trip should end (out of
-     *  NX/reserve, trip cap hit, or no inventory room). Mirrors {@code doGachapon}'s body for the
-     *  roll effect; the buy is the allowed cash-shop abstraction. Package-visible for the seam test. */
+    /** Buy + roll one ticket. Returns true to keep rolling, false when the trip should end (trip NX
+     *  budget spent, can't afford another without dipping the reserve, or no inventory room). Mirrors
+     *  {@code doGachapon}'s body for the roll effect; the buy is the allowed cash-shop abstraction.
+     *  Package-visible for the seam test. */
     static boolean rollOnce(BotEntry entry, Character bot) {
-        if (entry.gachaTicketsThisTrip >= BotManager.cfg.GACHA_TICKETS_PER_TRIP) {
+        int price = ticketPrice.nx();
+        if (price <= 0) {
             return false;
         }
-        int price = ticketPrice.nx();
-        if (price <= 0 || nxBalance.nx(bot) - BotManager.cfg.GACHA_NX_RESERVE < price) {
-            return false; // can't afford another without dipping into the reserve
+        // Personality NX budget (a fraction of spare NX) is the spend cap, replacing the old flat ticket
+        // count. Also never dip the reserve regardless of budget.
+        if (entry.gachaSpentThisTrip + price > entry.gachaTripBudgetNx
+                || nxBalance.nx(bot) - BotManager.cfg.GACHA_NX_RESERVE < price) {
+            return false;
         }
         // Inventory-space guard BEFORE charging (mirrors gachapon.js, which checks one free slot in
         // every inventory type before consuming the ticket - the reward type is unknown until the
@@ -507,6 +548,7 @@ final class BotGachaponManager {
         // cash shop would, then roll (the SSOT pick) and grant the reward via the legal add path.
         nxCharge.charge(bot, price);
         entry.gachaTicketsThisTrip++;
+        entry.gachaSpentThisTrip += price;
         Gachapon.GachaponItem item = roll.roll(entry.gachaErrandNpcId);
         if (item == null) {
             return true; // shouldn't happen on a valid NPC; skip and keep going
@@ -551,18 +593,31 @@ final class BotGachaponManager {
     static GachaLog gachaLog = Gachapon::log;
 
     private static void announceAndLog(BotEntry entry, Character bot, Gachapon.GachaponItem item) {
+        String town = bot.getMap() != null ? bot.getMap().getMapName() : "";
         try {
-            gachaLog.log(bot, item.getId(), bot.getMap() != null ? bot.getMap().getMapName() : "");
+            gachaLog.log(bot, item.getId(), town);
         } catch (RuntimeException ignored) {
             // logging is best-effort
         }
-        // Shout only on a notable (uncommon/rare) pull, rate-limited.
+        // Notable (uncommon/rare) pull: the same tier>0 gate doGachapon uses.
         if (item.getTier() > 0) {
             long now = System.currentTimeMillis();
             if (now >= entry.gachaNextRareChatAtMs) {
                 entry.gachaNextRareChatAtMs = now + RARE_CHAT_CD_MS;
                 String name = gachaItemName(item.getId());
                 reply.accept(entry, "gacha: got " + name + "!");
+            }
+            // World-wide notice, exactly like a real player's pull (the bot path was missing this).
+            try {
+                int id = item.getId();
+                short qty = (short) (id / 10000 == 200 ? 100 : 1);
+                Item display = isEquip.test(id) ? ItemInformationProvider.getInstance().getEquipById(id) : null;
+                if (display == null) {
+                    display = new Item(id, (short) 0, qty);
+                }
+                rareBroadcast.announce(bot, display, town);
+            } catch (RuntimeException ignored) {
+                // broadcast is best-effort; a bad id / missing Server must not break the roll loop
             }
         }
     }
@@ -583,8 +638,15 @@ final class BotGachaponManager {
         }
     }
 
-    private static void finishErrand(BotEntry entry, Character bot, String say) {
+    static void finishErrand(BotEntry entry, Character bot, String say) {
         clearGachaErrand(entry);
+        // Personality satiation: after a trip the bot won't reconsider gachapon for hours/days (a few times
+        // a day for a high-appetite bot, once every few days for a low one). This jittered interval is the
+        // cadence control that kills the old "roll, leave, immediately come back" yo-yo - the scan clock was
+        // set at trip START and a trip outlasts it, so it used to already be expired on finish.
+        BotPersonality p = entry.personality != null ? entry.personality : BotPersonality.defaults();
+        long gap = Math.round(p.gachaIntervalMs() * (0.5 + ThreadLocalRandom.current().nextDouble())); // 0.5..1.5x
+        entry.nextGachaScanAtMs = System.currentTimeMillis() + gap;
         if (say != null) {
             reply.accept(entry, say);
         }
@@ -598,6 +660,9 @@ final class BotGachaponManager {
         entry.gachaTicketsThisTrip = 0;
         entry.gachaNextRollAtMs = 0L;
         entry.gachaUpgradeDriven = false;
+        entry.gachaStandSpot = null;
+        entry.gachaTripBudgetNx = 0L;
+        entry.gachaSpentThisTrip = 0;
     }
 
     // ---- helpers -----------------------------------------------------------------------------

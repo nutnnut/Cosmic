@@ -400,11 +400,14 @@ public class BotEntry {
     int gachaErrandMapId = -1;
     int gachaErrandNpcId = 0;
     final BotTravelManager.ErrandProgress gachaErrandProgress = new BotTravelManager.ErrandProgress(); // abort if it can't reach the NPC
-    int gachaTicketsThisTrip = 0;        // capped by GACHA_TICKETS_PER_TRIP
+    int gachaTicketsThisTrip = 0;        // diagnostic count of rolls this trip (budget is the real limiter)
     long gachaNextRollAtMs = 0L;         // humanlike pacing between rolls
     long nextGachaScanAtMs = 0L;
     long gachaNextRareChatAtMs = 0L;     // rate-limit the "got <rare>!" shout
     boolean gachaUpgradeDriven = false;  // trip chosen for gear upgrades (not resale) -> pivot when satisfied
+    Point gachaStandSpot = null;          // per-bot jittered foothold near the machine (anti-stacking)
+    long gachaTripBudgetNx = 0L;          // personality NX budget for this trip; replaces the flat ticket cap
+    int gachaSpentThisTrip = 0;           // NX spent so far this trip (vs gachaTripBudgetNx)
 
     // Supervised-mode quest AUTO-SUGGEST (Feature A): when the owner is online and the bot is at
     // their side, the bot occasionally SUGGESTS a standout nearby quest in chat (it never wanders

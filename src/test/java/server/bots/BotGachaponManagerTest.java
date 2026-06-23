@@ -48,6 +48,7 @@ class BotGachaponManagerTest {
     private final java.util.function.BiConsumer<BotEntry, String> prevReply = BotGachaponManager.reply;
     private final java.util.function.IntFunction<String> prevName = BotGachaponManager.itemNameLookup;
     private final BotGachaponManager.GachaLog prevLog = BotGachaponManager.gachaLog;
+    private final BotGachaponManager.RareBroadcast prevBroadcast = BotGachaponManager.rareBroadcast;
 
     private final List<String> replies = new ArrayList<>();
     private final BotManager.Config prevCfg = BotManager.cfg;
@@ -56,6 +57,7 @@ class BotGachaponManagerTest {
         BotGachaponManager.reply = (e, t) -> replies.add(t);
         BotGachaponManager.itemNameLookup = id -> "Item" + id;
         BotGachaponManager.gachaLog = (b, id, m) -> { /* no WZ in tests */ };
+        BotGachaponManager.rareBroadcast = (b, item, town) -> { /* no Server singleton in tests */ };
         // Need-aware upgrade EV is off by default (no WZ): resale drives, matching the legacy tests.
         // Plenty of spare NX so plannedRolls() (now part of rankTowns) doesn't touch a mock CashShop.
         BotGachaponManager.upgradeValue = (b, id, barCache) -> 0.0;
@@ -85,6 +87,7 @@ class BotGachaponManagerTest {
         BotGachaponManager.reply = prevReply;
         BotGachaponManager.itemNameLookup = prevName;
         BotGachaponManager.gachaLog = prevLog;
+        BotGachaponManager.rareBroadcast = prevBroadcast;
         BotManager.cfg = prevCfg;
     }
 
@@ -115,10 +118,11 @@ class BotGachaponManagerTest {
     // ---- affordability gate ------------------------------------------------------------------
 
     @Test
-    void buysFloorOfSpendableOverPriceCappedAtTripCap() {
+    void stopsAtTheReserveFloorWhenBudgetIsAmple() {
         Character bot = mock(Character.class);
         BotEntry e = entry(bot);
         e.gachaErrandNpcId = constants.id.NpcId.GACHAPON_HENESYS;
+        e.gachaTripBudgetNx = 1_000_000; // budget not the limiter here - the reserve floor is
 
         int[] wallet = {1_000 + 800 * 3 + 100}; // reserve 1000 + room for 3 tickets + leftover
         int[] charged = {0};
@@ -134,8 +138,8 @@ class BotGachaponManagerTest {
         while (BotGachaponManager.rollOnce(e, bot)) {
             rolls++;
         }
-        // spendable = 1000+2400+100 - 1000 reserve = 2500 -> floor(2500/800) = 3 tickets.
-        assertEquals(3, rolls, "buys floor(spendable/price)");
+        // spendable above the reserve = 1000+2400+100 - 1000 = 2500 -> floor(2500/800) = 3 tickets.
+        assertEquals(3, rolls, "rolls until one more would dip the reserve");
         assertEquals(3, charged[0]);
         assertEquals(3, granted[0]);
         assertEquals(3, e.gachaTicketsThisTrip);
@@ -146,6 +150,7 @@ class BotGachaponManagerTest {
         Character bot = mock(Character.class);
         BotEntry e = entry(bot);
         int[] charged = {0};
+        e.gachaTripBudgetNx = 1_000_000; // budget ample: the reserve gate is what blocks
         BotGachaponManager.ticketPrice = () -> 800;
         BotGachaponManager.nxBalance = b -> 1_500; // only 500 above the 1000 reserve, < 800
         BotGachaponManager.nxCharge = (b, nx) -> charged[0]++;
@@ -159,13 +164,13 @@ class BotGachaponManagerTest {
     }
 
     @Test
-    void stopsAtPerTripCap() {
-        BotManager.cfg.GACHA_TICKETS_PER_TRIP = 2;
+    void stopsWhenTheTripNxBudgetIsSpent() {
         Character bot = mock(Character.class);
         BotEntry e = entry(bot);
+        e.gachaTripBudgetNx = 800 * 2; // personality budget = exactly two tickets, NX otherwise unlimited
         int[] charged = {0};
         BotGachaponManager.ticketPrice = () -> 800;
-        BotGachaponManager.nxBalance = b -> 1_000_000; // effectively unlimited
+        BotGachaponManager.nxBalance = b -> 1_000_000; // effectively unlimited NX -> budget is the cap
         BotGachaponManager.nxCharge = (b, nx) -> charged[0]++;
         BotGachaponManager.spaceCheck = (b, id, q) -> true;
         BotGachaponManager.grantItem = (b, id, q) -> {};
@@ -175,8 +180,9 @@ class BotGachaponManagerTest {
         while (BotGachaponManager.rollOnce(e, bot)) {
             rolls++;
         }
-        assertEquals(2, rolls, "capped at GACHA_TICKETS_PER_TRIP");
+        assertEquals(2, rolls, "capped by the trip NX budget, not a flat ticket count");
         assertEquals(2, charged[0]);
+        assertEquals(800 * 2, e.gachaSpentThisTrip);
     }
 
     // ---- per-roll inventory guard ------------------------------------------------------------
@@ -185,6 +191,7 @@ class BotGachaponManagerTest {
     void fullBagStopsTripWithoutChargingNxOrCountingTicket() {
         Character bot = mock(Character.class);
         BotEntry e = entry(bot);
+        e.gachaTripBudgetNx = 1_000_000;
         int[] charged = {0};
         int[] granted = {0};
         BotGachaponManager.ticketPrice = () -> 800;
@@ -205,6 +212,7 @@ class BotGachaponManagerTest {
     void potionRewardGrantsHundred() {
         Character bot = mock(Character.class);
         BotEntry e = entry(bot);
+        e.gachaTripBudgetNx = 1_000_000;
         Map<Integer, Short> grants = new HashMap<>();
         BotGachaponManager.ticketPrice = () -> 800;
         BotGachaponManager.nxBalance = b -> 1_000_000;
@@ -314,6 +322,10 @@ class BotGachaponManagerTest {
         assertEquals(constants.id.NpcId.GACHAPON_HENESYS, e.gachaErrandNpcId,
                 "autopilot heads to the best-EV town");
         assertEquals(BotGachaponManager.gachaponTownMap(constants.id.NpcId.GACHAPON_HENESYS), e.gachaErrandMapId);
+        // The trip's spend cap is a personality fraction of spare NX (resetTripCounters via beginErrand).
+        long spare = 1_000_000 - BotManager.cfg.GACHA_NX_RESERVE;
+        assertEquals(Math.round(spare * e.personality.gachaSpendFrac()), e.gachaTripBudgetNx,
+                "trip budget = personality fraction of spare NX");
     }
 
     // ---- roll-amortized travel ---------------------------------------------------------------
@@ -364,6 +376,7 @@ class BotGachaponManagerTest {
         BotEntry e = entry(bot);
         e.gachaErrandNpcId = constants.id.NpcId.GACHAPON_HENESYS;
         e.gachaUpgradeDriven = true; // chosen for gear, so it should pivot once satisfied
+        e.gachaTripBudgetNx = 1_000_000;
 
         double[] upgrade = {200.0}; // 0.9 * 200 * 5(NX/score) = 900 NX/roll > 800 price -> keep rolling
         BotGachaponManager.ticketPrice = () -> 800;
@@ -383,5 +396,50 @@ class BotGachaponManagerTest {
         assertFalse(BotGachaponManager.rollOnce(e, bot), "need satisfied -> trip ends (pivot)");
         assertTrue(replies.stream().anyMatch(s -> s.contains("got what i came for")),
                 "bot says it got what it came for");
+    }
+
+    // ---- rare world broadcast ----------------------------------------------------------------
+
+    @Test
+    void notablePullFiresTheWorldBroadcastButCommonDoesNot() {
+        Character bot = mock(Character.class);
+        BotEntry e = entry(bot);
+        e.gachaErrandNpcId = constants.id.NpcId.GACHAPON_HENESYS;
+        e.gachaTripBudgetNx = 1_000_000;
+        int[] broadcasts = {0};
+        BotGachaponManager.rareBroadcast = (b, item, town) -> broadcasts[0]++;
+        BotGachaponManager.ticketPrice = () -> 800;
+        BotGachaponManager.nxBalance = b -> 1_000_000;
+        BotGachaponManager.nxCharge = (b, nx) -> {};
+        BotGachaponManager.spaceCheck = (b, id, q) -> true;
+        BotGachaponManager.grantItem = (b, id, q) -> {};
+        BotGachaponManager.isEquip = id -> false; // non-equip -> plain Item display, no WZ
+
+        BotGachaponManager.roll = npc -> new Gachapon.GachaponItem(0, 4000000); // tier 0 = common
+        assertTrue(BotGachaponManager.rollOnce(e, bot));
+        assertEquals(0, broadcasts[0], "common pull: no world notice (matches doGachapon)");
+
+        BotGachaponManager.roll = npc -> new Gachapon.GachaponItem(1, 4000000); // tier 1 = uncommon
+        assertTrue(BotGachaponManager.rollOnce(e, bot));
+        assertEquals(1, broadcasts[0], "uncommon/rare pull: one world notice");
+    }
+
+    // ---- personality cadence (anti-yo-yo) ----------------------------------------------------
+
+    @Test
+    void finishingATripPushesTheNextScanOutByThePersonalityInterval() {
+        Character bot = mock(Character.class);
+        BotEntry e = entry(bot);
+        e.gachaErrandMapId = constants.id.MapId.HENESYS;
+        e.nextGachaScanAtMs = 0L;
+
+        long before = System.currentTimeMillis();
+        BotGachaponManager.finishErrand(e, bot, null);
+
+        assertEquals(-1, e.gachaErrandMapId, "trip state cleared");
+        // The default personality (appetite 0.3 -> ~53h interval, jittered >=0.5x) pushes the next scan
+        // hours out, killing the "roll, leave, immediately return" yo-yo.
+        assertTrue(e.nextGachaScanAtMs > before + 3_600_000L,
+                "next gacha scan is pushed at least an hour out");
     }
 }

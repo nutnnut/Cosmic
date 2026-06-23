@@ -209,6 +209,31 @@ public record BotPersonality(
         return PARTY_MISTAKE_BASE * (0.5 + riskTolerance);
     }
 
+    // ---- gachapon appetite (personality-driven cadence + budget) ----
+    // Derived from the seed with a distinct salt so a bot's gambling appetite is stable across restarts
+    // without a stored field and doesn't correlate with its other traits (same trick as permanentBeginner).
+    private static final long GACHA_SALT = 0xD1B54A32D192ED03L;
+    private static final long GACHA_INTERVAL_LOW_MS  = 72L * 3600_000L; // low appetite: ~once every 3 days
+    private static final long GACHA_INTERVAL_HIGH_MS =  8L * 3600_000L; // high appetite: ~a few times a day
+    private static final double GACHA_SPEND_FRAC_LOW  = 0.05;
+    private static final double GACHA_SPEND_FRAC_HIGH = 0.40;
+
+    /** Stable 0..1 gacha appetite. Neutral 0.3 for the seed-0 default profile (non-managed bots). */
+    private double gachaAppetite() {
+        return seed == 0 ? 0.3 : new Random(seed ^ GACHA_SALT).nextDouble();
+    }
+
+    /** Mean gap between gachapon trips: high appetite ~8h (a few times a day), low ~72h (once every few
+     *  days). Jitter at the call site for per-session variance. */
+    public long gachaIntervalMs() {
+        return Math.round(GACHA_INTERVAL_LOW_MS + (GACHA_INTERVAL_HIGH_MS - GACHA_INTERVAL_LOW_MS) * gachaAppetite());
+    }
+
+    /** Max fraction of spare NX (above the reserve) the bot will blow on one gachapon trip. */
+    public double gachaSpendFrac() {
+        return GACHA_SPEND_FRAC_LOW + (GACHA_SPEND_FRAC_HIGH - GACHA_SPEND_FRAC_LOW) * gachaAppetite();
+    }
+
     // ---- serialization (flat key=value; tolerant on read) ----
 
     public String serialize() {
