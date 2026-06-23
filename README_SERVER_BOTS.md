@@ -6,12 +6,13 @@
 
 - bot autonomy / autopilot - send a bot or party off to travel, grind, resupply, and play on its own
 - fully ownerless bots/living-server population (`!botpop`)
-- follow, trade, loot
-- auto fight/grind, use skill, auto assign ap/sp, buffs (Only 1st jobs + select 2nd job configured/tested)
-- auto buy/resupply potions/ammo if shop available within the same map
+- companion bots that fight, follow, trade, loot
+- form your own crew, or join a new party of bots everytime
+- auto fight/grind, use skill, auto assign ap/sp, buffs (Not all classes/skills are implemented)
+- auto buy/resupply potions/ammo
 - auto share potions/ammo/rocks among themselves and to owner(if requested) when running low while farming
 - auto equip and optimize own gear loadout - including chaining stats bonus to unlock higher requirement equips and weapons, allowing dexless/strless/lukless builds
-- auto gear progression, grind mob for drop, grind scroll, apply scroll
+- auto gear progression, grind mob for drop, grind scroll, apply scroll, use gachapon
 - auto share equipment upgrades with owner and other sibling bots (auto compare stats directly against recipient's inventory)
 - auto sort equipment from junk equip so selling trash equips become manageable. (sell trash command available)
 - automation command for maker skill disassemble gear / craft monster crystals
