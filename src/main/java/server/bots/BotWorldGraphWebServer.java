@@ -134,6 +134,7 @@ public final class BotWorldGraphWebServer {
             s.createContext("/api/live", BotWorldGraphWebServer::serveLive);
             s.createContext("/api/mapinfo", BotWorldGraphWebServer::serveMapInfo);
             s.createContext("/api/command", BotWorldGraphWebServer::serveCommand);
+            s.createContext("/api/botdebug", BotWorldGraphWebServer::serveBotDebug);
             s.setExecutor(Executors.newCachedThreadPool(r -> {
                 Thread t = new Thread(r, "bot-worldmap-web");
                 t.setDaemon(true);
@@ -576,6 +577,52 @@ public final class BotWorldGraphWebServer {
             liveJsonAt = now;
         }
         send(ex, 200, "application/json", json.getBytes(StandardCharsets.UTF_8));
+    }
+
+    /** Read-only per-bot autopilot internals for live debugging — party/crew cohesion, follow state, and
+     *  travel target for every online bot. Lets an operator (or an agent, via plain HTTP) see WHY bots
+     *  scatter: owner (null/self/human), apParty, dst (travel target), errand, grinding, follow/transit,
+     *  straggler-wait, operator override. No cache — low-frequency introspection, not a client poll. */
+    private static void serveBotDebug(HttpExchange ex) throws IOException {
+        send(ex, 200, "application/json", botDebugJson().getBytes(StandardCharsets.UTF_8));
+    }
+
+    private static String botDebugJson() {
+        StringBuilder sb = new StringBuilder("{\"bots\":[");
+        boolean first = true;
+        for (Character chr : onlineCharacters()) {
+            if (!(chr.getClient() instanceof BotClient)) {
+                continue;
+            }
+            BotEntry e = lookupBotEntry(chr.getId());
+            if (e == null) {
+                continue;
+            }
+            String owner = e.owner == null ? "null" : (e.owner == e.bot ? "self" : e.owner.getName());
+            if (!first) {
+                sb.append(',');
+            }
+            first = false;
+            sb.append("{\"id\":").append(chr.getId())
+                    .append(",\"n\":").append(jsonStr(chr.getName()))
+                    .append(",\"map\":").append(chr.getMapId())
+                    .append(",\"lvl\":").append(chr.getLevel())
+                    .append(",\"party\":").append(Math.max(0, chr.getPartyId()))
+                    .append(",\"crew\":").append(e.crewGroupId != null ? e.crewGroupId : 0)
+                    .append(",\"owner\":").append(jsonStr(owner))
+                    .append(",\"apParty\":").append(e.autopilotParty)
+                    .append(",\"dst\":").append(e.autopilotMapId)
+                    .append(",\"errand\":").append(e.autopilotErrandMapId)
+                    .append(",\"grinding\":").append(e.grinding)
+                    .append(",\"following\":").append(e.following)
+                    .append(",\"followTo\":").append(e.followTargetId)
+                    .append(",\"transit\":").append(e.autopilotTransitFollow)
+                    .append(",\"waiting\":").append(e.autopilotWaitingForStragglers)
+                    .append(",\"op\":").append(jsonStr(e.operatorCmd == null ? "" : e.operatorCmd.name()))
+                    .append(",\"status\":").append(jsonStr(BotAutopilotManager.statusReport(e, chr)))
+                    .append('}');
+        }
+        return sb.append("]}").toString();
     }
 
     /** Per-map detail for a clicked node: the mobs that spawn there (name, level, spawn-point count) and
