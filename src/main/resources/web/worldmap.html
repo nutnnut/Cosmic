@@ -30,6 +30,9 @@
   #status{margin-top:8px;color:#9fb0c8}
   #detail{margin-top:10px;line-height:1.5;border-top:1px solid #283143;padding-top:8px;min-height:40px}
   #detail .occ{color:#9fb0c8}
+  #detail summary{cursor:pointer;list-style-position:outside}
+  #detail > details > summary{font-weight:bold}
+  #detail .body details summary{font-weight:normal;color:#9fb0c8;font-size:0.9em}
   .legend{margin-top:10px;font-size:11px;color:#8a99b3}
   .legend span{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:4px;vertical-align:middle}
   textarea{width:100%;height:240px;margin-top:8px;background:#0d1017;color:#cdd6e4;border:1px solid #283143;font:11px monospace}
@@ -326,26 +329,40 @@ const esc = s => String(s).replace(/[&<>]/g, ch => ({'&':'&amp;','<':'&lt;','>':
 const occLine = (k,c) => (k==='P'?'&#128100; ':'&#129302; ')+esc(c.n)+'  Lv'+c.l+' '+esc(c.j);
 const occupants = map => { const o = live[map]; return o ? [...o.players.map(c=>['P',c]), ...o.bots.map(c=>['B',c])] : []; };
 
-let selectedMap = null;
-function showDetail(inst){
-  selectedMap = inst.id;
+let selectedMap = null;      // async-fetch guard token (joined selected-node ids)
+let selNodes = [];           // nodes whose detail the right panel shows (RTS multi-select aware)
+function showDetail(inst){ selNodes = [inst]; renderDetails(); }   // non-RTS single click
+// Right panel: one collapsible <details> per map across all selected nodes. A map with characters is
+// open by default; an empty map stays collapsed (just its name/id) and lazy-loads on first expand.
+function renderDetails(){
+  const el = document.getElementById('detail');
+  const seen = new Set(), list = selNodes.filter(n => !seen.has(n.id) && seen.add(n.id));
+  if(!list.length){ selectedMap = null; el.innerHTML = '<span class="meta">click a node</span>'; return; }
+  const token = list.map(n=>n.id).join(',');
+  selectedMap = token;
+  el.innerHTML = list.map(nodeBlock).join('');
+  el.querySelectorAll('details[data-map]').forEach(d => {
+    const m = +d.dataset.map;
+    if(d.open) fetchMapInfo(m, token);                         // visible now -> load now
+    else d.addEventListener('toggle', function once(){         // collapsed -> load on first expand
+      if(d.open){ d.removeEventListener('toggle', once); fetchMapInfo(m, token); }
+    });
+  });
+}
+function nodeBlock(inst){
   const flags = [inst.hub?'hub':null, inst.anchor?'worldmap spot':null, inst.dup?'on multiple worldmaps':null,
                  inst.danger?'UNRETURNABLE':null, inst.unreachable?'UNREACHABLE BY BOT':null,
                  inst.leaf?'dead-end':null].filter(Boolean).join(' &middot; ');
-  const merged = inst.maps.length > 1;
-  // single node -> one merged section (no repeated sub-header / divider); merged -> a section per map
-  const boxes = inst.maps.map((m,i) =>
-    '<div id="mb'+m+'" style="margin-top:8px">'
-    + (merged ? '<b>'+esc(inst.names[i])+' ('+m+')</b>' : '')
-    + '<div class="body" style="margin-top:4px">loading…</div></div>').join('');
-  document.getElementById('detail').innerHTML =
-    'WorldMap'+inst.wm + (flags?'<br>'+flags:'') + boxes;   // node name omitted — already shown on hover
-  inst.maps.forEach(m => fetchMapInfo(m, inst.id));
+  const head = '<div class="meta" style="margin-top:6px">WorldMap'+inst.wm+(flags?' &middot; '+flags:'')+'</div>';
+  return head + inst.maps.map((m,i) =>
+    '<details data-map="'+m+'"'+(occupants(m).length ? ' open' : '')+' style="margin-top:4px">'
+    + '<summary>'+esc(inst.names[i])+' ('+m+')</summary>'
+    + '<div class="body" style="margin:4px 0 0 10px">loading…</div></details>').join('');
 }
 function fetchMapInfo(mapId, token){
   fetch('/api/mapinfo?id='+mapId).then(r=>r.json()).then(d=>{
-    if(selectedMap !== token) return;          // a newer node was clicked while this was loading
-    const box = document.getElementById('mb'+mapId); if(!box) return;
+    if(selectedMap !== token) return;          // a newer selection happened while this was loading
+    const box = document.querySelector('details[data-map="'+mapId+'"]'); if(!box) return;
     const statusOf = {}; (d.bots||[]).forEach(b => statusOf[b.name] = b.status);
     // players first, then bots; each bot's @botstatus inline directly under it
     const lines = occupants(mapId).map(([k,c]) => {
@@ -355,13 +372,16 @@ function fetchMapInfo(mapId, token){
         : head;
     });
     const occHtml = lines.length ? lines.join('<br>') : 'nobody here';
-    const mobs = d.mobs.length                                  // skip the section entirely when no spawns
-      ? '<br><br><b>Mobs</b><br>'+d.mobs.map(m => esc(m.name)+' Lv'+m.level+(m.spawns>1 ? ' x'+m.spawns : '')).join('<br>')
+    const mobs = d.mobs.length                                  // collapsed by default
+      ? '<details style="margin-top:6px"><summary>Mobs ('+d.mobs.length+')</summary>'
+        + d.mobs.map(m => esc(m.name)+' Lv'+m.level+(m.spawns>1 ? ' x'+m.spawns : '')).join('<br>') + '</details>'
       : '';
-    const chat = (d.chat && d.chat.length)
-      ? '<br><br><b>Chat</b><br>'+d.chat.map(c => '<span class="meta">'+c.t+'</span> '+esc(c.n)+': '+esc(c.m)).join('<br>') : '';
+    const chat = (d.chat && d.chat.length)                      // collapsed by default
+      ? '<details style="margin-top:6px"><summary>Chat ('+d.chat.length+')</summary>'
+        + d.chat.map(c => '<span class="meta">'+c.t+'</span> '+esc(c.n)+': '+esc(c.m)).join('<br>') + '</details>'
+      : '';
     box.querySelector('.body').innerHTML = occHtml + mobs + chat;
-  }).catch(()=>{ const box=document.getElementById('mb'+mapId); if(box){ const b=box.querySelector('.body'); if(b) b.textContent='failed to load'; } });
+  }).catch(()=>{ const box=document.querySelector('details[data-map="'+mapId+'"]'); if(box){ const b=box.querySelector('.body'); if(b) b.textContent='failed to load'; } });
 }
 
 // hover tooltip: just the characters on the node (class+level) — no mob/status preview
@@ -497,7 +517,7 @@ function rosterClick(ev, id, map, bot, c){
       circle.on('click tap', e => { e.cancelBubble = true;
         if(rtsMode && followArm){ handleFollowPick(inst, e.evt); return; }                // pick whom to follow
         if(rtsMode && moveArmed){ sendCmd(moveCmd, inst.maps); armMove(false); return; }  // pick destination node
-        if(rtsMode){ applySel(nodeBotIds(inst), e.evt); return; }                         // RTS: click selects the node's bots
+        if(rtsMode){ selectNodeRts(inst, e.evt); return; }                               // RTS: select node's bots + show detail
         showDetail(inst);
       });
       circle.on('contextmenu', e => { e.evt.preventDefault(); e.cancelBubble = true; cycleCustom(inst); });
@@ -617,6 +637,13 @@ function applySel(ids, ev){
   else { selected.clear(); ids.forEach(id => selected.add(id)); }
   updateSel();
 }
+// RTS node click: mirror the bot selection AND drive the right panel (same replace/shift-toggle rule)
+function selectNodeRts(inst, ev){
+  if(ev && ev.shiftKey){ const i = selNodes.indexOf(inst); if(i>=0) selNodes.splice(i,1); else selNodes.push(inst); }
+  else selNodes = [inst];
+  applySel(nodeBotIds(inst), ev);
+  renderDetails();
+}
 // move-destination / follow-target arming are mutually exclusive; disarm clears both + the picker
 function disarm(){
   moveArmed = false; followArm = false; hidePicker();
@@ -688,15 +715,18 @@ stage.on('mouseup touchend', e => {
   if(!p) return;
   const x1=Math.min(p.x,s.x), y1=Math.min(p.y,s.y), x2=Math.max(p.x,s.x), y2=Math.max(p.y,s.y);
   if(x2-x1 < 4 && y2-y1 < 4){                          // tap on empty/map background = clear (unless shift)
-    if(!(e.evt && e.evt.shiftKey)){ selected.clear(); updateSel(); }
+    if(!(e.evt && e.evt.shiftKey)){ selected.clear(); selNodes = []; updateSel(); renderDetails(); }
     return;
   }
-  const ids = [];
+  const ids = [], hitNodes = [];
   for(const inst of allInst){
     const a = inst.circle.getAbsolutePosition();      // screen-space, matches pointer coords
-    if(a.x>=x1 && a.x<=x2 && a.y>=y1 && a.y<=y2) ids.push(...nodeBotIds(inst));
+    if(a.x>=x1 && a.x<=x2 && a.y>=y1 && a.y<=y2){ ids.push(...nodeBotIds(inst)); hitNodes.push(inst); }
   }
   applySel(ids, e.evt);
+  if(e.evt && e.evt.shiftKey){ hitNodes.forEach(n => { if(!selNodes.includes(n)) selNodes.push(n); }); }
+  else selNodes = hitNodes;                            // plain box = replace the panel with boxed maps
+  renderDetails();
   status('box: ' + ids.length + ' bot(s) ' + (e.evt && e.evt.shiftKey ? 'toggled' : 'selected'));
 });
 
