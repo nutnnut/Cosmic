@@ -336,7 +336,15 @@ public final class BotScheduler {
                 bm.partyUp(leader.bot, e.bot);
             }
         }
-        if (runStartParty) {
+        // Self-heal: (re)issue the shared party directive when a member was just brought up
+        // (runStartParty) OR when an online crew is partied but NOBODY is party-grinding. The
+        // spawn-time startParty no-ops if it raced bot login (getMap() null) or decideParty returned
+        // null under cold load, and the steady sweep otherwise NEVER retries — leaving the whole crew
+        // scattered in solo autopilot (observed: every crew apParty=false). Self-limiting: once
+        // startParty sets autopilotParty on the members, noneMatch is false and this stops re-firing.
+        // ponytail: coarse scheduler cadence; if decideParty keeps returning null it re-fires per sweep
+        // (fine at minute granularity) — add an in-flight gate only if it shows in perf.
+        if (runStartParty || live.stream().noneMatch(e -> e.autopilotParty)) {
             BotAutopilotManager.startParty(leader.bot, live);
         }
     }
