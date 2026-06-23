@@ -56,6 +56,16 @@ Read-only per-bot autopilot internals for live debugging (party cohesion, follow
 }, ...]}
 ```
 
+### `/api/bot/pathlog?id=<botCharId>`
+On-demand per-bot navigation trace, mirroring the `!botnav pathlog <name>` command. **Toggle:** the
+first call attaches a 120-tick (~6 s) ring-buffer recorder (`BotEntry.pathLogger`) — recording is
+otherwise OFF, zero per-tick overhead; the second call detaches it, dumps the trace to `logs/bot-nav`,
+and returns the report. Use briefly to capture why a bot is stuck.
+```
+1st call -> {"recording":true,"bot":<name>,"msg":"recording started — call again to dump"}
+2nd call -> {"recording":false,"bot":<name>,"file":<path>,"report":<full pathlog text>}
+```
+
 ## Write API
 
 ### `/api/command` (POST)

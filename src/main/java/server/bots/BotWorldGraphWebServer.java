@@ -137,6 +137,7 @@ public final class BotWorldGraphWebServer {
             s.createContext("/api/mapinfo", BotWorldGraphWebServer::serveMapInfo);
             s.createContext("/api/command", BotWorldGraphWebServer::serveCommand);
             s.createContext("/api/botdebug", BotWorldGraphWebServer::serveBotDebug);
+            s.createContext("/api/bot/pathlog", BotWorldGraphWebServer::servePathLog);
             s.setExecutor(Executors.newCachedThreadPool(r -> {
                 Thread t = new Thread(r, "bot-worldmap-web");
                 t.setDaemon(true);
@@ -625,6 +626,49 @@ public final class BotWorldGraphWebServer {
                     .append('}');
         }
         return sb.append("]}").toString();
+    }
+
+    /** On-demand per-bot path-log toggle — mirrors the {@code !botnav pathlog} command
+     *  ({@link BotNavigationDebugOverlay#pathLog}): the FIRST call attaches a 120-tick ring-buffer
+     *  recorder ({@code BotEntry.pathLogger}); recording is otherwise OFF (the field is null → zero
+     *  per-tick overhead). The SECOND call detaches it, dumps the trace to {@code logs/bot-nav}, and
+     *  returns the report text — use briefly to capture why a bot is stuck. {@code ?id=<botCharId>}.
+     *  ponytail: stateful GET is deliberate (one-click toggle, matches the command); LAN debug only. */
+    private static void servePathLog(HttpExchange ex) throws IOException {
+        int id;
+        try {
+            id = Integer.parseInt(queryParams(ex.getRequestURI().getRawQuery()).getOrDefault("id", "").trim());
+        } catch (NumberFormatException e) {
+            send(ex, 400, "application/json", "{\"error\":\"bad id\"}".getBytes(StandardCharsets.UTF_8));
+            return;
+        }
+        BotEntry e = lookupBotEntry(id);
+        if (e == null || e.bot == null) {
+            send(ex, 404, "application/json", "{\"error\":\"no such bot\"}".getBytes(StandardCharsets.UTF_8));
+            return;
+        }
+        send(ex, 200, "application/json", pathLogToggleJson(e).getBytes(StandardCharsets.UTF_8));
+    }
+
+    private static synchronized String pathLogToggleJson(BotEntry e) {
+        String name = e.bot.getName();
+        if (e.pathLogger == null) {
+            e.pathLogger = new BotPathLogger(name, e.bot.getMapId());
+            return "{\"recording\":true,\"bot\":" + jsonStr(name)
+                    + ",\"msg\":\"recording started — call again to dump\"}";
+        }
+        BotPathLogger logger = e.pathLogger;
+        e.pathLogger = null; // stop recording first (tick sees null next tick), then dump the static buffer
+        BotManager.TargetSnapshot snap = BotManager.getInstance().captureTargetSnapshot(e);
+        String path = logger.dumpToFile(e, snap, "via /api/bot/pathlog");
+        String report;
+        try {
+            report = Files.readString(Path.of(path)); // dumpToFile wrote it; read back to return over HTTP
+        } catch (Exception io) {
+            report = path; // dumpToFile returned an error string, not a path
+        }
+        return "{\"recording\":false,\"bot\":" + jsonStr(name) + ",\"file\":" + jsonStr(path)
+                + ",\"report\":" + jsonStr(report) + "}";
     }
 
     /** Per-map detail for a clicked node: the mobs that spawn there (name, level, spawn-point count) and
