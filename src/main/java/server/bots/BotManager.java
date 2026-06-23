@@ -968,6 +968,7 @@ public class BotManager {
             BotEntry entry = registerSpawnedBot(charId, botChar, botChar); // self-owned: owner == bot
             ManagedBotService.ManagedBot mb = ManagedBotService.getInstance().get(charId);
             entry.crewGroupId = mb != null ? mb.groupId() : null; // crewmates share like an owned party
+            entry.selfScrollEnabled = true; // population bots self-scroll their own gear (gated to town-breaks)
             startTakeoverAutopilot(entry, botChar);
             ManagedBotService.getInstance().touchOnline(charId);
             return true;

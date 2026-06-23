@@ -232,8 +232,8 @@ final class BotScrollManager {
 
     // ---- Armed periodic rescan ----
     /** Jittered cadence for the armed auto-scan. */
-    private static final int AUTO_SCAN_MIN_MS = 90_000;
-    private static final int AUTO_SCAN_MAX_MS = 180_000;
+    private static final int AUTO_SCAN_MIN_MS = 300_000;
+    private static final int AUTO_SCAN_MAX_MS = 600_000;
     /** A declined proposal backs the next look off — the owner can always say "scroll now". */
     private static final int AUTO_SCAN_DECLINED_BACKOFF_MS = 900_000;
     /** Quick follow-up after a self-confirmed scroll (snowball-the-winner pacing). */
@@ -256,6 +256,15 @@ final class BotScrollManager {
         }
         if (nowMs < entry.nextSelfScrollScanAtMs
                 || entry.pendingAction != null || entry.pendingTradeCategory != null) {
+            return;
+        }
+        // Managed/self-owned bots only self-scroll while resting on a town-break — never mid-grind
+        // (companions with an online owner keep proposing anytime, since the owner confirms). The scan
+        // stays "due" (timer not re-armed) until the next town-break, then fires and re-arms below.
+        boolean managed = entry.owner == null || entry.owner == bot
+                || (entry.owner != null && !entry.owner.isLoggedin());
+        if (managed && !(BotBreakManager.onBreak(entry, nowMs)
+                && bot.getMap() != null && bot.getMap().isTown())) {
             return;
         }
         entry.nextSelfScrollScanAtMs = nowMs + BotManager.randMs(AUTO_SCAN_MIN_MS, AUTO_SCAN_MAX_MS);
