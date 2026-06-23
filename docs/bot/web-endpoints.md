@@ -43,8 +43,10 @@ On-demand detail for one map.
  "chat":[{"t","n","m"}, ...]}                 // recent map chat: time, name, message
 ```
 
-### `/api/botdebug`
+### `/api/botdebug[?id=<botCharId>]`
 Read-only per-bot autopilot internals for live debugging (party cohesion, follow, travel). No cache.
+`?id=` filters to one bot and adds a `detail` block (live stats + learned skills). **Read this over a DB
+`skills`/`characters` query** — the in-memory `Character` is the SSOT; the DB row lags until the next save.
 ```
 {"bots":[{
   "id","n","map","lvl",
@@ -52,7 +54,14 @@ Read-only per-bot autopilot internals for live debugging (party cohesion, follow
   "apParty","dst","errand",        // apParty = party-autopilot on; dst = travel target map; errand = resupply map (-1 none)
   "grinding","following","followTo","transit","waiting",
   "op",                            // operator override command name ("" = none)
-  "status"                         // the @botstatus line
+  "wt","atk","aoe","noAmmo",       // combat-readiness: weapon type; resolved single-target/aoe skill ids (atk=0 => no offensive skill => basic swing only); ammo gate
+  "status",                        // the @botstatus line
+  "detail":{                       // only when ?id= given
+    "job","str","dex","int","luk","watk","matk",   // totals (base+equip)
+    "hp","maxHp","mp","maxMp","exp","meso",
+    "atkSkill","aoeSkill",         // resolved attack choices (BotCombatManager.rebuildSkillCacheIfNeeded; 0 = none)
+    "skills":{ "<skillId>": <level>, ... }          // every learned skill, live
+  }
 }, ...]}
 ```
 

@@ -588,14 +588,25 @@ public final class BotWorldGraphWebServer {
      *  scatter: owner (null/self/human), apParty, dst (travel target), errand, grinding, follow/transit,
      *  straggler-wait, operator override. No cache — low-frequency introspection, not a client poll. */
     private static void serveBotDebug(HttpExchange ex) throws IOException {
-        send(ex, 200, "application/json", botDebugJson().getBytes(StandardCharsets.UTF_8));
+        int filterId = 0;
+        try {
+            filterId = Integer.parseInt(queryParams(ex.getRequestURI().getRawQuery()).getOrDefault("id", "0").trim());
+        } catch (NumberFormatException ignore) { /* 0 = all bots */ }
+        send(ex, 200, "application/json", botDebugJson(filterId).getBytes(StandardCharsets.UTF_8));
     }
 
-    private static String botDebugJson() {
+    /** {@code ?id=<botCharId>} filters to one bot AND adds a {@code "detail"} block with live stats +
+     *  learned skills (read straight off the {@link Character}, the SSOT — never stale like the DB). The
+     *  cheap combat-readiness fields ({@code atk}/{@code aoe}/{@code wt}/{@code noAmmo}) are on every row so
+     *  "can this bot even attack" is visible in the list view (atk=0 => no offensive skill => basic swing). */
+    private static String botDebugJson(int filterId) {
         StringBuilder sb = new StringBuilder("{\"bots\":[");
         boolean first = true;
         for (Character chr : onlineCharacters()) {
             if (!(chr.getClient() instanceof BotClient)) {
+                continue;
+            }
+            if (filterId > 0 && chr.getId() != filterId) {
                 continue;
             }
             BotEntry e = lookupBotEntry(chr.getId());
@@ -603,6 +614,7 @@ public final class BotWorldGraphWebServer {
                 continue;
             }
             String owner = e.owner == null ? "null" : (e.owner == e.bot ? "self" : e.owner.getName());
+            var wt = BotAttackExecutionProvider.getEquippedWeaponType(chr);
             if (!first) {
                 sb.append(',');
             }
@@ -623,10 +635,51 @@ public final class BotWorldGraphWebServer {
                     .append(",\"transit\":").append(e.autopilotTransitFollow)
                     .append(",\"waiting\":").append(e.autopilotWaitingForStragglers)
                     .append(",\"op\":").append(jsonStr(e.operatorCmd == null ? "" : e.operatorCmd.name()))
-                    .append(",\"status\":").append(jsonStr(BotAutopilotManager.statusReport(e, chr)))
-                    .append('}');
+                    // combat-readiness (cheap, every row): atk=resolved single-target skill (0 => basic swing only)
+                    .append(",\"wt\":").append(jsonStr(wt == null ? "none" : wt.name()))
+                    .append(",\"atk\":").append(e.attackSkillId)
+                    .append(",\"aoe\":").append(e.aoeSkillId)
+                    .append(",\"noAmmo\":").append(e.noAmmo)
+                    .append(",\"status\":").append(jsonStr(BotAutopilotManager.statusReport(e, chr)));
+            if (filterId > 0) {
+                appendBotDetail(sb, chr, e);
+            }
+            sb.append('}');
         }
         return sb.append("]}").toString();
+    }
+
+    /** Live stats + learned skills for a single bot, read off the {@link Character} (SSOT). Use this over a
+     *  DB {@code skills}/{@code characters} query — the in-memory character is authoritative and the DB row
+     *  lags until the next save. {@code skills} maps skillId -> level; {@code atkSkill}/{@code aoeSkill} are
+     *  the bot's resolved choices from {@link BotCombatManager#rebuildSkillCacheIfNeeded} (0 = none). */
+    private static void appendBotDetail(StringBuilder sb, Character chr, BotEntry e) {
+        sb.append(",\"detail\":{")
+                .append("\"job\":").append(chr.getJob().getId())
+                .append(",\"str\":").append(chr.getTotalStr())
+                .append(",\"dex\":").append(chr.getTotalDex())
+                .append(",\"int\":").append(chr.getTotalInt())
+                .append(",\"luk\":").append(chr.getTotalLuk())
+                .append(",\"watk\":").append(chr.getTotalWatk())
+                .append(",\"matk\":").append(chr.getTotalMagic())
+                .append(",\"hp\":").append(chr.getHp()).append(",\"maxHp\":").append(chr.getCurrentMaxHp())
+                .append(",\"mp\":").append(chr.getMp()).append(",\"maxMp\":").append(chr.getCurrentMaxMp())
+                .append(",\"exp\":").append(chr.getExp()).append(",\"meso\":").append(chr.getMeso())
+                .append(",\"atkSkill\":").append(e.attackSkillId)
+                .append(",\"aoeSkill\":").append(e.aoeSkillId)
+                .append(",\"skills\":{");
+        boolean firstSkill = true;
+        for (var entry : chr.getSkills().entrySet()) {
+            if (entry.getKey() == null) {
+                continue;
+            }
+            if (!firstSkill) {
+                sb.append(',');
+            }
+            firstSkill = false;
+            sb.append('"').append(entry.getKey().getId()).append("\":").append(entry.getValue().skillevel);
+        }
+        sb.append("}}");
     }
 
     /** Live perf snapshot from {@link BotPerformanceMonitor} (per-subsystem timings incl. "scroll-scan").

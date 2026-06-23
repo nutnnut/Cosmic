@@ -319,6 +319,15 @@ final class BotPathLogger {
                 .append("  hp=").append(bot.getHp()).append("/").append(bot.getCurrentMaxHp())
                 .append("  mp=").append(bot.getMp()).append("/").append(bot.getCurrentMaxMp())
                 .append("  noAmmo=").append(entry.noAmmo).append("\n");
+        // Resolved attack skills (SSOT: BotCombatManager.rebuildSkillCacheIfNeeded). atkSkill=0 means NO
+        // offensive skill is leveled -> the bot can only basic-swing its weapon (CLOSE route): it walks
+        // onto the mob instead of casting from range, and a short-reach wand/claw can wedge just shy of it.
+        sb.append("            atkSkill=").append(entry.attackSkillId)
+                .append("  aoeSkill=").append(entry.aoeSkillId)
+                .append("  allAtk=").append(entry.attackSkillIds)
+                .append(entry.attackSkillId == 0 && entry.attackSkillIds.isEmpty()
+                        ? "  (NONE -> basic weapon swing only)" : "")
+                .append("\n");
         var mob = entry.grindTarget;
         if (mob == null || !mob.isAlive()) {
             sb.append("            grindTarget=<none — searching/wandering>\n");
