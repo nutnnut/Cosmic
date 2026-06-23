@@ -299,6 +299,7 @@ public class BotEntry {
     volatile long operatorCmdUntilMs = 0L;         // window deadline; >= this -> revert to autopilot
     volatile int operatorMoveMapId = -1;           // MOVE destination (already per-bot resolved by the server)
     volatile int operatorFollowTargetId = 0;       // FOLLOW target character id (0 = none)
+    volatile Point operatorMovePos = null;         // "moveto": precise (x,y) on the bot's CURRENT map (debug + RTS); null = map-level MOVE
     boolean operatorStuck = false;                 // MOVE gave up (logged) -> idle for the rest of the window
     Point operatorSpot = null;                     // cached random idle/fidget spot (ferry SSOT)
     int operatorSpotMapId = -1;

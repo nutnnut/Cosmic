@@ -77,8 +77,10 @@ disables, no param just reports the current aggregate. Enable it, let it run, th
 ## Write API
 
 ### `/api/command` (POST)
-RTS control. Body `{"cmd","ids":[botCharId,...],"maps":[mapId,...]?,"target":charId?}`.
-`cmd` ∈ `idle | fidget | move | moveattack | follow | resume | dance | jump | cheer`. Applies to each
+RTS control. Body `{"cmd","ids":[botCharId,...],"maps":[mapId,...]?,"target":charId?,"x":int?,"y":int?}`.
+`cmd` ∈ `idle | fidget | move | moveattack | moveto | follow | resume | dance | jump | cheer`. Applies to each
 commandable bot id; `move`/`moveattack` resolve a per-bot destination from `maps[]` (clicked node:
-hub-first, else nearest); `follow` needs `target`. Returns `{"ok","applied","skipped":[ids...]}`.
-Commands persist ~30 min, then revert to autopilot.
+hub-first, else nearest); `moveto` walks each bot to an exact `x`,`y` on its **current** map via the full
+nav pipeline (A*/jumps/climbs) and holds there — the live physics-debug + RTS "go exactly here" surface
+(exposed in the RTS toolbar as the x/y inputs + **Go xy**); `follow` needs `target`. Returns
+`{"ok","applied","skipped":[ids...]}`. Commands persist ~30 min, then revert to autopilot (`resume` ends now).

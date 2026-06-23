@@ -10,12 +10,17 @@ import server.maps.Portal;
 import server.maps.Rope;
 
 import java.awt.*;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.Deque;
 import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.PriorityQueue;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ThreadLocalRandom;
 
@@ -794,6 +799,21 @@ final class BotNavigationManager {
     }
 
     private static Point selectWaypoint(BotEntry entry, BotNavigationGraph graph, Point botPos, BotNavigationGraph.Edge edge) {
+        // '-<' branch detour: the launch foothold may be reachable only by first walking AWAY from
+        // the launch x (cross the shared vertex onto the other arm). Normal steering is monotone
+        // toward the launch x and can never take that detour. This override fires ONLY for that case
+        // (grounded JUMP/CLIMB/DROP whose foothold-chain to the launch starts in the away direction).
+        if (entry != null && !entry.inAir && !entry.climbing) {
+            switch (edge.type) {
+                case JUMP, CLIMB, DROP -> {
+                    Point detour = footholdDetourWaypoint(entry, graph, botPos, edge);
+                    if (detour != null) {
+                        return detour;
+                    }
+                }
+                default -> { }
+            }
+        }
         return switch (edge.type) {
             case WALK -> new Point(edge.endPoint);
             case CLIMB -> selectClimbWaypoint(graph, entry, botPos, edge);
@@ -801,6 +821,124 @@ final class BotNavigationManager {
             case DROP -> selectDropWaypoint(entry, graph, botPos, edge);
             case PORTAL -> new Point(edge.startPoint); // always head to the portal entrance; it only fires once landed there
         };
+    }
+
+    /**
+     * Within-region foothold-chain routing for a launch approach. A merged region can contain a
+     * '-<' branch (a vertex where the upper arm, lower arm and stem meet): the bot may stand on one
+     * arm while the edge's launch point sits on another. You can only get there by walking to the
+     * shared vertex and continuing onto the other arm — which means first moving AWAY from the launch
+     * x. The normal waypoint ({@code region.pointAt(launchX)}) steers monotonically toward the launch
+     * x, so the bot never crosses the vertex and oscillates forever (the 101020000 magician shaft).
+     *
+     * <p>This returns a waypoint that sends the bot across the next foothold in the legal walk chain
+     * (toward the shared vertex) ONLY when that first step is in the away-from-launch direction.
+     * In every other case (same foothold, or the chain already heads toward the launch x) it returns
+     * null and the caller's normal monotone steering is used unchanged — so this is inert for all
+     * straight-line approaches and only engages on a genuine branch detour. Re-evaluated each tick:
+     * once the bot reaches the arm whose chain heads toward the launch, this disengages.
+     */
+    static Point footholdDetourWaypoint(BotEntry entry, BotNavigationGraph graph, Point botPos,
+                                        BotNavigationGraph.Edge edge) {
+        MapleMap map = entry.bot.getMap();
+        BotNavigationGraph.Region region = graph.getRegion(edge.fromRegionId);
+        if (map == null || region == null || region.isRopeRegion) {
+            return null;
+        }
+        Point launchPt = edge.startPoint;
+        Foothold curFh = BotPhysicsEngine.findGroundFoothold(map, botPos);
+        Foothold launchFh = BotPhysicsEngine.findGroundFoothold(map, launchPt);
+        if (curFh == null || launchFh == null || curFh.getId() == launchFh.getId()) {
+            return null;
+        }
+        List<Foothold> path = walkFootholdPath(map, region, curFh, launchFh);
+        if (path == null || path.size() < 2) {
+            return null;
+        }
+        Foothold next = path.get(1);
+        Point cross = sharedEndpoint(curFh, next);
+        if (cross == null) {
+            return null;
+        }
+        int awayDir = Integer.signum(cross.x - botPos.x);
+        int launchDir = Integer.signum(launchPt.x - botPos.x);
+        if (awayDir == 0 || awayDir == launchDir) {
+            return null; // chain already heads toward the launch x -> normal monotone steering reaches it
+        }
+        return farEndpoint(next, cross); // detour: walk across 'next' toward the shared vertex
+    }
+
+    /** BFS over a region's footholds via walkable prev/next links. Returns the foothold chain from
+     *  {@code start} to {@code goal} (inclusive), or null if there is no in-region walk path. */
+    private static List<Foothold> walkFootholdPath(MapleMap map, BotNavigationGraph.Region region,
+                                                   Foothold start, Foothold goal) {
+        Set<Integer> inRegion = new HashSet<>();
+        for (BotNavigationGraph.Segment s : region.segments) {
+            inRegion.add(s.footholdId);
+        }
+        if (!inRegion.contains(start.getId()) || !inRegion.contains(goal.getId())) {
+            return null;
+        }
+        Map<Integer, Foothold> byId = BotPhysicsEngine.footholdsByIdFor(map);
+        Map<Integer, Integer> prevOf = new HashMap<>();
+        Deque<Integer> queue = new ArrayDeque<>();
+        prevOf.put(start.getId(), start.getId());
+        queue.add(start.getId());
+        while (!queue.isEmpty()) {
+            int cur = queue.poll();
+            if (cur == goal.getId()) {
+                break;
+            }
+            Foothold f = byId.get(cur);
+            if (f == null) {
+                continue;
+            }
+            for (int nb : new int[]{f.getPrev(), f.getNext()}) {
+                if (nb <= 0 || prevOf.containsKey(nb) || !inRegion.contains(nb)) {
+                    continue;
+                }
+                Foothold nf = byId.get(nb);
+                if (nf == null || !BotPhysicsEngine.canWalkAcrossFootholds(f, nf)) {
+                    continue;
+                }
+                prevOf.put(nb, cur);
+                queue.add(nb);
+            }
+        }
+        if (!prevOf.containsKey(goal.getId())) {
+            return null;
+        }
+        LinkedList<Foothold> path = new LinkedList<>();
+        int cur = goal.getId();
+        while (true) {
+            path.addFirst(byId.get(cur));
+            if (cur == start.getId()) {
+                break;
+            }
+            cur = prevOf.get(cur);
+        }
+        return path;
+    }
+
+    /** The endpoint shared (within 3px) by two linked footholds, or null. */
+    private static Point sharedEndpoint(Foothold a, Foothold b) {
+        Point[] ae = {new Point(a.getX1(), a.getY1()), new Point(a.getX2(), a.getY2())};
+        Point[] be = {new Point(b.getX1(), b.getY1()), new Point(b.getX2(), b.getY2())};
+        for (Point p : ae) {
+            for (Point q : be) {
+                if (Math.abs(p.x - q.x) <= 3 && Math.abs(p.y - q.y) <= 3) {
+                    return p;
+                }
+            }
+        }
+        return null;
+    }
+
+    /** The endpoint of {@code f} that is NOT the given near point. */
+    private static Point farEndpoint(Foothold f, Point near) {
+        Point e1 = new Point(f.getX1(), f.getY1());
+        Point e2 = new Point(f.getX2(), f.getY2());
+        return (Math.abs(e1.x - near.x) <= 3 && Math.abs(e1.y - near.y) <= 3) ? e2 : e1;
     }
 
     static Point selectJumpWaypoint(BotEntry entry, Point botPos, BotNavigationGraph.Edge edge) {

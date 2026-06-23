@@ -1019,6 +1019,9 @@ public final class BotWorldGraphWebServer {
         List<Integer> ids = jsonIntArray(body, "ids");
         List<Integer> maps = jsonIntArray(body, "maps");
         boolean resume = "resume".equalsIgnoreCase(cmdStr);
+        boolean moveto = "moveto".equalsIgnoreCase(cmdStr); // precise (x,y) on the bot's current map (debug + RTS)
+        int moveX = jsonInt(body, "x");
+        int moveY = jsonInt(body, "y");
         BotEntry.OperatorCmd cmd = parseCmd(cmdStr);
         int followTarget = jsonInt(body, "target");
         BotManager mgr = BotManager.getInstance();
@@ -1043,6 +1046,11 @@ public final class BotWorldGraphWebServer {
             }
             if (resume) {
                 mgr.resumeFromOperatorCommand(e);
+                applied++;
+                continue;
+            }
+            if (moveto) {
+                mgr.applyOperatorMoveTo(e, new Point(moveX, moveY));
                 applied++;
                 continue;
             }

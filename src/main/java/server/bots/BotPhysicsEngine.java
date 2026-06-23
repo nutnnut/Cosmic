@@ -587,6 +587,11 @@ final class BotPhysicsEngine {
         return new WalkRegionLookup(map.getId(), graph.regionsById, graph.regionIdByFootholdId, footholdsById(map));
     }
 
+    /** Package-visible accessor for nav within-region foothold-chain routing (cached id->Foothold). */
+    static Map<Integer, Foothold> footholdsByIdFor(MapleMap map) {
+        return footholdsById(map);
+    }
+
     private static Map<Integer, Foothold> footholdsById(MapleMap map) {
         if (map == null || map.getFootholds() == null) {
             return Map.of();

@@ -84,6 +84,7 @@
     <button data-cmd="fidget">Fidget</button>
     <button id="moveBtn">Move</button>
     <button id="moveAtkBtn">Move+atk</button>
+    <span id="movePos" title="walk selected bot(s) to an exact x,y on their current map (physics debug)"><input id="moveX" type="number" placeholder="x" style="width:54px"><input id="moveY" type="number" placeholder="y" style="width:54px"><button id="movePosBtn">Go xy</button></span>
     <button id="followBtn">Follow</button>
     <button data-cmd="resume">Resume</button>
     <button data-cmd="dance">Dance</button>
@@ -679,10 +680,11 @@ function showFollowPicker(occ, evt){
 function hidePicker(){ const el = document.getElementById('picker'); if(el) el.style.display = 'none'; }
 function pickFollowTarget(id){ hidePicker(); sendCmd('follow', null, id); }   // selected bots follow this char
 
-async function sendCmd(cmd, maps, target){
+async function sendCmd(cmd, maps, target, extra){
   const ids = [...selected];
   if(!ids.length){ status('select bots first'); return; }
   const body = {cmd, ids}; if(maps) body.maps = maps; if(target) body.target = target;
+  if(extra) Object.assign(body, extra);
   try {
     const r = await (await fetch('/api/command',
       {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)})).json();
@@ -758,6 +760,11 @@ document.getElementById('moveBtn').onclick = () => armMoveBtn('move');
 document.getElementById('moveAtkBtn').onclick = () => armMoveBtn('moveattack');
 document.getElementById('followBtn').onclick = () => { if(!selected.size){ status('select bots first'); return; } armFollow(!followArm); };
 document.getElementById('clearSel').onclick = () => { selected.clear(); disarm(); updateSel(); };
+document.getElementById('movePosBtn').onclick = () => {
+  const x = parseInt(document.getElementById('moveX').value, 10), y = parseInt(document.getElementById('moveY').value, 10);
+  if(!Number.isFinite(x) || !Number.isFinite(y)){ status('enter x and y'); return; }
+  sendCmd('moveto', null, null, {x, y});   // walk selected bot(s) to exact x,y on their current map
+};
 document.getElementById('sortBtn').onclick = () => {
   sortMode = sortMode === 'name' ? 'level' : 'name';
   document.getElementById('sortBtn').textContent = 'Sort: ' + sortMode;

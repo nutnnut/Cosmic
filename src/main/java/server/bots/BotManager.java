@@ -4555,6 +4555,22 @@ public class BotManager {
         entry.operatorCmd = cmd; // volatile, published last (safe publication of the fields above)
     }
 
+    /** Operator "moveto" (HTTP/RTS): walk the bot to a precise (x,y) on its CURRENT map and hold there.
+     *  Rides the MOVE command's autopilot-suppression window; the tick honors {@link BotEntry#operatorMovePos}.
+     *  This is the live physics-debug + RTS "go exactly here" primitive (SSOT with the player "here" path). */
+    public void applyOperatorMoveTo(BotEntry entry, Point pos) {
+        if (entry == null || pos == null || entry.bot == null) {
+            return;
+        }
+        entry.operatorMovePos = new Point(pos);
+        entry.operatorMoveMapId = entry.bot.getMapId(); // current map => "already arrived" => position-drive branch
+        entry.operatorFollowTargetId = 0;
+        entry.operatorCmdUntilMs = System.currentTimeMillis() + OPERATOR_CMD_WINDOW_MS;
+        entry.operatorStuck = false;
+        entry.operatorCmdPending = true;
+        entry.operatorCmd = BotEntry.OperatorCmd.MOVE; // volatile, published last
+    }
+
     /** Operator "resume autopilot": end any command now and let autopilot re-decide. */
     public void resumeFromOperatorCommand(BotEntry entry) {
         if (entry != null) {
@@ -4567,6 +4583,7 @@ public class BotManager {
         entry.operatorCmdPending = false;
         entry.operatorMoveMapId = -1;
         entry.operatorFollowTargetId = 0;
+        entry.operatorMovePos = null;
         entry.operatorStuck = false;
         entry.operatorSpot = null;
         entry.operatorSpotMapId = -1;
@@ -4617,6 +4634,9 @@ public class BotManager {
             case MOVE, MOVE_ATTACK -> {
                 if (bot.getMapId() == entry.operatorMoveMapId) {
                     entry.operatorStuck = false;
+                    if (entry.operatorMovePos != null) {
+                        return tickOperatorMoveToPos(entry, bot, botPos, now, runAiTick); // precise "go exactly here"
+                    }
                     if (operatorMapHasMobs(entry.operatorMoveMapId)) {
                         return false; // arrived with mobs: let the normal grind flow run (map pinned)
                     }
@@ -4664,6 +4684,29 @@ public class BotManager {
         entry.moveTargetPrecise = true;
         entry.moveTargetSource = "operator-idle";
         stepMovementCore(entry, spot, runAiTick);
+        return true;
+    }
+
+    /** "moveto": drive the bot to a precise (x,y) on its current map via the full nav pipeline (same
+     *  movement core as the player "here" command), then stand once arrived. The point goes through the
+     *  normal {@code moveTarget} -> nav (A* edges, jumps, climbs) path, so this faithfully reproduces
+     *  whatever the autopilot would do to reach that spot — the live physics-debug surface. */
+    private boolean tickOperatorMoveToPos(BotEntry entry, Character bot, Point botPos, long now, boolean runAiTick) {
+        Point dest = entry.operatorMovePos;
+        if (dest == null) {
+            return tickOperatorIdleAtSpot(entry, bot, botPos, now, runAiTick, null);
+        }
+        if (isNear(botPos, dest, 8) && !entry.inAir && !entry.climbing) {   // arrived & grounded -> stand
+            if (entry.grinding) {
+                issueStop(entry); // drop the combat baseline so it just stands at the spot
+            }
+            BotFidgetManager.tickStandingFidget(entry, dest, now, runAiTick);
+            return true;
+        }
+        entry.moveTarget = dest;                                            // not there yet -> walk/fall/climb via nav
+        entry.moveTargetPrecise = true;
+        entry.moveTargetSource = "cmd-moveto";
+        stepMovementCore(entry, dest, runAiTick);
         return true;
     }
 
