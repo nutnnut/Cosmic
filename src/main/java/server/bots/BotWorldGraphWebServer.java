@@ -898,6 +898,17 @@ public final class BotWorldGraphWebServer {
         BotEntry.OperatorCmd cmd = parseCmd(cmdStr);
         int followTarget = jsonInt(body, "target");
         BotManager mgr = BotManager.getInstance();
+        // operator-follow: count the bots that will follow so each gets a distinct formation slot (spread)
+        int followTotal = 0;
+        if (cmd == BotEntry.OperatorCmd.FOLLOW) {
+            for (int id : ids) {
+                BotEntry e = mgr.getEntryByBotCharId(id);
+                if (e != null && commandableEntry(e) && followTarget > 0 && followTarget != id) {
+                    followTotal++;
+                }
+            }
+        }
+        int followIdx = 0;
         int applied = 0;
         List<String> skipped = new ArrayList<>();
         for (int id : ids) {
@@ -923,9 +934,12 @@ public final class BotWorldGraphWebServer {
                     continue;
                 }
             }
-            if (cmd == BotEntry.OperatorCmd.FOLLOW && (followTarget <= 0 || followTarget == id)) {
-                skipped.add(String.valueOf(id)); // need a target, and a bot can't follow itself
-                continue;
+            if (cmd == BotEntry.OperatorCmd.FOLLOW) {
+                if (followTarget <= 0 || followTarget == id) {
+                    skipped.add(String.valueOf(id)); // need a target, and a bot can't follow itself
+                    continue;
+                }
+                e.followOffsetX = BotManager.followSlotOffset(followIdx++, followTotal); // set before publish for visibility
             }
             mgr.applyOperatorCommand(e, cmd, moveMap, followTarget);
             applied++;

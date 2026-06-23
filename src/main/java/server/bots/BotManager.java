@@ -4541,6 +4541,7 @@ public class BotManager {
         entry.operatorSpotMapId = -1;
         entry.operatorMoveProgress.clear();
         entry.following = false;               // a follow command ends here; don't keep trailing a target
+        entry.followOffsetX = 0;               // clear the operator-follow formation slot
         BotFidgetManager.clear(entry);
         entry.autopilotNextDecisionAtMs = 0L; // let autopilot re-decide and take back over immediately
     }
@@ -4640,6 +4641,13 @@ public class BotManager {
         return sp != null && !sp.mobCounts().isEmpty();
     }
 
+    /** Per-bot horizontal spread slot for operator-follow, reusing the owner-follow STAGGER formation
+     *  so a group ordered to follow fans out around the target (idx 0->+px, 1->-px, 2->+2px ...) instead
+     *  of stacking on it. Assigned once at command-issue time (the selection index). */
+    public static int followSlotOffset(int idx, int total) {
+        return FormationState.defaultStagger().offsetFor(idx, total);
+    }
+
     /** Follow a chosen online character (any player/bot, resolved per tick): cross-map via the shared
      *  follow-travel ({@link #syncFollowMap}), same-map by walking near its live position with the loiter
      *  SSOT (which also opportunity-attacks). Target gone/offline -> stand down at a spot. */
@@ -4656,7 +4664,9 @@ public class BotManager {
             }
             return true;
         }
-        loiterAtAnchor(entry, bot, botPos, new Point(target.getPosition()), runAiTick); // walk near + opportunity-attack
+        Point tp = target.getPosition();
+        // fan out by the bot's assigned slot so a group doesn't stack on the target's exact pixel
+        loiterAtAnchor(entry, bot, botPos, new Point(tp.x + entry.followOffsetX, tp.y), runAiTick); // walk near + opportunity-attack
         return true;
     }
 
