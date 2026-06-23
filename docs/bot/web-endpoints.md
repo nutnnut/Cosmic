@@ -66,6 +66,14 @@ and returns the report. Use briefly to capture why a bot is stuck.
 2nd call -> {"recording":false,"bot":<name>,"file":<path>,"report":<full pathlog text>}
 ```
 
+### `/api/perf[?on=1|0]`
+Live performance snapshot from `BotPerformanceMonitor` (per-subsystem timings, including `scroll-scan`,
+grind decides, movement, pathfind). Monitoring is opt-in/off by default: `?on=1` enables it, `?on=0`
+disables, no param just reports the current aggregate. Enable it, let it run, then read to see what's hot.
+```
+{"enabled":true,"sections":[{"section":"scroll-scan","count":N,"avgMs":..,"maxMs":..,"slow":..,"slowAvgMs":..}, ...]}
+```
+
 ## Write API
 
 ### `/api/command` (POST)

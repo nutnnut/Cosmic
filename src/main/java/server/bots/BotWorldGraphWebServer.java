@@ -138,6 +138,7 @@ public final class BotWorldGraphWebServer {
             s.createContext("/api/command", BotWorldGraphWebServer::serveCommand);
             s.createContext("/api/botdebug", BotWorldGraphWebServer::serveBotDebug);
             s.createContext("/api/bot/pathlog", BotWorldGraphWebServer::servePathLog);
+            s.createContext("/api/perf", BotWorldGraphWebServer::servePerf);
             s.setExecutor(Executors.newCachedThreadPool(r -> {
                 Thread t = new Thread(r, "bot-worldmap-web");
                 t.setDaemon(true);
@@ -626,6 +627,36 @@ public final class BotWorldGraphWebServer {
                     .append('}');
         }
         return sb.append("]}").toString();
+    }
+
+    /** Live perf snapshot from {@link BotPerformanceMonitor} (per-subsystem timings incl. "scroll-scan").
+     *  {@code ?on=1} enables the monitor, {@code ?on=0} disables it; no param just reports the current
+     *  aggregate. Monitoring is opt-in (off by default) — enable it, let it run, then read this to see
+     *  what's hot. ponytail: stateful GET toggle, LAN debug only. */
+    private static void servePerf(HttpExchange ex) throws IOException {
+        String on = queryParams(ex.getRequestURI().getRawQuery()).get("on");
+        if ("1".equals(on) || "true".equalsIgnoreCase(on)) {
+            BotPerformanceMonitor.setEnabled(true);
+        } else if ("0".equals(on) || "false".equalsIgnoreCase(on)) {
+            BotPerformanceMonitor.setEnabled(false);
+        }
+        StringBuilder sb = new StringBuilder("{\"enabled\":").append(BotPerformanceMonitor.enabled())
+                .append(",\"sections\":[");
+        boolean first = true;
+        for (BotPerformanceMonitor.SectionSnapshot s : BotPerformanceMonitor.snapshot()) {
+            if (!first) {
+                sb.append(',');
+            }
+            first = false;
+            sb.append("{\"section\":").append(jsonStr(s.section()))
+                    .append(",\"count\":").append(s.count())
+                    .append(",\"avgMs\":").append(s.avgMs())
+                    .append(",\"maxMs\":").append(s.maxMs())
+                    .append(",\"slow\":").append(s.slowCount())
+                    .append(",\"slowAvgMs\":").append(s.slowAvgMs())
+                    .append('}');
+        }
+        send(ex, 200, "application/json", sb.append("]}").toString().getBytes(StandardCharsets.UTF_8));
     }
 
     /** On-demand per-bot path-log toggle — mirrors the {@code !botnav pathlog} command
