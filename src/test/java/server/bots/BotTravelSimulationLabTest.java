@@ -16,6 +16,7 @@ import java.util.List;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
+import static org.mockito.Mockito.when;
 
 /**
  * Offline travel harness — the navigation lab's real-WZ-geometry + real-physics substrate, but driving
@@ -103,6 +104,51 @@ final class BotTravelSimulationLabTest {
         Outcome outcome = driveTaxiHop(entry, entry.bot, cab, /*maxTicks*/ 5);
         System.out.printf("[travel-lab/hail] start=%s rode=%s atTick=%d%n", start, outcome.rode, outcome.rodeTick);
         assertTrue(outcome.rode, "lapsed-budget hop should hail the cab from here and ride");
+    }
+
+    @Test
+    void jobErrandDoesNotResetTheTaxiDwellWhileTravelingToTheCab() {
+        // Regression: the job errand and the taxi cab share npcDwellUntilMs. tickJobErrand used to reset it
+        // on every TRAVELING tick, which zeroed the cab's 2-7s "one ticket please" dwell so it never
+        // completed — the bot reached the cab grounded + in range but never paid the fare, stuck forever
+        // with no give-up and nothing in console. The dwell must survive a TRAVELING tick.
+        MapleMap map = BotNavigationMapLoader.loadMapGeometry(ELLINIA);
+        BotMovementSimulationLab lab = BotMovementSimulationLab.fromMap(map);
+        Point cab = BotNavigationMapLoader.npcGroundedPosition(ELLINIA, ELLINIA_CAB);
+        assertNotNull(cab);
+
+        BotManager.dwellInstant = false; // exercise the real 2-7s cab dwell, not the instant-test path
+        BotEntry entry = lab.spawnBot("cabber", 1, map, new Point(cab)); // stand ON the cab: in range at once
+        lab.teleport("cabber", new Point(cab)); // ground the bot on the cab's foothold
+        Character bot = entry.bot;
+        when(bot.getMeso()).thenReturn(900_000);
+
+        // Job errand whose instructor is a taxi hop away (Ellinia cab -> Lith Harbor), so the approach is
+        // cross-map TRAVELING that routes through the cab, exactly like the real 2nd-job field instructors.
+        entry.jobErrandMapId = LITH_HARBOR;
+        entry.jobErrandTarget = client.Job.WARRIOR;
+        entry.jobErrandNpcId = 999;
+
+        var prevScroll = BotTravelManager.returnScrollCount;
+        try {
+            BotTravelManager.returnScrollCount = b -> 0;
+            stubSeams(cab);
+
+            // First tick seeds the taxi hop and dwells at the cab (sets npcDwellUntilMs to a fresh 2-7s window).
+            BotStarterKitManager.tickJobErrand(entry, bot, true);
+            long dwellAfterFirst = entry.npcDwellUntilMs;
+            assertTrue(dwellAfterFirst > 0,
+                    "taxi should have armed its dwell at the cab; got " + dwellAfterFirst);
+
+            // Subsequent TRAVELING ticks must NOT zero it (the bug). Pre-fix this dropped to 0 every tick.
+            for (int i = 0; i < 5; i++) {
+                BotStarterKitManager.tickJobErrand(entry, bot, true);
+                assertTrue(entry.npcDwellUntilMs > 0,
+                        "job errand must not reset the cab dwell while TRAVELING (tick " + i + ")");
+            }
+        } finally {
+            BotTravelManager.returnScrollCount = prevScroll;
+        }
     }
 
     // --- harness internals -------------------------------------------------------------------------

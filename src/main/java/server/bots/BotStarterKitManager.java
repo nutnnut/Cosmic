@@ -259,7 +259,15 @@ final class BotStarterKitManager {
                 return true; // keep retrying, stuck here until it gets through — never grind
             }
             default -> {
-                BotManager.npcDwellReset(entry);
+                // Re-arm the instructor read-dwell only while WALKING to the instructor on ITS OWN map.
+                // NOT during cross-map TRAVELING: a taxi/ferry leg reaches its cab/usher and runs a 2-7s
+                // "one ticket please" dwell on this SAME shared timer (npcDwellUntilMs). Resetting it every
+                // travel tick zeroed that dwell so it never completed — the bot reached the cab grounded and
+                // in range but never paid the fare, stuck there forever with no give-up/warn (the job-advance
+                // "stuck at <town>, nothing in console" bug). The transport NPC owns the timer mid-travel.
+                if (status == BotTravelManager.ApproachStatus.WALKING) {
+                    BotManager.npcDwellReset(entry);
+                }
                 if (noProgressTooLong) { // WALKING but can't reach the NPC on its own map
                     forceAdvance(entry, bot, "no progress reaching instructor on its map");
                     return false;

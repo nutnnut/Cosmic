@@ -815,7 +815,9 @@ final class BotQuestManager {
             case TRAVELING -> {
                 // A hop is actively underway; record() above already refreshed the no-progress deadline
                 // (WALKING — can't close the last gap on the NPC's map — does NOT, so it still times out).
-                BotManager.npcDwellReset(entry);
+                // Do NOT reset the dwell here: a taxi/ferry leg reaches its cab/usher and runs a 2-7s dwell
+                // on this SAME shared timer, and zeroing it every travel tick strands the bot at the cab,
+                // never paying the fare (see the job-errand variant in BotStarterKitManager.tickJobErrand).
                 return true;
             }
             default -> {
