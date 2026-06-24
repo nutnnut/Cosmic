@@ -157,15 +157,24 @@ final class BotWorldGraph {
             new TaxiEdge(230000000, 2060009, 251000100, 10000),
             // Pason 1002002 on Lith Harbor sails to Florina Beach (1002002.js: gainMeso(-1500), warp(110000000)).
             new TaxiEdge(104000000, 1002002, 110000000, 1500),
+            // Pison 1081001 on Florina Beach sails back (1081001.js: warp to saved "FLORINA", defaults to
+            // 104000000 Lith Harbor; no fare). Bot lands at Lith since the 1002002 ride saved that location.
+            new TaxiEdge(110000000, 1081001, 104000000, 0),
             // Crane 2090005: Mu Lung Temple <-> Herb Town, instant warp + 500 meso (2090005.js cost[2]).
             new TaxiEdge(250000100, 2090005, 251000000, 500),
-            new TaxiEdge(251000000, 2090005, 250000100, 500));
+            new TaxiEdge(251000000, 2090005, 250000100, 500),
+            // Jeff 2030000 on Ice Valley II gates the ONLY entrance to Sharp Cliff I (211040300):
+            // a free NPC-click warp (2030000.js: cm.warp(211040300, 5)) with a level-50-themed gate
+            // that the script actually enforces at level >= 30. No forward portal exists (211040200's
+            // only plain portal goes back to Ice Valley I), so model it as a free, lv30 taxi ride.
+            new TaxiEdge(211040200, 2030000, 211040300, 0, false, 30));
 
     // NPCs whose "taxi" edge is a cross-continent scripted-warp ride with NO walking alternative
-    // (the block above): Shanks (Maple Island exit), Dolphin (Aqua Road), Pason (Florina Beach),
-    // Crane (Mu Lung <-> Herb Town). These stay available even to a poor bot; the Victoria cab edges
+    // (the block above): Shanks (Maple Island exit), Dolphin (Aqua Road), Pason/Pison (Florina Beach),
+    // Crane (Mu Lung <-> Herb Town), Jeff (Ice Valley II -> Sharp Cliff I). These stay available even to
+    // a poor bot; the Victoria cab edges
     // (optional shortcuts between towns that ARE walkable) are gated by the taxi meso tier in expand().
-    private static final Set<Integer> CONTINENT_RIDE_NPCS = Set.of(22000, 2060009, 1002002, 2090005);
+    private static final Set<Integer> CONTINENT_RIDE_NPCS = Set.of(22000, 2060009, 1002002, 1081001, 2090005, 2030000);
 
     private static final Map<Integer, List<TaxiEdge>> TAXI_BY_MAP = buildTaxiByMap();
 

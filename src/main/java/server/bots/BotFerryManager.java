@@ -247,8 +247,10 @@ final class BotFerryManager {
             222020210, 222020211, 222020211,
             List.of(222020200), "Elevator", "in00");
 
-    // TODO(bot-graph): Orbis <-> El Nath (211000000) still NOT modeled - the El Nath / Dead Mine / Orbis Tower
-    // side stays unreachable until its station NPC/platform/event ids are verified.
+    // Note: Orbis <-> El Nath (211000000) is NOT a ferry here, and doesn't need to be - El Nath is
+    // walk-reachable via the Orbis Tower (El Nath 211000000 -> 211000200 -> Orbis Tower 200082100 -> ...
+    // -> Orbis), so the bot graph reaches it by plain portals. The instant Orbis<->El Nath ship is just
+    // an unmodeled shortcut. (Sharp Cliff I is gated behind Jeff's NPC warp - see BotWorldGraph TAXI_EDGES.)
     private static final List<FerryRoute> ROUTES = List.of(
             ELLINIA_TO_ORBIS, ORBIS_TO_ELLINIA,
             ORBIS_TO_LUDIBRIUM, ORBIS_TO_LEAFRE, ORBIS_TO_ARIANT,
