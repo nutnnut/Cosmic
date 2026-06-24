@@ -76,9 +76,21 @@ Each stage is independently shippable and guarded by the existing tests.
   - Drift is now impossible by construction: one destination, refreshed every tick.
   - Cohort key handles the no-game-party case (owner's-own-bots cohort) and is null-safe for
     unkeyable cohorts (solo / test bots), which fall back to per-entry fields.
-- **Stage 2 — Solo = cohort of one.** Give every bot a `PartyAutopilotState`. Delete the
-  `autopilotParty` fork in `maybeRedecide` / cohesion; the decider handles size 1. Move the decision
-  clock (`nextDecisionAtMs`, `decisionInFlight`) into the SSOT (leader-driven).
+- **Stage 2 — Decision-dispatch seam. ✅ DONE (refined scope).**
+  - `maybeRedecide` no longer forks inline; it calls one `redecide(entry,bot)` dispatcher that routes
+    to `redecideParty` (group, leader-driven shared plan) vs `redecideSolo` (own advisor pass: gear /
+    farm-item + ferry teaser). The split is expressed by ONE predicate, `decidesAsGroupMember(entry)`,
+    which all decision call sites (`noteGearUpgraded`, `noteLevelUp`, the async guard) now read
+    instead of touching `autopilotParty` directly.
+  - This is the hook point for Stage 5's player-led policy — it plugs into `redecide` as one branch,
+    not smeared across call sites. Solo behavior is byte-for-byte preserved (suite stays 49/0/0).
+  - **Deliberately NOT done: literally flipping soloists to a cohort-of-one.** Two concrete reasons:
+    (1) a single solo bot has no plan-drift to fix — its `BotEntry` already *is* the single source,
+    so the party SSOT solves nothing there; (2) `autopilotParty` is load-bearing for cohort grouping
+    (`defaultPartyMembers`), so flipping it true would wrongly merge an owner's separate non-party
+    bots into one cohort. The seam gives the uniformity benefit without that risk. If a future stage
+    needs true universal cohorts, introduce an explicit cohort-identity field decoupled from
+    `autopilotParty` rather than overloading the flag.
 - **Stage 3 — Errand abstraction.** Collapse the four errand systems behind `Errand` + a registry;
   remove the bespoke per-errand fields and tick phases.
 - **Stage 4 — AutopilotState enum.** Replace the boolean soup with the explicit state machine.

@@ -1032,7 +1032,7 @@ final class BotAutopilotManager {
      * are leader-driven on a group clock — pulling one member's timer is future work).
      */
     static void noteGearUpgraded(BotEntry entry) {
-        if (entry == null || !isActive(entry) || entry.autopilotParty || entry.autopilotFarmItemId != 0) {
+        if (entry == null || !isActive(entry) || decidesAsGroupMember(entry) || entry.autopilotFarmItemId != 0) {
             return;
         }
         long at = System.currentTimeMillis() + UPGRADE_REDECIDE_DELAY_MS;
@@ -1054,7 +1054,7 @@ final class BotAutopilotManager {
     static void noteLevelUp(BotEntry entry, int newLevel) {
         if (entry == null || !isActive(entry) || entry.autopilotFarmItemId != 0) return;
         if (newLevel > 15) return; // ponytail: early-only; past 15 the regular interval is fine
-        if (entry.autopilotParty) {
+        if (decidesAsGroupMember(entry)) {
             entry.autopilotNextDecisionAtMs = 0L; // leader-driven redecide picks it up next tick
             return;
         }
@@ -1063,6 +1063,19 @@ final class BotAutopilotManager {
         if (entry.autopilotNextDecisionAtMs > at) {
             entry.autopilotNextDecisionAtMs = at;
         }
+    }
+
+    /**
+     * The single place the "who decides my grind destination" split is expressed: true when a cohort
+     * LEADER decides for this bot (group autopilot), false when the bot runs its own decision pass.
+     * Call sites read this instead of {@code autopilotParty} directly so the cohort model can grow a
+     * new policy (e.g. player-led, Stage 5) without re-touching every decision branch. Today a group
+     * member is exactly an {@code autopilotParty} bot; a soloist is its own (degenerate) cohort and
+     * decides for itself — note that solo state never drifts (one bot = inherent SSOT), so it is
+     * deliberately NOT folded into the party SSOT.
+     */
+    static boolean decidesAsGroupMember(BotEntry entry) {
+        return entry.autopilotParty;
     }
 
     private static void maybeRedecide(BotEntry entry, Character bot) {
@@ -1074,16 +1087,30 @@ final class BotAutopilotManager {
             return;
         }
         entry.autopilotNextDecisionAtMs = nextDecisionAt();
-        if (entry.autopilotParty) {
+        redecide(entry, bot);
+    }
+
+    /** Decision-dispatch seam: a group member's destination is chosen by its cohort leader (shared
+     *  plan via {@link #redecideParty}); a self-deciding bot runs its own advisor pass (grind /
+     *  farm-item + ferry teaser, via {@link #redecideSolo}). Stage 5's player-led policy plugs in
+     *  here — one branch — instead of being smeared across the decision call sites. */
+    private static void redecide(BotEntry entry, Character bot) {
+        if (decidesAsGroupMember(entry)) {
             redecideParty(entry, bot);
-            return;
+        } else {
+            redecideSolo(entry, bot);
         }
+    }
+
+    /** A self-deciding bot's own decision pass: full solo policy (gear-first advisor or farm-item
+     *  override, plus the owner-gated ferry teaser). Unchanged from the pre-seam inline solo branch. */
+    private static void redecideSolo(BotEntry entry, Character bot) {
         entry.autopilotDecisionInFlight = true;
         int epoch = entry.activityEpoch;
         decisionRunner.run(() -> decide(entry, bot), result -> {
             entry.autopilotDecisionInFlight = false;
             Decision decision = (Decision) result;
-            if (entry.activityEpoch != epoch || !isActive(entry) || entry.autopilotParty) {
+            if (entry.activityEpoch != epoch || !isActive(entry) || decidesAsGroupMember(entry)) {
                 return;
             }
             maybeTeaseFerry(entry, decision);
