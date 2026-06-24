@@ -122,6 +122,16 @@ class BotNameGeneratorTest {
         assertTrue(combos > 0, "Expected at least one two-word CamelCase combo in 300 samples");
     }
 
+    @Test
+    void rollNumberSuffixIsAlwaysShortDigits() {
+        Pattern digits = Pattern.compile("[0-9]{1,4}");
+        for (int i = 0; i < 500; i++) {
+            String n = BotNameGenerator.rollNumberSuffix(ThreadLocalRandom.current());
+            assertTrue(digits.matcher(n).matches(),
+                    "number suffix '" + n + "' is not [0-9]{1,4}");
+        }
+    }
+
     // ── Fallback / retry path doesn't throw ──────────────────────────────────
 
     @Test

@@ -205,7 +205,7 @@ public class BotNameGenerator {
     private static String generate(List<String> themedOverlay) {
         ThreadLocalRandom rng = ThreadLocalRandom.current();
         for (int attempt = 0; attempt < MAX_RETRIES; attempt++) {
-            String candidate = stylize(composeBase(themedOverlay, rng), rng);
+            String candidate = assemble(themedOverlay, rng);
             if (isValid(candidate)) return candidate;
         }
         return fallback(rng);
@@ -218,7 +218,7 @@ public class BotNameGenerator {
     static String generateForTest() {
         ThreadLocalRandom rng = ThreadLocalRandom.current();
         for (int attempt = 0; attempt < MAX_RETRIES; attempt++) {
-            String candidate = stylize(composeBase(ALL_CURATED, rng), rng);
+            String candidate = assemble(ALL_CURATED, rng);
             if (VALID.matcher(candidate).matches()) return candidate;
         }
         return fallback(rng);
@@ -226,50 +226,99 @@ public class BotNameGenerator {
 
     // ── Internals ─────────────────────────────────────────────────────────────
 
-    /**
-     * Build the base name before stylizing. ~55% two-word CamelCase combos (the N²
-     * variety lever), ~25% single standalone word, ~20% single short word. The themed
-     * overlay is mixed into each word pick (~25% chance), unioning class flavor over
-     * the generic dictionary without copying the big list.
-     */
+    /** Test/back-compat entry: compose with the full 12-char budget. */
     static String composeBase(List<String> themed, ThreadLocalRandom rng) {
+        return composeBase(themed, rng, 12);
+    }
+
+    /**
+     * Build the (decoration-free) base name to fit within {@code budget} chars: pick 1-2
+     * lowercase words whose joined length never exceeds the budget — words are filtered to
+     * fit, NEVER truncated mid-string — then apply one of six capitalization styles. ~55%
+     * two-word combos (the N² variety lever), else a single standalone or short word. The
+     * themed overlay is mixed into each word pick (~25%), unioning class flavor over the
+     * generic dictionary. When the budget is tight this naturally falls to shorter / single
+     * words.
+     */
+    static String composeBase(List<String> themed, ThreadLocalRandom rng, int budget) {
+        return applyCapitalization(pickWords(themed, rng, budget), pickCapStyle(rng));
+    }
+
+    /** Roll 1-2 lowercase words that fit {@code budget} (joined length); never truncates a word. */
+    private static List<String> pickWords(List<String> themed, ThreadLocalRandom rng, int budget) {
         int roll = rng.nextInt(100);
-        String base = null;
-        if (roll < 55) {
-            for (int i = 0; i < 6; i++) {
-                String s = cap(pickCombinable(themed, rng)) + cap(pickCombinable(themed, rng));
-                if (s.length() >= 3 && s.length() <= 12) {
-                    base = s;
-                    break;
-                }
+        if (budget >= 6 && roll < 55) { // two-word combo, each word >= 3
+            String w1 = pickCombinableFitting(themed, rng, budget - 3);
+            if (w1 != null) {
+                String w2 = pickCombinableFitting(themed, rng, budget - w1.length());
+                if (w2 != null) return List.of(w1, w2);
             }
-            // all 6 tries too long — fall through to a single word
         }
-        if (base == null) {
-            base = roll < 80 ? cap(pickStandalone(themed, rng)) : cap(pickCombinable(themed, rng));
+        if (budget >= 7 && roll < 80) { // single standalone (7-8)
+            String s = pickStandaloneFitting(themed, rng, budget);
+            if (s != null) return List.of(s);
         }
-        // Real players often don't capitalize at all (~7% of IGNs are fully lowercase, e.g. "larryang",
-        // "dualbladeyo") — so sometimes drop the CamelCase entirely.
-        if (rng.nextInt(100) < 12) {
-            base = base.toLowerCase();
-        }
-        return base;
+        String c = pickCombinableFitting(themed, rng, budget); // single short word (budget>=3 always fits)
+        return List.of(c != null ? c : "bot");
     }
 
-    private static String pickCombinable(List<String> themed, ThreadLocalRandom rng) {
+    /** Combinable word (len 3-6) with length &lt;= maxLen, themed overlay mixed in; null if none. */
+    private static String pickCombinableFitting(List<String> themed, ThreadLocalRandom rng, int maxLen) {
+        int cap = Math.min(6, maxLen);
+        if (cap < 3) return null;
         if (!themed.isEmpty() && rng.nextInt(100) < 25) {
-            String w = themed.get(rng.nextInt(themed.size()));
-            if (w.length() <= 6) return w.toLowerCase();
+            String w = themed.get(rng.nextInt(themed.size())).toLowerCase();
+            if (w.length() >= 3 && w.length() <= cap) return w;
         }
-        return GENERIC_COMBINABLE.get(rng.nextInt(GENERIC_COMBINABLE.size()));
+        return pickFitting(GENERIC_COMBINABLE, rng, 3, cap);
     }
 
-    private static String pickStandalone(List<String> themed, ThreadLocalRandom rng) {
+    /** Standalone word (len 7-8) with length &lt;= maxLen, themed overlay mixed in; null if none. */
+    private static String pickStandaloneFitting(List<String> themed, ThreadLocalRandom rng, int maxLen) {
+        int cap = Math.min(12, maxLen);
+        if (cap < 7) return null;
         if (!themed.isEmpty() && rng.nextInt(100) < 25) {
-            String w = themed.get(rng.nextInt(themed.size()));
-            if (w.length() >= 7 && w.length() <= 12) return w.toLowerCase();
+            String w = themed.get(rng.nextInt(themed.size())).toLowerCase();
+            if (w.length() >= 7 && w.length() <= cap) return w;
         }
-        return GENERIC_STANDALONE.get(rng.nextInt(GENERIC_STANDALONE.size()));
+        return pickFitting(GENERIC_STANDALONE, rng, 7, cap);
+    }
+
+    /** Random word from {@code pool} with len in [minLen,maxLen]: ~8 random tries, then linear scan; null if none. */
+    private static String pickFitting(List<String> pool, ThreadLocalRandom rng, int minLen, int maxLen) {
+        if (maxLen < minLen || pool.isEmpty()) return null;
+        for (int i = 0; i < 8; i++) {
+            String w = pool.get(rng.nextInt(pool.size()));
+            if (w.length() >= minLen && w.length() <= maxLen) return w;
+        }
+        for (String w : pool) if (w.length() >= minLen && w.length() <= maxLen) return w;
+        return null;
+    }
+
+    // ── Capitalization (length-neutral; chosen independently of word length) ────
+
+    private enum Cap { CAMEL, LOWER, UPPER, ALT_EVEN, ALT_ODD, FIRST_LAST }
+
+    /** Weighted style pick: camel 55, lower 15, upper 10, first+last 10, alt-even 5, alt-odd 5. */
+    private static Cap pickCapStyle(ThreadLocalRandom rng) {
+        int r = rng.nextInt(100);
+        if (r < 55) return Cap.CAMEL;
+        if (r < 70) return Cap.LOWER;
+        if (r < 80) return Cap.UPPER;
+        if (r < 90) return Cap.FIRST_LAST;
+        if (r < 95) return Cap.ALT_EVEN;
+        return Cap.ALT_ODD;
+    }
+
+    private static String applyCapitalization(List<String> words, Cap style) {
+        return switch (style) {
+            case CAMEL -> { StringBuilder sb = new StringBuilder(); for (String w : words) sb.append(cap(w)); yield sb.toString(); }
+            case LOWER -> String.join("", words);
+            case UPPER -> String.join("", words).toUpperCase();
+            case ALT_EVEN -> altCaps(String.join("", words), true);
+            case ALT_ODD -> altCaps(String.join("", words), false);
+            case FIRST_LAST -> { StringBuilder sb = new StringBuilder(); for (String w : words) sb.append(capFirstLast(w)); yield sb.toString(); }
+        };
     }
 
     /** Uppercase first letter, leave the rest (words load lowercase). */
@@ -278,79 +327,167 @@ public class BotNameGenerator {
         return java.lang.Character.toUpperCase(w.charAt(0)) + w.substring(1);
     }
 
+    /** Uppercase the first AND last character of a word, e.g. "scrolL"; 1-char word -> uppercased. */
+    private static String capFirstLast(String w) {
+        if (w.isEmpty()) return w;
+        if (w.length() == 1) return w.toUpperCase();
+        char[] cs = w.toCharArray();
+        cs[0] = java.lang.Character.toUpperCase(cs[0]);
+        cs[cs.length - 1] = java.lang.Character.toUpperCase(cs[cs.length - 1]);
+        return new String(cs);
+    }
+
+    /** Alternating caps toggled over LETTERS only, e.g. "ScRoLl" (startUpper) / "sCrOlL". */
+    private static String altCaps(String s, boolean startUpper) {
+        char[] cs = s.toCharArray();
+        boolean upper = startUpper;
+        for (int i = 0; i < cs.length; i++) {
+            if (java.lang.Character.isLetter(cs[i])) {
+                cs[i] = upper ? java.lang.Character.toUpperCase(cs[i]) : java.lang.Character.toLowerCase(cs[i]);
+                upper = !upper;
+            }
+        }
+        return new String(cs);
+    }
+
+    // ── Decoration pipeline (decorations sized FIRST so words fit the leftover) ──
+
     /**
-     * Apply 0–3 random transforms. Most names are plain (real players aren't all
-     * stylized); the rare 3-stack lets full looks like "xXR4ngerXx" appear (~0.6%
-     * of names) without making styling repetitive.
-     * Weights: 0 = 80% (plain), 1 = 12% (light), 2 = 6%, 3 = 2% (heavy stack).
+     * A length-decided decoration plan. Sizes are fixed up front (wrap edge, the literal number
+     * string, the minor-flavor kind) so {@link #cost()} is known before words are picked — that is
+     * what lets {@link #composeBase} fit words into the leftover budget without ever truncating one.
+     * {@code leet} is length-neutral.
+     */
+    private static final class Plan {
+        String wrapEdge;        // null = no wrap; suffix is its char-reverse
+        String numberStr = "";  // "" = no number
+        int minorKind = -1;     // -1 = none; else 0..3 (see applyMinor)
+        boolean leet;
+
+        int cost() {
+            int c = 0;
+            if (wrapEdge != null) c += 2 * wrapEdge.length();
+            c += numberStr.length();
+            c += MINOR_COST[minorKind + 1]; // index 0 = none
+            return c;
+        }
+
+        /** Drop the cheapest-to-lose decoration to free a char; returns false when nothing left to drop. */
+        boolean shrink() {
+            if (!numberStr.isEmpty()) { numberStr = ""; return true; }
+            if (minorKind >= 0) { minorKind = -1; return true; }
+            if (wrapEdge != null) { wrapEdge = null; return true; }
+            return false;
+        }
+    }
+
+    // Worst-case extra length per minor kind, indexed by (minorKind + 1): none, iPrefix, laugh, zPlural, wordLeet.
+    private static final int[] MINOR_COST = {0, 2, 2, 1, 1};
+
+    private static final String[] EDGES =
+            {"xx", "x", "xX", "Xx", "xXx", "o", "oo", "oO", "Oo", "oOo", "0", "00", "I", "II"};
+
+    /** Roll each decoration independently. Names stay mostly plain; numbers are intentionally uncommon. */
+    private static Plan planDecorations(ThreadLocalRandom rng) {
+        Plan p = new Plan();
+        if (rng.nextInt(100) < 7) {                 // ~7% wrap, e.g. xX..Xx
+            String pre = EDGES[rng.nextInt(EDGES.length)];
+            if (rng.nextBoolean()) pre = pre.toUpperCase();
+            p.wrapEdge = pre;
+        }
+        if (rng.nextInt(100) < 12) p.numberStr = rollNumberSuffix(rng); // ~12% number (single roll)
+        p.leet = rng.nextInt(100) < 7;              // ~7% leet (length-neutral)
+        if (rng.nextInt(100) < 8) p.minorKind = rng.nextInt(4); // ~8% minor flavor
+        return p;
+    }
+
+    /**
+     * Apply the plan in a fixed order: leet (neutral) -> wrap -> number -> minor flavor. The caller
+     * guarantees {@code base.length() + plan.cost() <= 12}, so nothing is clipped; {@link #truncate}
+     * remains only as a paranoid backstop.
+     */
+    private static String applyPlan(String base, Plan p, ThreadLocalRandom rng) {
+        String name = base;
+        if (p.leet) name = applyLeet(name, rng);
+        if (p.wrapEdge != null) {
+            String suf = new StringBuilder(p.wrapEdge).reverse().toString();
+            name = p.wrapEdge + name + suf;
+        }
+        if (!p.numberStr.isEmpty()) name = name + p.numberStr;
+        if (p.minorKind >= 0) name = applyMinor(name, p.minorKind, rng);
+        return truncate(name);
+    }
+
+    /** Build a full name: decorations first, then words fit the leftover budget (never truncated). */
+    static String assemble(List<String> themed, ThreadLocalRandom rng) {
+        Plan p = planDecorations(rng);
+        int budget = 12 - p.cost();
+        while (budget < 3 && p.shrink()) budget = 12 - p.cost(); // keep room for at least a 3-char word
+        if (budget < 3) budget = 3;
+        return applyPlan(composeBase(themed, rng, budget), p, rng);
+    }
+
+    /**
+     * Decorate a fixed root so the result fits within 12 chars — shares the SSOT plan/apply helpers with
+     * {@link #assemble}. Retained for tests; production names go through {@link #assemble}.
      */
     static String stylize(String root, ThreadLocalRandom rng) {
-        int roll = rng.nextInt(100);
-        int transforms = roll < 80 ? 0 : roll < 92 ? 1 : roll < 98 ? 2 : 3;
-
-        String name = root;
-        if (transforms == 0) {
-            // Plain: optionally add a number suffix
-            if (rng.nextBoolean()) {
-                name = applyNumberSuffix(name, rng);
-            }
-            return applyMinorFlavor(truncate(name), rng);
-        }
-
-        // Build a transform sequence (duplicates allowed — they add variety).
-        // doubleEdge removed: it was a strict subset of prefixSuffix (same wrap, no
-        // casing) — keeping both doubled edge-wrap frequency for no extra variety.
-        int[] seq = new int[transforms];
-        for (int i = 0; i < transforms; i++) seq[i] = rng.nextInt(4);
-
-        for (int t : seq) {
-            name = switch (t) {
-                case 0 -> applyPrefixSuffix(name, rng);
-                case 1 -> applyLeet(name, rng);
-                case 2 -> applyAltCaps(name, rng);
-                case 3 -> applyNumberSuffix(name, rng);
-                default -> name;
-            };
-            name = truncate(name); // enforce limit after each step
-        }
-        return applyMinorFlavor(name, rng);
+        Plan p = planDecorations(rng);
+        while (root.length() + p.cost() > 12 && p.shrink()) { /* drop decorations until the root fits */ }
+        return applyPlan(root, p, rng);
     }
 
     /**
-     * Rare text-speak flavor tags, mutually exclusive and LOW-weighted to match real IGN frequency
-     * (~2-3% each, ~10% of names get any): lowercase i/ii prefix, xD/XD laugh suffix, trailing-z
-     * pluralization, and number-as-word leet (4=for, 2=to, U=you). Applied last, over plain or styled
-     * names alike.
+     * Weighted human number-suffix patterns (returns the literal digit string, len 1-4): repeating
+     * (777), sequential (1234), lucky/meme (42/69/1337), round thousands (9000), years (1950-2030),
+     * with plain random kept as a low-weight fallback.
      */
-    private static String applyMinorFlavor(String name, ThreadLocalRandom rng) {
+    static String rollNumberSuffix(ThreadLocalRandom rng) {
         int roll = rng.nextInt(100);
-        if (roll < 3) return applyIPrefix(name, rng);       // ~3% "iiCloud"
-        if (roll < 5) return applyLaughSuffix(name, rng);   // ~2% "SasoriXD"
-        if (roll < 7) return applyZPlural(name, rng);       // ~2% "xMaplez"
-        if (roll < 10) return applyWordLeet(name, rng);     // ~3% "Fame4Fame" / "2Funded"
-        return name;                                         // ~90% no minor tag
+        if (roll < 25) {                                   // repeating digit, len 2-4
+            char d = (char) ('0' + rng.nextInt(10));
+            return String.valueOf(d).repeat(2 + rng.nextInt(3));
+        }
+        if (roll < 45) {                                   // sequential ascending, len 2-4
+            int len = 2 + rng.nextInt(3);
+            int start = 1 + rng.nextInt(10 - len);         // keep all digits <= 9
+            StringBuilder sb = new StringBuilder();
+            for (int i = 0; i < len; i++) sb.append((char) ('0' + start + i));
+            return sb.toString();
+        }
+        if (roll < 60) {                                   // lucky / meme
+            String[] lucky = {"7", "42", "69", "88", "99", "123", "321", "420", "777", "1337", "9000"};
+            return lucky[rng.nextInt(lucky.length)];
+        }
+        if (roll < 70) return (1 + rng.nextInt(9)) + "000"; // round thousand
+        if (roll < 85) return String.valueOf(1950 + rng.nextInt(81)); // year 1950-2030
+        int digits = 1 + rng.nextInt(3);                   // plain random, len 1-3
+        return String.valueOf(rng.nextInt((int) Math.pow(10, digits)));
     }
 
-    /** Lowercase i/ii prefix, e.g. "iiCloud", "iNuke" (asymmetric — no mirrored suffix). */
-    private static String applyIPrefix(String name, ThreadLocalRandom rng) {
-        return truncate((rng.nextBoolean() ? "ii" : "i") + name);
+    /**
+     * Rare text-speak flavor (kind 0..3, ADD-only — never mangles letters): i/ii prefix, xD/XD laugh
+     * suffix, trailing-z pluralization, number-as-word leet (4=for/2=to/U=you). No truncation here —
+     * {@link #applyPlan} budgeted the room and backstops.
+     */
+    private static String applyMinor(String name, int kind, ThreadLocalRandom rng) {
+        return switch (kind) {
+            case 0 -> (rng.nextBoolean() ? "ii" : "i") + name;         // "iiCloud"
+            case 1 -> name + (rng.nextBoolean() ? "xD" : "XD");        // "KevinxD"
+            case 2 -> applyZPlural(name);                              // "Maplez"
+            default -> applyWordLeet(name, rng);                       // "Fame4Fame" / "2Funded"
+        };
     }
 
-    /** Laugh-tag suffix, e.g. "SasoriXD", "KevinxD". */
-    private static String applyLaughSuffix(String name, ThreadLocalRandom rng) {
-        return truncate(name + (rng.nextBoolean() ? "xD" : "XD"));
-    }
-
-    /** Trailing-z pluralization, e.g. "Maplez", "Cloudz" (replaces a trailing s rather than doubling). */
-    private static String applyZPlural(String name, ThreadLocalRandom rng) {
+    /** Trailing-z pluralization, e.g. "Maplez" (replaces a trailing s rather than doubling). */
+    private static String applyZPlural(String name) {
         if (name.endsWith("s") || name.endsWith("S")) {
             name = name.substring(0, name.length() - 1);
         }
-        return truncate(name + "z");
+        return name + "z";
     }
 
-    /** Number-as-word leet that ADDS digits/letters (never mangles existing letters): infix "4" between
-     *  the two CamelCase words ("Fame4Fame"), or a "4"/"2" prefix ("4Fame"/"2Funded"), or a "U" suffix. */
+    /** Number-as-word leet (adds 1 char): infix "4" between two CamelCase words, or a "4"/"2" prefix, or a "U" suffix. */
     private static String applyWordLeet(String name, ThreadLocalRandom rng) {
         int split = -1;
         for (int i = 1; i < name.length(); i++) {
@@ -360,30 +497,16 @@ public class BotNameGenerator {
             }
         }
         return switch (rng.nextInt(4)) {
-            case 0 -> split > 0 ? truncate(name.substring(0, split) + "4" + name.substring(split)) : truncate("4" + name);
-            case 1 -> truncate("4" + name); // 4 = "for"
-            case 2 -> truncate("2" + name); // 2 = "to"
-            default -> truncate(name + "U"); // U = "you"
+            case 0 -> split > 0 ? name.substring(0, split) + "4" + name.substring(split) : "4" + name;
+            case 1 -> "4" + name; // 4 = "for"
+            case 2 -> "2" + name; // 2 = "to"
+            default -> name + "U"; // U = "you"
         };
     }
 
     // ── Transforms ────────────────────────────────────────────────────────────
 
-    /** e.g. "xXBladeXx", "__Drake__" */
-    private static String applyPrefixSuffix(String name, ThreadLocalRandom rng) {
-        // Name regex is [a-zA-Z0-9] only — no underscore (canCreateChar forbids it).
-        String[] edges = {"xx", "x", "xX", "Xx", "xXx", "o", "oo", "oO", "Oo", "oOo", "0", "00", "I", "II"};
-        String pre = edges[rng.nextInt(edges.length)];
-        if (rng.nextBoolean()) {
-            pre = pre.toUpperCase();
-        }
-        // Suffix MIRRORS the prefix (character-reversed) so it reads symmetrically:
-        // "xX" + name + "Xx", not "xX" + name + "xX".
-        String suf = new StringBuilder(pre).reverse().toString();
-        return truncate(pre + name + suf);
-    }
-
-    /** e.g. "B4nd1T", "Fr057" */
+    /** e.g. "B4nd1T", "Fr057" — length-neutral leet substitution. */
     private static String applyLeet(String name, ThreadLocalRandom rng) {
         char[] cs = name.toCharArray();
         for (int i = 0; i < cs.length; i++) {
@@ -400,24 +523,6 @@ public class BotNameGenerator {
             }
         }
         return new String(cs);
-    }
-
-    /** e.g. "yOuRdAdDy", "sHaDoW" */
-    private static String applyAltCaps(String name, ThreadLocalRandom rng) {
-        char[] cs = name.toCharArray();
-        boolean upper = rng.nextBoolean();
-        for (int i = 0; i < cs.length; i++) {
-            cs[i] = upper ? java.lang.Character.toUpperCase(cs[i]) : java.lang.Character.toLowerCase(cs[i]);
-            if (java.lang.Character.isLetter(cs[i])) upper = !upper;
-        }
-        return new String(cs);
-    }
-
-    /** e.g. "Blade124", "Mage999" */
-    private static String applyNumberSuffix(String name, ThreadLocalRandom rng) {
-        int digits = rng.nextInt(3) + 1; // 1–3 digits
-        int max = (int) Math.pow(10, digits);
-        return truncate(name + rng.nextInt(max));
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
