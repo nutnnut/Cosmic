@@ -1,6 +1,7 @@
 package server.bots;
 
 import client.Character;
+import client.Job;
 import org.junit.jupiter.api.Test;
 import org.mockito.MockedStatic;
 import server.bots.BotGrindPlanner.MobCandidate;
@@ -55,6 +56,9 @@ class BotAutopilotManagerTest {
         MapleMap map = mock(MapleMap.class);
         when(bot.getMap()).thenReturn(map);
         when(bot.getMapId()).thenReturn(mapId);
+        // Real bots always have a Job; tick() -> maybeStartOverdueJobAdvance dereferences it. Stub a
+        // beginner so the no-job-advance path is a clean no-op (autoAdvanceTarget is null at level 0).
+        when(bot.getJob()).thenReturn(Job.BEGINNER);
         BotEntry entry = new BotEntry(bot, owner, null);
         entry.lastMapId = mapId;
         return new Fixture(entry, bot);
