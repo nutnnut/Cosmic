@@ -346,6 +346,62 @@ final class BotNavigationGraph implements Serializable {
         return outgoingByRegionId.getOrDefault(regionId, List.of());
     }
 
+    // --- Lazy region-route cache (runtime-only; populated by BotNavigationManager.findNextEdge) ---
+    // Holds the next-hop edge per (startRegion, targetRegion, routeBucket). Transient by design:
+    // rebuilt per graph instance, so it dies with the graph version (no GRAPH_VERSION bump, no disk).
+    // Buckets give crowd de-stacking without per-bot searches (see BotNavigationManager.ROUTE_BUCKETS).
+    // ponytail: unbounded; bounded by regionPairs*buckets in practice, LRU only if a map ever blows up.
+    static final Edge NO_EDGE = new Edge(-1, -1, EdgeType.WALK, new Point(), new Point(), 0, -1, 0, 0, 0, 0);
+    private transient volatile Map<Long, Edge[]> routeCache;
+    transient volatile boolean portalRoutesWarmed;
+    private transient volatile List<Integer> portalRegionIds;
+
+    private Map<Long, Edge[]> routeCache() {
+        Map<Long, Edge[]> c = routeCache;
+        if (c == null) {
+            synchronized (this) {
+                c = routeCache;
+                if (c == null) {
+                    c = new java.util.concurrent.ConcurrentHashMap<>();
+                    routeCache = c;
+                }
+            }
+        }
+        return c;
+    }
+
+    private static long routeKey(int startRegionId, int targetRegionId) {
+        return ((long) startRegionId << 32) | (targetRegionId & 0xffffffffL);
+    }
+
+    /** Cached next hop ({@link #NO_EDGE} = direct walk), or {@code null} if not computed for this (pair, bucket). */
+    Edge cachedNextHop(int startRegionId, int targetRegionId, int bucket) {
+        Edge[] slots = routeCache().get(routeKey(startRegionId, targetRegionId));
+        return slots == null ? null : slots[bucket];
+    }
+
+    void putNextHop(int startRegionId, int targetRegionId, int bucket, int bucketCount, Edge edge) {
+        routeCache().computeIfAbsent(routeKey(startRegionId, targetRegionId), k -> new Edge[bucketCount])[bucket] = edge;
+    }
+
+    /** Distinct regions that contain a portal (PORTAL edge sources); the hubs warmed at first use. */
+    List<Integer> portalRegionIds() {
+        List<Integer> ids = portalRegionIds;
+        if (ids == null) {
+            Set<Integer> set = new java.util.LinkedHashSet<>();
+            for (List<Edge> edges : outgoingByRegionId.values()) {
+                for (Edge e : edges) {
+                    if (e.type == EdgeType.PORTAL) {
+                        set.add(e.fromRegionId);
+                    }
+                }
+            }
+            ids = new ArrayList<>(set);
+            portalRegionIds = ids;
+        }
+        return ids;
+    }
+
     boolean hasInterRegionEdge(int fromRegionId, int toRegionId) {
         for (Edge edge : getOutgoing(fromRegionId)) {
             if (edge.fromRegionId != edge.toRegionId && edge.toRegionId == toRegionId) {

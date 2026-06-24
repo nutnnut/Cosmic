@@ -1080,16 +1080,75 @@ final class BotNavigationManager {
                 && Math.abs(outcome.landing().point().y - edge.endPoint.y) <= yTolerance;
     }
 
+    // Crowd de-stacking under a shared cache: each bot hashes (by its stable routeSeed) to one of
+    // ROUTE_BUCKETS. Bucket 0 is the optimal (seed-0) route; buckets 1..N-1 use jittered weighted-A*
+    // so a crowd heading the same way fans across up to N routes instead of all stacking on one --
+    // the same diversity the per-bot jitter gave, but at N searches per region-pair, not one per bot.
+    static int ROUTE_BUCKETS = 8;
+
+    private static long bucketRouteSeed(int bucket) {
+        return bucket == 0 ? 0L : (0x9E3779B97F4A7C15L * bucket);
+    }
+
+    private static int routeBucket(Character bot) {
+        return (int) Long.remainderUnsigned(routeSeed(bot), ROUTE_BUCKETS);
+    }
+
     private static BotNavigationGraph.Edge findNextEdge(BotNavigationGraph graph,
                                                         Character bot,
                                                         int startRegionId,
                                                         int targetRegionId,
                                                         Point targetPos) {
-        List<BotNavigationGraph.Edge> path = findPath(graph, bot.getMap(), bot.getPosition(), startRegionId, targetRegionId, targetPos, null, routeSeed(bot));
-        if (path.isEmpty()) {
-            return null;
+        MapleMap map = bot.getMap();
+        if (!graph.portalRoutesWarmed) {
+            warmPortalRoutes(graph, map);
         }
-        return collapseLeadingWalkEdges(path);
+        int bucket = routeBucket(bot);
+        // Cache hit: O(1), no search. A cached PORTAL hop whose portal is now closed (isEdgeUsable
+        // false) falls through to a fresh search, which reroutes around it and overwrites the slot.
+        BotNavigationGraph.Edge cached = graph.cachedNextHop(startRegionId, targetRegionId, bucket);
+        if (cached != null && (cached == BotNavigationGraph.NO_EDGE || isEdgeUsable(graph, map, cached))) {
+            return cached == BotNavigationGraph.NO_EDGE ? null : cached;
+        }
+        // Miss: search once for this bucket, cache the next hop. Region progression (and other bots on
+        // the same route) then hit the cache -- a fresh A* fires only on a genuinely new (pair, bucket).
+        List<BotNavigationGraph.Edge> path =
+                findPath(graph, map, bot.getPosition(), startRegionId, targetRegionId, targetPos, null, bucketRouteSeed(bucket));
+        BotNavigationGraph.Edge next = path.isEmpty() ? null : collapseLeadingWalkEdges(path);
+        graph.putNextHop(startRegionId, targetRegionId, bucket, ROUTE_BUCKETS,
+                next == null ? BotNavigationGraph.NO_EDGE : next);
+        return next;
+    }
+
+    /** Precompute the canonical (bucket-0) hop between every portal-region pair, once per graph. */
+    private static void warmPortalRoutes(BotNavigationGraph graph, MapleMap map) {
+        synchronized (graph) {
+            if (graph.portalRoutesWarmed) {
+                return;
+            }
+            List<Integer> portals = graph.portalRegionIds();
+            for (int from : portals) {
+                BotNavigationGraph.Region fromRegion = graph.getRegion(from);
+                if (fromRegion == null) {
+                    continue;
+                }
+                for (int to : portals) {
+                    if (from == to || graph.cachedNextHop(from, to, 0) != null) {
+                        continue;
+                    }
+                    BotNavigationGraph.Region toRegion = graph.getRegion(to);
+                    if (toRegion == null) {
+                        continue;
+                    }
+                    List<BotNavigationGraph.Edge> path = findPath(
+                            graph, map, fromRegion.centerPoint(), from, to, toRegion.centerPoint(), "warm");
+                    BotNavigationGraph.Edge next = path.isEmpty() ? null : collapseLeadingWalkEdges(path);
+                    graph.putNextHop(from, to, 0, ROUTE_BUCKETS,
+                            next == null ? BotNavigationGraph.NO_EDGE : next);
+                }
+            }
+            graph.portalRoutesWarmed = true;
+        }
     }
 
     static List<BotNavigationGraph.Edge> findPath(BotNavigationGraph graph,
