@@ -91,8 +91,14 @@ Each stage is independently shippable and guarded by the existing tests.
     bots into one cohort. The seam gives the uniformity benefit without that risk. If a future stage
     needs true universal cohorts, introduce an explicit cohort-identity field decoupled from
     `autopilotParty` rather than overloading the flag.
-- **Stage 3 — Errand abstraction.** Collapse the four errand systems behind `Errand` + a registry;
-  remove the bespoke per-errand fields and tick phases.
+- **Stage 3 — Errand abstraction. ✅ DONE (NPC-detour trio).**
+  - `DetourErrand` interface (`maybeStart` / `active` / `tick`) + an ordered `DETOUR_ERRANDS` list
+    (job advance, quest piggyback, gachapon). `tick()` loops over them instead of a hardcoded
+    if-chain — a new detour errand is now one list entry, not another `tick()` branch.
+  - Behavior identical (suite 49/0/0). **Scope:** resupply and town-rest are intentionally NOT
+    detours — they reuse the MAIN travel pipeline (their town is `autopilotErrandMapId`, the tick's
+    travel destination) rather than consuming the tick with their own walk. Folding them in would mean
+    untangling them from the travel flow; left as a later step if it ever pays off.
 - **Stage 4 — AutopilotState enum.** Replace the boolean soup with the explicit state machine.
 - **Stage 5 — Player-led decider (Part B).** `PlayerLedDecider`: bots in a player's party follow the
   player, grind in the player's map when mobs are present, follow when not, and never decide a map.

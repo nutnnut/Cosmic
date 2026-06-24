@@ -559,6 +559,54 @@ final class BotAutopilotManager {
     }
 
     /**
+     * A "detour" errand: a self-contained side-trip (walk to an NPC, do a thing, resume grinding)
+     * that preempts the grind destination and consumes the tick while active. Each owns its own
+     * BotEntry state field and its own manager. New detour errand = implement this + add it to
+     * {@link #DETOUR_ERRANDS}; the tick loop drives them all uniformly, in order.
+     *
+     * NOTE: resupply and town-rest are deliberately NOT detours — they reuse the MAIN travel pipeline
+     * (their town becomes autopilotErrandMapId, the tick's travel destination) rather than consuming
+     * the tick with their own walk, so they live in the travel flow below, not here.
+     */
+    interface DetourErrand {
+        /** Restart hook for an errand that should be in flight but isn't (a missed level-up edge, a
+         *  relog mid-walk). No-op for most; the job advance uses it to re-arm an overdue advancement. */
+        default void maybeStart(BotEntry entry, Character bot) {}
+        /** True while this errand owns the bot (its destination field is set). */
+        boolean active(BotEntry entry);
+        /** One tick of the errand; true when it consumed the tick (the caller then returns true). */
+        boolean tick(BotEntry entry, Character bot, boolean runAiTick);
+    }
+
+    // Detour errands in precedence order. Job advance first (must not over-level en route), then the
+    // quest piggyback, then the gachapon trip. Behavior is identical to the old hardcoded if-chain;
+    // the point is that a new detour errand is now one list entry, not another tick() branch.
+    private static final List<DetourErrand> DETOUR_ERRANDS = List.of(
+            new DetourErrand() { // job change: walk to the class-town instructor, advance on arrival
+                @Override public void maybeStart(BotEntry entry, Character bot) {
+                    if (entry.jobErrandMapId == -1) {
+                        BotBuildManager.maybeStartOverdueJobAdvance(entry, bot);
+                    }
+                }
+                @Override public boolean active(BotEntry entry) { return entry.jobErrandMapId != -1; }
+                @Override public boolean tick(BotEntry entry, Character bot, boolean runAiTick) {
+                    return BotStarterKitManager.tickJobErrand(entry, bot, runAiTick);
+                }
+            },
+            new DetourErrand() { // quest piggyback: detour to a quest NPC to start/turn in, then resume
+                @Override public boolean active(BotEntry entry) { return entry.questErrandMapId != -1; }
+                @Override public boolean tick(BotEntry entry, Character bot, boolean runAiTick) {
+                    return BotQuestManager.tickErrand(entry, bot, runAiTick);
+                }
+            },
+            new DetourErrand() { // gachapon trip: detour to a gacha NPC, buy + roll tickets, then resume
+                @Override public boolean active(BotEntry entry) { return entry.gachaErrandMapId != -1; }
+                @Override public boolean tick(BotEntry entry, Character bot, boolean runAiTick) {
+                    return BotGachaponManager.tickErrand(entry, bot, runAiTick);
+                }
+            });
+
+    /**
      * One autopilot tick, between the map-change rebuild and the follow sync. Returns true
      * when the tick was consumed (walking a travel hop); false to continue the normal
      * grind/combat flow.
@@ -582,29 +630,14 @@ final class BotAutopilotManager {
                     || entry.autopilotErrandMapId != -1 || entry.jobErrandMapId != -1)) {
             clearWaitAnchor(entry);
         }
-        // Re-entrant job-advance reconciliation: buildJobPrompt only fires on a level-up edge, so an
-        // errand that was never started, interrupted (a follow command), or lost to a relog mid-walk
-        // would otherwise never restart and the overdue bot would just farm. Restart it here when no
-        // errand is in flight; the block below then drives it this same tick.
-        if (entry.jobErrandMapId == -1) {
-            BotBuildManager.maybeStartOverdueJobAdvance(entry, bot);
-        }
-        // Job-change errand takes precedence: walk to the class-town instructor and advance on
-        // arrival. Consumes the tick (no grinding/attacking en route, so the bot doesn't over-level
-        // past the advancement). Its own state (jobErrandMapId), like the quest/gacha errands.
-        if (entry.jobErrandMapId != -1 && BotStarterKitManager.tickJobErrand(entry, bot, runAiTick)) {
-            return true;
-        }
-        // Quest piggyback errand takes precedence over the grind destination: detour to a quest NPC
-        // to start/turn in a mob quest, then resume grinding. Its own state, not autopilotErrandMapId
-        // (which is hardwired to the shop visit). Consumes the tick while traveling/walking to the NPC.
-        if (entry.questErrandMapId != -1 && BotQuestManager.tickErrand(entry, bot, runAiTick)) {
-            return true;
-        }
-        // Gachapon trip errand: same precedence/structure as the quest errand - detour to a gacha
-        // NPC, buy + roll tickets, then resume grinding. Its own state (gachaErrandMapId).
-        if (entry.gachaErrandMapId != -1 && BotGachaponManager.tickErrand(entry, bot, runAiTick)) {
-            return true;
+        // Detour errands (job advance / quest piggyback / gachapon), in precedence order. maybeStart
+        // re-arms an errand that should be running but isn't (e.g. job advance after a missed level-up
+        // edge or a relog); an active errand that consumes the tick short-circuits the grind flow.
+        for (DetourErrand errand : DETOUR_ERRANDS) {
+            errand.maybeStart(entry, bot);
+            if (errand.active(entry) && errand.tick(entry, bot, runAiTick)) {
+                return true;
+            }
         }
         if (entry.restErrand && entry.autopilotErrandMapId == -1) {
             resolveTownRestDestination(entry, bot); // pick the rest town (or abort restErrand) before travel
