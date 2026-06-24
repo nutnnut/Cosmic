@@ -91,7 +91,15 @@
     <button data-cmd="jump">Jump</button>
     <button data-cmd="cheer">Cheer</button>
     <button id="clearSel">Clear</button>
+    <div id="rtsDbg" style="margin-top:4px;border-top:1px solid #333;padding-top:4px">
+      <span class="sub">debug:</span>
+      <input id="spawnIds" placeholder="charId,charId" style="width:110px"><button id="spawnBtn" title="bring offline bot char(s) online via /api/spawnbot">Spawn</button>
+      <button id="pathlogBtn" title="toggle nav+combat+firePath trace for the ONE selected bot; click again to dump">Pathlog</button>
+      <button id="inspectBtn" title="live skills/stats/combat-readiness for the ONE selected bot (/api/botdebug?id=)">Inspect</button>
+      <button id="perfBtn" title="toggle BotPerformanceMonitor + show top sections">Perf</button>
+    </div>
   </div>
+  <pre id="dbgOut" style="display:none;max-height:260px;overflow:auto;font-size:11px;line-height:1.35;white-space:pre-wrap;background:#111;border:1px solid #333;padding:6px;margin:4px 0"></pre>
   <div id="status"></div>
   <button id="sortBtn">Sort: name</button>
   <div id="roster"></div>
@@ -764,6 +772,47 @@ document.getElementById('movePosBtn').onclick = () => {
   const x = parseInt(document.getElementById('moveX').value, 10), y = parseInt(document.getElementById('moveY').value, 10);
   if(!Number.isFinite(x) || !Number.isFinite(y)){ status('enter x and y'); return; }
   sendCmd('moveto', null, null, {x, y});   // walk selected bot(s) to exact x,y on their current map
+};
+// ---- debug controls: spawn / pathlog / inspect / perf (mirror the LAN debug endpoints) -------------
+function dbgShow(t){ const o = document.getElementById('dbgOut'); o.style.display = 'block'; o.textContent = t; }
+function singleSel(){ if(selected.size !== 1){ status('select exactly ONE bot for this'); return null; } return [...selected][0]; }
+document.getElementById('spawnBtn').onclick = async () => {
+  const ids = document.getElementById('spawnIds').value.trim();
+  if(!ids){ status('enter charId(s) to spawn'); return; }
+  try { const r = await (await fetch('/api/spawnbot?id=' + encodeURIComponent(ids))).json();
+    dbgShow('spawn: ' + JSON.stringify(r.results)); status('spawn requested'); }
+  catch(e){ status('spawn failed'); }
+};
+document.getElementById('pathlogBtn').onclick = async () => {
+  const id = singleSel(); if(id == null) return;
+  status('pathlog…');
+  try { const r = await (await fetch('/api/bot/pathlog?id=' + id)).json();
+    if(r.recording){ status('pathlog recording ' + r.bot + ' — click Pathlog again to dump'); }
+    else { dbgShow(r.report || JSON.stringify(r)); status('pathlog dumped ' + r.bot); } }
+  catch(e){ status('pathlog failed'); }
+};
+document.getElementById('inspectBtn').onclick = async () => {
+  const id = singleSel(); if(id == null) return;
+  try { const r = await (await fetch('/api/botdebug?id=' + id)).json(); const b = (r.bots || [])[0];
+    if(!b){ status('bot ' + id + ' not online'); return; }
+    const d = b.detail || {};
+    dbgShow(b.n + '  lv' + b.lvl + '  map' + b.map
+      + '\nwt=' + b.wt + '  atk=' + b.atk + '  aoe=' + b.aoe + '  noAmmo=' + b.noAmmo
+      + '\nstatus: ' + b.status
+      + '\nstats: STR' + d.str + ' DEX' + d.dex + ' INT' + d.int + ' LUK' + d.luk + '  watk' + d.watk + ' matk' + d.matk
+      + '\nhp ' + d.hp + '/' + d.maxHp + '  mp ' + d.mp + '/' + d.maxMp + '  exp ' + d.exp + '  meso ' + d.meso
+      + '\natkSkill=' + d.atkSkill + '  aoeSkill=' + d.aoeSkill
+      + '\nskills: ' + JSON.stringify(d.skills)); }
+  catch(e){ status('inspect failed'); }
+};
+let perfOn = false;
+document.getElementById('perfBtn').onclick = async () => {
+  perfOn = !perfOn;
+  try { const r = await (await fetch('/api/perf?on=' + (perfOn ? 1 : 0))).json();
+    const rows = (r.sections || []).slice().sort((a,b)=>b.maxMs-a.maxMs).slice(0,20)
+      .map(s => s.section + ': avg' + s.avgMs + ' max' + s.maxMs + ' n' + s.count + ' slow' + s.slow).join('\n');
+    dbgShow('perf ' + (r.enabled ? 'ON' : 'off') + '\n' + (rows || '(no samples yet)')); status('perf ' + (perfOn?'on':'off')); }
+  catch(e){ status('perf failed'); }
 };
 document.getElementById('sortBtn').onclick = () => {
   sortMode = sortMode === 'name' ? 'level' : 'name';
