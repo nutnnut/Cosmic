@@ -310,6 +310,7 @@ class BotAutopilotManagerTest {
             f.entry().autopilotParty = true;
             f.entry().autopilotNextDecisionAtMs = Long.MAX_VALUE;
             f.entry().grinding = true;
+            f.entry().autopilotCohortMember = true; // co-located at embark: part of the travel cohort
         }
 
         try (Seams seams = new Seams(null)) {
@@ -357,6 +358,7 @@ class BotAutopilotManagerTest {
             f.entry().autopilotParty = true;
             f.entry().autopilotNextDecisionAtMs = Long.MAX_VALUE;
             f.entry().grinding = true;
+            f.entry().autopilotCohortMember = true; // co-located at embark: part of the travel cohort
         }
 
         try (Seams seams = new Seams(null);
@@ -390,6 +392,7 @@ class BotAutopilotManagerTest {
             f.entry().autopilotParty = true;
             f.entry().autopilotNextDecisionAtMs = Long.MAX_VALUE;
             f.entry().grinding = true;
+            f.entry().autopilotCohortMember = true; // co-located at embark: part of the travel cohort
         }
 
         try (Seams seams = new Seams(null);
@@ -434,6 +437,7 @@ class BotAutopilotManagerTest {
             f.entry().autopilotParty = true;
             f.entry().autopilotNextDecisionAtMs = Long.MAX_VALUE;
             f.entry().grinding = true;
+            f.entry().autopilotCohortMember = true; // co-located at embark: part of the travel cohort
         }
 
         try (Seams seams = new Seams(null);
@@ -461,6 +465,7 @@ class BotAutopilotManagerTest {
             f.entry().autopilotParty = true;
             f.entry().autopilotNextDecisionAtMs = Long.MAX_VALUE;
             f.entry().grinding = true;
+            f.entry().autopilotCohortMember = true; // co-located at embark: part of the travel cohort
         }
 
         try (Seams seams = new Seams(null);
@@ -494,6 +499,7 @@ class BotAutopilotManagerTest {
             f.entry().autopilotParty = true;
             f.entry().autopilotNextDecisionAtMs = Long.MAX_VALUE;
             f.entry().grinding = true;
+            f.entry().autopilotCohortMember = true; // co-located at embark: part of the travel cohort
         }
 
         try (Seams seams = new Seams(null)) {
@@ -534,6 +540,7 @@ class BotAutopilotManagerTest {
             f.entry().autopilotParty = true;
             f.entry().autopilotNextDecisionAtMs = Long.MAX_VALUE;
             f.entry().grinding = true;
+            f.entry().autopilotCohortMember = true; // co-located at embark: part of the travel cohort
         }
         follower.entry().followOffsetX = 400; // wide slot, beyond the 350 resume band
         leader.entry().autopilotWaitingForStragglers = true; // already holding -> resume band (350) applies
@@ -606,6 +613,7 @@ class BotAutopilotManagerTest {
             f.entry().autopilotParty = true;
             f.entry().autopilotNextDecisionAtMs = Long.MAX_VALUE;
             f.entry().grinding = true;
+            f.entry().autopilotCohortMember = true; // co-located at embark: part of the travel cohort
         }
         nominal.entry().autopilotErrandMapId = TOWN; // resupplying -> excluded as leader
 
