@@ -3271,6 +3271,15 @@ public class BotManager {
             }
         }
 
+        // Debug-follow TTL lapsed: a gm6-followed bot whose admin walked away (no command for the
+        // commander window) would otherwise idle forever with a dead anchor. Drop the binding and resume
+        // its own play, same path managed bots start on. One-shot — clearDebugCommander flips the flag.
+        if (entry.debugCommanderFollow && entry.debugCommanderId > 0 && !isDebugCommanderFresh(entry)) {
+            clearDebugCommander(entry);
+            startTakeoverAutopilot(entry, bot);
+            return;
+        }
+
         if (owner == null && !BotAutopilotManager.isActive(entry) && !entry.loggingOut) {
             entry.following = false;
             if (groundAfterMapChange(entry, bot)) {
