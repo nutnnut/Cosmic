@@ -227,7 +227,7 @@ final class BotAutopilotManager {
      *  ferries per the caller's owner-permission gate ({@link #ferryAllowed}). */
     private static BotWorldGraph.RouteOptions travelOptions(Character bot, boolean withFerry) {
         return new BotWorldGraph.RouteOptions(BotShopManager.countReturnScrolls(bot) > 0, bot.getMeso(), withFerry,
-                bot.getJob().getId() == 0);
+                bot.getJob().getId() == 0, bot.getLevel());
     }
 
     /**

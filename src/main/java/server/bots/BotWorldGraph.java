@@ -65,19 +65,23 @@ final class BotWorldGraph {
     static final int RETURN_SCROLL_MIN_HOPS = 3;
 
     /** Per-query toggles for the consumable edges; pure portal walking ignores them all. */
-    record RouteOptions(boolean withReturnScroll, int meso, boolean withFerry, boolean isBeginner) {
-        /** Non-beginner options (the common case). */
+    record RouteOptions(boolean withReturnScroll, int meso, boolean withFerry, boolean isBeginner, int riderLevel) {
+        /** Non-beginner options (the common case); unrestricted by level (abstract reachability probes). */
         RouteOptions(boolean withReturnScroll, int meso, boolean withFerry) {
-            this(withReturnScroll, meso, withFerry, false);
+            this(withReturnScroll, meso, withFerry, false, Integer.MAX_VALUE);
         }
         static final RouteOptions PORTALS_ONLY = new RouteOptions(false, 0, false);
     }
 
     /** One paid NPC ride: stand near {@code npcId} in {@code fromMapId}, pay, land in {@code toMapId}. */
-    record TaxiEdge(int fromMapId, int npcId, int toMapId, int fare, boolean beginnerOnly) {
-        /** Standard cab edge (any job, no discount). */
+    record TaxiEdge(int fromMapId, int npcId, int toMapId, int fare, boolean beginnerOnly, int minLevel) {
+        /** Standard cab edge (any job/level, no discount). */
         TaxiEdge(int fromMapId, int npcId, int toMapId, int fare) {
-            this(fromMapId, npcId, toMapId, fare, false);
+            this(fromMapId, npcId, toMapId, fare, false, 0);
+        }
+        /** Flagged cab (e.g. beginner-discount), no level gate. */
+        TaxiEdge(int fromMapId, int npcId, int toMapId, int fare, boolean beginnerOnly) {
+            this(fromMapId, npcId, toMapId, fare, beginnerOnly, 0);
         }
     }
 
@@ -145,8 +149,9 @@ final class BotWorldGraph {
             // warp(104000000,0)). He stands on BOTH Southperry maps - the classic 60000 and the post-Big-
             // Bang 2000000 that the Adventurer Training Center (1010000 -> 1020000 -> 2000000) leads to -
             // so both need the edge or training-center bots reach Southperry but find no boat out.
-            new TaxiEdge(60000, 22000, 104000000, 150),
-            new TaxiEdge(2000000, 22000, 104000000, 150),
+            // lv7+ gate: Shanks won't ferry a bot off Maple Island before it has found its footing.
+            new TaxiEdge(60000, 22000, 104000000, 150, false, 7),
+            new TaxiEdge(2000000, 22000, 104000000, 150, false, 7),
             // Dolphin NPC 2060009: Herb Town <-> Aqua Road (2060009.js: 10000 meso each way).
             new TaxiEdge(251000100, 2060009, 230000000, 10000),
             new TaxiEdge(230000000, 2060009, 251000100, 10000),
@@ -178,19 +183,23 @@ final class BotWorldGraph {
         return TAXI_BY_MAP.getOrDefault(fromMapId, List.of());
     }
 
-    /** The taxi ride from one map to another, or null when no cab drives that route (non-beginner). */
+    /** The taxi ride from one map to another, or null when no cab drives that route (non-beginner,
+     *  level-unrestricted — abstract edge lookup with no rider). */
     static TaxiEdge findTaxiEdge(int fromMapId, int toMapId) {
-        return findTaxiEdge(fromMapId, toMapId, false);
+        return findTaxiEdge(fromMapId, toMapId, false, Integer.MAX_VALUE);
     }
 
     /** The taxi ride from one map to another, or null when no cab drives that route. A beginner prefers
      *  a beginner-discount cab (Phil) over the full-price one; a non-beginner never gets a beginner cab
      *  (it would let them underpay) — so beginnerOnly edges are skipped for them. Mirrors {@code expand()}. */
-    static TaxiEdge findTaxiEdge(int fromMapId, int toMapId, boolean isBeginner) {
+    static TaxiEdge findTaxiEdge(int fromMapId, int toMapId, boolean isBeginner, int riderLevel) {
         TaxiEdge fullPrice = null;
         for (TaxiEdge edge : TAXI_BY_MAP.getOrDefault(fromMapId, List.of())) {
             if (edge.toMapId() != toMapId) {
                 continue;
+            }
+            if (edge.minLevel() > 0 && riderLevel < edge.minLevel()) {
+                continue; // level-gated ride (Shanks: lv7+ to leave Maple Island)
             }
             if (edge.beginnerOnly()) {
                 if (isBeginner) {
@@ -378,6 +387,9 @@ final class BotWorldGraph {
         for (TaxiEdge taxi : TAXI_BY_MAP.getOrDefault(mapId, List.of())) {
             if (taxi.beginnerOnly() && !options.isBeginner()) {
                 continue; // beginner-discount cab (Phil): only a beginner may ride it
+            }
+            if (taxi.minLevel() > 0 && options.riderLevel() < taxi.minLevel()) {
+                continue; // level-gated ride (Shanks: lv7+ to leave Maple Island)
             }
             boolean continentRide = CONTINENT_RIDE_NPCS.contains(taxi.npcId());
             // Beginner cabs are exempt from the meso-shortcut gate: the 90% discount makes them cheap
