@@ -52,6 +52,10 @@ final class BotGrindPlanner {
     static final double ATTAINABILITY_HORIZON_HOURS = 2.0;
     /** Candidates scoring within this fraction of the best join the weighted-random draw. */
     static final double NEAR_BEST_FRACTION = 0.85;
+    /** Party-map stickiness: when re-deciding for a cohort already grinding a map, only switch maps if
+     *  another scores more than this multiple of the current map. Stops a join/leave from yanking the
+     *  whole party off a perfectly good spot for a marginal gain. */
+    static final double MAP_SWITCH_HYSTERESIS = 1.3;
     /** A meaningful attainable upgrade (DPS-gain x attainability) anywhere in the pool; below this
      *  the bot is treated as not gear-driven for reporting (the {@code gearFocused} flag). */
     static final double MEANINGFUL_GEAR_DESIRE = 0.02;
@@ -287,7 +291,15 @@ final class BotGrindPlanner {
     static PartyPlan planPartyBest(List<List<MobCandidate>> perMember,
                                    List<IntToDoubleFunction> mapScoreWeights,
                                    IntToDoubleFunction extraCompetitors, Random rng) {
-        PartyScoring scoring = scorePartyBest(perMember, mapScoreWeights, extraCompetitors, rng);
+        return planPartyBest(perMember, mapScoreWeights, extraCompetitors, -1, rng);
+    }
+
+    /** Party pick that prefers staying on {@code stickyMapId} (the cohort's current grind map, -1 if
+     *  none) unless another map beats it by {@link #MAP_SWITCH_HYSTERESIS} — see that constant. */
+    static PartyPlan planPartyBest(List<List<MobCandidate>> perMember,
+                                   List<IntToDoubleFunction> mapScoreWeights,
+                                   IntToDoubleFunction extraCompetitors, int stickyMapId, Random rng) {
+        PartyScoring scoring = scorePartyBest(perMember, mapScoreWeights, extraCompetitors, stickyMapId, rng);
         return scoring == null ? null : scoring.plan();
     }
 
@@ -312,6 +324,12 @@ final class BotGrindPlanner {
     static PartyScoring scorePartyBest(List<List<MobCandidate>> perMember,
                                        List<IntToDoubleFunction> mapScoreWeights,
                                        IntToDoubleFunction extraCompetitors, Random rng) {
+        return scorePartyBest(perMember, mapScoreWeights, extraCompetitors, -1, rng);
+    }
+
+    static PartyScoring scorePartyBest(List<List<MobCandidate>> perMember,
+                                       List<IntToDoubleFunction> mapScoreWeights,
+                                       IntToDoubleFunction extraCompetitors, int stickyMapId, Random rng) {
         if (perMember == null || perMember.isEmpty()) {
             return null;
         }
@@ -354,7 +372,13 @@ final class BotGrindPlanner {
         if (best <= 0.0) {
             return null;
         }
-        int pickedMapId = mapIds.get(drawNearBest(score, best, rng));
+        // Stickiness: if the cohort is already grinding a still-viable map, stay there unless another
+        // map beats it by MAP_SWITCH_HYSTERESIS — so a join/leave re-decide doesn't relocate the party
+        // for a marginal gain. stickyMapId < 0 (fresh start) skips this.
+        double stickyScore = stickyMapId > 0 ? scoreByMap.getOrDefault(stickyMapId, 0.0) : 0.0;
+        int pickedMapId = stickyScore > 0.0 && best <= stickyScore * MAP_SWITCH_HYSTERESIS
+                ? stickyMapId
+                : mapIds.get(drawNearBest(score, best, rng));
 
         List<Recommendation> recs = new ArrayList<>(partySize);
         for (int m = 0; m < adjusted.size(); m++) {

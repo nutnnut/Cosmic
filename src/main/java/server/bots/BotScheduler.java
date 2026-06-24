@@ -218,6 +218,9 @@ public final class BotScheduler {
     /** when each crew (group id) was brought online together, for the shared leader-paced session. */
     private final Map<Integer, Long> crewOnlineSince = new ConcurrentHashMap<>();
 
+    /** last live-cohort fingerprint per crew (leader id), so a join/leave triggers a party re-decide. */
+    private static final Map<Integer, Integer> crewCohortSig = new ConcurrentHashMap<>();
+
     /**
      * Persistent crews ({@code managed_bot.group_id}): a crew logs in TOGETHER and parties up, on its
      * leader's personality schedule, and logs out together when that session elapses. Returns how many
@@ -349,16 +352,31 @@ public final class BotScheduler {
             }
         }
         // Self-heal: (re)issue the shared party directive when a member was just brought up
-        // (runStartParty) OR when an online crew is partied but NOBODY is party-grinding. The
+        // (runStartParty), when the live cohort changed since last sweep (a member joined OR left —
+        // re-decide for the new composition), or when ANY live member isn't party-grinding. The
         // spawn-time startParty no-ops if it raced bot login (getMap() null) or decideParty returned
-        // null under cold load, and the steady sweep otherwise NEVER retries — leaving the whole crew
-        // scattered in solo autopilot (observed: every crew apParty=false). Self-limiting: once
-        // startParty sets autopilotParty on the members, noneMatch is false and this stops re-firing.
+        // null under cold load, and the steady sweep otherwise wouldn't retry for a single straggler —
+        // leaving it scattered in solo autopilot while its crew grinds (observed: gnumage apParty=false
+        // while crewmates were true). anyMatch (was noneMatch) catches that one-member case; the
+        // membership-change check covers leaves (remaining members all still have autopilotParty, so
+        // anyMatch alone wouldn't fire). startParty's stay-put hysteresis keeps these re-decides from
+        // relocating the party off a good map for a marginal gain.
         // ponytail: coarse scheduler cadence; if decideParty keeps returning null it re-fires per sweep
         // (fine at minute granularity) — add an in-flight gate only if it shows in perf.
-        if (runStartParty || live.stream().noneMatch(e -> e.autopilotParty)) {
+        int crewKey = crewLeader(members);
+        int sig = cohortSignature(live);
+        Integer prevSig = crewCohortSig.put(crewKey, sig);
+        boolean membershipChanged = prevSig == null || prevSig != sig;
+        if (runStartParty || membershipChanged || live.stream().anyMatch(e -> !e.autopilotParty)) {
             BotAutopilotManager.startParty(leader.bot, live);
         }
+    }
+
+    /** Order-independent fingerprint of the live cohort's char ids — changes iff a member joins or
+     *  leaves, so {@link #formCrewParty} can re-decide on composition change. */
+    private static int cohortSignature(List<BotEntry> live) {
+        int[] ids = live.stream().mapToInt(e -> e.bot.getId()).sorted().toArray();
+        return java.util.Arrays.hashCode(ids);
     }
 
     private static long sessionMsOf(BotPersonality p) {

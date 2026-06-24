@@ -156,6 +156,27 @@ class BotGrindPlannerTest {
     }
 
     @Test
+    void shouldStayOnCurrentPartyMapUnlessClearlyBeaten() {
+        // A cohort already grinding map10 shouldn't relocate for a marginal gain. map20 scores 1.25x
+        // map10 (under the 1.3x hysteresis) -> stay; map20 at 2.5x clears it -> switch.
+        MobCandidate map10 = mob(1, 100, 2.0, 10, 8, List.of());
+        MobCandidate marginal20 = mob(2, 125, 2.0, 20, 8, List.of());  // 1.25x map10
+        MobCandidate strong20 = mob(3, 250, 2.0, 20, 8, List.of());    // 2.5x map10
+        List<List<MobCandidate>> stay = List.of(List.of(map10, marginal20));
+        List<List<MobCandidate>> switchPool = List.of(List.of(map10, strong20));
+        var flat = java.util.List.<java.util.function.IntToDoubleFunction>of(mapId -> 1.0);
+
+        for (int seed = 0; seed < 20; seed++) {
+            assertEquals(10, BotGrindPlanner.planPartyBest(stay, flat, mapId -> 0.0, 10, new Random(seed)).mapId(),
+                    "marginal (1.25x) gain must not pull the party off its current map");
+            assertEquals(20, BotGrindPlanner.planPartyBest(switchPool, flat, mapId -> 0.0, 10, new Random(seed)).mapId(),
+                    "a 2.5x better map clears the hysteresis and wins");
+            assertEquals(20, BotGrindPlanner.planPartyBest(stay, flat, mapId -> 0.0, -1, new Random(seed)).mapId(),
+                    "no sticky map (fresh start) -> just pick the best");
+        }
+    }
+
+    @Test
     void shouldNotChaseUnattainableJackpotDrop() {
         // Same +35% DPS upgrade but at one-in-a-million: attainability discounts it to noise.
         GearProspect jackpot = new GearProspect(1402000, "sword", 1e-6, 50.0, 0.35);

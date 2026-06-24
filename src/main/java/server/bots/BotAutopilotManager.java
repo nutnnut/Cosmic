@@ -12,6 +12,7 @@ import org.slf4j.LoggerFactory;
 
 import java.awt.Point;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -311,8 +312,23 @@ final class BotAutopilotManager {
         // member to read world occupancy — they share a party so the exclusion is identical.
         IntToDoubleFunction crowd = members.isEmpty() ? mapId -> 0.0
                 : BotOccupancy.extraCompetitors(members.get(0).bot, BotManager.cfg.CROWD_PENALTY_FACTOR);
-        return BotGrindPlanner.planPartyBest(in.perMember(), in.weights(), crowd, ThreadLocalRandom.current());
+        return BotGrindPlanner.planPartyBest(in.perMember(), in.weights(), crowd,
+                currentPartyMap(members), ThreadLocalRandom.current());
     };
+
+    /** The map the cohort is already grinding (most common autopilotMapId among members still in
+     *  party-autopilot), or -1 on a fresh start when nobody has a party map yet. Feeds the planner's
+     *  stay-put hysteresis so a join/leave re-decide doesn't relocate everyone. */
+    private static int currentPartyMap(List<BotEntry> members) {
+        Map<Integer, Integer> counts = new HashMap<>();
+        for (BotEntry m : members) {
+            if (m.autopilotParty && m.autopilotMapId > 0) {
+                counts.merge(m.autopilotMapId, 1, Integer::sum);
+            }
+        }
+        return counts.entrySet().stream().max(Map.Entry.comparingByValue())
+                .map(Map.Entry::getKey).orElse(-1);
+    }
 
     static BiConsumer<BotEntry, String> reply =
             (entry, text) -> BotManager.getInstance().botReply(entry, text);
