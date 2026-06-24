@@ -2340,7 +2340,7 @@ class BotCombatManager {
         // players, foreign bots) costs weight 2 so the bot steers clear and doesn't kill-steal.
         int myPartyId = bot.getPartyId();
         long weighted = 0L;
-        for (Character other : context.map().getCharacters()) {
+        for (Character other : context.map().getAllPlayers()) {
             if (other == null || other == bot || other.getHp() <= 0 || other.getPosition() == null) {
                 continue;
             }

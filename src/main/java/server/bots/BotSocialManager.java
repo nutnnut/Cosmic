@@ -121,7 +121,7 @@ final class BotSocialManager {
     /** Another solo self-owned autopilot bot on the same map, or null. */
     private static BotEntry findCandidate(Character bot) {
         MapleMap map = bot.getMap();
-        for (Character c : map.getCharacters()) {
+        for (Character c : map.getAllPlayers()) {
             if (c == bot || !(c.getClient() instanceof BotClient) || c.getParty() != null) {
                 continue;
             }
@@ -137,7 +137,7 @@ final class BotSocialManager {
     private static Character findPlayerCandidate(Character bot) {
         MapleMap map = bot.getMap();
         int shareWindow = YamlConfig.config.server.EXP_SPLIT_LEECH_INTERVAL;
-        for (Character c : map.getCharacters()) {
+        for (Character c : map.getAllPlayers()) {
             if (c == bot || c.getClient() instanceof BotClient || c.getParty() != null) {
                 continue;
             }
@@ -220,7 +220,7 @@ final class BotSocialManager {
     private static boolean completeAskedInvite(Character speaker) {
         MapleMap map = speaker.getMap();
         long now = System.currentTimeMillis();
-        for (Character c : map.getCharacters()) {
+        for (Character c : map.getAllPlayers()) {
             if (c == speaker || !(c.getClient() instanceof BotClient)) {
                 continue;
             }
@@ -287,7 +287,7 @@ final class BotSocialManager {
         long now = System.currentTimeMillis();
         BotEntry best = null;
         double bestDist = Double.MAX_VALUE;
-        for (Character c : map.getCharacters()) {
+        for (Character c : map.getAllPlayers()) {
             if (c == player || !(c.getClient() instanceof BotClient)) {
                 continue;
             }

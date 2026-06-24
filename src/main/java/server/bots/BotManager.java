@@ -1086,7 +1086,7 @@ public class BotManager {
                     Double.POSITIVE_INFINITY, java.util.List.of(server.maps.MapObjectType.NPC))) {
                 anchors.add(npc.getPosition());
             }
-            for (Character c : new ArrayList<>(map.getCharacters())) {
+            for (Character c : map.getAllPlayers()) {
                 if (c != bot) {
                     anchors.add(c.getPosition());
                 }
@@ -1394,7 +1394,7 @@ public class BotManager {
             return List.of();
         }
         List<BotEntry> out = new ArrayList<>();
-        for (Character c : new ArrayList<>(bot.getMap().getCharacters())) {
+        for (Character c : bot.getMap().getAllPlayers()) {
             if (c == bot || !(c.getClient() instanceof BotClient)) {
                 continue;
             }

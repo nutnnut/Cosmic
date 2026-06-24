@@ -3123,7 +3123,7 @@ public class BotChatManager {
         if (targetName.equalsIgnoreCase("me")) {
             target = entry.owner;
         } else {
-            target = bot.getMap().getCharacters().stream()
+            target = bot.getMap().getAllPlayers().stream()
                     .filter(c -> c.getName().equalsIgnoreCase(targetName))
                     .findFirst().orElse(null);
         }
