@@ -141,6 +141,7 @@ public final class BotWorldGraphWebServer {
             s.createContext("/api/bot/pathlog", BotWorldGraphWebServer::servePathLog);
             s.createContext("/api/perf", BotWorldGraphWebServer::servePerf);
             s.createContext("/api/spawnbot", BotWorldGraphWebServer::serveSpawnBot);
+            s.createContext("/api/navprobe", BotWorldGraphWebServer::serveNavProbe);
             s.createContext("/admin", BotWorldGraphWebServer::serveAdminPage);
             s.createContext("/api/settings", BotWorldGraphWebServer::serveSettings);
             s.setExecutor(Executors.newCachedThreadPool(r -> {
@@ -766,6 +767,72 @@ public final class BotWorldGraphWebServer {
             q.add(jsonStr(x));
         }
         return rawArr(q);
+    }
+
+    /** Pathfinding probe: run the bot's own nav planner from its current position to an arbitrary point
+     *  on its current map and report the result — {@code ?id=<botCharId>&x=<>&y=<>}. Shows the start/target
+     *  regions, whether the target sits on ground / a rope / midair, whether it's reachable, and the full
+     *  edge path (WALK/CLIMB/JUMP/DROP with endpoints). The "why can't the bot get there" companion to
+     *  {@code /api/bot/pathlog} (which shows what it's doing live) — answers it for a hypothetical target
+     *  (e.g. a portal's approach point) without having to drive the bot there. LAN debug only. */
+    private static void serveNavProbe(HttpExchange ex) throws IOException {
+        var q = queryParams(ex.getRequestURI().getRawQuery());
+        int id;
+        int x;
+        int y;
+        try {
+            id = Integer.parseInt(q.getOrDefault("id", "").trim());
+            x = Integer.parseInt(q.getOrDefault("x", "").trim());
+            y = Integer.parseInt(q.getOrDefault("y", "").trim());
+        } catch (NumberFormatException e) {
+            send(ex, 400, "application/json", "{\"error\":\"need ?id=<botCharId>&x=<>&y=<>\"}".getBytes(StandardCharsets.UTF_8));
+            return;
+        }
+        BotEntry e = lookupBotEntry(id);
+        if (e == null || e.bot == null || e.bot.getMap() == null) {
+            send(ex, 404, "application/json", "{\"error\":\"no such online bot\"}".getBytes(StandardCharsets.UTF_8));
+            return;
+        }
+        var bot = e.bot;
+        var map = bot.getMap();
+        var botPos = bot.getPosition();
+        var target = new java.awt.Point(x, y);
+        StringBuilder sb = new StringBuilder("{\"bot\":").append(jsonStr(bot.getName()))
+                .append(",\"map\":").append(map.getId())
+                .append(",\"from\":[").append(botPos.x).append(',').append(botPos.y).append("]")
+                .append(",\"to\":[").append(x).append(',').append(y).append("]");
+        var graph = BotNavigationGraphProvider.getGraph(map, e.movementProfile);
+        if (graph == null) {
+            send(ex, 200, "application/json", sb.append(",\"error\":\"graph warming — retry shortly\"}")
+                    .toString().getBytes(StandardCharsets.UTF_8));
+            return;
+        }
+        int fromRegion = BotNavigationManager.resolveCurrentRegionId(graph, e, map, botPos);
+        int toRegion = BotNavigationManager.resolveTargetRegionId(graph, e, map, target);
+        var ground = BotPhysicsEngine.findGroundPoint(map, new java.awt.Point(x, y - 1));
+        boolean onRope = BotPhysicsEngine.climbableAtPoint(map, target) != null;
+        var path = BotNavigationManager.findPath(graph, bot, fromRegion, toRegion, target);
+        sb.append(",\"fromRegion\":").append(fromRegion)
+                .append(",\"toRegion\":").append(toRegion)
+                .append(",\"targetGroundY\":").append(ground != null ? ground.y : -1)
+                .append(",\"targetOnRope\":").append(onRope)
+                .append(",\"reachable\":").append(path != null)
+                .append(",\"hops\":").append(path != null ? path.size() : 0)
+                .append(",\"path\":[");
+        if (path != null) {
+            for (int i = 0; i < path.size(); i++) {
+                var edge = path.get(i);
+                if (i > 0) {
+                    sb.append(',');
+                }
+                sb.append("{\"type\":").append(jsonStr(edge.type.name()))
+                        .append(",\"fromR\":").append(edge.fromRegionId)
+                        .append(",\"toR\":").append(edge.toRegionId)
+                        .append(",\"from\":[").append(edge.startPoint.x).append(',').append(edge.startPoint.y).append("]")
+                        .append(",\"to\":[").append(edge.endPoint.x).append(',').append(edge.endPoint.y).append("]}");
+            }
+        }
+        send(ex, 200, "application/json", sb.append("]}").toString().getBytes(StandardCharsets.UTF_8));
     }
 
     private static void serveBotDebug(HttpExchange ex) throws IOException {

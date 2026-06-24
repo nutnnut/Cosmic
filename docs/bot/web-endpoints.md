@@ -95,6 +95,19 @@ or load failed.
 {"results":[{"id":767,"spawned":true},{"id":814,"spawned":false,"note":"already online or load failed"}]}
 ```
 
+### `/api/navprobe?id=<botCharId>&x=<>&y=<>`
+Pathfinding probe: runs the bot's own nav planner (`BotNavigationManager.findPath` on the live graph)
+from its current position to an arbitrary point on its current map. The "why can't the bot get there"
+companion to `/api/bot/pathlog` — answers reachability for a hypothetical target (e.g. a portal's
+approach point) without driving the bot there. `targetGroundY=-1` / `targetOnRope` flag the target
+surface; `reachable=false` with `path:[]` means no route from `fromRegion` to `toRegion`.
+```
+{"bot","map","from":[x,y],"to":[x,y],
+ "fromRegion","toRegion","targetGroundY","targetOnRope",
+ "reachable":bool,"hops":n,
+ "path":[{"type":"WALK|CLIMB|JUMP|DROP","fromR","toR","from":[x,y],"to":[x,y]}, ...]}
+```
+
 ## Settings API
 
 ### `/api/settings` (GET + POST)
