@@ -7,6 +7,7 @@ import client.SkillFactory;
 import client.Stat;
 import client.processor.stat.AssignAPProcessor;
 import constants.game.GameConstants;
+import constants.skills.Pirate;
 import constants.skills.Rogue;
 import java.util.ArrayList;
 import java.util.List;
@@ -16,6 +17,7 @@ import server.bots.build.BowmanBuilds;
 import constants.skills.Beginner;
 import server.bots.build.BuildStep;
 import server.bots.build.MageBuilds;
+import server.bots.build.PirateBuilds;
 import server.bots.build.ThiefBuilds;
 import server.bots.build.WarriorBuilds;
 
@@ -290,10 +292,10 @@ class BotBuildManager {
      */
     static Job pickWeightedJob(Job currentJob) {
         if (currentJob == null || currentJob == Job.BEGINNER) {
-            // Only classes the bot can actually BUILD: PIRATE has no AP build (apPromptForJob) and no
-            // SP build tree, so an ownerless pirate would bank AP/SP forever. Filtering here (rather
-            // than dropping PIRATE from firstJobChoices, which mirrors the owner prompt) auto-includes
-            // pirate the moment a pirate build lands.
+            // Only classes the bot can actually BUILD: PIRATE has an SP build (PirateBuilds) but still
+            // no AP build (apPromptForJob returns null), so an ownerless pirate would bank AP forever.
+            // Filtering on apPromptForJob here (rather than dropping PIRATE from firstJobChoices, which
+            // mirrors the owner prompt) auto-includes pirate the moment a pirate AP build lands.
             List<Job> buildable = new ArrayList<>();
             for (Job j : BotStarterKitManager.firstJobChoices()) {
                 if (apPromptForJob(j) != null) buildable.add(j);
@@ -333,6 +335,14 @@ class BotBuildManager {
         if (currentJob == Job.THIEF && entry != null && entry.bot != null) {
             if (entry.bot.getSkillLevel(Rogue.DOUBLE_STAB) > 0) return Job.BANDIT;
             if (entry.bot.getSkillLevel(Rogue.LUCKY_SEVEN) > 0) return Job.ASSASSIN;
+        }
+        // Same safety for pirates: the trained 1st-job attack commits the weapon line, so a Double-Shot
+        // (gun) Pirate must advance into Gunslinger and a Flash-Fist/Somersault (knuckle) Pirate into
+        // Brawler. Mirrors the weapon gate in BotEquipManager.isWeaponCompatible.
+        if (currentJob == Job.PIRATE && entry != null && entry.bot != null) {
+            if (entry.bot.getSkillLevel(Pirate.DOUBLE_SHOT) > 0) return Job.GUNSLINGER;
+            if (entry.bot.getSkillLevel(Pirate.FLASH_FIST) > 0
+                    || entry.bot.getSkillLevel(Pirate.SOMERSAULT_KICK) > 0) return Job.BRAWLER;
         }
         return pickWeightedJob(currentJob);
     }
@@ -379,6 +389,52 @@ class BotBuildManager {
             boolean dagger = ThreadLocalRandom.current().nextBoolean();
             entry.spVariant = dagger ? "dagger" : "claw";
             tiePlannedSecondJob(entry, bot, dagger ? Job.BANDIT : Job.ASSASSIN);
+        }
+    }
+
+    /** Knuckle (Brawler) pirate line. */
+    private static boolean isKnucklePirateJob(Job job) {
+        return job == Job.BRAWLER || job == Job.MARAUDER || job == Job.BUCCANEER;
+    }
+
+    /** Gun (Gunslinger) pirate line. */
+    private static boolean isGunPirateJob(Job job) {
+        return job == Job.GUNSLINGER || job == Job.OUTLAW || job == Job.CORSAIR;
+    }
+
+    /**
+     * Pirate counterpart to {@link #resolveThiefVariantIfNeeded}: resolve the knuckle/gun build variant
+     * the first time SP is spent on a pirate-tree bot, reusing the shared {@code entry.spVariant}
+     * ("knuckle"/"gun"). An already-trained 1st-job attack skill or a 2nd+-job class is authoritative;
+     * otherwise a fresh Pirate derives it from its planned 2nd job, and an unplanned Pirate rolls one and
+     * FORCES its planned 2nd job to match. The trained skill is the SSOT the weapon gate
+     * ({@code BotEquipManager.isWeaponCompatible}) reads, so the variant must commit before any SP lands.
+     */
+    private static void resolvePirateVariantIfNeeded(BotEntry entry, Character bot) {
+        if (entry.spVariant != null) return;
+        Job job = bot.getJob();
+        if (job != Job.PIRATE && !isKnucklePirateJob(job) && !isGunPirateJob(job)) return;
+
+        if (bot.getSkillLevel(Pirate.DOUBLE_SHOT) > 0 || isGunPirateJob(job)) {
+            entry.spVariant = "gun";
+            return;
+        }
+        if (bot.getSkillLevel(Pirate.FLASH_FIST) > 0 || bot.getSkillLevel(Pirate.SOMERSAULT_KICK) > 0
+                || isKnucklePirateJob(job)) {
+            entry.spVariant = "knuckle";
+            return;
+        }
+        BotPersonality p = entry.personality;
+        Job planned2 = p != null ? p.plannedSecondJob() : null;
+        if (planned2 == Job.GUNSLINGER) {
+            entry.spVariant = "gun";
+        } else if (planned2 == Job.BRAWLER) {
+            entry.spVariant = "knuckle";
+        } else {
+            // ponytail: 50/50 roll; add BotManager.cfg weights here if a specific knuckle/gun mix is wanted.
+            boolean gun = ThreadLocalRandom.current().nextBoolean();
+            entry.spVariant = gun ? "gun" : "knuckle";
+            tiePlannedSecondJob(entry, bot, gun ? Job.GUNSLINGER : Job.BRAWLER);
         }
     }
 
@@ -452,6 +508,7 @@ class BotBuildManager {
     static void autoAssignSp(BotEntry entry, Character bot) {
         if (bot.getJob() == Job.HERO && entry.spVariant == null) return;
         resolveThiefVariantIfNeeded(entry, bot);
+        resolvePirateVariantIfNeeded(entry, bot);
 
         List<BuildStep> steps = getBuildOrder(bot.getJob(), entry.spVariant);
         if (steps == null) return;
@@ -557,12 +614,27 @@ class BotBuildManager {
             case SHADOWER -> List.of(Job.THIEF, Job.BANDIT, Job.CHIEFBANDIT, Job.SHADOWER);
             case PAGE -> List.of(Job.WARRIOR, Job.PAGE);
             case WHITEKNIGHT -> List.of(Job.WARRIOR, Job.PAGE, Job.WHITEKNIGHT);
+            case PALADIN -> List.of(Job.WARRIOR, Job.PAGE, Job.WHITEKNIGHT, Job.PALADIN);
             case SPEARMAN -> List.of(Job.WARRIOR, Job.SPEARMAN);
             case DRAGONKNIGHT -> List.of(Job.WARRIOR, Job.SPEARMAN, Job.DRAGONKNIGHT);
+            case DARKKNIGHT -> List.of(Job.WARRIOR, Job.SPEARMAN, Job.DRAGONKNIGHT, Job.DARKKNIGHT);
             case MAGICIAN -> List.of(Job.MAGICIAN);
             case CLERIC -> List.of(Job.MAGICIAN, Job.CLERIC);
             case PRIEST -> List.of(Job.MAGICIAN, Job.CLERIC, Job.PRIEST);
             case BISHOP -> List.of(Job.MAGICIAN, Job.CLERIC, Job.PRIEST, Job.BISHOP);
+            case FP_WIZARD -> List.of(Job.MAGICIAN, Job.FP_WIZARD);
+            case FP_MAGE -> List.of(Job.MAGICIAN, Job.FP_WIZARD, Job.FP_MAGE);
+            case FP_ARCHMAGE -> List.of(Job.MAGICIAN, Job.FP_WIZARD, Job.FP_MAGE, Job.FP_ARCHMAGE);
+            case IL_WIZARD -> List.of(Job.MAGICIAN, Job.IL_WIZARD);
+            case IL_MAGE -> List.of(Job.MAGICIAN, Job.IL_WIZARD, Job.IL_MAGE);
+            case IL_ARCHMAGE -> List.of(Job.MAGICIAN, Job.IL_WIZARD, Job.IL_MAGE, Job.IL_ARCHMAGE);
+            case PIRATE -> List.of(Job.PIRATE);
+            case BRAWLER -> List.of(Job.PIRATE, Job.BRAWLER);
+            case MARAUDER -> List.of(Job.PIRATE, Job.BRAWLER, Job.MARAUDER);
+            case BUCCANEER -> List.of(Job.PIRATE, Job.BRAWLER, Job.MARAUDER, Job.BUCCANEER);
+            case GUNSLINGER -> List.of(Job.PIRATE, Job.GUNSLINGER);
+            case OUTLAW -> List.of(Job.PIRATE, Job.GUNSLINGER, Job.OUTLAW);
+            case CORSAIR -> List.of(Job.PIRATE, Job.GUNSLINGER, Job.OUTLAW, Job.CORSAIR);
             default -> null;
         };
     }
@@ -586,6 +658,10 @@ class BotBuildManager {
         List<BuildStep> thiefBuild = ThiefBuilds.getBuildOrder(job, variant);
         if (thiefBuild != null) {
             return thiefBuild;
+        }
+        List<BuildStep> pirateBuild = PirateBuilds.getBuildOrder(job, variant);
+        if (pirateBuild != null) {
+            return pirateBuild;
         }
         return MageBuilds.getBuildOrder(job);
     }

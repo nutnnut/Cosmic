@@ -9,6 +9,7 @@ import constants.skills.DragonKnight;
 import constants.skills.Fighter;
 import constants.skills.Hero;
 import constants.skills.Page;
+import constants.skills.Paladin;
 import constants.skills.Spearman;
 import constants.skills.Warrior;
 import constants.skills.WhiteKnight;
@@ -30,6 +31,7 @@ public final class WarriorBuilds {
             case SPEARMAN -> spearmanBuild();
             case DRAGONKNIGHT -> dragonKnightBuild();
             case DARKKNIGHT -> darkKnightBuild();
+            case PALADIN -> paladinBuild();
             default -> null;
         };
     }
@@ -188,6 +190,29 @@ public final class WarriorBuilds {
                 s(DarkKnight.RUSH, 5),
                 s(DarkKnight.RUSH, max(DarkKnight.RUSH)),
                 s(DarkKnight.HEROS_WILL, 5)
+        );
+    }
+
+    // 4th-job skills are book-gated (canLevelSkill caps each at its master level); max() targets just
+    // spend whatever SP the unlocked levels allow, in priority order. Trains SWORD_HOLY_CHARGE (sword)
+    // to match the sword White Knight build, keeping the weapon line consistent across advancements.
+    // https://www.digitaltq.com/maplestory-page-white-knight-paladin-pre-big-bang-skill-build-guide
+    // (cross-checked against Haplopelma's MapleRoyals Paladin guide:
+    //  https://royals.ms/forum/threads/comprehensive-paladin-guide-haplopelma.161247/)
+    private static List<BuildStep> paladinBuild() {
+        return List.of(
+                s(Paladin.BLAST, 30),                // main single-target attack
+                s(Paladin.SWORD_HOLY_CHARGE, 30),    // element charge (sword; commits sword gate)
+                s(Paladin.ACHILLES, max(Paladin.ACHILLES)),          // damage reduction
+                s(Paladin.ADVANCED_CHARGE, max(Paladin.ADVANCED_CHARGE)), // keeps charge buff + boosts charged dmg
+                s(Paladin.STANCE, max(Paladin.STANCE)),              // knockback resist
+                s(Paladin.MAPLE_WARRIOR, 20),
+                s(Paladin.GUARDIAN, max(Paladin.GUARDIAN)),
+                s(Paladin.HEAVENS_HAMMER, max(Paladin.HEAVENS_HAMMER)), // AoE nuke
+                s(Paladin.MONSTER_MAGNET, max(Paladin.MONSTER_MAGNET)), // gathers mobs
+                s(Paladin.RUSH, max(Paladin.RUSH)),
+                s(Paladin.MAPLE_WARRIOR, max(Paladin.MAPLE_WARRIOR)),
+                s(Paladin.HEROS_WILL, max(Paladin.HEROS_WILL))
         );
     }
 }

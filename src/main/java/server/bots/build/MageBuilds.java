@@ -5,6 +5,9 @@ import client.Skill;
 import client.SkillFactory;
 import constants.skills.Bishop;
 import constants.skills.Cleric;
+import constants.skills.FPArchMage;
+import constants.skills.FPMage;
+import constants.skills.FPWizard;
 import constants.skills.ILArchMage;
 import constants.skills.ILMage;
 import constants.skills.ILWizard;
@@ -23,6 +26,9 @@ public final class MageBuilds {
             case IL_WIZARD -> ilWizardBuild();
             case IL_MAGE -> ilMageBuild();
             case IL_ARCHMAGE -> ilArchMageBuild();
+            case FP_WIZARD -> fpWizardBuild();
+            case FP_MAGE -> fpMageBuild();
+            case FP_ARCHMAGE -> fpArchMageBuild();
             case CLERIC -> clericBuild();
             case PRIEST -> priestBuild();
             case BISHOP -> bishopBuild();
@@ -91,6 +97,50 @@ public final class MageBuilds {
                 s(ILArchMage.INFINITY, max(ILArchMage.INFINITY)),
                 s(ILArchMage.MANA_REFLECTION, max(ILArchMage.MANA_REFLECTION)),
                 s(ILArchMage.HEROS_WILL, max(ILArchMage.HEROS_WILL))
+        );
+    }
+
+    // https://www.digitaltq.com/maplestory-fire-poison-pre-big-bang-skill-build-guide
+    // (cross-checked against GoodDoodoo's MapleRoyals F/P guide:
+    //  https://royals.ms/forum/threads/the-best-fire-poison-guide-there-was-is-and-ever-will-be.27168/)
+    private static List<BuildStep> fpWizardBuild() {
+        return List.of(
+                s(FPWizard.FIRE_ARROW, max(FPWizard.FIRE_ARROW)),   // main single-target nuke
+                s(FPWizard.MEDITATION, max(FPWizard.MEDITATION)),   // +MATK party buff (big damage boost)
+                s(FPWizard.TELEPORT, max(FPWizard.TELEPORT)),       // mobility
+                s(FPWizard.MP_EATER, max(FPWizard.MP_EATER)),       // MP sustain
+                s(FPWizard.POISON_BREATH, max(FPWizard.POISON_BREATH)), // poison DoT
+                s(FPWizard.SLOW, max(FPWizard.SLOW))
+        );
+    }
+
+    private static List<BuildStep> fpMageBuild() {
+        return List.of(
+                s(FPMage.ELEMENT_AMPLIFICATION, 10),  // immediate damage multiplier
+                s(FPMage.EXPLOSION, max(FPMage.EXPLOSION)),  // main AoE attack
+                s(FPMage.POISON_MIST, max(FPMage.POISON_MIST)), // DoT cloud
+                s(FPMage.SPELL_BOOSTER, max(FPMage.SPELL_BOOSTER)), // cast speed
+                s(FPMage.ELEMENT_AMPLIFICATION, max(FPMage.ELEMENT_AMPLIFICATION)),
+                s(FPMage.ELEMENT_COMPOSITION, max(FPMage.ELEMENT_COMPOSITION)), // strong dual-element attack
+                s(FPMage.PARTIAL_RESISTANCE, max(FPMage.PARTIAL_RESISTANCE)),
+                s(FPMage.SEAL, max(FPMage.SEAL))
+        );
+    }
+
+    /** 4th-job skills are book-gated (canLevelSkill caps each at its master level); max() targets just
+     *  spend whatever SP the unlocked levels allow, in priority order. */
+    private static List<BuildStep> fpArchMageBuild() {
+        return List.of(
+                s(FPArchMage.PARALYZE, max(FPArchMage.PARALYZE)),         // efficient main attack
+                s(FPArchMage.METEOR_SHOWER, max(FPArchMage.METEOR_SHOWER)), // heavy AoE nuke
+                s(FPArchMage.MAPLE_WARRIOR, 20),
+                s(FPArchMage.FIRE_DEMON, max(FPArchMage.FIRE_DEMON)),     // DoT + element resist down
+                s(FPArchMage.INFINITY, max(FPArchMage.INFINITY)),        // MP/damage sustain
+                s(FPArchMage.ELQUINES, max(FPArchMage.ELQUINES)),        // summon
+                s(FPArchMage.MANA_REFLECTION, max(FPArchMage.MANA_REFLECTION)),
+                s(FPArchMage.BIG_BANG, max(FPArchMage.BIG_BANG)),
+                s(FPArchMage.MAPLE_WARRIOR, max(FPArchMage.MAPLE_WARRIOR)),
+                s(FPArchMage.HEROS_WILL, max(FPArchMage.HEROS_WILL))
         );
     }
 
