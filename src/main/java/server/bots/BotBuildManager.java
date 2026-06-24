@@ -78,7 +78,7 @@ class BotBuildManager {
     /** Owner picked "auto" at the build prompt: hand AP over to the same self-managed path an
      *  ownerless bot uses — resolve the build (job + accuracy floor + weapon needs) and ratchet it on
      *  every future level-up, no more prompts. Returns the confirm line, or null if the job has no AP
-     *  build (Beginner/Pirate). */
+     *  build (Beginner). */
     static String setAutoApBuild(BotEntry entry, Character bot) {
         if (apPromptForJob(bot.getJob()) == null) return null;
         entry.apAuto = true;
@@ -170,15 +170,21 @@ class BotBuildManager {
 
     /**
      * The autonomous AP build for the bot's current job (the ownerless default), or null if the job
-     * has no AP build (Beginner/Pirate). Reuses the BotScrollManager job->stat SSOT and the
-     * BotEquipManager DPS/requirement scorer. Mages park the secondary (LUK) at the floor: magic
-     * damage and wand/staff requirements ignore LUK, so a non-floor target would only waste AP.
+     * has no AP build (Beginner). Reuses the BotScrollManager job->stat SSOT and the BotEquipManager
+     * DPS/requirement scorer. Mages park the secondary (LUK) at the floor: magic damage and
+     * wand/staff requirements ignore LUK, so a non-floor target would only waste AP.
      */
     static ApBuild resolveApBuild(BotEntry entry, Character bot) {
         Job job = bot.getJob();
         if (apPromptForJob(job) == null) return null;
         boolean[] mageOut = new boolean[1];
         char[] ms = BotScrollManager.mainSecondary(job.getId(), mageOut);
+        // Base Pirate (job 500) is weapon-ambiguous: mainSecondary defaults it to STR-primary, but a
+        // gun-bound pirate is DEX-primary. Orient it by the committed build variant. (2nd+ pirate jobs
+        // 51x/52x are already unambiguous in mainSecondary.)
+        if (job == Job.PIRATE && "gun".equals(entry.spVariant)) {
+            ms = new char[]{'d', 's'};
+        }
         StatType primary = statTypeOf(ms[0]);
         StatType secondary = statTypeOf(ms[1]);
         if (primary == null || secondary == null) return null;
@@ -268,7 +274,7 @@ class BotBuildManager {
      * the target only ever ratchets UP (toward unlocking a better owned weapon); it never drifts back
      * down as gear improves. Reclaiming over-invested secondary (funded->pure) is deferred to a future
      * NX-funded AP-reset feature (a well-geared bot with spare NX resets when worth it - see the
-     * design doc). No-op for jobs with no build (Beginner/Pirate) and for owned bots UNLESS the owner
+     * design doc). No-op for jobs with no build (Beginner) and for owned bots UNLESS the owner
      * opted into "auto" ({@code entry.apAuto}), which mirrors them onto this same self-managed path.
      */
     static void maybeRecomputeAutonomousApBuild(BotEntry entry, Character bot) {
@@ -292,10 +298,9 @@ class BotBuildManager {
      */
     static Job pickWeightedJob(Job currentJob) {
         if (currentJob == null || currentJob == Job.BEGINNER) {
-            // Only classes the bot can actually BUILD: PIRATE has an SP build (PirateBuilds) but still
-            // no AP build (apPromptForJob returns null), so an ownerless pirate would bank AP forever.
-            // Filtering on apPromptForJob here (rather than dropping PIRATE from firstJobChoices, which
-            // mirrors the owner prompt) auto-includes pirate the moment a pirate AP build lands.
+            // Only classes the bot can actually BUILD (apPromptForJob != null). All five 1st jobs now
+            // qualify, pirate included (SP build in PirateBuilds, AP build via resolveApBuild). The
+            // filter stays as the SSOT gate so any future unbuildable branch is auto-excluded.
             List<Job> buildable = new ArrayList<>();
             for (Job j : BotStarterKitManager.firstJobChoices()) {
                 if (apPromptForJob(j) != null) buildable.add(j);
@@ -682,6 +687,15 @@ class BotBuildManager {
         if (job.isA(Job.THIEF)) {
             return "what AP build? type 'auto' to let me decide, 'dexless'/'pure' or e.g. '25 dex' for a dex target";
         }
+        if (job.isA(Job.PIRATE)) {
+            // Gun line (Gunslinger/Outlaw/Corsair) is DEX-primary so its secondary is STR; the knuckle
+            // line (Brawler/Marauder/Buccaneer) and base Pirate are STR-primary with a DEX secondary.
+            // Base Pirate is shown the knuckle-oriented prompt; a gun-bound base pirate self-corrects at
+            // 2nd job, and the autonomous path is already variant-correct via resolveApBuild.
+            return isGunPirateJob(job)
+                    ? "what AP build? type 'auto' to let me decide, 'strless'/'pure' or e.g. '25 str' for a str target"
+                    : "what AP build? type 'auto' to let me decide, 'dexless'/'pure' or e.g. '25 dex' for a dex target";
+        }
         return null;
     }
 
@@ -698,6 +712,11 @@ class BotBuildManager {
         }
         if (job.isA(Job.WARRIOR) || job.isA(Job.THIEF)) {
             return List.of("auto", "pure", "dexless", "25 dex");
+        }
+        if (job.isA(Job.PIRATE)) {
+            return isGunPirateJob(job)
+                    ? List.of("auto", "pure", "strless", "25 str")
+                    : List.of("auto", "pure", "dexless", "25 dex");
         }
         return List.of();
     }

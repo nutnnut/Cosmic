@@ -2097,6 +2097,24 @@ public class BotChatManager {
                     "already doing strless!");
             return;
         }
+        // Pirate splits like the other STR/DEX classes: knuckle line (+ base pirate) is STR-primary
+        // with a DEX secondary (warrior-like); gun line is DEX-primary with a STR secondary (bowman-like).
+        if (isKnucklePirate(job, entry) && AP_PURE_STR_PATTERN.matcher(message).find()) {
+            int effectiveDex = Math.max(minStatFloor(job, Stat.DEX), entry.bot.getDex());
+            applyApBuildChoice(entry,
+                    new BotBuildManager.ApBuild(BotBuildManager.StatType.STR, BotBuildManager.StatType.DEX, 4),
+                    "dexless it is! keeping dex at " + effectiveDex + ", rest into str",
+                    "already doing dexless!");
+            return;
+        }
+        if (isGunPirate(job, entry) && AP_STRLESS_PATTERN.matcher(message).find()) {
+            int effectiveStr = Math.max(minStatFloor(job, Stat.STR), entry.bot.getStr());
+            applyApBuildChoice(entry,
+                    new BotBuildManager.ApBuild(BotBuildManager.StatType.DEX, BotBuildManager.StatType.STR, 4),
+                    "strless it is! keeping str at " + effectiveStr + ", rest into dex",
+                    "already doing strless!");
+            return;
+        }
 
         if (job.isA(Job.WARRIOR) || job.isA(Job.THIEF)) {
             Matcher matcher = AP_FIXED_DEX_PATTERN.matcher(message);
@@ -2137,8 +2155,48 @@ public class BotChatManager {
                         new BotBuildManager.ApBuild(BotBuildManager.StatType.DEX, BotBuildManager.StatType.STR, strTarget),
                         "ok! keeping str at " + effectiveStr + ", rest into dex",
                         "already doing " + legalStrTarget + " str build!");
+                return;
             }
         }
+        if (isKnucklePirate(job, entry)) {
+            Matcher matcher = AP_FIXED_DEX_PATTERN.matcher(message);
+            if (matcher.find()) {
+                int dexTarget = Integer.parseInt(matcher.group(1));
+                int legalDexTarget = Math.max(minStatFloor(job, Stat.DEX), dexTarget);
+                int effectiveDex = Math.max(legalDexTarget, entry.bot.getDex());
+                applyApBuildChoice(entry,
+                        new BotBuildManager.ApBuild(BotBuildManager.StatType.STR, BotBuildManager.StatType.DEX, dexTarget),
+                        "ok! keeping dex at " + effectiveDex + ", rest into str",
+                        "already doing " + legalDexTarget + " dex build!");
+                return;
+            }
+        }
+        if (isGunPirate(job, entry)) {
+            Matcher matcher = AP_FIXED_STR_PATTERN.matcher(message);
+            if (matcher.find()) {
+                int strTarget = Integer.parseInt(matcher.group(1));
+                int legalStrTarget = Math.max(minStatFloor(job, Stat.STR), strTarget);
+                int effectiveStr = Math.max(legalStrTarget, entry.bot.getStr());
+                applyApBuildChoice(entry,
+                        new BotBuildManager.ApBuild(BotBuildManager.StatType.DEX, BotBuildManager.StatType.STR, strTarget),
+                        "ok! keeping str at " + effectiveStr + ", rest into dex",
+                        "already doing " + legalStrTarget + " str build!");
+            }
+        }
+    }
+
+    /** Gun pirate line (DEX-primary, STR secondary): the 2nd+ gun jobs, plus a base Pirate whose
+     *  committed build variant is gun. Base pirate defaults to knuckle when the variant isn't set. */
+    private static boolean isGunPirate(Job job, BotEntry entry) {
+        if (job == Job.GUNSLINGER || job == Job.OUTLAW || job == Job.CORSAIR) {
+            return true;
+        }
+        return job == Job.PIRATE && "gun".equals(entry.spVariant);
+    }
+
+    /** Knuckle pirate line (STR-primary, DEX secondary): any pirate-tree job that isn't gun. */
+    private static boolean isKnucklePirate(Job job, BotEntry entry) {
+        return job.isA(Job.PIRATE) && !isGunPirate(job, entry);
     }
 
     private static int minStatFloor(Job job, Stat stat) {

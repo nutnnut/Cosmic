@@ -10,6 +10,7 @@ import constants.game.GameConstants;
 import constants.skills.Archer;
 import constants.skills.Bishop;
 import constants.skills.Magician;
+import constants.skills.Pirate;
 import constants.skills.Rogue;
 import constants.skills.Warrior;
 import java.util.HashMap;
@@ -472,13 +473,93 @@ class BotBuildManagerTest {
     }
 
     @Test
-    void pickWeightedJobNeverPicksAClassItCannotBuild() {
-        // PIRATE has no AP/SP build, so an ownerless bot must never roll into it (it would bank
-        // AP/SP forever). Only the four buildable explorer classes are eligible.
-        List<Job> buildable = List.of(Job.WARRIOR, Job.MAGICIAN, Job.BOWMAN, Job.THIEF);
-        for (int i = 0; i < 200; i++) {
-            assertTrue(buildable.contains(BotBuildManager.pickWeightedJob(Job.BEGINNER)));
+    void pickWeightedJobOnlyPicksBuildableClassesIncludingPirate() {
+        // All five explorer 1st jobs are now buildable (each has an SP build + an AP build), pirate
+        // included. The pick must stay within that set, and pirate must actually be reachable.
+        List<Job> buildable = List.of(Job.WARRIOR, Job.MAGICIAN, Job.BOWMAN, Job.THIEF, Job.PIRATE);
+        boolean sawPirate = false;
+        for (int i = 0; i < 400; i++) {
+            Job pick = BotBuildManager.pickWeightedJob(Job.BEGINNER);
+            assertTrue(buildable.contains(pick));
+            if (pick == Job.PIRATE) {
+                sawPirate = true;
+            }
         }
+        assertTrue(sawPirate, "pirate is now buildable and must be eligible");
+    }
+
+    @Test
+    void pirateGunVariantTrainsDoubleShotNotKnuckleSkills() {
+        Character bot = mock(Character.class);
+        BotEntry entry = new BotEntry(bot, mock(Character.class), mock(ScheduledFuture.class));
+        entry.spVariant = "gun"; // commit the gun line so getBuildOrder picks the gun pirate build
+        int pirateBook = GameConstants.getSkillBook(Pirate.DOUBLE_SHOT / 10000);
+        int[] remainingSps = new int[5];
+        remainingSps[pirateBook] = 7;
+        Map<Integer, Integer> skillLevels = new HashMap<>();
+        Map<Integer, Skill> skills = new HashMap<>();
+        skills.put(Pirate.DOUBLE_SHOT, mockSkill(Pirate.DOUBLE_SHOT, 20, false));
+        skills.put(Pirate.DASH, mockSkill(Pirate.DASH, 20, false));
+        skills.put(Pirate.BULLET_TIME, mockSkill(Pirate.BULLET_TIME, 20, false));
+
+        when(bot.getJob()).thenReturn(Job.PIRATE);
+        stubSkillState(bot, remainingSps, skillLevels);
+        when(bot.getMasterLevel(any(Skill.class))).thenReturn(0);
+
+        try (MockedStatic<SkillFactory> skillFactory = mockStatic(SkillFactory.class)) {
+            skillFactory.when(() -> SkillFactory.getSkill(anyInt()))
+                    .thenAnswer(invocation -> skills.get(invocation.getArgument(0)));
+            BotBuildManager.autoAssignSp(entry, bot);
+        }
+
+        assertEquals(0, remainingSps[pirateBook]);
+        assertEquals(7, skillLevels.getOrDefault(Pirate.DOUBLE_SHOT, 0)); // gun main attack maxed first
+        assertNull(skillLevels.get(Pirate.FLASH_FIST));
+        assertNull(skillLevels.get(Pirate.SOMERSAULT_KICK));
+    }
+
+    @Test
+    void pirateKnuckleVariantTrainsFlashFistAndSomersaultNotDoubleShot() {
+        Character bot = mock(Character.class);
+        BotEntry entry = new BotEntry(bot, mock(Character.class), mock(ScheduledFuture.class));
+        entry.spVariant = "knuckle";
+        int pirateBook = GameConstants.getSkillBook(Pirate.FLASH_FIST / 10000);
+        int[] remainingSps = new int[5];
+        remainingSps[pirateBook] = 7;
+        Map<Integer, Integer> skillLevels = new HashMap<>();
+        Map<Integer, Skill> skills = new HashMap<>();
+        skills.put(Pirate.FLASH_FIST, mockSkill(Pirate.FLASH_FIST, 20, false));
+        skills.put(Pirate.SOMERSAULT_KICK, mockSkill(Pirate.SOMERSAULT_KICK, 20, false));
+        skills.put(Pirate.DASH, mockSkill(Pirate.DASH, 20, false));
+        skills.put(Pirate.BULLET_TIME, mockSkill(Pirate.BULLET_TIME, 20, false));
+
+        when(bot.getJob()).thenReturn(Job.PIRATE);
+        stubSkillState(bot, remainingSps, skillLevels);
+        when(bot.getMasterLevel(any(Skill.class))).thenReturn(0);
+
+        try (MockedStatic<SkillFactory> skillFactory = mockStatic(SkillFactory.class)) {
+            skillFactory.when(() -> SkillFactory.getSkill(anyInt()))
+                    .thenAnswer(invocation -> skills.get(invocation.getArgument(0)));
+            BotBuildManager.autoAssignSp(entry, bot);
+        }
+
+        assertEquals(0, remainingSps[pirateBook]);
+        assertEquals(1, skillLevels.getOrDefault(Pirate.FLASH_FIST, 0));     // commits the knuckle gate
+        assertEquals(6, skillLevels.getOrDefault(Pirate.SOMERSAULT_KICK, 0)); // main attack next
+        assertNull(skillLevels.get(Pirate.DOUBLE_SHOT));
+    }
+
+    @Test
+    void resolveApBuildForGunPirateIsDexPrimaryStrSecondary() {
+        Character bot = mock(Character.class);
+        BotEntry entry = new BotEntry(bot, mock(Character.class), mock(ScheduledFuture.class));
+        entry.spVariant = "gun"; // gun line is DEX-primary; base Pirate orients off the variant
+        when(bot.getJob()).thenReturn(Job.PIRATE);
+
+        BotBuildManager.ApBuild build = BotBuildManager.resolveApBuild(entry, bot);
+
+        assertEquals(BotBuildManager.StatType.DEX, build.primaryStat);
+        assertEquals(BotBuildManager.StatType.STR, build.secondaryStat);
     }
 
     @Test
