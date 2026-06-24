@@ -4719,8 +4719,10 @@ public class BotManager {
     }
 
     /** Follow a chosen online character (any player/bot, resolved per tick): cross-map via the shared
-     *  follow-travel ({@link #syncFollowMap}), same-map by walking near its live position with the loiter
-     *  SSOT (which also opportunity-attacks). Target gone/offline -> stand down at a spot. */
+     *  follow-travel ({@link #syncFollowMap}), same-map by standing at the follow-mode formation slot
+     *  (formation offset + foothold/snap resolution, identical to owner/chat follow), with the shared
+     *  loiter locomotion (walk-near + opportunity-attack + settle). Target gone/offline -> stand down at
+     *  a spot. */
     private boolean tickOperatorFollow(BotEntry entry, Character bot, Point botPos, long now, boolean runAiTick) {
         Character target = bot.getWorldServer() != null
                 ? bot.getWorldServer().getPlayerStorage().getCharacterById(entry.operatorFollowTargetId) : null;
@@ -4734,9 +4736,15 @@ public class BotManager {
             }
             return true;
         }
-        Point tp = target.getPosition();
-        // fan out by the bot's assigned slot so a group doesn't stack on the target's exact pixel
-        loiterAtAnchor(entry, bot, botPos, new Point(tp.x + entry.followOffsetX, tp.y), runAiTick); // walk near + opportunity-attack
+        // Same-map placement = the follow-mode SSOT: formation offset (followOffsetX) + foothold/snap
+        // resolution via resolveFollowTargetPos, exactly as captureTargetSnapshot builds it for owner/chat
+        // follow. loiterAtAnchor then drives the shared walk-near + opportunity-attack + settle locomotion.
+        Point rawTargetPos = target.getPosition();
+        FormationState formation = formationStateFor(entry);
+        Point followBasePos = new Point(rawTargetPos.x + entry.followOffsetX, rawTargetPos.y);
+        Point followTargetPos = resolveFollowTargetPos(
+                followBasePos, target, rawTargetPos, formation.snapRange(), bot.getMap());
+        loiterAtAnchor(entry, bot, botPos, followTargetPos, runAiTick);
         return true;
     }
 
@@ -5940,13 +5948,7 @@ public class BotManager {
         return true;
     }
 
-    // ===== Owned-bot accessors used by the androidequip.cpp BotEquipHandler =====
-    /** Number of bots currently spawned (active) under this owner. */
-    public int spawnedBotCount(int ownerCharId) {
-        List<BotEntry> entries = bots.get(ownerCharId);
-        return entries == null ? 0 : entries.size();
-    }
-
+    // ===== Bot accessors used by the androidequip.cpp BotEquipHandler =====
     /** The Character objects of every spawned bot owned by the given player (empty if none). */
     public List<Character> getOwnedBotCharacters(int ownerCharId) {
         List<Character> result = new ArrayList<>();
@@ -5958,6 +5960,34 @@ public class BotManager {
                     result.add(b);
                 }
             }
+        }
+        return result;
+    }
+
+    /**
+     * Bots currently FOLLOWing the given GM via the gm6 debug-commander override — i.e. the tested
+     * "botName follow" chat path ({@link #bindDebugCommander} + {@code debugCommanderFollow} + the normal
+     * follow command, anchored in {@link #resolveFollowAnchor}). charId-sorted for a stable slot index,
+     * capped to the client's 5-button limit.
+     *
+     * This is how a GM curates the bot-inventory (F8) window over botpop bots they don't own: say
+     * "botName follow" to occupy a slot. A slot frees when the 5-min debug-commander TTL lapses or the
+     * bot's real owner reclaims it (both clear the binding). Reads the SAME state the chat command sets —
+     * no parallel follow plumbing.
+     */
+    public List<Character> getDebugCommanderFollowers(int gmCharId) {
+        List<Character> result = new ArrayList<>();
+        for (List<BotEntry> entries : bots.values()) {
+            for (BotEntry e : entries) {
+                if (e.debugCommanderFollow && e.debugCommanderId == gmCharId
+                        && isDebugCommanderFresh(e) && e.getBot() != null) {
+                    result.add(e.getBot());
+                }
+            }
+        }
+        result.sort((a, b) -> Integer.compare(a.getId(), b.getId()));
+        if (result.size() > 5) {
+            return result.subList(0, 5);
         }
         return result;
     }

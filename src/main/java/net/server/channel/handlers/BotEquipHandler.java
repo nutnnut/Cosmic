@@ -45,15 +45,14 @@ public final class BotEquipHandler extends AbstractPacketHandler {
         int action = p.readByte();
 
         if (action == REQ_LIST) {
-            int count = BotManager.getInstance().spawnedBotCount(player.getId());
-            c.sendPacket(PacketCreator.botEquipList(count));
+            c.sendPacket(PacketCreator.botEquipList(slotBots(player).size()));
             return;
         }
 
         int botIndex = p.readByte();
         Character bot = resolveBot(player, botIndex);
         if (bot == null) {
-            return;   // not an owned bot — ignore (treat all client input as hostile)
+            return;   // not a slot bot — ignore (treat all client input as hostile)
         }
 
         try {
@@ -97,12 +96,24 @@ public final class BotEquipHandler extends AbstractPacketHandler {
         c.sendPacket(PacketCreator.botEquipSnapshot(botIndex, bot));
     }
 
-    // botIndex 1..5 -> the player's Nth owned bot (stable spawn order), or null.
+    // The bots that fill this player's 1..5 window slots, stable order.
+    //  - GM: bots FOLLOWing the GM via the gm6 debug-commander override (say "botName follow") -> lets a
+    //    GM inspect botpop bots they don't own; the 5-min TTL or the owner reclaiming frees the slot.
+    //    Same state the tested chat-follow sets. See BotManager.getDebugCommanderFollowers.
+    //  - everyone else: their own owned bots.
+    private static List<Character> slotBots(Character player) {
+        BotManager bm = BotManager.getInstance();
+        return player.gmLevel() >= 6   // matches the gm6 debug-commander override that fills the roster
+                ? bm.getDebugCommanderFollowers(player.getId())
+                : bm.getOwnedBotCharacters(player.getId());
+    }
+
+    // botIndex 1..5 -> the player's Nth slot bot (stable order), or null.
     private static Character resolveBot(Character player, int botIndex) {
         if (botIndex < 1) {
             return null;
         }
-        List<Character> bots = BotManager.getInstance().getOwnedBotCharacters(player.getId());
+        List<Character> bots = slotBots(player);
         if (botIndex > bots.size()) {
             return null;
         }
