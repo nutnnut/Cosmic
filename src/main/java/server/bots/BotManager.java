@@ -5944,4 +5944,26 @@ public class BotManager {
         return true;
     }
 
+    // ===== Owned-bot accessors used by the androidequip.cpp BotEquipHandler =====
+    /** Number of bots currently spawned (active) under this owner. */
+    public int spawnedBotCount(int ownerCharId) {
+        List<BotEntry> entries = bots.get(ownerCharId);
+        return entries == null ? 0 : entries.size();
+    }
+
+    /** The Character objects of every spawned bot owned by the given player (empty if none). */
+    public List<Character> getOwnedBotCharacters(int ownerCharId) {
+        List<Character> result = new ArrayList<>();
+        List<BotEntry> entries = bots.get(ownerCharId);
+        if (entries != null) {
+            for (BotEntry e : entries) {
+                Character b = e.getBot();
+                if (b != null) {
+                    result.add(b);
+                }
+            }
+        }
+        return result;
+    }
+
 }

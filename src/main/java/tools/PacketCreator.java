@@ -7462,4 +7462,71 @@ public class PacketCreator {
         return p;
     }
 
+    // ===== Android/bot equip window — added for the Kaentake androidequip.cpp feature =====
+    // ---- Android/bot equip window (Kaentake LP_BotEquip) ---------------------
+    // RESP_SNAPSHOT: one bot's worn gear + per-tab inventory, each item serialized
+    // as the standard GW_ItemSlot block via addItemInfo so the Kaentake client can
+    // decode real item objects for native hover tooltips. The slot is the RAW
+    // position (negative = worn; cash worn <= -100) and zeroPosition=true so
+    // addItemInfo skips its own position prefix.
+    public static Packet botEquipSnapshot(int botIndex, client.Character bot) {
+        OutPacket p = OutPacket.create(SendOpcode.BOT_EQUIP);
+        p.writeByte(1);                 // RESP_SNAPSHOT
+        p.writeByte(botIndex);          // 1..5
+        java.util.List<Item> worn =
+                new java.util.ArrayList<>(bot.getInventory(client.inventory.InventoryType.EQUIPPED).list());
+        p.writeByte(worn.size());
+        for (Item it : worn) {
+            p.writeShort(it.getPosition());
+            addItemInfo(p, it, true);
+        }
+        client.inventory.InventoryType[] tabs = {
+                client.inventory.InventoryType.EQUIP, client.inventory.InventoryType.USE,
+                client.inventory.InventoryType.SETUP, client.inventory.InventoryType.ETC,
+                client.inventory.InventoryType.CASH
+        };
+        p.writeByte(tabs.length);       // 5 tabs
+        // Snapshot each tab once and reuse for both the item block and the trailing qty block
+        // (avoids a second per-tab Inventory.list() copy and a possible mid-build inventory drift).
+        @SuppressWarnings("unchecked")
+        java.util.List<Item>[] tabSnapshots = new java.util.List[tabs.length];
+        for (int t = 0; t < tabs.length; t++) {
+            tabSnapshots[t] = new java.util.ArrayList<>(bot.getInventory(tabs[t]).list());
+        }
+        for (int t = 0; t < tabs.length; t++) {
+            p.writeByte(t + 1);         // tabId 1..5
+            java.util.List<Item> items = tabSnapshots[t];
+            p.writeByte(items.size());
+            for (Item it : items) {
+                p.writeShort(it.getPosition());
+                addItemInfo(p, it, true);
+            }
+        }
+        p.writeInt(bot.getMeso());       // client reads trailing 4-byte LE int (canRead(4) -> readInt) first
+        // Trailing stack-count block (after meso): short count, then {byte tab, short
+        // slotPos, short qty} per inventory item -> the client draws the per-slot stack
+        // count. Backward compatible: an older client ignores these trailing bytes.
+        java.util.List<int[]> qtys = new java.util.ArrayList<>();
+        for (int t = 0; t < tabs.length; t++) {
+            for (Item it : tabSnapshots[t]) {
+                qtys.add(new int[]{ t + 1, it.getPosition(), it.getQuantity() });
+            }
+        }
+        p.writeShort(qtys.size());
+        for (int[] q : qtys) {
+            p.writeByte(q[0]);
+            p.writeShort(q[1]);
+            p.writeShort(q[2]);
+        }
+        return p;
+    }
+
+    // RESP_LIST: how many bots the player owns (gates the client's 1..5 buttons).
+    public static Packet botEquipList(int botCount) {
+        OutPacket p = OutPacket.create(SendOpcode.BOT_EQUIP);
+        p.writeByte(0);                 // RESP_LIST
+        p.writeByte(botCount);
+        return p;
+    }
+
 }
