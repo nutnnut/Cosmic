@@ -269,6 +269,7 @@ class BotBuildManagerTest {
         skills.put(Rogue.DISORDER, mockSkill(Rogue.DISORDER, 20, false));
         skills.put(Rogue.DARK_SIGHT, mockSkill(Rogue.DARK_SIGHT, 20, false));
 
+        entry.spVariant = "claw"; // supervised thieves now hold SP until the owner picks the weapon line
         when(bot.getJob()).thenReturn(Job.THIEF);
         stubSkillState(bot, remainingSps, skillLevels);
         when(bot.getMasterLevel(any(Skill.class))).thenReturn(0);
@@ -284,6 +285,51 @@ class BotBuildManagerTest {
         assertEquals(1, skillLevels.getOrDefault(Rogue.LUCKY_SEVEN, 0));
         assertEquals(3, skillLevels.getOrDefault(Rogue.NIMBLE_BODY, 0));
         assertEquals(3, skillLevels.getOrDefault(Rogue.KEEN_EYES, 0));
+    }
+
+    @Test
+    void supervisedThiefHoldsSpUntilWeaponLinePicked() {
+        // No spVariant + supervised (not autopilot): the 1st-job weapon line is the owner's pick, so SP
+        // must be HELD, not auto-rolled into a claw/dagger build.
+        Character bot = mock(Character.class);
+        BotEntry entry = new BotEntry(bot, mock(Character.class), mock(ScheduledFuture.class));
+        int thiefBook = GameConstants.getSkillBook(Rogue.LUCKY_SEVEN / 10000);
+        int[] remainingSps = new int[5];
+        remainingSps[thiefBook] = 7;
+        Map<Integer, Integer> skillLevels = new HashMap<>();
+
+        when(bot.getJob()).thenReturn(Job.THIEF);
+        stubSkillState(bot, remainingSps, skillLevels);
+        when(bot.getMasterLevel(any(Skill.class))).thenReturn(0);
+
+        try (MockedStatic<SkillFactory> skillFactory = mockStatic(SkillFactory.class);
+             MockedStatic<BotManager> bm = mockStatic(BotManager.class)) {
+            bm.when(() -> BotManager.isAutopilotActive(entry)).thenReturn(false); // supervised
+            skillFactory.when(() -> SkillFactory.getSkill(anyInt()))
+                    .thenAnswer(invocation -> mockSkill(invocation.getArgument(0), 20, false));
+            BotBuildManager.autoAssignSp(entry, bot);
+        }
+
+        assertNull(entry.spVariant, "variant must stay unset until the owner picks");
+        assertEquals(7, remainingSps[thiefBook], "SP held, not spent");
+        assertTrue(skillLevels.isEmpty(), "no skills trained while awaiting the pick");
+    }
+
+    @Test
+    void committedThiefAutoAdvancesAtLv30WithoutReprompt() {
+        // The weapon line picked at 1st job is authoritative: the lv30 2nd job follows it deterministically
+        // (claw -> Assassin), with no "assassin or bandit?" re-prompt.
+        Character bot = mock(Character.class);
+        BotEntry entry = new BotEntry(bot, mock(Character.class), mock(ScheduledFuture.class));
+        entry.spVariant = "claw";
+        when(bot.getJob()).thenReturn(Job.THIEF);
+        when(bot.getLevel()).thenReturn(30);
+
+        try (MockedStatic<BotManager> bm = mockStatic(BotManager.class)) {
+            assertNull(BotBuildManager.buildJobPrompt(entry, bot)); // deterministic advance, no prompt
+        }
+
+        assertEquals(30, entry.jobPromptSent);
     }
 
     @Test

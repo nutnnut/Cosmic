@@ -384,6 +384,12 @@ class BotBuildManager {
             entry.spVariant = "claw";
             return;
         }
+        // Undecided base Rogue. A SUPERVISED bot leaves the variant null so the owner picks the weapon
+        // line (buildSpVariantPrompt) — the build splits at 1st job and that pick is authoritative.
+        // Only an ownerless bot self-resolves: its planned 2nd job, else a 50/50 roll.
+        if (!isOwnerless(entry)) {
+            return;
+        }
         BotPersonality p = entry.personality;
         Job planned2 = p != null ? p.plannedSecondJob() : null;
         if (planned2 == Job.BANDIT) {
@@ -454,6 +460,12 @@ class BotBuildManager {
             entry.spVariant = "knuckle";
             return;
         }
+        // Undecided base Pirate. A SUPERVISED bot leaves the variant null so the owner picks the weapon
+        // line (buildSpVariantPrompt) — the build splits at 1st job and that pick is authoritative.
+        // Only an ownerless bot self-resolves: its planned 2nd job, else a 50/50 roll.
+        if (!isOwnerless(entry)) {
+            return;
+        }
         BotPersonality p = entry.personality;
         Job planned2 = p != null ? p.plannedSecondJob() : null;
         if (planned2 == Job.GUNSLINGER) {
@@ -481,6 +493,46 @@ class BotBuildManager {
         } catch (RuntimeException ignored) {
             // persistence best-effort
         }
+    }
+
+    /** Pending SP in the bot's 1st-job skill book (Thief/Pirate) — gates the 1st-job variant prompt. */
+    private static int firstJobSpPending(Character bot) {
+        int sampleSkill = bot.getJob() == Job.PIRATE ? Pirate.FLASH_FIST : Rogue.NIMBLE_BODY;
+        int book = GameConstants.getSkillBook(sampleSkill / 10000);
+        int[] sps = bot.getRemainingSps();
+        return book >= 0 && book < sps.length ? sps[book] : 0;
+    }
+
+    /** The 2nd job determined by the committed weapon-line variant (Thief: claw->Assassin, dagger->
+     *  Bandit; Pirate: knuckle->Brawler, gun->Gunslinger), or null if the line isn't committed yet. */
+    private static Job committedSecondJob(BotEntry entry, Character bot) {
+        Job job = bot.getJob();
+        if (job == Job.THIEF) {
+            if ("dagger".equals(entry.spVariant)) return Job.BANDIT;
+            if ("claw".equals(entry.spVariant)) return Job.ASSASSIN;
+        } else if (job == Job.PIRATE) {
+            if ("gun".equals(entry.spVariant)) return Job.GUNSLINGER;
+            if ("knuckle".equals(entry.spVariant)) return Job.BRAWLER;
+        }
+        return null;
+    }
+
+    /** Owner picked the 1st-job weapon line (claw/dagger, knuckle/gun). Commit it as authoritative:
+     *  store the variant, persist the matching planned 2nd job (so the lv30 advance + procedural name
+     *  agree), and spend the SP that was held awaiting the pick. */
+    static void commitWeaponLineVariant(BotEntry entry, Character bot, String variant) {
+        entry.spVariant = variant;
+        Job second = switch (variant) {
+            case "claw" -> Job.ASSASSIN;
+            case "dagger" -> Job.BANDIT;
+            case "knuckle" -> Job.BRAWLER;
+            case "gun" -> Job.GUNSLINGER;
+            default -> null;
+        };
+        if (second != null) {
+            tiePlannedSecondJob(entry, bot, second);
+        }
+        autoAssignSp(entry, bot);
     }
 
     static Job weightedPick(List<Job> choices, Map<Job, Integer> weights) {
@@ -516,19 +568,36 @@ class BotBuildManager {
     }
 
     /**
-     * Returns a prompt asking for the SP build variant, or null if not needed.
-     * Currently only Hero has two documented builds.
+     * Returns a prompt asking the owner to pick the SP build variant, or null if not needed. Hero
+     * chooses at 4th job (1h vs 2h); Thief and Pirate choose at 1st job (claw/dagger, knuckle/gun) —
+     * that's where the build splits and the trained attack commits the weapon line, so the pick is
+     * authoritative for the whole career. Ownerless bots are never prompted (they self-resolve).
      */
     static String buildSpVariantPrompt(BotEntry entry, Character bot) {
-        if (bot.getJob() != Job.HERO) return null;
-        if (entry.spVariant != null || entry.spVariantPromptSent || bot.getRemainingSps()[3] < 1) return null;
-        if (isOwnerless(entry)) {
-            entry.spVariant = "2h"; // autonomous default; no owner to choose 1h vs 2h
+        Job job = bot.getJob();
+        if (job == Job.HERO) {
+            if (entry.spVariant != null || entry.spVariantPromptSent || bot.getRemainingSps()[3] < 1) return null;
+            if (isOwnerless(entry)) {
+                entry.spVariant = "2h"; // autonomous default; no owner to choose 1h vs 2h
+                entry.spVariantPromptSent = true;
+                return null;
+            }
             entry.spVariantPromptSent = true;
-            return null;
+            return "hero build: '1h' (1h sword, Brandish first) or '2h' (interleave AC + Brandish for faster charges)?";
         }
-        entry.spVariantPromptSent = true;
-        return "hero build: '1h' (1h sword, Brandish first) or '2h' (interleave AC + Brandish for faster charges)?";
+        if (job == Job.THIEF || job == Job.PIRATE) {
+            // Commit from a trained skill / 2nd-job class if any (and roll for ownerless bots); a null
+            // variant after this means a supervised bot still awaiting the owner's weapon-line pick.
+            resolveThiefVariantIfNeeded(entry, bot);
+            resolvePirateVariantIfNeeded(entry, bot);
+            if (entry.spVariant != null) return null;
+            if (entry.spVariantPromptSent || firstJobSpPending(bot) < 1 || isOwnerless(entry)) return null;
+            entry.spVariantPromptSent = true;
+            return job == Job.THIEF
+                    ? "1st job build: 'claw' (Lucky Seven now, Assassin at lv30) or 'dagger' (Double Stab now, Bandit at lv30)?"
+                    : "1st job build: 'knuckle' (Brawler at lv30) or 'gun' (Gunslinger at lv30)?";
+        }
+        return null;
     }
 
     /**
@@ -539,6 +608,13 @@ class BotBuildManager {
         if (bot.getJob() == Job.HERO && entry.spVariant == null) return;
         resolveThiefVariantIfNeeded(entry, bot);
         resolvePirateVariantIfNeeded(entry, bot);
+        // A supervised base Thief/Pirate holds its 1st-job SP until the owner picks the weapon line
+        // (claw/dagger, knuckle/gun) via buildSpVariantPrompt — the build splits at 1st job and that
+        // pick is authoritative. The resolvers above already commit the variant for ownerless bots and
+        // for any bot that has trained a 1st-job attack, so a null here means "awaiting the owner".
+        if (entry.spVariant == null && (bot.getJob() == Job.THIEF || bot.getJob() == Job.PIRATE)) {
+            return;
+        }
 
         List<BuildStep> steps = getBuildOrder(bot.getJob(), entry.spVariant);
         if (steps == null) return;
@@ -746,9 +822,11 @@ class BotBuildManager {
         return List.of();
     }
 
-    /** Response-overlay labels for the Hero SP-variant prompt. */
-    static List<String> spVariantOptions() {
-        return List.of("1h", "2h");
+    /** Response-overlay labels for the SP-variant prompt, by job. */
+    static List<String> spVariantOptions(Job job) {
+        if (job == Job.THIEF) return List.of("claw", "dagger");
+        if (job == Job.PIRATE) return List.of("knuckle", "gun");
+        return List.of("1h", "2h"); // hero
     }
 
     private static int currentStat(Character bot, StatType statType) {
@@ -992,6 +1070,16 @@ class BotBuildManager {
         }
 
         if (lvl >= 30 && prompted < 30) {
+            // Thief/Pirate: the 2nd job follows the weapon line the owner already picked at 1st job
+            // (authoritative — that's where the build splits), so advance deterministically with no
+            // re-prompt, the same way 3rd/4th job advances. Only falls through to the choice prompt if
+            // the line was never committed (e.g. the owner ignored the 1st-job pick).
+            Job committed = committedSecondJob(entry, bot);
+            if (committed != null) {
+                entry.jobPromptSent = 30;
+                scheduleAutoAdvance(entry, committed);
+                return null;
+            }
             if (isOwnerless(entry)) {
                 Job target = plannedOrPicked(entry, job); // honor creation-time plan, else pick autonomously
                 if (target != null) {

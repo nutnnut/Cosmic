@@ -415,6 +415,11 @@ public class BotChatManager {
             "\\b1h\\b", Pattern.CASE_INSENSITIVE);
     private static final Pattern SP_2H_PATTERN = Pattern.compile(
             "\\b2h\\b", Pattern.CASE_INSENSITIVE);
+    // Thief/Pirate 1st-job weapon-line picks (claw/dagger, knuckle/gun) — same gated state as 1h/2h.
+    private static final Pattern SP_CLAW_PATTERN = Pattern.compile("\\bclaw\\b", Pattern.CASE_INSENSITIVE);
+    private static final Pattern SP_DAGGER_PATTERN = Pattern.compile("\\bdagger\\b", Pattern.CASE_INSENSITIVE);
+    private static final Pattern SP_KNUCKLE_PATTERN = Pattern.compile("\\bknuckle\\b", Pattern.CASE_INSENSITIVE);
+    private static final Pattern SP_GUN_PATTERN = Pattern.compile("\\bgun\\b", Pattern.CASE_INSENSITIVE);
 
     // "pure <stat>" matches only the class whose primary stat it names.
     // Bare "pure" (no stat qualifier) matches all classes via the negative lookahead,
@@ -1180,16 +1185,36 @@ public class BotChatManager {
             });
         }
 
-        // SP build variant selection — only matched when waiting for an answer (Hero 1h vs 2h)
+        // SP build variant selection — only matched when waiting for an answer (Hero 1h/2h at 4th job,
+        // Thief claw/dagger and Pirate knuckle/gun at 1st job).
         if (entry.spVariantPromptSent && entry.spVariant == null) {
-            if (SP_1H_PATTERN.matcher(message).find()) {
-                entry.spVariant = "1h";
-                BotManager.getInstance().botReply(entry, "ok! going 1h sword build, Brandish first");
-                BotBuildManager.autoAssignSp(entry, entry.bot);
-            } else if (SP_2H_PATTERN.matcher(message).find()) {
-                entry.spVariant = "2h";
-                BotManager.getInstance().botReply(entry, "ok! going 2h build, interleaving AC early for faster charges");
-                BotBuildManager.autoAssignSp(entry, entry.bot);
+            Job vjob = entry.bot.getJob();
+            if (vjob == Job.HERO) {
+                if (SP_1H_PATTERN.matcher(message).find()) {
+                    entry.spVariant = "1h";
+                    BotManager.getInstance().botReply(entry, "ok! going 1h sword build, Brandish first");
+                    BotBuildManager.autoAssignSp(entry, entry.bot);
+                } else if (SP_2H_PATTERN.matcher(message).find()) {
+                    entry.spVariant = "2h";
+                    BotManager.getInstance().botReply(entry, "ok! going 2h build, interleaving AC early for faster charges");
+                    BotBuildManager.autoAssignSp(entry, entry.bot);
+                }
+            } else if (vjob == Job.THIEF) {
+                if (SP_CLAW_PATTERN.matcher(message).find()) {
+                    BotBuildManager.commitWeaponLineVariant(entry, entry.bot, "claw");
+                    BotManager.getInstance().botReply(entry, "ok! claw build - Lucky Seven now, Assassin at lv30");
+                } else if (SP_DAGGER_PATTERN.matcher(message).find()) {
+                    BotBuildManager.commitWeaponLineVariant(entry, entry.bot, "dagger");
+                    BotManager.getInstance().botReply(entry, "ok! dagger build - Double Stab now, Bandit at lv30");
+                }
+            } else if (vjob == Job.PIRATE) {
+                if (SP_KNUCKLE_PATTERN.matcher(message).find()) {
+                    BotBuildManager.commitWeaponLineVariant(entry, entry.bot, "knuckle");
+                    BotManager.getInstance().botReply(entry, "ok! knuckle build - headed for Brawler at lv30");
+                } else if (SP_GUN_PATTERN.matcher(message).find()) {
+                    BotBuildManager.commitWeaponLineVariant(entry, entry.bot, "gun");
+                    BotManager.getInstance().botReply(entry, "ok! gun build - headed for Gunslinger at lv30");
+                }
             }
         }
 
@@ -1521,7 +1546,7 @@ public class BotChatManager {
         if (jobPrompt != null) queueBotReply(entry, jobPrompt.text(), jobPrompt.options());
         String spPrompt = BotBuildManager.buildSpVariantPrompt(entry, bot);
         if (spPrompt != null) {
-            queueBotReply(entry, spPrompt, BotBuildManager.spVariantOptions());
+            queueBotReply(entry, spPrompt, BotBuildManager.spVariantOptions(bot.getJob()));
         } else {
             BotBuildManager.autoAssignSp(entry, bot);
         }
