@@ -15,6 +15,7 @@ the LAN (accepted: private game-server LAN). Open `http://<server-lan-ip>:8089/`
 |-------|--------|---------|
 | `/` | GET | Legacy bot world-graph page (`botworld.html`). |
 | `/map` | GET | RTS world map (`worldmap.html`): graph over WorldMap continent images, live positions, RTS control, collapsible per-map detail. |
+| `/admin` | GET | Admin/settings menu (`admin.html`): edit bot config live, drive the population scheduler + LLM toggle, danger zone (disconnect-all / wipe). Front end for `/api/settings`. |
 | `/wm/{worldmapId}.png` | GET | A WorldMap continent background image. |
 
 ## Read APIs (JSON, GET)
@@ -93,6 +94,29 @@ or load failed.
 ```
 {"results":[{"id":767,"spawned":true},{"id":814,"spawned":false,"note":"already online or load failed"}]}
 ```
+
+## Settings API
+
+### `/api/settings` (GET + POST)
+Live admin/tuning surface behind `/admin`. Same SSOT as the GM commands: `BotConfigReflect` (the
+`!botcfg` reflection), `BotScheduler` (`@botpop`), `BotLlmConfig` (`!botllm`), `BotAdminOps` (`@botpop wipe`).
+
+**GET** — snapshot of every tunable group:
+```
+{"manager":[{"name","value","type"}, ...],   // BotManager.cfg public fields (POPULATION_MULTIPLIER, break/loot/autopilot/party knobs)
+ "combat":[{"name","value","type"}, ...],     // BotCombatManager.cfg public fields (the !botcfg set)
+ "pop":{"enabled":bool,"multiplier":num,"status":[lines...]},
+ "llm":{"enabled":bool,"debug":bool}}
+```
+
+**POST** — mutate one knob; dispatch on `cmd`:
+- `{"cmd":"set","group":"manager|combat","field","value"}` → set a config field (case-insensitive). Returns `{"ok","msg"}` (`msg` starts with `OK` on success, mirrors `!botcfg`).
+- `{"cmd":"pop","mult"?,"enabled"?,"sweep"?}` → set multiplier / toggle scheduler / force a sweep. Returns `{"ok","status":[lines...]}`.
+- `{"cmd":"llm","enabled"?,"debug"?}` → toggle LLM chat (`debug:true` implies on). Returns `{"ok","enabled","debug"}`.
+- `{"cmd":"disconnectAll","confirm":"DISCONNECT"}` → disconnect every online bot (scheduler may respawn them). Returns `{"ok","disconnected":n}`.
+- `{"cmd":"wipe","confirm":"WIPE"}` → **permanently delete** every managed bot (shared with `@botpop wipe`; real/shared accounts skipped). Returns `{"ok","wiped","skipped","lines":[...]}`.
+
+Destructive verbs require the exact `confirm` token (the page prompts for it) — no real auth, LAN-only.
 
 ## Write API
 

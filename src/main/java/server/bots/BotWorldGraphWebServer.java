@@ -15,6 +15,7 @@ import provider.DataProvider;
 import provider.DataProviderFactory;
 import provider.DataTool;
 import provider.wz.WZFiles;
+import server.bots.llm.BotLlmConfig;
 import server.life.LifeFactory;
 import server.life.MonsterInformationProvider;
 
@@ -140,6 +141,8 @@ public final class BotWorldGraphWebServer {
             s.createContext("/api/bot/pathlog", BotWorldGraphWebServer::servePathLog);
             s.createContext("/api/perf", BotWorldGraphWebServer::servePerf);
             s.createContext("/api/spawnbot", BotWorldGraphWebServer::serveSpawnBot);
+            s.createContext("/admin", BotWorldGraphWebServer::serveAdminPage);
+            s.createContext("/api/settings", BotWorldGraphWebServer::serveSettings);
             s.setExecutor(Executors.newCachedThreadPool(r -> {
                 Thread t = new Thread(r, "bot-worldmap-web");
                 t.setDaemon(true);
@@ -162,7 +165,8 @@ public final class BotWorldGraphWebServer {
             + "h1{font-weight:600;margin:0;color:#9fb0c8}"
             + "a{color:#6cc6ff;font-size:20px;text-decoration:none;padding:14px 24px;border:1px solid #3a4761;"
             + "border-radius:8px}a:hover{background:#171c26}</style></head>"
-            + "<body><h1>Bot World</h1><a href=\"/map\">Open the World Map &rarr;</a></body></html>";
+            + "<body><h1>Bot World</h1><a href=\"/map\">Open the World Map &rarr;</a>"
+            + "<a href=\"/admin\">Admin / Settings &rarr;</a></body></html>";
 
     private static void servePage(HttpExchange ex) throws IOException {
         if (!"/".equals(ex.getRequestURI().getPath())) {
@@ -619,6 +623,149 @@ public final class BotWorldGraphWebServer {
                     .append(spawned ? "" : ",\"note\":\"already online or load failed\"").append('}');
         }
         send(ex, 200, "application/json", sb.append("]}").toString().getBytes(StandardCharsets.UTF_8));
+    }
+
+    private static void serveAdminPage(HttpExchange ex) throws IOException {
+        byte[] body;
+        try (InputStream in = BotWorldGraphWebServer.class.getResourceAsStream("/web/admin.html")) {
+            if (in == null) {
+                send(ex, 500, "text/plain", "admin.html resource missing".getBytes(StandardCharsets.UTF_8));
+                return;
+            }
+            body = in.readAllBytes();
+        }
+        send(ex, 200, "text/html; charset=utf-8", body);
+    }
+
+    /**
+     * Admin settings menu API. GET = snapshot of every tunable group; POST = mutate one knob.
+     * GET shape: {@code {"manager":[{name,value,type}],"combat":[...],"pop":{enabled,multiplier,status:[...]},
+     * "llm":{enabled,debug}}}. POST dispatches on {@code cmd}: {@code set}{group,field,value} |
+     * {@code pop}{mult?,enabled?,sweep?} | {@code llm}{enabled?,debug?} | {@code disconnectAll}{confirm:"DISCONNECT"}
+     * | {@code wipe}{confirm:"WIPE"}. Reuses the same reflection ({@link BotConfigReflect}) as {@code !botcfg}
+     * and the {@link BotScheduler}/{@link BotAdminOps} the {@code @botpop} command drives — SSOT, no second copy.
+     */
+    private static void serveSettings(HttpExchange ex) throws IOException {
+        if ("GET".equals(ex.getRequestMethod())) {
+            send(ex, 200, "application/json", settingsJson().getBytes(StandardCharsets.UTF_8));
+            return;
+        }
+        if (!"POST".equals(ex.getRequestMethod())) {
+            send(ex, 405, "application/json", "{\"error\":\"GET or POST\"}".getBytes(StandardCharsets.UTF_8));
+            return;
+        }
+        String body = new String(ex.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+        String cmd = jsonField(body, "cmd");
+        String result;
+        switch (cmd == null ? "" : cmd) {
+            case "set" -> {
+                Object cfg = configGroup(jsonField(body, "group"));
+                if (cfg == null) {
+                    result = "{\"error\":\"unknown group (manager|combat)\"}";
+                } else {
+                    String msg = BotConfigReflect.setField(cfg, jsonField(body, "field"), jsonField(body, "value"));
+                    boolean ok = msg.startsWith("OK");
+                    result = "{\"ok\":" + ok + ",\"msg\":" + jsonStr(msg) + "}";
+                }
+            }
+            case "pop" -> {
+                BotScheduler sched = BotScheduler.getInstance();
+                String mult = jsonField(body, "mult");
+                if (mult != null) {
+                    try {
+                        sched.setMultiplier(Double.parseDouble(mult));
+                    } catch (NumberFormatException e) {
+                        result = "{\"error\":\"bad multiplier\"}";
+                        break;
+                    }
+                }
+                String enabled = jsonField(body, "enabled");
+                if (enabled != null) {
+                    sched.setEnabled(enabled.equalsIgnoreCase("true") || enabled.equals("1"));
+                }
+                if ("true".equalsIgnoreCase(jsonField(body, "sweep"))) {
+                    sched.sweepNow();
+                }
+                result = "{\"ok\":true,\"status\":" + jsonStrArr(sched.statusLines()) + "}";
+            }
+            case "llm" -> {
+                String enabled = jsonField(body, "enabled");
+                String debug = jsonField(body, "debug");
+                if (enabled != null) {
+                    BotLlmConfig.enabled = enabled.equalsIgnoreCase("true") || enabled.equals("1");
+                }
+                if (debug != null) {
+                    BotLlmConfig.debugLog = debug.equalsIgnoreCase("true") || debug.equals("1");
+                    if (BotLlmConfig.debugLog) {
+                        BotLlmConfig.enabled = true; // debug implies on, like !botllm debug
+                    }
+                }
+                result = "{\"ok\":true,\"enabled\":" + BotLlmConfig.enabled
+                        + ",\"debug\":" + BotLlmConfig.debugLog + "}";
+            }
+            case "disconnectAll" -> {
+                if (!"DISCONNECT".equals(jsonField(body, "confirm"))) {
+                    result = "{\"error\":\"confirm token mismatch\"}";
+                } else {
+                    int n = BotManager.getInstance().disconnectAllBots();
+                    result = "{\"ok\":true,\"disconnected\":" + n + "}";
+                }
+            }
+            case "wipe" -> {
+                if (!"WIPE".equals(jsonField(body, "confirm"))) {
+                    result = "{\"error\":\"confirm token mismatch\"}";
+                } else {
+                    BotAdminOps.WipeResult r = BotAdminOps.wipeManagedBots();
+                    List<String> lines = new ArrayList<>();
+                    for (String l : r.lines()) {
+                        lines.add(jsonStr(l));
+                    }
+                    result = "{\"ok\":true,\"wiped\":" + r.wiped() + ",\"skipped\":" + r.skipped()
+                            + ",\"lines\":" + rawArr(lines) + "}";
+                }
+            }
+            default -> result = "{\"error\":\"unknown cmd\"}";
+        }
+        send(ex, 200, "application/json", result.getBytes(StandardCharsets.UTF_8));
+    }
+
+    /** The live config instance for a settings group name, or null if unknown. */
+    private static Object configGroup(String group) {
+        if ("manager".equalsIgnoreCase(group)) {
+            return BotManager.cfg;
+        }
+        if ("combat".equalsIgnoreCase(group)) {
+            return BotCombatManager.config();
+        }
+        return null;
+    }
+
+    private static String settingsJson() {
+        BotScheduler sched = BotScheduler.getInstance();
+        return "{\"manager\":" + fieldsJson(BotManager.cfg)
+                + ",\"combat\":" + fieldsJson(BotCombatManager.config())
+                + ",\"pop\":{\"enabled\":" + BotManager.cfg.POPULATION_SCHED_ENABLED
+                + ",\"multiplier\":" + sched.getMultiplier()
+                + ",\"status\":" + jsonStrArr(sched.statusLines()) + "}"
+                + ",\"llm\":{\"enabled\":" + BotLlmConfig.enabled
+                + ",\"debug\":" + BotLlmConfig.debugLog + "}}";
+    }
+
+    private static String fieldsJson(Object cfg) {
+        List<String> rows = new ArrayList<>();
+        for (BotConfigReflect.FieldView f : BotConfigReflect.fields(cfg)) {
+            rows.add("{\"name\":" + jsonStr(f.name()) + ",\"value\":" + jsonStr(f.value())
+                    + ",\"type\":" + jsonStr(f.type()) + "}");
+        }
+        return rawArr(rows);
+    }
+
+    private static String jsonStrArr(List<String> xs) {
+        List<String> q = new ArrayList<>();
+        for (String x : xs) {
+            q.add(jsonStr(x));
+        }
+        return rawArr(q);
     }
 
     private static void serveBotDebug(HttpExchange ex) throws IOException {
