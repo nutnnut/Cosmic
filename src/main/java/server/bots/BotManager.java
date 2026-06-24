@@ -1749,6 +1749,12 @@ public class BotManager {
                         foreign.debugCommanderFollow = true;
                     }
                     BotChatManager.handleChat(foreign, foreignMatch.commandText());
+                    if (foreign.debugCommanderFollow) {
+                        // Self-owned bots are each their own owner, so the per-owner formation loop
+                        // never staggers them — assign slots across the GM's whole follow cohort here
+                        // so multiple followed bots fan out instead of stacking on one point.
+                        assignDebugFollowFormation(owner.getId());
+                    }
                 }
                 return;
             }
@@ -2082,13 +2088,35 @@ public class BotManager {
         }
     }
 
-    /** The bound admin commander while the binding is fresh, else null. Resolves the Character via
-     *  the bot's current map (the admin name-targeted a bot they can see). */
+    /** Stagger the GM's debug-commander follow cohort so multiple followed bots fan out instead of
+     *  stacking. charId order matches {@link #getDebugCommanderFollowers}, so the F8 slot index and the
+     *  on-screen formation position line up. */
+    private void assignDebugFollowFormation(int gmCharId) {
+        List<BotEntry> cohort = new ArrayList<>();
+        for (List<BotEntry> entries : bots.values()) {
+            for (BotEntry e : entries) {
+                if (e.debugCommanderFollow && e.debugCommanderId == gmCharId
+                        && isDebugCommanderFresh(e) && e.bot != null) {
+                    cohort.add(e);
+                }
+            }
+        }
+        cohort.sort((a, b) -> Integer.compare(a.bot.getId(), b.bot.getId()));
+        FormationState fs = FormationState.defaultStagger();
+        for (int i = 0; i < cohort.size(); i++) {
+            cohort.get(i).followOffsetX = fs.offsetFor(i, cohort.size());
+        }
+    }
+
+    /** The bound admin commander while the binding is fresh, else null. Resolved world-wide (not just
+     *  the bot's current map) so a followed bot keeps its anchor — and can travel cross-map to catch up —
+     *  when the admin changes maps. */
     Character resolveDebugCommander(BotEntry entry) {
-        if (!isDebugCommanderFresh(entry) || entry.bot == null || entry.bot.getMap() == null) {
+        if (!isDebugCommanderFresh(entry) || entry.bot == null) {
             return null;
         }
-        return entry.bot.getMap().getCharacterById(entry.debugCommanderId);
+        var ws = entry.bot.getWorldServer();
+        return ws != null ? ws.getPlayerStorage().getCharacterById(entry.debugCommanderId) : null;
     }
 
     /** Who command-driven interactions (trade-with-owner, follow) should target: the fresh admin
