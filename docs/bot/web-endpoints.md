@@ -61,6 +61,9 @@ Read-only per-bot autopilot internals for live debugging (party cohesion, follow
     "job","str","dex","int","luk","watk","matk",   // totals (base+equip)
     "hp","maxHp","mp","maxMp","exp","meso",
     "atkSkill","aoeSkill",         // resolved attack choices (BotCombatManager.rebuildSkillCacheIfNeeded; 0 = none)
+    "pos":[x,y],"navEdge",         // live position + committed nav edge summary (e.g. "TELEPORT r3->r7 (..)->(..)")
+    "navDecision","edgeBlock",     // last resolveTarget decision ("exec"/"skill-hop"/"reuse"/..) + last edge block reason ("tele-mp"/"fj-pos"/..)
+    "canMoveSkill":bool,           // passes the teleport/flash-jump gate right now (has skill && >40% MP && >500k meso)
     "skills":{ "<skillId>": <level>, ... }          // every learned skill, live
   }
 }, ...]}
@@ -95,17 +98,21 @@ or load failed.
 {"results":[{"id":767,"spawned":true},{"id":814,"spawned":false,"note":"already online or load failed"}]}
 ```
 
-### `/api/navprobe?id=<botCharId>&x=<>&y=<>`
+### `/api/navprobe?id=<botCharId>&x=<>&y=<>[&skills=1]`
 Pathfinding probe: runs the bot's own nav planner (`BotNavigationManager.findPath` on the live graph)
 from its current position to an arbitrary point on its current map. The "why can't the bot get there"
 companion to `/api/bot/pathlog` — answers reachability for a hypothetical target (e.g. a portal's
 approach point) without driving the bot there. `targetGroundY=-1` / `targetOnRope` flag the target
 surface; `reachable=false` with `path:[]` means no route from `fromRegion` to `toRegion`.
+`&skills=1` runs the **skill-enabled** planner — teleport / flash-jump edges the bot is eligible for by
+skill possession (no MP/meso gate, no cost-saved threshold) — so the path can include `TELEPORT`/
+`FLASH_JUMP`; default is walk-only. Probe a teleport mage / flash-jump hermit to confirm the planner
+routes through skill edges. The response echoes `skills`.
 ```
 {"bot","map","from":[x,y],"to":[x,y],
- "fromRegion","toRegion","targetGroundY","targetOnRope",
+ "fromRegion","toRegion","targetGroundY","targetOnRope","skills":bool,
  "reachable":bool,"hops":n,
- "path":[{"type":"WALK|CLIMB|JUMP|DROP","fromR","toR","from":[x,y],"to":[x,y]}, ...]}
+ "path":[{"type":"WALK|CLIMB|JUMP|DROP|TELEPORT|FLASH_JUMP","fromR","toR","from":[x,y],"to":[x,y]}, ...]}
 ```
 
 ## Settings API

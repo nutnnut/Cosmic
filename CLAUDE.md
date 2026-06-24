@@ -7,6 +7,10 @@ Behavioral guidelines to reduce common LLM coding mistakes. Merge with project-s
 - `.claude/skills/bot-combat/SKILL.md` — bot attack pipeline, packet shapes (`0xBA`/`0xBB`/`0xBC`), `AttackRoute` selection, hitbox model, ammo/Shadow Partner gates, and the checklist for adding new bot attack skills. Read this before touching `server.bots.*` combat code or debugging bot attack packets.
 - `.claude/skills/wz-data/SKILL.md` — WZ data (`wz/*.wz/*.img.xml`): file layout, XML node grammar, skill key meanings (`time`/`lt`/`mobCount`/…), the `DataProvider`/`DataTool` read path, and the gotchas for scanning the XML in scripts/tests. Read this before reading/parsing WZ data or writing tooling over it.
 
+## Bot knowledge base
+
+`docs/bot/kb/README.md` indexes accumulated bot knowledge (combat, nav, economy, perf root-causes, working-style feedback) — one file per area. Search it before re-deriving bot internals; add/update an entry when you learn something durable.
+
 **Tradeoff:** These guidelines bias toward caution over speed. For trivial tasks, use judgment.
 
 ## 1. Think Before Coding
