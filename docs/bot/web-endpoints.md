@@ -83,6 +83,17 @@ disables, no param just reports the current aggregate. Enable it, let it run, th
 {"enabled":true,"sections":[{"section":"scroll-scan","count":N,"avgMs":..,"maxMs":..,"slow":..,"slowAvgMs":..}, ...]}
 ```
 
+### `/api/spawnbot?id=<charId>[,<charId>...]`
+Bring offline bot character(s) back online as managed self-owned autopilot bots (reuses
+`BotManager.spawnManagedBot`, the `BotScheduler` path). Respawns at the character's saved map/position
+with its real level/job/skills/stats — it does **not** synthesize stats. For a controlled repro, respawn a
+character that already has the build you want, then `/api/command moveto x y` to drop it on an exact spot
+(e.g. a lv10 mage next to a snail). State-changing GET (LAN debug only). `spawned:false` = already online
+or load failed.
+```
+{"results":[{"id":767,"spawned":true},{"id":814,"spawned":false,"note":"already online or load failed"}]}
+```
+
 ## Write API
 
 ### `/api/command` (POST)

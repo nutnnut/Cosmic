@@ -139,6 +139,7 @@ public final class BotWorldGraphWebServer {
             s.createContext("/api/botdebug", BotWorldGraphWebServer::serveBotDebug);
             s.createContext("/api/bot/pathlog", BotWorldGraphWebServer::servePathLog);
             s.createContext("/api/perf", BotWorldGraphWebServer::servePerf);
+            s.createContext("/api/spawnbot", BotWorldGraphWebServer::serveSpawnBot);
             s.setExecutor(Executors.newCachedThreadPool(r -> {
                 Thread t = new Thread(r, "bot-worldmap-web");
                 t.setDaemon(true);
@@ -587,6 +588,39 @@ public final class BotWorldGraphWebServer {
      *  travel target for every online bot. Lets an operator (or an agent, via plain HTTP) see WHY bots
      *  scatter: owner (null/self/human), apParty, dst (travel target), errand, grinding, follow/transit,
      *  straggler-wait, operator override. No cache — low-frequency introspection, not a client poll. */
+    /** Bring offline bot character(s) back online as managed self-owned autopilot bots —
+     *  {@code ?id=<charId>[,<charId>...]}. Reuses {@link BotManager#spawnManagedBot(int)} (the same path
+     *  {@code BotScheduler} uses), so it respawns at the character's saved map/position with its real
+     *  level/job/skills/stats. Pair with {@code /api/command moveto x y} to drop it on an exact spot for a
+     *  controlled repro (e.g. a lv10 mage next to a snail). For a specific test condition, respawn a
+     *  character that already has the build you want — this does not synthesize stats. LAN debug only. */
+    private static void serveSpawnBot(HttpExchange ex) throws IOException {
+        String raw = queryParams(ex.getRequestURI().getRawQuery()).getOrDefault("id", "").trim();
+        if (raw.isEmpty()) {
+            send(ex, 400, "application/json", "{\"error\":\"need ?id=<charId>[,<charId>...]\"}".getBytes(StandardCharsets.UTF_8));
+            return;
+        }
+        BotManager mgr = BotManager.getInstance();
+        StringBuilder sb = new StringBuilder("{\"results\":[");
+        boolean first = true;
+        for (String tok : raw.split(",")) {
+            int id;
+            try {
+                id = Integer.parseInt(tok.trim());
+            } catch (NumberFormatException e) {
+                continue;
+            }
+            boolean spawned = mgr.spawnManagedBot(id);
+            if (!first) {
+                sb.append(',');
+            }
+            first = false;
+            sb.append("{\"id\":").append(id).append(",\"spawned\":").append(spawned)
+                    .append(spawned ? "" : ",\"note\":\"already online or load failed\"").append('}');
+        }
+        send(ex, 200, "application/json", sb.append("]}").toString().getBytes(StandardCharsets.UTF_8));
+    }
+
     private static void serveBotDebug(HttpExchange ex) throws IOException {
         int filterId = 0;
         try {
