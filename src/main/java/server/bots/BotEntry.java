@@ -30,6 +30,13 @@ public class BotEntry {
 
     final Character bot;
     volatile Character owner;
+    // TODO(party-autopilot-stage4): `following` + `grinding` (line ~114) + the autopilot sub-flags
+    // (autopilotTransitFollow/autopilotCohortMember/autopilotWaitAnchor) are a scattered boolean soup
+    // (~70 sites, 10 files incl. combat/movement hot paths). High reward (this shape caused the
+    // sentry-mode grinding=false regression) but DEFERRED: do NOT enum-ify blind — those hot paths have
+    // no test coverage. Sequencing: add mode-interaction characterization tests FIRST, then refactor.
+    // Note the flags are semi-orthogonal (follow without grind), so the target may be a small state
+    // object / named-state set, not one mutually-exclusive enum. Full plan: docs/bot/party-autopilot-redesign.md.
     volatile boolean following = false;
     volatile int followTargetId = 0; // 0 = owner
     volatile boolean airshowActive = false;
@@ -94,6 +101,10 @@ public class BotEntry {
     // Accumulated air-steering correction (gradually adjusted toward target each tick)
     double airSteerVelX = 0.0;
     boolean fixedAirArc = false;
+    // Flash Jump: set when committing a FLASH_JUMP edge; consumed once mid-air at apex to inject the dash impulse.
+    boolean pendingFlashJump = false;
+    // Intra-region express (teleport/flash-jump along a platform): earliest wall-clock time the next blink may fire.
+    long skillHopReadyAtMs = 0L;
 
     // Movement intent
     boolean climbUpIntent = false;

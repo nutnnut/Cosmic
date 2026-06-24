@@ -1,6 +1,6 @@
 # Party-autopilot redesign
 
-Status: **Stage 1 landed.** Stages 2–5 designed, not yet built.
+Status: **Stages 1–3 landed.** Stage 4 deferred (TODO/handoff), Stage 5 deferred — both decision-gated, see their entries below.
 
 ## Why
 
@@ -99,9 +99,22 @@ Each stage is independently shippable and guarded by the existing tests.
     detours — they reuse the MAIN travel pipeline (their town is `autopilotErrandMapId`, the tick's
     travel destination) rather than consuming the tick with their own walk. Folding them in would mean
     untangling them from the travel flow; left as a later step if it ever pays off.
-- **Stage 4 — AutopilotState enum.** Replace the boolean soup with the explicit state machine.
-- **Stage 5 — Player-led decider (Part B).** `PlayerLedDecider`: bots in a player's party follow the
-  player, grind in the player's map when mobs are present, follow when not, and never decide a map.
+- **Stage 4 — AutopilotState enum. DEFERRED (TODO, handoff).** Replace the `following`/`grinding` +
+  autopilot sub-flag boolean soup (~70 sites across 10 files incl. combat/movement hot paths) with an
+  explicit state model. High reward (this shape caused the sentry-mode `grinding=false` regression)
+  but high risk: those hot paths have **no test coverage**. **Do NOT enum-ify blind.** Sequencing for
+  whoever picks this up: (1) write mode-interaction characterization tests for the combat/movement
+  paths first; (2) then refactor against that net. Design caveat: the flags are *semi-orthogonal* (a
+  bot can follow without grinding), so the target may be a small state object / named-state set rather
+  than one mutually-exclusive enum — validate the state model before coding. TODO marker at
+  `BotEntry.following`.
+- **Stage 5 — Player-led decider (Part B). DEFERRED.** Bots in a player's party follow the player,
+  grind in the player's map when mobs are present, follow when not, never decide a map. NOT a
+  redecide-seam plug: `following` and `grinding` are *separate modes* in the tick (no fight-while-
+  following), so this needs an execution-layer grind↔follow switch with anti-flap (mobs spawn/die),
+  plus a decision on reusing the follow pipeline with opportunistic combat vs a new follow-with-combat
+  mode. The `redecide` seam (Stage 2) is the clean entry point for the "don't decide a map" half when
+  this is picked up.
 
 ## Risk
 
