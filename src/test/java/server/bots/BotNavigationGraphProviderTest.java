@@ -86,6 +86,60 @@ class BotNavigationGraphProviderTest {
         System.setProperty("wz-path", Path.of("wz").toAbsolutePath().toString());
     }
 
+    private static List<BotNavigationGraph.Edge> edgesOfType(BotNavigationGraph graph, BotNavigationGraph.EdgeType type) {
+        List<BotNavigationGraph.Edge> out = new ArrayList<>();
+        for (BotNavigationGraph.Region region : graph.regions) {
+            for (BotNavigationGraph.Edge edge : graph.getOutgoing(region.id)) {
+                if (edge.type == type) {
+                    out.add(edge);
+                }
+            }
+        }
+        return out;
+    }
+
+    @Test
+    void shouldGenerateWellFormedTeleportEdges() {
+        List<BotNavigationGraph.Edge> teleports = new ArrayList<>();
+        teleports.addAll(edgesOfType(henesysGraph(), BotNavigationGraph.EdgeType.TELEPORT));
+        teleports.addAll(edgesOfType(perionGraph(), BotNavigationGraph.EdgeType.TELEPORT));
+        teleports.addAll(edgesOfType(kerningGraph(), BotNavigationGraph.EdgeType.TELEPORT));
+
+        assertFalse(teleports.isEmpty(), "expected teleport edges to generate");
+        int maxReach = BotNavigationGraphProvider.TELEPORT_RANGE_PX + BotNavigationGraphProvider.TELEPORT_Y_SNAP_PX;
+        boolean sawVertical = false;
+        for (BotNavigationGraph.Edge edge : teleports) {
+            assertNotEquals(edge.fromRegionId, edge.toRegionId, "teleport edges are cross-region");
+            int dxAbs = Math.abs(edge.endPoint.x - edge.startPoint.x);
+            int dyAbs = Math.abs(edge.endPoint.y - edge.startPoint.y);
+            assertTrue(Math.max(dxAbs, dyAbs) <= maxReach, "teleport hop within reach, was " + Math.max(dxAbs, dyAbs));
+            if (dyAbs > dxAbs) {
+                sawVertical = true;
+            }
+        }
+        assertTrue(sawVertical, "expected at least one vertical (up/down) teleport edge");
+    }
+
+    @Test
+    void shouldGenerateFlashJumpEdges() {
+        int count = edgesOfType(henesysGraph(), BotNavigationGraph.EdgeType.FLASH_JUMP).size()
+                + edgesOfType(perionGraph(), BotNavigationGraph.EdgeType.FLASH_JUMP).size()
+                + edgesOfType(kerningGraph(), BotNavigationGraph.EdgeType.FLASH_JUMP).size();
+        assertTrue(count > 0, "expected flash-jump edges to generate across test maps");
+    }
+
+    @Test
+    void walkOnlyPathExcludesSkillEdges() {
+        // The default findPath runs the walk-only search (skillsEnabled=false): even though teleport/
+        // flash-jump edges exist in the graph, a non-skill search must never route through them.
+        List<BotNavigationGraph.Edge> path = findPath(henesysGraph(), henesys(),
+                new Point(990, 334), new Point(1275, 275));
+        for (BotNavigationGraph.Edge edge : path) {
+            assertNotEquals(BotNavigationGraph.EdgeType.TELEPORT, edge.type);
+            assertNotEquals(BotNavigationGraph.EdgeType.FLASH_JUMP, edge.type);
+        }
+    }
+
     @Test
     void shouldKeepHenesysLowerTownStreetInOneMergedRegion() {
         int firstRegionId = henesysGraph().findRegionId(henesys(), new Point(990, 334));

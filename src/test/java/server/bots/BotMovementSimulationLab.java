@@ -387,6 +387,10 @@ final class BotMovementSimulationLab {
                         edge.fromRegionId, edge.toRegionId, formatPoint(edge.startPoint), formatPoint(edge.endPoint), edge.launchStepX);
                 case PORTAL -> String.format("PORTAL r%d->r%d %s->%s",
                         edge.fromRegionId, edge.toRegionId, formatPoint(edge.startPoint), formatPoint(edge.endPoint));
+                case TELEPORT -> String.format("TELEPORT r%d->r%d %s->%s",
+                        edge.fromRegionId, edge.toRegionId, formatPoint(edge.startPoint), formatPoint(edge.endPoint));
+                case FLASH_JUMP -> String.format("FLASH_JUMP r%d->r%d %s->%s stepX=%d",
+                        edge.fromRegionId, edge.toRegionId, formatPoint(edge.startPoint), formatPoint(edge.endPoint), edge.launchStepX);
             };
         }
 

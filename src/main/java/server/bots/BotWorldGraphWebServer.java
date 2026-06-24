@@ -811,11 +811,17 @@ public final class BotWorldGraphWebServer {
         int toRegion = BotNavigationManager.resolveTargetRegionId(graph, e, map, target);
         var ground = BotPhysicsEngine.findGroundPoint(map, new java.awt.Point(x, y - 1));
         boolean onRope = BotPhysicsEngine.climbableAtPoint(map, target) != null;
-        var path = BotNavigationManager.findPath(graph, bot, fromRegion, toRegion, target);
+        // skills=1 runs the skill-enabled planner so the path shows TELEPORT/FLASH_JUMP edges the bot is
+        // eligible for (probe a teleport mage / flash-jump hermit). Default stays walk-only.
+        boolean skills = "1".equals(q.get("skills")) || "true".equalsIgnoreCase(q.getOrDefault("skills", ""));
+        var path = skills
+                ? BotNavigationManager.findPathWithSkills(graph, bot, fromRegion, toRegion, target)
+                : BotNavigationManager.findPath(graph, bot, fromRegion, toRegion, target);
         sb.append(",\"fromRegion\":").append(fromRegion)
                 .append(",\"toRegion\":").append(toRegion)
                 .append(",\"targetGroundY\":").append(ground != null ? ground.y : -1)
                 .append(",\"targetOnRope\":").append(onRope)
+                .append(",\"skills\":").append(skills)
                 .append(",\"reachable\":").append(path != null)
                 .append(",\"hops\":").append(path != null ? path.size() : 0)
                 .append(",\"path\":[");
@@ -902,6 +908,7 @@ public final class BotWorldGraphWebServer {
      *  lags until the next save. {@code skills} maps skillId -> level; {@code atkSkill}/{@code aoeSkill} are
      *  the bot's resolved choices from {@link BotCombatManager#rebuildSkillCacheIfNeeded} (0 = none). */
     private static void appendBotDetail(StringBuilder sb, Character chr, BotEntry e) {
+        java.awt.Point navPos = chr.getPosition();
         sb.append(",\"detail\":{")
                 .append("\"job\":").append(chr.getJob().getId())
                 .append(",\"str\":").append(chr.getTotalStr())
@@ -915,6 +922,13 @@ public final class BotWorldGraphWebServer {
                 .append(",\"exp\":").append(chr.getExp()).append(",\"meso\":").append(chr.getMeso())
                 .append(",\"atkSkill\":").append(e.attackSkillId)
                 .append(",\"aoeSkill\":").append(e.aoeSkillId)
+                // live nav state for movement-skill debugging: position, committed edge, last decision/block,
+                // and whether this bot currently passes the teleport/flash-jump gate (skill + >40% MP + >500k meso).
+                .append(",\"pos\":[").append(navPos == null ? 0 : navPos.x).append(',').append(navPos == null ? 0 : navPos.y).append(']')
+                .append(",\"navEdge\":").append(jsonStr(BotPathLogger.navEdgeSummary(e)))
+                .append(",\"navDecision\":").append(jsonStr(e.lastNavDecision == null ? "" : e.lastNavDecision))
+                .append(",\"edgeBlock\":").append(jsonStr(e.lastEdgeBlockReason == null ? "" : e.lastEdgeBlockReason))
+                .append(",\"canMoveSkill\":").append(BotNavigationManager.botCanUseMovementSkill(chr))
                 .append(",\"skills\":{");
         boolean firstSkill = true;
         for (var entry : chr.getSkills().entrySet()) {

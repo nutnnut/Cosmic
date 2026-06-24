@@ -377,7 +377,13 @@ class BotMovementManager {
             if (successfullyGrabbedRope(entry, bot, bot.getPosition())) {
                 return;
             }
-            broadcastMovement(entry);
+            if (entry.flashJumpFired) {
+                Point now = bot.getPosition();
+                broadcastFlashJump(entry, now.x - botPos.x, now.y - botPos.y);
+                entry.flashJumpFired = false;
+            } else {
+                broadcastMovement(entry);
+            }
         } finally {
             BotPerformanceMonitor.record("move-air", System.nanoTime() - startedAt);
         }
@@ -1046,6 +1052,79 @@ class BotMovementManager {
         InPacket packet = new ByteBufInPacket(Unpooled.wrappedBuffer(data));
         Packet movePacket = PacketCreator.movePlayer(bot.getId(), packet, data.length);
         bot.getMap().broadcastMessage(bot, movePacket, false);
+    }
+
+    /** Broadcast a teleport so other clients render a BLINK instead of a glide. Matches captured client
+     *  teleport packets (logs/monitored-packets-teleport*): two movement commands, 4=appear@origin then
+     *  3=disappear@dest, each 9 bytes after the type (x, y, xwobble, ywobble, newstate). The normal
+     *  per-tick cmd-0 broadcast would instead interpolate the 150px jump as a fast slide. */
+    static void broadcastTeleport(BotEntry entry, Point origin, Point dest) {
+        Character bot = entry.bot;
+        int stance = BotPhysicsEngine.movementSnapshot(entry).stance();
+        int fhId = resolveBroadcastFhId(entry, bot);
+        byte[] data = new byte[21];
+        int i = 0;
+        data[i++] = 2; // two movement commands
+        i = putTeleportFrag(data, i, (byte) 4, origin.x, origin.y, stance); // teleport appear @ origin
+        i = putTeleportFrag(data, i, (byte) 3, dest.x, dest.y, stance);     // teleport disappear -> dest
+        InPacket packet = new ByteBufInPacket(Unpooled.wrappedBuffer(data));
+        Packet movePacket = PacketCreator.movePlayer(bot.getId(), packet, data.length);
+        bot.getMap().broadcastMessage(bot, movePacket, false);
+        // Pin the dedup cache at dest so the next normal broadcast doesn't re-glide origin->dest.
+        entry.movementBroadcastValid = true;
+        entry.lastBroadcastX = dest.x;
+        entry.lastBroadcastY = dest.y;
+        entry.lastBroadcastVelX = 0;
+        entry.lastBroadcastVelY = 0;
+        entry.lastBroadcastStance = stance;
+        entry.lastBroadcastFh = fhId;
+    }
+
+    private static int putTeleportFrag(byte[] data, int i, byte cmd, int x, int y, int stance) {
+        data[i++] = cmd;
+        data[i++] = (byte) (x & 0xFF);
+        data[i++] = (byte) (x >> 8);
+        data[i++] = (byte) (y & 0xFF);
+        data[i++] = (byte) (y >> 8);
+        data[i++] = 0; // xwobble
+        data[i++] = 0;
+        data[i++] = 0; // ywobble
+        data[i++] = 0;
+        data[i++] = (byte) stance;
+        return i;
+    }
+
+    /** Broadcast a flash jump so observers render the dash animation instead of a plain air-glide. The
+     *  client plays the flash-jump action only for movement command type 6 ("fj", a RelativeLifeMovement:
+     *  relDX, relDY, newstate, duration — see AbstractMovementPacketHandler). The bot's normal per-tick
+     *  type-0 absolute move conveys position but not the FJ action. Fired once at the apex impulse; the
+     *  arc's remaining type-0 ticks carry the rest of the trajectory. Mirrors {@link #broadcastTeleport}. */
+    static void broadcastFlashJump(BotEntry entry, int relDx, int relDy) {
+        Character bot = entry.bot;
+        BotPhysicsEngine.MovementSnapshot snapshot = BotPhysicsEngine.movementSnapshot(entry);
+        int stance = snapshot.stance(); // JUMP stance while airborne
+        int fhId = resolveBroadcastFhId(entry, bot);
+        byte[] data = new byte[9];
+        data[0] = 1;          // one command
+        data[1] = 6;          // "fj" — RelativeLifeMovement
+        data[2] = (byte) (relDx & 0xFF);
+        data[3] = (byte) (relDx >> 8);
+        data[4] = (byte) (relDy & 0xFF);
+        data[5] = (byte) (relDy >> 8);
+        data[6] = (byte) stance;
+        data[7] = (byte) (BotPhysicsEngine.cfg.TICK_MS & 0xFF);
+        data[8] = (byte) (BotPhysicsEngine.cfg.TICK_MS >> 8);
+        InPacket packet = new ByteBufInPacket(Unpooled.wrappedBuffer(data));
+        Packet movePacket = PacketCreator.movePlayer(bot.getId(), packet, data.length);
+        bot.getMap().broadcastMessage(bot, movePacket, false);
+        // Pin the dedup cache at the post-impulse state so this tick isn't re-sent as a redundant type-0.
+        entry.movementBroadcastValid = true;
+        entry.lastBroadcastX = bot.getPosition().x;
+        entry.lastBroadcastY = bot.getPosition().y;
+        entry.lastBroadcastVelX = snapshot.velX();
+        entry.lastBroadcastVelY = snapshot.velY();
+        entry.lastBroadcastStance = stance;
+        entry.lastBroadcastFh = fhId;
     }
 
     static Map<Integer, Foothold> buildFhIndex(MapleMap map) {

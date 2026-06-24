@@ -25,7 +25,9 @@ final class BotNavigationGraph implements Serializable {
         JUMP,
         DROP,
         CLIMB,
-        PORTAL
+        PORTAL,
+        TELEPORT,
+        FLASH_JUMP
     }
 
     static final class Segment implements Serializable {

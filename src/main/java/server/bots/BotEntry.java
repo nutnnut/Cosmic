@@ -103,6 +103,8 @@ public class BotEntry {
     boolean fixedAirArc = false;
     // Flash Jump: set when committing a FLASH_JUMP edge; consumed once mid-air at apex to inject the dash impulse.
     boolean pendingFlashJump = false;
+    // Set at the FJ apex impulse; consumed by tickAirborne to broadcast the type-6 "fj" dash visual that tick.
+    boolean flashJumpFired = false;
     // Intra-region express (teleport/flash-jump along a platform): earliest wall-clock time the next blink may fire.
     long skillHopReadyAtMs = 0L;
 

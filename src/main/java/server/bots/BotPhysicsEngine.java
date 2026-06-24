@@ -37,6 +37,11 @@ final class BotPhysicsEngine {
         public float JUMP_DOWN_PXS = 196.0f;        // measured -196 px/s down-jump kick (not in Physics.img)
         public float JUMP_ROPE_PXS = 375.0f;        // rope-jump finding (NOT applied): real client kick = (±162, -277)
         public float MAX_FALL_PXS = 670.0f;         // Physics.img fallSpeed
+        // Flash Jump (Hermit/NightWalker) mid-air impulse, calibrated from logs/monitored-packets-flashjump*:
+        // a one-time set to (±550 horizontal, -350 vertical) px/s. 550 is a hard horizontal cap (did not
+        // scale with 138% speed). No WZ distance keys exist for the skill — this is a client constant.
+        public float FLASH_JUMP_H_PXS = 550.0f;
+        public float FLASH_JUMP_V_PXS = -350.0f;
         public double HFORCE_PXS = 16.667;          // was 20.0 (yields 125 px/s walk via hF*GROUNDSLIP/(FRICTION+SLOPEFACTOR))
         public double GROUNDSLIP = 3.0;
         public double FRICTION = 0.3;
@@ -283,6 +288,16 @@ final class BotPhysicsEngine {
         return profileOrBase(profile).ropeJumpSpeedPxs() * tickS();
     }
 
+    /** Flash Jump horizontal dash, px/tick (the ±550 px/s impulse converted via the tick rate). */
+    static float flashJumpHPerTick() {
+        return cfg.FLASH_JUMP_H_PXS * tickS();
+    }
+
+    /** Flash Jump vertical boost, px/tick (the -350 px/s impulse; negative = upward). */
+    static float flashJumpVPerTick() {
+        return cfg.FLASH_JUMP_V_PXS * tickS();
+    }
+
     static int climbStepPerTick() {
         return Math.max(1, Math.round(cfg.CLIMB_SPEED_PXS * tickS()));
     }
@@ -387,6 +402,57 @@ final class BotPhysicsEngine {
         int exactDistance = Math.abs(exactGround.y - position.y);
         int offsetDistance = Math.abs(offsetGround.y - position.y);
         return offsetDistance < exactDistance ? offsetGround : exactGround;
+    }
+
+    /**
+     * SSOT for teleport position resolution: the nav layer supplies only an INTENT (a direction), and
+     * physics resolves the legal landing — or null when blocked (no platform to snap to). Mirrors the
+     * client's directional teleport so navigation can never cheat into an impossible spot:
+     *  - HORIZONTAL ({@code dirX}=±1, dirY=0): move {@code range} px; snap to the platform CLOSEST
+     *    VERTICALLY to the origin within ±{@code ySnap}. A same-level platform beats a higher/lower
+     *    diagonal one (the bug this was written to fix). null if none in the band.
+     *  - UP ({@code dirY}<0): the FURTHEST platform within {@code range} directly above. null if none.
+     *  - DOWN ({@code dirY}>0): the nearest platform within {@code range} directly below — the prone
+     *    (down-key) intent, like a down-jump. null if none.
+     */
+    static Point teleportLanding(MapleMap map, Point origin, int dirX, int dirY, int range, int ySnap) {
+        if (map == null || origin == null) {
+            return null;
+        }
+        if (dirX != 0) {
+            int tx = origin.x + Integer.signum(dirX) * range;
+            return closestPlatformWithin(map, tx, origin.y, ySnap);
+        }
+        if (dirY < 0) { // up: furthest within range
+            Point up = pointBelowIndexed(map, new Point(origin.x, origin.y - range));
+            return (up != null && up.y < origin.y && origin.y - up.y <= range) ? up : null;
+        }
+        if (dirY > 0) { // down: nearest within range (prone intent)
+            Point down = pointBelowIndexed(map, new Point(origin.x, origin.y + 1));
+            return (down != null && down.y > origin.y && down.y - origin.y <= range) ? down : null;
+        }
+        return null;
+    }
+
+    /** Platform at x whose surface is closest vertically to {@code referenceY} within ±{@code ySnap}
+     *  (same-level priority); null if none. Compares the at/just-below candidate against the highest
+     *  candidate in the upper band so a same-level platform always beats a higher diagonal one. */
+    private static Point closestPlatformWithin(MapleMap map, int x, int referenceY, int ySnap) {
+        Point below = pointBelowIndexed(map, new Point(x, referenceY));         // at / just below referenceY
+        Point above = pointBelowIndexed(map, new Point(x, referenceY - ySnap)); // highest within the upper band
+        Point best = null;
+        int bestD = Integer.MAX_VALUE;
+        for (Point c : new Point[]{below, above}) {
+            if (c == null) {
+                continue;
+            }
+            int d = Math.abs(c.y - referenceY);
+            if (d <= ySnap && d < bestD) {
+                best = c;
+                bestD = d;
+            }
+        }
+        return best;
     }
 
     // Canonical walk-connectivity rule shared by graph region merging and runtime ground traversal.
@@ -1451,6 +1517,19 @@ final class BotPhysicsEngine {
             applyAirDrag(entry, bot.getMap());
         }
 
+        // Flash Jump: one-time mid-air impulse fired at apex (velY crosses to >= 0). Overrides this
+        // tick's velocity with the dash (±550, -350 px/s) and pins the arc so steering/drag leave it
+        // alone (applyAirSteering is a no-op above the input band; fixedAirArc skips drag).
+        if (entry.pendingFlashJump && entry.velY >= 0f) {
+            int dir = entry.airVelX != 0 ? Integer.signum(entry.airVelX) : (entry.facingDir >= 0 ? 1 : -1);
+            entry.airVelX = Math.round(dir * flashJumpHPerTick());
+            entry.airSteerVelX = 0.0;
+            entry.velY = flashJumpVPerTick();
+            entry.fixedAirArc = true;
+            entry.pendingFlashJump = false;
+            entry.flashJumpFired = true; // signal tickAirborne to broadcast the type-6 "fj" dash this tick
+        }
+
         Point previousPos = roundedAirPosition(entry);
         Point nextPos = advanceAirbornePosition(entry, bot);
         AirCollision collision = resolveAirCollision(bot.getMap(), previousPos, nextPos);
@@ -1669,6 +1748,20 @@ final class BotPhysicsEngine {
         return simulateLanding(map, from, -jumpForcePerTick(profile), stepX, 0L);
     }
 
+    private record FlashImpulse(int hStep, float velY) {}
+
+    static JumpLanding simulateFlashJumpLanding(MapleMap map, Point from, int stepX) {
+        return simulateFlashJumpLanding(map, from, stepX, BotMovementProfile.base());
+    }
+
+    /** Flash-jump trajectory: a normal jump launch with the apex impulse injected (mirrors execution).
+     *  {@code stepX} sets the launch direction; the apex dash magnitude is the client ±550 px/s cap. */
+    static JumpLanding simulateFlashJumpLanding(MapleMap map, Point from, int stepX, BotMovementProfile profile) {
+        int dashStep = Math.round(Integer.signum(stepX) * flashJumpHPerTick());
+        return simulateLanding(map, from, -jumpForcePerTick(profile), stepX, 0L,
+                new FlashImpulse(dashStep, flashJumpVPerTick()));
+    }
+
     static PostLandingJump simulateJumpLandingWithPostLandingTicks(MapleMap map,
                                                                    Point from,
                                                                    int stepX,
@@ -1790,6 +1883,8 @@ final class BotPhysicsEngine {
         entry.airSteerVelX = 0.0;
         entry.fixedAirArc = false;
         entry.downJumpPending = false;
+        entry.pendingFlashJump = false; // FLASH_JUMP execution re-sets this right after launch
+        entry.flashJumpFired = false;
         // Clear ground movement intent when going airborne - unified moveDir serves both
         // ground and air, so ground walk direction must not bleed into air steering.
         // Movement manager will set moveDir for air steering if shouldApplyAirSteering allows.
@@ -2620,14 +2715,14 @@ final class BotPhysicsEngine {
         // it outright — handled by the caller, which knows the input state.)
         landingDeltaX *= 0.5;
 
-        double maxDeltaPerTick = Math.max(1.0, walkStep(map, profile));
-        landingDeltaX = Math.clamp(landingDeltaX, -maxDeltaPerTick, maxDeltaPerTick);
-        return groundHSpeedFromTickDelta(map, landingDeltaX, profile);
-    }
-
-    private static double groundHSpeedFromTickDelta(MapleMap map, double deltaXPerTick, BotMovementProfile profile) {
+        // Do NOT clamp to walk speed: a fast landing legitimately exceeds it. A flash-jump dash
+        // (~550 px/s) lands at ~275 and the force/drag ground integrator decays it (capture
+        // monitored-packets-flashjumpspeed100jump100: 550->275 then 251->227->204...). The old
+        // clamp to walkStep flattened that to walk speed -- the "stuttery 0-momentum" FJ landing.
+        // Normal jumps land at/below walk (halved 125->62, -104->-52, ...), so only fast dashes
+        // change; this is bit-identical for them (halved delta < walkStep => was never clamped).
         double stepsPerTick = Math.max(1.0, cfg.TICK_MS / CLIENT_GROUND_STEP_MS);
-        return Math.clamp(deltaXPerTick / stepsPerTick, -maxHSpeedPerClientStep(profile), maxHSpeedPerClientStep(profile));
+        return landingDeltaX / stepsPerTick;
     }
 
     private static double tickDeltaFromGroundHSpeed(MapleMap map, double groundHSpeed, BotMovementProfile profile) {
@@ -2796,6 +2891,18 @@ final class BotPhysicsEngine {
                                                float initialVelY,
                                                int stepX,
                                                long landingGraceMs) {
+        return simulateLanding(map, from, initialVelY, stepX, landingGraceMs, null);
+    }
+
+    /** {@code flashImpulse} non-null models Flash Jump: a one-time apex (velocityY>=0) override of
+     *  (hStep, velY) that mirrors the {@link #stepAirborne} injection, so generated FLASH_JUMP edges
+     *  land where execution will actually fly. */
+    private static JumpLanding simulateLanding(MapleMap map,
+                                               Point from,
+                                               float initialVelY,
+                                               int stepX,
+                                               long landingGraceMs,
+                                               FlashImpulse flashImpulse) {
         float velocityY = initialVelY;
         double physX = from.x;
         double physY = from.y;
@@ -2804,10 +2911,17 @@ final class BotPhysicsEngine {
         final float gravity = gravityPerTick();
         final float maxFall = maxFallPerTick();
         final int floorY = mapFloorY(map);
+        boolean flashInjected = false;
 
         for (int tick = 0; tick < FALL_SIM_TICK_CAP; tick++) {
             if (remainingLandingGraceMs > 0L) {
                 remainingLandingGraceMs = Math.max(0L, remainingLandingGraceMs - cfg.TICK_MS);
+            }
+
+            if (flashImpulse != null && !flashInjected && velocityY >= 0f) {
+                flashInjected = true;
+                stepX = flashImpulse.hStep();
+                velocityY = flashImpulse.velY();
             }
 
             physX += stepX;
