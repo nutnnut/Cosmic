@@ -107,6 +107,12 @@ final class BotScrollPlanner {
      *  scroll cost by 20%. */
     static double SCROLL_OPPORTUNITY_MARGIN = 0.2;
 
+    /** Scroll-to-sell ("profit") pass: scroll benched gear purely to resell at a markup. Disabled until
+     *  the bot economy / trading exists to actually sell the scrolled item — otherwise it just burns
+     *  scrolls for meso the bot can never realize.
+     *  ponytail: flip true once economy/bot-trading lands. */
+    static boolean SCROLL_FOR_PROFIT_ENABLED = false;
+
     /**
      * Best eligible (equip, scroll) play across all candidates, or null if none clear the bar.
      *
@@ -127,7 +133,10 @@ final class BotScrollPlanner {
             return null;
         }
         ScrollPlan combat = bestPlay(candidates, false);
-        return combat != null ? combat : bestPlay(candidates, true);
+        if (combat != null || !SCROLL_FOR_PROFIT_ENABLED) {
+            return combat;
+        }
+        return bestPlay(candidates, true);
     }
 
     /** One pass of the search. {@code profit} selects the decayed market lens + sell-as-is floor; else

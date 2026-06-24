@@ -322,6 +322,10 @@ public class BotEntry {
     // A personal idle spot picked once when idle-leech begins and held, so leechers settle at distinct
     // points instead of re-wandering into each other / stacking. Cleared when leech ends.
     java.awt.Point leechIdleAnchor = null;
+    // HP snapshot taken when leechIdleAnchor is resolved. A drop below this while parked means a mob
+    // reached the bot (wandered over, or a knockback shoved it into a danger region) -> drop the anchor
+    // and re-resolve a safe spot rather than sitting there taking hits forever. -1 = unset.
+    int idleAnchorHp = -1;
     // Low-HP rest (no-pot survival): a broke, out-of-pots bot parks and passive-regens until HP recovers
     // instead of grinding itself to death. Hysteresis flag + held safe anchor (like leechIdleAnchor).
     volatile boolean hpResting = false;
@@ -447,6 +451,10 @@ public class BotEntry {
     // resumes grinding/fighting (set via BotManager.armPostWarpQuiet). Travel hops never reach the
     // gated grind section, so multi-hop routes aren't slowed.
     long postWarpQuietUntilMs = 0L;
+    // Supply-sharing settle window (pot/ammo/rock requests + donations): on a map change/spawn a whole
+    // cohort can land at once, so all of them hold off sharing for ~5-10s instead of firing every
+    // request in the same tick. Set via BotManager.armPostWarpQuiet; checked by supplySharingSettled.
+    long shareGateUntilMs = 0L;
     // Reading/talking pause while standing at an NPC before the bot fires the interaction
     // (quest accept/turn-in, job advance, taxi/ferry edge). Armed on the first in-range tick,
     // re-armed fresh each approach via BotManager.npcDwellReady/npcDwellReset.

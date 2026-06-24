@@ -396,25 +396,19 @@ final class BotPotionManager {
             BotShopManager.logSellBlockIfCramped(entry, bot);
         }
 
-        if (!entry.grinding && !entry.following) {
-            return;
-        }
-        startedAt = BotPerformanceMonitor.start();
-        BotAmmoManager.tickAmmoShareCheck(entry, bot);
-        BotRockManager.tickRockShareCheck(entry, bot);
-        BotPerformanceMonitor.recordSince("potion-ammo-share", startedAt);
-
-        startedAt = BotPerformanceMonitor.start();
+        // Crew/owner supply sharing (pots/ammo/rock) is NOT behind the grind/follow gate: a broke bot
+        // that's resting or idle-leeching can still pull pots, and a parked donor can still give. Held
+        // off for a few seconds after a map change/spawn (supplySharingSettled) so a cohort landing
+        // together doesn't fire every request in the same tick.
         int[] pots = potions.counts();
-        BotPerformanceMonitor.recordSince("potion-count", startedAt);
-
-        startedAt = BotPerformanceMonitor.start();
-        requestLowPotShare(entry, bot, pots[0], true, false);
-        BotPerformanceMonitor.recordSince("potion-share-hp", startedAt);
-
-        startedAt = BotPerformanceMonitor.start();
-        requestLowPotShare(entry, bot, pots[1], false, false);
-        BotPerformanceMonitor.recordSince("potion-share-mp", startedAt);
+        if (BotManager.supplySharingSettled(entry)) {
+            startedAt = BotPerformanceMonitor.start();
+            requestLowPotShare(entry, bot, pots[0], true, false);
+            requestLowPotShare(entry, bot, pots[1], false, false);
+            BotAmmoManager.tickAmmoShareCheck(entry, bot);
+            BotRockManager.tickRockShareCheck(entry, bot);
+            BotPerformanceMonitor.recordSince("potion-share", startedAt);
+        }
 
         if (!entry.grinding) {
             return;

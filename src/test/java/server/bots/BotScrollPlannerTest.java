@@ -59,6 +59,17 @@ class BotScrollPlannerTest {
                 1302000, name, score, slots, slots, 0.0, true, true, false, List.of(options), LINEAR);
     }
 
+    /** Run a planning call with the scroll-to-sell profit pass enabled (default off until economy lands). */
+    private static <T> T withProfit(java.util.function.Supplier<T> body) {
+        boolean prev = BotScrollPlanner.SCROLL_FOR_PROFIT_ENABLED;
+        BotScrollPlanner.SCROLL_FOR_PROFIT_ENABLED = true;
+        try {
+            return body.get();
+        } finally {
+            BotScrollPlanner.SCROLL_FOR_PROFIT_ENABLED = prev;
+        }
+    }
+
     @Test
     void picksPositiveWorthNonBoomScroll() {
         BotScrollPlanner.ScrollPlan plan = BotScrollPlanner.planBest(List.of(
@@ -88,9 +99,9 @@ class BotScrollPlannerTest {
         // The glove bug: a bag glove (5 free slots) whose EXPECTED scrolled value can't reach the worn
         // glove (worth 1000) is NOT a combat upgrade. The self-combat pass refuses it; only the profit
         // pass (scroll-to-sell) considers it, so any plan returned must be profit-driven, never combat.
-        BotScrollPlanner.ScrollPlan plan = BotScrollPlanner.planBest(List.of(
+        BotScrollPlanner.ScrollPlan plan = withProfit(() -> BotScrollPlanner.planBest(List.of(
                 equipR(LINEAR, "bag glove", 3.0, 5, 5, 1000.0, false, false,
-                        scroll("70% att", 0.70, 10.0))));
+                        scroll("70% att", 0.70, 10.0)))));
         assertNotNull(plan);
         assertTrue(plan.profitDriven(), "high worn rival must push the play out of the combat pass");
     }
@@ -110,9 +121,9 @@ class BotScrollPlannerTest {
     void profitPassFiresOnlyWhenNoCombatPlayAndIsDecayed() {
         // Out-classed for combat (betterAvailable) so combat is empty; a free, high-odds scroll makes
         // scroll-to-sell net-positive even after the decay -> a profit-driven play is returned.
-        BotScrollPlanner.ScrollPlan plan = BotScrollPlanner.planBest(List.of(
+        BotScrollPlanner.ScrollPlan plan = withProfit(() -> BotScrollPlanner.planBest(List.of(
                 equipR(LINEAR, "spare glove", 100.0, 2, 2, 0.0, true, false,
-                        scroll("100% att", 1.00, 30.0))));
+                        scroll("100% att", 1.00, 30.0)))));
         assertNotNull(plan);
         assertTrue(plan.profitDriven());
         // Decay: two 100% successes -> stat 160, but each consumed slot x0.9 -> 160*0.9^2 = 129.6.

@@ -258,7 +258,7 @@ final class BotTravelManager {
             portal = adjacentOrScriptedPortal(map, targetMapId, bot.getPosition());
             if (portal == null) {
                 BotWorldGraph.RouteOptions options = new BotWorldGraph.RouteOptions(
-                        returnScrollCount.applyAsInt(bot) > 0, bot.getMeso(), allowFerry);
+                        returnScrollCount.applyAsInt(bot) > 0, bot.getMeso(), allowFerry, bot.getJob().getId() == 0);
                 List<Integer> route = routeLookup.route(bot.getMapId(), targetMapId, maxHops, options,
                         BotAutopilotManager.routeBlockFor(bot)); // SSOT danger gate: no <15 route through Sleepywood
                 if (route == null || route.isEmpty()) {
@@ -407,7 +407,7 @@ final class BotTravelManager {
             entry.followTravelEnteredAtMs = now;
             return true;
         }
-        BotWorldGraph.TaxiEdge taxi = BotWorldGraph.findTaxiEdge(bot.getMapId(), nextHopMapId);
+        BotWorldGraph.TaxiEdge taxi = BotWorldGraph.findTaxiEdge(bot.getMapId(), nextHopMapId, bot.getJob().getId() == 0);
         if (taxi != null && bot.getMeso() >= taxi.fare()) {
             Point npcPos = taxiNpcLocator.locate(map, taxi.npcId());
             if (npcPos == null) {
@@ -473,7 +473,8 @@ final class BotTravelManager {
                 return true; // pause a beat at the cab before paying the fare
             }
             BotWorldGraph.TaxiEdge taxi =
-                    BotWorldGraph.findTaxiEdge(entry.followTravelFromMapId, entry.followTravelNextHopMapId);
+                    BotWorldGraph.findTaxiEdge(entry.followTravelFromMapId, entry.followTravelNextHopMapId,
+                            bot.getJob().getId() == 0);
             if (taxi == null || !taxiRide.ride(bot, taxi)) {
                 giveUp(entry, now, "taxi-fare-fail"); // fare spent elsewhere mid-walk — don't retry the same hop
                 return false;
@@ -510,7 +511,7 @@ final class BotTravelManager {
         Portal portal = findAdjacentPortal(map.getPortals(), targetMapId, botPos);
         if (portal == null) {
             BotWorldGraph.RouteOptions options = new BotWorldGraph.RouteOptions(
-                    returnScrollCount.applyAsInt(bot) > 0, bot.getMeso(), false);
+                    returnScrollCount.applyAsInt(bot) > 0, bot.getMeso(), false, bot.getJob().getId() == 0);
             List<Integer> route = routeLookup.route(bot.getMapId(), targetMapId, maxHops, options,
                     BotAutopilotManager.routeBlockFor(bot)); // SSOT danger gate: no <15 route through Sleepywood
             if (route == null || route.isEmpty()) {

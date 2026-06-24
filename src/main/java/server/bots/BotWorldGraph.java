@@ -65,17 +65,26 @@ final class BotWorldGraph {
     static final int RETURN_SCROLL_MIN_HOPS = 3;
 
     /** Per-query toggles for the consumable edges; pure portal walking ignores them all. */
-    record RouteOptions(boolean withReturnScroll, int meso, boolean withFerry) {
+    record RouteOptions(boolean withReturnScroll, int meso, boolean withFerry, boolean isBeginner) {
+        /** Non-beginner options (the common case). */
+        RouteOptions(boolean withReturnScroll, int meso, boolean withFerry) {
+            this(withReturnScroll, meso, withFerry, false);
+        }
         static final RouteOptions PORTALS_ONLY = new RouteOptions(false, 0, false);
     }
 
     /** One paid NPC ride: stand near {@code npcId} in {@code fromMapId}, pay, land in {@code toMapId}. */
-    record TaxiEdge(int fromMapId, int npcId, int toMapId, int fare) {
+    record TaxiEdge(int fromMapId, int npcId, int toMapId, int fare, boolean beginnerOnly) {
+        /** Standard cab edge (any job, no discount). */
+        TaxiEdge(int fromMapId, int npcId, int toMapId, int fare) {
+            this(fromMapId, npcId, toMapId, fare, false);
+        }
     }
 
     // Victoria cab rides, mirrored from the NPC scripts (scripts/npc/<npcId>.js): each cab
     // warps to portal 0 of the destination for the listed fare. The 10k VIP cabs go to the
-    // Ant Tunnel park. Beginner discounts are ignored — bots always have a job.
+    // Ant Tunnel park. Most beginner discounts are ignored — bots usually have a job — except
+    // Phil's beginner-only discount cab (see the 1002000 block below).
     // Kerning City <-> NLC subway and Kerning City <-> Kerning Square train are modeled as EventManager
     // "ferry" rides in BotFerryManager (Subway/KerningTrain), as is Orbis <-> Mu Lung (Hak). El Nath / Aqua
     // Road are still the remaining stranded Orbis regions - see the TODO in BotFerryManager.
@@ -87,6 +96,16 @@ final class BotWorldGraph {
             new TaxiEdge(104000000, 1002007, 103000000, 1000),
             new TaxiEdge(104000000, 1002007, 120000000, 800),
             new TaxiEdge(104000000, 1002004, 105070001, 10000),
+
+            // Phil (1002000), Lith Harbor's beginner cab: same Victoria-town destinations as the regular
+            // cab (1002007) but beginners ride at a 90% discount (fares = script cost/10, see 1002000.js).
+            // beginnerOnly => only a beginner (jobId 0) may take it, AND it's exempt from the TAXI_MIN_MESO
+            // shortcut gate in expand() (the discount makes it cheap enough for a broke beginner to hop towns).
+            new TaxiEdge(104000000, 1002000, 100000000, 100, true),
+            new TaxiEdge(104000000, 1002000, 102000000, 100, true),
+            new TaxiEdge(104000000, 1002000, 101000000, 80, true),
+            new TaxiEdge(104000000, 1002000, 103000000, 100, true),
+            new TaxiEdge(104000000, 1002000, 120000000, 80, true),
             // Henesys 100000000 — Regular Cab 1012000
             new TaxiEdge(100000000, 1012000, 104000000, 1000),
             new TaxiEdge(100000000, 1012000, 102000000, 1000),
@@ -159,14 +178,31 @@ final class BotWorldGraph {
         return TAXI_BY_MAP.getOrDefault(fromMapId, List.of());
     }
 
-    /** The taxi ride from one map to another, or null when no cab drives that route. */
+    /** The taxi ride from one map to another, or null when no cab drives that route (non-beginner). */
     static TaxiEdge findTaxiEdge(int fromMapId, int toMapId) {
+        return findTaxiEdge(fromMapId, toMapId, false);
+    }
+
+    /** The taxi ride from one map to another, or null when no cab drives that route. A beginner prefers
+     *  a beginner-discount cab (Phil) over the full-price one; a non-beginner never gets a beginner cab
+     *  (it would let them underpay) — so beginnerOnly edges are skipped for them. Mirrors {@code expand()}. */
+    static TaxiEdge findTaxiEdge(int fromMapId, int toMapId, boolean isBeginner) {
+        TaxiEdge fullPrice = null;
         for (TaxiEdge edge : TAXI_BY_MAP.getOrDefault(fromMapId, List.of())) {
-            if (edge.toMapId() == toMapId) {
-                return edge;
+            if (edge.toMapId() != toMapId) {
+                continue;
+            }
+            if (edge.beginnerOnly()) {
+                if (isBeginner) {
+                    return edge; // discounted cab — the beginner's first choice
+                }
+                continue; // non-beginner may not ride a beginner-only cab
+            }
+            if (fullPrice == null) {
+                fullPrice = edge;
             }
         }
-        return null;
+        return fullPrice;
     }
 
     /**
@@ -340,8 +376,14 @@ final class BotWorldGraph {
         // alternative, so they're always allowed (still subject to the per-edge fare check).
         boolean taxiShortcuts = options.meso() >= BotManager.cfg.TAXI_MIN_MESO;
         for (TaxiEdge taxi : TAXI_BY_MAP.getOrDefault(mapId, List.of())) {
+            if (taxi.beginnerOnly() && !options.isBeginner()) {
+                continue; // beginner-discount cab (Phil): only a beginner may ride it
+            }
             boolean continentRide = CONTINENT_RIDE_NPCS.contains(taxi.npcId());
-            if ((continentRide || taxiShortcuts) && options.meso() >= taxi.fare()) {
+            // Beginner cabs are exempt from the meso-shortcut gate: the 90% discount makes them cheap
+            // enough that a broke beginner should still hop towns rather than walk.
+            boolean gateOk = continentRide || taxi.beginnerOnly() || taxiShortcuts;
+            if (gateOk && options.meso() >= taxi.fare()) {
                 out.add(taxi.toMapId());
             }
         }

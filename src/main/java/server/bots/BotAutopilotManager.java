@@ -226,7 +226,8 @@ final class BotAutopilotManager {
     /** What the bot can spend on travel right now: scrolls if carried, taxis per meso,
      *  ferries per the caller's owner-permission gate ({@link #ferryAllowed}). */
     private static BotWorldGraph.RouteOptions travelOptions(Character bot, boolean withFerry) {
-        return new BotWorldGraph.RouteOptions(BotShopManager.countReturnScrolls(bot) > 0, bot.getMeso(), withFerry);
+        return new BotWorldGraph.RouteOptions(BotShopManager.countReturnScrolls(bot) > 0, bot.getMeso(), withFerry,
+                bot.getJob().getId() == 0);
     }
 
     /**

@@ -483,8 +483,20 @@ public class BotManager {
 
     /** Arm the post-map-change settle window; called wherever a map change is detected. */
     static void armPostWarpQuiet(BotEntry entry) {
-        entry.postWarpQuietUntilMs = System.currentTimeMillis()
+        long now = System.currentTimeMillis();
+        entry.postWarpQuietUntilMs = now
                 + POST_WARP_DELAY_MS + ThreadLocalRandom.current().nextInt(POST_WARP_JITTER_MS);
+        // Stagger supply sharing too: a cohort that lands together must not all fire requests at once.
+        entry.shareGateUntilMs = now + SHARE_GATE_DELAY_MS + ThreadLocalRandom.current().nextInt(SHARE_GATE_JITTER_MS);
+    }
+
+    static final int SHARE_GATE_DELAY_MS = 5_000;
+    static final int SHARE_GATE_JITTER_MS = 5_000;
+
+    /** SSOT settle gate for ALL supply sharing (pot/ammo/rock): true once this bot's map-change/spawn
+     *  jitter window has elapsed. Keeps a freshly-landed cohort from firing every share request at once. */
+    static boolean supplySharingSettled(BotEntry entry) {
+        return entry != null && System.currentTimeMillis() >= entry.shareGateUntilMs;
     }
 
     // -------------------------------------------------------------------------
@@ -3560,10 +3572,17 @@ public class BotManager {
         // exp share. Reuses the existing no-target idle resolver; no attack/target search runs.
         if (BotAutopilotManager.updateIdleLeech(entry, bot)) {
             entry.grindTarget = null;
+            // Hit while parked (a mob wandered over, or a knockback shoved it into a danger region) ->
+            // abandon the spot so the line below re-resolves a safe one, instead of idling there and
+            // taking hits forever.
+            if (entry.leechIdleAnchor != null && bot.getHp() < entry.idleAnchorHp) {
+                entry.leechIdleAnchor = null;
+            }
             // Pick a personal idle spot ONCE and hold it: re-resolving every tick made leechers drift
             // and pile onto the same point. Independent one-shot in-region picks spread them out.
             if (entry.leechIdleAnchor == null) {
                 entry.leechIdleAnchor = resolveSafeIdleRegion(entry, bot, botPos, true); // spread among safe regions
+                entry.idleAnchorHp = bot.getHp(); // snapshot at the fresh spot; a later drop => got hit
             }
             return walkToOrIdleAt(entry, bot, botPos, entry.leechIdleAnchor, runAiTick);
         }
