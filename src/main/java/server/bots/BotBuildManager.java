@@ -180,9 +180,10 @@ class BotBuildManager {
         boolean[] mageOut = new boolean[1];
         char[] ms = BotScrollManager.mainSecondary(job.getId(), mageOut);
         // Base Pirate (job 500) is weapon-ambiguous: mainSecondary defaults it to STR-primary, but a
-        // gun-bound pirate is DEX-primary. Orient it by the committed build variant. (2nd+ pirate jobs
-        // 51x/52x are already unambiguous in mainSecondary.)
-        if (job == Job.PIRATE && "gun".equals(entry.spVariant)) {
+        // gun-bound pirate is DEX-primary. Orient it off the TRAINED 1st-job attack (the same SSOT the
+        // weapon gate reads), so it's correct even when entry.spVariant is unset/stale (relog,
+        // mid-career spawn). (2nd+ pirate jobs 51x/52x are already unambiguous in mainSecondary.)
+        if (job == Job.PIRATE && pirateIsGun(bot, entry)) {
             ms = new char[]{'d', 's'};
         }
         StatType primary = statTypeOf(ms[0]);
@@ -405,6 +406,30 @@ class BotBuildManager {
     /** Gun (Gunslinger) pirate line. */
     private static boolean isGunPirateJob(Job job) {
         return job == Job.GUNSLINGER || job == Job.OUTLAW || job == Job.CORSAIR;
+    }
+
+    /**
+     * Whether this pirate is on the gun (DEX-primary) line, read off the UPGRADED 1st-job attack
+     * skill — the SSOT the weapon gate ({@code BotEquipManager.isWeaponCompatible}) uses: Double Shot
+     * => gun, Flash Fist/Somersault Kick => knuckle. A 2nd+ gun job is authoritative. Falls back to the
+     * planned {@code entry.spVariant} only before any 1st-job attack is trained. This is what makes the
+     * AP build robust to a stale/absent in-memory variant (relog, mid-career spawn). Shared SSOT for
+     * the AP orientation (used by {@code BotChatManager}'s owner-reply parse too).
+     */
+    static boolean pirateIsGun(Character bot, BotEntry entry) {
+        if (isGunPirateJob(bot.getJob())) {
+            return true;
+        }
+        if (isKnucklePirateJob(bot.getJob())) {
+            return false;
+        }
+        if (bot.getSkillLevel(Pirate.DOUBLE_SHOT) > 0) {
+            return true; // trained the gun attack
+        }
+        if (bot.getSkillLevel(Pirate.FLASH_FIST) > 0 || bot.getSkillLevel(Pirate.SOMERSAULT_KICK) > 0) {
+            return false; // trained a knuckle attack
+        }
+        return "gun".equals(entry.spVariant); // nothing trained yet -> planned variant
     }
 
     /**

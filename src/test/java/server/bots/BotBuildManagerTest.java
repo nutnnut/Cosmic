@@ -563,6 +563,33 @@ class BotBuildManagerTest {
     }
 
     @Test
+    void resolveApBuildReadsTrainedGunSkillWhenVariantUnset() {
+        Character bot = mock(Character.class);
+        BotEntry entry = new BotEntry(bot, mock(Character.class), mock(ScheduledFuture.class));
+        // spVariant intentionally left null: orientation must be read off the trained skill (the SSOT).
+        when(bot.getJob()).thenReturn(Job.PIRATE);
+        when(bot.getSkillLevel(Pirate.DOUBLE_SHOT)).thenReturn(1); // trained the gun attack
+
+        BotBuildManager.ApBuild build = BotBuildManager.resolveApBuild(entry, bot);
+
+        assertEquals(BotBuildManager.StatType.DEX, build.primaryStat);
+        assertEquals(BotBuildManager.StatType.STR, build.secondaryStat);
+    }
+
+    @Test
+    void resolveApBuildReadsTrainedKnuckleSkillWhenVariantUnset() {
+        Character bot = mock(Character.class);
+        BotEntry entry = new BotEntry(bot, mock(Character.class), mock(ScheduledFuture.class));
+        when(bot.getJob()).thenReturn(Job.PIRATE);
+        when(bot.getSkillLevel(Pirate.FLASH_FIST)).thenReturn(1); // trained a knuckle attack
+
+        BotBuildManager.ApBuild build = BotBuildManager.resolveApBuild(entry, bot);
+
+        assertEquals(BotBuildManager.StatType.STR, build.primaryStat);
+        assertEquals(BotBuildManager.StatType.DEX, build.secondaryStat);
+    }
+
+    @Test
     void resolveApBuildForMageParksSecondaryAtFloor() {
         Character bot = mock(Character.class);
         BotEntry entry = new BotEntry(bot, mock(Character.class), mock(ScheduledFuture.class));

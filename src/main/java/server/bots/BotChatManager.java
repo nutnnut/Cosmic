@@ -2185,13 +2185,10 @@ public class BotChatManager {
         }
     }
 
-    /** Gun pirate line (DEX-primary, STR secondary): the 2nd+ gun jobs, plus a base Pirate whose
-     *  committed build variant is gun. Base pirate defaults to knuckle when the variant isn't set. */
+    /** Gun pirate line (DEX-primary, STR secondary). Delegates to the shared AP-orientation SSOT,
+     *  which reads the trained 1st-job attack skill (Double Shot => gun) before the planned variant. */
     private static boolean isGunPirate(Job job, BotEntry entry) {
-        if (job == Job.GUNSLINGER || job == Job.OUTLAW || job == Job.CORSAIR) {
-            return true;
-        }
-        return job == Job.PIRATE && "gun".equals(entry.spVariant);
+        return job.isA(Job.PIRATE) && BotBuildManager.pirateIsGun(entry.bot, entry);
     }
 
     /** Knuckle pirate line (STR-primary, DEX secondary): any pirate-tree job that isn't gun. */
