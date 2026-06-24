@@ -1076,6 +1076,11 @@ public class BotChatManager {
         // Independent supervised grind must run before plain "go grind"; otherwise
         // "go grind somewhere" schedules local grind and then clears autopilot.
         if (isAutopilotCommand(message)) {
+            // "autopilot" / "go solo" releases the bot back to its own play. Drop any gm6 debug-commander
+            // binding + formation slot NOW (not on the 5-min TTL) so a dismissed bot leaves the F8
+            // debug roster immediately. (start() -> issueGrind clears the follow state itself.)
+            BotManager.clearDebugCommander(entry);
+            entry.followOffsetX = 0;
             BotManager.after(BotManager.randMs(900, 1600), () -> {
                 prepareActiveModeEntry(entry);
                 BotAutopilotManager.start(entry, entry.bot);
