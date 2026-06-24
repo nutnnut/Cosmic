@@ -671,6 +671,27 @@ final class BotPhysicsEngine {
         syncCharacterState(entry);
     }
 
+    /** Min drop (px) below the portal landing before a map-change spawn falls by gravity instead of
+     *  snapping. Below this the floor is effectively at the spawn point — snap (no visible drop). */
+    static final int SPAWN_FALL_MIN_DROP_PX = 12;
+
+    /** Settle a bot that just changed map. When it lands on/near the floor, snap as before. But when the
+     *  destination portal drops it meaningfully ABOVE the floor, leave it at the spawn point, zero its
+     *  velocity, and enter the AIR so the normal physics ticks ease it down under gravity — the way a real
+     *  player spawns at a portal and falls, instead of hard-snapping its Y (which reads as a position
+     *  warp). The fall resolves in the following ticks when a foothold catches it. */
+    static void spawnIntoMap(BotEntry entry, Character bot) {
+        Point cur = bot.getPosition();
+        Point ground = findGroundPoint(bot.getMap(), new Point(cur.x, cur.y - 1));
+        if (ground != null && ground.y - cur.y > SPAWN_FALL_MIN_DROP_PX) {
+            teleportTo(entry, bot, cur); // stay at the portal landing...
+            entry.inAir = true;          // ...and let gravity carry it down to the floor
+            entry.velY = 0f;
+        } else {
+            teleportTo(entry, bot, ground != null ? ground : cur);
+        }
+    }
+
     static void markDead(BotEntry entry, Character bot) {
         clearMovementState(entry, bot.getPosition());
         syncCharacterState(entry);

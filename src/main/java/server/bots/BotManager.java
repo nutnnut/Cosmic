@@ -3311,9 +3311,7 @@ public class BotManager {
             if (!perf) {
                 entry.fhIndex  = BotMovementManager.buildFhIndex(bot.getMap());
                 entry.lastMapId = bot.getMapId();
-                Point cur = bot.getPosition();
-                Point ground = BotPhysicsEngine.findGroundPoint(bot.getMap(), new Point(cur.x, cur.y - 1));
-                BotPhysicsEngine.teleportTo(entry, bot, ground != null ? ground : cur);
+                BotPhysicsEngine.spawnIntoMap(entry, bot); // snap, or fall-by-gravity if dropped above the floor
                 BotMovementManager.resetEntryStateAfterTeleport(entry);
                 BotNavigationGraphProvider.warmGraphAsync(bot.getMap(), entry.movementProfile);
                 BotMovementManager.broadcastMovement(entry);
@@ -3328,9 +3326,7 @@ public class BotManager {
                 try {
                     entry.fhIndex  = BotMovementManager.buildFhIndex(bot.getMap());
                     entry.lastMapId = bot.getMapId();
-                    Point cur = bot.getPosition();
-                    Point ground = BotPhysicsEngine.findGroundPoint(bot.getMap(), new Point(cur.x, cur.y - 1));
-                    BotPhysicsEngine.teleportTo(entry, bot, ground != null ? ground : cur);
+                    BotPhysicsEngine.spawnIntoMap(entry, bot); // snap, or fall-by-gravity if dropped above the floor
                     BotMovementManager.resetEntryStateAfterTeleport(entry);
                     BotNavigationGraphProvider.warmGraphAsync(bot.getMap(), entry.movementProfile);
                     BotMovementManager.broadcastMovement(entry);
