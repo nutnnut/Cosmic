@@ -664,6 +664,16 @@ final class BotAutopilotManager {
         if (entry.autopilotErrandMapId != -1) {
             entry.autopilotErrandMapId = -1; // unreachable errand: forget it, the cooldown gates retries
             entry.autopilotReturningFromErrand = false;
+            // A rest-errand whose town is UNREACHABLE must also drop restErrand. Otherwise line ~578
+            // re-resolves it next tick (resolveTownRestDestination has no cooldown of its own), which
+            // re-announces "heading to town for a breather" EVERY tick (dozens/sec of chat spam) and
+            // re-pins destination on the unreachable town so the stranding-recovery below never runs.
+            // Abort the rest and gate the next break roll; a stranded bot keeps grinding/recovers.
+            if (entry.restErrand) {
+                entry.restErrand = false;
+                long now = System.currentTimeMillis();
+                entry.nextBreakRollAtMs = Math.max(entry.nextBreakRollAtMs, now + 60_000L);
+            }
         }
         maybeRedecide(entry, bot);
         // Stranded off the destination map with no route: rather than anchor to the owner,
