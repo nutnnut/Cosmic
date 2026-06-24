@@ -17,6 +17,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.function.BiConsumer;
 import java.util.function.IntPredicate;
@@ -367,6 +368,15 @@ final class BotAutopilotManager {
     }
 
     static void clear(BotEntry entry) {
+        // Drop the shared party plan when its owner (the leader) stands down; the next applyPartyPlan
+        // recreates it. Followers clearing leave it alone — others may still be tracking it.
+        if (entry.autopilotParty && entry.bot != null) {
+            Integer key = partyStateKey(entry);
+            PartyAutopilotState ps = key == null ? null : partyStates.get(key);
+            if (ps != null && ps.leaderCharId == entry.bot.getId()) {
+                partyStates.remove(key);
+            }
+        }
         entry.autopilotMapId = -1;
         entry.autopilotNextDecisionAtMs = 0L;
         entry.autopilotDestinationName = "";
@@ -557,6 +567,10 @@ final class BotAutopilotManager {
         if (!isActive(entry) || bot.getMap() == null) {
             return false;
         }
+        // Party SSOT: pull this member's grind destination from the one shared plan before anything
+        // reads autopilotMapId below. A follower can no longer drift onto a stale solo pick (the old
+        // per-member-copy split-up bug); the leader owns the plan, followers track it every tick.
+        syncFromPartyState(entry);
         // Any errand (quest / gachapon / resupply detour) supersedes a party transit-hold and runs
         // independently. Each of those branches returns or skips the cohesion section below, which is
         // the only thing that clears the wait anchor when the group regroups -- so a wait anchor pinned
@@ -1174,6 +1188,60 @@ final class BotAutopilotManager {
 
     static PartyMembersLookup partyMembers = BotAutopilotManager::defaultPartyMembers;
 
+    // Party-plan SSOT (see PartyAutopilotState): one shared plan per game party, keyed by party id.
+    // The leader writes it in applyPartyPlan; every member refreshes its per-tick destination cache
+    // from it in tick() (syncFromPartyState). This is what makes follower drift impossible — there
+    // is one destination, not one copy per member. Orphaned entries (party disbanded) are tiny and
+    // pruned when the leader clears its autopilot (clear()); a stale entry can never be MIS-read
+    // because lookup is keyed by the member's CURRENT party id.
+    private static final Map<Integer, PartyAutopilotState> partyStates = new ConcurrentHashMap<>();
+
+    /** Registry key for a cohort's shared plan: the game party id when there is one, else a synthetic
+     *  key off the shared owner (owner's own bots can grind as a cohort with no formal party — see
+     *  defaultPartyMembers). Null when no cohort identity exists (solo / unmocked test bot), in which
+     *  case there is no SSOT and the bot just uses its own per-entry destination. */
+    private static Integer partyStateKey(BotEntry entry) {
+        if (entry == null || entry.bot == null) {
+            return null;
+        }
+        if (entry.bot.getParty() != null) {
+            return entry.bot.getParty().getId();
+        }
+        Character owner = entry.owner;
+        return owner != null && owner != entry.bot ? -owner.getId() : null;
+    }
+
+    /** The shared plan for this bot's current cohort, or null when soloing / no plan yet. */
+    static PartyAutopilotState partyStateFor(BotEntry entry) {
+        Integer key = partyStateKey(entry);
+        return key == null ? null : partyStates.get(key);
+    }
+
+    /** The cohort's shared plan, creating it on first publish. Null only when the cohort has no
+     *  identity to key on (then the caller leaves members on their per-entry fields). */
+    private static PartyAutopilotState partyStateOrCreate(BotEntry leader) {
+        Integer key = partyStateKey(leader);
+        return key == null ? null : partyStates.computeIfAbsent(key, k -> new PartyAutopilotState());
+    }
+
+    /** Refresh a FOLLOWER's cached destination from the party SSOT, so it can never travel to a
+     *  stale per-bot pick. The leader is the writer, so it is skipped; soloists have no state. */
+    private static void syncFromPartyState(BotEntry entry) {
+        if (!entry.autopilotParty) {
+            return;
+        }
+        PartyAutopilotState ps = partyStateFor(entry);
+        if (ps == null || ps.mapId == -1 || entry.bot.getId() == ps.leaderCharId) {
+            return;
+        }
+        entry.autopilotMapId = ps.mapId;
+        entry.autopilotDestinationName = ps.destinationName;
+        String objective = ps.objectiveByCharId.get(entry.bot.getId());
+        if (objective != null) {
+            entry.autopilotObjectiveSummary = objective;
+        }
+    }
+
     @FunctionalInterface
     interface HopDistance {
         int hops(int fromMapId, int toMapId);
@@ -1611,7 +1679,19 @@ final class BotAutopilotManager {
             }
         }
         long baseDecisionAt = nextDecisionAt();
-        int leaderMapId = members.get(0).bot.getMapId(); // embark anchor: who's co-located heads out together
+        BotEntry leader = members.get(0);
+        int leaderMapId = leader.bot.getMapId(); // embark anchor: who's co-located heads out together
+        // Publish the shared plan to the SSOT first; the per-member fields below are the derived cache
+        // that syncFromPartyState refreshes each tick. The leader is the authoritative writer. ps is
+        // null only for an unkeyable cohort (no party + no shared owner) — then members just run off
+        // their own per-entry fields, same as before the SSOT existed.
+        PartyAutopilotState ps = partyStateOrCreate(leader);
+        if (ps != null) {
+            ps.mapId = plan.mapId();
+            ps.destinationName = destination;
+            ps.leaderCharId = leader.bot.getId();
+            ps.objectiveByCharId.clear();
+        }
         for (int i = 0; i < members.size(); i++) {
             BotEntry member = members.get(i);
             BotManager.getInstance().issueGrind(member); // combat baseline + clears old autopilot
@@ -1624,6 +1704,9 @@ final class BotAutopilotManager {
                 member.autopilotDestinationName = destination;
                 member.autopilotObjectiveSummary = "back the party up";
                 member.autopilotArrivalAnnounced = true;
+            }
+            if (ps != null) {
+                ps.objectiveByCharId.put(member.bot.getId(), member.autopilotObjectiveSummary);
             }
             member.autopilotParty = true;
             // Only members on the leader's map at embark join the travel cohort (formation-follow +
@@ -1652,7 +1735,7 @@ final class BotAutopilotManager {
                 }
             }
             if (plan == null || plan.mapId() == entry.autopilotMapId) {
-                return; // current spot is still the call for the group
+                return; // group's map unchanged; followers track it via the SSOT sync each tick
             }
             applyPartyPlan(members, plan);
             announceParty(members, plan);
