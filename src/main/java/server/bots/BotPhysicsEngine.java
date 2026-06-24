@@ -2721,6 +2721,55 @@ final class BotPhysicsEngine {
         return null;
     }
 
+    /** A reachable climb point inside the (±dx,±dy) box around {@code center}, or null. Used to approach a
+     *  collision portal whose warp point floats BESIDE a rope (common WZ layout): the portal fires on
+     *  hitbox overlap, and a rope threading that box is a reachable surface the bot can climb to the
+     *  portal's height — unlike the exact centre, which sits on no foothold. Returns the rope's x at the
+     *  centre's height, clamped to the rope's climbable span. */
+    static Point ropeApproachInBox(MapleMap map, Point center, int dx, int dy) {
+        if (map == null || center == null) {
+            return null;
+        }
+        for (Rope rope : map.getRopes()) {
+            if (Math.abs(rope.x() - center.x) <= dx
+                    && firstClimbableY(rope) <= center.y + dy
+                    && rope.bottomY() >= center.y - dy) {
+                int y = Math.clamp(center.y, firstClimbableY(rope), rope.bottomY());
+                return new Point(rope.x(), y);
+            }
+        }
+        return null;
+    }
+
+    /** A reachable standable/climbable point inside the (±dx,±dy) box around {@code center}, or null —
+     *  the general form of {@link #ropeApproachInBox}. A collision portal fires on hitbox overlap, but its
+     *  warp point can float onto no surface; pathfinding needs a real target inside the box. Prefers a rope
+     *  (climb to height), else the nearest foothold platform whose surface the box overlaps (covers an
+     *  offset platform, not just an offset rope). Returns the point nearest the centre's x. */
+    static Point reachableApproachInBox(MapleMap map, Point center, int dx, int dy) {
+        if (map == null || center == null) {
+            return null;
+        }
+        Point rope = ropeApproachInBox(map, center, dx, dy);
+        if (rope != null) {
+            return rope;
+        }
+        Point best = null;
+        long bestDx = Long.MAX_VALUE;
+        for (int sx = -dx; sx <= dx; sx += 10) {        // sample columns across the box for a platform
+            Point ground = findGroundPoint(map, new Point(center.x + sx, center.y - dy));
+            if (ground == null || Math.abs(ground.y - center.y) > dy) {
+                continue;                                // no floor, or floor is outside the box vertically
+            }
+            long d = (long) sx * sx;
+            if (d < bestDx) {
+                bestDx = d;
+                best = new Point(center.x + sx, ground.y);
+            }
+        }
+        return best;
+    }
+
     private static JumpLanding simulateLanding(MapleMap map,
                                                Point from,
                                                float initialVelY,

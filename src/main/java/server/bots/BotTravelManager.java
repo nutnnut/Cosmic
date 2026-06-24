@@ -282,7 +282,7 @@ final class BotTravelManager {
         // Progress-aware deadline: while the bot is still closing on the portal (a long multi-jump
         // climb counts), push the give-up deadline out. Only NET progress (a new closest distance)
         // resets it, so a bot that's genuinely stuck or oscillating in place still times out.
-        int distToPortal = manhattan(bot.getPosition(), portal.getPosition());
+        int distToPortal = manhattan(bot.getPosition(), portalApproachTarget(map, portal));
         if (distToPortal < entry.followTravelBestDist) {
             entry.followTravelBestDist = distToPortal;
             entry.followTravelDeadlineMs = now + travelBudgetMs(distToPortal);
@@ -294,8 +294,22 @@ final class BotTravelManager {
      * Walk toward a plain portal and enter it once in range — the shared walk-and-enter step
      * used by the main hop flow above and the ferry legs (cabin door, station walkway).
      */
+    /** Where to actually walk to enter {@code portal}. Normally the portal centre — but a collision
+     *  (pt=3) portal fires on HITBOX overlap, and its warp point often floats beside a rope onto no
+     *  foothold (e.g. Aqua Road 222000001 out00 at x=-31 while the rope is at x=-51). Targeting the
+     *  unstandable centre wedges pathfinding; target a reachable surface (rope OR platform) inside the
+     *  hitbox instead, and {@link #tickCollisionPortal} warps on overlap once the bot is in the box.
+     *  Plain (non-collision) portals are unaffected — the centre is returned. */
+    static Point portalApproachTarget(MapleMap map, Portal portal) {
+        if (map == null || portal.getType() != COLLISION_PORTAL_TYPE) {
+            return portal.getPosition();
+        }
+        Point reachable = BotPhysicsEngine.reachableApproachInBox(map, portal.getPosition(), COLLISION_ENTER_X, COLLISION_ENTER_Y);
+        return reachable != null ? reachable : portal.getPosition();
+    }
+
     static boolean walkToPortalAndEnter(BotEntry entry, Character bot, Portal portal, long now, boolean runAiTick) {
-        Point portalPos = portal.getPosition();
+        Point portalPos = portalApproachTarget(bot.getMap(), portal);
         Point botPos = bot.getPosition();
         // A portal at the top of (or on) a rope is only reachable by climbing - the bot arrives in the
         // climbing state, so blocking entry while climbing strands it hanging at the portal forever
