@@ -2082,9 +2082,15 @@ public class BotManager {
 
     static void clearDebugCommander(BotEntry entry) {
         if (entry != null) {
+            int formerGm = entry.debugCommanderId;
+            boolean wasFollowing = entry.debugCommanderFollow;
             entry.debugCommanderId = 0;
             entry.debugCommanderUntilMs = 0L;
             entry.debugCommanderFollow = false;
+            entry.followOffsetX = 0;                       // drop this bot's own formation slot
+            if (wasFollowing && formerGm > 0) {
+                getInstance().assignDebugFollowFormation(formerGm); // re-stagger the bots still following
+            }
         }
     }
 
