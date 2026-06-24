@@ -843,6 +843,11 @@ final class BotPathLogger {
         int gap = ground.y - point.y; // y grows downward: >0 ⇒ point floats above the floor
         int tol = BotMovementManager.cfg.JUMP_Y_THRESH;
         if (gap > tol) {
+            // A point on a rope/ladder is SUPPOSED to float above the floor — you stand by clinging to
+            // the rope, not on a foothold. Don't cry "not standable" there: it's a legit climb target.
+            if (BotPhysicsEngine.climbableAtPoint(dumpMap, point) != null) {
+                return "  *ON-ROPE +" + gap + "px above floor(y=" + ground.y + ") — standable by climbing*";
+            }
             return "  *MIDAIR +" + gap + "px above floor(y=" + ground.y + ") — not standable here*";
         }
         if (gap < -tol) {

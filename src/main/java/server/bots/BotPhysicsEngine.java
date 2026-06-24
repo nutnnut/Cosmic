@@ -2706,6 +2706,21 @@ final class BotPhysicsEngine {
                 && position.y <= rope.bottomY();
     }
 
+    /** A rope/ladder the bot could cling to at this exact point, or null. A point on a rope legitimately
+     *  floats above the floor (you stand by climbing, not on a foothold) — so callers reasoning about
+     *  "standable" must treat this as standable, not midair. */
+    static Rope climbableAtPoint(MapleMap map, Point position) {
+        if (map == null || position == null) {
+            return null;
+        }
+        for (Rope rope : map.getRopes()) {
+            if (canGrabRopeAtPoint(position, rope)) {
+                return rope;
+            }
+        }
+        return null;
+    }
+
     private static JumpLanding simulateLanding(MapleMap map,
                                                Point from,
                                                float initialVelY,
