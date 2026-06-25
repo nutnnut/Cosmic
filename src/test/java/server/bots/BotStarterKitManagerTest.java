@@ -5,6 +5,7 @@ import client.Job;
 import org.junit.jupiter.api.Test;
 import org.mockito.MockedStatic;
 
+import java.awt.Point;
 import java.util.List;
 import java.util.concurrent.ScheduledFuture;
 
@@ -181,6 +182,7 @@ class BotStarterKitManagerTest {
         BotEntry entry = new BotEntry(bot, owner, mock(ScheduledFuture.class));
 
         when(bot.getJob()).thenReturn(Job.BOWMAN);
+        when(bot.getPosition()).thenReturn(new Point(100, 100));
 
         var savedReply = BotStarterKitManager.reply;
         BotStarterKitManager.reply = (e, t) -> { }; // avoid the BotManager singleton in the unit test
@@ -190,9 +192,38 @@ class BotStarterKitManagerTest {
             BotStarterKitManager.advanceJob(entry, Job.HUNTER);
 
             verify(bot).changeJob(Job.HUNTER);
+            verify(bot).changeFaceExpression(Emote.HAPPY.getValue());
             buildManager.verify(() -> BotBuildManager.handleJobAdvance(entry, bot, Job.BOWMAN, Job.HUNTER));
             equipManager.verify(() -> BotEquipManager.autoEquip(bot, owner, null));
             chatManager.verify(() -> BotChatManager.checkBotStatus(entry, bot));
+            assertTrue(entry.fidgetMode != BotFidgetMode.NONE);
+            assertEquals(BotFidgetTrigger.SOCIAL, entry.fidgetTrigger);
+        } finally {
+            BotStarterKitManager.reply = savedReply;
+        }
+    }
+
+    @Test
+    void advanceJobDoesNotOverrideActiveFidget() {
+        Character bot = mock(Character.class);
+        Character owner = mock(Character.class);
+        BotEntry entry = new BotEntry(bot, owner, mock(ScheduledFuture.class));
+        entry.fidgetMode = BotFidgetMode.PRONE;
+        entry.fidgetTrigger = BotFidgetTrigger.IDLE;
+
+        when(bot.getJob()).thenReturn(Job.BOWMAN);
+
+        var savedReply = BotStarterKitManager.reply;
+        BotStarterKitManager.reply = (e, t) -> { };
+        try (MockedStatic<BotBuildManager> buildManager = mockStatic(BotBuildManager.class);
+             MockedStatic<BotChatManager> chatManager = mockStatic(BotChatManager.class);
+             MockedStatic<BotEquipManager> equipManager = mockStatic(BotEquipManager.class)) {
+            BotStarterKitManager.advanceJob(entry, Job.HUNTER);
+
+            verify(bot).changeJob(Job.HUNTER);
+            verify(bot, org.mockito.Mockito.never()).changeFaceExpression(org.mockito.Mockito.anyInt());
+            assertEquals(BotFidgetMode.PRONE, entry.fidgetMode);
+            assertEquals(BotFidgetTrigger.IDLE, entry.fidgetTrigger);
         } finally {
             BotStarterKitManager.reply = savedReply;
         }

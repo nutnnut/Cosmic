@@ -57,7 +57,19 @@ final class BotStarterKitManager {
         grantStarterKitIfEligible(bot, oldJob, newJob);
         BotEquipManager.autoEquip(bot, owner, null);
         reply.accept(entry, "advanced to " + newJob + "!");
+        maybeCelebrateJobAdvance(entry, bot);
         BotChatManager.checkBotStatus(entry, bot);
+    }
+
+    private static void maybeCelebrateJobAdvance(BotEntry entry, Character bot) {
+        if (entry == null || bot == null || entry.fidgetMode != BotFidgetMode.NONE
+                || entry.inAir || entry.climbing) {
+            return;
+        }
+
+        bot.changeFaceExpression(Emote.HAPPY.getValue());
+        BotFidgetManager.startRandomFidget(entry, System.currentTimeMillis(), (int) BotManager.randMs(2000, 5000),
+                BotFidgetTrigger.SOCIAL);
     }
 
     static List<ItemGrant> starterKitFor(Job job) {
