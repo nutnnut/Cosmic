@@ -76,6 +76,8 @@ final class BotShopManager {
         // Debug/verify aid: after a sell-trash visit, list the USE/ETC items that were sold so
         // the owner can spot a valuable being misclassified. Equips are excluded (well tested).
         public boolean REPORT_SOLD_USE_ETC = true;
+        // Per-item sold audit log (bot-sell:). Off by default — spams even at DEBUG with many bots.
+        public boolean LOG_SOLD_ITEMS = false;
     }
     static Config cfg = new Config();
 
@@ -774,6 +776,9 @@ final class BotShopManager {
     /** Audit trail for every NPC sale a bot makes — equips include their above-base trade
      *  score so a concerning sale (a good roll liquidated) is findable in the server log. */
     private static void logSoldItem(Character bot, Item item, short quantity) {
+        if (!cfg.LOG_SOLD_ITEMS) {
+            return;
+        }
         String name = resolveItemName(item.getItemId(), "item");
         if (item instanceof Equip equip) {
             double score;
