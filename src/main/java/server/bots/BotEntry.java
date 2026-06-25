@@ -678,6 +678,18 @@ public class BotEntry {
     // launching at the identical spot when an arc is borderline.
     int navJumpLaunchDelaySteps = Integer.MIN_VALUE;
     int navTargetRegionId = -1;
+    // Committed route: the full planned hop sequence to the current goal region. The bot follows it
+    // hop-by-hop (sticking to ONE route) instead of re-deciding the next hop per region. The best
+    // first hop OUT of a region is position-dependent (it depends on the bot's x within the region —
+    // the walk cost to each candidate launch point), but the old per-region next-hop cache is keyed
+    // (region,target,bucket) — position-blind — and never invalidated, so it serves a hop computed
+    // for whatever bot/position first populated it. Two adjacent regions' cached hops (filled from
+    // different positions) can then disagree (r45->r42 while r42->r45) and trap the bot ping-ponging
+    // (pathlog-GearArrow). Committing one route planned from the bot's OWN current position is
+    // internally consistent (acyclic) and keeps per-bot route diversity. Recomputed when the goal
+    // region changes or the bot is knocked off the route.
+    List<BotNavigationGraph.Edge> committedRoute = null;
+    int committedRouteTargetRegionId = -1;
     boolean navPreciseTarget = false;
     // Stale-edge give-up: consecutive ticks spent parked against a committed edge's position
     // gate ("*-pos" block reason) without any movement. BotNavigationManager drops the edge

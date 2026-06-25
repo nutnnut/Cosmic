@@ -195,11 +195,32 @@ final class BotNavigationManager {
                 }
             }
             if (edge == null && runAiTick && startRegionId >= 0 && targetRegionId >= 0) {
+                // Stick to ONE committed route: take the next hop off the bot's already-planned route
+                // instead of re-deciding it per region. The best first hop out of a region is
+                // position-dependent, but the per-region next-hop cache (findNextEdge) is keyed by
+                // (region,target,bucket) — position-blind — and never invalidated, so adjacent regions
+                // can serve mutually-inconsistent cached hops (r45->r42 while r42->r45) and trap the bot
+                // ping-ponging. One route planned from the bot's own position is acyclic. The route is
+                // recomputed only when the goal region changes or the bot is knocked off it.
                 // Same-region planning is intentionally allowed: intra-region portals appear as
-                // self-loop edges (fromRegionId == toRegionId) and A* picks them when the
-                // walk-to-entry + walk-from-exit cost beats the direct walk. findPath returns
-                // an empty path when direct walk wins, falling through to direct steering.
-                edge = findNextEdge(graph, bot, startRegionId, targetRegionId, pathTargetPos);
+                // self-loop edges (fromRegionId == toRegionId) and the search picks them when the
+                // walk-to-entry + walk-from-exit cost beats the direct walk; an empty route falls
+                // through to direct steering.
+                edge = nextCommittedRouteEdge(graph, entry, startRegionId, targetRegionId);
+                if (edge == null) {
+                    List<BotNavigationGraph.Edge> route =
+                            computeCommittedRoute(graph, bot, startRegionId, targetRegionId, pathTargetPos);
+                    if (route != null) {
+                        entry.committedRoute = route;
+                        entry.committedRouteTargetRegionId = targetRegionId;
+                        edge = nextCommittedRouteEdge(graph, entry, startRegionId, targetRegionId);
+                    } else {
+                        // Uncommittable (intra-region portal detour): fall back to the per-hop planner.
+                        entry.committedRoute = null;
+                        entry.committedRouteTargetRegionId = -1;
+                        edge = findNextEdge(graph, bot, startRegionId, targetRegionId, pathTargetPos);
+                    }
+                }
                 if (edge != null) {
                     entry.navEdge = edge;
                     entry.navTargetRegionId = targetRegionId;
@@ -1332,6 +1353,18 @@ final class BotNavigationManager {
                                                                   int startRegionId,
                                                                   int targetRegionId,
                                                                   Point targetPos) {
+        List<BotNavigationGraph.Edge> path = skillAwareRoutePath(graph, map, bot, startRegionId, targetRegionId, targetPos);
+        return path.isEmpty() ? null : collapseLeadingWalkEdges(path);
+    }
+
+    /** Full skill-aware route path (the two-pass walk-vs-skill compare), used both for the next-hop and
+     *  for committing a whole route. */
+    private static List<BotNavigationGraph.Edge> skillAwareRoutePath(BotNavigationGraph graph,
+                                                                     MapleMap map,
+                                                                     Character bot,
+                                                                     int startRegionId,
+                                                                     int targetRegionId,
+                                                                     Point targetPos) {
         long seed = routeSeed(bot);
         SearchOutcome walkOnly = runSearch(graph, map, bot.getPosition(), startRegionId, targetRegionId,
                 targetPos, null, useAdmissibleHeuristic, true, seed, false, bot);
@@ -1344,7 +1377,56 @@ final class BotNavigationManager {
                 chosen = withSkills;
             }
         }
-        return chosen.path().isEmpty() ? null : collapseLeadingWalkEdges(chosen.path());
+        return chosen.path();
+    }
+
+    /**
+     * The bot's full committed route to the goal, computed once with the bot's OWN seed (so per-bot
+     * route diversity is preserved) and then followed hop-by-hop. Returns {@code null} when the route
+     * should NOT be committed — it contains an intra-region PORTAL self-loop (a same-region detour);
+     * following those by region-match could re-select the self-loop forever, so the per-hop planner
+     * ({@link #findNextEdge}) handles them as before. An empty list means "direct walk, no hop".
+     */
+    static List<BotNavigationGraph.Edge> computeCommittedRoute(BotNavigationGraph graph, Character bot,
+                                                               int startRegionId, int targetRegionId, Point targetPos) {
+        MapleMap map = bot.getMap();
+        if (!graph.portalRoutesWarmed) {
+            warmPortalRoutes(graph, map);
+        }
+        List<BotNavigationGraph.Edge> route = botCanUseMovementSkill(bot)
+                ? skillAwareRoutePath(graph, map, bot, startRegionId, targetRegionId, targetPos)
+                : findPath(graph, bot, startRegionId, targetRegionId, targetPos);
+        for (BotNavigationGraph.Edge e : route) {
+            if (e.type == BotNavigationGraph.EdgeType.PORTAL && e.fromRegionId == e.toRegionId) {
+                return null;
+            }
+        }
+        return route;
+    }
+
+    /**
+     * Next hop off the committed route: the first usable, non-WALK edge leaving the bot's current
+     * region. A* routes are region-acyclic, so the bot advances along its own route and never reverses
+     * into the region it just came from (the GearArrow r45&lt;-&gt;r42 ping-pong from inconsistent
+     * position-blind cache entries). Returns {@code null} when the route is absent/stale (goal region
+     * changed) or the bot's region isn't on it (knocked off) — the caller then recomputes and commits
+     * a fresh route.
+     */
+    static BotNavigationGraph.Edge nextCommittedRouteEdge(BotNavigationGraph graph, BotEntry entry,
+                                                          int startRegionId, int targetRegionId) {
+        List<BotNavigationGraph.Edge> route = entry.committedRoute;
+        if (route == null || route.isEmpty() || entry.committedRouteTargetRegionId != targetRegionId) {
+            return null;
+        }
+        for (BotNavigationGraph.Edge e : route) {
+            if (e.type == BotNavigationGraph.EdgeType.WALK) {
+                continue;
+            }
+            if (e.fromRegionId == startRegionId && isEdgeUsable(graph, entry.bot, e)) {
+                return e;
+            }
+        }
+        return null;
     }
 
     /**
@@ -2280,11 +2362,15 @@ final class BotNavigationManager {
                 return ropeRegionId;
             }
         }
-        if (entry.inAir) {
-            // Airborne points do not have a meaningful "current region". A ground lookup from an
-            // in-flight point resolves to whatever foothold is below the arc, which can be an
-            // unrelated upper platform. That makes runtime navigation discard the committed jump
-            // edge even though the authored graph and ballistic landing simulation still agree.
+        // Airborne over a real gap has no meaningful "current region": a ground lookup mid-arc
+        // resolves to whatever foothold is below the arc, which can be an unrelated platform, and
+        // runtime nav would discard the committed jump even though the authored ballistic landing
+        // still agrees. But "airborne" while hugging a platform (within a snap) is NOT a real arc —
+        // e.g. a bot settled at a rope bottom sits 1-2px above the ground in the off-graph gap under
+        // the rope region. Returning -1 there gave an empty A* path and a grab/exit loop
+        // (pathlog-rApIdScUrVy / live bot 1416, whose real route was a rope-free jump). Only blank the
+        // region when the ground is genuinely far below; otherwise resolve to the platform underfoot.
+        if (entry.inAir && BotPhysicsEngine.isGroundFarBelow(map, botPos)) {
             return -1;
         }
         return graph.findRegionId(map, botPos);

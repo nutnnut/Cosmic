@@ -141,6 +141,43 @@ class BotNavigationGraphProviderTest {
     }
 
     @Test
+    void committedRouteIsFollowedForwardToGoalWithoutFlipFlop() {
+        // GearArrow root cause: the best first hop out of a region is position-dependent, but the
+        // per-region next-hop cache is position-blind and never invalidated, so adjacent regions served
+        // mutually-inconsistent cached hops (r45->r42 but r42->r45), trapping the bot ping-ponging. The
+        // fix commits ONE route (planned from the bot's own position) and follows it. This verifies the
+        // follow logic: from each region on the route the bot advances to a NEW region and reaches the
+        // goal, never reversing into a region it already left.
+        BotNavigationGraph g = henesysGraph();
+        MapleMap map = henesys();
+        Point start = new Point(1018, 334);   // r45, GearArrow's stuck platform
+        Point goal = new Point(-922, 272);    // r41, the travel-pin portal
+        Character bot = mockBot(start, map);
+        int startRegion = g.findRegionId(map, bot.getPosition());
+        int goalRegion = g.findRegionId(map, goal);
+
+        var route = BotNavigationManager.computeCommittedRoute(g, bot, startRegion, goalRegion, goal);
+        assertNotNull(route, "expected a committable route (no intra-region portal detour)");
+        assertFalse(route.isEmpty(), "expected a multi-region route from r45 to r41");
+
+        BotEntry entry = new BotEntry(bot, null, null);
+        entry.committedRoute = route;
+        entry.committedRouteTargetRegionId = goalRegion;
+
+        java.util.Set<Integer> visited = new java.util.HashSet<>();
+        int region = startRegion;
+        visited.add(region);
+        for (int step = 0; step < 64 && region != goalRegion; step++) {
+            BotNavigationGraph.Edge hop = BotNavigationManager.nextCommittedRouteEdge(g, entry, region, goalRegion);
+            assertNotNull(hop, "committed route stalls at region " + region);
+            assertEquals(region, hop.fromRegionId, "hop must leave the bot's current region");
+            region = hop.toRegionId;
+            assertTrue(visited.add(region), "committed route revisits region " + region + " — flip-flop");
+        }
+        assertEquals(goalRegion, region, "committed route reaches the goal region");
+    }
+
+    @Test
     void shouldKeepHenesysLowerTownStreetInOneMergedRegion() {
         int firstRegionId = henesysGraph().findRegionId(henesys(), new Point(990, 334));
         int secondRegionId = henesysGraph().findRegionId(henesys(), new Point(1080, 334));
@@ -555,6 +592,27 @@ class BotNavigationGraphProviderTest {
     }
 
     @Test
+    void shouldResolveRopeBottomDeadZoneToGroundInsteadOfMinusOne() {
+        // A bot that grabbed a rope and descended to its bottom hovers (airborne, velY~0) in the
+        // 1-2px gap under the rope region but over the ground platform. Without the fix the airborne
+        // branch returns -1, A* finds no path, and the bot loops grab/exit (pathlog-rApIdScUrVy / live
+        // bot 1416). It must resolve to the ground region so it can plan to walk/jump off the rope.
+        MapleMap map = ropeBottomDeadZoneMap(910000302);
+        BotNavigationGraph graph = BotNavigationGraphProvider.rebuildGraph(map);
+
+        Point deadZone = new Point(50, 198); // rope column, 2px above the ground at y=200 (within a snap)
+        int groundRegion = graph.findRegionId(map, deadZone);
+        assertTrue(groundRegion >= 0, "ground region should exist directly below the rope bottom");
+
+        BotEntry entry = new BotEntry(mockBot(deadZone, map), null, null);
+        entry.inAir = true; // the airborne-hover state captured at the rope bottom
+
+        assertEquals(groundRegion,
+                BotNavigationManager.resolveCurrentRegionId(graph, entry, map, deadZone),
+                "rope-bottom dead zone must resolve to the ground region, not -1");
+    }
+
+    @Test
     void shouldResolveFollowTargetFromOwnerRopeRegionWhileOwnerIsHanging() {
         MapleMap map = topRopeEntryMap(910000211);
         BotNavigationGraph graph = BotNavigationGraphProvider.rebuildGraph(map);
@@ -571,6 +629,43 @@ class BotNavigationGraphProviderTest {
 
         assertEquals(reuseCase.edge().toRegionId,
                 BotNavigationManager.resolveTargetRegionId(graph, entry, map, owner.getPosition()));
+    }
+
+    @Test
+    void shouldNotAuthorStraightDownDropThatWouldGrabRopeInstead() {
+        // Upper + lower platform with a rope hanging between them. A straight-down (down-jump) drop
+        // launched at the rope's column presses DOWN, which physics resolves as a rope grab — so such
+        // a DROP edge is a phantom A* would prefer but execution can never satisfy (grab/regrab loop
+        // at the rope top, pathlog-LeSsOn-2026-06-24). It must not be authored; descent stays via the
+        // rope CLIMB edge. Drops at columns clear of the rope are unaffected.
+        MapleMap map = phantomDropOverRopeMap(910000301);
+        BotNavigationGraph graph = BotNavigationGraphProvider.rebuildGraph(map);
+
+        int ropeX = 50;
+        int grabX = BotPhysicsEngine.cfg.ROPE_GRAB_X;
+
+        boolean anyStraightDropClearOfRope = false;
+        boolean ropeEntryExists = false;
+        for (BotNavigationGraph.Region region : graph.regions) {
+            for (BotNavigationGraph.Edge edge : graph.getOutgoing(region.id)) {
+                if (edge.type == BotNavigationGraph.EdgeType.DROP && edge.launchStepX == 0) {
+                    assertTrue(Math.abs(edge.startPoint.x - ropeX) > grabX,
+                            "straight-down DROP at x=" + edge.startPoint.x
+                                    + " is within rope-grab range of the rope at x=" + ropeX
+                                    + " — pressing DOWN would grab the rope, not drop");
+                    anyStraightDropClearOfRope = true;
+                }
+                BotNavigationGraph.Region to = graph.getRegion(edge.toRegionId);
+                if (edge.type == BotNavigationGraph.EdgeType.CLIMB && to != null && to.isRopeRegion) {
+                    ropeEntryExists = true;
+                }
+            }
+        }
+
+        assertTrue(anyStraightDropClearOfRope,
+                "expected a straight-down DROP at a column clear of the rope (guard must be selective, not blanket)");
+        assertTrue(ropeEntryExists,
+                "expected a CLIMB entry onto the rope so the bot can still descend without the phantom DROP");
     }
 
     @Test
@@ -985,6 +1080,25 @@ class BotNavigationGraphProviderTest {
         MapleMap map = createEmptyTestMap(mapId);
         map.getFootholds().insert(new Foothold(new Point(80, 100), new Point(120, 100), 1));
         map.addRope(new Rope(100, 100, 200, false));
+        return map;
+    }
+
+    private static MapleMap phantomDropOverRopeMap(int mapId) {
+        MapleMap map = createEmptyTestMap(mapId);
+        // Wide upper + lower platforms (so straight drops exist at columns far from the rope) with a
+        // rope hanging between them at x=50. The rope's x is a feature anchor, so the builder DOES try
+        // a straight-down drop there — the guard is what removes it.
+        map.getFootholds().insert(new Foothold(new Point(0, 0), new Point(300, 0), 1));
+        map.getFootholds().insert(new Foothold(new Point(0, 150), new Point(300, 150), 2));
+        map.addRope(new Rope(50, 0, 150, false));
+        return map;
+    }
+
+    private static MapleMap ropeBottomDeadZoneMap(int mapId) {
+        MapleMap map = createEmptyTestMap(mapId);
+        map.getFootholds().insert(new Foothold(new Point(0, 0), new Point(120, 0), 1));     // upper platform / rope top
+        map.getFootholds().insert(new Foothold(new Point(0, 200), new Point(300, 200), 2)); // ground at the rope bottom
+        map.addRope(new Rope(50, 0, 200, false));
         return map;
     }
 

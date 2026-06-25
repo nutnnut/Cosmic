@@ -1020,6 +1020,14 @@ final class BotNavigationGraphProvider {
             if (dropLaunchStep(from, map, anchor, movementProfile) != 0) {
                 continue;
             }
+            // A straight-down drop presses DOWN, but DOWN over a grabbable rope makes physics
+            // grab the rope instead of falling through — that grab is already modelled as a
+            // CLIMB edge (canTopStep/canGrab). Emitting a DROP at the same column produces a
+            // phantom edge A* prefers but execution can never satisfy, causing a grab/regrab
+            // loop at the rope top. Skip it; descent stays available via the rope CLIMB edges.
+            if (downKeyGrabsRope(map, anchor)) {
+                continue;
+            }
 
             JumpLaunchWindow launchWindow = expandDownJumpLaunchWindow(
                     from, map, regionIdByFootholdId, anchor.x, movementProfile);
@@ -1038,6 +1046,25 @@ final class BotNavigationGraphProvider {
                     launchWindow.minX(), launchWindow.maxX(),
                     0, 0, launchWindow.landingTimeMs(), outgoing, edgeKeys);
         }
+    }
+
+    /**
+     * True when a straight-down jump from {@code launch} would grab a rope instead of dropping
+     * through the platform. Reuses {@link BotPhysicsEngine#simulateDownJumpRopeGrab} — the exact
+     * physics the rope-entry builder uses for its canTopStep CLIMB edge — so a DROP edge is never
+     * authored where execution would grab. Returns false below a rope's bottom (the down-jump arc
+     * never reaches the rope), so legitimate downward drops are unaffected.
+     */
+    private static boolean downKeyGrabsRope(MapleMap map, Point launch) {
+        for (Rope rope : map.getRopes()) {
+            if (Math.abs(launch.x - rope.x()) > BotMovementManager.cfg.ROPE_GRAB_X) {
+                continue;
+            }
+            if (BotPhysicsEngine.simulateDownJumpRopeGrab(map, launch, rope) != null) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static void addDirectionalDropEdge(BotNavigationGraph.Region from,

@@ -628,9 +628,13 @@ class BotPhysicsEngineTest {
     }
 
     @Test
-    void shouldZeroMomentumWhenCounterStrafingIntoLanding() {
-        // Packet-verified: landing with the OPPOSITE direction held zeroes hspeed outright
-        // (-122 -> 0 on ice) — the legal "stop dead on an icy ledge" trick.
+    void shouldRideHalvedMomentumWhenCounterStrafeKeyHeldAtTouchdown() {
+        // Landing no longer counter-strafe-brakes (commit 54daaf229 "ride the momentum"): at the
+        // landing tick moveDir still holds STALE airborne steering, so the old "opposite key zeroes
+        // hspeed" brake fired on noise — it killed landing momentum and left facing backwards. A
+        // counter-strafe key held through touchdown now keeps the same halved momentum as a neutral
+        // landing; the next ground tick brakes on the REAL planned direction (slipperyStopDir still
+        // guards icy ledges). (Trades away the client "stop dead on an icy ledge" trick on purpose.)
         MapleMap snow = flatGroundMap(0.2f);
         Character bot = mockBot(new Point(0, 50), snow);
         BotEntry entry = new BotEntry(bot, null, null);
@@ -639,10 +643,12 @@ class BotPhysicsEngineTest {
         entry.physY = 50;
         entry.velY = 5f;
         entry.airVelX = 6;
-        entry.moveDir = -1; // counter-strafe held through touchdown
+        entry.moveDir = -1; // counter-strafe held through touchdown — must NOT zero momentum anymore
 
         landAirborne(entry, bot);
-        assertEquals(0.0, entry.hspeed, 1e-9, "counter-strafe landing stops dead");
+        double stepsPerTick = BotPhysicsEngine.cfg.TICK_MS / 8.0;
+        assertEquals(6 * 0.5 / stepsPerTick, entry.hspeed, 0.05,
+                "counter-strafe at touchdown rides the halved landing momentum, no longer stops dead");
     }
 
     private static void landAirborne(BotEntry entry, Character bot) {
@@ -932,14 +938,17 @@ class BotPhysicsEngineTest {
     }
 
     @Test
-    void shouldRefuseDownJumpWhenTheNextFloorIsTooFarBelow() {
-        // Platform gap 150px: legal down-jump. Gap 860px (Orbis tower rim): refused, the
-        // client only down-jumps when a landing exists within a bounded probe below — most
-        // such ledges carry NO forbidFallDown flag.
+    void shouldDownJumpToAnyRealFloorBelowRegardlessOfDistance() {
+        // Down-jump has NO drop-distance cap. The old 300px probe was empirically wrong: it stranded
+        // the Orbis station (a ~780px straight drop) and was removed at GRAPH_VERSION 56->57. A landing
+        // is found wherever a real floor exists below, any distance — refusal is forbidFallDown / no
+        // floor, never distance (see kb_bot_downjump_eligibility, docs/bot/physics-client-audit.md).
+        // Do NOT re-cap without in-client + disasm proof.
         assertTrue(BotPhysicsEngine.simulateDownJumpLanding(
-                twoFloorMap(150), new Point(0, -150)) != null);
+                twoFloorMap(150), new Point(0, -150)) != null, "short gap: legal down-jump");
         assertTrue(BotPhysicsEngine.simulateDownJumpLanding(
-                twoFloorMap(860), new Point(0, -860)) == null);
+                twoFloorMap(860), new Point(0, -860)) != null,
+                "deep gap with a real floor below is still legal — distance is not a refusal reason");
     }
 
     private static MapleMap twoFloorMap(int gapPx) {
