@@ -782,10 +782,10 @@ final class BotShopManager {
             } catch (Throwable t) {
                 score = -1; // unit tests / WZ unavailable
             }
-            log.info("bot-sell: {} sold equip {} (id {}, tradeScore {})",
+            log.debug("bot-sell: {} sold equip {} (id {}, tradeScore {})",
                     bot.getName(), name, item.getItemId(), String.format("%.1f", score));
         } else {
-            log.info("bot-sell: {} sold {}x {} (id {})",
+            log.debug("bot-sell: {} sold {}x {} (id {})",
                     bot.getName(), quantity, name, item.getItemId());
         }
     }

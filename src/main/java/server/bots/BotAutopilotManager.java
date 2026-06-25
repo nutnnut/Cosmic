@@ -847,6 +847,9 @@ final class BotAutopilotManager {
      *  bot, the gate that stopped a wanted resupply/sell errand from starting. Grep {@code bot-errand}
      *  in the server log to see which condition is blocking a given bot. */
     private static void logErrandBlock(BotEntry entry, Character bot, String reason) {
+        if ("errand-cooldown".equals(reason)) {
+            return;
+        }
         long now = System.currentTimeMillis();
         if (now < entry.autopilotLastErrandLogAtMs + ERRAND_BLOCK_LOG_THROTTLE_MS) {
             return;
