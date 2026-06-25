@@ -406,6 +406,12 @@ class BotMovementManager {
             if (sameRope(entry.blockedRopeGrab, rope)) {
                 continue;
             }
+            // A nav rope-jump targets one specific rope; never grab a different one the arc happens to
+            // pass (co-located ropes at the launch otherwise hijack the jump). Recovery jumps leave the
+            // target null and may grab any reachable rope.
+            if (entry.climbIntentRope != null && !sameRope(entry.climbIntentRope, rope)) {
+                continue;
+            }
             if (Math.abs(rope.x() - botPos.x) > BotPhysicsEngine.cfg.ROPE_GRAB_X) {
                 continue;
             }
@@ -964,8 +970,13 @@ class BotMovementManager {
         broadcastMovement(entry);
     }
 
-    static void initiateRopeJump(BotEntry entry, Character bot, int dx) {
+    static void initiateRopeJump(BotEntry entry, Character bot, int dx, Rope targetRope) {
         BotPhysicsEngine.beginClimbUpJump(entry, bot, resolveAirVelocityX(entry, bot.getMap(), entry.movementProfile, dx));
+        // Aim the mid-air grab at THIS rope only (set after launch — launchAirborne cleared it). Without
+        // a target, successfullyGrabbedRope grabs whatever rope the arc passes, so a rope co-located at
+        // the launch X hijacks a jump meant for a farther rope (Nautilus rope[6] stealing a jump at
+        // rope[7]) → grab/exit oscillation.
+        entry.climbIntentRope = targetRope;
         broadcastMovement(entry);
     }
 

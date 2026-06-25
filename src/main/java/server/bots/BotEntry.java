@@ -110,6 +110,10 @@ public class BotEntry {
 
     // Movement intent
     boolean climbUpIntent = false;
+    // The specific rope a nav rope-jump intends to grab. While airborne with climbUpIntent, the bot
+    // grabs ONLY this rope (not any rope the arc passes), so a co-located rope at the launch X can't
+    // hijack a jump aimed at a farther rope. Null for recovery/knockback jumps (grab whatever is reached).
+    Rope climbIntentRope = null;
     int ropeGrabCooldownMs = 0;
 
     // Down-jump: true when crouch was shown last tick, jump fires this tick

@@ -837,7 +837,7 @@ final class BotNavigationManager {
 
         if (canExecuteGroundRopeJumpEntryFromCurrentPosition(botPos, edge)) {
             entry.lastEdgeBlockReason = null;
-            BotMovementManager.initiateRopeJump(entry, bot, edge.launchStepX);
+            BotMovementManager.initiateRopeJump(entry, bot, edge.launchStepX, rope);
             return new NavigationDirective(rawTargetPos, true);
         }
 

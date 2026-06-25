@@ -40,7 +40,7 @@ final class BotFallbackMovementManager {
                     BotPhysicsEngine.walkStep(map, entry.movementProfile) * 2);
             if (Math.abs(ropeDx) <= ropeJumpRange
                     && BotPhysicsEngine.canReachRopeFromGround(map, botPos, rope, entry.movementProfile)) {
-                BotMovementManager.initiateRopeJump(entry, bot, ropeDx);
+                BotMovementManager.initiateRopeJump(entry, bot, ropeDx, rope);
                 return true;
             }
         }

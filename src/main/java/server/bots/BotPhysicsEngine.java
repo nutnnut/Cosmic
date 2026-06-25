@@ -924,6 +924,7 @@ final class BotPhysicsEngine {
         entry.physY = position.y;
         stopGroundMotion(entry);
         entry.climbUpIntent = true;
+        entry.climbIntentRope = null; // knockback recovery may grab any rope it reaches
         entry.airVelX = airVelX;
         entry.airSteerVelX = 0.0;
         entry.fixedAirArc = false;
@@ -1878,6 +1879,7 @@ final class BotPhysicsEngine {
         entry.velY = initialVelY;
         stopGroundMotion(entry);
         entry.climbUpIntent = climbUpIntent;
+        entry.climbIntentRope = null; // nav rope-jumps re-set this to their target rope right after launch
         clearRopeEntryIntent(entry);
         entry.airVelX = airVelX;
         entry.airSteerVelX = 0.0;
