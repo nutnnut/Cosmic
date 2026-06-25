@@ -66,7 +66,8 @@ Read-only per-bot autopilot internals for live debugging (party cohesion, follow
     "canMoveSkill":bool,           // passes the teleport/flash-jump gate right now (has skill && >40% MP && >500k meso)
     "skills":{ "<skillId>": <level>, ... }          // every learned skill, live
   }
-}, ...]}
+}, ...],
+"routeCache":{"hits","misses","rate"}}             // region-route cache effectiveness, cumulative since server start (rate = hits/(hits+misses)); A/B vs pathfind count in bot-perf CSV
 ```
 
 ### `/api/bot/pathlog?id=<botCharId>`

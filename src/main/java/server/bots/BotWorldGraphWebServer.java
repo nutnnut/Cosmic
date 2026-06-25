@@ -902,7 +902,7 @@ public final class BotWorldGraphWebServer {
             }
             sb.append('}');
         }
-        return sb.append("]}").toString();
+        return sb.append("],\"routeCache\":").append(BotNavigationGraph.routeCacheStatsJson()).append("}").toString();
     }
 
     /** Live stats + learned skills for a single bot, read off the {@link Character} (SSOT). Use this over a

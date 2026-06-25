@@ -376,10 +376,24 @@ final class BotNavigationGraph implements Serializable {
         return ((long) startRegionId << 32) | (targetRegionId & 0xffffffffL);
     }
 
+    // Hit/miss counters for A/B-ing the route cache (did it actually save A* calls?). Static + cumulative
+    // since server start, so they survive graph rebuilds — exactly what a session-long measurement wants.
+    // Exposed on /api/botdebug as "routeCache". ponytail: no reset endpoint, restart the server to zero them.
+    static final java.util.concurrent.atomic.LongAdder cacheHits = new java.util.concurrent.atomic.LongAdder();
+    static final java.util.concurrent.atomic.LongAdder cacheMisses = new java.util.concurrent.atomic.LongAdder();
+
     /** Cached next hop ({@link #NO_EDGE} = direct walk), or {@code null} if not computed for this (pair, bucket). */
     Edge cachedNextHop(int startRegionId, int targetRegionId, int bucket) {
         Edge[] slots = routeCache().get(routeKey(startRegionId, targetRegionId));
-        return slots == null ? null : slots[bucket];
+        Edge hop = slots == null ? null : slots[bucket];
+        (hop == null ? cacheMisses : cacheHits).increment();
+        return hop;
+    }
+
+    /** {@code {"hits":N,"misses":M,"rate":0.xx}} — cumulative cache effectiveness for /api/botdebug. */
+    static String routeCacheStatsJson() {
+        long h = cacheHits.sum(), m = cacheMisses.sum(), t = h + m;
+        return "{\"hits\":" + h + ",\"misses\":" + m + ",\"rate\":" + (t == 0 ? 0 : (double) h / t) + "}";
     }
 
     void putNextHop(int startRegionId, int targetRegionId, int bucket, int bucketCount, Edge edge) {
