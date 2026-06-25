@@ -64,6 +64,12 @@ public final class BotPerformanceMonitor {
         notes.put("nav-resolve", "region lookup, graph/path selection, edge reuse, and waypoint selection");
         notes.put("pathfind", "A* search over the current bot navigation graph");
         notes.put("pathfind-target-score", "A* called while ranking grind target regions");
+        notes.put("pathfind-committed", "A* replanning a non-skill bot's committed route (primary live path)");
+        notes.put("pathfind-skill-walk", "A* walk-only pass while planning a skill-capable bot's route");
+        notes.put("pathfind-skill-jump", "A* skill-enabled pass (teleport/flash-jump) for a skill-capable bot's route");
+        notes.put("pathfind-fallback", "A* on the cross-region cache-miss fallback (findNextEdge, uncommittable route)");
+        notes.put("pathfind-fallback-sameregion", "A* on the intra-region portal-loop fallback (computed fresh from live position)");
+        notes.put("pathfind-warm", "A* precomputing canonical portal-region next hops once per graph");
         notes.put("combat-target-search", "monster scan, distance filtering, foothold lookup, and candidate sorting");
         notes.put("combat-plan", "skill/basic attack route selection and hitbox construction");
         // Common tick systems (run every tick, instrumented in BotManager.runCommonTickSystems)

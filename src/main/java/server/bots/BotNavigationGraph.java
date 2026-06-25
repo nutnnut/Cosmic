@@ -348,6 +348,81 @@ final class BotNavigationGraph implements Serializable {
         return outgoingByRegionId.getOrDefault(regionId, List.of());
     }
 
+    // --- Connected-component (island) index (runtime-only; lazy, transient per graph) -------------
+    // Undirected connected components of the region graph, so a pathfind can early-exit when start and
+    // target are in different islands (no possible route) instead of scanning the whole graph to prove
+    // it. Two variants: base EXCLUDES the skill-gated TELEPORT/FLASH_JUMP edges (which can bridge
+    // walk-islands), skill INCLUDES them -- a walk-only search uses base, a skill-enabled search uses
+    // skill. Undirected is conservative: different island => unreachable both directions; same island
+    // may still be directionally unreachable (the search/edge-check cap handles that case).
+    private transient volatile Map<Integer, Integer> baseComponentByRegion;
+    private transient volatile Map<Integer, Integer> skillComponentByRegion;
+
+    /** Island id of {@code regionId}; {@code withSkills} includes TELEPORT/FLASH_JUMP edges. Two regions
+     *  with different ids have NO route between them for that edge set. Returns -1 for an unknown region
+     *  (caller should not early-exit on -1). Lazily computed once per graph instance. */
+    int connectedComponentId(int regionId, boolean withSkills) {
+        Map<Integer, Integer> comp = withSkills ? skillComponentByRegion : baseComponentByRegion;
+        if (comp == null) {
+            synchronized (this) {
+                comp = withSkills ? skillComponentByRegion : baseComponentByRegion;
+                if (comp == null) {
+                    comp = computeComponents(withSkills);
+                    if (withSkills) {
+                        skillComponentByRegion = comp;
+                    } else {
+                        baseComponentByRegion = comp;
+                    }
+                }
+            }
+        }
+        return comp.getOrDefault(regionId, -1);
+    }
+
+    private Map<Integer, Integer> computeComponents(boolean withSkills) {
+        Map<Integer, Integer> parent = new HashMap<>(regions.size() * 2);
+        for (Region r : regions) {
+            parent.put(r.id, r.id);
+        }
+        for (Region r : regions) {
+            for (Edge e : getOutgoing(r.id)) {
+                if (!withSkills && (e.type == EdgeType.TELEPORT || e.type == EdgeType.FLASH_JUMP)) {
+                    continue;
+                }
+                unionComponents(parent, e.fromRegionId, e.toRegionId);
+            }
+        }
+        Map<Integer, Integer> comp = new HashMap<>(parent.size() * 2);
+        for (Integer id : parent.keySet()) {
+            comp.put(id, findComponent(parent, id));
+        }
+        return comp;
+    }
+
+    private static int findComponent(Map<Integer, Integer> parent, int x) {
+        int root = x;
+        while (parent.get(root) != root) {
+            root = parent.get(root);
+        }
+        while (parent.get(x) != root) { // path compression
+            int next = parent.get(x);
+            parent.put(x, root);
+            x = next;
+        }
+        return root;
+    }
+
+    private static void unionComponents(Map<Integer, Integer> parent, int a, int b) {
+        if (!parent.containsKey(a) || !parent.containsKey(b)) {
+            return; // edge referencing an unknown region id; ignore for connectivity
+        }
+        int ra = findComponent(parent, a);
+        int rb = findComponent(parent, b);
+        if (ra != rb) {
+            parent.put(ra, rb);
+        }
+    }
+
     // --- Lazy region-route cache (runtime-only; populated by BotNavigationManager.findNextEdge) ---
     // Holds the next-hop edge per (startRegion, targetRegion, routeBucket). Transient by design:
     // rebuilt per graph instance, so it dies with the graph version (no GRAPH_VERSION bump, no disk).

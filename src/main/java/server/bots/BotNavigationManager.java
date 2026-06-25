@@ -63,6 +63,12 @@ final class BotNavigationManager {
     // aggregates everything else. Rate-limited so one degenerate map can't flood the console.
     private static final long SLOW_PATHFIND_WARN_NS = 250_000_000L;
     private static final long SLOW_PATHFIND_WARN_COOLDOWN_MS = 10_000L;
+    // Hard bound on a single A* so one search can't freeze a bot-tick worker. On exceed the search
+    // breaks and returns best-effort (cheapest goal reached so far, or empty -> caller retries / picks
+    // a nearer target). ~160k edge checks ~= 100ms at the observed ~1.6M checks/s. Unreachable targets
+    // on dense maps used to exhaust the whole graph here: live single searches hit 4-7s, resultEdges=0.
+    // Tunable at runtime (non-final) like the route-diversity knobs.
+    static int MAX_EDGE_CHECKS = 160_000;
     private static final java.util.concurrent.atomic.AtomicLong slowPathfindNextWarnAtMs =
             new java.util.concurrent.atomic.AtomicLong();
     private static final java.util.concurrent.atomic.AtomicInteger slowPathfindSuppressed =
@@ -108,7 +114,8 @@ final class BotNavigationManager {
                                    int relaxations,
                                    int openPeak,
                                    int bestGoalCost,
-                                   int resultEdges) {
+                                   int resultEdges,
+                                   boolean capped) {
     }
 
     static NavigationDirective resolveTarget(BotEntry entry, Point rawTargetPos, boolean runAiTick) {
@@ -1289,7 +1296,7 @@ final class BotNavigationManager {
         // fresh from the live position every time so A* picks the real direct walk once the bot is near.
         if (startRegionId == targetRegionId) {
             List<BotNavigationGraph.Edge> sameRegionPath =
-                    findPath(graph, map, bot.getPosition(), startRegionId, targetRegionId, targetPos, null, bucketRouteSeed(bucket));
+                    findPath(graph, map, bot.getPosition(), startRegionId, targetRegionId, targetPos, "fallback-sameregion", bucketRouteSeed(bucket));
             return sameRegionPath.isEmpty() ? null : collapseLeadingWalkEdges(sameRegionPath);
         }
         // Cache hit: O(1), no search. A cached PORTAL hop whose portal is now closed (isEdgeUsable
@@ -1301,7 +1308,7 @@ final class BotNavigationManager {
         // Miss: search once for this bucket, cache the next hop. Region progression (and other bots on
         // the same route) then hit the cache -- a fresh A* fires only on a genuinely new (pair, bucket).
         List<BotNavigationGraph.Edge> path =
-                findPath(graph, map, bot.getPosition(), startRegionId, targetRegionId, targetPos, null, bucketRouteSeed(bucket));
+                findPath(graph, map, bot.getPosition(), startRegionId, targetRegionId, targetPos, "fallback", bucketRouteSeed(bucket));
         BotNavigationGraph.Edge next = path.isEmpty() ? null : collapseLeadingWalkEdges(path);
         graph.putNextHop(startRegionId, targetRegionId, bucket, ROUTE_BUCKETS,
                 next == null ? BotNavigationGraph.NO_EDGE : next);
@@ -1403,11 +1410,11 @@ final class BotNavigationManager {
                                                                      Point targetPos) {
         long seed = routeSeed(bot);
         SearchOutcome walkOnly = runSearch(graph, map, bot.getPosition(), startRegionId, targetRegionId,
-                targetPos, null, useAdmissibleHeuristic, true, seed, false, bot);
+                targetPos, "skill-walk", useAdmissibleHeuristic, true, seed, false, bot);
         SearchOutcome chosen = walkOnly;
         if (walkOnly.cost() > SKILL_CLOSE_GATE_MS) {
             SearchOutcome withSkills = runSearch(graph, map, bot.getPosition(), startRegionId, targetRegionId,
-                    targetPos, null, useAdmissibleHeuristic, true, seed, true, bot);
+                    targetPos, "skill-jump", useAdmissibleHeuristic, true, seed, true, bot);
             int saved = walkOnly.cost() - withSkills.cost();
             if (!withSkills.path().isEmpty() && saved >= skillSavingsThreshold(walkOnly.cost())) {
                 chosen = withSkills;
@@ -1584,7 +1591,7 @@ final class BotNavigationManager {
                                                   int startRegionId,
                                                   int targetRegionId,
                                                   Point targetPos) {
-        return findPath(graph, bot.getMap(), bot.getPosition(), startRegionId, targetRegionId, targetPos, null, routeSeed(bot));
+        return findPath(graph, bot.getMap(), bot.getPosition(), startRegionId, targetRegionId, targetPos, "committed", routeSeed(bot));
     }
 
     /** Skill-enabled path for /api/navprobe debugging — routes through teleport/flash-jump edges the bot
@@ -1692,6 +1699,16 @@ final class BotNavigationManager {
         boolean randomized = routeSeed != 0;
         double epsilon = randomized ? 1.0 + hashFrac(routeSeed, EPSILON_SALT) * EPSILON_SPAN : 0.0;
         try {
+            // Island early-exit: different connected component for this edge set (skillsEnabled selects
+            // base vs skill-augmented) => no path can exist. Skip the full-graph scan that would
+            // otherwise expand the whole reachable graph just to prove the target is unreachable.
+            if (startRegionId != targetRegionId) {
+                int startComp = graph.connectedComponentId(startRegionId, skillsEnabled);
+                int targetComp = graph.connectedComponentId(targetRegionId, skillsEnabled);
+                if (startComp != -1 && targetComp != -1 && startComp != targetComp) {
+                    return new SearchOutcome(List.of(), Integer.MAX_VALUE, 0, false);
+                }
+            }
             PriorityQueue<SearchNode> open = new PriorityQueue<>(Comparator.comparingInt(node -> node.score));
             Map<SearchState, Integer> gScore = new HashMap<>();
             Map<SearchState, SearchState> cameFrom = new HashMap<>();
@@ -1705,11 +1722,20 @@ final class BotNavigationManager {
             int usableEdges = 0;
             int relaxations = 0;
             int openPeak = 1;
+            boolean capped = false;
+            // Closest reached frontier (by raw distance-to-target), for best-effort partial progress
+            // when a committed-route search caps out short of the goal.
+            SearchState closestState = startState;
+            int closestH = heuristic(graph, startPos, targetPos);
 
             gScore.put(startState, 0);
             open.add(new SearchNode(startState, 0, hValue(graph, startPos, targetPos, zeroHeuristic, randomized, epsilon)));
 
             while (!open.isEmpty()) {
+                if (edgeChecks >= MAX_EDGE_CHECKS) {
+                    capped = true;
+                    break;
+                }
                 SearchNode current = open.poll();
                 if (current.cost != gScore.getOrDefault(current.state, Integer.MAX_VALUE)) {
                     staleNodes++;
@@ -1783,10 +1809,20 @@ final class BotNavigationManager {
                     int fScore = tentativeCost + hValue(graph, edge.endPoint, targetPos, zeroHeuristic, randomized, epsilon);
                     open.add(new SearchNode(nextState, tentativeCost, fScore));
                     openPeak = Math.max(openPeak, open.size());
+                    int reachedH = heuristic(graph, landingPoint, targetPos);
+                    if (reachedH < closestH) {
+                        closestH = reachedH;
+                        closestState = nextState;
+                    }
                 }
             }
 
-            List<BotNavigationGraph.Edge> path = reconstructPath(startState, bestGoalState, cameFrom, cameByEdge);
+            SearchState resultState = bestGoalState;
+            if (resultState == null && capped && bestEffortCaller(pathfindCaller)
+                    && !closestState.equals(startState)) {
+                resultState = closestState; // best-effort: head toward the closest reached frontier
+            }
+            List<BotNavigationGraph.Edge> path = reconstructPath(startState, resultState, cameFrom, cameByEdge);
             profile = new PathfindProfile(
                     System.nanoTime() - startedAt,
                     expandedNodes,
@@ -1796,7 +1832,8 @@ final class BotNavigationManager {
                     relaxations,
                     openPeak,
                     bestGoalCost,
-                    path.size());
+                    path.size(),
+                    capped);
             boolean usesPortal = false;
             for (BotNavigationGraph.Edge edge : path) {
                 if (edge.type == BotNavigationGraph.EdgeType.PORTAL) {
@@ -1817,7 +1854,8 @@ final class BotNavigationManager {
                             0,
                             0,
                             Integer.MAX_VALUE,
-                            0);
+                            0,
+                            false);
                 }
                 logSlowPathfind(graph, map, startPos, startRegionId, targetRegionId, targetPos, pathfindCaller, profile);
                 BotPerformanceMonitor.recordPathfind(pathfindCaller, System.nanoTime() - startedAt);
@@ -1877,7 +1915,7 @@ final class BotNavigationManager {
                                         Point targetPos,
                                         String pathfindCaller,
                                         PathfindProfile profile) {
-        if (profile.elapsedNs() < SLOW_PATHFIND_WARN_NS) {
+        if (!profile.capped() && profile.elapsedNs() < SLOW_PATHFIND_WARN_NS) {
             return;
         }
         long now = System.currentTimeMillis();
@@ -1893,7 +1931,7 @@ final class BotNavigationManager {
         int bestGoalCost = profile.bestGoalCost() == Integer.MAX_VALUE ? -1 : profile.bestGoalCost();
         log.warn(
                 "Slow bot pathfind (suppressedSinceLast=" + suppressed
-                        + "): caller={} took {} ms map={} startRegion={} targetRegion={} regions={} startOut={} startPos=({}, {}) targetPos=({}, {}) expanded={} stale={} edgeChecks={} usableEdges={} relaxations={} openPeak={} bestGoalCost={} resultEdges={}",
+                        + "): caller={} took {} ms map={} startRegion={} targetRegion={} regions={} startOut={} startPos=({}, {}) targetPos=({}, {}) expanded={} stale={} edgeChecks={} usableEdges={} relaxations={} openPeak={} bestGoalCost={} resultEdges={} capped={}",
                 caller,
                 String.format("%.1f", profile.elapsedNs() / 1_000_000.0),
                 map != null ? map.getId() : -1,
@@ -1912,7 +1950,8 @@ final class BotNavigationManager {
                 profile.relaxations(),
                 profile.openPeak(),
                 bestGoalCost,
-                profile.resultEdges());
+                profile.resultEdges(),
+                profile.capped());
     }
 
     private static List<BotNavigationGraph.Edge> reconstructPath(SearchState startState,
@@ -2213,6 +2252,13 @@ final class BotNavigationManager {
 
     private static int heuristic(BotNavigationGraph graph, Point from, Point targetPos) {
         return intraRegionTravelCost(graph, from, targetPos);
+    }
+
+    /** Committed-route movement callers get a best-effort partial path (toward the closest reached
+     *  frontier) when a search caps out, so a bot heading to a far-but-reachable goal makes progress
+     *  instead of stalling. Scoring/reachability callers stay strict (empty on cap = "too far"). */
+    private static boolean bestEffortCaller(String caller) {
+        return "committed".equals(caller) || "skill-walk".equals(caller) || "skill-jump".equals(caller);
     }
 
     // ponytail: route-diversification knobs — calibrated on map 10000 via BotRouteDiversityTest.

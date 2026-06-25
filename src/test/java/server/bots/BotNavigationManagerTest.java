@@ -308,6 +308,42 @@ class BotNavigationManagerTest {
     }
 
     @Test
+    void islandIndexSeparatesWalkComponentsButSkillEdgesBridgeThem() {
+        // Regions 1-2 are walk-connected; region 3 is reachable only via a TELEPORT (skill) edge.
+        BotNavigationGraph.Region r1 = new BotNavigationGraph.Region(
+                1, List.of(new BotNavigationGraph.Segment(new Foothold(new Point(0, 100), new Point(100, 100), 1))));
+        BotNavigationGraph.Region r2 = new BotNavigationGraph.Region(
+                2, List.of(new BotNavigationGraph.Segment(new Foothold(new Point(0, 200), new Point(100, 200), 2))));
+        BotNavigationGraph.Region r3 = new BotNavigationGraph.Region(
+                3, List.of(new BotNavigationGraph.Segment(new Foothold(new Point(500, 300), new Point(600, 300), 3))));
+        Map<Integer, BotNavigationGraph.Region> regionsById = new HashMap<>();
+        regionsById.put(1, r1);
+        regionsById.put(2, r2);
+        regionsById.put(3, r3);
+        BotNavigationGraph.Edge walk12 = new BotNavigationGraph.Edge(
+                1, 2, BotNavigationGraph.EdgeType.WALK,
+                new Point(50, 100), new Point(50, 200), 0, 0, 0, 0, 0, 100);
+        BotNavigationGraph.Edge teleport23 = new BotNavigationGraph.Edge(
+                2, 3, BotNavigationGraph.EdgeType.TELEPORT,
+                new Point(50, 200), new Point(550, 300), 0, 0, 0, 0, 0, 100);
+        BotNavigationGraph graph = new BotNavigationGraph(
+                910000026, 1,
+                List.of(r1, r2, r3), regionsById,
+                Map.of(1, 1, 2, 2, 3, 3),
+                Map.of(1, List.of(walk12), 2, List.of(teleport23)),
+                Set.of());
+
+        // Base (walk-only) islands: {1,2} separate from {3}.
+        assertEquals(graph.connectedComponentId(1, false), graph.connectedComponentId(2, false),
+                "walk-connected regions share a base island");
+        assertNotEquals(graph.connectedComponentId(1, false), graph.connectedComponentId(3, false),
+                "a skill-only region must NOT be in the walk island (else a walk bot early-exits a reachable target wrongly)");
+        // Skill-augmented islands: the TELEPORT bridge merges all three.
+        assertEquals(graph.connectedComponentId(1, true), graph.connectedComponentId(3, true),
+                "TELEPORT edge bridges the islands for a skill-enabled search");
+    }
+
+    @Test
     void shouldRefreshStaleCommittedGroundDropWhenBestFirstEdgeChanges() {
         MapleMap map = new MapleMap(910000032, 0, 0, 910000032, 1.0f);
         FootholdTree footholds = new FootholdTree(new Point(-2000, -2000), new Point(2000, 2000));
