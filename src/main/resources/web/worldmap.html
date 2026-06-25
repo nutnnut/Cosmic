@@ -15,6 +15,7 @@
   #roster{margin-top:8px}
   .rosterItem{padding:4px 6px;border-radius:4px;cursor:pointer}
   .rosterItem:hover{background:#222a38}
+  .rosterItem.off{opacity:.5}   /* off-map party/crew member shown greyed in the right panel */
   .meta{color:#67748c;font-size:0.85em}
   #fontRow{font-size:11px;color:#8a99b3;margin-bottom:8px}
   #fontRow input{width:130px;margin:0 0 0 6px;padding:0;vertical-align:middle}
@@ -72,6 +73,7 @@
 <body>
 <div id="c"></div>
 <div id="left">
+  <button id="backBtn" onclick="location.href='/'" title="back to main page">&#8592; Main</button>
   <h1>Online</h1>
   <p class="sub" id="rosterHead">loading...</p>
   <input id="search" placeholder="filter name (contains)">
@@ -372,15 +374,8 @@ function fetchMapInfo(mapId, token){
   fetch('/api/mapinfo?id='+mapId).then(r=>r.json()).then(d=>{
     if(selectedMap !== token) return;          // a newer selection happened while this was loading
     const box = document.querySelector('details[data-map="'+mapId+'"]'); if(!box) return;
-    const statusOf = {}; (d.bots||[]).forEach(b => statusOf[b.name] = b.status);
-    // players first, then bots; each bot's @botstatus inline directly under it
-    const lines = occupants(mapId).map(([k,c]) => {
-      const head = (k==='P'?'&#128100; ':'&#129302; ') + esc(c.n) + ' Lv'+c.l+' ' + esc(c.j);
-      return (k==='B' && statusOf[c.n])
-        ? head + '<br><span class="meta" style="margin-left:16px">'+esc(statusOf[c.n])+'</span>'
-        : head;
-    });
-    const occHtml = lines.length ? lines.join('<br>') : 'nobody here';
+    mobCache[mapId] = d.mobs || [];                 // static WZ data — also feeds the node-hover preview
+    const occHtml = detailBody(mapId);              // grouped like the left roster (status/off-map from /api/live)
     const mobs = d.mobs.length                                  // collapsed by default
       ? '<details style="margin-top:6px"><summary>Mobs ('+d.mobs.length+')</summary>'
         + d.mobs.map(m => esc(m.name)+' Lv'+m.level+(m.spawns>1 ? ' x'+m.spawns : '')).join('<br>') + '</details>'
@@ -393,16 +388,112 @@ function fetchMapInfo(mapId, token){
   }).catch(()=>{ const box=document.querySelector('details[data-map="'+mapId+'"]'); if(box){ const b=box.querySelector('.body'); if(b) b.textContent='failed to load'; } });
 }
 
-// hover tooltip: just the characters on the node (class+level) — no mob/status preview
-function showTip(inst, evt){
-  const occ = instOccupants(inst);
-  const tip = document.getElementById('tip');
-  tip.innerHTML = '<b>'+esc(inst.name)+'</b><br>' + (occ.length ? occ.map(([k,c]) => occLine(k,c)).join('<br>') : '(empty)');
-  tip.style.display = 'block';
-  tip.style.left = (evt.clientX + 14) + 'px';
-  tip.style.top  = (evt.clientY + 14) + 'px';
+// ---- right-panel grouped detail (party>crew>loose like the left roster, + off-map members) ----------
+function getList(map, k){ if(!map.has(k)) map.set(k, []); return map.get(k); }
+// online members of a party (players+bots) or crew (bots only) on maps OTHER than mapId — shown greyed.
+function offMembers(kind, gid, mapId){
+  const out = [];
+  for(const m in live){ if(+m===mapId) continue; const o = live[m];
+    if(kind==='p'){ for(const c of o.players) if((c.p||0)===gid) out.push({c, map:+m, bot:false});
+                    for(const c of o.bots)    if((c.p||0)===gid) out.push({c, map:+m, bot:true}); }
+    else for(const c of o.bots) if((c.g||0)===gid) out.push({c, map:+m, bot:true});
+  }
+  return out;
 }
-function hideTip(){ document.getElementById('tip').style.display = 'none'; }
+// a party/crew box in the right panel: same look as the left roster, but its header doesn't select
+function detailGroup(type, label, count, innerHtml){
+  const icon = type==='party' ? '&#128101;' : '&#129309;';
+  return '<div class="grp '+type+'"><div class="grpHead" style="cursor:default">'
+    + icon+' '+esc(label)+' &middot; '+count+'</div>' + innerHtml + '</div>';
+}
+// right-panel body for one map: occupants grouped party>crew>loose like the left roster, each party/crew
+// also listing its members on other maps (greyed, click=locate). statusOf: botName -> @status line.
+function detailBody(mapId){
+  const occ = occupants(mapId);
+  if(!occ.length) return 'nobody here';
+  // @botstatus (from /api/live) shows for in-map AND off-map members; an off-map member with no status
+  // falls back to a "@ map" location chip. Either way the row is click-to-locate.
+  const meta = it => (it.bot && it.c.status) ? esc(it.c.status) : '';
+  const inRow  = it => rowHtml(it, {meta: meta(it)});
+  const offRow = it => rowHtml(it, {off:true, meta: meta(it) || '@ '+esc(mapName(it.map)), click:'locateChar('+it.map+')'});
+  const offHtml = arr => sortRows(arr).map(offRow).join('');
+  const items = occ.map(([k,c]) => ({c, map:mapId, bot:k==='B'}));
+  const parties = new Map(), noParty = [];
+  for(const it of items){ const p = it.c.p||0; if(p) getList(parties,p).push(it); else noParty.push(it); }
+  let out = '';
+  for(const [pid, members] of parties){
+    const off = offMembers('p', pid, mapId);
+    if(members.length + off.length >= 2)
+      out += detailGroup('party','Party', members.length+off.length, crewBoxes(members, mapId, inRow, offRow, true) + offHtml(off));
+    else noParty.push(...members);
+  }
+  return out + crewBoxes(noParty, mapId, inRow, offRow, false);
+}
+// crew sub-grouping; partyHasOff suppresses a crew's off-list when the parent party already showed it.
+function crewBoxes(items, mapId, inRow, offRow, partyHasOff){
+  const crews = new Map(), loose = [];
+  for(const it of items){ const g = it.bot ? (it.c.g||0) : 0; if(g) getList(crews,g).push(it); else loose.push(it); }
+  let out = '';
+  for(const [gid, members] of crews){
+    const off = partyHasOff ? [] : offMembers('crew', gid, mapId);
+    if(members.length + off.length >= 2)
+      out += detailGroup('crew','Crew #'+gid, members.length+off.length,
+               sortRows(members).map(inRow).join('') + sortRows(off).map(offRow).join(''));
+    else loose.push(...members);
+  }
+  return out + sortRows(loose).map(inRow).join('');
+}
+
+// ---- shared hover tooltip (map nodes + roster rows) -----------------------------------------------
+const mobCache = {};   // mapId -> [{name,level,spawns}] | 'pending'  (mob spawn data is static WZ -> cache forever)
+function ensureMobs(mapId, cb){
+  const cur = mobCache[mapId];
+  if(Array.isArray(cur)){ if(cb) cb(); return; }
+  if(cur === 'pending') return;
+  mobCache[mapId] = 'pending';
+  fetch('/api/mapinfo?id='+mapId).then(r=>r.json()).then(d=>{ mobCache[mapId] = d.mobs || []; if(cb) cb(); })
+    .catch(()=>{ mobCache[mapId] = []; });
+}
+function tipAt(html, x, y){
+  const tip = document.getElementById('tip');
+  tip.innerHTML = html; tip.style.display = 'block';
+  tip.style.left = (x + 14) + 'px'; tip.style.top = (y + 14) + 'px';
+}
+let tipNode = null, tipXY = {x:0, y:0};
+// merged top-8-by-spawns mob lines for a node's maps — no header (compact), dim. '' while nothing known.
+function mobPreviewHtml(inst){
+  const agg = {}; let pending = false;
+  for(const m of inst.maps){ const c = mobCache[m];
+    if(Array.isArray(c)) for(const mb of c){ const a = agg[mb.name] || (agg[mb.name]={name:mb.name,level:mb.level,spawns:0}); a.spawns += mb.spawns; }
+    else pending = true;
+  }
+  const rows = Object.values(agg).sort((a,b)=> b.spawns-a.spawns || a.level-b.level);
+  if(!rows.length) return pending ? '<span class="meta">mobs…</span>' : '';
+  const top = rows.slice(0,8).map(m => esc(m.name)+' Lv'+m.level+(m.spawns>1?' &times;'+m.spawns:'')).join('<br>');
+  return '<span class="meta">'+top+(rows.length>8 ? '<br>+'+(rows.length-8)+' more' : '')+'</span>';
+}
+function paintTip(inst){
+  const occ = instOccupants(inst);
+  const occHtml = occ.length ? occ.map(([k,c]) => occLine(k,c)).join('<br>') : '(empty)';
+  const mobs = mobPreviewHtml(inst);
+  tipAt('<b>'+esc(inst.name)+'</b><br>' + occHtml + (mobs ? '<br>'+mobs : ''), tipXY.x, tipXY.y);
+}
+function showTip(inst, evt){
+  tipNode = inst; tipXY = {x:evt.clientX, y:evt.clientY};
+  inst.maps.forEach(m => ensureMobs(m, () => { if(tipNode===inst) paintTip(inst); }));
+  paintTip(inst);
+}
+function hideTip(){ tipNode = null; document.getElementById('tip').style.display = 'none'; }
+// roster-row hover: bots show their @botstatus (a player carries nothing the row doesn't -> no tip)
+function findLiveChar(id, map){ const o = live[map]; if(!o) return null;
+  return o.players.find(c=>c.id===id) || o.bots.find(c=>c.id===id) || null; }
+function rosterTip(ev, id, map, bot){
+  if(!bot) return;
+  const c = findLiveChar(id, map); if(!c) return;
+  tipNode = null; tipXY = {x:ev.clientX, y:ev.clientY};
+  tipAt('<b>'+esc(c.n)+'</b> <span class="meta">Lv'+c.l+' '+esc(c.j)+'</span><br>'
+        + (c.status ? esc(c.status) : '<span class="meta">(no status)</span>'), ev.clientX, ev.clientY);
+}
 
 // name of one specific map (a merged node shows its constituents' names aligned to maps)
 function mapName(mapId){
@@ -428,13 +519,16 @@ function renderRoster(){
   for(const it of items){ if(!it.bot) players++; else if(it.c.c) managed++; else companion++; }
   document.getElementById('rosterHead').textContent =
     (query ? filt.length+' shown · ' : '') + players + ' online + ' + managed + ' managed + ' + companion + ' companion';
+  const mapHits = query ? getMapNameIndex().filter(m => m.lower.includes(query)) : [];
   const sig = query+'#'+rtsMode+'#'+sortMode+'#'+[...selected].join(',')+'#'
-    + filt.map(it => it.c.n+'@'+it.map+'/'+it.c.l+'/'+(it.c.p||0)+'/'+(it.c.g||0)).join('|');
+    + filt.map(it => it.c.n+'@'+it.map+'/'+it.c.l+'/'+(it.c.p||0)+'/'+(it.c.g||0)).join('|')
+    + '#M'+mapHits.map(m=>m.id).join(',');
   if(sig === rosterSig) return;               // unchanged -> skip rebuild (keeps scroll position, saves work)
   rosterSig = sig;
   const el = document.getElementById('roster'), scroll = el.scrollTop;
   rosterGroups = {}; _grpSeq = 0;
-  el.innerHTML = query ? sortRows(filt).map(rowHtml).join('') : renderGrouped(filt);  // flat while filtering
+  // matches keep their party/crew grouping; map-name matches list below (click to locate)
+  el.innerHTML = renderGrouped(filt) + mapHitsHtml(mapHits);
   el.scrollTop = scroll;
 }
 // type rank: player(0) -> companion bot(1) -> managed bot(2); then name A-Z, or level high->low
@@ -446,11 +540,19 @@ function cmpRows(a,b){
   return a.c.n.localeCompare(b.c.n);
 }
 function sortRows(arr){ return arr.slice().sort(cmpRows); }
-function rowHtml(it){
+// one row, shared by the left roster and the right panel. opts.off greys an off-map member; opts.meta
+// overrides the second line (default = the char's map name); opts.click overrides the click handler.
+// Hovering a bot row shows its @botstatus (rosterTip).
+function rowHtml(it, opts){
+  opts = opts || {};
   const sel = it.bot && selected.has(it.c.id);
-  return '<div class="rosterItem'+(sel?' sel':'')+'" onclick="rosterClick(event,'+it.c.id+','+it.map+','+(it.bot?1:0)+','+(it.c.c?1:0)+')">'
+  const click = opts.click || ('rosterClick(event,'+it.c.id+','+it.map+','+(it.bot?1:0)+','+(it.c.c?1:0)+')');
+  const meta = opts.meta != null ? opts.meta : esc(mapName(it.map));   // bot's actual map, not merged
+  return '<div class="rosterItem'+(sel?' sel':'')+(opts.off?' off':'')+'"'+(it.bot?' data-cid="'+it.c.id+'"':'')
+    + ' onmouseenter="rosterTip(event,'+it.c.id+','+it.map+','+(it.bot?1:0)+')" onmouseleave="hideTip()"'
+    + ' onclick="'+click+'">'
     + (it.bot?'&#129302; ':'&#128100; ') + esc(it.c.n) + ' <span class="meta">Lv'+it.c.l+' '+esc(it.c.j)+'</span>'
-    + '<br><span class="meta">'+esc(mapName(it.map))+'</span></div>';   // bot's actual map, not merged
+    + (meta!=='' ? '<br><span class="meta">'+meta+'</span>' : '') + '</div>';
 }
 // nesting: party (outer box) > crew (inner box) > loose rows. Boxes only form at >=2 members.
 function renderGrouped(items){
@@ -482,11 +584,33 @@ function groupBox(type, label, members, innerHtml){
     + innerHtml + '</div>';
 }
 function selectGroup(ev, key){ applySel(rosterGroups[key]||[], ev); }   // plain = replace, shift = add/remove
-// roster click: in RTS mode select that managed bot (shift toggles); otherwise center its map
+// roster/detail click on a character: RTS picks/selects managed bots; otherwise locate them — center+ping
+// their map AND select that node so the right panel follows. Same handler on both panels => consistent.
 function rosterClick(ev, id, map, bot, c){
   if(rtsMode && followArm){ pickFollowTarget(id); return; }   // pick whom the selection follows
-  if(rtsMode && bot && c) applySel([id], ev);
-  else centerOnMap(map);
+  if(rtsMode && bot && c){ applySel([id], ev); return; }
+  locateChar(map);
+}
+function locateChar(map){ centerOnMap(map); const inst = pickInstance(map); if(inst) showDetail(inst); }
+// map-name search index, built once (node names are static). [{id,name,lower}]
+let _mapIdx = null;
+function getMapNameIndex(){
+  if(_mapIdx) return _mapIdx;
+  const seen = new Set(); _mapIdx = [];
+  for(const inst of allInst) inst.maps.forEach((m,i) => {
+    if(seen.has(m)) return; seen.add(m);
+    const name = inst.names[i] || ('map '+m);
+    _mapIdx.push({id:m, name, lower:name.toLowerCase()});
+  });
+  return _mapIdx;
+}
+// map-name matches, listed under the player matches; click focuses+selects the map (locateChar)
+function mapHitsHtml(hits){
+  if(!hits.length) return '';
+  const cap = 40, shown = hits.slice(0,cap).map(m =>
+    '<div class="rosterItem" onclick="locateChar('+m.id+')">&#128506; '+esc(m.name)+' <span class="meta">('+m.id+')</span></div>').join('');
+  return '<div class="grpHead" style="cursor:default;margin-top:10px">&#128506; Maps &middot; '+hits.length+'</div>'
+    + shown + (hits.length>cap ? '<div class="meta" style="padding:2px 6px">+'+(hits.length-cap)+' more</div>' : '');
 }
 
 (async function init(){
@@ -521,7 +645,7 @@ function rosterClick(ev, id, map, bot, c){
                     unreachable:nd.unreachable, custom:false, absolute:false, absX:0, absY:0,
                     circle, center:null};
       circle.on('mouseover', e => { document.body.style.cursor='pointer'; showTip(inst, e.evt); });
-      circle.on('mousemove', e => showTip(inst, e.evt));
+      circle.on('mousemove', e => { tipXY={x:e.evt.clientX,y:e.evt.clientY}; if(tipNode===inst) paintTip(inst); });
       circle.on('mouseout', () => { document.body.style.cursor='default'; hideTip(); });
       circle.on('click tap', e => { e.cancelBubble = true;
         if(rtsMode && followArm){ handleFollowPick(inst, e.evt); return; }                // pick whom to follow
@@ -633,6 +757,8 @@ function updateSel(){
        : moveArmed ? ' · click destination (' + (moveCmd==='moveattack'?'attack':'quiet') + ')'
        : ' · click/box = select · shift = add/remove');
   applyStyle(); renderRoster();
+  document.querySelectorAll('#detail .rosterItem[data-cid]').forEach(el =>
+    el.classList.toggle('sel', selected.has(+el.dataset.cid)));   // keep right-panel rows in sync w/o refetch
 }
 function nodeBotIds(inst){
   const ids = [];

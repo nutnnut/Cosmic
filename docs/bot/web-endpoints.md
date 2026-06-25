@@ -30,11 +30,12 @@ Live occupancy of every online character, bucketed by map. Cached ~750 ms.
 ```
 {"maps":{"<mapId>":{
    "players":[{"id","n","l","j","c","p","g"}, ...],
-   "bots":[{"id","n","l","j","c","p","g"}, ...]
+   "bots":[{"id","n","l","j","c","p","g","status"}, ...]
 }}}
 ```
 `n`=name, `l`=level, `j`=job, `c`=commandable (1 = managed/RTS-controllable bot), `p`=party id (0=none),
-`g`=crew id (0=none).
+`g`=crew id (0=none). `status`=the @botstatus line (bots only; drives the roster-hover tooltip and the
+right-panel detail — omitted for players and for bots with no registry entry).
 
 ### `/api/mapinfo?id=<mapId>`
 On-demand detail for one map.
