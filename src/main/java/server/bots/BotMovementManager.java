@@ -82,9 +82,10 @@ class BotMovementManager {
         public int GRIND_EDGE_MARGIN = 40; // keep bot this many px from foothold edge while grinding
         public int MOB_AVOID_LOOKAHEAD_STEPS = 3;
         // Per-grounded-tick chance to actually commit a legal dodge jump when a mob blocks the walk
-        // lane. < 1.0 adds humanlike reaction jitter so dodges aren't frame-perfect; the bot re-rolls
-        // each grounded tick the mob stays in the lane, so a high value still dodges promptly.
-        public double MOB_AVOID_REACTION_CHANCE = 0.6;
+        // lane. 1.0 = always commit the dodge (no humanlike miss); lower it (< 1.0) to add reaction
+        // jitter so dodges aren't frame-perfect — the bot re-rolls each grounded tick the mob stays in
+        // the lane, so even a low value still dodges eventually.
+        public double MOB_AVOID_REACTION_CHANCE = 1.0;
 
         public int JUMP_Y_THRESH = 30;
         // Within-map "hopelessly far -> teleport to target" fallback. Big maps legitimately exceed
