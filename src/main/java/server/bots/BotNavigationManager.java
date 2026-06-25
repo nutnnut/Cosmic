@@ -1278,6 +1278,20 @@ final class BotNavigationManager {
             return findNextEdgeWithSkills(graph, map, bot, startRegionId, targetRegionId, targetPos);
         }
         int bucket = routeBucket(bot);
+        // Same-region next hop is position-dependent and must NEVER use the position-blind cache. The
+        // cache is keyed only by (startRegion, targetRegion, bucket), so every in-region target shares
+        // one slot. An intra-map "tubi" PORTAL (a self-loop r->r warp, e.g. Nautilus 120000100's
+        // 164<->2798) cached for one target then gets served to a different in-region target it is wrong
+        // for: the bot warps on the in-map shortcut instead of walking the few px to the real exit
+        // portal, and because each post-warp re-plan re-reads the same stale slot it loops forever and
+        // never reaches the map-exit portal (live: pirate bots stuck in the hallway, never job-advancing).
+        // Intra-region routing is cheap and only reached on the uncommittable-route fallback; compute it
+        // fresh from the live position every time so A* picks the real direct walk once the bot is near.
+        if (startRegionId == targetRegionId) {
+            List<BotNavigationGraph.Edge> sameRegionPath =
+                    findPath(graph, map, bot.getPosition(), startRegionId, targetRegionId, targetPos, null, bucketRouteSeed(bucket));
+            return sameRegionPath.isEmpty() ? null : collapseLeadingWalkEdges(sameRegionPath);
+        }
         // Cache hit: O(1), no search. A cached PORTAL hop whose portal is now closed (isEdgeUsable
         // false) falls through to a fresh search, which reroutes around it and overwrites the slot.
         BotNavigationGraph.Edge cached = graph.cachedNextHop(startRegionId, targetRegionId, bucket);
