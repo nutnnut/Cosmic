@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Turn a bot-perf CSV into a single self-contained HTML report (no deps, no internet).
 
-Usage:  py tools/botperf_report.py logs/bot-perf/bot-perf-<ts>.csv [out.html]
+Usage:  python tools/botperf_report.py logs/bot-perf/bot-perf-<ts>.csv [out.html]
 Writes <csv>.html next to the CSV if no out path given, and prints the path.
 """
 import csv, sys, html, os
@@ -9,7 +9,7 @@ import csv, sys, html, os
 # ponytail: CSS bars instead of a charting lib — it's one <div> width per row, no JS, opens anywhere.
 
 def load(path):
-    with open(path, newline="") as f:
+    with open(path, newline="", encoding="utf-8") as f:
         return list(csv.DictReader(f))
 
 def fnum(row, key):
@@ -82,7 +82,7 @@ def build(rows):
 
 def main():
     if len(sys.argv) < 2:
-        sys.exit("usage: botperf_report.py <csv> [out.html]")
+        sys.exit("usage: python tools/botperf_report.py <csv> [out.html]")
     csvp = sys.argv[1]
     outp = sys.argv[2] if len(sys.argv) > 2 else os.path.splitext(csvp)[0] + ".html"
     with open(outp, "w", encoding="utf-8") as f:

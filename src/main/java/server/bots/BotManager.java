@@ -268,6 +268,7 @@ public class BotManager {
 
     // ownerCharId → list of owned bot entries (1:N)
     private final Map<Integer, List<BotEntry>> bots = new ConcurrentHashMap<>();
+    private final Map<Integer, BotEntry> botsByCharId = new ConcurrentHashMap<>();
     // Serializes the dedup-sweep + add in registerBotInternal so two threads registering the SAME bot
     // character concurrently (overlapping @botpop fast-start sweeps on the multi-worker TimerManager
     // pool) can't both survive the sweep and leave two tick tasks driving one character.
@@ -868,12 +869,17 @@ public class BotManager {
         synchronized (registryLock) {
             for (List<BotEntry> list : bots.values()) {
                 list.removeIf(e -> {
-                    if (e.bot.getId() == botCharId) { e.task.cancel(false); return true; }
+                    if (e.bot.getId() == botCharId) {
+                        cancelBotTask(e);
+                        unindexBotEntry(e);
+                        return true;
+                    }
                     return false;
                 });
             }
             List<BotEntry> entries = bots.computeIfAbsent(ownerCharId, k -> new CopyOnWriteArrayList<>());
             entries.add(entry);
+            indexBotEntry(entry);
             FormationState fs = ownerFormations.getOrDefault(ownerCharId, FormationState.defaultStagger());
             for (int i = 0; i < entries.size(); i++) {
                 entries.get(i).followOffsetX = fs.offsetFor(i, entries.size());
@@ -910,7 +916,10 @@ public class BotManager {
     public void removeBot(int ownerCharId) {
         List<BotEntry> entries = bots.remove(ownerCharId);
         if (entries != null) {
-            entries.forEach(this::cancelBotTask);
+            for (BotEntry entry : entries) {
+                cancelBotTask(entry);
+                unindexBotEntry(entry);
+            }
         }
         ownerFormations.remove(ownerCharId);
         townClusterAnchors.remove(ownerCharId);
@@ -924,6 +933,7 @@ public class BotManager {
             boolean removedFromOwner = entries.removeIf(e -> {
                 if (e.bot.getId() == botCharId) {
                     cancelBotTask(e);
+                    unindexBotEntry(e);
                     return true;
                 }
                 return false;
@@ -1149,6 +1159,18 @@ public class BotManager {
         }
     }
 
+    private void indexBotEntry(BotEntry entry) {
+        if (entry != null && entry.bot != null) {
+            botsByCharId.put(entry.bot.getId(), entry);
+        }
+    }
+
+    private void unindexBotEntry(BotEntry entry) {
+        if (entry != null && entry.bot != null) {
+            botsByCharId.remove(entry.bot.getId(), entry);
+        }
+    }
+
     private static void clearBotOnlyAutopotState(Character bot) {
         bot.setAutopotHpAlert(0f);
         bot.setAutopotMpAlert(0f);
@@ -1170,7 +1192,8 @@ public class BotManager {
         BotEntry entry = getBotEntry(ownerCharId, botName);
         if (entry == null) return false;
         entries.remove(entry);
-        entry.task.cancel(false);
+        cancelBotTask(entry);
+        unindexBotEntry(entry);
         issueStop(entry);
         after(randMs(400, 600), () ->
                 botReply(entry, randomReply(List.of(
@@ -1227,7 +1250,8 @@ public class BotManager {
         // Disown from current owner
         Character bot = found.bot;
         entries.remove(found);
-        found.task.cancel(false);
+        cancelBotTask(found);
+        unindexBotEntry(found);
         issueStop(found);
 
         // Register under new owner
@@ -1243,14 +1267,7 @@ public class BotManager {
     }
 
     BotEntry getEntryByBotCharId(int botCharId) {
-        for (List<BotEntry> entries : bots.values()) {
-            for (BotEntry entry : entries) {
-                if (entry.bot.getId() == botCharId) {
-                    return entry;
-                }
-            }
-        }
-        return null;
+        return botsByCharId.get(botCharId);
     }
 
     /**
@@ -3730,7 +3747,7 @@ public class BotManager {
         entry.wanderDirection = 0;
         entry.patrolWanderTarget = null;
         Point tp = target.getPosition();
-        Monster rangedPriorityTarget = selectPriorityRangedAttackTarget(entry, bot, botPos, target);
+        Monster rangedPriorityTarget = selectPriorityRangedAttackTarget(entry, bot, botPos, target, attackPlan);
         if (rangedPriorityTarget != null && rangedPriorityTarget != target) {
             target = rangedPriorityTarget;
             entry.grindTarget = rangedPriorityTarget;
@@ -3955,6 +3972,14 @@ public class BotManager {
                                                    Character bot,
                                                    Point botPos,
                                                    Monster preferredTarget) {
+        return selectPriorityRangedAttackTarget(entry, bot, botPos, preferredTarget, null);
+    }
+
+    static Monster selectPriorityRangedAttackTarget(BotEntry entry,
+                                                   Character bot,
+                                                   Point botPos,
+                                                   Monster preferredTarget,
+                                                   BotCombatManager.AttackPlan preferredPlan) {
         if (entry == null || entry.noAmmo || bot == null || botPos == null) {
             return null;
         }
@@ -3963,7 +3988,7 @@ public class BotManager {
         if (!BotCombatManager.isRangedAmmoWeapon(weaponType)) {
             return null;
         }
-        if (isNonDegenerateRangedAttackTarget(entry, bot, botPos, weaponType, preferredTarget)) {
+        if (isNonDegenerateRangedAttackTarget(entry, bot, botPos, weaponType, preferredTarget, preferredPlan)) {
             return preferredTarget;
         }
 
@@ -3973,7 +3998,7 @@ public class BotManager {
             if (candidate == preferredTarget) {
                 continue;
             }
-            if (!isNonDegenerateRangedAttackTarget(entry, bot, botPos, weaponType, candidate)) {
+            if (!isNonDegenerateRangedAttackTarget(entry, bot, botPos, weaponType, candidate, null)) {
                 continue;
             }
             double distanceSq = candidate.getPosition().distanceSq(botPos);
@@ -3989,7 +4014,8 @@ public class BotManager {
                                                             Character bot,
                                                             Point botPos,
                                                             WeaponType weaponType,
-                                                            Monster target) {
+                                                            Monster target,
+                                                            BotCombatManager.AttackPlan knownPlan) {
         if (target == null || !target.isAlive()) {
             return false;
         }
@@ -3997,7 +4023,7 @@ public class BotManager {
         if (BotAttackExecutionProvider.shouldDegenerateRangedAttack(weaponType, botPos, targetPos)) {
             return false;
         }
-        BotCombatManager.AttackPlan plan = BotCombatManager.planAttack(entry, bot, target);
+        BotCombatManager.AttackPlan plan = knownPlan != null ? knownPlan : BotCombatManager.planAttack(entry, bot, target);
         return plan != null
                 && plan.route == BotCombatManager.AttackRoute.RANGED
                 && BotCombatManager.isTargetInAttackRange(plan, bot, target)

@@ -36,4 +36,7 @@ models/
 # LLM bot chat memory (per-bot plain-text JSONL + summaries)
 bots/llm-memory/
 
+# Cygwin/MSYS crash dumps
+bash.exe.stackdump
+
 nul
