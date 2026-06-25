@@ -712,7 +712,7 @@ final class BotAutopilotManager {
                 destination = entry.autopilotErrandMapId; // head to town this tick, not the grind map
             }
         }
-        if (entry.autopilotParty && entry.autopilotErrandMapId == -1) {
+        if (entry.autopilotParty && !detachedFromPartyCohesion(entry)) {
             Boolean cohesion = tickPartyCohesion(entry, bot);
             if (cohesion != null) {
                 return cohesion;
@@ -1521,26 +1521,35 @@ final class BotAutopilotManager {
     }
 
     /**
-     * The cohesion leader: the first party member NOT off on a resupply errand
-     * ({@code autopilotErrandMapId == -1}). A resupplying bot handles its own town trip
-     * independently (the line-343 gate already keeps it out of cohesion), so followers must
-     * anchor on the first member still heading to the grind map, not on the absent leader.
-     * Null when every member is resupplying.
+     * True while this member is on a personal errand that should not hold or lead the party cohort.
+     * The bot still keeps the shared party grind destination, but owns its travel until the errand is
+     * done; remaining cohort members continue toward the party plan instead of waiting/chasing it.
+     */
+    private static boolean detachedFromPartyCohesion(BotEntry entry) {
+        return entry.autopilotErrandMapId != -1 || entry.restErrand
+                || entry.questErrandMapId != -1 || entry.gachaErrandMapId != -1
+                || entry.jobErrandMapId != -1;
+    }
+
+    /**
+     * The cohesion leader: the first party member NOT off on a personal errand. A detouring bot
+     * handles its own side trip independently, so followers must anchor on the first member still
+     * heading to the grind map, not on the absent leader. Null when every member is detached.
      */
     static BotEntry effectiveCohesionLeader(List<BotEntry> members) {
         for (BotEntry m : members) {
-            if (m.autopilotErrandMapId == -1) {
+            if (!detachedFromPartyCohesion(m)) {
                 return m;
             }
         }
         return null;
     }
 
-    /** Count of members eligible for cohesion (not off resupplying). */
+    /** Count of members eligible for cohesion (not off on a personal errand). */
     private static int cohesionMemberCount(List<BotEntry> members) {
         int count = 0;
         for (BotEntry m : members) {
-            if (m.autopilotErrandMapId == -1) {
+            if (!detachedFromPartyCohesion(m)) {
                 count++;
             }
         }
@@ -1682,8 +1691,8 @@ final class BotAutopilotManager {
         String reason = null; // captured for the pathlog: which member tripped the hold, and how
         for (BotEntry member : members) {
             if (member == entry || member.bot == null || member.bot.getMap() == null
-                    || member.autopilotErrandMapId != -1 || !member.autopilotCohortMember) {
-                continue; // resupplying OR not in the embark cohort -> never wait on it (travels solo)
+                    || detachedFromPartyCohesion(member) || !member.autopilotCohortMember) {
+                continue; // on a personal errand OR not in the embark cohort -> never wait on it
             }
             int memberHops = hopDistance.hops(member.bot.getMapId(), bot.getMapId());
             if (memberHops > BotManager.cfg.STRAGGLER_WAIT_HOPS

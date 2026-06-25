@@ -11,6 +11,7 @@ import server.maps.MapleMap;
 import java.awt.Point;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.function.Consumer;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -678,6 +679,69 @@ class BotAutopilotManagerTest {
             // Were the resupplying member counted, the leader would hold; instead it travels on.
             assertTrue(BotAutopilotManager.tick(leader.entry(), leader.bot(), true));
             assertFalse(leader.entry().autopilotWaitingForStragglers);
+        }
+    }
+
+    @Test
+    void leaderDoesNotWaitForMembersOnPersonalDetours() {
+        // Quest/gacha/job detours consume the member's own tick and can send it several maps away.
+        // The cohort must treat them like resupply: keep the party plan, but do not hold for them.
+        Fixture leader = fixture(104000000, onlineOwner());
+        Fixture quest = fixture(TOWN, onlineOwner());
+        Fixture gacha = fixture(TOWN, onlineOwner());
+        Fixture job = fixture(TOWN, onlineOwner());
+        Fixture rest = fixture(TOWN, onlineOwner());
+        for (Fixture f : List.of(leader, quest, gacha, job, rest)) {
+            f.entry().autopilotMapId = HUNTING_GROUND;
+            f.entry().autopilotParty = true;
+            f.entry().autopilotNextDecisionAtMs = Long.MAX_VALUE;
+            f.entry().grinding = true;
+            f.entry().autopilotCohortMember = true;
+        }
+        quest.entry().questErrandMapId = TOWN;
+        gacha.entry().gachaErrandMapId = TOWN;
+        job.entry().jobErrandMapId = TOWN;
+        rest.entry().restErrand = true;
+
+        try (Seams seams = new Seams(null)) {
+            BotAutopilotManager.partyMembers =
+                    entry -> List.of(leader.entry(), quest.entry(), gacha.entry(), job.entry(), rest.entry());
+            BotAutopilotManager.hopDistance = (from, to) -> BotManager.cfg.STRAGGLER_WAIT_HOPS + 1;
+
+            assertFalse(waitingForStragglers(leader));
+            assertFalse(leader.entry().autopilotWaitingForStragglers);
+        }
+    }
+
+    @Test
+    void shouldFollowNextNonDetouringMemberWhenNominalLeaderIsOnPersonalDetour() {
+        assertFollowsNextNonDetouringMember(entry -> entry.questErrandMapId = TOWN);
+        assertFollowsNextNonDetouringMember(entry -> entry.gachaErrandMapId = TOWN);
+        assertFollowsNextNonDetouringMember(entry -> entry.jobErrandMapId = TOWN);
+    }
+
+    private static void assertFollowsNextNonDetouringMember(Consumer<BotEntry> startDetour) {
+        Fixture nominal = fixture(104000000, onlineOwner());
+        Fixture effective = fixture(104000000, onlineOwner());
+        Fixture follower = fixture(TOWN, onlineOwner());
+        when(nominal.bot().getId()).thenReturn(7001);
+        when(effective.bot().getId()).thenReturn(7002);
+        for (Fixture f : List.of(nominal, effective, follower)) {
+            f.entry().autopilotMapId = HUNTING_GROUND;
+            f.entry().autopilotParty = true;
+            f.entry().autopilotNextDecisionAtMs = Long.MAX_VALUE;
+            f.entry().grinding = true;
+            f.entry().autopilotCohortMember = true;
+        }
+        startDetour.accept(nominal.entry());
+
+        try (Seams seams = new Seams(null)) {
+            BotAutopilotManager.partyMembers =
+                    entry -> List.of(nominal.entry(), effective.entry(), follower.entry());
+
+            assertTrue(BotAutopilotManager.tick(follower.entry(), follower.bot(), true));
+            assertTrue(follower.entry().autopilotTransitFollow);
+            assertEquals(7002, follower.entry().followTargetId);
         }
     }
 
