@@ -30,6 +30,7 @@ import java.nio.file.Path;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -66,6 +67,7 @@ public final class BotWorldGraphWebServer {
     // Worldmap panel transforms for the /map view (worldmap id -> {x, y, scale}), captured by dragging the
     // worldmaps into a real-world arrangement and exporting. Worldmaps not listed fall back to a grid.
     private static final Map<String, double[]> WORLDMAP_LAYOUT = buildWorldMapLayout();
+    private static final Object PERF_SAMPLE_LOCK = new Object();
 
     private static Map<String, double[]> buildWorldMapLayout() {
         Map<String, double[]> m = new HashMap<>();
@@ -949,29 +951,133 @@ public final class BotWorldGraphWebServer {
      *  aggregate. Monitoring is opt-in (off by default) — enable it, let it run, then read this to see
      *  what's hot. ponytail: stateful GET toggle, LAN debug only. */
     private static void servePerf(HttpExchange ex) throws IOException {
-        String on = queryParams(ex.getRequestURI().getRawQuery()).get("on");
+        var q = queryParams(ex.getRequestURI().getRawQuery());
+        String on = q.get("on");
         if ("1".equals(on) || "true".equalsIgnoreCase(on)) {
             BotPerformanceMonitor.setEnabled(true);
         } else if ("0".equals(on) || "false".equalsIgnoreCase(on)) {
             BotPerformanceMonitor.setEnabled(false);
         }
+        int durationMs = parseBoundedInt(q.get("durationMs"), 0, 0, 60_000);
+        if (durationMs > 0) {
+            send(ex, 200, "application/json", samplePerfJson(durationMs).getBytes(StandardCharsets.UTF_8));
+            return;
+        }
+        long now = System.currentTimeMillis();
+        send(ex, 200, "application/json", perfJson(BotPerformanceMonitor.snapshot(), 0, now, now, null, null)
+                .getBytes(StandardCharsets.UTF_8));
+    }
+
+    private static String samplePerfJson(int durationMs) {
+        synchronized (PERF_SAMPLE_LOCK) {
+            boolean wasEnabled = BotPerformanceMonitor.enabled();
+            long startedAtMs = System.currentTimeMillis();
+            java.time.Duration cpuBefore = processCpuDuration();
+            Runtime rt = Runtime.getRuntime();
+            long heapUsedBefore = rt.totalMemory() - rt.freeMemory();
+            BotPerformanceMonitor.setEnabled(true);
+            sleepForSample(durationMs);
+            List<BotPerformanceMonitor.SectionSnapshot> snap = BotPerformanceMonitor.snapshot();
+            long endedAtMs = System.currentTimeMillis();
+            java.time.Duration cpuAfter = processCpuDuration();
+            long heapUsedAfter = rt.totalMemory() - rt.freeMemory();
+            if (!wasEnabled) {
+                BotPerformanceMonitor.setEnabled(false);
+            }
+            return perfJson(snap, Math.max(1L, endedAtMs - startedAtMs), startedAtMs, endedAtMs,
+                    cpuDeltaMs(cpuBefore, cpuAfter), heapUsedAfter - heapUsedBefore);
+        }
+    }
+
+    private static void sleepForSample(int durationMs) {
+        try {
+            Thread.sleep(durationMs);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    private static java.time.Duration processCpuDuration() {
+        return ProcessHandle.current().info().totalCpuDuration().orElse(null);
+    }
+
+    private static Long cpuDeltaMs(java.time.Duration before, java.time.Duration after) {
+        if (before == null || after == null) {
+            return null;
+        }
+        return Math.max(0L, after.minus(before).toMillis());
+    }
+
+    private static String perfJson(List<BotPerformanceMonitor.SectionSnapshot> snapshots, long sampleMs,
+                                   long startedAtMs, long endedAtMs, Long processCpuMs,
+                                   Long heapDeltaBytes) {
+        List<BotPerformanceMonitor.SectionSnapshot> sorted = new ArrayList<>(snapshots);
+        sorted.sort(Comparator.comparingLong(BotPerformanceMonitor.SectionSnapshot::totalNs).reversed());
+        long denomNs = 0L;
+        for (BotPerformanceMonitor.SectionSnapshot s : sorted) {
+            if ("tick-total".equals(s.section())) {
+                denomNs = s.totalNs();
+                break;
+            }
+        }
+        if (denomNs <= 0L) {
+            for (BotPerformanceMonitor.SectionSnapshot s : sorted) {
+                denomNs += s.totalNs();
+            }
+        }
+        denomNs = Math.max(1L, denomNs);
+        double sampleSeconds = sampleMs > 0 ? sampleMs / 1000.0 : 0.0;
         StringBuilder sb = new StringBuilder("{\"enabled\":").append(BotPerformanceMonitor.enabled())
-                .append(",\"sections\":[");
+                .append(",\"sampleMs\":").append(sampleMs)
+                .append(",\"startedAtMs\":").append(startedAtMs)
+                .append(",\"endedAtMs\":").append(endedAtMs);
+        if (processCpuMs != null) {
+            sb.append(",\"processCpuMs\":").append(processCpuMs)
+                    .append(",\"processCore\":").append(sampleSeconds > 0.0 ? processCpuMs / (sampleSeconds * 1000.0) : 0.0);
+        }
+        Runtime rt = Runtime.getRuntime();
+        sb.append(",\"heapUsedBytes\":").append(rt.totalMemory() - rt.freeMemory())
+                .append(",\"heapTotalBytes\":").append(rt.totalMemory())
+                .append(",\"heapMaxBytes\":").append(rt.maxMemory());
+        if (heapDeltaBytes != null) {
+            sb.append(",\"heapDeltaBytes\":").append(heapDeltaBytes);
+        }
+        sb.append(",\"sections\":[");
         boolean first = true;
-        for (BotPerformanceMonitor.SectionSnapshot s : BotPerformanceMonitor.snapshot()) {
+        for (BotPerformanceMonitor.SectionSnapshot s : sorted) {
             if (!first) {
                 sb.append(',');
             }
             first = false;
+            double totalMs = s.totalNs() / 1_000_000.0;
+            double cpuMsPerSec = sampleSeconds > 0.0 ? totalMs / sampleSeconds : 0.0;
+            double callsPerSec = sampleSeconds > 0.0 ? s.count() / sampleSeconds : 0.0;
             sb.append("{\"section\":").append(jsonStr(s.section()))
                     .append(",\"count\":").append(s.count())
+                    .append(",\"totalMs\":").append(totalMs)
                     .append(",\"avgMs\":").append(s.avgMs())
                     .append(",\"maxMs\":").append(s.maxMs())
+                    .append(",\"cpuMsPerSec\":").append(cpuMsPerSec)
+                    .append(",\"core\":").append(cpuMsPerSec / 1000.0)
+                    .append(",\"callsPerSec\":").append(callsPerSec)
+                    .append(",\"sharePct\":").append(100.0 * s.totalNs() / denomNs)
                     .append(",\"slow\":").append(s.slowCount())
                     .append(",\"slowAvgMs\":").append(s.slowAvgMs())
                     .append('}');
         }
-        send(ex, 200, "application/json", sb.append("]}").toString().getBytes(StandardCharsets.UTF_8));
+        return sb.append("]}").toString();
+    }
+
+    private static int parseBoundedInt(String raw, int defaultValue, int min, int max) {
+        if (raw == null || raw.isBlank()) {
+            return defaultValue;
+        }
+        try {
+            int value = Integer.parseInt(raw.trim());
+            return Math.max(min, Math.min(max, value));
+        } catch (NumberFormatException e) {
+            return defaultValue;
+        }
     }
 
     /** On-demand per-bot path-log toggle — mirrors the {@code !botnav pathlog} command

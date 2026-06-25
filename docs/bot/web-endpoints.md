@@ -79,12 +79,19 @@ and returns the report. Use briefly to capture why a bot is stuck.
 2nd call -> {"recording":false,"bot":<name>,"file":<path>,"report":<full pathlog text>}
 ```
 
-### `/api/perf[?on=1|0]`
+### `/api/perf[?on=1|0][&durationMs=5000]`
 Live performance snapshot from `BotPerformanceMonitor` (per-subsystem timings, including `scroll-scan`,
 grind decides, movement, pathfind). Monitoring is opt-in/off by default: `?on=1` enables it, `?on=0`
-disables, no param just reports the current aggregate. Enable it, let it run, then read to see what's hot.
+disables, no param just reports the current aggregate. `durationMs` resets the monitor, samples that
+many milliseconds (capped at 60000), and returns a bounded window sorted by total CPU time; use this for
+repeatable live checks instead of comparing cumulative snapshots. Enable it, let it run, then read to see
+what's hot, or call `durationMs` for a one-shot sample.
 ```
-{"enabled":true,"sections":[{"section":"scroll-scan","count":N,"avgMs":..,"maxMs":..,"slow":..,"slowAvgMs":..}, ...]}
+{"enabled":true,"sampleMs":5001,"processCpuMs":123,"processCore":0.025,
+ "heapUsedBytes":123,"heapTotalBytes":123,"heapMaxBytes":123,"heapDeltaBytes":123,
+ "sections":[{"section":"tick-total","count":N,"totalMs":..,"avgMs":..,"maxMs":..,
+              "cpuMsPerSec":..,"core":..,"callsPerSec":..,"sharePct":..,
+              "slow":..,"slowAvgMs":..}, ...]}
 ```
 
 ### `/api/spawnbot?id=<charId>[,<charId>...]`
