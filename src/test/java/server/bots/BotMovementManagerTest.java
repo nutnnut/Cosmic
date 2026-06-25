@@ -369,16 +369,23 @@ class BotMovementManagerTest {
 
     @Test
     void shouldJumpForwardWhenMobBlocksWalkLaneAndLandingStaysInCurrentRegion() {
-        MapleMap map = spy(new MapleMap(910009048, 0, 0, 910009048, 1.0f));
+        MapleMap realMap = new MapleMap(910009048, 0, 0, 910009048, 1.0f);
         server.maps.FootholdTree footholds = new server.maps.FootholdTree(new Point(-2000, -2000), new Point(2000, 2000));
         footholds.insert(new Foothold(new Point(0, 100), new Point(300, 100), 1));
-        map.setFootholds(footholds);
-        BotNavigationGraphProvider.rebuildGraph(map);
+        realMap.setFootholds(footholds);
+        // Build the graph on the bare map FIRST. rebuildGraph runs flash-jump edge simulation that probes
+        // map.getFootholds() millions of times; doing that through a Mockito spy records every invocation,
+        // ballooning the heap to OOM (multi-GB, 20+ min hang). The spy only exists to stub getAllMonsters()
+        // for the movement tick, so wrap the map AFTER the graph is cached (cache + collision index are
+        // keyed by map id / foothold tree, both shared with the spy).
+        BotNavigationGraphProvider.rebuildGraph(realMap);
+        MapleMap map = spy(realMap);
         doReturn(List.of(mockMob(new Point(130, 100), 100100))).when(map).getAllMonsters();
 
         Character bot = mockBot(new Point(100, 100), map);
         BotEntry entry = new BotEntry(bot, null, null);
         entry.following = true;
+        BotMovementManager.cfg.MOB_AVOID_REACTION_CHANCE = 1.0; // deterministic: test the dodge logic, not the humanlike RNG roll
 
         BotMovementManager.tickGrounded(entry, new Point(250, 100));
 
@@ -393,16 +400,20 @@ class BotMovementManagerTest {
 
     @Test
     void shouldNotJumpOverBlockingMobWhenSimulatedLandingLeavesCurrentRegion() {
-        MapleMap map = spy(new MapleMap(910009049, 0, 0, 910009049, 1.0f));
+        // Build on the bare map before spying — see shouldJumpForwardWhenMobBlocksWalkLaneAndLandingStaysInCurrentRegion
+        // for why rebuildGraph through a spy OOMs.
+        MapleMap realMap = new MapleMap(910009049, 0, 0, 910009049, 1.0f);
         server.maps.FootholdTree footholds = new server.maps.FootholdTree(new Point(-2000, -2000), new Point(2000, 2000));
         footholds.insert(new Foothold(new Point(0, 100), new Point(140, 100), 1));
-        map.setFootholds(footholds);
-        BotNavigationGraphProvider.rebuildGraph(map);
+        realMap.setFootholds(footholds);
+        BotNavigationGraphProvider.rebuildGraph(realMap);
+        MapleMap map = spy(realMap);
         doReturn(List.of(mockMob(new Point(120, 100), 100100))).when(map).getAllMonsters();
 
         Character bot = mockBot(new Point(100, 100), map);
         BotEntry entry = new BotEntry(bot, null, null);
         entry.following = true;
+        BotMovementManager.cfg.MOB_AVOID_REACTION_CHANCE = 1.0; // deterministic: the "no jump" must come from the region check, not a failed RNG roll
 
         BotMovementManager.tickGrounded(entry, new Point(190, 100));
 

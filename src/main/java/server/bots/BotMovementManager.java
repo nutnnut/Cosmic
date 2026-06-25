@@ -207,10 +207,15 @@ class BotMovementManager {
         entry.navJumpLaunchX = Integer.MIN_VALUE;
         entry.navJumpLaunchDelaySteps = Integer.MIN_VALUE;
         entry.navTargetRegionId = -1;
-        entry.committedRoute = null;
-        entry.committedRouteTargetRegionId = -1;
         entry.navPreciseTarget = false;
         entry.navBlockedPosTicks = 0;
+        // NOTE: committedRoute is deliberately NOT cleared here. clearNavigationState fires on many
+        // incidental ticks — notably tryExecuteCommittedEdgeAfterGroundMovement the instant a jump
+        // completes on landing — and wiping the route there degraded "commit one route and follow it"
+        // back into "recompute per landing", reviving the position-dependent r45<->r42 ping-pong
+        // (pathlog-Sunset). The route self-invalidates in nextCommittedRouteEdge (goal-region change or
+        // knocked off-route); it is cleared explicitly only on a real replan: graph swap (stale edge
+        // instances) and the stale-edge give-up, both in BotNavigationManager.resolveTarget.
     }
 
     static void tickClimbing(BotEntry entry, Point targetPos, boolean runAiTick) {
@@ -624,9 +629,14 @@ class BotMovementManager {
     private static MoveAction planGroundAction(BotEntry entry, Foothold currentFh, Point botPos, Point targetPos) {
         boolean directionalDrop = isDirectionalDropEdge(entry.navEdge);
         int stopDist = directionalDrop ? 0 : entry.navPreciseTarget ? preciseNavStopDist(entry.navEdge) : cfg.STOP_DIST;
-        // No hysteresis when navigating to an edge — always move toward the waypoint
+        // No hysteresis when navigating to an edge — always move toward the waypoint. FOLLOW_DIST
+        // hysteresis exists to stop owner-follow spacing jitter; a grind-wander/objective target must be
+        // reached, so it restarts at stopDist (else the bot parks within 80px of its goal and never
+        // closes the gap — pathlog-duiuganda: stalled 49px short with nav=same-region edge=none).
         int followDist = directionalDrop ? 0
-                : (entry.navEdge != null || entry.navPreciseTarget) ? stopDist : cfg.FOLLOW_DIST;
+                : (entry.navEdge != null || entry.navPreciseTarget) ? stopDist
+                : entry.grinding ? stopDist
+                : cfg.FOLLOW_DIST;
         int stepX = resolveGroundStepX(entry, botPos, targetPos, stopDist, followDist);
         if (stepX == 0) {
             return MoveAction.idle();

@@ -690,6 +690,11 @@ public class BotEntry {
     // region changes or the bot is knocked off the route.
     List<BotNavigationGraph.Edge> committedRoute = null;
     int committedRouteTargetRegionId = -1;
+    // Cursor into committedRoute. A* search states are (region, point, ...), so a route can legitimately
+    // revisit a region at different points (jump-up/drop-down staircase). Following by region-match alone
+    // aliased the bot's later visit onto an earlier hop and bounced it (pathlog-WeeklyCovert r66<->r67);
+    // the cursor follows the hop SEQUENCE instead. Reset to 0 whenever the route is (re)computed.
+    int committedRouteCursor = 0;
     boolean navPreciseTarget = false;
     // Stale-edge give-up: consecutive ticks spent parked against a committed edge's position
     // gate ("*-pos" block reason) without any movement. BotNavigationManager drops the edge

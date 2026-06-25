@@ -157,6 +157,7 @@ final class BotNavigationManager {
                 if (entry.navGraph != null) {
                     BotMovementManager.clearNavigationState(entry);
                 }
+                clearCommittedRoute(entry); // edges in the route belong to the old graph instance — stale
                 entry.navGraph = graph;
             }
             Point botPos = bot.getPosition();
@@ -174,20 +175,23 @@ final class BotNavigationManager {
                     && entry.navBlockedPosTicks > 0
                     && entry.navBlockedPosTicks >= entry.navBlockedPosGiveUpTicks) {
                 clearNavigation(entry);
+                clearCommittedRoute(entry); // parked against a gate — force a genuinely fresh route, not the same hop
             }
 
             BotNavigationGraph.Edge edge = reuseCommittedEdge(graph, entry, startRegionId, targetRegionId);
             boolean edgeReused = (edge != null);
+            boolean committedRouteFollow = false;  // took the next hop off an existing committed route
+            boolean committedRouteReplan = false;  // had to (re)compute the committed route this tick
             if (edgeReused) {
                 BotNavigationGraph.Edge refreshedEdge = refreshPendingClimbExitEdge(
-                        graph, entry, bot, botPos, startRegionId, targetRegionId, pathTargetPos, edge, runAiTick);
+                        graph, entry, bot, botPos, startRegionId, targetRegionId, edge, runAiTick);
                 if (refreshedEdge != edge) {
                     edge = refreshedEdge;
                     edgeReused = edge != null;
                 }
                 if (edgeReused) {
                     BotNavigationGraph.Edge refreshedGroundEdge = refreshCommittedGroundEdge(
-                            graph, entry, bot, startRegionId, targetRegionId, pathTargetPos, edge, runAiTick);
+                            graph, entry, startRegionId, targetRegionId, edge, runAiTick);
                     if (refreshedGroundEdge != edge) {
                         edge = refreshedGroundEdge;
                         edgeReused = edge != null;
@@ -207,17 +211,20 @@ final class BotNavigationManager {
                 // walk-to-entry + walk-from-exit cost beats the direct walk; an empty route falls
                 // through to direct steering.
                 edge = nextCommittedRouteEdge(graph, entry, startRegionId, targetRegionId);
-                if (edge == null) {
+                if (edge != null) {
+                    committedRouteFollow = true; // following the already-committed route (the good case)
+                } else {
                     List<BotNavigationGraph.Edge> route =
                             computeCommittedRoute(graph, bot, startRegionId, targetRegionId, pathTargetPos);
                     if (route != null) {
                         entry.committedRoute = route;
                         entry.committedRouteTargetRegionId = targetRegionId;
+                        entry.committedRouteCursor = 0; // fresh route — follow it from the top
                         edge = nextCommittedRouteEdge(graph, entry, startRegionId, targetRegionId);
+                        committedRouteReplan = true; // had to (re)plan — goal-region change or knocked off-route
                     } else {
                         // Uncommittable (intra-region portal detour): fall back to the per-hop planner.
-                        entry.committedRoute = null;
-                        entry.committedRouteTargetRegionId = -1;
+                        clearCommittedRoute(entry);
                         edge = findNextEdge(graph, bot, startRegionId, targetRegionId, pathTargetPos);
                     }
                 }
@@ -278,7 +285,10 @@ final class BotNavigationManager {
                 }
             }
 
-            entry.lastNavDecision = edgeReused ? "reuse" : "new";
+            entry.lastNavDecision = edgeReused ? "reuse"
+                    : committedRouteFollow ? "route"     // following the committed route — want lots of these
+                    : committedRouteReplan ? "replan"    // route recomputed (goal moved / knocked off-route)
+                    : "new";
             trackBlockedPositionGate(entry, botPos, edgeReused);
             entry.navPreciseTarget = shouldUsePreciseTarget(graph, entry, botPos, edge);
             entry.navTargetPos = selectWaypoint(entry, graph, botPos, edge);
@@ -326,6 +336,15 @@ final class BotNavigationManager {
 
     private static void clearNavigation(BotEntry entry) {
         BotMovementManager.clearNavigationState(entry);
+    }
+
+    /** Drop the committed route so the next plan recomputes one from the live position. Only for real
+     *  replans (graph swap / stale-edge give-up); routine clears must NOT touch it (see
+     *  clearNavigationState), or the route stops surviving jumps and the ping-pong returns. */
+    static void clearCommittedRoute(BotEntry entry) {
+        entry.committedRoute = null;
+        entry.committedRouteTargetRegionId = -1;
+        entry.committedRouteCursor = 0;
     }
 
     /**
@@ -399,7 +418,6 @@ final class BotNavigationManager {
                                                                        Point botPos,
                                                                        int startRegionId,
                                                                        int targetRegionId,
-                                                                       Point targetPos,
                                                                        BotNavigationGraph.Edge edge,
                                                                        boolean runAiTick) {
         if (!runAiTick
@@ -417,7 +435,9 @@ final class BotNavigationManager {
             return edge;
         }
 
-        BotNavigationGraph.Edge bestEdge = findNextEdge(graph, bot, startRegionId, targetRegionId, targetPos);
+        // Committed-route SSOT: pull the next hop from the bot's planned route, never the position-blind
+        // bucket cache (findNextEdge) — see refreshCommittedGroundEdge for why that re-injects ping-pong.
+        BotNavigationGraph.Edge bestEdge = nextCommittedRouteEdge(graph, entry, startRegionId, targetRegionId);
         if (sameEdge(edge, bestEdge) || bestEdge == null) {
             return edge;
         }
@@ -431,10 +451,8 @@ final class BotNavigationManager {
 
     private static BotNavigationGraph.Edge refreshCommittedGroundEdge(BotNavigationGraph graph,
                                                                       BotEntry entry,
-                                                                      Character bot,
                                                                       int startRegionId,
                                                                       int targetRegionId,
-                                                                      Point targetPos,
                                                                       BotNavigationGraph.Edge edge,
                                                                       boolean runAiTick) {
         if (!runAiTick
@@ -447,7 +465,11 @@ final class BotNavigationManager {
             return edge;
         }
 
-        BotNavigationGraph.Edge bestEdge = findNextEdge(graph, bot, startRegionId, targetRegionId, targetPos);
+        // Committed-route SSOT: the next hop comes from the bot's planned route, not the position-blind
+        // (region,target,bucket) bucket cache. That cache let adjacent regions serve mutually-inconsistent
+        // hops (r45->r42 while r42->r45), and refreshing the committed edge against it every ground tick
+        // re-injected the cross-region ping-pong the committed route was meant to stop.
+        BotNavigationGraph.Edge bestEdge = nextCommittedRouteEdge(graph, entry, startRegionId, targetRegionId);
         if (bestEdge == null || sameEdge(edge, bestEdge)) {
             return edge;
         }
@@ -1418,15 +1440,28 @@ final class BotNavigationManager {
         if (route == null || route.isEmpty() || entry.committedRouteTargetRegionId != targetRegionId) {
             return null;
         }
-        for (BotNavigationGraph.Edge e : route) {
-            if (e.type == BotNavigationGraph.EdgeType.WALK) {
-                continue;
-            }
-            if (e.fromRegionId == startRegionId && isEdgeUsable(graph, entry.bot, e)) {
-                return e;
-            }
+        int cursor = Math.max(0, entry.committedRouteCursor);
+        // Advance past hops the bot has already completed: it now stands at the current hop's toRegion
+        // (it landed). Routes can revisit a region at different points (jump-up/drop-down staircase), so
+        // we follow the SEQUENCE by cursor — matching fromRegion alone aliases a later visit onto an
+        // earlier hop and bounces the bot (pathlog-WeeklyCovert r66<->r67).
+        while (cursor < route.size()
+                && route.get(cursor).toRegionId == startRegionId
+                && route.get(cursor).fromRegionId != startRegionId) {
+            cursor++;
         }
-        return null;
+        while (cursor < route.size() && route.get(cursor).type == BotNavigationGraph.EdgeType.WALK) {
+            cursor++;
+        }
+        if (cursor >= route.size()) {
+            return null; // route exhausted (or knocked off its tail) — caller recomputes
+        }
+        BotNavigationGraph.Edge e = route.get(cursor);
+        if (e.fromRegionId == startRegionId && isEdgeUsable(graph, entry.bot, e)) {
+            entry.committedRouteCursor = cursor;
+            return e;
+        }
+        return null; // bot's region isn't where the route expects it — knocked off, recompute
     }
 
     /**
