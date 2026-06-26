@@ -39,7 +39,6 @@ final class BotNavigationManager {
     private static final Logger log = LoggerFactory.getLogger(BotNavigationManager.class);
     private static final int JUMP_READY_X_TOLERANCE = 10;
     private static final int EDGE_READY_X_TOLERANCE = 14;
-    private static final int FLASH_JUMP_LAUNCH_TOL = 12; // FJ window is a single point; let the bot fire from near it
     private static final int NO_MOVEMENT_WALK_TOLERANCE = 4;
     // Stale-edge give-up: after this many consecutive no-movement ticks blocked on a
     // committed edge's position gate ("*-pos"), drop the edge and replan from the live
@@ -621,7 +620,7 @@ final class BotNavigationManager {
             case DROP -> tryExecuteDrop(graph, entry, bot, botPos, rawTargetPos, edge);
             case CLIMB -> tryExecuteClimb(graph, entry, bot, botPos, rawTargetPos, edge);
             case PORTAL -> tryExecutePortalEdge(entry, bot, botPos, rawTargetPos, edge);
-            case TELEPORT -> tryExecuteTeleport(entry, bot, botPos, rawTargetPos, edge);
+            case TELEPORT -> tryExecuteTeleport(graph, entry, bot, botPos, rawTargetPos, edge);
             case FLASH_JUMP -> tryExecuteFlashJump(graph, entry, bot, rawTargetPos, edge);
             default -> null;
         };
@@ -683,7 +682,8 @@ final class BotNavigationManager {
     /** Teleport edge: blink to the (grounded) destination instantly and broadcast a teleport so other
      *  clients render a blink, not a glide. MP is deducted; the &gt;40% MP / &gt;500k meso gate is enforced
      *  upstream at plan time, with a final affordability guard here. */
-    private static NavigationDirective tryExecuteTeleport(BotEntry entry,
+    private static NavigationDirective tryExecuteTeleport(BotNavigationGraph graph,
+                                                          BotEntry entry,
                                                           Character bot,
                                                           Point botPos,
                                                           Point rawTargetPos,
@@ -695,7 +695,7 @@ final class BotNavigationManager {
             entry.lastEdgeBlockReason = "tele-cd";
             return null;
         }
-        if (!isReadyForEdge(botPos, edge)) {
+        if (!isWithinTeleportLaunchWindow(graph, botPos, edge)) {
             entry.lastEdgeBlockReason = "tele-pos";
             return null;
         }
@@ -704,15 +704,29 @@ final class BotNavigationManager {
             entry.lastEdgeBlockReason = "tele-mp";
             return null;
         }
+        // Compute the blink dest LIVE from the bot's actual position via the physics SSOT — a windowed
+        // teleport edge can fire from anywhere in [launchMinX, launchMaxX], and blinking to a fixed
+        // endPoint from a non-representative X would be an illegal off-range hop. Direction is recovered
+        // from the representative start→end (horizontal = ±range in x; vertical = same x, range in y).
+        int dx = edge.endPoint.x - edge.startPoint.x;
+        int dy = edge.endPoint.y - edge.startPoint.y;
+        int dirX = Math.abs(dx) >= Math.abs(dy) ? Integer.signum(dx) : 0;
+        int dirY = dirX == 0 ? Integer.signum(dy) : 0;
+        Point dest = BotPhysicsEngine.teleportLanding(bot.getMap(), botPos, dirX, dirY,
+                BotNavigationGraphProvider.TELEPORT_RANGE_PX, BotNavigationGraphProvider.TELEPORT_Y_SNAP_PX);
+        if (dest == null) {
+            entry.lastEdgeBlockReason = "tele-blocked";
+            return null;
+        }
         entry.lastEdgeBlockReason = null;
         Point origin = new Point(botPos);
-        BotPhysicsEngine.teleportTo(entry, bot, edge.endPoint);
-        boolean downward = edge.endPoint.y > edge.startPoint.y;
+        BotPhysicsEngine.teleportTo(entry, bot, dest);
+        boolean downward = dest.y > origin.y;
         if (downward) { entry.crouching = true; }   // prone for the down-teleport blink (capture: stance 0x0A both frags)
         if (mpCon > 0) {
             bot.addMP(-mpCon);
         }
-        BotMovementManager.broadcastTeleport(entry, origin, edge.endPoint);
+        BotMovementManager.broadcastTeleport(entry, origin, dest);
         if (downward) { entry.crouching = false; }  // clear: prone is the blink only; next tick stands/walks
         entry.skillHopReadyAtMs = System.currentTimeMillis() + SKILL_CAST_COOLDOWN_MS;
         clearNavigation(entry); // consumed: bot is now in the destination region — replan next tick
@@ -1001,7 +1015,7 @@ final class BotNavigationManager {
                     : !canExecuteClimbEntryFromCurrentPosition(entry.bot.getMap(), botPos, edge,
                     findRopeForRegion(entry.bot.getMap(), graph.getRegion(edge.toRegionId)));
             case PORTAL -> !isReadyForEdge(botPos, edge) || entry.portalEnterReadyTicks > 0; // precise while walking the extra jitter ticks in
-            case TELEPORT -> !isReadyForEdge(botPos, edge); // walk precisely onto the launch point, then blink
+            case TELEPORT -> !isWithinTeleportLaunchWindow(graph, botPos, edge); // steer into the launch window, then blink
             case FLASH_JUMP -> !canExecuteSelectedJumpFromCurrentPosition(graph, entry, entry.bot.getMap(), botPos, edge);
         };
     }
@@ -1028,7 +1042,7 @@ final class BotNavigationManager {
             case JUMP -> entry.inAir ? new Point(edge.endPoint) : selectJumpWaypoint(graph, entry, botPos, edge);
             case DROP -> selectDropWaypoint(entry, graph, botPos, edge);
             case PORTAL -> new Point(edge.startPoint); // always head to the portal entrance; it only fires once landed there
-            case TELEPORT -> new Point(edge.startPoint); // walk to the launch point, then blink
+            case TELEPORT -> selectTeleportWaypoint(graph, botPos, edge); // steer to the nearest in-window x, then blink
             case FLASH_JUMP -> entry.inAir ? new Point(edge.endPoint) : selectJumpWaypoint(graph, entry, botPos, edge);
         };
     }
@@ -1171,6 +1185,17 @@ final class BotNavigationManager {
         int targetX = entry == null
                 ? edge.containsLaunchX(botPos.x) ? botPos.x : botPos.x < edge.launchMinX ? edge.launchMinX : edge.launchMaxX
                 : selectedJumpLaunchX(entry, graph, edge);
+        return fromRegion.pointAt(targetX);
+    }
+
+    /** Teleport launch steering: any x in the window is a legal blink origin, so steer to the bot's own x
+     *  if already in-window, else to the nearest in-window x (inset). Mirrors the launchStepX==0 DROP case. */
+    private static Point selectTeleportWaypoint(BotNavigationGraph graph, Point botPos, BotNavigationGraph.Edge edge) {
+        BotNavigationGraph.Region fromRegion = graph != null ? graph.getRegion(edge.fromRegionId) : null;
+        if (fromRegion == null || fromRegion.isRopeRegion) {
+            return new Point(edge.startPoint);
+        }
+        int targetX = edge.containsLaunchX(botPos.x) ? botPos.x : steerXWithinLaunchWindow(edge, botPos.x);
         return fromRegion.pointAt(targetX);
     }
 
@@ -2424,7 +2449,7 @@ final class BotNavigationManager {
                                             BotNavigationGraph.Edge edge) {
         if (botPos == null
                 || (edge.type != BotNavigationGraph.EdgeType.JUMP && edge.type != BotNavigationGraph.EdgeType.FLASH_JUMP)
-                || !edge.containsLaunchX(botPos.x, edge.type == BotNavigationGraph.EdgeType.FLASH_JUMP ? FLASH_JUMP_LAUNCH_TOL : 0)) {
+                || !edge.containsLaunchX(botPos.x)) {
             return false;
         }
 
@@ -2433,6 +2458,28 @@ final class BotNavigationManager {
             return false;
         }
 
+        Point expectedLaunchPoint = fromRegion.pointAt(botPos.x);
+        return Math.abs(botPos.y - expectedLaunchPoint.y) <= BotMovementManager.cfg.JUMP_Y_THRESH;
+    }
+
+    /** Teleport launch window: the bot may blink from anywhere in [launchMinX, launchMaxX] (dest is
+     *  computed live), so the gate is the same shape as {@link #isWithinJumpLaunchWindow} — in the
+     *  window X and grounded at the expected launch height. */
+    static boolean isWithinTeleportLaunchWindow(BotNavigationGraph graph,
+                                                Point botPos,
+                                                BotNavigationGraph.Edge edge) {
+        if (botPos == null
+                || edge.type != BotNavigationGraph.EdgeType.TELEPORT
+                || !edge.containsLaunchX(botPos.x)) {
+            return false;
+        }
+        if (graph == null) {
+            return Math.abs(botPos.y - edge.startPoint.y) <= BotMovementManager.cfg.JUMP_Y_THRESH;
+        }
+        BotNavigationGraph.Region fromRegion = graph.getRegion(edge.fromRegionId);
+        if (fromRegion == null || fromRegion.isRopeRegion) {
+            return false;
+        }
         Point expectedLaunchPoint = fromRegion.pointAt(botPos.x);
         return Math.abs(botPos.y - expectedLaunchPoint.y) <= BotMovementManager.cfg.JUMP_Y_THRESH;
     }
@@ -2463,7 +2510,9 @@ final class BotNavigationManager {
     private static int selectedJumpLaunchX(BotEntry entry,
                                            BotNavigationGraph graph,
                                            BotNavigationGraph.Edge edge) {
-        if (entry == null || graph == null || edge == null || edge.type != BotNavigationGraph.EdgeType.JUMP) {
+        if (entry == null || graph == null || edge == null
+                || (edge.type != BotNavigationGraph.EdgeType.JUMP
+                    && edge.type != BotNavigationGraph.EdgeType.FLASH_JUMP)) {
             return edge != null ? edge.startPoint.x : 0;
         }
         BotNavigationGraph.Region fromRegion = graph.getRegion(edge.fromRegionId);

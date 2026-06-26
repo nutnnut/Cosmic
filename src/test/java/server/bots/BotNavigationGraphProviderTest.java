@@ -112,24 +112,46 @@ class BotNavigationGraphProviderTest {
         assertFalse(teleports.isEmpty(), "expected teleport edges to generate");
         int maxReach = BotNavigationGraphProvider.TELEPORT_RANGE_PX + BotNavigationGraphProvider.TELEPORT_Y_SNAP_PX;
         boolean sawVertical = false;
+        boolean sawWindow = false;
         for (BotNavigationGraph.Edge edge : teleports) {
             assertNotEquals(edge.fromRegionId, edge.toRegionId, "teleport edges are cross-region");
             int dxAbs = Math.abs(edge.endPoint.x - edge.startPoint.x);
             int dyAbs = Math.abs(edge.endPoint.y - edge.startPoint.y);
             assertTrue(Math.max(dxAbs, dyAbs) <= maxReach, "teleport hop within reach, was " + Math.max(dxAbs, dyAbs));
+            // Teleport now carries an X launch window like JUMP/FLASH_JUMP — every edge well-formed,
+            // representative start inside its own window, and at least one with real (>0) width.
+            assertTrue(edge.launchMaxX >= edge.launchMinX, "teleport launch window must be well-formed");
+            assertTrue(edge.containsLaunchX(edge.startPoint.x), "representative start must sit inside its own window");
+            if (edge.launchMaxX > edge.launchMinX) {
+                sawWindow = true;
+            }
             if (dyAbs > dxAbs) {
                 sawVertical = true;
             }
         }
         assertTrue(sawVertical, "expected at least one vertical (up/down) teleport edge");
+        assertTrue(sawWindow, "expected at least one teleport edge to carry a non-degenerate launch window");
     }
 
     @Test
     void shouldGenerateFlashJumpEdges() {
-        int count = edgesOfType(henesysGraph(), BotNavigationGraph.EdgeType.FLASH_JUMP).size()
-                + edgesOfType(perionGraph(), BotNavigationGraph.EdgeType.FLASH_JUMP).size()
-                + edgesOfType(kerningGraph(), BotNavigationGraph.EdgeType.FLASH_JUMP).size();
-        assertTrue(count > 0, "expected flash-jump edges to generate across test maps");
+        List<BotNavigationGraph.Edge> fjEdges = new ArrayList<>();
+        fjEdges.addAll(edgesOfType(henesysGraph(), BotNavigationGraph.EdgeType.FLASH_JUMP));
+        fjEdges.addAll(edgesOfType(perionGraph(), BotNavigationGraph.EdgeType.FLASH_JUMP));
+        fjEdges.addAll(edgesOfType(kerningGraph(), BotNavigationGraph.EdgeType.FLASH_JUMP));
+        assertFalse(fjEdges.isEmpty(), "expected flash-jump edges to generate across test maps");
+
+        // FJ now carries an X launch window like JUMP — every edge must be well-formed, and at least one
+        // must span a real (>0) width (the dedup payoff: per-anchor point-edges collapsed into windows).
+        boolean sawWindow = false;
+        for (BotNavigationGraph.Edge edge : fjEdges) {
+            assertTrue(edge.launchMaxX >= edge.launchMinX, "flash-jump launch window must be well-formed");
+            assertTrue(edge.containsLaunchX(edge.startPoint.x), "representative start must sit inside its own window");
+            if (edge.launchMaxX > edge.launchMinX) {
+                sawWindow = true;
+            }
+        }
+        assertTrue(sawWindow, "expected at least one flash-jump edge to carry a non-degenerate launch window");
     }
 
     @Test

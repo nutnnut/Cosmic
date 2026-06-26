@@ -412,8 +412,9 @@ final class BotPhysicsEngine {
      *    VERTICALLY to the origin within ±{@code ySnap}. A same-level platform beats a higher/lower
      *    diagonal one (the bug this was written to fix). null if none in the band.
      *  - UP ({@code dirY}<0): the FURTHEST platform within {@code range} directly above. null if none.
-     *  - DOWN ({@code dirY}>0): the nearest platform within {@code range} directly below — the prone
-     *    (down-key) intent, like a down-jump. null if none.
+     *  - DOWN ({@code dirY}>0): the FURTHEST platform within {@code range} directly below (symmetric
+     *    with UP — a down-teleport is a full-range downward blink, not a short prone hop). Never a rope
+     *    (pointBelowIndexed is foothold-only). null if none.
      */
     static Point teleportLanding(MapleMap map, Point origin, int dirX, int dirY, int range, int ySnap) {
         if (map == null || origin == null) {
@@ -427,9 +428,14 @@ final class BotPhysicsEngine {
             Point up = pointBelowIndexed(map, new Point(origin.x, origin.y - range));
             return (up != null && up.y < origin.y && origin.y - up.y <= range) ? up : null;
         }
-        if (dirY > 0) { // down: nearest within range (prone intent)
-            Point down = pointBelowIndexed(map, new Point(origin.x, origin.y + 1));
-            return (down != null && down.y > origin.y && down.y - origin.y <= range) ? down : null;
+        if (dirY > 0) { // down: FURTHEST platform within range below (walk platform-by-platform, keep the last in range)
+            Point best = null;
+            Point probe = pointBelowIndexed(map, new Point(origin.x, origin.y + 1));
+            while (probe != null && probe.y > origin.y && probe.y - origin.y <= range) {
+                best = probe;
+                probe = pointBelowIndexed(map, new Point(origin.x, probe.y + 1));
+            }
+            return best;
         }
         return null;
     }
