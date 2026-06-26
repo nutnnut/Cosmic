@@ -84,20 +84,40 @@ Scoring/reachability callers stay strict (empty on cap = "too far", correct rank
 heading to a far-but-reachable goal walks partway and the next (nearer, cheaper) search makes more
 progress, instead of stalling. `runSearch` tracks `closestState`/`closestH` per search.
 
-### Fix shipped — island (connected-component) early-exit
-`BotNavigationGraph.connectedComponentId(regionId, withSkills)`: lazy undirected union-find over the
-region graph, two variants — **base** excludes skill-gated TELEPORT/FLASH_JUMP, **skill** includes them.
-`runSearch` early-exits with empty when start/target are in different components for its edge set
-(`skillsEnabled` selects which). Kills the unreachable-target full-graph exhaustion (the 4-7s
-`resultEdges=0` disasters) in O(1) instead of scanning the whole graph to prove "no path".
-- **Conditional-edge correctness:** walk-only searches use base components (skill edges can't be used so
-  must not count); skill searches use the augmented ones. Undirected = conservative: different component
-  ⇒ unreachable both ways (never a false early-exit); same component may still be directionally
-  unreachable → the cap handles that. Skill components are optimistic-but-safe (a teleport edge the bot
-  lacks MP/meso for still counts as a bridge → no early-exit → search runs → cap bounds it).
-- **Synergy:** island-miss returns empty *pre-search* (truly unreachable → bot doesn't wander);
-  best-effort only fires on cap (same island ⇒ reachable ⇒ walking closer is real progress). Disjoint.
-- Test: `BotNavigationManagerTest.islandIndexSeparatesWalkComponentsButSkillEdgesBridgeThem`.
+### Fix shipped — directed reachability early-exit
+`BotNavigationGraph.canReach(startRegion, targetRegion, skillMask)`: lazy per-source forward-BFS over
+the region graph, memoized per `(skillMask, startRegion)`. `runSearch` early-exits with empty when the
+target is not forward-reachable from the start for the bot's usable edges. Kills the unreachable-target
+exhaustion (the `resultEdges=0`, `bestGoalCost=-1`, `capped=true` spam from high-fan-out start regions
+with 500+ outgoing edges) by deciding reachability in O(V+E)-once-then-cached instead of letting A* burn
+the 160k edge-check cap every tick to fail.
+- **Directed**, unlike the old undirected union-find: a one-way DROP/JUMP into a region no longer makes
+  it look reachable from the other side (the union-find's known directional-unreachable gap that the cap
+  used to absorb).
+- **Skill-filtered:** `skillMask` (bits `SKILL_TELEPORT`/`SKILL_FLASH_JUMP`, built from `skillsEnabled
+  && hasTeleport/hasFlashJump`) gates the exact skill edges the bot can use — finer than the old 2-state
+  base/skill split, which assumed a skill bot had both.
+- **PORTAL treated as always usable** (the map is static — portals are structural links), so the
+  reachable set is a *superset* of what the real per-edge-filtered search traverses. "Not reachable" is
+  therefore a sound NO (safe early-exit); "reachable" just means "run the search". No TTL / portal-status
+  listener needed: reachability varies only with the bot's movement profile, which is already baked into
+  the graph instance (speed/jump via `GraphCacheKey`) plus `skillMask`.
+- **Best-effort redirect (unreachable target):** only the per-tick movement executor (`"committed"`)
+  redirects to `nearestReachableRegion(start, skillMask, targetPos)` — the reachable region strictly closer
+  to the target than the start — and paths there, so the bot walks AS CLOSE AS POSSIBLE (into NPC/portal
+  interaction range for the stuck-near fallback) instead of stopping dead. The redirect region is
+  known-reachable from the uncapped BFS set, so the A* resolves it without burning the edge-check cap —
+  unlike the old cap-then-return-`closestState`, which on high-fan-out maps capped *before* discovering the
+  nearer frontier (the 102040000 NPC-1072003 job-instructor stall: bots parked at the map-entry wall with
+  `no-path` instead of walking to the reachable ledge ~262px below the NPC). Returns -1 / empty only when
+  nothing reachable is closer than where the bot already stands. Every other caller gets the clean empty
+  "no path": scoring/approach-probe (`null` caller) must rank it unreachable, and the `skill-walk`/
+  `skill-jump` cost-comparison searches must keep their true unreachable cost (a redirected cheap partial
+  would hide that walking can't reach the target and suppress the teleport route). Those still fall through
+  to the existing cap-then-`closestState` best-effort path, unchanged.
+- **Synergy:** reachability-miss redirects/returns *pre-search* (no full-graph scan); best-effort heads to
+  the nearest reachable frontier deliberately rather than as a cap artifact. Disjoint.
+- Test: `BotNavigationManagerTest.reachabilityIndexIsDirectedAndSkillFiltered`.
 
 ### Spike follow-ups (not yet done)
 - **Give `caller=default` a heuristic** (1 line): travel-reach/retreat use h=0 Dijkstra; let them use the

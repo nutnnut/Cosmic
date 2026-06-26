@@ -1261,6 +1261,13 @@ final class BotNavigationManager {
     // the same diversity the per-bot jitter gave, but at N searches per region-pair, not one per bot.
     static int ROUTE_BUCKETS = 8;
 
+    // Master switch for the position-blind bucket route cache (graph.cachedNextHop/putNextHop, fed by
+    // findNextEdge + warmPortalRoutes). Lives in BotManager.cfg so it's live-toggleable from /admin; see
+    // ROUTE_CACHE_ENABLED there for the rationale (OFF by default — it caused region ping-pong).
+    private static boolean routeCacheEnabled() {
+        return BotManager.cfg.ROUTE_CACHE_ENABLED;
+    }
+
     private static long bucketRouteSeed(int bucket) {
         return bucket == 0 ? 0L : (0x9E3779B97F4A7C15L * bucket);
     }
@@ -1275,7 +1282,7 @@ final class BotNavigationManager {
                                                         int targetRegionId,
                                                         Point targetPos) {
         MapleMap map = bot.getMap();
-        if (!graph.portalRoutesWarmed) {
+        if (routeCacheEnabled() && !graph.portalRoutesWarmed) {
             warmPortalRoutes(graph, map);
         }
         // Skill-capable bots (teleport/flash-jump + MP/meso headroom) plan with a fresh per-bot
@@ -1301,7 +1308,9 @@ final class BotNavigationManager {
         }
         // Cache hit: O(1), no search. A cached PORTAL hop whose portal is now closed (isEdgeUsable
         // false) falls through to a fresh search, which reroutes around it and overwrites the slot.
-        BotNavigationGraph.Edge cached = graph.cachedNextHop(startRegionId, targetRegionId, bucket);
+        // Gated by routeCacheEnabled: when off, always miss -> fresh position-aware search.
+        BotNavigationGraph.Edge cached = routeCacheEnabled()
+                ? graph.cachedNextHop(startRegionId, targetRegionId, bucket) : null;
         if (cached != null && (cached == BotNavigationGraph.NO_EDGE || isEdgeUsable(graph, map, cached))) {
             return cached == BotNavigationGraph.NO_EDGE ? null : cached;
         }
@@ -1310,8 +1319,10 @@ final class BotNavigationManager {
         List<BotNavigationGraph.Edge> path =
                 findPath(graph, map, bot.getPosition(), startRegionId, targetRegionId, targetPos, "fallback", bucketRouteSeed(bucket));
         BotNavigationGraph.Edge next = path.isEmpty() ? null : collapseLeadingWalkEdges(path);
-        graph.putNextHop(startRegionId, targetRegionId, bucket, ROUTE_BUCKETS,
-                next == null ? BotNavigationGraph.NO_EDGE : next);
+        if (routeCacheEnabled()) {
+            graph.putNextHop(startRegionId, targetRegionId, bucket, ROUTE_BUCKETS,
+                    next == null ? BotNavigationGraph.NO_EDGE : next);
+        }
         return next;
     }
 
@@ -1433,7 +1444,7 @@ final class BotNavigationManager {
     static List<BotNavigationGraph.Edge> computeCommittedRoute(BotNavigationGraph graph, Character bot,
                                                                int startRegionId, int targetRegionId, Point targetPos) {
         MapleMap map = bot.getMap();
-        if (!graph.portalRoutesWarmed) {
+        if (routeCacheEnabled() && !graph.portalRoutesWarmed) {
             warmPortalRoutes(graph, map);
         }
         List<BotNavigationGraph.Edge> route = botCanUseMovementSkill(bot)
@@ -1699,14 +1710,41 @@ final class BotNavigationManager {
         boolean randomized = routeSeed != 0;
         double epsilon = randomized ? 1.0 + hashFrac(routeSeed, EPSILON_SALT) * EPSILON_SPAN : 0.0;
         try {
-            // Island early-exit: different connected component for this edge set (skillsEnabled selects
-            // base vs skill-augmented) => no path can exist. Skip the full-graph scan that would
-            // otherwise expand the whole reachable graph just to prove the target is unreachable.
+            // Reachability early-exit: if the target region is not forward-reachable from the start for
+            // this bot's usable edges, no path can exist -- skip the search. Without this a high-fan-out
+            // start region caps A* (160k edge checks) every tick just to fail. Directed + skill-filtered
+            // (the old undirected island index missed one-way edges and per-skill gating); PORTAL is
+            // treated as usable so the reachable set is a superset of the real search's, making a "not
+            // reachable" answer a sound skip.
             if (startRegionId != targetRegionId) {
-                int startComp = graph.connectedComponentId(startRegionId, skillsEnabled);
-                int targetComp = graph.connectedComponentId(targetRegionId, skillsEnabled);
-                if (startComp != -1 && targetComp != -1 && startComp != targetComp) {
-                    return new SearchOutcome(List.of(), Integer.MAX_VALUE, 0, false);
+                int skillMask = 0;
+                if (skillsEnabled && bot != null) {
+                    if (hasTeleport(bot)) {
+                        skillMask |= BotNavigationGraph.SKILL_TELEPORT;
+                    }
+                    if (hasFlashJump(bot)) {
+                        skillMask |= BotNavigationGraph.SKILL_FLASH_JUMP;
+                    }
+                }
+                if (!graph.canReach(startRegionId, targetRegionId, skillMask)) {
+                    // Target region is unreachable. Only the per-tick movement executor ("committed")
+                    // redirects to walk AS CLOSE AS POSSIBLE: head to the reachable region nearest the
+                    // target so the bot makes real progress and lands in NPC/portal interaction range for
+                    // the stuck-near fallback, rather than stopping dead. The redirect region is
+                    // known-reachable, so the A* below resolves it without burning the edge-check cap.
+                    // Every other caller gets the clean empty "no path": scoring/approach-probe must rank
+                    // it as unreachable, and the skill-walk/skill-jump cost-comparison searches must keep
+                    // their true unreachable cost (a redirected cheap partial would hide that walking
+                    // can't reach the target and suppress the teleport route).
+                    if (!"committed".equals(pathfindCaller)) {
+                        return new SearchOutcome(List.of(), Integer.MAX_VALUE, 0, false);
+                    }
+                    int redirectRegionId = graph.nearestReachableRegion(startRegionId, skillMask, targetPos);
+                    if (redirectRegionId < 0) {
+                        return new SearchOutcome(List.of(), Integer.MAX_VALUE, 0, false);
+                    }
+                    targetRegionId = redirectRegionId;
+                    targetPos = graph.getRegion(redirectRegionId).pointAt(targetPos.x);
                 }
             }
             PriorityQueue<SearchNode> open = new PriorityQueue<>(Comparator.comparingInt(node -> node.score));

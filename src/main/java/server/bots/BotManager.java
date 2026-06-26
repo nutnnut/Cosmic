@@ -121,6 +121,14 @@ public class BotManager {
         // Follow stagger: each bot is offset this many px from the owner (index-based, alternating left/right)
         public int FOLLOW_STAGGER = 60;
 
+        // Position-blind bucket route cache (BotNavigationManager.findNextEdge / warmPortalRoutes). OFF by
+        // default: it keys hops by (startRegion,targetRegion,bucket) with no start-position component, so
+        // adjacent regions can serve mutually-inconsistent cached hops and trap bots ping-ponging (see
+        // docs/bot/nav-bucket-cache-regression-report-2026-06-25.md). The per-bot committedRoute is the
+        // authoritative path; this was a low-impact perf shortcut slated for removal. On => restore the old
+        // cache to A/B. Live-toggle from /admin (Manager config).
+        public boolean ROUTE_CACHE_ENABLED = false;
+
         // Quest piggyback (BotQuestManager). AUTO_QUESTS: run autoStart+autoComplete quests on the
         // tick (no travel). QUEST_PIGGYBACK: while autopiloting, detour to start/turn-in mob quests
         // whose kills overlap the current grind. Kill switches - both default on.

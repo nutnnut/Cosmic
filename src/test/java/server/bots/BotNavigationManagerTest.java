@@ -308,8 +308,8 @@ class BotNavigationManagerTest {
     }
 
     @Test
-    void islandIndexSeparatesWalkComponentsButSkillEdgesBridgeThem() {
-        // Regions 1-2 are walk-connected; region 3 is reachable only via a TELEPORT (skill) edge.
+    void reachabilityIndexIsDirectedAndSkillFiltered() {
+        // One-way walk 1->2; region 3 reachable from 2 only via a TELEPORT (skill) edge.
         BotNavigationGraph.Region r1 = new BotNavigationGraph.Region(
                 1, List.of(new BotNavigationGraph.Segment(new Foothold(new Point(0, 100), new Point(100, 100), 1))));
         BotNavigationGraph.Region r2 = new BotNavigationGraph.Region(
@@ -333,14 +333,28 @@ class BotNavigationManagerTest {
                 Map.of(1, List.of(walk12), 2, List.of(teleport23)),
                 Set.of());
 
-        // Base (walk-only) islands: {1,2} separate from {3}.
-        assertEquals(graph.connectedComponentId(1, false), graph.connectedComponentId(2, false),
-                "walk-connected regions share a base island");
-        assertNotEquals(graph.connectedComponentId(1, false), graph.connectedComponentId(3, false),
-                "a skill-only region must NOT be in the walk island (else a walk bot early-exits a reachable target wrongly)");
-        // Skill-augmented islands: the TELEPORT bridge merges all three.
-        assertEquals(graph.connectedComponentId(1, true), graph.connectedComponentId(3, true),
-                "TELEPORT edge bridges the islands for a skill-enabled search");
+        // Walk-only (skillMask 0): 1 reaches 2; the skill-only region 3 is unreachable.
+        assertTrue(graph.canReach(1, 2, 0), "walk edge 1->2 is reachable walk-only");
+        assertFalse(graph.canReach(1, 3, 0), "skill-only region 3 is NOT walk-reachable from 1");
+        assertFalse(graph.canReach(2, 3, 0), "skill-only region 3 is NOT walk-reachable from 2");
+        // Directed: the edge is one-way 1->2, so 2 cannot reach 1 (the old undirected index missed this).
+        assertFalse(graph.canReach(2, 1, 0), "reachability is directed: no edge 2->1");
+        // With TELEPORT usable, 1 and 2 reach 3 through the skill bridge.
+        assertTrue(graph.canReach(1, 3, BotNavigationGraph.SKILL_TELEPORT), "TELEPORT bridges 1->2->3");
+        assertTrue(graph.canReach(2, 3, BotNavigationGraph.SKILL_TELEPORT), "TELEPORT bridges 2->3");
+        // A FLASH_JUMP-only mask must not enable a TELEPORT edge.
+        assertFalse(graph.canReach(2, 3, BotNavigationGraph.SKILL_FLASH_JUMP),
+                "FLASH_JUMP mask must not enable a TELEPORT edge");
+
+        // Best-effort redirect: target sits near the unreachable skill-only region 3 (550,300). Walk-only
+        // from region 1, region 2 (y=200) is reachable and closer to the target than the start (y=100), so
+        // it's the "walk as close as possible" pick.
+        Point nearR3 = new Point(550, 300);
+        assertEquals(2, graph.nearestReachableRegion(1, 0, nearR3),
+                "redirect to the reachable region closest to the unreachable target");
+        // From region 2 walk-only, nothing reachable is closer than region 2 itself -> -1 (already closest).
+        assertEquals(-1, graph.nearestReachableRegion(2, 0, nearR3),
+                "no redirect when the start is already the closest reachable region");
     }
 
     @Test

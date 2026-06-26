@@ -6,12 +6,14 @@ import server.maps.MapleMap;
 import java.awt.*;
 import java.io.Serial;
 import java.io.Serializable;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 final class BotNavigationGraph implements Serializable {
     // Cached nav graphs are serialized to disk. Keep explicit serialVersionUIDs so
@@ -348,79 +350,109 @@ final class BotNavigationGraph implements Serializable {
         return outgoingByRegionId.getOrDefault(regionId, List.of());
     }
 
-    // --- Connected-component (island) index (runtime-only; lazy, transient per graph) -------------
-    // Undirected connected components of the region graph, so a pathfind can early-exit when start and
-    // target are in different islands (no possible route) instead of scanning the whole graph to prove
-    // it. Two variants: base EXCLUDES the skill-gated TELEPORT/FLASH_JUMP edges (which can bridge
-    // walk-islands), skill INCLUDES them -- a walk-only search uses base, a skill-enabled search uses
-    // skill. Undirected is conservative: different island => unreachable both directions; same island
-    // may still be directionally unreachable (the search/edge-check cap handles that case).
-    private transient volatile Map<Integer, Integer> baseComponentByRegion;
-    private transient volatile Map<Integer, Integer> skillComponentByRegion;
+    // --- Directed reachability index (runtime-only; lazy, transient per graph) --------------------
+    // Per-source FORWARD reachability over the region graph, so a pathfind can early-exit when the
+    // target is not reachable from the start for this bot's capability -- instead of letting A* burn
+    // its edge-check budget (a high-fan-out start region caps the search before it ever reaches, or
+    // rules out, the goal). Directed (follows getOutgoing), unlike the old undirected union-find: a
+    // one-way DROP/JUMP into a region no longer makes it look reachable from the other side. The map
+    // is static, so reachability varies only with the bot's movement profile -- speed/jump are already
+    // baked into THIS graph instance (GraphCacheKey), and usable skill edges are captured by skillMask.
+    // PORTAL edges are treated as always usable (static structural links), so the reachable set is a
+    // SUPERSET of what the real per-edge-filtered search can traverse: "not reachable" is a sound NO
+    // (safe early-exit); "reachable" just means "run the search". Lazily computed per (skillMask,
+    // startRegion) and cached for the graph's life.
+    // ponytail: per-source BFS, O(V+E) each, memoized; all-pairs matrix only if distinct start regions
+    // ever get numerous enough to matter.
+    static final int SKILL_TELEPORT = 1;
+    static final int SKILL_FLASH_JUMP = 1 << 1;
+    private transient volatile Map<Integer, Map<Integer, Set<Integer>>> reachableByMaskAndStart;
 
-    /** Island id of {@code regionId}; {@code withSkills} includes TELEPORT/FLASH_JUMP edges. Two regions
-     *  with different ids have NO route between them for that edge set. Returns -1 for an unknown region
-     *  (caller should not early-exit on -1). Lazily computed once per graph instance. */
-    int connectedComponentId(int regionId, boolean withSkills) {
-        Map<Integer, Integer> comp = withSkills ? skillComponentByRegion : baseComponentByRegion;
-        if (comp == null) {
+    /** True unless {@code targetRegionId} is provably NOT forward-reachable from {@code startRegionId}
+     *  for a bot whose usable skill edges are described by {@code skillMask} (bitwise-or of
+     *  {@link #SKILL_TELEPORT}/{@link #SKILL_FLASH_JUMP}; 0 = walk-only). Returns true for an unknown
+     *  region (caller must not early-exit when reachability cannot be decided). */
+    boolean canReach(int startRegionId, int targetRegionId, int skillMask) {
+        if (startRegionId == targetRegionId) {
+            return true;
+        }
+        if (!regionsById.containsKey(startRegionId) || !regionsById.containsKey(targetRegionId)) {
+            return true;
+        }
+        return reachableFrom(startRegionId, skillMask).contains(targetRegionId);
+    }
+
+    private Set<Integer> reachableFrom(int startRegionId, int skillMask) {
+        Map<Integer, Map<Integer, Set<Integer>>> byMask = reachableByMaskAndStart;
+        if (byMask == null) {
             synchronized (this) {
-                comp = withSkills ? skillComponentByRegion : baseComponentByRegion;
-                if (comp == null) {
-                    comp = computeComponents(withSkills);
-                    if (withSkills) {
-                        skillComponentByRegion = comp;
-                    } else {
-                        baseComponentByRegion = comp;
-                    }
+                byMask = reachableByMaskAndStart;
+                if (byMask == null) {
+                    byMask = new ConcurrentHashMap<>();
+                    reachableByMaskAndStart = byMask;
                 }
             }
         }
-        return comp.getOrDefault(regionId, -1);
+        return byMask
+                .computeIfAbsent(skillMask, k -> new ConcurrentHashMap<>())
+                .computeIfAbsent(startRegionId, s -> computeReachable(s, skillMask));
     }
 
-    private Map<Integer, Integer> computeComponents(boolean withSkills) {
-        Map<Integer, Integer> parent = new HashMap<>(regions.size() * 2);
-        for (Region r : regions) {
-            parent.put(r.id, r.id);
-        }
-        for (Region r : regions) {
-            for (Edge e : getOutgoing(r.id)) {
-                if (!withSkills && (e.type == EdgeType.TELEPORT || e.type == EdgeType.FLASH_JUMP)) {
+    private Set<Integer> computeReachable(int startRegionId, int skillMask) {
+        Set<Integer> visited = new HashSet<>();
+        ArrayDeque<Integer> queue = new ArrayDeque<>();
+        visited.add(startRegionId);
+        queue.add(startRegionId);
+        while (!queue.isEmpty()) {
+            int regionId = queue.poll();
+            for (Edge edge : getOutgoing(regionId)) {
+                if (!reachEdgeUsable(edge, skillMask)) {
                     continue;
                 }
-                unionComponents(parent, e.fromRegionId, e.toRegionId);
+                if (visited.add(edge.toRegionId)) {
+                    queue.add(edge.toRegionId);
+                }
             }
         }
-        Map<Integer, Integer> comp = new HashMap<>(parent.size() * 2);
-        for (Integer id : parent.keySet()) {
-            comp.put(id, findComponent(parent, id));
-        }
-        return comp;
+        return visited;
     }
 
-    private static int findComponent(Map<Integer, Integer> parent, int x) {
-        int root = x;
-        while (parent.get(root) != root) {
-            root = parent.get(root);
-        }
-        while (parent.get(x) != root) { // path compression
-            int next = parent.get(x);
-            parent.put(x, root);
-            x = next;
-        }
-        return root;
+    private static boolean reachEdgeUsable(Edge edge, int skillMask) {
+        return switch (edge.type) {
+            case WALK, JUMP, DROP, CLIMB, PORTAL -> true;
+            case TELEPORT -> (skillMask & SKILL_TELEPORT) != 0;
+            case FLASH_JUMP -> (skillMask & SKILL_FLASH_JUMP) != 0;
+        };
     }
 
-    private static void unionComponents(Map<Integer, Integer> parent, int a, int b) {
-        if (!parent.containsKey(a) || !parent.containsKey(b)) {
-            return; // edge referencing an unknown region id; ignore for connectivity
+    /** Among regions forward-reachable from {@code startRegionId} (for {@code skillMask}), the one whose
+     *  nearest standable point is STRICTLY closer to {@code targetPos} than the start region itself; -1
+     *  when nothing reachable beats the start (the bot is already as close as it can get). The
+     *  best-effort "walk as close as possible" target when the exact target region is unreachable: a
+     *  bounded A* to this known-reachable region replaces the old cap-then-give-up. */
+    int nearestReachableRegion(int startRegionId, int skillMask, Point targetPos) {
+        Region start = regionsById.get(startRegionId);
+        long bestDist = start == null ? Long.MAX_VALUE : manhattan(start.pointAt(targetPos.x), targetPos);
+        int best = -1;
+        for (int regionId : reachableFrom(startRegionId, skillMask)) {
+            if (regionId == startRegionId) {
+                continue;
+            }
+            Region region = regionsById.get(regionId);
+            if (region == null) {
+                continue;
+            }
+            long dist = manhattan(region.pointAt(targetPos.x), targetPos);
+            if (dist < bestDist) {
+                bestDist = dist;
+                best = regionId;
+            }
         }
-        int ra = findComponent(parent, a);
-        int rb = findComponent(parent, b);
-        if (ra != rb) {
-            parent.put(ra, rb);
-        }
+        return best;
+    }
+
+    private static long manhattan(Point a, Point b) {
+        return Math.abs((long) a.x - b.x) + Math.abs((long) a.y - b.y);
     }
 
     // --- Lazy region-route cache (runtime-only; populated by BotNavigationManager.findNextEdge) ---
