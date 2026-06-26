@@ -357,6 +357,10 @@ class BotNavigationManagerTest {
                 "walk-only outgoing should skip baked TELEPORT edges before A* scans them");
         assertEquals(List.of(teleport23), graph.getOutgoing(2, BotNavigationGraph.SKILL_TELEPORT),
                 "TELEPORT mask should restore teleport outgoing edges");
+        assertNull(graph.costToGoal(3, 0).get(2),
+                "walk-only cost-to-goal should not route through TELEPORT edges");
+        assertEquals(100, graph.costToGoal(3, BotNavigationGraph.SKILL_TELEPORT).get(2),
+                "TELEPORT mask should include teleport edges in the reverse cost index");
 
         // Walk-only (skillMask 0): 1 reaches 2; the skill-only region 3 is unreachable.
         assertTrue(graph.canReach(1, 2, 0), "walk edge 1->2 is reachable walk-only");
@@ -444,6 +448,74 @@ class BotNavigationManagerTest {
         assertEquals(100, dist.get(2), "2 -> 3 is one 100-cost walk");
         assertEquals(150, dist.get(1), "1 prefers the direct 150 jump over the 200 two-hop walk");
         assertNull(dist.get(4), "region 4 cannot reach the goal -> absent from the index");
+    }
+
+    @Test
+    void graphBakesNextHopsFromAllRegionsToPortalRegions() {
+        MapleMap map = new MapleMap(910000027, 0, 0, 910000027, 1.0f);
+        BotNavigationGraph.Region r1 = new BotNavigationGraph.Region(
+                1, List.of(new BotNavigationGraph.Segment(new Foothold(new Point(0, 100), new Point(100, 100), 1))));
+        BotNavigationGraph.Region r2 = new BotNavigationGraph.Region(
+                2, List.of(new BotNavigationGraph.Segment(new Foothold(new Point(0, 200), new Point(100, 200), 2))));
+        BotNavigationGraph.Region portalRegion = new BotNavigationGraph.Region(
+                3, List.of(new BotNavigationGraph.Segment(new Foothold(new Point(0, 300), new Point(100, 300), 3))));
+        Map<Integer, BotNavigationGraph.Region> regionsById = new HashMap<>();
+        regionsById.put(1, r1);
+        regionsById.put(2, r2);
+        regionsById.put(3, portalRegion);
+        BotNavigationGraph.Edge e12 = new BotNavigationGraph.Edge(
+                1, 2, BotNavigationGraph.EdgeType.WALK, new Point(50, 100), new Point(50, 200),
+                0, 0, 0, 0, 0, 100);
+        BotNavigationGraph.Edge e23 = new BotNavigationGraph.Edge(
+                2, 3, BotNavigationGraph.EdgeType.WALK, new Point(50, 200), new Point(50, 300),
+                0, 0, 0, 0, 0, 100);
+        BotNavigationGraph.Edge portalMarker = new BotNavigationGraph.Edge(
+                3, 3, BotNavigationGraph.EdgeType.PORTAL, new Point(50, 300), new Point(50, 300),
+                0, 77, 0, 0, 0, 0);
+        BotNavigationGraph graph = new BotNavigationGraph(
+                map.getId(), 1,
+                List.of(r1, r2, portalRegion), regionsById,
+                Map.of(1, 1, 2, 2, 3, 3),
+                Map.of(1, List.of(e12), 2, List.of(e23), 3, List.of(portalMarker)),
+                Set.of());
+
+        assertTrue(graph.hasPortalRouteTarget(3));
+        assertEquals(e12, graph.portalNextHop(1, 3, r1.centerPoint()),
+                "baked portal index should store the first hop from non-portal regions too");
+        assertEquals(e23, graph.portalNextHop(2, 3, r2.centerPoint()),
+                "baked portal index should store the next hop into the portal region");
+    }
+
+    @Test
+    void routeCacheSeparatesStartAndTargetPointBuckets() {
+        BotNavigationGraph.Region r1 = new BotNavigationGraph.Region(
+                1, List.of(new BotNavigationGraph.Segment(new Foothold(new Point(0, 100), new Point(200, 100), 1))));
+        BotNavigationGraph.Region r2 = new BotNavigationGraph.Region(
+                2, List.of(new BotNavigationGraph.Segment(new Foothold(new Point(0, 200), new Point(200, 200), 2))));
+        Map<Integer, BotNavigationGraph.Region> regionsById = new HashMap<>();
+        regionsById.put(1, r1);
+        regionsById.put(2, r2);
+        BotNavigationGraph.Edge leftExit = new BotNavigationGraph.Edge(
+                1, 2, BotNavigationGraph.EdgeType.JUMP, new Point(10, 100), new Point(10, 200),
+                0, 0, 0, 0, 0, 100);
+        BotNavigationGraph.Edge rightExit = new BotNavigationGraph.Edge(
+                1, 2, BotNavigationGraph.EdgeType.JUMP, new Point(190, 100), new Point(190, 200),
+                0, 0, 0, 0, 0, 100);
+        BotNavigationGraph graph = new BotNavigationGraph(
+                910000028, 1,
+                List.of(r1, r2), regionsById,
+                Map.of(1, 1, 2, 2),
+                Map.of(1, List.of(leftExit, rightExit)),
+                Set.of());
+
+        int leftStartBucket = BotNavigationManager.routePointBucket(graph, 1, new Point(10, 100));
+        int rightStartBucket = BotNavigationManager.routePointBucket(graph, 1, new Point(190, 100));
+        int targetBucket = BotNavigationManager.routePointBucket(graph, 2, new Point(100, 200));
+        graph.putNextHop(1, 2, leftStartBucket, targetBucket, 0, BotNavigationManager.ROUTE_BUCKETS, leftExit);
+        graph.putNextHop(1, 2, rightStartBucket, targetBucket, 0, BotNavigationManager.ROUTE_BUCKETS, rightExit);
+
+        assertEquals(leftExit, graph.cachedNextHop(1, 2, leftStartBucket, targetBucket, 0));
+        assertEquals(rightExit, graph.cachedNextHop(1, 2, rightStartBucket, targetBucket, 0));
     }
 
     @Test

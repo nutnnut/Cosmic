@@ -241,9 +241,8 @@ final class BotNavigationManager {
             if (edge == null && runAiTick && startRegionId >= 0 && targetRegionId >= 0) {
                 // Stick to ONE committed route: take the next hop off the bot's already-planned route
                 // instead of re-deciding it per region. The best first hop out of a region is
-                // position-dependent, but the per-region next-hop cache (findNextEdge) is keyed by
-                // (region,target,bucket) — position-blind — and never invalidated, so adjacent regions
-                // can serve mutually-inconsistent cached hops (r45->r42 while r42->r45) and trap the bot
+                // position-dependent; the old per-region next-hop cache was position-blind and could
+                // serve mutually-inconsistent cached hops (r45->r42 while r42->r45) and trap the bot
                 // ping-ponging. One route planned from the bot's own position is acyclic. The route is
                 // recomputed only when the goal region changes or the bot is knocked off it.
                 // Same-region planning is intentionally allowed: intra-region portals appear as
@@ -481,8 +480,7 @@ final class BotNavigationManager {
             return edge;
         }
 
-        // Committed-route SSOT: pull the next hop from the bot's planned route, never the position-blind
-        // bucket cache (findNextEdge) — see refreshCommittedGroundEdge for why that re-injects ping-pong.
+        // Committed-route SSOT: pull the next hop from the bot's planned route, not a shared cache entry.
         BotNavigationGraph.Edge bestEdge = nextCommittedRouteEdge(graph, entry, startRegionId, targetRegionId);
         if (sameEdge(edge, bestEdge) || bestEdge == null) {
             return edge;
@@ -511,10 +509,8 @@ final class BotNavigationManager {
             return edge;
         }
 
-        // Committed-route SSOT: the next hop comes from the bot's planned route, not the position-blind
-        // (region,target,bucket) bucket cache. That cache let adjacent regions serve mutually-inconsistent
-        // hops (r45->r42 while r42->r45), and refreshing the committed edge against it every ground tick
-        // re-injected the cross-region ping-pong the committed route was meant to stop.
+        // Committed-route SSOT: the next hop comes from the bot's planned route, not a shared cache
+        // entry. Refreshing against a cache every ground tick re-injects cross-region disagreement.
         BotNavigationGraph.Edge bestEdge = nextCommittedRouteEdge(graph, entry, startRegionId, targetRegionId);
         if (bestEdge == null || sameEdge(edge, bestEdge)) {
             return edge;
@@ -1308,9 +1304,8 @@ final class BotNavigationManager {
     static int ROUTE_BUCKETS = 8;
     private static final int COMMITTED_ROUTE_TARGET_REPLAN_PX = 128;
 
-    // Master switch for the position-blind bucket route cache (graph.cachedNextHop/putNextHop, fed by
-    // findNextEdge + warmPortalRoutes). Lives in BotManager.cfg so it's live-toggleable from /admin; see
-    // ROUTE_CACHE_ENABLED there for the rationale (OFF by default — it caused region ping-pong).
+    // Master switch for the shared bucket route cache (graph.cachedNextHop/putNextHop), fed by
+    // findNextEdge cache misses. Lives in BotManager.cfg so it's live-toggleable from /admin.
     private static boolean routeCacheEnabled() {
         return BotManager.cfg.ROUTE_CACHE_ENABLED;
     }
@@ -1323,15 +1318,23 @@ final class BotNavigationManager {
         return (int) Long.remainderUnsigned(routeSeed(bot), ROUTE_BUCKETS);
     }
 
+    private static final int ROUTE_CACHE_POINT_BUCKET_PX = 64;
+
+    static int routePointBucket(BotNavigationGraph graph, int regionId, Point point) {
+        BotNavigationGraph.Region region = graph.getRegion(regionId);
+        if (region == null || point == null) {
+            return 0;
+        }
+        int offset = region.isRopeRegion ? point.y - region.minY : point.x - region.minX;
+        return Math.floorDiv(offset, ROUTE_CACHE_POINT_BUCKET_PX);
+    }
+
     private static BotNavigationGraph.Edge findNextEdge(BotNavigationGraph graph,
                                                         Character bot,
                                                         int startRegionId,
                                                         int targetRegionId,
                                                         Point targetPos) {
         MapleMap map = bot.getMap();
-        if (routeCacheEnabled() && !graph.portalRoutesWarmed) {
-            warmPortalRoutes(graph, map);
-        }
         // Skill-capable bots (teleport/flash-jump + MP/meso headroom) plan with a fresh per-bot
         // two-pass compare and bypass the shared walk-only route cache: the skill decision is
         // per-bot and MP/meso-dependent, so it must never be cached into the slot other bots read.
@@ -1339,35 +1342,38 @@ final class BotNavigationManager {
             return findNextEdgeWithSkills(graph, map, bot, startRegionId, targetRegionId, targetPos);
         }
         int bucket = routeBucket(bot);
-        // Same-region next hop is position-dependent and must NEVER use the position-blind cache. The
-        // cache is keyed only by (startRegion, targetRegion, bucket), so every in-region target shares
-        // one slot. An intra-map "tubi" PORTAL (a self-loop r->r warp, e.g. Nautilus 120000100's
-        // 164<->2798) cached for one target then gets served to a different in-region target it is wrong
-        // for: the bot warps on the in-map shortcut instead of walking the few px to the real exit
-        // portal, and because each post-warp re-plan re-reads the same stale slot it loops forever and
-        // never reaches the map-exit portal (live: pirate bots stuck in the hallway, never job-advancing).
+        Point botPos = bot.getPosition();
+        int startPointBucket = routePointBucket(graph, startRegionId, botPos);
+        int targetPointBucket = routePointBucket(graph, targetRegionId, targetPos);
+        // Same-region next hop is still too position-dependent for a shared cache. An intra-map "tubi"
+        // PORTAL (a self-loop r->r warp, e.g. Nautilus 120000100's 164<->2798) cached for one target
+        // could be wrong for a different in-region target; compute it fresh from the live position.
         // Intra-region routing is cheap and only reached on the uncommittable-route fallback; compute it
         // fresh from the live position every time so A* picks the real direct walk once the bot is near.
         if (startRegionId == targetRegionId) {
             List<BotNavigationGraph.Edge> sameRegionPath =
-                    findPath(graph, map, bot.getPosition(), startRegionId, targetRegionId, targetPos, "fallback-sameregion", bucketRouteSeed(bucket));
+                    findPath(graph, map, botPos, startRegionId, targetRegionId, targetPos, "fallback-sameregion", bucketRouteSeed(bucket));
             return sameRegionPath.isEmpty() ? null : collapseLeadingWalkEdges(sameRegionPath);
+        }
+        BotNavigationGraph.Edge bakedPortalHop = graph.portalNextHop(startRegionId, targetRegionId, botPos);
+        if (bakedPortalHop != null && isEdgeUsable(graph, map, bakedPortalHop)) {
+            return bakedPortalHop;
         }
         // Cache hit: O(1), no search. A cached PORTAL hop whose portal is now closed (isEdgeUsable
         // false) falls through to a fresh search, which reroutes around it and overwrites the slot.
         // Gated by routeCacheEnabled: when off, always miss -> fresh position-aware search.
         BotNavigationGraph.Edge cached = routeCacheEnabled()
-                ? graph.cachedNextHop(startRegionId, targetRegionId, bucket) : null;
+                ? graph.cachedNextHop(startRegionId, targetRegionId, startPointBucket, targetPointBucket, bucket) : null;
         if (cached != null && (cached == BotNavigationGraph.NO_EDGE || isEdgeUsable(graph, map, cached))) {
             return cached == BotNavigationGraph.NO_EDGE ? null : cached;
         }
         // Miss: search once for this bucket, cache the next hop. Region progression (and other bots on
         // the same route) then hit the cache -- a fresh A* fires only on a genuinely new (pair, bucket).
         List<BotNavigationGraph.Edge> path =
-                findPath(graph, map, bot.getPosition(), startRegionId, targetRegionId, targetPos, "fallback", bucketRouteSeed(bucket));
+                findPath(graph, map, botPos, startRegionId, targetRegionId, targetPos, "fallback", bucketRouteSeed(bucket));
         BotNavigationGraph.Edge next = path.isEmpty() ? null : collapseLeadingWalkEdges(path);
         if (routeCacheEnabled()) {
-            graph.putNextHop(startRegionId, targetRegionId, bucket, ROUTE_BUCKETS,
+            graph.putNextHop(startRegionId, targetRegionId, startPointBucket, targetPointBucket, bucket, ROUTE_BUCKETS,
                     next == null ? BotNavigationGraph.NO_EDGE : next);
         }
         return next;
@@ -1506,18 +1512,31 @@ final class BotNavigationManager {
     static List<BotNavigationGraph.Edge> computeCommittedRoute(BotNavigationGraph graph, Character bot,
                                                                int startRegionId, int targetRegionId, Point targetPos) {
         MapleMap map = bot.getMap();
-        if (routeCacheEnabled() && !graph.portalRoutesWarmed) {
-            warmPortalRoutes(graph, map);
+        boolean skillsEnabled = botCanUseMovementSkill(bot);
+        List<BotNavigationGraph.Edge> route;
+        if (skillsEnabled) {
+            route = skillAwareRoutePath(graph, map, bot, startRegionId, targetRegionId, targetPos);
+        } else {
+            route = graph.portalRoute(startRegionId, targetRegionId, bot.getPosition());
+            if (route.isEmpty() || !routeUsable(graph, map, route)) {
+                route = findPath(graph, bot, startRegionId, targetRegionId, targetPos);
+            }
         }
-        List<BotNavigationGraph.Edge> route = botCanUseMovementSkill(bot)
-                ? skillAwareRoutePath(graph, map, bot, startRegionId, targetRegionId, targetPos)
-                : findPath(graph, bot, startRegionId, targetRegionId, targetPos);
         for (BotNavigationGraph.Edge e : route) {
             if (e.type == BotNavigationGraph.EdgeType.PORTAL && e.fromRegionId == e.toRegionId) {
                 return null;
             }
         }
         return route;
+    }
+
+    private static boolean routeUsable(BotNavigationGraph graph, MapleMap map, List<BotNavigationGraph.Edge> route) {
+        for (BotNavigationGraph.Edge edge : route) {
+            if (!isEdgeUsable(graph, map, edge)) {
+                return false;
+            }
+        }
+        return true;
     }
 
     static boolean committedRouteStillCoversTarget(BotEntry entry,
@@ -1540,8 +1559,8 @@ final class BotNavigationManager {
     /**
      * Next hop off the committed route: the first usable, non-WALK edge leaving the bot's current
      * region. A* routes are region-acyclic, so the bot advances along its own route and never reverses
-     * into the region it just came from (the GearArrow r45&lt;-&gt;r42 ping-pong from inconsistent
-     * position-blind cache entries). Returns {@code null} when the route is absent/stale (goal region
+     * into the region it just came from (the GearArrow r45&lt;-&gt;r42 ping-pong was from inconsistent
+     * shared cache entries). Returns {@code null} when the route is absent/stale (goal region
      * changed) or the bot's region isn't on it (knocked off) — the caller then recomputes and commits
      * a fresh route.
      */
@@ -1725,37 +1744,6 @@ final class BotNavigationManager {
     private static int regionIdAt(BotNavigationGraph graph, MapleMap map, Point p) {
         Foothold fh = BotPhysicsEngine.findGroundFoothold(map, p);
         return fh == null ? -1 : graph.regionIdByFootholdId.getOrDefault(fh.getId(), -1);
-    }
-
-    /** Precompute the canonical (bucket-0) hop between every portal-region pair, once per graph. */
-    private static void warmPortalRoutes(BotNavigationGraph graph, MapleMap map) {
-        synchronized (graph) {
-            if (graph.portalRoutesWarmed) {
-                return;
-            }
-            List<Integer> portals = graph.portalRegionIds();
-            for (int from : portals) {
-                BotNavigationGraph.Region fromRegion = graph.getRegion(from);
-                if (fromRegion == null) {
-                    continue;
-                }
-                for (int to : portals) {
-                    if (from == to || graph.cachedNextHop(from, to, 0) != null) {
-                        continue;
-                    }
-                    BotNavigationGraph.Region toRegion = graph.getRegion(to);
-                    if (toRegion == null) {
-                        continue;
-                    }
-                    List<BotNavigationGraph.Edge> path = findPath(
-                            graph, map, fromRegion.centerPoint(), from, to, toRegion.centerPoint(), "warm");
-                    BotNavigationGraph.Edge next = path.isEmpty() ? null : collapseLeadingWalkEdges(path);
-                    graph.putNextHop(from, to, 0, ROUTE_BUCKETS,
-                            next == null ? BotNavigationGraph.NO_EDGE : next);
-                }
-            }
-            graph.portalRoutesWarmed = true;
-        }
     }
 
     static List<BotNavigationGraph.Edge> findPath(BotNavigationGraph graph,
@@ -1950,7 +1938,7 @@ final class BotNavigationManager {
             // h=0 Dijkstra measurement path), and cached on the graph so the fleet shares one build.
             boolean usesHeuristic = randomized || !zeroHeuristic;
             Map<Integer, Integer> costToGoal = (useGoalDistanceHeuristic && usesHeuristic)
-                    ? graph.costToGoal(targetRegionId) : null;
+                    ? graph.costToGoal(targetRegionId, skillMask) : null;
             PriorityQueue<SearchNode> open = new PriorityQueue<>(Comparator.comparingInt(node -> node.score));
             Map<SearchState, Integer> gScore = new HashMap<>();
             Map<SearchState, SearchState> cameFrom = new HashMap<>();
@@ -1971,7 +1959,7 @@ final class BotNavigationManager {
             long closestDistance = rawDistance(startPos, targetPos);
 
             gScore.put(startState, 0);
-            open.add(new SearchNode(startState, 0, hValue(graph, startRegionId, startPos, targetRegionId, targetPos, costToGoal, zeroHeuristic, randomized, epsilon)));
+            open.add(new SearchNode(startState, 0, hValue(graph, startRegionId, startPos, targetRegionId, targetPos, costToGoal, zeroHeuristic, randomized, epsilon, skillMask)));
 
             while (!open.isEmpty()) {
                 if (edgeChecks >= edgeCheckBudget) {
@@ -2061,7 +2049,7 @@ final class BotNavigationManager {
                     gScore.put(nextState, tentativeCost);
                     cameFrom.put(nextState, current.state);
                     cameByEdge.put(nextState, edge);
-                    int fScore = tentativeCost + hValue(graph, nextState.regionId, edge.endPoint, targetRegionId, targetPos, costToGoal, zeroHeuristic, randomized, epsilon);
+                    int fScore = tentativeCost + hValue(graph, nextState.regionId, edge.endPoint, targetRegionId, targetPos, costToGoal, zeroHeuristic, randomized, epsilon, skillMask);
                     open.add(new SearchNode(nextState, tentativeCost, fScore));
                     openPeak = Math.max(openPeak, open.size());
                     long reachedDistance = rawDistance(landingPoint, targetPos);
@@ -2527,7 +2515,8 @@ final class BotNavigationManager {
     }
 
     private static int heuristic(BotNavigationGraph graph, int regionId, Point from,
-                                 int targetRegionId, Point targetPos, Map<Integer, Integer> costToGoal) {
+                                 int targetRegionId, Point targetPos, Map<Integer, Integer> costToGoal,
+                                 int skillMask) {
         if (costToGoal == null) {
             // No goal-distance index: straight-line estimate, but now X+Y (the old X-only term had no
             // vertical gradient, so tall maps probed up/down). Still position-aware.
@@ -2542,7 +2531,7 @@ final class BotNavigationManager {
         // term under-estimates), it is portal-aware (cost-to-goal routes through portals), and the
         // point->exit term keeps a gradient inside wide regions where the region-level cache is flat.
         int best = Integer.MAX_VALUE;
-        for (BotNavigationGraph.Edge e : graph.getOutgoing(regionId)) {
+        for (BotNavigationGraph.Edge e : graph.getOutgoing(regionId, skillMask)) {
             Integer downstream = costToGoal.get(e.toRegionId);
             if (downstream == null) {
                 continue; // exit leads somewhere that can't reach the goal
@@ -2595,11 +2584,11 @@ final class BotNavigationManager {
     /** Heuristic value: zeroSeed callers keep h=0/legacy; per-bot search uses an inflated (weighted) admissible h to prune. */
     private static int hValue(BotNavigationGraph graph, int regionId, Point from,
                               int targetRegionId, Point targetPos, Map<Integer, Integer> costToGoal,
-                              boolean zeroHeuristic, boolean randomized, double epsilon) {
+                              boolean zeroHeuristic, boolean randomized, double epsilon, int skillMask) {
         if (randomized) {
-            return (int) Math.round(epsilon * heuristic(graph, regionId, from, targetRegionId, targetPos, costToGoal));
+            return (int) Math.round(epsilon * heuristic(graph, regionId, from, targetRegionId, targetPos, costToGoal, skillMask));
         }
-        return zeroHeuristic ? 0 : heuristic(graph, regionId, from, targetRegionId, targetPos, costToGoal);
+        return zeroHeuristic ? 0 : heuristic(graph, regionId, from, targetRegionId, targetPos, costToGoal, skillMask);
     }
 
     /** Per-bot route seed; non-zero so the search takes the randomized branch. */

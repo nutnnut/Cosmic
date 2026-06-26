@@ -372,6 +372,25 @@ final class BotNavigationGraph implements Serializable {
         }
     }
 
+    static final class PortalRouteIndex implements Serializable {
+        @Serial
+        private static final long serialVersionUID = 1L;
+
+        final int[] targetRegionIds;
+        final int sourceBucketsPerRegion;
+        final int[][] nextEdgeIndexByTargetAndRegionBucket;
+
+        PortalRouteIndex(int[] targetRegionIds, int sourceBucketsPerRegion, int[][] nextEdgeIndexByTargetAndRegionBucket) {
+            this.targetRegionIds = targetRegionIds;
+            this.sourceBucketsPerRegion = sourceBucketsPerRegion;
+            this.nextEdgeIndexByTargetAndRegionBucket = nextEdgeIndexByTargetAndRegionBucket;
+        }
+
+        boolean isEmpty() {
+            return targetRegionIds.length == 0;
+        }
+    }
+
     final int mapId;
     final int version;
     final BotMovementProfile movementProfile;
@@ -381,6 +400,10 @@ final class BotNavigationGraph implements Serializable {
     final Map<Integer, List<Edge>> outgoingByRegionId;
     final java.util.Set<Integer> collidableWallIds;
     final java.util.Set<Integer> collidableFromBelowIds;
+    final PortalRouteIndex portalRouteIndex;
+    private transient volatile Edge[] portalRouteEdgesByIndex;
+    private transient volatile Map<Integer, Integer> portalRouteRegionRowById;
+    private static final int PORTAL_ROUTE_SOURCE_BUCKETS = 8;
 
     BotNavigationGraph(int mapId,
                        int version,
@@ -414,6 +437,7 @@ final class BotNavigationGraph implements Serializable {
         }
         this.collidableWallIds = new java.util.HashSet<>(collidableWallIds);
         this.collidableFromBelowIds = new java.util.HashSet<>(collidableFromBelowIds);
+        this.portalRouteIndex = buildPortalRouteIndex();
     }
 
     BotNavigationGraph(int mapId,
@@ -490,30 +514,39 @@ final class BotNavigationGraph implements Serializable {
     // Map is static per graph, so distances are stable for the graph's life. Cached per target region;
     // grind targets are shared across bots, so one reverse-Dijkstra amortises across the fleet.
     // ponytail: edge-cost-only reverse-Dijkstra; exact enough as an admissible lower bound.
-    private transient volatile Map<Integer, Map<Integer, Integer>> costToGoalByTarget;
+    private transient volatile Map<Integer, Map<Integer, Map<Integer, Integer>>> costToGoalBySkillMaskAndTarget;
 
     /** Forward cost (sum of edge costs, the same units {@link Edge#cost} uses) from each region to
      *  {@code targetRegionId}. Regions that cannot reach the target are absent. Admissible lower
      *  bound: ignores intra-region travel and portal cooldown (both {@code >= 0}). */
     Map<Integer, Integer> costToGoal(int targetRegionId) {
-        Map<Integer, Map<Integer, Integer>> cache = costToGoalByTarget;
+        return costToGoal(targetRegionId, SKILL_TELEPORT | SKILL_FLASH_JUMP);
+    }
+
+    Map<Integer, Integer> costToGoal(int targetRegionId, int skillMask) {
+        Map<Integer, Map<Integer, Map<Integer, Integer>>> cache = costToGoalBySkillMaskAndTarget;
         if (cache == null) {
             synchronized (this) {
-                cache = costToGoalByTarget;
+                cache = costToGoalBySkillMaskAndTarget;
                 if (cache == null) {
                     cache = new ConcurrentHashMap<>();
-                    costToGoalByTarget = cache;
+                    costToGoalBySkillMaskAndTarget = cache;
                 }
             }
         }
-        return cache.computeIfAbsent(targetRegionId, this::computeCostToGoal);
+        return cache
+                .computeIfAbsent(skillMask, ignored -> new ConcurrentHashMap<>())
+                .computeIfAbsent(targetRegionId, target -> computeCostToGoal(target, skillMask));
     }
 
-    private Map<Integer, Integer> computeCostToGoal(int targetRegionId) {
+    private Map<Integer, Integer> computeCostToGoal(int targetRegionId, int skillMask) {
         // Reverse adjacency: forward edge r -> e.toRegionId (cost e.cost) becomes e.toRegionId -> r.
         Map<Integer, List<int[]>> rev = new HashMap<>();
         for (List<Edge> edges : outgoingByRegionId.values()) {
             for (Edge e : edges) {
+                if (!reachEdgeUsable(e, skillMask)) {
+                    continue;
+                }
                 // Cheapest launch across the (rope) window — admissible lower bound; flat for other edges.
                 rev.computeIfAbsent(e.toRegionId, k -> new ArrayList<>()).add(new int[]{e.fromRegionId, e.minLaunchCost()});
             }
@@ -644,18 +677,229 @@ final class BotNavigationGraph implements Serializable {
         return Math.abs((long) a.x - b.x) + Math.abs((long) a.y - b.y);
     }
 
+    private PortalRouteIndex buildPortalRouteIndex() {
+        List<Integer> targets = new ArrayList<>(portalRegionIds());
+        targets.sort(Integer::compare);
+        if (targets.isEmpty() || regions.isEmpty()) {
+            return new PortalRouteIndex(new int[0], PORTAL_ROUTE_SOURCE_BUCKETS, new int[0][]);
+        }
+
+        Edge[] indexedEdges = buildPortalRouteEdgesByIndex();
+        portalRouteEdgesByIndex = indexedEdges;
+        Map<Edge, Integer> edgeIndexByEdge = new HashMap<>();
+        for (int i = 0; i < indexedEdges.length; i++) {
+            edgeIndexByEdge.put(indexedEdges[i], i);
+        }
+
+        int[] targetIds = targets.stream().mapToInt(Integer::intValue).toArray();
+        int rowCount = regions.size() * PORTAL_ROUTE_SOURCE_BUCKETS;
+        int[][] nextEdges = new int[targetIds.length][rowCount];
+        for (int i = 0; i < nextEdges.length; i++) {
+            java.util.Arrays.fill(nextEdges[i], -1);
+        }
+
+        for (int targetIndex = 0; targetIndex < targetIds.length; targetIndex++) {
+            int targetRegionId = targetIds[targetIndex];
+            Map<Integer, Integer> costToPortal = computeCostToGoal(targetRegionId, 0);
+            for (int regionRow = 0; regionRow < regions.size(); regionRow++) {
+                Region region = regions.get(regionRow);
+                if (region.id == targetRegionId) {
+                    continue;
+                }
+                for (int bucket = 0; bucket < PORTAL_ROUTE_SOURCE_BUCKETS; bucket++) {
+                    Point from = portalRouteBucketPoint(region, bucket);
+                    Edge next = bestPortalRouteNextHop(region, from, costToPortal, edgeIndexByEdge);
+                    if (next != null) {
+                        nextEdges[targetIndex][regionRow * PORTAL_ROUTE_SOURCE_BUCKETS + bucket] =
+                                edgeIndexByEdge.get(next);
+                    }
+                }
+            }
+        }
+        return new PortalRouteIndex(targetIds, PORTAL_ROUTE_SOURCE_BUCKETS, nextEdges);
+    }
+
+    private Edge[] buildPortalRouteEdgesByIndex() {
+        List<Edge> edges = new ArrayList<>();
+        List<Integer> sourceRegionIds = new ArrayList<>(outgoingByRegionId.keySet());
+        sourceRegionIds.sort(Integer::compare);
+        for (int regionId : sourceRegionIds) {
+            edges.addAll(outgoingByRegionId.getOrDefault(regionId, List.of()));
+        }
+        return edges.toArray(new Edge[0]);
+    }
+
+    private Edge bestPortalRouteNextHop(Region region,
+                                        Point from,
+                                        Map<Integer, Integer> costToPortal,
+                                        Map<Edge, Integer> edgeIndexByEdge) {
+        if (!costToPortal.containsKey(region.id)) {
+            return null;
+        }
+        Edge best = null;
+        long bestCost = Long.MAX_VALUE;
+        int bestIndex = Integer.MAX_VALUE;
+        for (Edge edge : getOutgoing(region.id, 0)) {
+            Integer downstream = costToPortal.get(edge.toRegionId);
+            if (downstream == null) {
+                continue;
+            }
+            Point approach = edge.type == EdgeType.CLIMB && edge.launchMaxY > edge.launchMinY
+                    ? edge.pointAtNearestLaunchY(from.y)
+                    : edge.startPoint;
+            long cost = (long) portalRouteTravelCost(region, from, approach) + edge.minLaunchCost() + downstream;
+            int edgeIndex = edgeIndexByEdge.getOrDefault(edge, Integer.MAX_VALUE);
+            if (cost < bestCost || (cost == bestCost && edgeIndex < bestIndex)) {
+                best = edge;
+                bestCost = cost;
+                bestIndex = edgeIndex;
+            }
+        }
+        return best;
+    }
+
+    private int portalRouteTravelCost(Region region, Point from, Point to) {
+        if (region.isRopeRegion) {
+            int travel = Math.abs(to.y - from.y);
+            return Math.max(0, (int) Math.round((travel * 1000.0) / Math.max(1, BotMovementManager.cfg.CLIMB_SPEED_PXS)));
+        }
+        long travel = Math.abs((long) to.x - from.x) + Math.abs((long) to.y - from.y);
+        return Math.max(0, (int) Math.min(Integer.MAX_VALUE,
+                Math.round((travel * 1000.0) / Math.max(1.0, movementProfile.walkVelocityPxs()))));
+    }
+
+    private Point portalRouteBucketPoint(Region region, int bucket) {
+        int b = Math.clamp(bucket, 0, PORTAL_ROUTE_SOURCE_BUCKETS - 1);
+        if (region.isRopeRegion) {
+            int span = Math.max(0, region.maxY - region.minY);
+            int y = region.minY + (int) Math.round((span * (b + 0.5)) / PORTAL_ROUTE_SOURCE_BUCKETS);
+            return new Point(region.minX, y);
+        }
+        int span = Math.max(0, region.maxX - region.minX);
+        int x = region.minX + (int) Math.round((span * (b + 0.5)) / PORTAL_ROUTE_SOURCE_BUCKETS);
+        return region.pointAt(x);
+    }
+
+    private int portalRouteBucket(Region region, Point point) {
+        if (region == null || point == null) {
+            return 0;
+        }
+        int span = Math.max(1, region.isRopeRegion ? region.maxY - region.minY : region.maxX - region.minX);
+        int offset = region.isRopeRegion ? point.y - region.minY : point.x - region.minX;
+        int bucket = (int) ((long) Math.clamp(offset, 0, span) * PORTAL_ROUTE_SOURCE_BUCKETS / (span + 1L));
+        return Math.clamp(bucket, 0, PORTAL_ROUTE_SOURCE_BUCKETS - 1);
+    }
+
+    private Edge[] portalRouteEdgesByIndex() {
+        Edge[] edges = portalRouteEdgesByIndex;
+        if (edges == null) {
+            synchronized (this) {
+                edges = portalRouteEdgesByIndex;
+                if (edges == null) {
+                    edges = buildPortalRouteEdgesByIndex();
+                    portalRouteEdgesByIndex = edges;
+                }
+            }
+        }
+        return edges;
+    }
+
+    private Map<Integer, Integer> portalRouteRegionRowById() {
+        Map<Integer, Integer> rows = portalRouteRegionRowById;
+        if (rows == null) {
+            synchronized (this) {
+                rows = portalRouteRegionRowById;
+                if (rows == null) {
+                    rows = new HashMap<>();
+                    for (int i = 0; i < regions.size(); i++) {
+                        rows.put(regions.get(i).id, i);
+                    }
+                    portalRouteRegionRowById = rows;
+                }
+            }
+        }
+        return rows;
+    }
+
+    boolean hasPortalRouteTarget(int targetRegionId) {
+        return portalRouteTargetIndex(targetRegionId) >= 0;
+    }
+
+    List<Integer> portalRouteTargetRegionIds() {
+        if (portalRouteIndex.isEmpty()) {
+            return List.of();
+        }
+        List<Integer> ids = new ArrayList<>(portalRouteIndex.targetRegionIds.length);
+        for (int id : portalRouteIndex.targetRegionIds) {
+            ids.add(id);
+        }
+        return ids;
+    }
+
+    Edge portalNextHop(int startRegionId, int targetRegionId, Point startPoint) {
+        int targetIndex = portalRouteTargetIndex(targetRegionId);
+        if (targetIndex < 0) {
+            return null;
+        }
+        Integer regionRow = portalRouteRegionRowById().get(startRegionId);
+        Region region = regionsById.get(startRegionId);
+        if (regionRow == null || region == null) {
+            return null;
+        }
+        int bucket = portalRouteBucket(region, startPoint);
+        int row = regionRow * portalRouteIndex.sourceBucketsPerRegion + bucket;
+        int edgeIndex = portalRouteIndex.nextEdgeIndexByTargetAndRegionBucket[targetIndex][row];
+        if (edgeIndex < 0) {
+            return null;
+        }
+        Edge[] edges = portalRouteEdgesByIndex();
+        return edgeIndex < edges.length ? edges[edgeIndex] : null;
+    }
+
+    List<Edge> portalRoute(int startRegionId, int targetRegionId, Point startPoint) {
+        if (startRegionId == targetRegionId || !hasPortalRouteTarget(targetRegionId)) {
+            return List.of();
+        }
+        List<Edge> route = new ArrayList<>();
+        Set<Integer> seen = new HashSet<>();
+        int regionId = startRegionId;
+        Point point = startPoint;
+        while (regionId != targetRegionId && seen.add(regionId)) {
+            Edge next = portalNextHop(regionId, targetRegionId, point);
+            if (next == null) {
+                return List.of();
+            }
+            route.add(next);
+            regionId = next.toRegionId;
+            point = next.endPoint;
+        }
+        return regionId == targetRegionId ? route : List.of();
+    }
+
+    private int portalRouteTargetIndex(int targetRegionId) {
+        for (int i = 0; i < portalRouteIndex.targetRegionIds.length; i++) {
+            if (portalRouteIndex.targetRegionIds[i] == targetRegionId) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
     // --- Lazy region-route cache (runtime-only; populated by BotNavigationManager.findNextEdge) ---
-    // Holds the next-hop edge per (startRegion, targetRegion, routeBucket). Transient by design:
+    // Holds the next-hop edge per (startRegion, targetRegion, startPointBucket, targetPointBucket,
+    // routeBucket). Transient by design:
     // rebuilt per graph instance, so it dies with the graph version (no GRAPH_VERSION bump, no disk).
     // Buckets give crowd de-stacking without per-bot searches (see BotNavigationManager.ROUTE_BUCKETS).
     // ponytail: unbounded; bounded by regionPairs*buckets in practice, LRU only if a map ever blows up.
     static final Edge NO_EDGE = new Edge(-1, -1, EdgeType.WALK, new Point(), new Point(), 0, -1, 0, 0, 0, 0);
-    private transient volatile Map<Long, Edge[]> routeCache;
-    transient volatile boolean portalRoutesWarmed;
+    private record RouteCacheKey(int startRegionId, int targetRegionId, int startPointBucket, int targetPointBucket) {
+    }
+
+    private transient volatile Map<RouteCacheKey, Edge[]> routeCache;
     private transient volatile List<Integer> portalRegionIds;
 
-    private Map<Long, Edge[]> routeCache() {
-        Map<Long, Edge[]> c = routeCache;
+    private Map<RouteCacheKey, Edge[]> routeCache() {
+        Map<RouteCacheKey, Edge[]> c = routeCache;
         if (c == null) {
             synchronized (this) {
                 c = routeCache;
@@ -668,19 +912,15 @@ final class BotNavigationGraph implements Serializable {
         return c;
     }
 
-    private static long routeKey(int startRegionId, int targetRegionId) {
-        return ((long) startRegionId << 32) | (targetRegionId & 0xffffffffL);
-    }
-
     // Hit/miss counters for A/B-ing the route cache (did it actually save A* calls?). Static + cumulative
     // since server start, so they survive graph rebuilds — exactly what a session-long measurement wants.
     // Exposed on /api/botdebug as "routeCache". ponytail: no reset endpoint, restart the server to zero them.
     static final java.util.concurrent.atomic.LongAdder cacheHits = new java.util.concurrent.atomic.LongAdder();
     static final java.util.concurrent.atomic.LongAdder cacheMisses = new java.util.concurrent.atomic.LongAdder();
 
-    /** Cached next hop ({@link #NO_EDGE} = direct walk), or {@code null} if not computed for this (pair, bucket). */
-    Edge cachedNextHop(int startRegionId, int targetRegionId, int bucket) {
-        Edge[] slots = routeCache().get(routeKey(startRegionId, targetRegionId));
+    /** Cached next hop ({@link #NO_EDGE} = direct walk), or {@code null} if not computed for this key. */
+    Edge cachedNextHop(int startRegionId, int targetRegionId, int startPointBucket, int targetPointBucket, int bucket) {
+        Edge[] slots = routeCache().get(new RouteCacheKey(startRegionId, targetRegionId, startPointBucket, targetPointBucket));
         Edge hop = slots == null ? null : slots[bucket];
         (hop == null ? cacheMisses : cacheHits).increment();
         return hop;
@@ -692,8 +932,11 @@ final class BotNavigationGraph implements Serializable {
         return "{\"hits\":" + h + ",\"misses\":" + m + ",\"rate\":" + (t == 0 ? 0 : (double) h / t) + "}";
     }
 
-    void putNextHop(int startRegionId, int targetRegionId, int bucket, int bucketCount, Edge edge) {
-        routeCache().computeIfAbsent(routeKey(startRegionId, targetRegionId), k -> new Edge[bucketCount])[bucket] = edge;
+    void putNextHop(int startRegionId, int targetRegionId, int startPointBucket, int targetPointBucket,
+                    int bucket, int bucketCount, Edge edge) {
+        routeCache()
+                .computeIfAbsent(new RouteCacheKey(startRegionId, targetRegionId, startPointBucket, targetPointBucket),
+                        k -> new Edge[bucketCount])[bucket] = edge;
     }
 
     /** Distinct regions that contain a portal (PORTAL edge sources); the hubs warmed at first use. */
