@@ -394,7 +394,9 @@ final class BotGrindAdvisor {
         double totalWornOffense = totalWornValue(bot, ii);
         Map<Short, Double> wornScoreBySlot = new HashMap<>();
         Map<Integer, double[]> rollScoreCache = new HashMap<>(); // per pass: same item drops from many mobs
-        Map<Integer, Double> scrollGainCache = new HashMap<>();
+        // Per pass: an item's gain is mob-independent (depends only on bot gear/asp/acc), but the same
+        // item drops from many mobs — value it once. Covers both scroll and equip gains.
+        Map<Integer, Double> gainByItem = new HashMap<>();
         Map<Integer, MobProfile> profiles = new HashMap<>();
 
         long tBuild = BotPerformanceMonitor.start();
@@ -432,7 +434,7 @@ final class BotGrindAdvisor {
                 }
                 long tGear = BotPerformanceMonitor.start();
                 List<GearProspect> gear = gearByMob.computeIfAbsent(e.getKey(), id ->
-                        gearProspects(bot, ii, id, wornScoreBySlot, rollScoreCache, scrollGainCache,
+                        gearProspects(bot, ii, id, wornScoreBySlot, rollScoreCache, gainByItem,
                                 totalWornOffense, asp, baseHit, botAcc));
                 BotPerformanceMonitor.recordSince("grind.gear", tGear);
                 pointsByMob.put(new MobProfile(p.mobId(), p.mobName(), p.level(), p.avoid(), p.exp(),
@@ -856,7 +858,7 @@ final class BotGrindAdvisor {
     private static List<GearProspect> gearProspects(Character bot, ItemInformationProvider ii, int mobId,
                                                     Map<Short, Double> wornScoreBySlot,
                                                     Map<Integer, double[]> rollScoreCache,
-                                                    Map<Integer, Double> scrollGainCache,
+                                                    Map<Integer, Double> gainByItem,
                                                     double totalWornOffense,
                                                     MobProfile asp, double baseHit, int botAcc) {
         List<int[]> drops = gearDropsByMob().get(mobId);
@@ -866,9 +868,13 @@ final class BotGrindAdvisor {
         List<GearProspect> out = new ArrayList<>(2);
         for (int[] drop : drops) {
             int itemId = drop[0];
-            double gain = itemId / 10000 == BotScrollManager.SCROLL_ITEM_PREFIX
-                    ? scrollGainCache.computeIfAbsent(itemId, id -> scrollGains.gain(bot, id))
-                    : equipGain(bot, ii, itemId, wornScoreBySlot, rollScoreCache, asp, baseHit, botAcc);
+            // gain is mob-independent — memoize across mobs (scrolls and equips alike) so an item
+            // dropping from N mobs is valued once, not N times (equipGain re-derives catalog stats,
+            // accuracy hit-factor, and the acquire-gain roll each call).
+            double gain = gainByItem.computeIfAbsent(itemId, id ->
+                    id / 10000 == BotScrollManager.SCROLL_ITEM_PREFIX
+                            ? scrollGains.gain(bot, id)
+                            : equipGain(bot, ii, id, wornScoreBySlot, rollScoreCache, asp, baseHit, botAcc));
             if (gain < MIN_GEAR_GAIN_SCORE) {
                 continue;
             }
