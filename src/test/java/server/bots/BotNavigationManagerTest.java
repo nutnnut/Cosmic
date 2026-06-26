@@ -358,6 +358,32 @@ class BotNavigationManagerTest {
     }
 
     @Test
+    void ropeExitEdgeCarriesYLaunchWindowAndSteersWithinIt() {
+        // Rope-exit CLIMB: fixed x (ropeX=100), launches from any climb height in the Y window [150,260].
+        BotNavigationGraph.Edge e = new BotNavigationGraph.Edge(
+                5, 6, BotNavigationGraph.EdgeType.CLIMB, new Point(100, 200), new Point(140, 260),
+                100, 100,   // degenerate X window (fixed rope x)
+                150, 260,   // Y launch window
+                3, 0, 100, 140, 280, 50);
+        assertTrue(e.containsLaunchY(150));
+        assertTrue(e.containsLaunchY(260));
+        assertFalse(e.containsLaunchY(149));
+        assertTrue(e.containsLaunchY(145, 10), "tolerance widens the window");
+        // nearest in-window launch point keeps the rope x
+        assertEquals(new Point(100, 150), e.pointAtNearestLaunchY(120));
+        assertEquals(new Point(100, 260), e.pointAtNearestLaunchY(300));
+        // steer clamps to the window with a 4px inset (LAUNCH_WINDOW_STEER_INSET_PX)
+        assertEquals(154, BotNavigationManager.steerYWithinLaunchWindow(e, 100));
+        assertEquals(256, BotNavigationManager.steerYWithinLaunchWindow(e, 999));
+        assertEquals(200, BotNavigationManager.steerYWithinLaunchWindow(e, 200));
+        // a non-rope edge has a degenerate Y window (= startPoint.y), so containsLaunchY is an exact check
+        BotNavigationGraph.Edge ground = new BotNavigationGraph.Edge(
+                1, 2, BotNavigationGraph.EdgeType.WALK, new Point(0, 0), new Point(10, 0), 0, -1, 0, 0, 0, 0);
+        assertTrue(ground.containsLaunchY(0));
+        assertFalse(ground.containsLaunchY(1));
+    }
+
+    @Test
     void costToGoalIsMinReverseDijkstraAndOmitsRegionsThatCannotReachGoal() {
         // 1 --walk(100)--> 2 --walk(100)--> 3(goal); 1 --jump(150)--> 3 direct; 3 --drop(50)--> 4 (dead end vs goal).
         BotNavigationGraph.Region r1 = new BotNavigationGraph.Region(
@@ -749,7 +775,11 @@ class BotNavigationManagerTest {
         BotNavigationGraph.Edge ropeExit = path.getFirst();
         assertEquals(BotNavigationGraph.EdgeType.CLIMB, ropeExit.type);
         assertTrue(ropeExit.launchStepX > 0);
-        assertEquals(new Point(1265, 290), ropeExit.startPoint);
+        // Rope-exit now carries a Y launch window (not a single authored pixel). It fires at the rope x and
+        // its window reaches up to the bot's near-top climb height, so the bot can jump off before physics
+        // auto-dismounts upward.
+        assertEquals(1265, ropeExit.startPoint.x);
+        assertTrue(ropeExit.containsLaunchY(botPos.y), "Y window includes the bot's top-rope climb height");
 
         Character bot = mockBot(botPos, lithHarbor);
         BotEntry entry = new BotEntry(bot, null, null);
@@ -763,7 +793,10 @@ class BotNavigationManagerTest {
         assertTrue(directive.consumedTick);
         assertTrue(entry.inAir);
         assertFalse(entry.climbing);
-        assertEquals(new Point(1265, 290), bot.getPosition());
+        // Launched from within the verified window at the rope x (no longer snapped to one fixed pixel).
+        assertEquals(1265, bot.getPosition().x);
+        assertTrue(ropeExit.containsLaunchY(bot.getPosition().y),
+                "bot launched from within the rope-exit Y window");
     }
 
     @Test
