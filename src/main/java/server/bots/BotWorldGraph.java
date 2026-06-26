@@ -467,6 +467,9 @@ final class BotWorldGraph {
             new ScriptedEntrance(100000200, "in02", 100000201),
             // 4th job: Leafre -> Forest of the Priest 4th-job room, script minar_job4
             new ScriptedEntrance(240010500, "in00", 240010501),
+            // Kerning subway: Ticketing Booth -> Line 1 <Area 1>, script subway_in2 (pt=7, tm=999999999).
+            // Forward-unreachable grind cluster (64 Bubbling); rest of Line 1 reachable by normal portals from here.
+            new ScriptedEntrance(103000100, "in00", 103000101),
             // Return legs (one-way regions, Lith-anchored audit) -----------------------------------------
             // Snow Island: Dangerous Forest field -> Puro's boat dock 140020300, script enterPort (then
             // the Puro ferry returns to Lith). Without this the whole Rien/Snow Island is a can't-return trap.
