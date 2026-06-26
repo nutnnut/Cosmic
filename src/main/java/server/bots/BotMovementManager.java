@@ -1120,24 +1120,49 @@ class BotMovementManager {
 
     /** Broadcast a flash jump so observers render the dash animation instead of a plain air-glide. The
      *  client plays the flash-jump action only for movement command type 6 ("fj", a RelativeLifeMovement:
-     *  relDX, relDY, newstate, duration — see AbstractMovementPacketHandler). The bot's normal per-tick
-     *  type-0 absolute move conveys position but not the FJ action. Fired once at the apex impulse; the
-     *  arc's remaining type-0 ticks carry the rest of the trajectory. Mirrors {@link #broadcastTeleport}. */
+     *  see AbstractMovementPacketHandler). The bot's normal per-tick type-0 absolute move conveys position
+     *  but not the FJ action. Fired once at the apex impulse; the arc's remaining type-0 ticks carry the
+     *  rest of the trajectory. Mirrors {@link #broadcastTeleport}.
+     *
+     *  <p>The fj fragment MUST be preceded, in the SAME path, by an absolute fragment. Verified against the
+     *  v83 client (CMovePath::Decode @ 0x0068a33c): a type-6 fragment does NOT read x/y from the packet —
+     *  the client sets its position to the PREVIOUS fragment's position and stores the two shorts into the
+     *  velocity slots. The "previous position" register is seeded with packet-header garbage, so a LONE
+     *  fj fragment renders the bot off-screen for one frame until the next absolute tick snaps it back.
+     *  Every real flash-jump capture leads with an absolute cmd-0 (logs/monitored-packets-flashjump*). */
     static void broadcastFlashJump(BotEntry entry, int relDx, int relDy) {
         Character bot = entry.bot;
         BotPhysicsEngine.MovementSnapshot snapshot = BotPhysicsEngine.movementSnapshot(entry);
         int stance = snapshot.stance(); // JUMP stance while airborne
         int fhId = resolveBroadcastFhId(entry, bot);
-        byte[] data = new byte[9];
-        data[0] = 1;          // one command
-        data[1] = 6;          // "fj" — RelativeLifeMovement
-        data[2] = (byte) (relDx & 0xFF);
-        data[3] = (byte) (relDx >> 8);
-        data[4] = (byte) (relDy & 0xFF);
-        data[5] = (byte) (relDy >> 8);
-        data[6] = (byte) stance;
-        data[7] = (byte) (BotPhysicsEngine.cfg.TICK_MS & 0xFF);
-        data[8] = (byte) (BotPhysicsEngine.cfg.TICK_MS >> 8);
+        int x = bot.getPosition().x;
+        int y = bot.getPosition().y;
+        int dur = BotPhysicsEngine.cfg.TICK_MS;
+        byte[] data = new byte[23];
+        int i = 0;
+        data[i++] = 2;                       // two commands: absolute anchor + fj
+        data[i++] = 0;                       // cmd 0 — absolute, anchors the fj fragment's position
+        data[i++] = (byte) (x & 0xFF);
+        data[i++] = (byte) (x >> 8);
+        data[i++] = (byte) (y & 0xFF);
+        data[i++] = (byte) (y >> 8);
+        data[i++] = (byte) (snapshot.velX() & 0xFF);
+        data[i++] = (byte) (snapshot.velX() >> 8);
+        data[i++] = (byte) (snapshot.velY() & 0xFF);
+        data[i++] = (byte) (snapshot.velY() >> 8);
+        data[i++] = (byte) (fhId & 0xFF);
+        data[i++] = (byte) (fhId >> 8);
+        data[i++] = (byte) stance;
+        data[i++] = (byte) (dur & 0xFF);
+        data[i++] = (byte) (dur >> 8);
+        data[i++] = 6;                       // cmd 6 "fj" — RelativeLifeMovement (plays the dash action)
+        data[i++] = (byte) (relDx & 0xFF);
+        data[i++] = (byte) (relDx >> 8);
+        data[i++] = (byte) (relDy & 0xFF);
+        data[i++] = (byte) (relDy >> 8);
+        data[i++] = (byte) stance;
+        data[i++] = 0;                       // fj duration 0 — matches real captures (no extrapolation)
+        data[i++] = 0;
         InPacket packet = new ByteBufInPacket(Unpooled.wrappedBuffer(data));
         Packet movePacket = PacketCreator.movePlayer(bot.getId(), packet, data.length);
         bot.getMap().broadcastMessage(bot, movePacket, false);
