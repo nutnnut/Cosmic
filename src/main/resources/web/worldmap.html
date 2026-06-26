@@ -26,6 +26,7 @@
   .sub{color:#67748c;font-size:11px;margin:0 0 10px}
   button{background:#2a3346;color:#cdd6e4;border:1px solid #3a4761;border-radius:4px;padding:5px 9px;cursor:pointer;margin:2px 0}
   button:hover{background:#34405a}
+  .ggBtn{font-size:10px;padding:1px 6px;margin:0 0 0 4px}
   a{color:#6cc6ff}
   input{width:100%;box-sizing:border-box;background:#0d1017;color:#cdd6e4;border:1px solid #283143;border-radius:4px;padding:5px 7px;margin:4px 0}
   #status{margin-top:8px;color:#9fb0c8}
@@ -110,7 +111,7 @@
   <div id="fontRow">font size<input id="fontSlider" type="range" min="10" max="22" value="13"></div>
   <h1>Bot World Map</h1>
   <p class="sub">drag map to move &middot; click map to resize &middot; scroll to zoom<br>
-     click node: detail &middot; right-click node: custom anchor (relative/absolute)</p>
+     click node: detail &middot; middle-click node: map graph &middot; right-click node: custom anchor (relative/absolute)</p>
   <button id="lockBtn">&#128274; Locked</button>
   <button id="export">Export positions</button>
   <button id="fit">Reset view</button>
@@ -367,7 +368,9 @@ function nodeBlock(inst){
   const head = '<div class="meta" style="margin-top:6px">WorldMap'+inst.wm+(flags?' &middot; '+flags:'')+'</div>';
   return head + inst.maps.map((m,i) =>
     '<details data-map="'+m+'"'+(occupants(m).length ? ' open' : '')+' style="margin-top:4px">'
-    + '<summary>'+esc(inst.names[i])+' ('+m+')</summary>'
+    + '<summary>'+esc(inst.names[i])+' ('+m+') '
+    + '<button class="ggBtn" onclick="event.stopPropagation();location.href=\'/mapgraph?id='+m+'\'" title="open map nav-graph preview">map graph</button>'
+    + '</summary>'
     + '<div class="body" style="margin:4px 0 0 10px">loading…</div></details>').join('');
 }
 function fetchMapInfo(mapId, token){
@@ -654,6 +657,8 @@ function mapHitsHtml(hits){
         showDetail(inst);
       });
       circle.on('contextmenu', e => { e.evt.preventDefault(); e.cancelBubble = true; cycleCustom(inst); });
+      circle.on('mousedown', e => { if(e.evt.button === 1){ e.evt.preventDefault(); e.cancelBubble = true;
+        window.open('/mapgraph?id=' + inst.id, '_blank'); } });   // middle-click: map graph in a new tab
       circle.on('dragmove', () => { const p = inst.circle.position();
         if(inst.center) inst.center.position(p); drawEdges(inst.wm); });
       circle.on('dragend', () => {

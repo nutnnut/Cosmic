@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Map Graph</title>
+<script src="https://unpkg.com/konva@9/konva.min.js"></script>
+<style>
+  html,body{margin:0;height:100%;font:13px system-ui,sans-serif;background:#10141c;color:#cdd6e4;overflow:hidden}
+  #bar{position:absolute;top:0;left:0;right:0;height:42px;box-sizing:border-box;display:flex;align-items:center;
+       gap:12px;padding:0 12px;background:#171c26;border-bottom:1px solid #283143;z-index:5;overflow:hidden}
+  #bar h1{font-size:14px;margin:0;color:#9fb0c8;white-space:nowrap}
+  #bar .sub{color:#67748c;font-size:11px}
+  button{background:#2a3346;color:#cdd6e4;border:1px solid #3a4761;border-radius:4px;padding:5px 9px;cursor:pointer}
+  button:hover{background:#34405a}
+  #legend{display:flex;gap:10px;flex-wrap:wrap;font-size:11px;color:#8a99b3;margin-left:auto}
+  #legend span{display:inline-flex;align-items:center;gap:4px}
+  #legend i{width:11px;height:9px;display:inline-block}
+  .ov{border-radius:50%}
+  #c{position:absolute;top:42px;left:0;right:0;bottom:0;touch-action:none}
+  #tip{position:absolute;display:none;pointer-events:none;background:#0d1017;border:1px solid #3a4761;
+       border-radius:4px;padding:5px 8px;font-size:11px;line-height:1.4;z-index:10;max-width:240px;
+       box-shadow:0 2px 8px rgba(0,0,0,.5)}
+  #status{position:absolute;left:10px;bottom:8px;font-size:11px;color:#67748c;z-index:6}
+  #bar select{background:#0d1017;color:#cdd6e4;border:1px solid #3a4761;border-radius:4px;padding:4px 6px;font-size:11px}
+  #info{position:absolute;right:10px;top:52px;width:300px;max-height:calc(100% - 64px);overflow:auto;
+        background:#0d1017;border:1px solid #3a4761;border-radius:6px;padding:8px 10px;font:11px/1.55 monospace;
+        color:#cdd6e4;z-index:8;display:none;white-space:pre-wrap;box-shadow:0 2px 10px rgba(0,0,0,.5)}
+  #info .ihead{font-weight:bold;color:#9fb0c8;margin-bottom:5px;font-family:system-ui,sans-serif}
+  #info .x{float:right;cursor:pointer;color:#8a99b3}
+</style>
+</head>
+<body>
+<div id="bar">
+  <button id="back" title="back">&#8592; Back</button>
+  <h1 id="title">Map Graph</h1>
+  <button id="fitBtn" title="reset view">Fit</button>
+  <label class="sub" style="white-space:nowrap">graph <select id="profile" title="cached movement-profile graph"></select></label>
+  <div id="legend">
+    <span><i class="ov" style="background:#39d353"></i>foothold</span>
+    <span><i class="ov" style="background:#6cc6ff"></i>rope</span>
+    <span><i class="ov" style="background:#ff4d4d"></i>char</span>
+    <span><i style="border:1px solid #ffd54a"></i>npc</span>
+    <span><i class="ov" style="background:#ffd54a"></i>in-map portal</span>
+    <span><i class="ov" style="background:#fff"></i>cross portal</span>
+    <span><i style="border:1px solid #fff"></i>collision warp</span>
+    <span><i style="background:#39d353;height:2px"></i>jump</span>
+    <span><i style="background:#6cc6ff;height:2px"></i>portal edge</span>
+  </div>
+</div>
+<div id="c"></div>
+<div id="tip"></div>
+<div id="info"></div>
+<div id="status">loading…</div>
+<script>
+const P = new URLSearchParams(location.search);
+const mapId = P.get('id');
+const host = document.getElementById('c');
+const status = t => { document.getElementById('status').textContent = t; };
+document.getElementById('back').onclick = () => { if(history.length > 1) history.back(); else location.href = '/map'; };
+
+const COL = {
+  fh:'#39d353', rope:'#6cc6ff',
+  eJump:'#39d353', ePortal:'#6cc6ff', eRest:'#6b7689',
+  npc:'#ffd54a', pin:'#ffd54a', pcross:'#ffffff', pcoll:'#ffffff', char:'#ff4d4d'
+};
+
+const stage = new Konva.Stage({container:'c', width:host.clientWidth, height:host.clientHeight, draggable:true});
+const layer = new Konva.Layer();       // regions, edges, npcs, portals (static)
+const charLayer = new Konva.Layer();   // live characters (repainted on poll)
+stage.add(layer); stage.add(charLayer);
+let B = {minX:0,minY:0,maxX:0,maxY:0};
+let markers = [];       // static markers: {resize(scale)}
+let charMarkers = [];   // char markers: {resize(scale)}
+let regionShapes = {};  // regionId -> {report:[str], shapes:[Konva.Line], base:color}
+let selRegion = null;   // currently selected region id (highlighted + shown in #info)
+let prof = null;        // selected movement profile {sp,jmp,snow}; null = server default (base)
+
+// ---- tooltip ----
+const tip = document.getElementById('tip');
+function showTip(html, ev){ tip.innerHTML = html; tip.style.display='block';
+  tip.style.left=(ev.clientX+14)+'px'; tip.style.top=(ev.clientY+14)+'px'; }
+function hideTip(){ tip.style.display='none'; }
+function bindTip(shape, html){
+  shape.on('mouseover', e => { document.body.style.cursor='pointer'; showTip(html, e.evt); });
+  shape.on('mousemove', e => { if(tip.style.display==='block') showTip(html, e.evt); });
+  shape.on('mouseout', () => { document.body.style.cursor='default'; hideTip(); });
+}
+const esc = s => String(s==null?'':s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+
+// ---- shape helpers (markers keep a constant screen size via resize(scale)) ----
+function addLine(pts, color, width, layerRef, arc, dash){
+  const o = {points:pts, stroke:color, strokeWidth:width, strokeScaleEnabled:false,
+             listening:false, lineCap:'round', lineJoin:'round'};
+  if(arc) o.tension = 0.5;
+  if(dash) o.dash = dash;
+  (layerRef||layer).add(new Konva.Line(o));
+}
+// a clickable region line (thin visual, fat hit area) — click shows the region's report in #info
+function regionLine(pts, color, dash){
+  const o = {points:pts, stroke:color, strokeWidth:2, strokeScaleEnabled:false, lineCap:'round', hitStrokeWidth:12};
+  if(dash) o.dash = dash;
+  const l = new Konva.Line(o);
+  l.on('mouseover', () => document.body.style.cursor = 'pointer');
+  l.on('mouseout', () => document.body.style.cursor = 'default');
+  layer.add(l);
+  return l;
+}
+function addOval(x, y, rx, ry, fill, stroke, html, layerRef, bucket){
+  const e = new Konva.Ellipse({x, y, radiusX:rx, radiusY:ry, fill, stroke:stroke||undefined,
+                               strokeWidth:stroke?1.2:0, strokeScaleEnabled:false});
+  if(html) bindTip(e, html);
+  (layerRef||layer).add(e);
+  bucket.push({resize:s => { e.radiusX(rx/s); e.radiusY(ry/s); }});
+}
+function addBox(x, y, sz, stroke, fill, html, layerRef, bucket){
+  const r = new Konva.Rect({x, y, width:sz, height:sz, offsetX:sz/2, offsetY:sz/2,
+                            stroke, fill:fill||undefined, strokeWidth:1.4, strokeScaleEnabled:false});
+  if(html) bindTip(r, html);
+  (layerRef||layer).add(r);
+  bucket.push({resize:s => { const w=sz/s; r.width(w); r.height(w); r.offsetX(w/2); r.offsetY(w/2); }});
+}
+
+// ---- render ----
+function edgeStyle(t){ return t==='JUMP' ? COL.eJump : t==='PORTAL' ? COL.ePortal : COL.eRest; }
+function renderStatic(d){
+  layer.destroyChildren(); markers = []; selRegion = null; hideInfo();
+  // edges first (under the structure), JUMP as a lifted arc
+  for(const e of d.edges){
+    const col = edgeStyle(e.t);
+    if(e.t === 'JUMP'){
+      const mx=(e.fx+e.tx)/2, top=Math.min(e.fy,e.ty);
+      const h=Math.min(80, Math.max(14, Math.hypot(e.tx-e.fx, e.ty-e.fy)*0.25));
+      addLine([e.fx,e.fy, mx,top-h, e.tx,e.ty], col, e.t==='PORTAL'?1.4:1.1, layer, true);
+    } else {
+      addLine([e.fx,e.fy, e.tx,e.ty], col, e.t==='PORTAL'?1.4:1.1, layer,
+              false, (e.t==='TELEPORT'||e.t==='FLASH_JUMP') ? [5,4] : null);
+    }
+  }
+  // regions: foothold segments (green) + rope spans (light-blue, ladders dashed); clickable -> report
+  regionShapes = {};
+  for(const r of d.regions){
+    const shapes = [];
+    if(r.kind === 'rope'){
+      shapes.push(regionLine([r.x,r.y1, r.x,r.y2], COL.rope, r.ladder ? [5,4] : null));
+    } else {
+      for(const s of r.segs) shapes.push(regionLine([s[0],s[1], s[2],s[3]], COL.fh, null));
+    }
+    regionShapes[r.id] = {report:r.report||[], shapes, base:r.kind==='rope'?COL.rope:COL.fh};
+    for(const sh of shapes) sh.on('click tap', e => { e.cancelBubble = true; selectRegion(r.id); });
+  }
+  // npcs (yellow box) + portals (in=yellow oval, cross=white oval, collision=white box)
+  for(const n of d.npcs) addBox(n.x, n.y, 11, COL.npc, null, '<b>NPC</b> '+esc(n.n), layer, markers);
+  for(const p of d.portals){
+    if(p.k === 'coll') addBox(p.x, p.y, 14, COL.pcoll, null,
+        '<b>collision warp</b><br>'+esc(p.n)+(p.tm>0?' &rarr; '+p.tm:''), layer, markers);
+    else addOval(p.x, p.y, 5.5, 4.2, p.k==='in'?COL.pin:COL.pcross, '#0d1017',
+        '<b>'+(p.k==='in'?'in-map portal':'cross portal')+'</b><br>'+esc(p.n)+(p.tm>0&&p.k!=='in'?' &rarr; '+p.tm:''),
+        layer, markers);
+  }
+}
+function renderChars(chars){
+  charLayer.destroyChildren(); charMarkers = [];
+  for(const c of chars)
+    addOval(c.x, c.y, 5, 3.6, COL.char, '#3a0d0d',
+      (c.bot?'&#129302; ':'&#128100; ')+esc(c.n), charLayer, charMarkers);
+  applyScale();
+  charLayer.batchDraw();
+}
+
+function hideInfo(){ const i = document.getElementById('info'); if(i) i.style.display = 'none'; }
+// click a region: highlight its lines white + show its server-computed report (SSOT with !pos)
+function selectRegion(id){
+  if(selRegion != null && regionShapes[selRegion])
+    for(const sh of regionShapes[selRegion].shapes){ sh.stroke(regionShapes[selRegion].base); sh.strokeWidth(2); }
+  selRegion = id;
+  if(id == null || !regionShapes[id]){ hideInfo(); layer.batchDraw(); return; }
+  for(const sh of regionShapes[id].shapes){ sh.stroke('#ffffff'); sh.strokeWidth(3); }
+  const info = document.getElementById('info');
+  info.style.display = 'block';
+  info.innerHTML = '<div class="ihead">Region '+id+'<span class="x" onclick="selectRegion(null)">&times;</span></div>'
+    + regionShapes[id].report.map(esc).join('<br>');
+  layer.batchDraw();
+}
+// populate the cached-graph picker; keep `prof` in sync with what the server actually served
+function buildProfileDropdown(profiles, active){
+  const sel = document.getElementById('profile');
+  const key = p => p.sp+'_'+p.jmp+'_'+(p.snow?1:0);
+  const isBase = p => p.sp===100 && p.jmp===100 && !p.snow;
+  sel.innerHTML = (profiles||[]).map(p =>
+    '<option value="'+key(p)+'">sp'+p.sp+' jmp'+p.jmp+(p.snow?' snow':'')+(isBase(p)?' (base)':'')+'</option>').join('');
+  if(active) sel.value = key(active);
+  prof = active || null;
+}
+
+function applyScale(){
+  const s = stage.scaleX();
+  markers.forEach(m => m.resize(s));
+  charMarkers.forEach(m => m.resize(s));
+  layer.batchDraw(); charLayer.batchDraw();
+}
+function fit(){
+  const W=stage.width(), H=stage.height(), pad=46;
+  const bw=Math.max(1, B.maxX-B.minX), bh=Math.max(1, B.maxY-B.minY);
+  const s=Math.min((W-2*pad)/bw, (H-2*pad)/bh);
+  stage.scale({x:s, y:s});
+  stage.position({x:(W-bw*s)/2 - B.minX*s, y:(H-bh*s)/2 - B.minY*s});
+  applyScale();
+}
+document.getElementById('fitBtn').onclick = fit;
+
+stage.on('wheel', e => {
+  e.evt.preventDefault();
+  const old=stage.scaleX(), p=stage.getPointerPosition();
+  const to={x:(p.x-stage.x())/old, y:(p.y-stage.y())/old};
+  const ns=e.evt.deltaY>0 ? old/1.1 : old*1.1;
+  stage.scale({x:ns, y:ns});
+  stage.position({x:p.x-to.x*ns, y:p.y-to.y*ns});
+  applyScale();
+});
+window.addEventListener('resize', () => { stage.size({width:host.clientWidth, height:host.clientHeight}); stage.batchDraw(); });
+
+function curQuery(){
+  let q = 'id=' + encodeURIComponent(mapId);
+  if(prof) q += '&sp='+prof.sp+'&jmp='+prof.jmp+'&snow='+(prof.snow?1:0);
+  return q;
+}
+async function load(refit){
+  let d;
+  try { d = await (await fetch('/api/mapgraph?'+curQuery())).json(); }
+  catch(e){ status('failed to load /api/mapgraph'); return; }
+  if(d.error){ status('map '+mapId+': '+d.error); return; }
+  B = d.bounds;
+  document.getElementById('title').innerHTML = esc(d.name)+' <span class="sub">('+d.map+')</span>';
+  document.title = d.name+' — Map Graph';
+  buildProfileDropdown(d.profiles, d.active);
+  renderStatic(d);
+  renderChars(d.chars||[]);
+  if(refit) fit(); else applyScale();
+  status(d.regions.length+' regions · '+d.edges.length+' edges · '+d.portals.length+' portals · '
+         +d.npcs.length+' npcs · '+(d.chars||[]).length+' chars · click a region for details');
+}
+document.getElementById('profile').onchange = e => {
+  const [sp,jmp,snow] = e.target.value.split('_');
+  prof = {sp:+sp, jmp:+jmp, snow: snow==='1'};
+  load(true);
+};
+async function pollChars(){
+  try { const d = await (await fetch('/api/mapgraph?'+curQuery())).json(); if(!d.error) renderChars(d.chars||[]); }
+  catch(e){ /* keep last */ }
+  setTimeout(pollChars, 2000);
+}
+(async function init(){
+  if(!mapId){ status('no ?id= map given'); return; }
+  await load(true);
+  pollChars();
+})();
+</script>
+</body>
+</html>

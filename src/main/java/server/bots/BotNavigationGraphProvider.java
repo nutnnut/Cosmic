@@ -346,6 +346,18 @@ final class BotNavigationGraphProvider {
         return getOrStartGraphLoad(map, movementProfile, key, false).join();
     }
 
+    /** Movement profiles that currently have a graph cached for {@code mapId} — the web map-graph
+     *  profile picker lists these (default is the speed100/jump100 {@link BotMovementProfile#base()}). */
+    static List<BotMovementProfile> cachedProfiles(int mapId) {
+        List<BotMovementProfile> out = new ArrayList<>();
+        for (GraphCacheKey k : GRAPHS.keySet()) {
+            if (k.mapId() == mapId) {
+                out.add(new BotMovementProfile(k.totalSpeedStat(), k.totalJumpStat(), k.snowShoes()));
+            }
+        }
+        return out;
+    }
+
     /** Returns the cached graph without triggering a build. */
     static BotNavigationGraph peekGraph(MapleMap map) {
         if (map == null) {

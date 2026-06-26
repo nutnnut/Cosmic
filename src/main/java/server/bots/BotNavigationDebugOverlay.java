@@ -13,10 +13,13 @@ import tools.PacketCreator;
 
 import java.awt.*;
 import java.util.ArrayList;
+import java.util.EnumSet;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ScheduledFuture;
 
@@ -68,6 +71,88 @@ public final class BotNavigationDebugOverlay {
 
         replaceOverlay(viewer, overlay.objectIds());
         return buildGraphMessage(graph, overlay);
+    }
+
+    /** Debug lines for the nav region the {@code viewer} is standing on — backs the {@code !pos} command.
+     *  Uses the viewer's OWN movement profile ({@link BotMovementProfile#fromCharacter}) and the same
+     *  position→region resolution the bot uses ({@link BotNavigationGraph#findRegionId}), then delegates
+     *  to {@link #describeRegion} (the SSOT shared with the web map-graph region click). */
+    public static List<String> posReport(Character viewer) {
+        List<String> out = new ArrayList<>();
+        MapleMap map = viewer.getMap();
+        Point pos = viewer.getPosition();
+        BotMovementProfile profile = BotMovementProfile.fromCharacter(viewer);
+        out.add("pos (" + pos.x + "," + pos.y + ")  map " + map.getId()
+                + "  graph sp" + profile.totalSpeedStat() + " jmp" + profile.totalJumpStat()
+                + (profile.snowShoes() ? " snow" : ""));
+        BotNavigationGraph graph = BotNavigationGraphProvider.getGraph(map, profile);
+        if (graph == null) {
+            out.add("nav graph unavailable for this map");
+            return out;
+        }
+        int regionId = graph.findRegionId(map, pos);
+        if (regionId < 0) {
+            out.add("not on any nav region (mid-air / off-graph)  regions=" + graph.regions.size());
+            return out;
+        }
+        out.addAll(describeRegion(graph, regionId));
+        return out;
+    }
+
+    /** Human-readable debug lines for one nav region — the SSOT shared by the {@code !pos} command and
+     *  the web map-graph region click: id, kind (platform/rope/ladder), bounds, footholds, and every
+     *  outgoing edge grouped by destination region (edge types, {@code <->} when bidirectional). */
+    static List<String> describeRegion(BotNavigationGraph graph, int regionId) {
+        List<String> out = new ArrayList<>();
+        BotNavigationGraph.Region r = graph.getRegion(regionId);
+        if (r == null) {
+            out.add("region " + regionId + ": not found in graph");
+            return out;
+        }
+        String kind = r.isRopeRegion ? (r.isLadder ? "ladder" : "rope") : "platform";
+        out.add("region " + r.id + " — " + kind
+                + "  x[" + r.minX + ".." + r.maxX + "] y[" + r.minY + ".." + r.maxY + "]");
+        if (r.isRopeRegion) {
+            out.add("  rope span " + r.height() + "px at x=" + r.minX);
+        } else {
+            StringBuilder fhs = new StringBuilder();
+            boolean forbid = false;
+            for (BotNavigationGraph.Segment s : r.segments) {
+                if (fhs.length() > 0) {
+                    fhs.append(", ");
+                }
+                fhs.append(s.footholdId);
+                forbid |= s.forbidFallDown;
+            }
+            out.add("  footholds(" + r.segments.size() + "): " + fhs + (forbid ? "  [forbidFallDown]" : ""));
+        }
+        Map<Integer, EnumSet<BotNavigationGraph.EdgeType>> byDest = new TreeMap<>();
+        Map<Integer, Integer> portalTo = new HashMap<>();
+        for (BotNavigationGraph.Edge e : graph.getOutgoing(regionId)) {
+            if (e.fromRegionId == e.toRegionId) {
+                continue; // intra-region walk
+            }
+            byDest.computeIfAbsent(e.toRegionId, k -> EnumSet.noneOf(BotNavigationGraph.EdgeType.class)).add(e.type);
+            if (e.type == BotNavigationGraph.EdgeType.PORTAL && e.portalId >= 0) {
+                portalTo.put(e.toRegionId, e.portalId);
+            }
+        }
+        out.add("  out-edges: " + byDest.size() + " connected region(s)");
+        Set<Integer> mutual = graph.getMutualAdjacentRegionIds(regionId);
+        for (Map.Entry<Integer, EnumSet<BotNavigationGraph.EdgeType>> en : byDest.entrySet()) {
+            StringBuilder types = new StringBuilder();
+            for (BotNavigationGraph.EdgeType t : en.getValue()) {
+                if (types.length() > 0) {
+                    types.append(", ");
+                }
+                types.append(t.name());
+            }
+            if (portalTo.containsKey(en.getKey())) {
+                types.append(" portal#").append(portalTo.get(en.getKey()));
+            }
+            out.add("   " + (mutual.contains(en.getKey()) ? "<->" : " ->") + " R" + en.getKey() + ": " + types);
+        }
+        return out;
     }
 
     public static synchronized String showPath(Character viewer, String botName) {

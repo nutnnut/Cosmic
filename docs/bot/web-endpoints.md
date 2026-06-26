@@ -16,6 +16,7 @@ the LAN (accepted: private game-server LAN). Open `http://<server-lan-ip>:8089/`
 | `/` | GET | Legacy bot world-graph page (`botworld.html`). |
 | `/map` | GET | RTS world map (`worldmap.html`): graph over WorldMap continent images, live positions, RTS control, collapsible per-map detail. |
 | `/admin` | GET | Admin/settings menu (`admin.html`): edit bot config live, drive the population scheduler + LLM toggle, danger zone (disconnect-all / wipe). Front end for `/api/settings`. |
+| `/mapgraph?id=<mapId>` | GET | Single-map nav-graph preview (`mapgraph.html`): regions (footholds/ropes), typed edges, NPCs, portals, live characters. Opened from a world-map node's detail-panel button (same tab) or by middle-clicking a node (new tab). |
 | `/wm/{worldmapId}.png` | GET | A WorldMap continent background image. |
 
 ## Read APIs (JSON, GET)
@@ -44,6 +45,30 @@ On-demand detail for one map.
  "bots":[{"name","status"}, ...],             // status = the @botstatus line
  "chat":[{"t","n","m"}, ...]}                 // recent map chat: time, name, message
 ```
+
+### `/api/mapgraph?id=<mapId>[&sp=<>&jmp=<>&snow=0|1]`
+One map's bot {@code BotNavigationGraph} + live features for the `/mapgraph` canvas. Loads the map on
+demand (map factory builds it from WZ — footholds/portals/NPCs included) and blocks once on the cached
+graph build, so an empty map still resolves. `sp`/`jmp`/`snow` pick which cached movement-profile graph
+to render (default speed100/jump100 `BotMovementProfile.base()`); `active` echoes the served profile and
+`profiles` lists the profiles currently cached for this map (the page's graph picker). `portals.k`
+classifies each portal: `in` = shortcut whose target is this same map, `cross` = press-up portal to
+another map, `coll` = a collision-warp portal type (WZ `pt` ∈ {3,9,12,13}). `edges` are de-duped to one
+per (from-region, to-region, type). Each region's `report` is the **same** debug text the `!pos` command
+prints (SSOT: `BotNavigationDebugOverlay.describeRegion`); the page shows it when a region is clicked.
+```
+{"map","name","active":{sp,jmp,snow},"profiles":[{sp,jmp,snow},...],
+ "bounds":{minX,minY,maxX,maxY},
+ "regions":[{"id","kind":"fh","segs":[[x1,y1,x2,y2],...],"report":[lines]}   // foothold region: segment lines
+          | {"id","kind":"rope","ladder","x","y1","y2","report":[lines]}],   // rope/ladder region: vertical span
+ "edges":[{"t":"WALK|JUMP|DROP|CLIMB|PORTAL|TELEPORT|FLASH_JUMP","fx","fy","tx","ty"}, ...],
+ "npcs":[{"x","y","n"}, ...],
+ "portals":[{"x","y","k":"in|cross|coll","tm","n"}, ...],
+ "chars":[{"x","y","n","bot"}, ...]}                             // live player+bot positions
+```
+The client renders regions/edges/npcs/portals once and repaints only `chars` on its 2 s poll. The same
+region report backs the GM command **`!pos`** (`PosCommand` → `BotNavigationDebugOverlay.posReport`),
+which reports the region you're standing on using your own movement profile.
 
 ### `/api/botdebug[?id=<botCharId>]`
 Read-only per-bot autopilot internals for live debugging (party cohesion, follow, travel). No cache.

@@ -18,6 +18,11 @@ import provider.wz.WZFiles;
 import server.bots.llm.BotLlmConfig;
 import server.life.LifeFactory;
 import server.life.MonsterInformationProvider;
+import server.life.NPC;
+import server.maps.MapObject;
+import server.maps.MapObjectType;
+import server.maps.MapleMap;
+import server.maps.Portal;
 
 import java.awt.Point;
 import java.io.IOException;
@@ -144,6 +149,8 @@ public final class BotWorldGraphWebServer {
             s.createContext("/api/perf", BotWorldGraphWebServer::servePerf);
             s.createContext("/api/spawnbot", BotWorldGraphWebServer::serveSpawnBot);
             s.createContext("/api/navprobe", BotWorldGraphWebServer::serveNavProbe);
+            s.createContext("/mapgraph", BotWorldGraphWebServer::serveMapGraphPage);
+            s.createContext("/api/mapgraph", BotWorldGraphWebServer::serveMapGraph);
             s.createContext("/admin", BotWorldGraphWebServer::serveAdminPage);
             s.createContext("/api/settings", BotWorldGraphWebServer::serveSettings);
             s.setExecutor(Executors.newCachedThreadPool(r -> {
@@ -184,6 +191,19 @@ public final class BotWorldGraphWebServer {
         try (InputStream in = BotWorldGraphWebServer.class.getResourceAsStream("/web/worldmap.html")) {
             if (in == null) {
                 send(ex, 500, "text/plain", "worldmap.html resource missing".getBytes(StandardCharsets.UTF_8));
+                return;
+            }
+            body = in.readAllBytes();
+        }
+        send(ex, 200, "text/html; charset=utf-8", body);
+    }
+
+    /** Standalone per-map graph preview page ({@code mapgraph.html}); reads {@code ?id=<mapId>} client-side. */
+    private static void serveMapGraphPage(HttpExchange ex) throws IOException {
+        byte[] body;
+        try (InputStream in = BotWorldGraphWebServer.class.getResourceAsStream("/web/mapgraph.html")) {
+            if (in == null) {
+                send(ex, 500, "text/plain", "mapgraph.html resource missing".getBytes(StandardCharsets.UTF_8));
                 return;
             }
             body = in.readAllBytes();
@@ -1181,6 +1201,225 @@ public final class BotWorldGraphWebServer {
                     .append(",\"status\":").append(jsonStr(status)).append('}');
         }
         return "{\"mobs\":[" + mobs + "],\"bots\":[" + bots + "],\"chat\":[" + chatJson(mapId) + "]}";
+    }
+
+    // --- single-map nav-graph preview (the /mapgraph page) ---
+
+    /** Renders one map's bot nav graph + live features for the {@code /mapgraph} canvas.
+     *  Optional {@code sp}/{@code jmp}/{@code snow} pick which cached movement-profile graph to show. */
+    private static void serveMapGraph(HttpExchange ex) throws IOException {
+        var q = queryParams(ex.getRequestURI().getRawQuery());
+        int mapId;
+        try {
+            mapId = Integer.parseInt(q.getOrDefault("id", "").trim());
+        } catch (NumberFormatException e) {
+            send(ex, 400, "application/json", "{\"error\":\"bad id\"}".getBytes(StandardCharsets.UTF_8));
+            return;
+        }
+        send(ex, 200, "application/json", mapGraphJson(mapId, parseProfile(q)).getBytes(StandardCharsets.UTF_8));
+    }
+
+    /** {@code sp}/{@code jmp}/{@code snow} query params → a movement profile; default speed100/jump100 base. */
+    private static BotMovementProfile parseProfile(Map<String, String> q) {
+        String sp = q.get("sp");
+        String jmp = q.get("jmp");
+        if (sp == null || jmp == null) {
+            return BotMovementProfile.base();
+        }
+        try {
+            boolean snow = "1".equals(q.get("snow")) || "true".equalsIgnoreCase(q.getOrDefault("snow", ""));
+            return new BotMovementProfile(Integer.parseInt(sp.trim()), Integer.parseInt(jmp.trim()), snow);
+        } catch (NumberFormatException e) {
+            return BotMovementProfile.base();
+        }
+    }
+
+    private static String profileJson(BotMovementProfile p) {
+        return "{\"sp\":" + p.totalSpeedStat() + ",\"jmp\":" + p.totalJumpStat() + ",\"snow\":" + p.snowShoes() + "}";
+    }
+
+    /** First loaded {@link MapleMap} instance for {@code mapId} across all worlds/channels (map factory
+     *  loads it from WZ on demand — footholds/portals/NPCs included — so an empty map still resolves). */
+    private static MapleMap loadMap(int mapId) {
+        for (World w : Server.getInstance().getWorlds()) {
+            for (Channel ch : Server.getInstance().getChannelsFromWorld(w.getId())) {
+                try {
+                    MapleMap m = ch.getMapFactory().getMap(mapId);
+                    if (m != null) {
+                        return m;
+                    }
+                } catch (Throwable ignore) {
+                    // bad/unloadable id on this channel — try the next
+                }
+            }
+        }
+        return null;
+    }
+
+    /**
+     * One map's bot {@link BotNavigationGraph} plus live features, for the {@code /mapgraph} preview:
+     * <ul>
+     *   <li>{@code regions}: foothold regions ({@code kind:"fh"}, their segment lines) and rope/ladder
+     *       regions ({@code kind:"rope"}, a vertical span) — the "accurate node sections".</li>
+     *   <li>{@code edges}: inter-region nav edges (one per from/to/type), {@code t} = WALK/JUMP/DROP/CLIMB/
+     *       PORTAL/TELEPORT/FLASH_JUMP with from/to points (the client arcs JUMP, colours PORTAL).</li>
+     *   <li>{@code npcs}, {@code portals} (classified {@code in}=same-map shortcut / {@code cross}=other map /
+     *       {@code coll}=collision-warp type), and {@code chars} (live player+bot positions).</li>
+     * </ul>
+     * ponytail: loads the map + blocks on the (cached) graph build on demand — a LAN debug page, not a hot
+     * path; the client re-fetches the whole payload each poll and only repaints {@code chars}.
+     */
+    private static String mapGraphJson(int mapId, BotMovementProfile profile) {
+        MapleMap map = loadMap(mapId);
+        if (map == null) {
+            return "{\"error\":\"map not found / not loadable\"}";
+        }
+        BotNavigationGraph g = BotNavigationGraphProvider.getGraph(map, profile);
+        if (g == null) {
+            return "{\"error\":\"graph unavailable\"}";
+        }
+        long[] b = {Long.MAX_VALUE, Long.MAX_VALUE, Long.MIN_VALUE, Long.MIN_VALUE}; // minX,minY,maxX,maxY
+
+        StringBuilder regions = new StringBuilder();
+        for (BotNavigationGraph.Region r : g.regions) {
+            if (regions.length() > 0) {
+                regions.append(',');
+            }
+            if (r.isRopeRegion) {
+                regions.append("{\"id\":").append(r.id).append(",\"kind\":\"rope\",\"ladder\":").append(r.isLadder)
+                        .append(",\"x\":").append(r.minX).append(",\"y1\":").append(r.minY)
+                        .append(",\"y2\":").append(r.maxY);
+            } else {
+                regions.append("{\"id\":").append(r.id).append(",\"kind\":\"fh\",\"segs\":[");
+                boolean firstSeg = true;
+                for (BotNavigationGraph.Segment s : r.segments) {
+                    if (!firstSeg) {
+                        regions.append(',');
+                    }
+                    firstSeg = false;
+                    regions.append('[').append(s.x1).append(',').append(s.y1).append(',')
+                            .append(s.x2).append(',').append(s.y2).append(']');
+                }
+                regions.append(']');
+            }
+            regions.append(",\"report\":[");      // SSOT with the !pos command (BotNavigationDebugOverlay)
+            boolean firstLine = true;
+            for (String line : BotNavigationDebugOverlay.describeRegion(g, r.id)) {
+                if (!firstLine) {
+                    regions.append(',');
+                }
+                firstLine = false;
+                regions.append(jsonStr(line));
+            }
+            regions.append("]}");
+            expandBounds(b, r.minX, r.minY);
+            expandBounds(b, r.maxX, r.maxY);
+        }
+
+        StringBuilder edges = new StringBuilder();
+        Set<Long> edgeSeen = new HashSet<>();
+        for (List<BotNavigationGraph.Edge> list : g.outgoingByRegionId.values()) {
+            for (BotNavigationGraph.Edge e : list) {
+                if (e.fromRegionId == e.toRegionId) {
+                    continue; // intra-region walk — not a drawn hop
+                }
+                long key = (((long) e.fromRegionId * 1000003L + e.toRegionId) << 3) | e.type.ordinal();
+                if (!edgeSeen.add(key)) {
+                    continue; // collapse parallel edges (multiple launch xs) to one line per from/to/type
+                }
+                if (edges.length() > 0) {
+                    edges.append(',');
+                }
+                edges.append("{\"t\":\"").append(e.type.name()).append("\",\"fx\":").append(e.startPoint.x)
+                        .append(",\"fy\":").append(e.startPoint.y).append(",\"tx\":").append(e.endPoint.x)
+                        .append(",\"ty\":").append(e.endPoint.y).append('}');
+            }
+        }
+
+        StringBuilder npcs = new StringBuilder();
+        for (MapObject o : map.getMapObjectsInRange(new Point(0, 0), Double.POSITIVE_INFINITY, List.of(MapObjectType.NPC))) {
+            Point p = o.getPosition();
+            if (p == null) {
+                continue;
+            }
+            String name = (o instanceof NPC n) ? n.getName() : "";
+            if (npcs.length() > 0) {
+                npcs.append(',');
+            }
+            npcs.append("{\"x\":").append(p.x).append(",\"y\":").append(p.y)
+                    .append(",\"n\":").append(jsonStr(name == null ? "" : name)).append('}');
+            expandBounds(b, p.x, p.y);
+        }
+
+        StringBuilder portals = new StringBuilder();
+        for (Portal p : map.getPortals()) {
+            Point pos = p.getPosition();
+            if (pos == null) {
+                continue;
+            }
+            int type = p.getType();
+            int tm = p.getTargetMapId();
+            String kind;
+            if (type == 3 || type == 9 || type == 12 || type == 13) {
+                kind = "coll";                       // pc / pcs / collision-jump / custom-impact: warps on touch
+            } else if (tm == mapId) {
+                kind = "in";                         // shortcut within this same map
+            } else if (tm > 0 && tm != 999999999) {
+                kind = "cross";                      // press-up portal to another map
+            } else {
+                continue;                            // spawn point / target-less script / unbound door
+            }
+            String pname = p.getName();
+            if (portals.length() > 0) {
+                portals.append(',');
+            }
+            portals.append("{\"x\":").append(pos.x).append(",\"y\":").append(pos.y).append(",\"k\":\"").append(kind)
+                    .append("\",\"tm\":").append(tm).append(",\"n\":").append(jsonStr(pname == null ? "" : pname)).append('}');
+            expandBounds(b, pos.x, pos.y);
+        }
+
+        StringBuilder chars = new StringBuilder();
+        for (Character chr : map.getCharacters()) {
+            Point pos = chr.getPosition();
+            if (pos == null) {
+                continue;
+            }
+            if (chars.length() > 0) {
+                chars.append(',');
+            }
+            chars.append("{\"x\":").append(pos.x).append(",\"y\":").append(pos.y)
+                    .append(",\"n\":").append(jsonStr(chr.getName()))
+                    .append(",\"bot\":").append(chr.getClient() instanceof BotClient).append('}');
+        }
+
+        if (b[0] > b[2]) { // no geometry at all — avoid a degenerate viewport
+            b[0] = 0;
+            b[1] = 0;
+            b[2] = 0;
+            b[3] = 0;
+        }
+        // Cached movement-profile graphs available for this map (the web profile picker); base + active
+        // are always offered (getGraph above just cached `profile`), the rest are whatever bots warmed.
+        java.util.LinkedHashSet<String> profSet = new java.util.LinkedHashSet<>();
+        profSet.add(profileJson(BotMovementProfile.base()));
+        profSet.add(profileJson(profile));
+        for (BotMovementProfile p : BotNavigationGraphProvider.cachedProfiles(mapId)) {
+            profSet.add(profileJson(p));
+        }
+        String name = graphData().names().getOrDefault(mapId, "map " + mapId);
+        return "{\"map\":" + mapId + ",\"name\":" + jsonStr(name)
+                + ",\"active\":" + profileJson(profile)
+                + ",\"profiles\":[" + String.join(",", profSet) + "]"
+                + ",\"bounds\":{\"minX\":" + b[0] + ",\"minY\":" + b[1] + ",\"maxX\":" + b[2] + ",\"maxY\":" + b[3] + "}"
+                + ",\"regions\":[" + regions + "],\"edges\":[" + edges + "],\"npcs\":[" + npcs
+                + "],\"portals\":[" + portals + "],\"chars\":[" + chars + "]}";
+    }
+
+    private static void expandBounds(long[] b, int x, int y) {
+        b[0] = Math.min(b[0], x);
+        b[1] = Math.min(b[1], y);
+        b[2] = Math.max(b[2], x);
+        b[3] = Math.max(b[3], y);
     }
 
     // --- recent normal (map) chat, tapped from the player + bot general-chat chokepoints ---
