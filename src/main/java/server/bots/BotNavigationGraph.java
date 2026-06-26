@@ -8,10 +8,12 @@ import java.io.Serial;
 import java.io.Serializable;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.PriorityQueue;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -348,6 +350,65 @@ final class BotNavigationGraph implements Serializable {
 
     List<Edge> getOutgoing(int regionId) {
         return outgoingByRegionId.getOrDefault(regionId, List.of());
+    }
+
+    // --- Cost-to-goal index (runtime-only; lazy, transient per graph) -----------------------------
+    // Reverse-Dijkstra distance (edge-cost lower bound) from EVERY region to a given target region,
+    // over the real edge graph -- portals/teleports included. Used only as an admissible A* heuristic
+    // floor: it is portal-aware (a region whose cheapest real route to goal runs through a "backward"
+    // portal gets a low value, so A* beelines toward the shortcut instead of away from it) where a
+    // straight-line-to-target heuristic would over-penalise and never reach. It is position-BLIND
+    // (region granularity), so the caller pairs it with the live point->exit travel term to keep a
+    // gradient inside wide regions -- this map alone is never used as a per-position distance.
+    // Map is static per graph, so distances are stable for the graph's life. Cached per target region;
+    // grind targets are shared across bots, so one reverse-Dijkstra amortises across the fleet.
+    // ponytail: edge-cost-only reverse-Dijkstra; exact enough as an admissible lower bound.
+    private transient volatile Map<Integer, Map<Integer, Integer>> costToGoalByTarget;
+
+    /** Forward cost (sum of edge costs, the same units {@link Edge#cost} uses) from each region to
+     *  {@code targetRegionId}. Regions that cannot reach the target are absent. Admissible lower
+     *  bound: ignores intra-region travel and portal cooldown (both {@code >= 0}). */
+    Map<Integer, Integer> costToGoal(int targetRegionId) {
+        Map<Integer, Map<Integer, Integer>> cache = costToGoalByTarget;
+        if (cache == null) {
+            synchronized (this) {
+                cache = costToGoalByTarget;
+                if (cache == null) {
+                    cache = new ConcurrentHashMap<>();
+                    costToGoalByTarget = cache;
+                }
+            }
+        }
+        return cache.computeIfAbsent(targetRegionId, this::computeCostToGoal);
+    }
+
+    private Map<Integer, Integer> computeCostToGoal(int targetRegionId) {
+        // Reverse adjacency: forward edge r -> e.toRegionId (cost e.cost) becomes e.toRegionId -> r.
+        Map<Integer, List<int[]>> rev = new HashMap<>();
+        for (List<Edge> edges : outgoingByRegionId.values()) {
+            for (Edge e : edges) {
+                rev.computeIfAbsent(e.toRegionId, k -> new ArrayList<>()).add(new int[]{e.fromRegionId, e.cost});
+            }
+        }
+        Map<Integer, Integer> dist = new HashMap<>();
+        PriorityQueue<int[]> pq = new PriorityQueue<>(Comparator.comparingInt(a -> a[1])); // (region, dist)
+        dist.put(targetRegionId, 0);
+        pq.add(new int[]{targetRegionId, 0});
+        while (!pq.isEmpty()) {
+            int[] top = pq.poll();
+            int r = top[0], d = top[1];
+            if (d > dist.getOrDefault(r, Integer.MAX_VALUE)) {
+                continue;
+            }
+            for (int[] step : rev.getOrDefault(r, List.of())) {
+                int pr = step[0], nd = d + step[1];
+                if (nd < dist.getOrDefault(pr, Integer.MAX_VALUE)) {
+                    dist.put(pr, nd);
+                    pq.add(new int[]{pr, nd});
+                }
+            }
+        }
+        return dist;
     }
 
     // --- Directed reachability index (runtime-only; lazy, transient per graph) --------------------

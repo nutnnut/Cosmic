@@ -358,6 +358,44 @@ class BotNavigationManagerTest {
     }
 
     @Test
+    void costToGoalIsMinReverseDijkstraAndOmitsRegionsThatCannotReachGoal() {
+        // 1 --walk(100)--> 2 --walk(100)--> 3(goal); 1 --jump(150)--> 3 direct; 3 --drop(50)--> 4 (dead end vs goal).
+        BotNavigationGraph.Region r1 = new BotNavigationGraph.Region(
+                1, List.of(new BotNavigationGraph.Segment(new Foothold(new Point(0, 100), new Point(100, 100), 1))));
+        BotNavigationGraph.Region r2 = new BotNavigationGraph.Region(
+                2, List.of(new BotNavigationGraph.Segment(new Foothold(new Point(0, 200), new Point(100, 200), 2))));
+        BotNavigationGraph.Region r3 = new BotNavigationGraph.Region(
+                3, List.of(new BotNavigationGraph.Segment(new Foothold(new Point(0, 300), new Point(100, 300), 3))));
+        BotNavigationGraph.Region r4 = new BotNavigationGraph.Region(
+                4, List.of(new BotNavigationGraph.Segment(new Foothold(new Point(0, 400), new Point(100, 400), 4))));
+        Map<Integer, BotNavigationGraph.Region> regionsById = new HashMap<>();
+        regionsById.put(1, r1);
+        regionsById.put(2, r2);
+        regionsById.put(3, r3);
+        regionsById.put(4, r4);
+        BotNavigationGraph.Edge e12 = new BotNavigationGraph.Edge(
+                1, 2, BotNavigationGraph.EdgeType.WALK, new Point(50, 100), new Point(50, 200), 0, 0, 0, 0, 0, 100);
+        BotNavigationGraph.Edge e23 = new BotNavigationGraph.Edge(
+                2, 3, BotNavigationGraph.EdgeType.WALK, new Point(50, 200), new Point(50, 300), 0, 0, 0, 0, 0, 100);
+        BotNavigationGraph.Edge e13 = new BotNavigationGraph.Edge(
+                1, 3, BotNavigationGraph.EdgeType.JUMP, new Point(50, 100), new Point(50, 300), 0, 0, 0, 0, 0, 150);
+        BotNavigationGraph.Edge e34 = new BotNavigationGraph.Edge(
+                3, 4, BotNavigationGraph.EdgeType.DROP, new Point(50, 300), new Point(50, 400), 0, 0, 0, 0, 0, 50);
+        BotNavigationGraph graph = new BotNavigationGraph(
+                910000026, 1,
+                List.of(r1, r2, r3, r4), regionsById,
+                Map.of(1, 1, 2, 2, 3, 3, 4, 4),
+                Map.of(1, List.of(e12, e13), 2, List.of(e23), 3, List.of(e34)),
+                Set.of());
+
+        Map<Integer, Integer> dist = graph.costToGoal(3);
+        assertEquals(0, dist.get(3), "goal region cost is 0");
+        assertEquals(100, dist.get(2), "2 -> 3 is one 100-cost walk");
+        assertEquals(150, dist.get(1), "1 prefers the direct 150 jump over the 200 two-hop walk");
+        assertNull(dist.get(4), "region 4 cannot reach the goal -> absent from the index");
+    }
+
+    @Test
     void shouldRefreshStaleCommittedGroundDropWhenBestFirstEdgeChanges() {
         MapleMap map = new MapleMap(910000032, 0, 0, 910000032, 1.0f);
         FootholdTree footholds = new FootholdTree(new Point(-2000, -2000), new Point(2000, 2000));

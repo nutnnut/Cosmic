@@ -1646,6 +1646,17 @@ final class BotNavigationManager {
      */
     static boolean useAdmissibleHeuristic = true;
 
+    /**
+     * Goal-distance heuristic. When {@code true} (default) the per-bot A* heuristic is a one-step
+     * lookahead: live travel from the bot's point to each real region exit + that exit's reverse-
+     * Dijkstra {@link BotNavigationGraph#costToGoal cost-to-goal} over the actual edge graph. This is
+     * portal-aware (a "backward" portal that genuinely shortens the route scores low, so the search
+     * heads toward it) and keeps a vertical/position gradient inside wide regions (the point->exit
+     * term), replacing the old X-only straight-line heuristic that had neither -- which made tall
+     * maps probe up/down backward edges and cap. Flip off to restore the pure straight-line term.
+     */
+    static boolean useGoalDistanceHeuristic = true;
+
     private static List<BotNavigationGraph.Edge> findPath(BotNavigationGraph graph,
                                                           MapleMap map,
                                                           Point startPos,
@@ -1771,6 +1782,13 @@ final class BotNavigationManager {
                     targetPos = graph.getRegion(redirectRegionId).pointAt(targetPos.x);
                 }
             }
+            // Goal-distance heuristic floor (portal-aware, position-blind region distances). Computed
+            // once per search against the final target (post-redirect); the heuristic pairs it with the
+            // live point->exit term. Only built when the heuristic is actually consulted (skip the pure
+            // h=0 Dijkstra measurement path), and cached on the graph so the fleet shares one build.
+            boolean usesHeuristic = randomized || !zeroHeuristic;
+            Map<Integer, Integer> costToGoal = (useGoalDistanceHeuristic && usesHeuristic)
+                    ? graph.costToGoal(targetRegionId) : null;
             PriorityQueue<SearchNode> open = new PriorityQueue<>(Comparator.comparingInt(node -> node.score));
             Map<SearchState, Integer> gScore = new HashMap<>();
             Map<SearchState, SearchState> cameFrom = new HashMap<>();
@@ -1791,7 +1809,7 @@ final class BotNavigationManager {
             long closestDistance = rawDistance(startPos, targetPos);
 
             gScore.put(startState, 0);
-            open.add(new SearchNode(startState, 0, hValue(graph, startPos, targetPos, zeroHeuristic, randomized, epsilon)));
+            open.add(new SearchNode(startState, 0, hValue(graph, startRegionId, startPos, targetRegionId, targetPos, costToGoal, zeroHeuristic, randomized, epsilon)));
 
             while (!open.isEmpty()) {
                 if (edgeChecks >= edgeCheckBudget) {
@@ -1871,7 +1889,7 @@ final class BotNavigationManager {
                     gScore.put(nextState, tentativeCost);
                     cameFrom.put(nextState, current.state);
                     cameByEdge.put(nextState, edge);
-                    int fScore = tentativeCost + hValue(graph, edge.endPoint, targetPos, zeroHeuristic, randomized, epsilon);
+                    int fScore = tentativeCost + hValue(graph, nextState.regionId, edge.endPoint, targetRegionId, targetPos, costToGoal, zeroHeuristic, randomized, epsilon);
                     open.add(new SearchNode(nextState, tentativeCost, fScore));
                     openPeak = Math.max(openPeak, open.size());
                     long reachedDistance = rawDistance(landingPoint, targetPos);
@@ -2315,8 +2333,43 @@ final class BotNavigationManager {
         return intraRegionTravelCost(graph, from, to);
     }
 
-    private static int heuristic(BotNavigationGraph graph, Point from, Point targetPos) {
-        return intraRegionTravelCost(graph, from, targetPos);
+    private static int heuristic(BotNavigationGraph graph, int regionId, Point from,
+                                 int targetRegionId, Point targetPos, Map<Integer, Integer> costToGoal) {
+        if (costToGoal == null) {
+            // No goal-distance index: straight-line estimate, but now X+Y (the old X-only term had no
+            // vertical gradient, so tall maps probed up/down). Still position-aware.
+            return manhattanCost(graph, from, targetPos);
+        }
+        if (regionId == targetRegionId) {
+            return intraRegionTravelCost(graph, regionId, from, targetPos);
+        }
+        // One-step lookahead: for each real exit of this region, cost to walk/climb to that exit from
+        // the bot's actual point + the exit edge cost + the exit neighbour's cached cost-to-goal. The
+        // min over exits is an admissible lower bound (the true path leaves via one of them, and every
+        // term under-estimates), it is portal-aware (cost-to-goal routes through portals), and the
+        // point->exit term keeps a gradient inside wide regions where the region-level cache is flat.
+        int best = Integer.MAX_VALUE;
+        for (BotNavigationGraph.Edge e : graph.getOutgoing(regionId)) {
+            Integer downstream = costToGoal.get(e.toRegionId);
+            if (downstream == null) {
+                continue; // exit leads somewhere that can't reach the goal
+            }
+            int c = intraRegionTravelCost(graph, regionId, from, e.startPoint) + e.cost + downstream;
+            if (c < best) {
+                best = c;
+            }
+        }
+        // No usable exit reaches the goal from here (dead-end region): fall back to straight-line so the
+        // node still gets a finite, position-aware estimate rather than a flat zero.
+        return best == Integer.MAX_VALUE ? manhattanCost(graph, from, targetPos) : best;
+    }
+
+    /** Straight-line lower bound on travel cost, X and Y, scaled to the fastest ground/climb speed so
+     *  it under-estimates (admissible). Fallback only -- used when no cost-to-goal index is available. */
+    private static int manhattanCost(BotNavigationGraph graph, Point from, Point targetPos) {
+        long dist = Math.abs((long) targetPos.x - from.x) + Math.abs((long) targetPos.y - from.y);
+        double fastest = Math.max(graph.movementProfile.walkVelocityPxs(), BotMovementManager.cfg.CLIMB_SPEED_PXS);
+        return (int) Math.min(Integer.MAX_VALUE, Math.round((dist * 1000.0) / Math.max(1.0, fastest)));
     }
 
     private static long rawDistance(Point from, Point targetPos) {
@@ -2342,12 +2395,13 @@ final class BotNavigationManager {
     private static final long EPSILON_SALT = 0xE95011L;
 
     /** Heuristic value: zeroSeed callers keep h=0/legacy; per-bot search uses an inflated (weighted) admissible h to prune. */
-    private static int hValue(BotNavigationGraph graph, Point from, Point targetPos,
+    private static int hValue(BotNavigationGraph graph, int regionId, Point from,
+                              int targetRegionId, Point targetPos, Map<Integer, Integer> costToGoal,
                               boolean zeroHeuristic, boolean randomized, double epsilon) {
         if (randomized) {
-            return (int) Math.round(epsilon * heuristic(graph, from, targetPos));
+            return (int) Math.round(epsilon * heuristic(graph, regionId, from, targetRegionId, targetPos, costToGoal));
         }
-        return zeroHeuristic ? 0 : heuristic(graph, from, targetPos);
+        return zeroHeuristic ? 0 : heuristic(graph, regionId, from, targetRegionId, targetPos, costToGoal);
     }
 
     /** Per-bot route seed; non-zero so the search takes the randomized branch. */
