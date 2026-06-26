@@ -16,7 +16,7 @@ the LAN (accepted: private game-server LAN). Open `http://<server-lan-ip>:8089/`
 | `/` | GET | Legacy bot world-graph page (`botworld.html`). |
 | `/map` | GET | RTS world map (`worldmap.html`): graph over WorldMap continent images, live positions, RTS control, collapsible per-map detail. |
 | `/admin` | GET | Admin/settings menu (`admin.html`): edit bot config live, drive the population scheduler + LLM toggle, danger zone (disconnect-all / wipe). Front end for `/api/settings`. |
-| `/mapgraph?id=<mapId>` | GET | Single-map nav-graph preview (`mapgraph.html`): regions (footholds/ropes), typed edges, NPCs, portals, live characters. Opened from a world-map node's detail-panel button (same tab) or by middle-clicking a node (new tab). |
+| `/mapgraph?id=<mapId>` | GET | Single-map nav-graph preview (`mapgraph.html`): regions (footholds/ropes), typed edges, NPCs, portals, live characters. Click a region for its `!pos` report; the **Pathfind** button lets you pick a source then target region to preview + verdict the route (`/api/pathfind`). Opened from a world-map node's detail-panel button (same tab) or by middle-clicking a node (new tab). |
 | `/wm/{worldmapId}.png` | GET | A WorldMap continent background image. |
 
 ## Read APIs (JSON, GET)
@@ -147,6 +147,33 @@ routes through skill edges. The response echoes `skills`.
  "fromRegion","toRegion","targetGroundY","targetOnRope","skills":bool,
  "reachable":bool,"hops":n,
  "path":[{"type":"WALK|CLIMB|JUMP|DROP|TELEPORT|FLASH_JUMP","fromR","toR","from":[x,y],"to":[x,y]}, ...]}
+```
+**Caveat:** `reachable` here is `path != null`, and the underlying `findPath` is the live executor's
+**redirecting** `"committed"` search — for an UNREACHABLE target it returns a best-effort partial path that
+stops at the nearest reachable region, so `reachable:true` with a `path` that does NOT end at `toRegion`
+means *not actually reachable*. Check the last edge's `toR` against `toRegion`. For an honest yes/no use
+`/api/pathfind` (below), which runs a strict search + reports `canReach` separately.
+
+### `/api/pathfind?id=<mapId>&from=<regionId>&to=<regionId>[&sp=<>&jmp=<>&snow=0|1][&mode=normal|exhaustive]`
+Region-to-region pathfind for the `/mapgraph` UI: click **Pathfind**, click a source region, click a target
+region — it draws the route and verdicts it. Pathfinds on the SAME cached movement-profile graph the page
+renders (`sp`/`jmp`/`snow`; default base sp100/jmp100). Runs the **same `BotNavigationManager.runSearch` the
+live bot uses** (SSOT — no parallel pathfinder), in one of two modes:
+- `mode=normal` (default) — the live executor's `"committed"` **redirecting best-effort** search with the
+  bot's bounded edge-check budget. On an unreachable/too-far target it walks AS CLOSE AS POSSIBLE; the
+  `explored` array is the frontier it checked (drawn faint teal) so you can see where it gave up.
+- `mode=exhaustive` — **strict, UNBOUNDED** search: exhausts the graph so an empty path is a definitive "no
+  route". `canReach` (a full directed reachability BFS) is the exhaustive proof of (un)reachability.
+
+Unlike `navprobe`, reachability here is honest: `reached` is true only when a real path lands in `toRegion`.
+Verdicts: `reached:true` = genuine route; `bestEffort:true` = produced a partial that stops at `redirect`
+(`canReach:true` → A* capped; `canReach:false` → real graph gap, the "stuck in a movement loop" target);
+`canReach:false, path:[]` (exhaustive) = proven unreachable.
+```
+{"map","from","to","profile":{sp,jmp,snow},"mode":"normal|exhaustive",
+ "canReach":bool,"reached":bool,"bestEffort":bool,"hops":n,"redirect":<regionId|-1>,
+ "path":[{"type","fromR","toR","from":[x,y],"to":[x,y]}, ...],
+ "explored":[ ...same edge shape; only populated for a best-effort result... ]}
 ```
 
 ## Settings API

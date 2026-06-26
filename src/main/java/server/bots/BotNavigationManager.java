@@ -1702,6 +1702,30 @@ final class BotNavigationManager {
                                    long routeSeed,
                                    boolean skillsEnabled,
                                    Character bot) {
+        // Default cap, no edge collection: every production/bot/test caller uses the standard budget.
+        return runSearch(graph, map, startPos, startRegionId, targetRegionId, targetPos, pathfindCaller,
+                zeroHeuristic, instrument, routeSeed, skillsEnabled, bot, MAX_EDGE_CHECKS, null);
+    }
+
+    /** Same search, with the edge-check cap as a parameter (a debug tool can run UNBOUNDED with
+     *  {@code edgeCheckBudget = Integer.MAX_VALUE} to exhaust the graph and PROVE unreachability vs the
+     *  live bot's bounded budget) and an optional {@code exploredSink}: when non-null, every USABLE edge
+     *  the search examined is appended to it, so a best-effort result can show what was explored before
+     *  giving up. SSOT: one search body — callers only vary the budget / opt into edge collection. */
+    static SearchOutcome runSearch(BotNavigationGraph graph,
+                                   MapleMap map,
+                                   Point startPos,
+                                   int startRegionId,
+                                   int targetRegionId,
+                                   Point targetPos,
+                                   String pathfindCaller,
+                                   boolean zeroHeuristic,
+                                   boolean instrument,
+                                   long routeSeed,
+                                   boolean skillsEnabled,
+                                   Character bot,
+                                   int edgeCheckBudget,
+                                   List<BotNavigationGraph.Edge> exploredSink) {
         long startedAt = System.nanoTime();
         PathfindProfile profile = null;
         // routeSeed != 0 (per-bot) diversifies routes so 100 bots don't stack on one optimal
@@ -1764,13 +1788,13 @@ final class BotNavigationManager {
             // Closest reached frontier (by raw distance-to-target), for best-effort partial progress
             // when a committed-route search caps out short of the goal.
             SearchState closestState = startState;
-            int closestH = heuristic(graph, startPos, targetPos);
+            long closestDistance = rawDistance(startPos, targetPos);
 
             gScore.put(startState, 0);
             open.add(new SearchNode(startState, 0, hValue(graph, startPos, targetPos, zeroHeuristic, randomized, epsilon)));
 
             while (!open.isEmpty()) {
-                if (edgeChecks >= MAX_EDGE_CHECKS) {
+                if (edgeChecks >= edgeCheckBudget) {
                     capped = true;
                     break;
                 }
@@ -1798,6 +1822,9 @@ final class BotNavigationManager {
                         continue;
                     }
                     usableEdges++;
+                    if (exploredSink != null) {
+                        exploredSink.add(edge);   // debug: the explored frontier, for best-effort visualisation
+                    }
 
                     boolean isPortal = edge.type == BotNavigationGraph.EdgeType.PORTAL;
                     // Portals are free on their own (edge.cost == 0). Charge PORTAL_USE_COOLDOWN_MS
@@ -1847,9 +1874,9 @@ final class BotNavigationManager {
                     int fScore = tentativeCost + hValue(graph, edge.endPoint, targetPos, zeroHeuristic, randomized, epsilon);
                     open.add(new SearchNode(nextState, tentativeCost, fScore));
                     openPeak = Math.max(openPeak, open.size());
-                    int reachedH = heuristic(graph, landingPoint, targetPos);
-                    if (reachedH < closestH) {
-                        closestH = reachedH;
+                    long reachedDistance = rawDistance(landingPoint, targetPos);
+                    if (reachedDistance < closestDistance) {
+                        closestDistance = reachedDistance;
                         closestState = nextState;
                     }
                 }
@@ -2290,6 +2317,13 @@ final class BotNavigationManager {
 
     private static int heuristic(BotNavigationGraph graph, Point from, Point targetPos) {
         return intraRegionTravelCost(graph, from, targetPos);
+    }
+
+    private static long rawDistance(Point from, Point targetPos) {
+        if (from == null || targetPos == null) {
+            return Long.MAX_VALUE;
+        }
+        return Math.abs((long) from.x - targetPos.x) + Math.abs((long) from.y - targetPos.y);
     }
 
     /** Committed-route movement callers get a best-effort partial path (toward the closest reached

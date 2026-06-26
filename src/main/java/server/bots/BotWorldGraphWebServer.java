@@ -151,6 +151,7 @@ public final class BotWorldGraphWebServer {
             s.createContext("/api/navprobe", BotWorldGraphWebServer::serveNavProbe);
             s.createContext("/mapgraph", BotWorldGraphWebServer::serveMapGraphPage);
             s.createContext("/api/mapgraph", BotWorldGraphWebServer::serveMapGraph);
+            s.createContext("/api/pathfind", BotWorldGraphWebServer::servePathfind);
             s.createContext("/admin", BotWorldGraphWebServer::serveAdminPage);
             s.createContext("/api/settings", BotWorldGraphWebServer::serveSettings);
             s.setExecutor(Executors.newCachedThreadPool(r -> {
@@ -861,6 +862,110 @@ public final class BotWorldGraphWebServer {
             }
         }
         send(ex, 200, "application/json", sb.append("]}").toString().getBytes(StandardCharsets.UTF_8));
+    }
+
+    /**
+     * Region-to-region pathfind for the {@code /mapgraph} UI (select source region, select target region,
+     * preview the route). Pathfinds on the same cached movement-profile graph the page renders (?sp/jmp/snow).
+     *
+     * <p>Honest reachability, unlike {@code /api/navprobe} whose {@code reachable} is just {@code path!=null}
+     * (the redirecting "committed" search returns a best-effort partial even for an unreachable target, so it
+     * always looks reachable). Here {@code canReach} is the directed reachability index and the search runs
+     * STRICT (non-"committed", so NO redirect): {@code reached} is true only if a real path lands in the
+     * target region. {@code canReach && !reached} means the A* edge-check cap gave up; {@code !canReach} means
+     * a genuine graph gap, and {@code redirect} is where the live bot's best-effort would orbit instead.
+     */
+    private static void servePathfind(HttpExchange ex) throws IOException {
+        var q = queryParams(ex.getRequestURI().getRawQuery());
+        int mapId;
+        int from;
+        int to;
+        try {
+            mapId = Integer.parseInt(q.getOrDefault("id", "").trim());
+            from = Integer.parseInt(q.getOrDefault("from", "").trim());
+            to = Integer.parseInt(q.getOrDefault("to", "").trim());
+        } catch (NumberFormatException e) {
+            send(ex, 400, "application/json", "{\"error\":\"need ?id=<mapId>&from=<regionId>&to=<regionId>\"}"
+                    .getBytes(StandardCharsets.UTF_8));
+            return;
+        }
+        MapleMap map = loadMap(mapId);
+        if (map == null) {
+            send(ex, 404, "application/json", "{\"error\":\"no such map\"}".getBytes(StandardCharsets.UTF_8));
+            return;
+        }
+        BotMovementProfile profile = parseProfile(q);
+        BotNavigationGraph g = BotNavigationGraphProvider.getGraph(map, profile);
+        if (g == null) {
+            send(ex, 200, "application/json", "{\"error\":\"graph warming — retry shortly\"}"
+                    .getBytes(StandardCharsets.UTF_8));
+            return;
+        }
+        BotNavigationGraph.Region fr = g.getRegion(from);
+        BotNavigationGraph.Region tr = g.getRegion(to);
+        if (fr == null || tr == null) {
+            send(ex, 400, "application/json", "{\"error\":\"unknown region id (from/to not in this graph)\"}"
+                    .getBytes(StandardCharsets.UTF_8));
+            return;
+        }
+        // Walk-only on the selected profile graph: the region tool has no live bot, so skill-edge
+        // eligibility (teleport/flash-jump) can't be decided — probe those with /api/navprobe&skills=1.
+        java.awt.Point fp = fr.centerPoint();
+        java.awt.Point tp = tr.centerPoint();
+        boolean exhaustive = "exhaustive".equalsIgnoreCase(q.getOrDefault("mode", ""))
+                || "1".equals(q.get("exhaustive"));
+        boolean canReach = g.canReach(from, to, 0);
+        // SAME search the live bot runs (SSOT — no parallel pathfinder), two ways:
+        //  normal     = "committed" (the live executor's redirecting best-effort) + bounded budget. On an
+        //               unreachable/too-far target it walks AS CLOSE AS POSSIBLE; exploredSink captures the
+        //               frontier it checked so the UI can paint it when the result is best-effort.
+        //  exhaustive = strict ("webpathfind", no redirect) + UNBOUNDED budget: exhausts the graph so an
+        //               empty path is a definitive "no route". canReach (a full directed BFS) is itself the
+        //               exhaustive proof of unreachability, reported alongside.
+        String caller = exhaustive ? "webpathfind" : "committed";
+        int budget = exhaustive ? Integer.MAX_VALUE : BotNavigationManager.MAX_EDGE_CHECKS;
+        List<BotNavigationGraph.Edge> explored = new java.util.ArrayList<>();
+        List<BotNavigationGraph.Edge> path = BotNavigationManager.runSearch(
+                g, map, fp, from, to, tp, caller, true, false, 0L, false, null, budget, explored).path();
+        boolean reached = from == to
+                || (!path.isEmpty() && path.get(path.size() - 1).toRegionId == to);
+        // Best-effort = produced a path but didn't actually land in the target region (redirected/capped).
+        boolean bestEffort = !reached && !path.isEmpty();
+        int redirect = reached ? -1
+                : (path.isEmpty() ? g.nearestReachableRegion(from, 0, tp) : path.get(path.size() - 1).toRegionId);
+        StringBuilder sb = new StringBuilder("{\"map\":").append(mapId)
+                .append(",\"from\":").append(from).append(",\"to\":").append(to)
+                .append(",\"profile\":").append(profileJson(g.movementProfile))
+                .append(",\"mode\":").append(exhaustive ? "\"exhaustive\"" : "\"normal\"")
+                .append(",\"canReach\":").append(canReach)
+                .append(",\"reached\":").append(reached)
+                .append(",\"bestEffort\":").append(bestEffort)
+                .append(",\"hops\":").append(path.size())
+                .append(",\"redirect\":").append(redirect)
+                .append(",\"path\":[");
+        appendEdgesJson(sb, path);
+        // Explored frontier: only meaningful for a best-effort result (show what was checked before giving
+        // up). Omit on a clean reach to keep the payload small.
+        sb.append("],\"explored\":[");
+        if (bestEffort) {
+            appendEdgesJson(sb, explored);
+        }
+        send(ex, 200, "application/json", sb.append("]}").toString().getBytes(StandardCharsets.UTF_8));
+    }
+
+    /** Appends nav edges as a JSON array body (no enclosing brackets) — shared by path + explored lists. */
+    private static void appendEdgesJson(StringBuilder sb, List<BotNavigationGraph.Edge> edges) {
+        for (int i = 0; i < edges.size(); i++) {
+            var edge = edges.get(i);
+            if (i > 0) {
+                sb.append(',');
+            }
+            sb.append("{\"type\":").append(jsonStr(edge.type.name()))
+                    .append(",\"fromR\":").append(edge.fromRegionId)
+                    .append(",\"toR\":").append(edge.toRegionId)
+                    .append(",\"from\":[").append(edge.startPoint.x).append(',').append(edge.startPoint.y).append("]")
+                    .append(",\"to\":[").append(edge.endPoint.x).append(',').append(edge.endPoint.y).append("]}");
+        }
     }
 
     private static void serveBotDebug(HttpExchange ex) throws IOException {

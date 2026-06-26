@@ -35,6 +35,9 @@
   <button id="back" title="back">&#8592; Back</button>
   <h1 id="title">Map Graph</h1>
   <button id="fitBtn" title="reset view">Fit</button>
+  <button id="pfBtn" title="pick a source region then a target region to preview the route">Pathfind</button>
+  <label class="sub" style="white-space:nowrap" title="Normal = live bot's bounded best-effort search. Exhaustive = uncapped strict search that exhausts the graph to prove unreachability."><input type="checkbox" id="pfExhaustive"> exhaustive</label>
+  <span id="pfstat" class="sub" style="white-space:nowrap"></span>
   <label class="sub" style="white-space:nowrap">graph <select id="profile" title="cached movement-profile graph"></select></label>
   <div id="legend">
     <span><i class="ov" style="background:#39d353"></i>foothold</span>
@@ -46,6 +49,8 @@
     <span><i style="border:1px solid #fff"></i>collision warp</span>
     <span><i style="background:#39d353;height:2px"></i>jump</span>
     <span><i style="background:#6cc6ff;height:2px"></i>portal edge</span>
+    <span><i style="background:#ff9f1c;height:2px"></i>route</span>
+    <span><i style="background:#2dd4bf;height:2px"></i>checked</span>
   </div>
 </div>
 <div id="c"></div>
@@ -67,8 +72,9 @@ const COL = {
 
 const stage = new Konva.Stage({container:'c', width:host.clientWidth, height:host.clientHeight, draggable:true});
 const layer = new Konva.Layer();       // regions, edges, npcs, portals (static)
+const pathLayer = new Konva.Layer();   // pathfind route preview (above static, below chars)
 const charLayer = new Konva.Layer();   // live characters (repainted on poll)
-stage.add(layer); stage.add(charLayer);
+stage.add(layer); stage.add(pathLayer); stage.add(charLayer);
 let B = {minX:0,minY:0,maxX:0,maxY:0};
 let markers = [];       // static markers: {resize(scale)}
 let charMarkers = [];   // char markers: {resize(scale)}
@@ -125,6 +131,7 @@ function addBox(x, y, sz, stroke, fill, html, layerRef, bucket){
 function edgeStyle(t){ return t==='JUMP' ? COL.eJump : t==='PORTAL' ? COL.ePortal : COL.eRest; }
 function renderStatic(d){
   layer.destroyChildren(); markers = []; selRegion = null; hideInfo();
+  if(typeof pfReset === 'function') pfReset(false);   // drop any stale route (region set may differ per profile)
   // edges first (under the structure), JUMP as a lifted arc
   for(const e of d.edges){
     const col = edgeStyle(e.t);
@@ -147,7 +154,7 @@ function renderStatic(d){
       for(const s of r.segs) shapes.push(regionLine([s[0],s[1], s[2],s[3]], COL.fh, null));
     }
     regionShapes[r.id] = {report:r.report||[], shapes, base:r.kind==='rope'?COL.rope:COL.fh};
-    for(const sh of shapes) sh.on('click tap', e => { e.cancelBubble = true; selectRegion(r.id); });
+    for(const sh of shapes) sh.on('click tap', e => { e.cancelBubble = true; onRegionClick(r.id); });
   }
   // npcs (yellow box) + portals (in=yellow oval, cross=white oval, collision=white box)
   for(const n of d.npcs) addBox(n.x, n.y, 11, COL.npc, null, '<b>NPC</b> '+esc(n.n), layer, markers);
@@ -182,6 +189,61 @@ function selectRegion(id){
     + regionShapes[id].report.map(esc).join('<br>');
   layer.batchDraw();
 }
+// ---- pathfind preview: pick a source region, then a target region; draw + explain the route ----
+// pfMode: 0 off, 1 awaiting source, 2 awaiting target. Routes on the SAME profile graph the page shows.
+let pfMode = 0, pfFrom = null;
+const pfBtn = document.getElementById('pfBtn');
+const pfstat = document.getElementById('pfstat');
+function pfSet(msg){ pfstat.textContent = msg || ''; }
+function pfReset(keepOn){
+  pathLayer.destroyChildren(); pathLayer.batchDraw();
+  pfFrom = null;
+  pfMode = keepOn ? 1 : 0;
+  pfBtn.style.background = keepOn ? '#3b5bdb' : '';
+  pfSet(keepOn ? 'click SOURCE region' : '');
+}
+pfBtn.onclick = () => pfReset(pfMode === 0);
+// region click dispatcher: in pathfind mode it picks source/target, else it shows the region report
+function onRegionClick(id){
+  if(pfMode === 0){ selectRegion(id); return; }
+  if(pfMode === 1){ pfFrom = id; pfMode = 2; pfSet('source r'+id+' → click TARGET region'); return; }
+  if(pfMode === 2){ runPathfind(pfFrom, id); pfMode = 1; }
+}
+async function runPathfind(from, to){
+  pathLayer.destroyChildren();
+  const exhaustive = document.getElementById('pfExhaustive').checked;
+  pfSet('r'+from+' → r'+to+(exhaustive?' (exhaustive)':'')+' …');
+  let d;
+  try { d = await (await fetch('/api/pathfind?'+curQuery()+'&from='+from+'&to='+to
+        +'&mode='+(exhaustive?'exhaustive':'normal'))).json(); }
+  catch(e){ pfSet('pathfind failed'); return; }
+  if(d.error){ pfSet('pathfind: '+d.error); return; }
+  // explored frontier FIRST (under the chosen route): the edges the best-effort search checked, faint teal
+  for(const e of (d.explored||[])){
+    pathLayer.add(new Konva.Line({points:[e.from[0],e.from[1], e.to[0],e.to[1]], stroke:'#2dd4bf',
+      strokeWidth:1.4, opacity:0.5, strokeScaleEnabled:false, listening:false}));
+  }
+  // route polyline: orange + solid when truly reached; grey + dashed when best-effort/no route
+  for(const e of (d.path||[])){
+    const col = d.reached ? '#ff9f1c' : '#c2410c';
+    pathLayer.add(new Konva.Arrow({points:[e.from[0],e.from[1], e.to[0],e.to[1]], stroke:col, fill:col,
+      strokeWidth:3, strokeScaleEnabled:false, pointerLength:7, pointerWidth:6, listening:false,
+      dash:d.reached?null:[6,5]}));
+  }
+  // endpoints: source green dot, target blue (reached) / red (not) dot
+  const dot=(p,c)=>{ if(p) pathLayer.add(new Konva.Circle({x:p[0],y:p[1],radius:5,fill:c,stroke:'#0d1017',
+    strokeWidth:1.2,strokeScaleEnabled:false,listening:false})); };
+  const p0=(d.path&&d.path[0])?d.path[0].from:null, pN=(d.path&&d.path.length)?d.path[d.path.length-1].to:null;
+  dot(p0,'#39d353'); dot(pN, d.reached?'#3b82f6':'#ff4d4d');
+  pathLayer.batchDraw();
+  const verdict = d.reached ? 'REACHED ('+d.hops+' hops)'
+    : d.bestEffort ? 'BEST-EFFORT — stops at r'+d.redirect+', '+(d.canReach?'A* capped':'target unreachable')
+                     +' ('+(d.explored?d.explored.length:0)+' edges checked)'
+    : d.canReach ? 'NO PATH — canReach=true but search returned empty'
+    : 'UNREACHABLE — proven graph gap'+(d.redirect>=0?'; bot would orbit r'+d.redirect:'');
+  pfSet('r'+from+'→r'+to+' ['+d.profile.sp+'/'+d.profile.jmp+'·'+d.mode+']: '+verdict);
+}
+
 // populate the cached-graph picker; keep `prof` in sync with what the server actually served
 function buildProfileDropdown(profiles, active){
   const sel = document.getElementById('profile');

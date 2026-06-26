@@ -551,7 +551,14 @@ final class BotPathLogger {
         }
         sb.append("Travel:     ").append(here).append(" -> ").append(dest);
         try {
-            List<Integer> route = BotWorldGraph.route(here, dest, BotAutopilotManager.MAX_TRAVEL_HOPS);
+            // Mirror the REAL travel route the executor walks: same spend options (scroll/taxi/ferry per
+            // meso+permission) AND the routeBlockFor danger gate. The bare BotWorldGraph.route(here,dest)
+            // overload is PORTALS_ONLY with no gate, so it can show a different first hop than the bot
+            // actually takes (e.g. a taxi/ferry shortcut, or a gated map detour) — the classic "the log
+            // says it should go to portal A but it's walking to portal B" confusion.
+            List<Integer> route = BotAutopilotManager.routeForBot(bot, here, dest,
+                    BotAutopilotManager.MAX_TRAVEL_HOPS,
+                    BotAutopilotManager.travelOptions(bot, BotAutopilotManager.ferryAllowed(entry)));
             sb.append("  route=").append(route == null ? "<none/unreachable>" : route.toString());
         } catch (RuntimeException e) {
             sb.append("  route=<err:").append(e).append(">");
@@ -722,6 +729,24 @@ final class BotPathLogger {
             } else {
                 for (int i = 0; i < path.size(); i++) {
                     sb.append("  ").append(i + 1).append(". ").append(edgeStr(path.get(i))).append("\n");
+                }
+                // The "committed" findPath above redirects an UNREACHABLE target to the nearest reachable
+                // region (BotNavigationGraph.nearestReachableRegion) and returns that partial path, so a
+                // non-empty result does NOT mean the bot arrives. When the last edge lands in a region
+                // other than the target, the target region is unreachable in THIS graph and the bot will
+                // oscillate around the redirect region forever (the classic "stuck in a movement loop").
+                // Flag it loudly with the residual gap so the log says WHY, not just where it walked.
+                BotNavigationGraph.Edge last = path.get(path.size() - 1);
+                if (last.toRegionId != targetRegionId) {
+                    int residual = Math.abs(last.endPoint.x - targetPos.x)
+                            + Math.abs(last.endPoint.y - targetPos.y);
+                    sb.append("  *** TARGET REGION ").append(targetRegionId)
+                            .append(" NOT REACHED — best-effort redirect ends at region ").append(last.toRegionId)
+                            .append(" (").append(last.endPoint.x).append(",").append(last.endPoint.y).append("), ")
+                            .append(residual).append("px short. Bot orbits the redirect region, never arrives.")
+                            .append(" Confirm WHY via /mapgraph Pathfind r").append(botRegionId).append("→r")
+                            .append(targetRegionId).append(" exhaustive (canReach=false => graph gap; ")
+                            .append("canReach=true => edge-check cap). ***\n");
                 }
             }
         }
