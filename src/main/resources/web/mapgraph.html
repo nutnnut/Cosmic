@@ -397,7 +397,19 @@ async function pollChars(){
 }
 (async function init(){
   if(!mapId){ status('no ?id= map given'); return; }
+  // ?sp=&jmp=&snow= pins the graph to the bot's exact movement profile before the first load
+  const aSp = P.get('sp'), aJmp = P.get('jmp');
+  if(aSp !== null && aJmp !== null){ prof = {sp:+aSp, jmp:+aJmp, snow: P.get('snow') === '1'}; }
   await load(true);
+  // auto-run pathfind when linked with ?from=&to=&run=1 (e.g. from a bot stuck-travel log).
+  // ?tp=1 / ?fj=1 enable the bot's teleport / flash-jump skill edges, matching its eligibility.
+  const aFrom = P.get('from'), aTo = P.get('to');
+  if(P.get('run') === '1' && aFrom !== null && aTo !== null){
+    if(P.get('tp') === '1') document.getElementById('pfTeleport').checked = true;
+    if(P.get('fj') === '1') document.getElementById('pfFlashJump').checked = true;
+    pfReset(true);                 // enter pathfind mode (highlights button, sets status)
+    runPathfind(+aFrom, +aTo);
+  }
   pollChars();
 })();
 </script>

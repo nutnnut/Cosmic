@@ -340,10 +340,56 @@ final class BotStarterKitManager {
         log.error("Bot '{}' stuck trying to job-advance to {} ({}): instructor npc {} on map {}, bot on "
                         + "map {}, meso={}, route-reachable={}, lastGiveUp={}, liveRoute={}, grindDest={}, "
                         + "liveHop=[{}]. Staying put and retrying (set JOB_CHANGE_FALLBACK_ANYWHERE=true to "
-                        + "force-advance instead).",
+                        + "force-advance instead). Visualize: {}",
                 bot.getName(), entry.jobErrandTarget, reason, entry.jobErrandNpcId,
                 entry.jobErrandMapId, bot.getMapId(), bot.getMeso(), reachable, lastGiveUp,
-                liveRouteStr, entry.autopilotMapId, hopState);
+                liveRouteStr, entry.autopilotMapId, hopState, stuckGraphLink(bot, entry));
+    }
+
+    /**
+     * Clickable {@code /mapgraph} URL that auto-runs the bot's own region pathfind on the map it's stuck
+     * traversing — bot's current region → the portal toward the next hop — so the stuck log links straight
+     * to the web visualization ({@code &run=1} fires it on page load). Falls back to a plain {@code ?id}
+     * link when regions can't be resolved (graph warming / wrong map / no portal). Never throws — debug
+     * convenience only ({@code BotWorldGraphWebServer} on the same host, port 8089).
+     */
+    private static String stuckGraphLink(Character bot, BotEntry entry) {
+        try {
+            server.maps.MapleMap map = bot.getMap();
+            if (map == null) {
+                return "(no map)";
+            }
+            // Profile (sp/jmp/snow) + skill availability (tp/fj) so the page renders the SAME graph the bot
+            // navigates on and the pathfind enables exactly the skill edges the bot is eligible for.
+            StringBuilder url = new StringBuilder("http://127.0.0.1:8089/mapgraph?id=").append(map.getId());
+            BotMovementProfile prof = entry.movementProfile;
+            if (prof != null) {
+                url.append("&sp=").append(prof.totalSpeedStat())
+                        .append("&jmp=").append(prof.totalJumpStat())
+                        .append("&snow=").append(prof.snowShoes() ? 1 : 0);
+            }
+            int mask = BotNavigationManager.botSkillMask(bot);
+            if ((mask & BotNavigationGraph.SKILL_TELEPORT) != 0) {
+                url.append("&tp=1");
+            }
+            if ((mask & BotNavigationGraph.SKILL_FLASH_JUMP) != 0) {
+                url.append("&fj=1");
+            }
+            BotNavigationGraph graph = BotNavigationGraphProvider.getGraph(map, prof);
+            server.maps.Portal portal = entry.followTravelPortalId > 0
+                    ? map.getPortal(entry.followTravelPortalId) : null;
+            if (graph == null || portal == null || portal.getPosition() == null) {
+                return url.toString();
+            }
+            int from = graph.findRegionId(map, bot.getPosition());
+            int to = graph.findRegionId(map, portal.getPosition());
+            if (from < 0 || to < 0) {
+                return url.toString();
+            }
+            return url.append("&from=").append(from).append("&to=").append(to).append("&run=1").toString();
+        } catch (Exception e) {
+            return "(link failed: " + e + ")";
+        }
     }
 
     // Job-topology SSOT for the autonomous (ownerless) job picker in BotBuildManager. Unlike the

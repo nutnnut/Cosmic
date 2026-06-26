@@ -1370,6 +1370,21 @@ final class BotNavigationManager {
         return botSkillLevel(bot, FLASH_JUMP_SKILL_IDS) > 0;
     }
 
+    /** The skill-edge mask a live bot is actually eligible for (teleport / flash-jump), the SSOT both the
+     *  planner and the /mapgraph debug link compute from. 0 = walk-only. */
+    static int botSkillMask(Character bot) {
+        int mask = 0;
+        if (bot != null) {
+            if (hasTeleport(bot)) {
+                mask |= BotNavigationGraph.SKILL_TELEPORT;
+            }
+            if (hasFlashJump(bot)) {
+                mask |= BotNavigationGraph.SKILL_FLASH_JUMP;
+            }
+        }
+        return mask;
+    }
+
     private static int skillMpCon(Character bot, int[] ids) {
         for (int id : ids) {
             int lvl = bot.getSkillLevel(id);
@@ -1788,12 +1803,7 @@ final class BotNavigationManager {
                 // edges by mask; a live bot ORs in only the skills it actually has.
                 int skillMask = forcedSkillMask;
                 if (skillsEnabled && bot != null) {
-                    if (hasTeleport(bot)) {
-                        skillMask |= BotNavigationGraph.SKILL_TELEPORT;
-                    }
-                    if (hasFlashJump(bot)) {
-                        skillMask |= BotNavigationGraph.SKILL_FLASH_JUMP;
-                    }
+                    skillMask |= botSkillMask(bot);
                 }
                 if (!graph.canReach(startRegionId, targetRegionId, skillMask)) {
                     // Target region is unreachable. Only the per-tick movement executor ("committed")
