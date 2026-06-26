@@ -41,6 +41,8 @@
   <button id="fitBtn" title="reset view">Fit</button>
   <button id="pfBtn" title="pick a source region then a target region to preview the route">Pathfind</button>
   <label class="sub" style="white-space:nowrap" title="Normal = live bot's bounded best-effort search. Exhaustive = uncapped strict search that exhausts the graph to prove unreachability."><input type="checkbox" id="pfExhaustive"> exhaustive</label>
+  <label class="sub" style="white-space:nowrap" title="Allow teleport (mage) skill edges in the route (default off = walk-only)."><input type="checkbox" id="pfTeleport"> teleport</label>
+  <label class="sub" style="white-space:nowrap" title="Allow flash-jump (thief) skill edges in the route (default off = walk-only)."><input type="checkbox" id="pfFlashJump"> flash-jump</label>
   <span id="pfstat" class="sub" style="white-space:nowrap"></span>
   <label class="sub" style="white-space:nowrap">graph <select id="profile" title="cached movement-profile graph"></select></label>
   <div id="legend">
@@ -265,10 +267,14 @@ function onRegionClick(id){
 async function runPathfind(from, to){
   pathLayer.destroyChildren();
   const exhaustive = document.getElementById('pfExhaustive').checked;
-  pfSet('r'+from+' → r'+to+(exhaustive?' (exhaustive)':'')+' …');
+  const teleport = document.getElementById('pfTeleport').checked;
+  const flashJump = document.getElementById('pfFlashJump').checked;
+  const skills = (teleport?' +tp':'') + (flashJump?' +fj':'');
+  pfSet('r'+from+' → r'+to+(exhaustive?' (exhaustive)':'')+skills+' …');
   let d;
   try { d = await (await fetch('/api/pathfind?'+curQuery()+'&from='+from+'&to='+to
-        +'&mode='+(exhaustive?'exhaustive':'normal'))).json(); }
+        +'&mode='+(exhaustive?'exhaustive':'normal')
+        +(teleport?'&tp=1':'')+(flashJump?'&fj=1':''))).json(); }
   catch(e){ pfSet('pathfind failed'); return; }
   if(d.error){ pfSet('pathfind: '+d.error); return; }
   // explored frontier FIRST (under the chosen route): the edges the best-effort search checked, faint teal.
@@ -304,7 +310,8 @@ async function runPathfind(from, to){
                      +' ('+(d.explored?d.explored.length:0)+' edges checked)'
     : d.canReach ? 'NO PATH — canReach=true but search returned empty'
     : 'UNREACHABLE — proven graph gap'+(d.redirect>=0?'; bot would orbit r'+d.redirect:'');
-  pfSet('r'+from+'→r'+to+' ['+d.profile.sp+'/'+d.profile.jmp+'·'+d.mode+']: '+verdict);
+  const sk = (d.teleport?'+tp':'') + (d.flashJump?(d.teleport?'/fj':'+fj'):'');
+  pfSet('r'+from+'→r'+to+' ['+d.profile.sp+'/'+d.profile.jmp+'·'+d.mode+(sk?'·'+sk:'')+']: '+verdict);
 }
 
 // top-bar composition stats, computed from the served regions+edges (edges are the deduped drawn set)

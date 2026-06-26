@@ -908,13 +908,17 @@ public final class BotWorldGraphWebServer {
                     .getBytes(StandardCharsets.UTF_8));
             return;
         }
-        // Walk-only on the selected profile graph: the region tool has no live bot, so skill-edge
-        // eligibility (teleport/flash-jump) can't be decided — probe those with /api/navprobe&skills=1.
+        // The region tool has no live bot, so skill-edge eligibility is opt-in via toggles (default OFF =
+        // walk-only). tp=1 / fj=1 force teleport / flash-jump edges usable (mage / thief mobility).
         java.awt.Point fp = fr.centerPoint();
         java.awt.Point tp = tr.centerPoint();
         boolean exhaustive = "exhaustive".equalsIgnoreCase(q.getOrDefault("mode", ""))
                 || "1".equals(q.get("exhaustive"));
-        boolean canReach = g.canReach(from, to, 0);
+        boolean teleport = "1".equals(q.get("tp"));
+        boolean flashJump = "1".equals(q.get("fj"));
+        int skillMask = (teleport ? BotNavigationGraph.SKILL_TELEPORT : 0)
+                | (flashJump ? BotNavigationGraph.SKILL_FLASH_JUMP : 0);
+        boolean canReach = g.canReach(from, to, skillMask);
         // SAME search the live bot runs (SSOT — no parallel pathfinder), two ways:
         //  normal     = "committed" (the live executor's redirecting best-effort) + bounded budget. On an
         //               unreachable/too-far target it walks AS CLOSE AS POSSIBLE; exploredSink captures the
@@ -926,17 +930,19 @@ public final class BotWorldGraphWebServer {
         int budget = exhaustive ? Integer.MAX_VALUE : BotNavigationManager.MAX_EDGE_CHECKS;
         List<BotNavigationGraph.Edge> explored = new java.util.ArrayList<>();
         List<BotNavigationGraph.Edge> path = BotNavigationManager.runSearch(
-                g, map, fp, from, to, tp, caller, true, false, 0L, false, null, budget, explored).path();
+                g, map, fp, from, to, tp, caller, true, false, 0L, false, null, budget, explored, skillMask).path();
         boolean reached = from == to
                 || (!path.isEmpty() && path.get(path.size() - 1).toRegionId == to);
         // Best-effort = produced a path but didn't actually land in the target region (redirected/capped).
         boolean bestEffort = !reached && !path.isEmpty();
         int redirect = reached ? -1
-                : (path.isEmpty() ? g.nearestReachableRegion(from, 0, tp) : path.get(path.size() - 1).toRegionId);
+                : (path.isEmpty() ? g.nearestReachableRegion(from, skillMask, tp) : path.get(path.size() - 1).toRegionId);
         StringBuilder sb = new StringBuilder("{\"map\":").append(mapId)
                 .append(",\"from\":").append(from).append(",\"to\":").append(to)
                 .append(",\"profile\":").append(profileJson(g.movementProfile))
                 .append(",\"mode\":").append(exhaustive ? "\"exhaustive\"" : "\"normal\"")
+                .append(",\"teleport\":").append(teleport)
+                .append(",\"flashJump\":").append(flashJump)
                 .append(",\"canReach\":").append(canReach)
                 .append(",\"reached\":").append(reached)
                 .append(",\"bestEffort\":").append(bestEffort)

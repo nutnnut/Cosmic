@@ -1722,7 +1722,7 @@ final class BotNavigationManager {
                                    Character bot) {
         // Default cap, no edge collection: every production/bot/test caller uses the standard budget.
         return runSearch(graph, map, startPos, startRegionId, targetRegionId, targetPos, pathfindCaller,
-                zeroHeuristic, instrument, routeSeed, skillsEnabled, bot, MAX_EDGE_CHECKS, null);
+                zeroHeuristic, instrument, routeSeed, skillsEnabled, bot, MAX_EDGE_CHECKS, null, 0);
     }
 
     /** Same search, with the edge-check cap as a parameter (a debug tool can run UNBOUNDED with
@@ -1743,7 +1743,8 @@ final class BotNavigationManager {
                                    boolean skillsEnabled,
                                    Character bot,
                                    int edgeCheckBudget,
-                                   List<BotNavigationGraph.Edge> exploredSink) {
+                                   List<BotNavigationGraph.Edge> exploredSink,
+                                   int forcedSkillMask) {
         long startedAt = System.nanoTime();
         PathfindProfile profile = null;
         // routeSeed != 0 (per-bot) diversifies routes so 100 bots don't stack on one optimal
@@ -1759,7 +1760,9 @@ final class BotNavigationManager {
             // treated as usable so the reachable set is a superset of the real search's, making a "not
             // reachable" answer a sound skip.
             if (startRegionId != targetRegionId) {
-                int skillMask = 0;
+                // forcedSkillMask lets a bot-less caller (the /api/pathfind tool) enable teleport/flash-jump
+                // edges by mask; a live bot ORs in only the skills it actually has.
+                int skillMask = forcedSkillMask;
                 if (skillsEnabled && bot != null) {
                     if (hasTeleport(bot)) {
                         skillMask |= BotNavigationGraph.SKILL_TELEPORT;
@@ -1843,7 +1846,7 @@ final class BotNavigationManager {
 
                 for (BotNavigationGraph.Edge edge : graph.getOutgoing(current.state.regionId)) {
                     edgeChecks++;
-                    if (!isEdgeUsable(graph, map, bot, skillsEnabled, edge)) {
+                    if (!isEdgeUsable(graph, map, bot, skillsEnabled, forcedSkillMask, edge)) {
                         continue;
                     }
                     usableEdges++;
@@ -2161,14 +2164,22 @@ final class BotNavigationManager {
 
     private static boolean isEdgeUsable(BotNavigationGraph graph, MapleMap map, Character bot,
                                         boolean skillsEnabled, BotNavigationGraph.Edge edge) {
+        return isEdgeUsable(graph, map, bot, skillsEnabled, 0, edge);
+    }
+
+    private static boolean isEdgeUsable(BotNavigationGraph graph, MapleMap map, Character bot,
+                                        boolean skillsEnabled, int forcedSkillMask, BotNavigationGraph.Edge edge) {
         return switch (edge.type) {
             case WALK, JUMP, DROP, CLIMB -> true;
             case PORTAL -> {
                 Portal portal = map.getPortal(edge.portalId);
                 yield portal != null && portal.getPortalStatus();
             }
-            case TELEPORT -> skillsEnabled && bot != null && hasTeleport(bot);
-            case FLASH_JUMP -> skillsEnabled && bot != null && hasFlashJump(bot);
+            // forcedSkillMask bit set = treat the skill edge as usable without a bot (web tool toggle).
+            case TELEPORT -> (forcedSkillMask & BotNavigationGraph.SKILL_TELEPORT) != 0
+                    || (skillsEnabled && bot != null && hasTeleport(bot));
+            case FLASH_JUMP -> (forcedSkillMask & BotNavigationGraph.SKILL_FLASH_JUMP) != 0
+                    || (skillsEnabled && bot != null && hasFlashJump(bot));
         };
     }
 

@@ -161,7 +161,7 @@ stops at the nearest reachable region, so `reachable:true` with a `path` that do
 means *not actually reachable*. Check the last edge's `toR` against `toRegion`. For an honest yes/no use
 `/api/pathfind` (below), which runs a strict search + reports `canReach` separately.
 
-### `/api/pathfind?id=<mapId>&from=<regionId>&to=<regionId>[&sp=<>&jmp=<>&snow=0|1][&mode=normal|exhaustive]`
+### `/api/pathfind?id=<mapId>&from=<regionId>&to=<regionId>[&sp=<>&jmp=<>&snow=0|1][&mode=normal|exhaustive][&tp=1][&fj=1]`
 Region-to-region pathfind for the `/mapgraph` UI: click **Pathfind**, click a source region, click a target
 region — it draws the route and verdicts it. Pathfinds on the SAME cached movement-profile graph the page
 renders (`sp`/`jmp`/`snow`; default base sp100/jmp100). Runs the **same `BotNavigationManager.runSearch` the
@@ -174,12 +174,16 @@ live bot uses** (SSOT — no parallel pathfinder), in one of two modes:
 - `mode=exhaustive` — **strict, UNBOUNDED** search: exhausts the graph so an empty path is a definitive "no
   route". `canReach` (a full directed reachability BFS) is the exhaustive proof of (un)reachability.
 
+The tool has no live bot, so skill edges are **off by default (walk-only)**. `tp=1` enables teleport (mage)
+edges and `fj=1` enables flash-jump (thief) edges — both `canReach` and the search honour the mask (via
+`runSearch`'s `forcedSkillMask`, so no synthetic bot is needed). The response echoes `teleport`/`flashJump`.
+
 Unlike `navprobe`, reachability here is honest: `reached` is true only when a real path lands in `toRegion`.
 Verdicts: `reached:true` = genuine route; `bestEffort:true` = produced a partial that stops at `redirect`
 (`canReach:true` → A* capped; `canReach:false` → real graph gap, the "stuck in a movement loop" target);
 `canReach:false, path:[]` (exhaustive) = proven unreachable.
 ```
-{"map","from","to","profile":{sp,jmp,snow},"mode":"normal|exhaustive",
+{"map","from","to","profile":{sp,jmp,snow},"mode":"normal|exhaustive","teleport":bool,"flashJump":bool,
  "canReach":bool,"reached":bool,"bestEffort":bool,"hops":n,"redirect":<regionId|-1>,
  "path":[{"type","fromR","toR","cost","lsx","from":[x,y],"to":[x,y]}, ...],
  "explored":[ ...same edge shape; only populated for a best-effort result... ]}
