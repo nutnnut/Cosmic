@@ -45,6 +45,8 @@ final class BotTravelManager {
     private static final long TRAVEL_BUDGET_BASE_MS = 10_000L;
     private static final long TRAVEL_BUDGET_PER_PX_MS = 15L;
     private static final long TRAVEL_BUDGET_MAX_MS = 45_000L;
+    private static final int TRAVEL_BUDGET_ROUTE_COST_MULTIPLIER = 2;
+    private static final int TRAVEL_PROGRESS_MOVE_PX = 24;
     // tm of spawn points / doors (mirrors BotWorldGraph.NO_TARGET_MAPID): a positive sentinel, NOT
     // a real map — must be excluded from cross-map portal candidates or the wander targets dead ends.
     private static final int NO_DESTINATION_MAPID = 999999999;
@@ -215,15 +217,6 @@ final class BotTravelManager {
             clear(entry);
             active = false;
         }
-        if (active && now > entry.followTravelDeadlineMs
-                && entry.followTravelTaxiNpcId == 0 && !entry.followTravelFerry) {
-            // Taxi and ferry hops own their deadline (tickTaxiHop / BotFerryManager.walkToNpcThenAct):
-            // their NPCs are clickable map-wide in the real client, so rather than fail the errand beside
-            // a cab/dock NPC the nav can't stand exactly on (Ellinia's rope-tree, the Ariant Genie pier),
-            // the hop hails from wherever the bot ended up once the approach budget lapses.
-            giveUp(entry, now, "deadline");
-            return false;
-        }
         if (active && entry.followTravelEnteredAtMs > 0) {
             if (now - entry.followTravelEnteredAtMs > PORTAL_LAND_GRACE_MS) {
                 giveUp(entry, now, "warp-no-land");
@@ -249,6 +242,11 @@ final class BotTravelManager {
             portal = map.getPortal(entry.followTravelPortalId);
             if (portal == null || !portal.getPortalStatus()) {
                 giveUp(entry, now, "portal-closed"); // our portal closed mid-walk
+                return false;
+            }
+            refreshTravelDeadlineOnProgress(entry, bot, map, portalApproachTarget(map, portal), now);
+            if (now > entry.followTravelDeadlineMs) {
+                giveUp(entry, now, "deadline");
                 return false;
             }
         } else {
@@ -277,17 +275,14 @@ final class BotTravelManager {
             entry.followTravelFromMapId = bot.getMapId();
             entry.followTravelPortalId = portal.getId();
             entry.followTravelBestDist = Integer.MAX_VALUE; // fresh hop — first walk tick seeds progress
+            entry.followTravelBestRouteCost = Integer.MAX_VALUE;
+            entry.followTravelProgressPos = null;
             entry.followTravelDeadlineMs = now + travelBudgetMs(manhattan(bot.getPosition(), portal.getPosition()));
         }
 
-        // Progress-aware deadline: while the bot is still closing on the portal (a long multi-jump
-        // climb counts), push the give-up deadline out. Only NET progress (a new closest distance)
-        // resets it, so a bot that's genuinely stuck or oscillating in place still times out.
-        int distToPortal = manhattan(bot.getPosition(), portalApproachTarget(map, portal));
-        if (distToPortal < entry.followTravelBestDist) {
-            entry.followTravelBestDist = distToPortal;
-            entry.followTravelDeadlineMs = now + travelBudgetMs(distToPortal);
-        }
+        // Progress-aware deadline: refresh from committed-route progress, not raw portal distance.
+        // Legal routes can initially move away from the portal in screen space (Ludibrium station climb).
+        refreshTravelDeadlineOnProgress(entry, bot, map, portalApproachTarget(map, portal), now);
         return walkToPortalAndEnter(entry, bot, portal, now, runAiTick);
     }
 
@@ -424,6 +419,8 @@ final class BotTravelManager {
             // Southperry) are major chokepoints where every bot piles on the same spot and freezes.
             entry.followTravelTaxiPos = pickReachableApproachPoint(entry, bot, npcPos, APPROACH_SPREAD_PX);
             entry.followTravelBestDist = Integer.MAX_VALUE; // fresh hop — tickTaxiHop seeds progress
+            entry.followTravelBestRouteCost = Integer.MAX_VALUE;
+            entry.followTravelProgressPos = null;
             entry.followTravelDeadlineMs = now + travelBudgetMs(manhattan(bot.getPosition(), npcPos));
             return tickTaxiHop(entry, bot, now, runAiTick);
         }
@@ -450,10 +447,10 @@ final class BotTravelManager {
             giveUp(entry, now, "taxi-npc-missing");
             return false;
         }
+        int distToCab = manhattan(botPos, npcPos);
         // Progress-aware deadline, same as the portal hop: the walk/climb to a town cab can take longer than
         // the manhattan budget (Ellinia's rope-tree, Perion's cliffs), so push the deadline out while the bot
         // is still closing on the cab. Only NET progress resets it, so a genuinely stranded bot still times out.
-        int distToCab = manhattan(botPos, npcPos);
         if (distToCab < entry.followTravelBestDist) {
             entry.followTravelBestDist = distToCab;
             entry.followTravelDeadlineMs = now + travelBudgetMs(distToCab);
@@ -626,6 +623,8 @@ final class BotTravelManager {
         entry.followTravelDeadlineMs = 0L;
         entry.followTravelEnteredAtMs = 0L;
         entry.followTravelBestDist = Integer.MAX_VALUE;
+        entry.followTravelBestRouteCost = Integer.MAX_VALUE;
+        entry.followTravelProgressPos = null;
         entry.followTravelTaxiNpcId = 0;
         entry.followTravelTaxiPos = null;
         entry.followTravelFerry = false;
@@ -659,7 +658,8 @@ final class BotTravelManager {
                 + " fromMap=" + entry.followTravelFromMapId
                 // closest the bot got to the hop target: small = reached it but ran out of budget; large/absent
                 // = never made progress (nav can't reach it), a deeper routing problem than a short deadline.
-                + (entry.followTravelBestDist != Integer.MAX_VALUE ? " bestDist=" + entry.followTravelBestDist : "");
+                + (entry.followTravelBestDist != Integer.MAX_VALUE ? " bestDist=" + entry.followTravelBestDist : "")
+                + (entry.followTravelBestRouteCost != Integer.MAX_VALUE ? " bestRouteCost=" + entry.followTravelBestRouteCost : "");
         clear(entry);
         entry.followTravelGiveUpUntilMs = now + GIVE_UP_WARP_WINDOW_MS;
         entry.followTravelGiveUpTargetMapId = failedDest;
@@ -671,6 +671,60 @@ final class BotTravelManager {
     /** Walk budget = give-up window for reaching a portal/NPC, scaled by manhattan distance. */
     private static long travelBudgetMs(int manhattanDist) {
         return Math.min(TRAVEL_BUDGET_MAX_MS, TRAVEL_BUDGET_BASE_MS + TRAVEL_BUDGET_PER_PX_MS * manhattanDist);
+    }
+
+    private static long travelRouteBudgetMs(int routeCostMs) {
+        return Math.min(TRAVEL_BUDGET_MAX_MS,
+                TRAVEL_BUDGET_BASE_MS + (long) TRAVEL_BUDGET_ROUTE_COST_MULTIPLIER * routeCostMs);
+    }
+
+    private static void refreshTravelDeadlineOnProgress(BotEntry entry, Character bot, MapleMap map,
+                                                        Point targetPos, long now) {
+        Point botPos = bot == null ? null : bot.getPosition();
+        if (entry == null || botPos == null || targetPos == null) {
+            return;
+        }
+        int dist = manhattan(botPos, targetPos);
+        boolean closer = dist < entry.followTravelBestDist;
+        if (dist < entry.followTravelBestDist) {
+            entry.followTravelBestDist = dist;
+        }
+        int routeCost = remainingTravelRouteCost(entry, bot, map, botPos, targetPos);
+        if (routeCost != Integer.MAX_VALUE) {
+            if (routeCost < entry.followTravelBestRouteCost) {
+                entry.followTravelBestRouteCost = routeCost;
+                entry.followTravelProgressPos = new Point(botPos);
+                entry.followTravelDeadlineMs = now + travelRouteBudgetMs(routeCost);
+            }
+            return;
+        }
+
+        // Fallback only: graph warming or a stale committed route can leave us without a route-cost
+        // scalar for a tick. Physical movement keeps the hop alive briefly until the movement stack
+        // commits a route, but the graph cost above is the normal watchdog signal.
+        boolean moved = entry.followTravelProgressPos == null
+                || manhattan(botPos, entry.followTravelProgressPos) >= TRAVEL_PROGRESS_MOVE_PX;
+        if (!closer && !moved) {
+            return;
+        }
+        if (closer) {
+            entry.followTravelBestDist = dist;
+        }
+        entry.followTravelProgressPos = new Point(botPos);
+        entry.followTravelDeadlineMs = now + travelBudgetMs(dist);
+    }
+
+    private static int remainingTravelRouteCost(BotEntry entry, Character bot, MapleMap map, Point botPos, Point targetPos) {
+        if (bot == null || map == null || botPos == null || targetPos == null) {
+            return Integer.MAX_VALUE;
+        }
+        BotNavigationGraph graph = BotNavigationGraphProvider.getGraph(map, entry.movementProfile);
+        if (graph == null) {
+            return Integer.MAX_VALUE;
+        }
+        int startRegionId = BotNavigationManager.resolveCurrentRegionId(graph, entry, map, botPos);
+        int targetRegionId = BotNavigationManager.resolveTargetRegionId(graph, entry, map, targetPos);
+        return BotNavigationManager.committedRouteRemainingCost(graph, entry, botPos, startRegionId, targetRegionId, targetPos);
     }
 
     // "Got close, act from where you stand" — the SSOT robustness behind the shop visit, taxi, ferry and

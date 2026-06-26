@@ -615,7 +615,10 @@ final class BotPathLogger {
             }
             sb.append(" deadlineInMs=").append(entry.followTravelDeadlineMs - now);
             if (entry.followTravelBestDist != Integer.MAX_VALUE) {
-                sb.append(" bestDist=").append(entry.followTravelBestDist); // closest to portal so far; resets deadline on progress
+                sb.append(" bestDist=").append(entry.followTravelBestDist); // closest to portal so far
+            }
+            if (entry.followTravelBestRouteCost != Integer.MAX_VALUE) {
+                sb.append(" bestRouteCost=").append(entry.followTravelBestRouteCost); // graph-cost progress for deadline
             }
             sb.append("\n");
         } else {

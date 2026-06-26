@@ -232,7 +232,9 @@ public class BotEntry {
     String followTravelGiveUpReason = null; // why the last give-up fired (deadline/portal-closed/...) — path-log only
     String followTravelGiveUpHop = null; // the hop that failed (nextHop + taxi/ferry/portal + fromMap), for the stuck log/pathlog
     long followTravelGiveUpAtMs = 0L; // when the last give-up fired — so the log can show how recent it was
-    int followTravelBestDist = Integer.MAX_VALUE; // closest manhattan to the hop portal so far; resets the deadline on progress
+    int followTravelBestDist = Integer.MAX_VALUE; // closest manhattan to the hop portal so far; path-log only
+    int followTravelBestRouteCost = Integer.MAX_VALUE; // lowest committed-route remaining cost seen for this portal hop
+    Point followTravelProgressPos = null; // last fallback position that refreshed the travel deadline
     Point followTravelMoveTarget = null; // the exact moveTarget instance travel pinned (identity-checked on clear)
     int followTravelTaxiNpcId = 0;       // != 0: current hop is a cab ride — walk to this NPC, pay, warp
     Point followTravelTaxiPos = null;    // cab NPC position (static, cached at hop start)

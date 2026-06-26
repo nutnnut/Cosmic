@@ -837,30 +837,34 @@ public final class BotWorldGraphWebServer {
         // skills=1 runs the skill-enabled planner so the path shows TELEPORT/FLASH_JUMP edges the bot is
         // eligible for (probe a teleport mage / flash-jump hermit). Default stays walk-only.
         boolean skills = "1".equals(q.get("skills")) || "true".equalsIgnoreCase(q.getOrDefault("skills", ""));
-        var path = skills
-                ? BotNavigationManager.findPathWithSkills(graph, bot, fromRegion, toRegion, target)
-                : BotNavigationManager.findPath(graph, bot, fromRegion, toRegion, target);
+        boolean exhaustive = "exhaustive".equalsIgnoreCase(q.getOrDefault("mode", ""))
+                || "1".equals(q.get("exhaustive"));
+        int skillMask = skills ? BotNavigationManager.botSkillMask(bot) : 0;
+        boolean canReach = graph.canReach(fromRegion, toRegion, skillMask);
+        String caller = exhaustive ? "navprobe" : "committed";
+        int budget = exhaustive ? Integer.MAX_VALUE : BotNavigationManager.MAX_EDGE_CHECKS;
+        BotNavigationManager.SearchOutcome outcome = BotNavigationManager.runSearch(
+                graph, map, botPos, fromRegion, toRegion, target, caller,
+                BotNavigationManager.useAdmissibleHeuristic, true, BotNavigationManager.routeSeed(bot),
+                skills, bot, budget, null, skillMask);
+        var path = outcome.path();
         sb.append(",\"fromRegion\":").append(fromRegion)
                 .append(",\"toRegion\":").append(toRegion)
                 .append(",\"targetGroundY\":").append(ground != null ? ground.y : -1)
                 .append(",\"targetOnRope\":").append(onRope)
                 .append(",\"skills\":").append(skills)
-                .append(",\"reachable\":").append(path != null)
-                .append(",\"hops\":").append(path != null ? path.size() : 0)
+                .append(",\"mode\":").append(exhaustive ? "\"exhaustive\"" : "\"normal\"")
+                .append(",\"canReach\":").append(canReach)
+                .append(",\"reachable\":").append(outcome.reached())
+                .append(",\"reached\":").append(outcome.reached())
+                .append(",\"bestEffort\":").append(outcome.bestEffort())
+                .append(",\"capped\":").append(outcome.capped())
+                .append(",\"finalRegion\":").append(outcome.finalRegionId())
+                .append(",\"cost\":").append(outcome.cost())
+                .append(",\"expanded\":").append(outcome.expandedNodes())
+                .append(",\"hops\":").append(path.size())
                 .append(",\"path\":[");
-        if (path != null) {
-            for (int i = 0; i < path.size(); i++) {
-                var edge = path.get(i);
-                if (i > 0) {
-                    sb.append(',');
-                }
-                sb.append("{\"type\":").append(jsonStr(edge.type.name()))
-                        .append(",\"fromR\":").append(edge.fromRegionId)
-                        .append(",\"toR\":").append(edge.toRegionId)
-                        .append(",\"from\":[").append(edge.startPoint.x).append(',').append(edge.startPoint.y).append("]")
-                        .append(",\"to\":[").append(edge.endPoint.x).append(',').append(edge.endPoint.y).append("]}");
-            }
-        }
+        appendEdgesJson(sb, path);
         send(ex, 200, "application/json", sb.append("]}").toString().getBytes(StandardCharsets.UTF_8));
     }
 
@@ -929,14 +933,11 @@ public final class BotWorldGraphWebServer {
         String caller = exhaustive ? "webpathfind" : "committed";
         int budget = exhaustive ? Integer.MAX_VALUE : BotNavigationManager.MAX_EDGE_CHECKS;
         List<BotNavigationGraph.Edge> explored = new java.util.ArrayList<>();
-        List<BotNavigationGraph.Edge> path = BotNavigationManager.runSearch(
-                g, map, fp, from, to, tp, caller, true, false, 0L, false, null, budget, explored, skillMask).path();
-        boolean reached = from == to
-                || (!path.isEmpty() && path.get(path.size() - 1).toRegionId == to);
-        // Best-effort = produced a path but didn't actually land in the target region (redirected/capped).
-        boolean bestEffort = !reached && !path.isEmpty();
-        int redirect = reached ? -1
-                : (path.isEmpty() ? g.nearestReachableRegion(from, skillMask, tp) : path.get(path.size() - 1).toRegionId);
+        BotNavigationManager.SearchOutcome outcome = BotNavigationManager.runSearch(
+                g, map, fp, from, to, tp, caller, true, false, 0L, false, null, budget, explored, skillMask);
+        List<BotNavigationGraph.Edge> path = outcome.path();
+        int redirect = outcome.reached() ? -1
+                : (path.isEmpty() ? g.nearestReachableRegion(from, skillMask, tp) : outcome.finalRegionId());
         StringBuilder sb = new StringBuilder("{\"map\":").append(mapId)
                 .append(",\"from\":").append(from).append(",\"to\":").append(to)
                 .append(",\"profile\":").append(profileJson(g.movementProfile))
@@ -944,8 +945,13 @@ public final class BotWorldGraphWebServer {
                 .append(",\"teleport\":").append(teleport)
                 .append(",\"flashJump\":").append(flashJump)
                 .append(",\"canReach\":").append(canReach)
-                .append(",\"reached\":").append(reached)
-                .append(",\"bestEffort\":").append(bestEffort)
+                .append(",\"reachable\":").append(outcome.reached())
+                .append(",\"reached\":").append(outcome.reached())
+                .append(",\"bestEffort\":").append(outcome.bestEffort())
+                .append(",\"capped\":").append(outcome.capped())
+                .append(",\"finalRegion\":").append(outcome.finalRegionId())
+                .append(",\"cost\":").append(outcome.cost())
+                .append(",\"expanded\":").append(outcome.expandedNodes())
                 .append(",\"hops\":").append(path.size())
                 .append(",\"redirect\":").append(redirect)
                 .append(",\"path\":[");
@@ -953,7 +959,7 @@ public final class BotWorldGraphWebServer {
         // Explored frontier: only meaningful for a best-effort result (show what was checked before giving
         // up). Omit on a clean reach to keep the payload small.
         sb.append("],\"explored\":[");
-        if (bestEffort) {
+        if (outcome.bestEffort()) {
             // A* re-pops regions, so the same edge object lands in the sink many times; collapse to the
             // DISTINCT edges checked (identity = from/to/type + endpoints, so genuine parallel launch-x
             // variants stay separate — those are the redundant rope/jump edges worth seeing).

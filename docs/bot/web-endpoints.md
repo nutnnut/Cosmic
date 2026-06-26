@@ -139,12 +139,13 @@ or load failed.
 {"results":[{"id":767,"spawned":true},{"id":814,"spawned":false,"note":"already online or load failed"}]}
 ```
 
-### `/api/navprobe?id=<botCharId>&x=<>&y=<>[&skills=1]`
-Pathfinding probe: runs the bot's own nav planner (`BotNavigationManager.findPath` on the live graph)
+### `/api/navprobe?id=<botCharId>&x=<>&y=<>[&skills=1][&mode=normal|exhaustive]`
+Pathfinding probe: runs the bot's own nav search (`BotNavigationManager.runSearch` on the live graph)
 from its current position to an arbitrary point on its current map. The "why can't the bot get there"
 companion to `/api/bot/pathlog` — answers reachability for a hypothetical target (e.g. a portal's
 approach point) without driving the bot there. `targetGroundY=-1` / `targetOnRope` flag the target
-surface; `reachable=false` with `path:[]` means no route from `fromRegion` to `toRegion`.
+surface. `mode=normal` mirrors the live executor's bounded `"committed"` search, including best-effort
+redirects for unreachable targets; `mode=exhaustive` runs a strict unbounded proof search.
 `&skills=1` runs the **skill-enabled** planner — teleport / flash-jump edges the bot is eligible for by
 skill possession (no MP/meso gate, no cost-saved threshold) — so the path can include `TELEPORT`/
 `FLASH_JUMP`; default is walk-only. Probe a teleport mage / flash-jump hermit to confirm the planner
@@ -152,14 +153,15 @@ routes through skill edges. The response echoes `skills`.
 ```
 {"bot","map","from":[x,y],"to":[x,y],
  "fromRegion","toRegion","targetGroundY","targetOnRope","skills":bool,
- "reachable":bool,"hops":n,
- "path":[{"type":"WALK|CLIMB|JUMP|DROP|TELEPORT|FLASH_JUMP","fromR","toR","from":[x,y],"to":[x,y]}, ...]}
+ "mode":"normal|exhaustive","canReach":bool,"reachable":bool,"reached":bool,
+ "bestEffort":bool,"capped":bool,"finalRegion":n,"cost":n,"expanded":n,"hops":n,
+ "path":[{"type":"WALK|CLIMB|JUMP|DROP|TELEPORT|FLASH_JUMP","fromR","toR","cost","lsx","from":[x,y],"to":[x,y]}, ...]}
 ```
-**Caveat:** `reachable` here is `path != null`, and the underlying `findPath` is the live executor's
+`reachable` is an alias of `reached`: true only when the path actually lands in `toRegion`.
 **redirecting** `"committed"` search — for an UNREACHABLE target it returns a best-effort partial path that
-stops at the nearest reachable region, so `reachable:true` with a `path` that does NOT end at `toRegion`
-means *not actually reachable*. Check the last edge's `toR` against `toRegion`. For an honest yes/no use
-`/api/pathfind` (below), which runs a strict search + reports `canReach` separately.
+stops at the closest useful region instead of the exact target; `bestEffort:true` marks this case.
+This is expected for some unreachable NPC/portal pixels where walking near enough is still useful to the
+runtime `stuckNear`/interaction fallback.
 
 ### `/api/pathfind?id=<mapId>&from=<regionId>&to=<regionId>[&sp=<>&jmp=<>&snow=0|1][&mode=normal|exhaustive][&tp=1][&fj=1]`
 Region-to-region pathfind for the `/mapgraph` UI: click **Pathfind**, click a source region, click a target
@@ -178,13 +180,14 @@ The tool has no live bot, so skill edges are **off by default (walk-only)**. `tp
 edges and `fj=1` enables flash-jump (thief) edges — both `canReach` and the search honour the mask (via
 `runSearch`'s `forcedSkillMask`, so no synthetic bot is needed). The response echoes `teleport`/`flashJump`.
 
-Unlike `navprobe`, reachability here is honest: `reached` is true only when a real path lands in `toRegion`.
-Verdicts: `reached:true` = genuine route; `bestEffort:true` = produced a partial that stops at `redirect`
+Reachability uses the same verdict fields as `navprobe`: `reached:true` = genuine route;
+`bestEffort:true` = produced a partial that stops at `redirect`
 (`canReach:true` → A* capped; `canReach:false` → real graph gap, the "stuck in a movement loop" target);
 `canReach:false, path:[]` (exhaustive) = proven unreachable.
 ```
 {"map","from","to","profile":{sp,jmp,snow},"mode":"normal|exhaustive","teleport":bool,"flashJump":bool,
- "canReach":bool,"reached":bool,"bestEffort":bool,"hops":n,"redirect":<regionId|-1>,
+ "canReach":bool,"reachable":bool,"reached":bool,"bestEffort":bool,"capped":bool,
+ "finalRegion":n,"cost":n,"expanded":n,"hops":n,"redirect":<regionId|-1>,
  "path":[{"type","fromR","toR","cost","lsx","from":[x,y],"to":[x,y]}, ...],
  "explored":[ ...same edge shape; only populated for a best-effort result... ]}
 ```

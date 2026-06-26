@@ -1,6 +1,7 @@
 package server.bots;
 
 import client.Character;
+import client.Job;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -52,6 +53,7 @@ class BotTravelManagerTest {
         when(bot.getMap()).thenReturn(map);
         when(bot.getMapId()).thenReturn(botMapId);
         when(bot.getPosition()).thenReturn(botPos);
+        when(bot.getJob()).thenReturn(Job.BEGINNER);
         when(anchor.getMapId()).thenReturn(anchorMapId);
         when(map.getPortals()).thenReturn(portals);
         for (Portal portal : portals) {
@@ -574,6 +576,28 @@ class BotTravelManagerTest {
             assertTrue(BotTravelManager.tickFollowTravel(f.entry(), f.bot(), f.anchor(), true));
             assertEquals(500, f.entry().followTravelBestDist);          // new closest distance recorded
             assertTrue(f.entry().followTravelDeadlineMs >= beforeMs);   // deadline refreshed from 'now'
+        }
+    }
+
+    @Test
+    void movementAlongDetourRefreshesPortalDeadlineEvenBeforeRawDistanceImproves() {
+        // Some valid graph routes initially move away from the portal in raw Manhattan distance
+        // before climbing back toward it. The hop watchdog must not time out those legal detours.
+        Portal portal = portal(1, HENESYS, Portal.MAP_PORTAL, null, Portal.OPEN, new Point(1000, 0));
+        Fixture f = fixture(HUNTING_GROUND, HENESYS, new Point(0, 0), List.of(portal));
+
+        try (MovementRecorder movement = new MovementRecorder()) {
+            assertTrue(BotTravelManager.tickFollowTravel(f.entry(), f.bot(), f.anchor(), true));
+            assertEquals(1000, f.entry().followTravelBestDist);
+
+            when(f.bot().getPosition()).thenReturn(new Point(0, 200)); // farther from portal, but real movement
+            f.entry().followTravelDeadlineMs = System.currentTimeMillis() - 1;
+            long beforeMs = System.currentTimeMillis();
+
+            assertTrue(BotTravelManager.tickFollowTravel(f.entry(), f.bot(), f.anchor(), true));
+            assertEquals(1000, f.entry().followTravelBestDist);
+            assertTrue(f.entry().followTravelDeadlineMs >= beforeMs);
+            assertEquals(2, movement.steps.size());
         }
     }
 

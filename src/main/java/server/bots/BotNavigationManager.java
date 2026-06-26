@@ -1542,6 +1542,88 @@ final class BotNavigationManager {
         return null; // bot's region isn't where the route expects it — knocked off, recompute
     }
 
+    static int committedRouteRemainingCost(BotNavigationGraph graph, BotEntry entry, Point botPos,
+                                           int startRegionId, int targetRegionId, Point targetPos) {
+        if (graph == null || entry == null || botPos == null || targetPos == null
+                || startRegionId < 0 || targetRegionId < 0) {
+            return Integer.MAX_VALUE;
+        }
+        if (startRegionId == targetRegionId) {
+            return intraRegionTravelCost(graph, startRegionId, botPos, targetPos);
+        }
+        List<BotNavigationGraph.Edge> route = entry.committedRoute;
+        if (route == null || route.isEmpty() || entry.committedRouteTargetRegionId != targetRegionId) {
+            return Integer.MAX_VALUE;
+        }
+        Point committedTarget = entry.committedRouteTargetPos;
+        if (committedTarget == null || committedTarget.distanceSq(targetPos) > COMMITTED_ROUTE_TARGET_REPLAN_PX * COMMITTED_ROUTE_TARGET_REPLAN_PX) {
+            return Integer.MAX_VALUE;
+        }
+
+        int cursor = Math.max(0, entry.committedRouteCursor);
+        while (cursor < route.size()
+                && route.get(cursor).toRegionId == startRegionId
+                && route.get(cursor).fromRegionId != startRegionId) {
+            cursor++;
+        }
+        while (cursor < route.size() && route.get(cursor).type == BotNavigationGraph.EdgeType.WALK) {
+            cursor++;
+        }
+        if (cursor >= route.size()) {
+            return Integer.MAX_VALUE;
+        }
+        BotNavigationGraph.Edge first = route.get(cursor);
+        if (first.fromRegionId != startRegionId || !isEdgeUsable(graph, entry.bot, first)) {
+            return Integer.MAX_VALUE;
+        }
+
+        long total = 0L;
+        Point from = botPos;
+        int region = startRegionId;
+        for (int i = cursor; i < route.size(); i++) {
+            BotNavigationGraph.Edge edge = route.get(i);
+            if (edge.fromRegionId != region) {
+                return Integer.MAX_VALUE;
+            }
+            Point approach = routeApproachPoint(edge, from);
+            total += intraRegionTravelCost(graph, region, from, approach);
+            total += routeEdgeCost(edge, approach);
+            from = routeLandingPoint(edge, approach);
+            region = edge.toRegionId;
+            if (total >= Integer.MAX_VALUE) {
+                return Integer.MAX_VALUE;
+            }
+        }
+        if (region == targetRegionId) {
+            total += intraRegionTravelCost(graph, region, from, targetPos);
+        }
+        return total >= Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) total;
+    }
+
+    private static Point routeApproachPoint(BotNavigationGraph.Edge edge, Point from) {
+        if (edge.type == BotNavigationGraph.EdgeType.DROP && edge.launchStepX == 0) {
+            return edge.pointAtNearestLaunchX(from.x);
+        }
+        if (edge.type == BotNavigationGraph.EdgeType.CLIMB && edge.launchMaxY > edge.launchMinY) {
+            return edge.pointAtNearestLaunchY(from.y);
+        }
+        return edge.startPoint;
+    }
+
+    private static Point routeLandingPoint(BotNavigationGraph.Edge edge, Point approach) {
+        if (edge.type == BotNavigationGraph.EdgeType.DROP && edge.launchStepX == 0) {
+            return new Point(approach.x, edge.endPoint.y);
+        }
+        return edge.endPoint;
+    }
+
+    private static int routeEdgeCost(BotNavigationGraph.Edge edge, Point approach) {
+        if (edge.type == BotNavigationGraph.EdgeType.CLIMB && edge.launchMaxY > edge.launchMinY) {
+            return edge.launchCostAt(approach.y);
+        }
+        return edge.cost;
+    }
+
     /**
      * Intra-region express: a skill bot far from a SAME-region target blinks (teleport) or dashes
      * (flash jump) along the platform instead of walking the whole stretch — the "speed up a straight
@@ -1786,6 +1868,8 @@ final class BotNavigationManager {
                                    int forcedSkillMask) {
         long startedAt = System.nanoTime();
         PathfindProfile profile = null;
+        int requestedTargetRegionId = targetRegionId;
+        boolean redirected = false;
         // routeSeed != 0 (per-bot) diversifies routes so 100 bots don't stack on one optimal
         // path, and switches the search from h=0 Dijkstra (full-graph scan) to a per-bot
         // weighted A* that prunes. Seed 0 = exact legacy behavior (probes/calibration/non-bot).
@@ -1816,14 +1900,17 @@ final class BotNavigationManager {
                     // their true unreachable cost (a redirected cheap partial would hide that walking
                     // can't reach the target and suppress the teleport route).
                     if (!"committed".equals(pathfindCaller)) {
-                        return new SearchOutcome(List.of(), Integer.MAX_VALUE, 0, false);
+                        return new SearchOutcome(List.of(), Integer.MAX_VALUE, 0, false,
+                                false, false, false, startRegionId);
                     }
                     int redirectRegionId = graph.nearestReachableRegion(startRegionId, skillMask, targetPos);
                     if (redirectRegionId < 0) {
-                        return new SearchOutcome(List.of(), Integer.MAX_VALUE, 0, false);
+                        return new SearchOutcome(List.of(), Integer.MAX_VALUE, 0, false,
+                                false, false, false, startRegionId);
                     }
                     targetRegionId = redirectRegionId;
                     targetPos = graph.getRegion(redirectRegionId).pointAt(targetPos.x);
+                    redirected = true;
                 }
             }
             // Goal-distance heuristic floor (portal-aware, position-blind region distances). Computed
@@ -1978,7 +2065,11 @@ final class BotNavigationManager {
                     break;
                 }
             }
-            return new SearchOutcome(path, bestGoalCost, expandedNodes, usesPortal);
+            int finalRegionId = resultState == null ? startRegionId : resultState.regionId;
+            boolean reached = resultState != null && finalRegionId == requestedTargetRegionId;
+            boolean bestEffort = !reached && !path.isEmpty();
+            return new SearchOutcome(path, bestGoalCost, expandedNodes, usesPortal,
+                    reached, capped, redirected || bestEffort, finalRegionId);
         } finally {
             if (instrument) {
                 if (profile == null) {
@@ -2001,7 +2092,8 @@ final class BotNavigationManager {
     }
 
     /** Result of a single {@link #runSearch} call. */
-    record SearchOutcome(List<BotNavigationGraph.Edge> path, int cost, int expandedNodes, boolean usesPortal) {
+    record SearchOutcome(List<BotNavigationGraph.Edge> path, int cost, int expandedNodes, boolean usesPortal,
+                         boolean reached, boolean capped, boolean bestEffort, int finalRegionId) {
     }
 
     /** Side-by-side comparison of the production heuristic vs the admissible (h=0) optimal search. */
@@ -2476,7 +2568,7 @@ final class BotNavigationManager {
     }
 
     /** Per-bot route seed; non-zero so the search takes the randomized branch. */
-    private static long routeSeed(Character bot) {
+    static long routeSeed(Character bot) {
         return mix64(bot.getId()) | 1L;
     }
 
