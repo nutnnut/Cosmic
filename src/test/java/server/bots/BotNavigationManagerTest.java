@@ -387,6 +387,33 @@ class BotNavigationManagerTest {
     }
 
     @Test
+    void teleportCooldownSteersHorizontallyInsideLaunchWindow() {
+        MapleMap map = new MapleMap(910000102, 0, 0, 910000102, 1.0f);
+        Character bot = mockBot(new Point(100, 100), map);
+        BotEntry entry = new BotEntry(bot, null, null);
+        entry.movementProfile = BotMovementProfile.base();
+        entry.lastEdgeBlockReason = "tele-cd";
+
+        BotNavigationGraph.Edge rightTeleport = new BotNavigationGraph.Edge(
+                1, 2, BotNavigationGraph.EdgeType.TELEPORT,
+                new Point(100, 100), new Point(250, 100),
+                80, 200, 0, 0, 0, 0, 0, 100);
+
+        Point waypoint = BotNavigationManager.selectTeleportCooldownWaypoint(
+                entry, new Point(100, 100), rightTeleport);
+
+        assertEquals(new Point(100 + BotPhysicsEngine.walkStep(map, entry.movementProfile), 100), waypoint);
+
+        BotNavigationGraph.Edge upTeleport = new BotNavigationGraph.Edge(
+                1, 2, BotNavigationGraph.EdgeType.TELEPORT,
+                new Point(100, 100), new Point(100, -50),
+                80, 200, 0, 0, 0, 0, 0, 100);
+
+        assertNull(BotNavigationManager.selectTeleportCooldownWaypoint(
+                entry, new Point(100, 100), upTeleport));
+    }
+
+    @Test
     void ropeExitEdgeCarriesYLaunchWindowAndSteersWithinIt() {
         // Rope-exit CLIMB: fixed x (ropeX=100), launches from any climb height in the Y window [150,260].
         BotNavigationGraph.Edge e = new BotNavigationGraph.Edge(

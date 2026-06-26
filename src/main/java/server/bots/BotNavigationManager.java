@@ -319,6 +319,18 @@ final class BotNavigationManager {
                 return executionDirective;
             }
 
+            Point cooldownWaypoint = selectTeleportCooldownWaypoint(entry, botPos, edge);
+            if (cooldownWaypoint != null) {
+                entry.lastNavDecision = "skill-cd";
+                entry.navBlockedPosTicks = 0;
+                entry.navPreciseTarget = false;
+                entry.navTargetPos = cooldownWaypoint;
+                if (entry.pathLogger != null) {
+                    entry.pathLogger.record(entry, captureTargetSnapshot(entry, rawTargetPos), startRegionId, false, runAiTick);
+                }
+                return new NavigationDirective(new Point(cooldownWaypoint), false);
+            }
+
             // Long-stretch express: walking a long way to a committed cross-region edge's launch point —
             // blink/dash toward that launch X instead of trudging the whole platform. Keeps the committed
             // edge (tryIntraRegionSkillHop no longer clears nav) so the bot executes the hop once in range.
@@ -1203,6 +1215,32 @@ final class BotNavigationManager {
         }
         int targetX = edge.containsLaunchX(botPos.x) ? botPos.x : steerXWithinLaunchWindow(edge, botPos.x);
         return fromRegion.pointAt(targetX);
+    }
+
+    static Point selectTeleportCooldownWaypoint(BotEntry entry, Point botPos, BotNavigationGraph.Edge edge) {
+        if (entry == null || botPos == null || edge == null
+                || edge.type != BotNavigationGraph.EdgeType.TELEPORT
+                || !"tele-cd".equals(entry.lastEdgeBlockReason)) {
+            return null;
+        }
+
+        int dx = edge.endPoint.x - edge.startPoint.x;
+        int dy = edge.endPoint.y - edge.startPoint.y;
+        if (Math.abs(dx) < Math.abs(dy)) {
+            return null;
+        }
+        int dir = Integer.signum(dx);
+        if (dir == 0) {
+            return null;
+        }
+
+        int walkStep = BotPhysicsEngine.walkStep(entry.bot.getMap(), entry.movementProfile);
+        int nextX = botPos.x + dir * walkStep;
+        nextX = dir > 0 ? Math.min(nextX, edge.launchMaxX) : Math.max(nextX, edge.launchMinX);
+        if (nextX == botPos.x || !edge.containsLaunchX(nextX)) {
+            return null;
+        }
+        return new Point(nextX, botPos.y);
     }
 
     static Point selectClimbWaypoint(BotEntry entry, Point botPos, BotNavigationGraph.Edge edge) {

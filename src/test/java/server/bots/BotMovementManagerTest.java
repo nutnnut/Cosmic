@@ -27,6 +27,37 @@ import static org.mockito.Mockito.when;
 
 class BotMovementManagerTest {
     @Test
+    void shouldBuildTeleportPacketWithImmediateLandingFragment() {
+        byte[] data = BotMovementManager.buildTeleportMovementData(
+                new Point(100, 200),
+                new Point(250, 200),
+                new BotPhysicsEngine.MovementSnapshot(0, 0, CharacterStance.STAND_RIGHT_STANCE),
+                321);
+
+        assertEquals(35, data.length);
+        assertEquals(3, u8(data[0]));
+
+        assertEquals(4, u8(data[1]));
+        assertEquals(100, i16(data, 2));
+        assertEquals(200, i16(data, 4));
+        assertEquals(CharacterStance.STAND_RIGHT_STANCE, u8(data[10]));
+
+        assertEquals(3, u8(data[11]));
+        assertEquals(250, i16(data, 12));
+        assertEquals(200, i16(data, 14));
+        assertEquals(CharacterStance.STAND_RIGHT_STANCE, u8(data[20]));
+
+        assertEquals(0, u8(data[21]));
+        assertEquals(250, i16(data, 22));
+        assertEquals(200, i16(data, 24));
+        assertEquals(0, i16(data, 26));
+        assertEquals(0, i16(data, 28));
+        assertEquals(321, i16(data, 30));
+        assertEquals(CharacterStance.STAND_RIGHT_STANCE, u8(data[32]));
+        assertEquals(BotPhysicsEngine.cfg.TICK_MS, i16(data, 33));
+    }
+
+    @Test
     void shouldClampGrindingTargetAwayFromCurrentFootholdEdgeForSameFootholdCombat() {
         MapleMap map = new MapleMap(910000007, 0, 0, 910000007, 1.0f);
         server.maps.FootholdTree footholds = new server.maps.FootholdTree(new Point(-2000, -2000), new Point(2000, 2000));
@@ -1095,5 +1126,14 @@ class BotMovementManagerTest {
         when(mob.isAlive()).thenReturn(true);
         when(mob.isFacingLeft()).thenReturn(false);
         return mob;
+    }
+
+    private static int u8(byte b) {
+        return b & 0xFF;
+    }
+
+    private static int i16(byte[] data, int offset) {
+        int value = u8(data[offset]) | (u8(data[offset + 1]) << 8);
+        return value >= 32768 ? value - 65536 : value;
     }
 }

@@ -1078,30 +1078,38 @@ class BotMovementManager {
         bot.getMap().broadcastMessage(bot, movePacket, false);
     }
 
-    /** Broadcast a teleport so other clients render a BLINK instead of a glide. Matches captured client
-     *  teleport packets (logs/monitored-packets-teleport*): two movement commands, 4=appear@origin then
-     *  3=disappear@dest, each 9 bytes after the type (x, y, xwobble, ywobble, newstate). The normal
-     *  per-tick cmd-0 broadcast would instead interpolate the 150px jump as a fast slide. */
+    /** Broadcast a teleport so other clients render a BLINK instead of a glide. Captured client
+     *  teleport packets (logs/monitored-packets-teleport*) carry 4@origin then 3@dest, followed by
+     *  an ordinary absolute landing fragment so observers settle at the arrival side immediately. */
     static void broadcastTeleport(BotEntry entry, Point origin, Point dest) {
         Character bot = entry.bot;
-        int stance = BotPhysicsEngine.movementSnapshot(entry).stance();
+        BotPhysicsEngine.MovementSnapshot snapshot = BotPhysicsEngine.movementSnapshot(entry);
         int fhId = resolveBroadcastFhId(entry, bot);
-        byte[] data = new byte[21];
-        int i = 0;
-        data[i++] = 2; // two movement commands
-        i = putTeleportFrag(data, i, (byte) 4, origin.x, origin.y, stance); // teleport appear @ origin
-        i = putTeleportFrag(data, i, (byte) 3, dest.x, dest.y, stance);     // teleport disappear -> dest
+        byte[] data = buildTeleportMovementData(origin, dest, snapshot, fhId);
         InPacket packet = new ByteBufInPacket(Unpooled.wrappedBuffer(data));
         Packet movePacket = PacketCreator.movePlayer(bot.getId(), packet, data.length);
         bot.getMap().broadcastMessage(bot, movePacket, false);
-        // Pin the dedup cache at dest so the next normal broadcast doesn't re-glide origin->dest.
+        // Pin the dedup cache at the landing state so the next normal broadcast doesn't re-glide origin->dest.
         entry.movementBroadcastValid = true;
         entry.lastBroadcastX = dest.x;
         entry.lastBroadcastY = dest.y;
-        entry.lastBroadcastVelX = 0;
-        entry.lastBroadcastVelY = 0;
-        entry.lastBroadcastStance = stance;
+        entry.lastBroadcastVelX = snapshot.velX();
+        entry.lastBroadcastVelY = snapshot.velY();
+        entry.lastBroadcastStance = snapshot.stance();
         entry.lastBroadcastFh = fhId;
+    }
+
+    static byte[] buildTeleportMovementData(Point origin,
+                                            Point dest,
+                                            BotPhysicsEngine.MovementSnapshot snapshot,
+                                            int fhId) {
+        byte[] data = new byte[35];
+        int i = 0;
+        data[i++] = 3; // teleport origin, teleport destination, landing settle
+        i = putTeleportFrag(data, i, (byte) 4, origin.x, origin.y, snapshot.stance());
+        i = putTeleportFrag(data, i, (byte) 3, dest.x, dest.y, snapshot.stance());
+        putAbsoluteFrag(data, i, dest.x, dest.y, snapshot.velX(), snapshot.velY(), fhId, snapshot.stance());
+        return data;
     }
 
     private static int putTeleportFrag(byte[] data, int i, byte cmd, int x, int y, int stance) {
@@ -1115,6 +1123,24 @@ class BotMovementManager {
         data[i++] = 0; // ywobble
         data[i++] = 0;
         data[i++] = (byte) stance;
+        return i;
+    }
+
+    private static int putAbsoluteFrag(byte[] data, int i, int x, int y, int velX, int velY, int fhId, int stance) {
+        data[i++] = 0;
+        data[i++] = (byte) (x & 0xFF);
+        data[i++] = (byte) (x >> 8);
+        data[i++] = (byte) (y & 0xFF);
+        data[i++] = (byte) (y >> 8);
+        data[i++] = (byte) (velX & 0xFF);
+        data[i++] = (byte) (velX >> 8);
+        data[i++] = (byte) (velY & 0xFF);
+        data[i++] = (byte) (velY >> 8);
+        data[i++] = (byte) (fhId & 0xFF);
+        data[i++] = (byte) (fhId >> 8);
+        data[i++] = (byte) stance;
+        data[i++] = (byte) (BotPhysicsEngine.cfg.TICK_MS & 0xFF);
+        data[i++] = (byte) (BotPhysicsEngine.cfg.TICK_MS >> 8);
         return i;
     }
 
