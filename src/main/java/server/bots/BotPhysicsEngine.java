@@ -1542,7 +1542,7 @@ final class BotPhysicsEngine {
             collideWithAirCeiling(entry, bot, collision.point());
             return AirborneStepResult.CEILING;
         }
-        if (collision.type() == AirCollisionType.LAND && (canLand(entry) || forbidFallDownLanding(collision))) {
+        if (collision.type() == AirCollisionType.LAND && landingResolves(canLand(entry), collision)) {
             landOnGround(entry, bot, collision.point(), collision.foothold(),
                     nextPos.x - previousPos.x, nextPos.y - previousPos.y);
             return AirborneStepResult.LANDED;
@@ -1739,6 +1739,13 @@ final class BotPhysicsEngine {
      *  down-jump grace window (matches the client; the grace only skips normal platforms). */
     private static boolean forbidFallDownLanding(AirCollision collision) {
         return collision.foothold() != null && collision.foothold().isForbidFallDown();
+    }
+
+    /** SSOT landing-accept rule shared by the live integrator and both offline fall simulators: a LAND
+     *  collision resolves into a real landing once the down-jump grace has expired, OR immediately when
+     *  the foothold forbids fall-down (those stay solid even mid-grace). */
+    private static boolean landingResolves(boolean graceExpired, AirCollision collision) {
+        return graceExpired || forbidFallDownLanding(collision);
     }
 
     static JumpLanding simulateJumpLanding(MapleMap map, Point from, int stepX) {
@@ -2785,7 +2792,7 @@ final class BotPhysicsEngine {
                 continue;
             }
             if (collision.type() == AirCollisionType.LAND
-                    && (remainingLandingGraceMs == 0L || forbidFallDownLanding(collision))) {
+                    && landingResolves(remainingLandingGraceMs == 0L, collision)) {
                 return null;
             }
 
@@ -2822,6 +2829,20 @@ final class BotPhysicsEngine {
         return Math.abs(position.x - rope.x()) <= cfg.ROPE_GRAB_X
                 && position.y >= firstClimbableY(rope)
                 && position.y <= rope.bottomY();
+    }
+
+    /** Coarse vertical pre-filter: can a bot at {@code botPos} plausibly reach {@code rope} to start
+     *  climbing, given its direction of travel? {@code descending} = the bot needs a rope below it
+     *  (drop onto it); otherwise it needs a rope above (jump up to it). Uses the same MAX_SNAP_DROP /
+     *  MAX_SLOPE_UP gates as direct attachment. Whether the rope actually advances toward a goal is a
+     *  selection concern that stays in the caller. */
+    static boolean ropeWithinReach(Point botPos, Rope rope, boolean descending) {
+        if (descending) {
+            return rope.bottomY() > botPos.y + cfg.MAX_SNAP_DROP
+                    && rope.topY() <= botPos.y + cfg.MAX_SLOPE_UP;
+        }
+        return rope.topY() < botPos.y - cfg.MAX_SNAP_DROP
+                && rope.bottomY() >= botPos.y - cfg.MAX_SNAP_DROP;
     }
 
     /** A rope/ladder the bot could cling to at this exact point, or null. A point on a rope legitimately
@@ -2950,7 +2971,7 @@ final class BotPhysicsEngine {
                 continue;
             }
             if (collision.type() == AirCollisionType.LAND
-                    && (remainingLandingGraceMs == 0L || forbidFallDownLanding(collision))) {
+                    && landingResolves(remainingLandingGraceMs == 0L, collision)) {
                 return new JumpLanding(collision.point(), collision.foothold(),
                         nextPoint.x - previousPoint.x, nextPoint.y - previousPoint.y, tick + 1);
             }

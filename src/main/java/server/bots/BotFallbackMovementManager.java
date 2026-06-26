@@ -116,6 +116,7 @@ final class BotFallbackMovementManager {
         MapleMap map = entry.bot.getMap();
         int walkStep = BotPhysicsEngine.walkStep(map, entry.movementProfile);
         int searchX = Math.max(walkStep * 4, 90);
+        boolean descending = dy >= 0;
         Rope best = null;
         int bestScore = Integer.MAX_VALUE;
         for (Rope rope : map.getRopes()) {
@@ -123,32 +124,24 @@ final class BotFallbackMovementManager {
             if (dx > searchX) {
                 continue;
             }
-
-            if (dy < 0) {
-                if (rope.topY() >= botPos.y - BotPhysicsEngine.cfg.MAX_SNAP_DROP) {
-                    continue;
-                }
-                if (rope.bottomY() < botPos.y - BotPhysicsEngine.cfg.MAX_SNAP_DROP) {
-                    continue;
-                }
-                if (rope.topY() > targetPos.y + BotMovementManager.cfg.FOLLOW_Y_CAP) {
+            // Physics owns "can I physically attach to this rope from here"; we keep only the
+            // target-relevance gate (does the rope land us within reach of the goal Y).
+            if (!BotPhysicsEngine.ropeWithinReach(botPos, rope, descending)) {
+                continue;
+            }
+            if (descending) {
+                if (rope.bottomY() < targetPos.y - BotMovementManager.cfg.FOLLOW_Y_CAP) {
                     continue;
                 }
             } else {
-                if (rope.bottomY() <= botPos.y + BotPhysicsEngine.cfg.MAX_SNAP_DROP) {
-                    continue;
-                }
-                if (rope.topY() > botPos.y + BotPhysicsEngine.cfg.MAX_SLOPE_UP) {
-                    continue;
-                }
-                if (rope.bottomY() < targetPos.y - BotMovementManager.cfg.FOLLOW_Y_CAP) {
+                if (rope.topY() > targetPos.y + BotMovementManager.cfg.FOLLOW_Y_CAP) {
                     continue;
                 }
             }
 
-            int verticalPenalty = dy < 0
-                    ? Math.max(0, rope.topY() - targetPos.y)
-                    : Math.max(0, targetPos.y - rope.bottomY());
+            int verticalPenalty = descending
+                    ? Math.max(0, targetPos.y - rope.bottomY())
+                    : Math.max(0, rope.topY() - targetPos.y);
             int score = dx * 4 + verticalPenalty;
             if (score < bestScore) {
                 best = rope;
