@@ -826,8 +826,7 @@ public class BotChatManager {
                         int world       = entry.bot.getClient().getWorld();
                         int channel     = entry.bot.getClient().getChannel();
                         BotManager.after(BotManager.randMs(1800, 2200), () -> {
-                            entry.bot.saveCharToDB(true);
-                            entry.bot.getClient().disconnect(false, false);
+                            entry.bot.getClient().disconnect(false, false); // disconnect() persists the char
                             BotManager.after(BotManager.randMs(10000, 10100),
                                     () -> BotManager.getInstance().reloginBot(charId, ownerCharId, world, channel));
                         });
@@ -836,8 +835,7 @@ public class BotChatManager {
                     BotManager.after(BotManager.randMs(900, 1100), () -> {
                         BotManager.getInstance().botReply(entry, BotManager.randomReply(List.of("ok! saving and logging off~", "cya!!", "ok bye!!")));
                         BotManager.after(BotManager.randMs(1800, 2200), () -> {
-                            entry.bot.saveCharToDB(true);
-                            entry.bot.getClient().disconnect(false, false);
+                            entry.bot.getClient().disconnect(false, false); // disconnect() persists the char
                         });
                     });
                 }
@@ -1452,8 +1450,7 @@ public class BotChatManager {
         for (BotEntry owned : BotManager.getInstance().getBotEntries(owner.getId())) {
             BotManager.getInstance().issueStop(owned);
             BotManager.after(BotManager.randMs(1200, 1800), () -> {
-                owned.bot.saveCharToDB(true);
-                owned.bot.getClient().disconnect(false, false);
+                owned.bot.getClient().disconnect(false, false); // disconnect() persists the char
             });
         }
     }

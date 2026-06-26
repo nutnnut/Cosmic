@@ -1138,11 +1138,7 @@ public class BotManager {
     }
 
     private void finishManagedLogout(Character bot) {
-        try {
-            bot.saveCharToDB(true);
-        } catch (RuntimeException e) {
-            log.warn("managed-bot logout save failed for {}", bot.getId(), e);
-        }
+        // disconnect() persists the char (Client.saveCharToDB in its finally) — no explicit pre-save.
         if (bot.getClient() != null) {
             bot.getClient().disconnect(false, false);
         }
