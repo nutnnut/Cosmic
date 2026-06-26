@@ -28,6 +28,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.PriorityQueue;
 import java.util.Set;
@@ -116,6 +117,38 @@ final class BotNavigationManager {
                                    int bestGoalCost,
                                    int resultEdges,
                                    boolean capped) {
+    }
+
+    static String mapGraphPathfindUrl(BotNavigationGraph graph,
+                                      MapleMap map,
+                                      int fromRegionId,
+                                      int toRegionId,
+                                      int skillMask,
+                                      boolean autoRun) {
+        int mapId = map != null ? map.getId() : (graph != null ? graph.mapId : -1);
+        if (mapId < 0) {
+            return "(no map)";
+        }
+        StringBuilder url = new StringBuilder("http://127.0.0.1:8089/mapgraph?id=").append(mapId);
+        BotMovementProfile profile = graph != null ? graph.movementProfile : null;
+        if (profile != null) {
+            url.append("&sp=").append(profile.totalSpeedStat())
+                    .append("&jmp=").append(profile.totalJumpStat())
+                    .append("&snow=").append(profile.snowShoes() ? 1 : 0);
+        }
+        if ((skillMask & BotNavigationGraph.SKILL_TELEPORT) != 0) {
+            url.append("&tp=1");
+        }
+        if ((skillMask & BotNavigationGraph.SKILL_FLASH_JUMP) != 0) {
+            url.append("&fj=1");
+        }
+        if (fromRegionId >= 0 && toRegionId >= 0) {
+            url.append("&from=").append(fromRegionId).append("&to=").append(toRegionId);
+            if (autoRun) {
+                url.append("&run=1");
+            }
+        }
+        return url.toString();
     }
 
     static NavigationDirective resolveTarget(BotEntry entry, Point rawTargetPos, boolean runAiTick) {
@@ -1875,6 +1908,10 @@ final class BotNavigationManager {
         // weighted A* that prunes. Seed 0 = exact legacy behavior (probes/calibration/non-bot).
         boolean randomized = routeSeed != 0;
         double epsilon = randomized ? 1.0 + hashFrac(routeSeed, EPSILON_SALT) * EPSILON_SPAN : 0.0;
+        int skillMask = forcedSkillMask;
+        if (skillsEnabled && bot != null) {
+            skillMask |= botSkillMask(bot);
+        }
         try {
             // Reachability early-exit: if the target region is not forward-reachable from the start for
             // this bot's usable edges, no path can exist -- skip the search. Without this a high-fan-out
@@ -1883,12 +1920,6 @@ final class BotNavigationManager {
             // treated as usable so the reachable set is a superset of the real search's, making a "not
             // reachable" answer a sound skip.
             if (startRegionId != targetRegionId) {
-                // forcedSkillMask lets a bot-less caller (the /api/pathfind tool) enable teleport/flash-jump
-                // edges by mask; a live bot ORs in only the skills it actually has.
-                int skillMask = forcedSkillMask;
-                if (skillsEnabled && bot != null) {
-                    skillMask |= botSkillMask(bot);
-                }
                 if (!graph.canReach(startRegionId, targetRegionId, skillMask)) {
                     // Target region is unreachable. Only the per-tick movement executor ("committed")
                     // redirects to walk AS CLOSE AS POSSIBLE: head to the reachable region nearest the
@@ -1965,7 +1996,7 @@ final class BotNavigationManager {
                     }
                 }
 
-                for (BotNavigationGraph.Edge edge : graph.getOutgoing(current.state.regionId)) {
+                for (BotNavigationGraph.Edge edge : graph.getOutgoing(current.state.regionId, skillMask)) {
                     edgeChecks++;
                     if (!isEdgeUsable(graph, map, bot, skillsEnabled, forcedSkillMask, edge)) {
                         continue;
@@ -2085,7 +2116,8 @@ final class BotNavigationManager {
                             0,
                             false);
                 }
-                logSlowPathfind(graph, map, startPos, startRegionId, targetRegionId, targetPos, pathfindCaller, profile);
+                logSlowPathfind(graph, map, startPos, startRegionId, targetRegionId, targetPos,
+                        pathfindCaller, profile, skillMask);
                 BotPerformanceMonitor.recordPathfind(pathfindCaller, System.nanoTime() - startedAt);
             }
         }
@@ -2143,7 +2175,8 @@ final class BotNavigationManager {
                                         int targetRegionId,
                                         Point targetPos,
                                         String pathfindCaller,
-                                        PathfindProfile profile) {
+                                        PathfindProfile profile,
+                                        int skillMask) {
         if (!profile.capped() && profile.elapsedNs() < SLOW_PATHFIND_WARN_NS) {
             return;
         }
@@ -2158,11 +2191,12 @@ final class BotNavigationManager {
         int outgoingFromStart = graph != null ? graph.getOutgoing(startRegionId).size() : -1;
         String caller = pathfindCaller == null || pathfindCaller.isBlank() ? "default" : pathfindCaller;
         int bestGoalCost = profile.bestGoalCost() == Integer.MAX_VALUE ? -1 : profile.bestGoalCost();
+        String web = mapGraphPathfindUrl(graph, map, startRegionId, targetRegionId, skillMask, true);
         log.warn(
                 "Slow bot pathfind (suppressedSinceLast=" + suppressed
-                        + "): caller={} took {} ms map={} startRegion={} targetRegion={} regions={} startOut={} startPos=({}, {}) targetPos=({}, {}) expanded={} stale={} edgeChecks={} usableEdges={} relaxations={} openPeak={} bestGoalCost={} resultEdges={} capped={}",
+                        + "): caller={} took {} ms map={} startRegion={} targetRegion={} regions={} startOut={} startPos=({}, {}) targetPos=({}, {}) expanded={} stale={} edgeChecks={} usableEdges={} relaxations={} openPeak={} bestGoalCost={} resultEdges={} capped={} web={}",
                 caller,
-                String.format("%.1f", profile.elapsedNs() / 1_000_000.0),
+                String.format(Locale.ROOT, "%.1f", profile.elapsedNs() / 1_000_000.0),
                 map != null ? map.getId() : -1,
                 startRegionId,
                 targetRegionId,
@@ -2180,7 +2214,8 @@ final class BotNavigationManager {
                 profile.openPeak(),
                 bestGoalCost,
                 profile.resultEdges(),
-                profile.capped());
+                profile.capped(),
+                web);
     }
 
     private static List<BotNavigationGraph.Edge> reconstructPath(SearchState startState,

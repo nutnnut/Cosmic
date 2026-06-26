@@ -351,6 +351,13 @@ class BotNavigationManagerTest {
                 Map.of(1, List.of(walk12), 2, List.of(teleport23)),
                 Set.of());
 
+        assertEquals(List.of(walk12), graph.getOutgoing(1, 0),
+                "walk-only outgoing should keep non-skill edges");
+        assertEquals(List.of(), graph.getOutgoing(2, 0),
+                "walk-only outgoing should skip baked TELEPORT edges before A* scans them");
+        assertEquals(List.of(teleport23), graph.getOutgoing(2, BotNavigationGraph.SKILL_TELEPORT),
+                "TELEPORT mask should restore teleport outgoing edges");
+
         // Walk-only (skillMask 0): 1 reaches 2; the skill-only region 3 is unreachable.
         assertTrue(graph.canReach(1, 2, 0), "walk edge 1->2 is reachable walk-only");
         assertFalse(graph.canReach(1, 3, 0), "skill-only region 3 is NOT walk-reachable from 1");

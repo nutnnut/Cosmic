@@ -445,6 +445,40 @@ final class BotNavigationGraph implements Serializable {
         return outgoingByRegionId.getOrDefault(regionId, List.of());
     }
 
+    private transient volatile Map<Integer, Map<Integer, List<Edge>>> outgoingBySkillMask;
+
+    List<Edge> getOutgoing(int regionId, int skillMask) {
+        if ((skillMask & (SKILL_TELEPORT | SKILL_FLASH_JUMP)) == (SKILL_TELEPORT | SKILL_FLASH_JUMP)) {
+            return getOutgoing(regionId);
+        }
+        Map<Integer, Map<Integer, List<Edge>>> byMask = outgoingBySkillMask;
+        if (byMask == null) {
+            synchronized (this) {
+                byMask = outgoingBySkillMask;
+                if (byMask == null) {
+                    byMask = new ConcurrentHashMap<>();
+                    outgoingBySkillMask = byMask;
+                }
+            }
+        }
+        return byMask
+                .computeIfAbsent(skillMask, ignored -> new ConcurrentHashMap<>())
+                .computeIfAbsent(regionId, r -> filterOutgoingForSkillMask(getOutgoing(r), skillMask));
+    }
+
+    private static List<Edge> filterOutgoingForSkillMask(List<Edge> edges, int skillMask) {
+        if (edges.isEmpty()) {
+            return edges;
+        }
+        List<Edge> filtered = new ArrayList<>(edges.size());
+        for (Edge edge : edges) {
+            if (reachEdgeUsable(edge, skillMask)) {
+                filtered.add(edge);
+            }
+        }
+        return List.copyOf(filtered);
+    }
+
     // --- Cost-to-goal index (runtime-only; lazy, transient per graph) -----------------------------
     // Reverse-Dijkstra distance (edge-cost lower bound) from EVERY region to a given target region,
     // over the real edge graph -- portals/teleports included. Used only as an admissible A* heuristic

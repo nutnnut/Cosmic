@@ -305,12 +305,13 @@ async function runPathfind(from, to){
   const p0=(d.path&&d.path[0])?d.path[0].from:null, pN=(d.path&&d.path.length)?d.path[d.path.length-1].to:null;
   dot(p0,'#39d353'); dot(pN, d.reached?'#3b82f6':'#ff4d4d');
   pathLayer.batchDraw();
-  const verdict = d.reached ? 'REACHED ('+d.hops+' hops)'
+  let verdict = d.reached ? 'REACHED ('+d.hops+' hops)'
     : d.bestEffort ? 'BEST-EFFORT — stops at r'+d.redirect+', '+(d.canReach?'A* capped':'target unreachable')
                      +' ('+(d.explored?d.explored.length:0)+' edges checked)'
     : d.canReach ? 'NO PATH — canReach=true but search returned empty'
     : 'UNREACHABLE — proven graph gap'+(d.redirect>=0?'; bot would orbit r'+d.redirect:'');
   const sk = (d.teleport?'+tp':'') + (d.flashJump?(d.teleport?'/fj':'+fj'):'');
+  if(Number.isFinite(d.elapsedMs)) verdict += ' - '+d.elapsedMs.toFixed(3)+'ms';
   pfSet('r'+from+'→r'+to+' ['+d.profile.sp+'/'+d.profile.jmp+'·'+d.mode+(sk?'·'+sk:'')+']: '+verdict);
 }
 

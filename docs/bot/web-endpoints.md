@@ -187,7 +187,7 @@ Reachability uses the same verdict fields as `navprobe`: `reached:true` = genuin
 ```
 {"map","from","to","profile":{sp,jmp,snow},"mode":"normal|exhaustive","teleport":bool,"flashJump":bool,
  "canReach":bool,"reachable":bool,"reached":bool,"bestEffort":bool,"capped":bool,
- "finalRegion":n,"cost":n,"expanded":n,"hops":n,"redirect":<regionId|-1>,
+ "finalRegion":n,"cost":n,"expanded":n,"elapsedMs":n,"hops":n,"redirect":<regionId|-1>,
  "path":[{"type","fromR","toR","cost","lsx","from":[x,y],"to":[x,y]}, ...],
  "explored":[ ...same edge shape; only populated for a best-effort result... ]}
 ```

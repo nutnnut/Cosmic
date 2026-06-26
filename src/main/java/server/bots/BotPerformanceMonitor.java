@@ -2,6 +2,7 @@ package server.bots;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import server.maps.MapleMap;
 
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -243,15 +244,44 @@ public final class BotPerformanceMonitor {
         long suppressedWorst = stallSuppressedWorstNs.getAndSet(0);
         String botName = entry != null && entry.bot != null ? entry.bot.getName() : "?";
         int mapId = entry != null && entry.bot != null ? entry.bot.getMapId() : -1;
+        String web = stallWebLink(entry);
         if (suppressed > 0) {
-            log.warn("Bot tick stall: {} on map {} took {} ms{} ({} more stalls >= {} ms in the last {}s, worst {} ms)",
+            log.warn("Bot tick stall: {} on map {} took {} ms{} web={} ({} more stalls >= {} ms in the last {}s, worst {} ms)",
                     botName, mapId, formatMs(elapsedNs / 1_000_000.0),
-                    formatStallPhases(), suppressed,
+                    formatStallPhases(), web, suppressed,
                     formatMs(STALL_WARN_MS), STALL_WARN_COOLDOWN_MS / 1000,
                     formatMs(suppressedWorst / 1_000_000.0));
         } else {
-            log.warn("Bot tick stall: {} on map {} took {} ms{}",
-                    botName, mapId, formatMs(elapsedNs / 1_000_000.0), formatStallPhases());
+            log.warn("Bot tick stall: {} on map {} took {} ms{} web={}",
+                    botName, mapId, formatMs(elapsedNs / 1_000_000.0), formatStallPhases(), web);
+        }
+    }
+
+    private static String stallWebLink(BotEntry entry) {
+        try {
+            if (entry == null || entry.bot == null) {
+                return "(no bot)";
+            }
+            MapleMap map = entry.bot.getMap();
+            if (map == null) {
+                return "(no map)";
+            }
+            BotNavigationGraph graph = entry.navGraph != null
+                    ? entry.navGraph
+                    : BotNavigationGraphProvider.peekBestGraph(map, entry.movementProfile);
+            int fromRegionId = -1;
+            int toRegionId = entry.navTargetRegionId;
+            if (graph != null) {
+                fromRegionId = BotNavigationManager.resolveCurrentRegionId(
+                        graph, entry, map, entry.bot.getPosition());
+            }
+            if (toRegionId < 0 && entry.navEdge != null) {
+                toRegionId = entry.navEdge.toRegionId;
+            }
+            return BotNavigationManager.mapGraphPathfindUrl(
+                    graph, map, fromRegionId, toRegionId, BotNavigationManager.botSkillMask(entry.bot), true);
+        } catch (RuntimeException ex) {
+            return "(link failed: " + ex.getClass().getSimpleName() + ")";
         }
     }
 

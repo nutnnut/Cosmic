@@ -39,6 +39,7 @@ import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
@@ -933,8 +934,10 @@ public final class BotWorldGraphWebServer {
         String caller = exhaustive ? "webpathfind" : "committed";
         int budget = exhaustive ? Integer.MAX_VALUE : BotNavigationManager.MAX_EDGE_CHECKS;
         List<BotNavigationGraph.Edge> explored = new java.util.ArrayList<>();
+        long pathfindStartedAt = System.nanoTime();
         BotNavigationManager.SearchOutcome outcome = BotNavigationManager.runSearch(
                 g, map, fp, from, to, tp, caller, true, false, 0L, false, null, budget, explored, skillMask);
+        double elapsedMs = (System.nanoTime() - pathfindStartedAt) / 1_000_000.0;
         List<BotNavigationGraph.Edge> path = outcome.path();
         int redirect = outcome.reached() ? -1
                 : (path.isEmpty() ? g.nearestReachableRegion(from, skillMask, tp) : outcome.finalRegionId());
@@ -952,6 +955,7 @@ public final class BotWorldGraphWebServer {
                 .append(",\"finalRegion\":").append(outcome.finalRegionId())
                 .append(",\"cost\":").append(outcome.cost())
                 .append(",\"expanded\":").append(outcome.expandedNodes())
+                .append(",\"elapsedMs\":").append(String.format(Locale.ROOT, "%.3f", elapsedMs))
                 .append(",\"hops\":").append(path.size())
                 .append(",\"redirect\":").append(redirect)
                 .append(",\"path\":[");
