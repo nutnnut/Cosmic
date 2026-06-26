@@ -43,6 +43,8 @@ class BotNavigationGraphProviderTest {
     private static final Supplier<BotNavigationGraph> swamp1GraphS = lazyGraph(swamp1S);
     private static final Supplier<MapleMap> elNathS = lazyMap(211000000);
     private static final Supplier<BotNavigationGraph> elNathGraphS = lazyGraph(elNathS);
+    private static final Supplier<MapleMap> cursedSanctuaryS = lazyMap(105030000);
+    private static final Supplier<BotNavigationGraph> cursedSanctuaryGraphS = lazyGraph(cursedSanctuaryS);
 
     private static MapleMap henesys() { return henesysS.get(); }
     private static BotNavigationGraph henesysGraph() { return henesysGraphS.get(); }
@@ -58,6 +60,8 @@ class BotNavigationGraphProviderTest {
     private static BotNavigationGraph swamp1Graph() { return swamp1GraphS.get(); }
     private static MapleMap elNath() { return elNathS.get(); }
     private static BotNavigationGraph elNathGraph() { return elNathGraphS.get(); }
+    private static MapleMap cursedSanctuary() { return cursedSanctuaryS.get(); }
+    private static BotNavigationGraph cursedSanctuaryGraph() { return cursedSanctuaryGraphS.get(); }
 
     private static Supplier<MapleMap> lazyMap(int mapId) {
         return memoize(() -> BotNavigationMapLoader.loadMapGeometry(mapId));
@@ -175,6 +179,54 @@ class BotNavigationGraphProviderTest {
             assertTrue(visited.add(region), "committed route revisits region " + region + " — flip-flop");
         }
         assertEquals(goalRegion, region, "committed route reaches the goal region");
+    }
+
+    @Test
+    void committedBestEffortRouteDoesNotCycleWhenPortalRegionSearchCaps() {
+        // pathlog-DecembeR-2026-06-26T034055: target portal region r1 is far above the bot in
+        // 105030000, and the full search caps before finding a complete route. The committed
+        // best-effort route must still make monotone progress instead of cycling
+        // r83 -> r89 -> r102 -> r83 and recomputing forever.
+        BotNavigationGraph g = cursedSanctuaryGraph();
+        MapleMap map = cursedSanctuary();
+        Point start = new Point(63, -73);
+        Point goal = new Point(58, -2586);
+        int startRegion = g.findRegionId(map, start);
+        int goalRegion = g.findRegionId(map, goal);
+        assertEquals(83, startRegion, "fixture start region drifted");
+        assertEquals(1, goalRegion, "fixture target region drifted");
+
+        for (int botId : new int[]{1246}) {
+            Character bot = mockBot(start, map, botId);
+            assertBestEffortRouteAcyclic(g, bot, startRegion, goalRegion, goal, botId);
+        }
+    }
+
+    private static void assertBestEffortRouteAcyclic(BotNavigationGraph g,
+                                                     Character bot,
+                                                     int startRegion,
+                                                     int goalRegion,
+                                                     Point goal,
+                                                     int botId) {
+        var route = BotNavigationManager.computeCommittedRoute(g, bot, startRegion, goalRegion, goal);
+        assertNotNull(route, "best-effort committed route should be represented as an empty or partial route");
+
+        java.util.Set<Integer> visited = new java.util.HashSet<>();
+        int region = startRegion;
+        visited.add(region);
+        BotEntry entry = new BotEntry(bot, null, null);
+        entry.committedRoute = route;
+        entry.committedRouteTargetRegionId = goalRegion;
+
+        for (int step = 0; step < 16; step++) {
+            BotNavigationGraph.Edge hop = BotNavigationManager.nextCommittedRouteEdge(g, entry, region, goalRegion);
+            if (hop == null) {
+                break;
+            }
+            assertEquals(region, hop.fromRegionId, "hop must leave the bot's current region");
+            region = hop.toRegionId;
+            assertTrue(visited.add(region), "botId " + botId + " best-effort route revisits region " + region + ": " + route);
+        }
     }
 
     @Test
@@ -1255,6 +1307,10 @@ class BotNavigationGraphProviderTest {
     }
 
     private static Character mockBot(Point startPosition, MapleMap map) {
+        return mockBot(startPosition, map, 1);
+    }
+
+    private static Character mockBot(Point startPosition, MapleMap map, int botId) {
         Character bot = mock(Character.class);
         AtomicReference<Point> position = new AtomicReference<>(new Point(startPosition));
         AtomicInteger stance = new AtomicInteger(CharacterStance.STAND_RIGHT_STANCE);
@@ -1265,6 +1321,7 @@ class BotNavigationGraphProviderTest {
             return null;
         }).when(bot).setPosition(any(Point.class));
         when(bot.getMap()).thenReturn(map);
+        when(bot.getId()).thenReturn(botId);
         when(bot.getHp()).thenReturn(100);
         when(bot.getTotalMoveSpeedStat()).thenReturn(100);
         when(bot.getTotalJumpStat()).thenReturn(100);

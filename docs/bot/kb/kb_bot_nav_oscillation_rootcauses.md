@@ -5,7 +5,7 @@ type: project
 ---
 # Bot Nav Oscillation Root Causes
 
-Three separate "bot stuck ping-ponging" bugs diagnosed from `logs/bot-nav/pathlog-*.txt`
+Four separate "bot stuck ping-ponging" bugs diagnosed from `logs/bot-nav/pathlog-*.txt`
 captures + the live `/api/navprobe` (bot web server, port 8089). All on Henesys (100000000).
 Verified on `experimental`, 2026-06-25. Diagnose oscillations with the pathlog tick history
 (`nav=new/reuse/exec`, the committed `edge=`, and region `r=`) plus `/api/navprobe?id=&x=&y=`.
@@ -74,6 +74,20 @@ variety, but commit ONE route and follow it instead of re-deciding the next hop 
   leg instead of shared per-region cache hits. Test:
   `committedRouteIsFollowedForwardToGoalWithoutFlipFlop`.
 
+## 4. Capped Best-Effort - horizontal-only "closest" route loops
+Symptom (`pathlog-DecembeR-2026-06-26T034055`, map 105030000): target portal was far above at
+`(58,-2586)` / r1. A full path search capped, then capped best-effort returned the loop
+`DROP r83->r89`, `CLIMB r89->r102`, `CLIMB r102->r83`; the bot repeated it forever.
+
+Root cause: `runSearch` said the capped best-effort frontier was chosen by raw distance to target, but
+the code used `heuristic(...)`. For ground regions that heuristic is X-only walk cost, so returning to
+r83 at x=60 looked better than starting at x=63 even though it was still about 2500px vertically below
+the portal. A large vertical detour was accepted as "progress".
+
+Fix: capped best-effort frontier selection now uses Manhattan raw distance (`rawDistance`) while A*
+keeps the existing cost heuristic. Regression:
+`BotNavigationGraphProviderTest.committedBestEffortRouteDoesNotCycleWhenPortalRegionSearchCaps`.
+
 ## Not-a-bug
 `pathlog-fictionxD` "jumping back-forth" = a single clean walk-off DROP mid-descent (`Stuck:no`,
 `r=-1` is the normal airborne reading). No oscillation.
@@ -81,7 +95,8 @@ variety, but commit ONE route and follow it instead of re-deciding the next hop 
 ## Files
 - `BotNavigationGraphProvider.java` — `addDropEdges` + `downKeyGrabsRope` (#1)
 - `BotNavigationManager.java` — `resolveCurrentRegionId` inAir gate (#2); `resolveTarget` +
-  `computeCommittedRoute` / `nextCommittedRouteEdge` / `skillAwareRoutePath` (#3)
+  `computeCommittedRoute` / `nextCommittedRouteEdge` / `skillAwareRoutePath` (#3);
+  capped best-effort `rawDistance` frontier selection (#4)
 - `BotEntry.java`, `BotMovementManager.clearNavigationState` — committed-route state (#3)
 - Tests in `BotNavigationGraphProviderTest` (fast synthetic + Henesys WZ graph).
 
