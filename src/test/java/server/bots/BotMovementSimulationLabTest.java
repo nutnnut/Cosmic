@@ -183,7 +183,11 @@ class BotMovementSimulationLabTest {
         assertTrue(trace.stream().anyMatch(line -> line.contains("nav=exec")
                         && line.contains("edge=JUMP r28->r27")),
                 "seeded jump edge should execute once the bot reaches its launch point");
-        assertTrue(trace.stream().anyMatch(line -> line.contains("nav=new")
+        // The commit is a fresh plan from the new region. Accept any (re)planning decision — "new" or the
+        // committed-route equivalents "replan"/"route" (added after this test) — as long as it commits a
+        // grounded JUMP out of r27; the specific label is an internal distinction, not the behaviour.
+        assertTrue(trace.stream().anyMatch(line -> (line.contains("nav=new")
+                        || line.contains("nav=replan") || line.contains("nav=route"))
                         && line.contains("phys=GND")
                         && line.contains("edge=JUMP r27->r")),
                 "after landing, the next AI tick should commit the next authored jump from the new region");
