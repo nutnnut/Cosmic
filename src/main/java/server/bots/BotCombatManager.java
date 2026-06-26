@@ -1796,6 +1796,57 @@ class BotCombatManager {
         return isImmediateProjectileSkillTarget(entry, bot, target);
     }
 
+    static boolean mayHaveNonDegenerateRangedReach(BotEntry entry, Character bot, Point botPos,
+                                                   WeaponType weaponType, Monster target) {
+        if (entry == null || entry.noAmmo || bot == null || botPos == null
+                || target == null || !target.isAlive()) {
+            return false;
+        }
+        Point targetPos = target.getPosition();
+        if (targetPos == null
+                || BotAttackExecutionProvider.shouldDegenerateRangedAttack(weaponType, botPos, targetPos)
+                || (entry.inAir && isAirborneRangedAttackBlockedWeapon(weaponType))) {
+            return false;
+        }
+
+        if (BotAttackExecutionProvider.determineBasicWeaponRoute(weaponType) == AttackRoute.RANGED) {
+            Rectangle hitBox = clientProjectileHitBox(bot, targetPos.x < botPos.x, 1.0f);
+            if (doesHitBoxIntersectMonster(hitBox, target)) {
+                return true;
+            }
+        }
+
+        for (int skillId : cachedAttackSkillIds(entry)) {
+            if (skillId == 0 || bot.skillIsCooling(skillId)) {
+                continue;
+            }
+            Skill skill = SkillFactory.getSkill(skillId);
+            int skillLevel = skill == null ? 0 : bot.getSkillLevel(skill);
+            if (skillLevel <= 0) {
+                continue;
+            }
+            StatEffect effect = skill.getEffect(skillLevel);
+            if (effect == null || !effect.canPaySkillCost(bot)
+                    || !canUseAttackSkillWithWeapon(skillId, weaponType)) {
+                continue;
+            }
+            AttackRoute route = BotAttackExecutionProvider.determineSkillRoute(bot, skillId);
+            if (route != AttackRoute.RANGED) {
+                continue;
+            }
+            Rectangle hitBox = calculateSkillHitBox(effect, bot, target, route, skillId, null);
+            if (hitBox == null || !doesHitBoxIntersectMonster(hitBox, target)) {
+                continue;
+            }
+            if (!isStrikePointAnchoredAoeSkill(skillId)
+                    || isPrimaryReachableByBasicWeapon(bot, target, route)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private static boolean isImmediateProjectileSkillTarget(BotEntry entry, Character bot, Monster target) {
         if (entry.attackSkillId == 0 || bot.skillIsCooling(entry.attackSkillId)) {
             return false;

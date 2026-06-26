@@ -4025,6 +4025,10 @@ public class BotManager {
         if (BotAttackExecutionProvider.shouldDegenerateRangedAttack(weaponType, botPos, targetPos)) {
             return false;
         }
+        if (knownPlan == null
+                && !BotCombatManager.mayHaveNonDegenerateRangedReach(entry, bot, botPos, weaponType, target)) {
+            return false;
+        }
         BotCombatManager.AttackPlan plan = knownPlan != null ? knownPlan : BotCombatManager.planAttack(entry, bot, target);
         return plan != null
                 && plan.route == BotCombatManager.AttackRoute.RANGED

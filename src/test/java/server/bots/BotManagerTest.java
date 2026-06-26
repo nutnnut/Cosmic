@@ -43,6 +43,7 @@ import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.mockStatic;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -410,6 +411,7 @@ class BotManagerTest {
                 0, 11, 11, 11, 4, 300, 600, null);
 
         when(bot.getMap()).thenReturn(map);
+        when(bot.getPosition()).thenReturn(new Point(botPos));
         when(map.getAllMonsters()).thenReturn(List.of(closeMob, rangedMob));
 
         try (MockedStatic<BotAttackExecutionProvider> attacks =
@@ -421,6 +423,30 @@ class BotManagerTest {
             combat.when(() -> BotCombatManager.isTargetInAttackRange(rangedPlan, bot, rangedMob)).thenReturn(true);
 
             assertEquals(rangedMob, BotManager.selectPriorityRangedAttackTarget(entry, bot, botPos, closeMob));
+        }
+    }
+
+    @Test
+    void shouldSkipFullPlanForFarRangedPriorityCandidate() {
+        MapleMap map = mock(MapleMap.class);
+        Character bot = mock(Character.class);
+        BotEntry entry = new BotEntry(bot, null, null);
+        Point botPos = new Point(100, 100);
+        Monster closeMob = mockMob(new Point(150, 100), 9300400);
+        Monster farMob = mockMob(new Point(2000, 100), 9300402);
+
+        when(bot.getMap()).thenReturn(map);
+        when(bot.getPosition()).thenReturn(new Point(botPos));
+        when(map.getAllMonsters()).thenReturn(List.of(closeMob, farMob));
+
+        try (MockedStatic<BotAttackExecutionProvider> attacks =
+                     mockStatic(BotAttackExecutionProvider.class, org.mockito.Mockito.CALLS_REAL_METHODS);
+             MockedStatic<BotCombatManager> combat =
+                     mockStatic(BotCombatManager.class, org.mockito.Mockito.CALLS_REAL_METHODS)) {
+            attacks.when(() -> BotAttackExecutionProvider.getEquippedWeaponType(bot)).thenReturn(WeaponType.BOW);
+
+            assertNull(BotManager.selectPriorityRangedAttackTarget(entry, bot, botPos, closeMob));
+            combat.verify(() -> BotCombatManager.planAttack(entry, bot, farMob), never());
         }
     }
 
