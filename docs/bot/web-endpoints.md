@@ -54,14 +54,21 @@ to render (default speed100/jump100 `BotMovementProfile.base()`); `active` echoe
 `profiles` lists the profiles currently cached for this map (the page's graph picker). `portals.k`
 classifies each portal: `in` = shortcut whose target is this same map, `cross` = press-up portal to
 another map, `coll` = a collision-warp portal type (WZ `pt` ∈ {3,9,12,13}). `edges` are de-duped to one
-per (from-region, to-region, type). Each region's `report` is the **same** debug text the `!pos` command
-prints (SSOT: `BotNavigationDebugOverlay.describeRegion`); the page shows it when a region is clicked.
+per (from-region, to-region, type), each carrying its `fromR`/`toR` region ids so the page can list a
+selected region's edges (hover a listed edge to highlight it on the canvas). Each edge also carries `cost`,
+`lsx` (launchStepX) and `n` = how many parallel launch-x edges collapsed into this one drawn line (`n>1` —
+common around ropes — is why the raw `/api/pathfind` `explored` overlay shows more edges than are drawn).
+Every drawn edge is **clickable** for its details (type, regions, cost, lsx, endpoints, parallel count).
+Each region's `report` is the **same** debug text the `!pos` command prints (SSOT:
+`BotNavigationDebugOverlay.describeRegion`); the page shows it when a region is clicked. The page also
+renders top-bar composition stats (region counts split fh/rope, edge counts split by type), computed
+client-side from `regions`+`edges`.
 ```
 {"map","name","active":{sp,jmp,snow},"profiles":[{sp,jmp,snow},...],
  "bounds":{minX,minY,maxX,maxY},
  "regions":[{"id","kind":"fh","segs":[[x1,y1,x2,y2],...],"report":[lines]}   // foothold region: segment lines
           | {"id","kind":"rope","ladder","x","y1","y2","report":[lines]}],   // rope/ladder region: vertical span
- "edges":[{"t":"WALK|JUMP|DROP|CLIMB|PORTAL|TELEPORT|FLASH_JUMP","fx","fy","tx","ty"}, ...],
+ "edges":[{"t":"WALK|JUMP|DROP|CLIMB|PORTAL|TELEPORT|FLASH_JUMP","fromR","toR","cost","lsx","n","fx","fy","tx","ty"}, ...],
  "npcs":[{"x","y","n"}, ...],
  "portals":[{"x","y","k":"in|cross|coll","tm","n"}, ...],
  "chars":[{"x","y","n","bot"}, ...]}                             // live player+bot positions
@@ -161,7 +168,9 @@ renders (`sp`/`jmp`/`snow`; default base sp100/jmp100). Runs the **same `BotNavi
 live bot uses** (SSOT — no parallel pathfinder), in one of two modes:
 - `mode=normal` (default) — the live executor's `"committed"` **redirecting best-effort** search with the
   bot's bounded edge-check budget. On an unreachable/too-far target it walks AS CLOSE AS POSSIBLE; the
-  `explored` array is the frontier it checked (drawn faint teal) so you can see where it gave up.
+  `explored` array is the frontier it checked (drawn faint teal, clickable) so you can see where it gave
+  up. It is de-duplicated to the **distinct** edges checked (A* re-pops regions, so the raw sink repeats the
+  same edge many times); genuine parallel launch-x variants stay separate — those are the redundant edges.
 - `mode=exhaustive` — **strict, UNBOUNDED** search: exhausts the graph so an empty path is a definitive "no
   route". `canReach` (a full directed reachability BFS) is the exhaustive proof of (un)reachability.
 
@@ -172,7 +181,7 @@ Verdicts: `reached:true` = genuine route; `bestEffort:true` = produced a partial
 ```
 {"map","from","to","profile":{sp,jmp,snow},"mode":"normal|exhaustive",
  "canReach":bool,"reached":bool,"bestEffort":bool,"hops":n,"redirect":<regionId|-1>,
- "path":[{"type","fromR","toR","from":[x,y],"to":[x,y]}, ...],
+ "path":[{"type","fromR","toR","cost","lsx","from":[x,y],"to":[x,y]}, ...],
  "explored":[ ...same edge shape; only populated for a best-effort result... ]}
 ```
 

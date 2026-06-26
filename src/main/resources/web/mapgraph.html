@@ -27,6 +27,9 @@
         background:#0d1017;border:1px solid #3a4761;border-radius:6px;padding:8px 10px;font:11px/1.55 monospace;
         color:#cdd6e4;z-index:8;display:none;white-space:pre-wrap;box-shadow:0 2px 10px rgba(0,0,0,.5)}
   #info .ihead{font-weight:bold;color:#9fb0c8;margin-bottom:5px;font-family:system-ui,sans-serif}
+  #info .ehead{font-weight:bold;color:#9fb0c8;margin:7px 0 3px;font-family:system-ui,sans-serif;border-top:1px solid #283143;padding-top:6px}
+  #info .edge{cursor:pointer;padding:1px 4px;border-radius:3px}
+  #info .edge:hover{background:#283143;color:#ffe066}
   #info .x{float:right;cursor:pointer;color:#8a99b3}
 </style>
 </head>
@@ -34,6 +37,7 @@
 <div id="bar">
   <button id="back" title="back">&#8592; Back</button>
   <h1 id="title">Map Graph</h1>
+  <span id="stats" class="sub" style="white-space:nowrap" title="region & edge composition"></span>
   <button id="fitBtn" title="reset view">Fit</button>
   <button id="pfBtn" title="pick a source region then a target region to preview the route">Pathfind</button>
   <label class="sub" style="white-space:nowrap" title="Normal = live bot's bounded best-effort search. Exhaustive = uncapped strict search that exhausts the graph to prove unreachability."><input type="checkbox" id="pfExhaustive"> exhaustive</label>
@@ -73,8 +77,10 @@ const COL = {
 const stage = new Konva.Stage({container:'c', width:host.clientWidth, height:host.clientHeight, draggable:true});
 const layer = new Konva.Layer();       // regions, edges, npcs, portals (static)
 const pathLayer = new Konva.Layer();   // pathfind route preview (above static, below chars)
+const hlLayer = new Konva.Layer();     // transient edge highlight (hover a region's edge in #info)
 const charLayer = new Konva.Layer();   // live characters (repainted on poll)
-stage.add(layer); stage.add(pathLayer); stage.add(charLayer);
+stage.add(layer); stage.add(pathLayer); stage.add(hlLayer); stage.add(charLayer);
+let allEdges = [];     // every drawn edge {t,fromR,toR,fx,fy,tx,ty} — for per-region listing + highlight
 let B = {minX:0,minY:0,maxX:0,maxY:0};
 let markers = [];       // static markers: {resize(scale)}
 let charMarkers = [];   // char markers: {resize(scale)}
@@ -95,13 +101,6 @@ function bindTip(shape, html){
 const esc = s => String(s==null?'':s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
 
 // ---- shape helpers (markers keep a constant screen size via resize(scale)) ----
-function addLine(pts, color, width, layerRef, arc, dash){
-  const o = {points:pts, stroke:color, strokeWidth:width, strokeScaleEnabled:false,
-             listening:false, lineCap:'round', lineJoin:'round'};
-  if(arc) o.tension = 0.5;
-  if(dash) o.dash = dash;
-  (layerRef||layer).add(new Konva.Line(o));
-}
 // a clickable region line (thin visual, fat hit area) — click shows the region's report in #info
 function regionLine(pts, color, dash){
   const o = {points:pts, stroke:color, strokeWidth:2, strokeScaleEnabled:false, lineCap:'round', hitStrokeWidth:12};
@@ -131,6 +130,7 @@ function addBox(x, y, sz, stroke, fill, html, layerRef, bucket){
 function edgeStyle(t){ return t==='JUMP' ? COL.eJump : t==='PORTAL' ? COL.ePortal : COL.eRest; }
 function renderStatic(d){
   layer.destroyChildren(); markers = []; selRegion = null; hideInfo();
+  allEdges = d.edges || []; clearHl();
   if(typeof pfReset === 'function') pfReset(false);   // drop any stale route (region set may differ per profile)
   // edges first (under the structure), JUMP as a lifted arc
   for(const e of d.edges){
@@ -138,10 +138,10 @@ function renderStatic(d){
     if(e.t === 'JUMP'){
       const mx=(e.fx+e.tx)/2, top=Math.min(e.fy,e.ty);
       const h=Math.min(80, Math.max(14, Math.hypot(e.tx-e.fx, e.ty-e.fy)*0.25));
-      addLine([e.fx,e.fy, mx,top-h, e.tx,e.ty], col, e.t==='PORTAL'?1.4:1.1, layer, true);
+      clickableEdge([e.fx,e.fy, mx,top-h, e.tx,e.ty], col, e.t==='PORTAL'?1.4:1.1, layer, true, null, e);
     } else {
-      addLine([e.fx,e.fy, e.tx,e.ty], col, e.t==='PORTAL'?1.4:1.1, layer,
-              false, (e.t==='TELEPORT'||e.t==='FLASH_JUMP') ? [5,4] : null);
+      clickableEdge([e.fx,e.fy, e.tx,e.ty], col, e.t==='PORTAL'?1.4:1.1, layer,
+              false, (e.t==='TELEPORT'||e.t==='FLASH_JUMP') ? [5,4] : null, e);
     }
   }
   // regions: foothold segments (green) + rope spans (light-blue, ladders dashed); clickable -> report
@@ -176,17 +176,70 @@ function renderChars(chars){
 }
 
 function hideInfo(){ const i = document.getElementById('info'); if(i) i.style.display = 'none'; }
-// click a region: highlight its lines white + show its server-computed report (SSOT with !pos)
+// click any edge (static line, route hop, or explored frontier) -> its details in #info. Normalises the
+// two server shapes: static {t,fx,fy,tx,ty,n}, dynamic {type,from[],to[],fromR,toR}. lsx=launchStepX and
+// n=parallel launch-x variants collapsed into this drawn line (why ropes show "more edges" when explored).
+function edgeInfo(e){
+  const t = e.t || e.type;
+  const fx = e.fx!=null?e.fx:e.from[0], fy = e.fy!=null?e.fy:e.from[1];
+  const tx = e.tx!=null?e.tx:e.to[0],  ty = e.ty!=null?e.ty:e.to[1];
+  const rows = ['r'+e.fromR+' &rarr; r'+e.toR, 'type: <b>'+esc(t)+'</b>',
+    'cost: '+e.cost, 'launchStepX: '+e.lsx, 'from ('+fx+','+fy+') &rarr; ('+tx+','+ty+')'];
+  if(e.n!=null && e.n>1) rows.push('<b>'+e.n+'</b> parallel launch-x edges share this from/to/type (drawn as one)');
+  const info = document.getElementById('info');
+  info.style.display = 'block';
+  info.innerHTML = '<div class="ihead">Edge<span class="x" onclick="hideInfo()">&times;</span></div>' + rows.join('<br>');
+}
+// a clickable edge line/arc on the given layer; click -> edgeInfo
+function clickableEdge(pts, col, width, layerRef, arc, dash, e){
+  const o = {points:pts, stroke:col, strokeWidth:width, strokeScaleEnabled:false,
+             lineCap:'round', lineJoin:'round', hitStrokeWidth:10};
+  if(arc) o.tension = 0.5;
+  if(dash) o.dash = dash;
+  const l = new Konva.Line(o);
+  l.on('click tap', ev => { ev.cancelBubble = true; edgeInfo(e); });
+  l.on('mouseover', () => document.body.style.cursor = 'pointer');
+  l.on('mouseout', () => document.body.style.cursor = 'default');
+  (layerRef||layer).add(l);
+  return l;
+}
+// transient edge highlight (hover an edge row in #info): redraw that one edge bright on hlLayer
+function clearHl(){ hlLayer.destroyChildren(); hlLayer.batchDraw(); }
+function highlightEdge(e){
+  hlLayer.destroyChildren();
+  if(e.t === 'JUMP'){
+    const mx=(e.fx+e.tx)/2, top=Math.min(e.fy,e.ty);
+    const h=Math.min(80, Math.max(14, Math.hypot(e.tx-e.fx, e.ty-e.fy)*0.25));
+    hlLayer.add(new Konva.Line({points:[e.fx,e.fy, mx,top-h, e.tx,e.ty], stroke:'#ffe066', strokeWidth:3.5,
+      tension:0.5, strokeScaleEnabled:false, listening:false, lineCap:'round'}));
+  } else {
+    hlLayer.add(new Konva.Arrow({points:[e.fx,e.fy, e.tx,e.ty], stroke:'#ffe066', fill:'#ffe066',
+      strokeWidth:3.5, strokeScaleEnabled:false, pointerLength:8, pointerWidth:7, listening:false}));
+  }
+  hlLayer.batchDraw();
+}
+// click a region: highlight its lines white + show its report (SSOT with !pos) + its edges (hover to trace)
 function selectRegion(id){
   if(selRegion != null && regionShapes[selRegion])
     for(const sh of regionShapes[selRegion].shapes){ sh.stroke(regionShapes[selRegion].base); sh.strokeWidth(2); }
   selRegion = id;
+  clearHl();
   if(id == null || !regionShapes[id]){ hideInfo(); layer.batchDraw(); return; }
   for(const sh of regionShapes[id].shapes){ sh.stroke('#ffffff'); sh.strokeWidth(3); }
+  // edges touching this region: outgoing (→) first, then incoming (←)
+  const out = allEdges.filter(e => e.fromR === id), inc = allEdges.filter(e => e.toR === id);
+  const row = (e,dir) => '<div class="edge">'
+    + (dir==='out' ? '&rarr; r'+e.toR : '&larr; r'+e.fromR) + ' <b>'+esc(e.t)+'</b></div>';
+  let edgesHtml = '<div class="ehead">Edges: '+out.length+' out · '+inc.length+' in</div>';
+  out.forEach(e => edgesHtml += row(e,'out'));
+  inc.forEach(e => edgesHtml += row(e,'inc'));
   const info = document.getElementById('info');
   info.style.display = 'block';
   info.innerHTML = '<div class="ihead">Region '+id+'<span class="x" onclick="selectRegion(null)">&times;</span></div>'
-    + regionShapes[id].report.map(esc).join('<br>');
+    + regionShapes[id].report.map(esc).join('<br>') + edgesHtml;
+  // bind hover→highlight: rows are in the same order as out.concat(inc)
+  const rows = info.querySelectorAll('.edge'), list = out.concat(inc);
+  rows.forEach((el,i) => { el.onmouseenter = () => highlightEdge(list[i]); el.onmouseleave = clearHl; });
   layer.batchDraw();
 }
 // ---- pathfind preview: pick a source region, then a target region; draw + explain the route ----
@@ -218,17 +271,27 @@ async function runPathfind(from, to){
         +'&mode='+(exhaustive?'exhaustive':'normal'))).json(); }
   catch(e){ pfSet('pathfind failed'); return; }
   if(d.error){ pfSet('pathfind: '+d.error); return; }
-  // explored frontier FIRST (under the chosen route): the edges the best-effort search checked, faint teal
+  // explored frontier FIRST (under the chosen route): the edges the best-effort search checked, faint teal.
+  // Clickable — these are the DISTINCT edges checked (parallel launch-x kept separate), so a click reveals
+  // which launch-x variant a rope/jump edge is.
   for(const e of (d.explored||[])){
-    pathLayer.add(new Konva.Line({points:[e.from[0],e.from[1], e.to[0],e.to[1]], stroke:'#2dd4bf',
-      strokeWidth:1.4, opacity:0.5, strokeScaleEnabled:false, listening:false}));
+    const l = new Konva.Line({points:[e.from[0],e.from[1], e.to[0],e.to[1]], stroke:'#2dd4bf',
+      strokeWidth:1.4, opacity:0.5, strokeScaleEnabled:false, hitStrokeWidth:8});
+    l.on('click tap', ev => { ev.cancelBubble = true; edgeInfo(e); });
+    l.on('mouseover', () => document.body.style.cursor='pointer');
+    l.on('mouseout', () => document.body.style.cursor='default');
+    pathLayer.add(l);
   }
-  // route polyline: orange + solid when truly reached; grey + dashed when best-effort/no route
+  // route polyline: orange + solid when truly reached; grey + dashed when best-effort/no route. Clickable too.
   for(const e of (d.path||[])){
     const col = d.reached ? '#ff9f1c' : '#c2410c';
-    pathLayer.add(new Konva.Arrow({points:[e.from[0],e.from[1], e.to[0],e.to[1]], stroke:col, fill:col,
-      strokeWidth:3, strokeScaleEnabled:false, pointerLength:7, pointerWidth:6, listening:false,
-      dash:d.reached?null:[6,5]}));
+    const a = new Konva.Arrow({points:[e.from[0],e.from[1], e.to[0],e.to[1]], stroke:col, fill:col,
+      strokeWidth:3, strokeScaleEnabled:false, pointerLength:7, pointerWidth:6, hitStrokeWidth:10,
+      dash:d.reached?null:[6,5]});
+    a.on('click tap', ev => { ev.cancelBubble = true; edgeInfo(e); });
+    a.on('mouseover', () => document.body.style.cursor='pointer');
+    a.on('mouseout', () => document.body.style.cursor='default');
+    pathLayer.add(a);
   }
   // endpoints: source green dot, target blue (reached) / red (not) dot
   const dot=(p,c)=>{ if(p) pathLayer.add(new Konva.Circle({x:p[0],y:p[1],radius:5,fill:c,stroke:'#0d1017',
@@ -242,6 +305,18 @@ async function runPathfind(from, to){
     : d.canReach ? 'NO PATH — canReach=true but search returned empty'
     : 'UNREACHABLE — proven graph gap'+(d.redirect>=0?'; bot would orbit r'+d.redirect:'');
   pfSet('r'+from+'→r'+to+' ['+d.profile.sp+'/'+d.profile.jmp+'·'+d.mode+']: '+verdict);
+}
+
+// top-bar composition stats, computed from the served regions+edges (edges are the deduped drawn set)
+function renderStats(d){
+  const regs = d.regions||[], edges = d.edges||[];
+  const rope = regs.filter(r => r.kind==='rope').length, fh = regs.length - rope;
+  const by = {}; for(const e of edges) by[e.t] = (by[e.t]||0)+1;
+  const order = ['WALK','JUMP','DROP','CLIMB','PORTAL','TELEPORT','FLASH_JUMP'];
+  const parts = order.filter(t => by[t]).map(t => by[t]+' '+t.toLowerCase().replace('_',''));
+  document.getElementById('stats').textContent =
+    regs.length+' regions ('+fh+' fh, '+rope+' rope) · '+edges.length+' edges'
+    + (parts.length ? ' ('+parts.join(', ')+')' : '');
 }
 
 // populate the cached-graph picker; keep `prof` in sync with what the server actually served
@@ -297,6 +372,7 @@ async function load(refit){
   document.title = d.name+' — Map Graph';
   buildProfileDropdown(d.profiles, d.active);
   renderStatic(d);
+  renderStats(d);
   renderChars(d.chars||[]);
   if(refit) fit(); else applyScale();
   status(d.regions.length+' regions · '+d.edges.length+' edges · '+d.portals.length+' portals · '

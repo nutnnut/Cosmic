@@ -948,7 +948,15 @@ public final class BotWorldGraphWebServer {
         // up). Omit on a clean reach to keep the payload small.
         sb.append("],\"explored\":[");
         if (bestEffort) {
-            appendEdgesJson(sb, explored);
+            // A* re-pops regions, so the same edge object lands in the sink many times; collapse to the
+            // DISTINCT edges checked (identity = from/to/type + endpoints, so genuine parallel launch-x
+            // variants stay separate — those are the redundant rope/jump edges worth seeing).
+            java.util.LinkedHashMap<String, BotNavigationGraph.Edge> distinct = new java.util.LinkedHashMap<>();
+            for (BotNavigationGraph.Edge e : explored) {
+                distinct.putIfAbsent(e.fromRegionId + "_" + e.toRegionId + "_" + e.type.ordinal()
+                        + "_" + e.startPoint.x + "_" + e.startPoint.y + "_" + e.endPoint.x + "_" + e.endPoint.y, e);
+            }
+            appendEdgesJson(sb, new java.util.ArrayList<>(distinct.values()));
         }
         send(ex, 200, "application/json", sb.append("]}").toString().getBytes(StandardCharsets.UTF_8));
     }
@@ -963,6 +971,8 @@ public final class BotWorldGraphWebServer {
             sb.append("{\"type\":").append(jsonStr(edge.type.name()))
                     .append(",\"fromR\":").append(edge.fromRegionId)
                     .append(",\"toR\":").append(edge.toRegionId)
+                    .append(",\"cost\":").append(edge.cost)
+                    .append(",\"lsx\":").append(edge.launchStepX)
                     .append(",\"from\":[").append(edge.startPoint.x).append(',').append(edge.startPoint.y).append("]")
                     .append(",\"to\":[").append(edge.endPoint.x).append(',').append(edge.endPoint.y).append("]}");
         }
@@ -1422,6 +1432,18 @@ public final class BotWorldGraphWebServer {
         }
 
         StringBuilder edges = new StringBuilder();
+        // Count parallel edges per (from,to,type) so a drawn line can report how many launch-x variants it
+        // collapses — n>1 (common around ropes) is exactly why the raw explored overlay shows "more edges".
+        Map<Long, Integer> parallelCount = new HashMap<>();
+        for (List<BotNavigationGraph.Edge> list : g.outgoingByRegionId.values()) {
+            for (BotNavigationGraph.Edge e : list) {
+                if (e.fromRegionId == e.toRegionId) {
+                    continue;
+                }
+                long key = (((long) e.fromRegionId * 1000003L + e.toRegionId) << 3) | e.type.ordinal();
+                parallelCount.merge(key, 1, Integer::sum);
+            }
+        }
         Set<Long> edgeSeen = new HashSet<>();
         for (List<BotNavigationGraph.Edge> list : g.outgoingByRegionId.values()) {
             for (BotNavigationGraph.Edge e : list) {
@@ -1435,7 +1457,11 @@ public final class BotWorldGraphWebServer {
                 if (edges.length() > 0) {
                     edges.append(',');
                 }
-                edges.append("{\"t\":\"").append(e.type.name()).append("\",\"fx\":").append(e.startPoint.x)
+                edges.append("{\"t\":\"").append(e.type.name())
+                        .append("\",\"fromR\":").append(e.fromRegionId).append(",\"toR\":").append(e.toRegionId)
+                        .append(",\"cost\":").append(e.cost).append(",\"lsx\":").append(e.launchStepX)
+                        .append(",\"n\":").append(parallelCount.getOrDefault(key, 1))
+                        .append(",\"fx\":").append(e.startPoint.x)
                         .append(",\"fy\":").append(e.startPoint.y).append(",\"tx\":").append(e.endPoint.x)
                         .append(",\"ty\":").append(e.endPoint.y).append('}');
             }
