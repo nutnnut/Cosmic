@@ -502,8 +502,7 @@ final class BotGachaponManager {
         // mid-trip. Pace the rolls so it reads as a human feeding tickets one at a time.
         entry.gachaErrandProgress.touch(now);
         if (now < entry.gachaNextRollAtMs) {
-            BotTravelManager.settleStandingDwell(entry); // stand at the machine, not walk-in-place
-            return true; // mid-pace between rolls
+            return true; // mid-pace between rolls (common-tick settle stands it at the machine)
         }
         if (!rollOnce(entry, bot)) {
             BotTravelManager.clearMoveTargetPin(entry);

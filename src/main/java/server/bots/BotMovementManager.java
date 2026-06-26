@@ -540,6 +540,22 @@ class BotMovementManager {
         }
     }
 
+    /**
+     * SSOT settle for "no movement intent this tick". A mode handler that consumes its tick with
+     * {@code return true} but never steps physics leaves the last WALK packet standing, and clients
+     * extrapolate it into walk-in-place. Idling the ground physics with a null target decays the
+     * leftover walk velocity/stance to STAND and emits one stop packet (the broadcast dedups, so the
+     * steady-state standing ticks send nothing). Air/climb states settle through their own physics
+     * ticks, so they're left alone; on a swim map a resting bot floats (inAir) and is likewise skipped —
+     * its SWIM stance never extrapolates as a walk. Called once per tick from the common tick.
+     */
+    static void settleIdle(BotEntry entry) {
+        if (entry == null || entry.bot == null || entry.inAir || entry.climbing) {
+            return;
+        }
+        tickGrounded(entry, null);
+    }
+
     static void tickGrounded(BotEntry entry, Point targetPos) {
         long startedAt = System.nanoTime();
         try {
@@ -1017,6 +1033,7 @@ class BotMovementManager {
     }
 
     private static void doBroadcastMovement(BotEntry entry) {
+        entry.broadcastedThisTick = true; // movement state reconciled this tick (even if deduped below)
         Character bot = entry.bot;
         int x = bot.getPosition().x;
         int y = bot.getPosition().y;
@@ -1090,6 +1107,7 @@ class BotMovementManager {
         Packet movePacket = PacketCreator.movePlayer(bot.getId(), packet, data.length);
         bot.getMap().broadcastMessage(bot, movePacket, false);
         // Pin the dedup cache at the landing state so the next normal broadcast doesn't re-glide origin->dest.
+        entry.broadcastedThisTick = true;
         entry.movementBroadcastValid = true;
         entry.lastBroadcastX = dest.x;
         entry.lastBroadcastY = dest.y;
@@ -1193,6 +1211,7 @@ class BotMovementManager {
         Packet movePacket = PacketCreator.movePlayer(bot.getId(), packet, data.length);
         bot.getMap().broadcastMessage(bot, movePacket, false);
         // Pin the dedup cache at the post-impulse state so this tick isn't re-sent as a redundant type-0.
+        entry.broadcastedThisTick = true;
         entry.movementBroadcastValid = true;
         entry.lastBroadcastX = bot.getPosition().x;
         entry.lastBroadcastY = bot.getPosition().y;

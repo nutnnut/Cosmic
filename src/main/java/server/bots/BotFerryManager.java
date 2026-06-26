@@ -575,7 +575,7 @@ final class BotFerryManager {
         if (inRange || stuckNearNpc || deadlineHail) {
             BotTravelManager.clearMoveTargetPin(entry);
             if (!BotManager.npcDwellReady(entry, BotManager.NPC_TALK_DELAY_MS, BotManager.NPC_TALK_JITTER_MS)) {
-                return true; // pause a beat at the NPC before buying/boarding
+                return true; // pause a beat at the NPC before buying/boarding (common-tick settle keeps it standing)
             }
             return act.getAsBoolean();
         }
@@ -646,6 +646,8 @@ final class BotFerryManager {
         }
         BotTravelManager.clearMoveTargetPin(entry);
         BotFidgetManager.tickStandingFidget(entry, spot, now, runAiTick);
+        // Between fidget rolls the bot just stands — the common tick's settleIdleIfUnbroadcast flips the
+        // stale WALK to STAND once it sees this tick consumed without a movement broadcast.
     }
 
     /**
@@ -675,7 +677,7 @@ final class BotFerryManager {
             BotTravelManager.pinMoveTarget(entry, target);
             BotTravelManager.movementStep.step(entry, target, runAiTick);
         } else {
-            BotTravelManager.clearMoveTargetPin(entry);
+            BotTravelManager.clearMoveTargetPin(entry); // arrived — common-tick settle stands it on the slot
         }
         return true;
     }

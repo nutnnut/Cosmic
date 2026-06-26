@@ -3179,6 +3179,7 @@ public class BotManager {
         BotPerformanceMonitor.beginTickTrace();
         try {
             tickCore(entry, ownerCharId, botCharId);
+            settleIdleIfUnbroadcast(entry);
             resetBotTickFailures(entry);
         } catch (Throwable t) {
             handleBotTickFailure(entry, ownerCharId, botCharId, t);
@@ -3190,6 +3191,33 @@ public class BotManager {
             BotPerformanceMonitor.noteTickStall(entry, elapsedNs);
             BotPerformanceMonitor.endTickTrace();
         }
+    }
+
+    /**
+     * Common-tick SSOT for "stopped moving -> stand". If the tick was consumed without any movement
+     * broadcast (a dwell/wait branch that {@code return true}d without stepping physics) yet the last
+     * packet still showed motion, settle the bot to STAND once so observers don't extrapolate a stale
+     * WALK into walk-in-place. Gated tightly so it fires exactly on the stop tick and never spams:
+     *  - {@code broadcastedThisTick}: an actively-moving tick already broadcast — never force-stop it.
+     *  - last broadcast velocity 0: already at rest — nothing to settle (this is what makes it one-shot).
+     *  - dead / spawn-warmup / skip-delay / airshow / air / climb: not a grounded resting state.
+     */
+    private void settleIdleIfUnbroadcast(BotEntry entry) {
+        if (entry == null || entry.broadcastedThisTick) {
+            return;
+        }
+        if (entry.lastBroadcastVelX == 0 && entry.lastBroadcastVelY == 0) {
+            return; // already broadcast at rest — settling again would be a no-op (and the dedup eats it)
+        }
+        Character bot = entry.bot;
+        if (bot == null || bot.getMap() == null || bot.getHp() <= 0) {
+            return;
+        }
+        if (entry.airshowActive || entry.spawnWarmupMs > 0 || entry.skipDelayMs > 0
+                || entry.inAir || entry.climbing) {
+            return;
+        }
+        BotMovementManager.settleIdle(entry);
     }
 
     /** Test-only hook: invokes {@link #runCommonTickSystems} on a caller-owned entry. */
@@ -3212,6 +3240,7 @@ public class BotManager {
         long startedAt = BotPerformanceMonitor.enabled() ? System.nanoTime() : 0L;
         try {
             tickCore(entry, ownerCharId, botCharId);
+            settleIdleIfUnbroadcast(entry);
         } catch (Throwable t) {
             log.warn("runTickForTest: tickCore threw for bot {}", entry.bot.getName(), t);
         } finally {
@@ -3223,6 +3252,7 @@ public class BotManager {
 
     private void tickCore(BotEntry entry, int ownerCharId, int botCharId) {
         if (entry == null) return;
+        entry.broadcastedThisTick = false; // re-armed each tick; settleIdleIfUnbroadcast reads it post-tick
         if (entry.airshowActive) return;
         if (entry.spawnWarmupMs > 0) { // emulate client loading/login: idle 2-7s after spawn
             entry.spawnWarmupMs = BotMovementManager.tickDown(entry.spawnWarmupMs);

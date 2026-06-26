@@ -468,8 +468,7 @@ final class BotTravelManager {
         if (inRangeGrounded || stuckNearCab || deadlineHail) {
             clearMoveTargetPin(entry);
             if (!BotManager.npcDwellReady(entry, BotManager.NPC_TALK_DELAY_MS, BotManager.NPC_TALK_JITTER_MS)) {
-                settleStandingDwell(entry); // stand (not walk-in-place) while waiting at the cab
-                return true; // pause a beat at the cab before paying the fare
+                return true; // pause a beat at the cab before paying the fare (common-tick settle stands it)
             }
             BotWorldGraph.TaxiEdge taxi =
                     BotWorldGraph.findTaxiEdge(entry.followTravelFromMapId, entry.followTravelNextHopMapId,
@@ -845,9 +844,8 @@ final class BotTravelManager {
         Point botPos = bot.getPosition();
         if (!entry.inAir && !entry.climbing && manhattan(botPos, npcPos) <= radiusPx) {
             clearMoveTargetPin(entry);
-            settleStandingDwell(entry);
             clearNpcApproach(entry);
-            return ApproachStatus.ARRIVED;
+            return ApproachStatus.ARRIVED; // common-tick settle stands the bot at the NPC
         }
         // Walk to a reachable spot NEAR the NPC, not its exact (often off-floor) sprite pixel: that
         // de-stacks bots converging on one NPC and gives the movement a target the nav can actually
@@ -866,9 +864,8 @@ final class BotTravelManager {
         // looping at the obstacle until the errand times out.
         if (stuckNear(entry.npcApproachStuck, botPos, npcPos, System.currentTimeMillis(), radiusPx)) {
             clearMoveTargetPin(entry);
-            settleStandingDwell(entry);
             clearNpcApproach(entry);
-            return ApproachStatus.ARRIVED;
+            return ApproachStatus.ARRIVED; // common-tick settle stands the bot at the NPC
         }
         pinMoveTarget(entry, walkTarget);
         movementStep.step(entry, walkTarget, runAiTick);
@@ -1000,22 +997,6 @@ final class BotTravelManager {
             entry.moveTargetPrecise = false;
         }
         entry.followTravelMoveTarget = null;
-    }
-
-    /**
-     * Settle a grounded bot to a standing stance on a dwell tick — it has arrived and is just
-     * "reading"/"talking" at an NPC, with no movement intent. Ticks ground physics with a null
-     * target so leftover walk momentum decays and the broadcast stance flips WALK->STAND. Without
-     * this the dwell consumes the tick WITHOUT stepping movement, so the client extrapolates the
-     * last walk packet and the bot visibly "walks in place" through the whole pause. Same idiom as
-     * BotManager.tickActionLocked (attack-lock) and the shop flow, which step every tick. The
-     * broadcast dedups, so the steady-state standing ticks send nothing.
-     */
-    static void settleStandingDwell(BotEntry entry) {
-        if (entry == null || entry.inAir || entry.climbing) {
-            return;
-        }
-        BotMovementManager.tickGrounded(entry, null);
     }
 
     private static int manhattan(Point a, Point b) {

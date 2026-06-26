@@ -773,6 +773,10 @@ public class BotEntry {
     int lastBroadcastStance = 0;
     int lastBroadcastFh = 0;
     int lastGroundFhId = 0;
+    // Set whenever a movement packet is (re)broadcast this tick; reset at the top of each tick.
+    // The common tick uses it to settle a bot to STAND once if it consumed the tick without
+    // moving (a stale WALK packet would otherwise extrapolate into walk-in-place).
+    boolean broadcastedThisTick = false;
 
     BotEntry(Character bot, Character owner, ScheduledFuture<?> task) {
         this.bot = bot;
