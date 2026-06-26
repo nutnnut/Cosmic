@@ -52,6 +52,24 @@ class BotNavigationManagerTest {
     }
 
     @Test
+    void emptyCommittedRouteCoversNearbySameRegionTargetOnly() {
+        Character bot = mock(Character.class);
+        BotEntry entry = new BotEntry(bot, null, null);
+        entry.committedRoute = List.of();
+        entry.committedRouteTargetRegionId = 7;
+        entry.committedRouteTargetPos = new Point(100, 100);
+
+        assertTrue(BotNavigationManager.committedRouteStillCoversTarget(
+                entry, 7, 7, new Point(180, 100)));
+        assertFalse(BotNavigationManager.committedRouteStillCoversTarget(
+                entry, 7, 7, new Point(260, 100)));
+        assertFalse(BotNavigationManager.committedRouteStillCoversTarget(
+                entry, 4, 7, new Point(100, 100)));
+        assertFalse(BotNavigationManager.committedRouteStillCoversTarget(
+                entry, 7, 8, new Point(100, 100)));
+    }
+
+    @Test
     void shouldPromoteFirstActionableEdgePastLeadingZeroDistanceWalks() {
         BotNavigationGraph.Edge collapsed = BotNavigationManager.collapseLeadingWalkEdges(List.of(
                 new BotNavigationGraph.Edge(1, 2, BotNavigationGraph.EdgeType.WALK,

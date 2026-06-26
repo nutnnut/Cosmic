@@ -220,12 +220,17 @@ final class BotNavigationManager {
                 edge = nextCommittedRouteEdge(graph, entry, startRegionId, targetRegionId);
                 if (edge != null) {
                     committedRouteFollow = true; // following the already-committed route (the good case)
+                } else if (committedRouteStillCoversTarget(entry, startRegionId, targetRegionId, pathTargetPos)) {
+                    // Valid route with no pending transition: either A* found direct walking only, or
+                    // the bot has completed the last hop and now just needs to walk inside the goal
+                    // region. Keep it instead of recomputing the same empty/exhausted route every tick.
                 } else {
                     List<BotNavigationGraph.Edge> route =
                             computeCommittedRoute(graph, bot, startRegionId, targetRegionId, pathTargetPos);
                     if (route != null) {
                         entry.committedRoute = route;
                         entry.committedRouteTargetRegionId = targetRegionId;
+                        entry.committedRouteTargetPos = pathTargetPos == null ? null : new Point(pathTargetPos);
                         entry.committedRouteCursor = 0; // fresh route — follow it from the top
                         edge = nextCommittedRouteEdge(graph, entry, startRegionId, targetRegionId);
                         committedRouteReplan = true; // had to (re)plan — goal-region change or knocked off-route
@@ -351,6 +356,7 @@ final class BotNavigationManager {
     static void clearCommittedRoute(BotEntry entry) {
         entry.committedRoute = null;
         entry.committedRouteTargetRegionId = -1;
+        entry.committedRouteTargetPos = null;
         entry.committedRouteCursor = 0;
     }
 
@@ -1267,6 +1273,7 @@ final class BotNavigationManager {
     // so a crowd heading the same way fans across up to N routes instead of all stacking on one --
     // the same diversity the per-bot jitter gave, but at N searches per region-pair, not one per bot.
     static int ROUTE_BUCKETS = 8;
+    private static final int COMMITTED_ROUTE_TARGET_REPLAN_PX = 128;
 
     // Master switch for the position-blind bucket route cache (graph.cachedNextHop/putNextHop, fed by
     // findNextEdge + warmPortalRoutes). Lives in BotManager.cfg so it's live-toggleable from /admin; see
@@ -1463,6 +1470,23 @@ final class BotNavigationManager {
             }
         }
         return route;
+    }
+
+    static boolean committedRouteStillCoversTarget(BotEntry entry,
+                                                   int startRegionId,
+                                                   int targetRegionId,
+                                                   Point targetPos) {
+        if (entry.committedRoute == null || entry.committedRouteTargetRegionId != targetRegionId) {
+            return false;
+        }
+        if (startRegionId != targetRegionId) {
+            return false;
+        }
+        Point committedTarget = entry.committedRouteTargetPos;
+        if (committedTarget == null || targetPos == null) {
+            return committedTarget == null && targetPos == null;
+        }
+        return committedTarget.distanceSq(targetPos) <= COMMITTED_ROUTE_TARGET_REPLAN_PX * COMMITTED_ROUTE_TARGET_REPLAN_PX;
     }
 
     /**

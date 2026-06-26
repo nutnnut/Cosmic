@@ -694,6 +694,7 @@ public class BotEntry {
     // region changes or the bot is knocked off the route.
     List<BotNavigationGraph.Edge> committedRoute = null;
     int committedRouteTargetRegionId = -1;
+    Point committedRouteTargetPos = null;
     // Cursor into committedRoute. A* search states are (region, point, ...), so a route can legitimately
     // revisit a region at different points (jump-up/drop-down staircase). Following by region-match alone
     // aliased the bot's later visit onto an earlier hop and bounced it (pathlog-WeeklyCovert r66<->r67);
