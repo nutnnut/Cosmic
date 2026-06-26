@@ -1128,4 +1128,52 @@ class BotNavigationManagerTest {
         map.addRope(new Rope(100, 100, 200, false));
         return map;
     }
+
+    private static boolean hasSelfLoopPortal(List<BotNavigationGraph.Edge> path) {
+        for (BotNavigationGraph.Edge e : path) {
+            if (e.type == BotNavigationGraph.EdgeType.PORTAL && e.fromRegionId == e.toRegionId) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Kerning City regression (nav-graph backed — run explicitly:
+     * mvn test -Dtest=BotNavigationManagerTest#excludeSelfLoopPortalsStillReachesViaWalk).
+     *
+     * A bot on the far-west platform routing to the east00 portal platform: the cheapest route teleports
+     * through Kerning's intra-region shortcut portal (a PORTAL self-loop, fromRegion==toRegion). The
+     * committed-route follower can't traverse one, so it used to bail and freeze (live: RougHWealtH stuck
+     * job-advancing to BANDIT, nav=no-path). The target IS reachable by plain walk/jump/climb, so a search
+     * that excludes self-loop portals must still reach it — and its path must contain no self-loop portal.
+     */
+    @Test
+    void excludeSelfLoopPortalsStillReachesViaWalk() {
+        MapleMap map = kerning();
+        BotNavigationGraph graph = BotNavigationGraphProvider.getGraph(map);
+
+        Point west = new Point(-1180, 6);     // far-west platform (live stuck position)
+        Point east00 = new Point(2512, -204); // east00 portal -> map 102050000
+        int fromReg = graph.findRegionId(map, west);
+        int toReg = BotNavigationManager.resolvePointTargetRegionId(graph, map, east00);
+        assertNotEquals(fromReg, toReg, "scenario assumes a cross-region route");
+
+        // Premise: the optimal route uses the in-map shortcut portal (self-loop).
+        BotNavigationManager.SearchOutcome optimal = BotNavigationManager.runSearch(
+                graph, map, west, fromReg, toReg, east00, "committed",
+                true, false, 0L, false, null, BotNavigationManager.MAX_EDGE_CHECKS, null, 0, false);
+        assertTrue(optimal.reached(), "optimal route should reach the portal platform");
+        assertTrue(hasSelfLoopPortal(optimal.path()),
+                "premise: cheapest route teleports through the intra-region shortcut portal");
+
+        // Fix: excluding self-loop portals (with the committed-route re-search budget) still reaches the
+        // target by walking, with no self-loop in the path.
+        BotNavigationManager.SearchOutcome portalFree = BotNavigationManager.runSearch(
+                graph, map, west, fromReg, toReg, east00, "committed",
+                true, false, 0L, false, null, BotNavigationManager.PORTAL_FREE_EDGE_CHECKS, null, 0, true);
+        assertTrue(portalFree.reached(), "target must be reachable without the shortcut portal");
+        assertFalse(hasSelfLoopPortal(portalFree.path()),
+                "excluded route must not contain a self-loop portal the follower can't traverse");
+    }
 }

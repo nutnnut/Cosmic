@@ -69,6 +69,12 @@ final class BotNavigationManager {
     // on dense maps used to exhaust the whole graph here: live single searches hit 4-7s, resultEdges=0.
     // Tunable at runtime (non-final) like the route-diversity knobs.
     static int MAX_EDGE_CHECKS = 160_000;
+    // Budget for the self-loop-portal-free re-search in computeCommittedRoute. Without the cheap (cost-0)
+    // shortcut portal, the walk-around route is long and position-state-heavy: Kerning City's west->east00
+    // walk needs ~300k edge checks (the standard 160k caps short). 4x gives headroom; runs only on the
+    // rare replan whose optimal route used an unfollowable self-loop portal, so the one-off ~ms cost is
+    // fine. ponytail: fixed multiple; revisit if a self-loop map ever needs more (it caps -> per-hop planner).
+    static int PORTAL_FREE_EDGE_CHECKS = 640_000;
     private static final java.util.concurrent.atomic.AtomicLong slowPathfindNextWarnAtMs =
             new java.util.concurrent.atomic.AtomicLong();
     private static final java.util.concurrent.atomic.AtomicInteger slowPathfindSuppressed =
@@ -1547,12 +1553,29 @@ final class BotNavigationManager {
                 route = findPath(graph, bot, startRegionId, targetRegionId, targetPos);
             }
         }
+        if (!containsSelfLoopPortal(route)) {
+            return route;
+        }
+        // The cheapest route teleports through an intra-region portal self-loop (free cost-0 edge, e.g.
+        // Kerning City's east/west shortcut). The committed-route follower can't traverse one — matching the
+        // loop by region would re-select it forever — so the bot used to fall through to the per-hop planner,
+        // which also can't express the self-loop and returned no-path, freezing it. The target is normally
+        // reachable by plain walk/jump/climb, so re-search a self-loop-portal-free route (exact h=0 Dijkstra,
+        // seed 0: deterministic + no heuristic distortion across the excluded zero-cost portal) and commit
+        // THAT. Only when the target is genuinely unreachable without the portal do we give up (return null,
+        // per-hop planner as before).
+        SearchOutcome portalFree = runSearch(graph, map, bot.getPosition(), startRegionId, targetRegionId,
+                targetPos, "committed", true, true, 0L, skillsEnabled, bot, PORTAL_FREE_EDGE_CHECKS, null, 0, true);
+        return portalFree.reached() && !containsSelfLoopPortal(portalFree.path()) ? portalFree.path() : null;
+    }
+
+    private static boolean containsSelfLoopPortal(List<BotNavigationGraph.Edge> route) {
         for (BotNavigationGraph.Edge e : route) {
             if (e.type == BotNavigationGraph.EdgeType.PORTAL && e.fromRegionId == e.toRegionId) {
-                return null;
+                return true;
             }
         }
-        return route;
+        return false;
     }
 
     private static boolean routeUsable(BotNavigationGraph graph, MapleMap map, List<BotNavigationGraph.Edge> route) {
@@ -1889,7 +1912,7 @@ final class BotNavigationManager {
                                    Character bot) {
         // Default cap, no edge collection: every production/bot/test caller uses the standard budget.
         return runSearch(graph, map, startPos, startRegionId, targetRegionId, targetPos, pathfindCaller,
-                zeroHeuristic, instrument, routeSeed, skillsEnabled, bot, MAX_EDGE_CHECKS, null, 0);
+                zeroHeuristic, instrument, routeSeed, skillsEnabled, bot, MAX_EDGE_CHECKS, null, 0, false);
     }
 
     /** Same search, with the edge-check cap as a parameter (a debug tool can run UNBOUNDED with
@@ -1911,7 +1934,8 @@ final class BotNavigationManager {
                                    Character bot,
                                    int edgeCheckBudget,
                                    List<BotNavigationGraph.Edge> exploredSink,
-                                   int forcedSkillMask) {
+                                   int forcedSkillMask,
+                                   boolean excludeSelfLoopPortals) {
         long startedAt = System.nanoTime();
         PathfindProfile profile = null;
         int requestedTargetRegionId = targetRegionId;
@@ -2011,6 +2035,10 @@ final class BotNavigationManager {
 
                 for (BotNavigationGraph.Edge edge : graph.getOutgoing(current.state.regionId, skillMask)) {
                     edgeChecks++;
+                    if (excludeSelfLoopPortals && edge.type == BotNavigationGraph.EdgeType.PORTAL
+                            && edge.fromRegionId == edge.toRegionId) {
+                        continue; // committed-route caller can't follow an intra-region portal self-loop
+                    }
                     if (!isEdgeUsable(graph, map, bot, skillsEnabled, forcedSkillMask, edge)) {
                         continue;
                     }

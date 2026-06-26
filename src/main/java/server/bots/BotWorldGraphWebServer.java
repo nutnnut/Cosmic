@@ -847,7 +847,7 @@ public final class BotWorldGraphWebServer {
         BotNavigationManager.SearchOutcome outcome = BotNavigationManager.runSearch(
                 graph, map, botPos, fromRegion, toRegion, target, caller,
                 BotNavigationManager.useAdmissibleHeuristic, true, BotNavigationManager.routeSeed(bot),
-                skills, bot, budget, null, skillMask);
+                skills, bot, budget, null, skillMask, false);
         var path = outcome.path();
         sb.append(",\"fromRegion\":").append(fromRegion)
                 .append(",\"toRegion\":").append(toRegion)
@@ -936,7 +936,7 @@ public final class BotWorldGraphWebServer {
         List<BotNavigationGraph.Edge> explored = new java.util.ArrayList<>();
         long pathfindStartedAt = System.nanoTime();
         BotNavigationManager.SearchOutcome outcome = BotNavigationManager.runSearch(
-                g, map, fp, from, to, tp, caller, true, false, 0L, false, null, budget, explored, skillMask);
+                g, map, fp, from, to, tp, caller, true, false, 0L, false, null, budget, explored, skillMask, false);
         double elapsedMs = (System.nanoTime() - pathfindStartedAt) / 1_000_000.0;
         List<BotNavigationGraph.Edge> path = outcome.path();
         int redirect = outcome.reached() ? -1
