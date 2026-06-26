@@ -453,6 +453,39 @@ public final class BotPerformanceMonitor {
         }
     }
 
+    /**
+     * One-shot timed capture for the admin web button: enables the monitor (if needed), holds a single
+     * clean window open for {@code seconds} (suppressing the periodic 15s auto-reset so the whole window
+     * is one sample), exports it via {@link #exportCsv()}, then restores the prior enabled state. Blocks
+     * the caller for {@code seconds} — call it off the request thread's hot path (the web executor is a
+     * cached pool, so this is fine). Returns the written CSV, or null if nothing accumulated / IO failed.
+     */
+    public static java.nio.file.Path captureCsv(int seconds) {
+        boolean wasEnabled = enabled;
+        synchronized (LOCK) {
+            cfg.ENABLED = true;
+            enabled = true;
+            statsBySection.clear();
+            lastLogAtMs = System.currentTimeMillis();
+            nextLogAtMs = Long.MAX_VALUE; // hold the window open: no mid-capture reset/console line
+        }
+        try {
+            Thread.sleep(Math.max(1L, (long) seconds) * 1000L);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        java.nio.file.Path file = exportCsv();
+        synchronized (LOCK) {
+            nextLogAtMs = System.currentTimeMillis() + cfg.LOG_INTERVAL_MS; // re-arm periodic report
+            if (!wasEnabled) {
+                cfg.ENABLED = false;
+                enabled = false;
+                statsBySection.clear();
+            }
+        }
+        return file;
+    }
+
     private static String fmt6(double value) {
         return String.format(Locale.ROOT, "%.6f", value);
     }

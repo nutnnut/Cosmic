@@ -39,6 +39,12 @@
     <button onclick="setPop({sweep:'true'})">Sweep now</button>
   </div>
   <div class="status" id="popStatus"></div>
+  <div class="row">
+    Perf log <input type="text" id="perfSecs" size="4" value="15"> seconds
+    <button onclick="perfLog(false)">Log CSV only</button>
+    <button onclick="perfLog(true)">Log + convert to HTML</button>
+  </div>
+  <div class="status" id="perfStatus"></div>
 </div>
 
 <h2>LLM chat</h2>
@@ -107,6 +113,12 @@ async function load(){
 }
 async function setPop(b){const r=await post(Object.assign({cmd:'pop'},b));if(r.status)$('popStatus').textContent=r.status.join('\n');toast(r.error||'ok');load();}
 async function setLlm(b){const r=await post(Object.assign({cmd:'llm'},b));toast(r.error||('llm '+r.enabled+'/'+r.debug));load();}
+async function perfLog(html){
+  const secs=$('perfSecs').value;
+  $('perfStatus').textContent='capturing '+secs+'s'+(html?' + converting...':'...');
+  const r=await post({cmd:'perflog',seconds:secs,html:html?'true':'false'});
+  $('perfStatus').textContent=r.error||r.msg||'?';toast(r.error||r.msg||'ok');
+}
 async function disconnectAll(){
   if(prompt('Type DISCONNECT to disconnect ALL online bots')!=='DISCONNECT')return;
   const r=await post({cmd:'disconnectAll',confirm:'DISCONNECT'});toast(r.error||('disconnected '+r.disconnected));

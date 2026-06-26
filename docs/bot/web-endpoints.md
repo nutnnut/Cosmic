@@ -210,6 +210,7 @@ Live admin/tuning surface behind `/admin`. Same SSOT as the GM commands: `BotCon
 - `{"cmd":"set","group":"manager|combat","field","value"}` → set a config field (case-insensitive). Returns `{"ok","msg"}` (`msg` starts with `OK` on success, mirrors `!botcfg`).
 - `{"cmd":"pop","mult"?,"enabled"?,"sweep"?}` → set multiplier / toggle scheduler / force a sweep. Returns `{"ok","status":[lines...]}`.
 - `{"cmd":"llm","enabled"?,"debug"?}` → toggle LLM chat (`debug:true` implies on). Returns `{"ok","enabled","debug"}`.
+- `{"cmd":"perflog","seconds":1-300,"html"?}` → enable `BotPerformanceMonitor`, capture one clean window for `seconds`, export `logs/bot-perf/bot-perf-<ts>.csv`; `html:true` also runs `tools/botperf_report.py` to write the `.html` report next to it. Blocks for `seconds`. Returns `{"ok","msg":"CSV: ...|HTML: ..."}`.
 - `{"cmd":"disconnectAll","confirm":"DISCONNECT"}` → disconnect every online bot (scheduler may respawn them). Returns `{"ok","disconnected":n}`.
 - `{"cmd":"wipe","confirm":"WIPE"}` → **permanently delete** every managed bot (shared with `@botpop wipe`; real/shared accounts skipped). Returns `{"ok","wiped","skipped","lines":[...]}`.
 

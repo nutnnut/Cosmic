@@ -666,8 +666,9 @@ public final class BotWorldGraphWebServer {
      * Admin settings menu API. GET = snapshot of every tunable group; POST = mutate one knob.
      * GET shape: {@code {"manager":[{name,value,type}],"combat":[...],"pop":{enabled,multiplier,status:[...]},
      * "llm":{enabled,debug}}}. POST dispatches on {@code cmd}: {@code set}{group,field,value} |
-     * {@code pop}{mult?,enabled?,sweep?} | {@code llm}{enabled?,debug?} | {@code disconnectAll}{confirm:"DISCONNECT"}
-     * | {@code wipe}{confirm:"WIPE"}. Reuses the same reflection ({@link BotConfigReflect}) as {@code !botcfg}
+     * {@code pop}{mult?,enabled?,sweep?} | {@code llm}{enabled?,debug?} | {@code perflog}{seconds,html?} |
+     * {@code disconnectAll}{confirm:"DISCONNECT"} | {@code wipe}{confirm:"WIPE"}. Reuses the same reflection
+     * ({@link BotConfigReflect}) as {@code !botcfg}
      * and the {@link BotScheduler}/{@link BotAdminOps} the {@code @botpop} command drives — SSOT, no second copy.
      */
     private static void serveSettings(HttpExchange ex) throws IOException {
@@ -749,9 +750,54 @@ public final class BotWorldGraphWebServer {
                             + ",\"lines\":" + rawArr(lines) + "}";
                 }
             }
+            case "perflog" -> {
+                int seconds;
+                try {
+                    seconds = Math.max(1, Math.min(300, Integer.parseInt(jsonField(body, "seconds"))));
+                } catch (NumberFormatException e) {
+                    result = "{\"error\":\"bad seconds\"}";
+                    break;
+                }
+                java.nio.file.Path csv = BotPerformanceMonitor.captureCsv(seconds);
+                if (csv == null) {
+                    result = "{\"error\":\"no samples captured (no bots active?)\"}";
+                    break;
+                }
+                String csvAbs = csv.toAbsolutePath().toString();
+                if ("true".equalsIgnoreCase(jsonField(body, "html"))) {
+                    result = perfHtmlReport(csv, csvAbs);
+                } else {
+                    result = "{\"ok\":true,\"msg\":" + jsonStr("CSV: " + csvAbs) + "}";
+                }
+            }
             default -> result = "{\"error\":\"unknown cmd\"}";
         }
         send(ex, 200, "application/json", result.getBytes(StandardCharsets.UTF_8));
+    }
+
+    /** Runs the existing {@code tools/botperf_report.py} converter on a freshly written CSV and returns a
+     *  JSON result with the .html path. The converter (SSOT for the report format) writes the HTML next to
+     *  the CSV; falls back to a CSV-only result if {@code py} isn't available or the script fails. */
+    private static String perfHtmlReport(java.nio.file.Path csv, String csvAbs) {
+        java.nio.file.Path html = java.nio.file.Path.of(csvAbs.substring(0, csvAbs.length() - 4) + ".html");
+        try {
+            Process p = new ProcessBuilder("py", "tools/botperf_report.py", csvAbs)
+                    .redirectErrorStream(true)
+                    .start();
+            p.getInputStream().readAllBytes(); // drain so the child can't block on a full pipe
+            boolean done = p.waitFor(60, java.util.concurrent.TimeUnit.SECONDS);
+            if (done && p.exitValue() == 0 && java.nio.file.Files.exists(html)) {
+                return "{\"ok\":true,\"msg\":" + jsonStr("HTML: " + html.toAbsolutePath()) + "}";
+            }
+            if (!done) {
+                p.destroyForcibly();
+            }
+        } catch (IOException | InterruptedException e) {
+            if (e instanceof InterruptedException) {
+                Thread.currentThread().interrupt();
+            }
+        }
+        return "{\"ok\":true,\"msg\":" + jsonStr("CSV: " + csvAbs + " (HTML convert failed; run: py tools/botperf_report.py " + csvAbs + ")") + "}";
     }
 
     /** The live config instance for a settings group name, or null if unknown. */
