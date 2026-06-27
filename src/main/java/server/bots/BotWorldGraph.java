@@ -167,14 +167,19 @@ final class BotWorldGraph {
             // a free NPC-click warp (2030000.js: cm.warp(211040300, 5)) with a level-50-themed gate
             // that the script actually enforces at level >= 30. No forward portal exists (211040200's
             // only plain portal goes back to Ice Valley I), so model it as a free, lv30 taxi ride.
-            new TaxiEdge(211040200, 2030000, 211040300, 0, false, 30));
+            new TaxiEdge(211040200, 2030000, 211040300, 0, false, 30),
+            // NLC Taxi 9201056 gates the ONLY entrance to the NLC Haunted House / ghost-park cluster
+            // (Bent Tree, Valley of Heroes, 40 maps): 9201056.js warps NLC <-> 682000000 for 15000 meso
+            // each way, no gate. No portal connects them, so model both legs as a taxi ride.
+            new TaxiEdge(600000000, 9201056, 682000000, 15000),
+            new TaxiEdge(682000000, 9201056, 600000000, 15000));
 
     // NPCs whose "taxi" edge is a cross-continent scripted-warp ride with NO walking alternative
     // (the block above): Shanks (Maple Island exit), Dolphin (Aqua Road), Pason/Pison (Florina Beach),
     // Crane (Mu Lung <-> Herb Town), Jeff (Ice Valley II -> Sharp Cliff I). These stay available even to
     // a poor bot; the Victoria cab edges
     // (optional shortcuts between towns that ARE walkable) are gated by the taxi meso tier in expand().
-    private static final Set<Integer> CONTINENT_RIDE_NPCS = Set.of(22000, 2060009, 1002002, 1081001, 2090005, 2030000);
+    private static final Set<Integer> CONTINENT_RIDE_NPCS = Set.of(22000, 2060009, 1002002, 1081001, 2090005, 2030000, 9201056);
 
     private static final Map<Integer, List<TaxiEdge>> TAXI_BY_MAP = buildTaxiByMap();
 
@@ -470,6 +475,9 @@ final class BotWorldGraph {
             // Kerning subway: Ticketing Booth -> Line 1 <Area 1>, script subway_in2 (pt=7, tm=999999999).
             // Forward-unreachable grind cluster (64 Bubbling); rest of Line 1 reachable by normal portals from here.
             new ScriptedEntrance(103000100, "in00", 103000101),
+            // NLC Haunted House -> Foyer (Sophilia mansion), portal st01 script halloween_enter (pt=8,
+            // tm=999999999, unconditional pi.warp(682000100)). One-way: Foyer walks back but not in.
+            new ScriptedEntrance(682000000, "st01", 682000100),
             // Return legs (one-way regions, Lith-anchored audit) -----------------------------------------
             // Snow Island: Dangerous Forest field -> Puro's boat dock 140020300, script enterPort (then
             // the Puro ferry returns to Lith). Without this the whole Rien/Snow Island is a can't-return trap.
