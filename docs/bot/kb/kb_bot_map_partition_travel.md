@@ -66,6 +66,15 @@ the heavy lazy nav layer).
 `findAdjacentPortal` / `pickRandomCrossMapPortal` use the shared predicate (one filter, not three).
 
 ## Notes / deferred
+- Live repro 2026-06-27, Dead Man's Gorge (`610010004`): the persisted partition row was correct
+  (`U5_4/U5_5/U5_6` bottom arrivals cannot use top-left `U5_1 -> 610010005`), and `/api/pathfind`
+  proved `R6 -> R4/R5` unreachable even with flash-jump enabled. The failure mode is not bad partition
+  derivation; it is the travel planner's cold-current-map fallback. `tickTravel` uses
+  `BotNavigationGraphProvider.peekGraph(base)` and, when it returns null / unknown region, falls back to
+  the old direct map-level portal pick. That can pin `U5_1` before `canReach` is available, and the active
+  travel branch does not revalidate the committed portal after graph warmup. Root fix: do not commit a
+  cross-map portal on a split-sensitive route until the current map graph can prove reachability, or
+  revalidate and clear/replan any active portal once the graph becomes available.
 - `nextHopPortalPosition` (party-loiter hint) not canReach-filtered yet — low stakes; follow-up.
 - No all-maps precompute; cache fills as maps are visited/warmed; unseen downstream maps degrade to
   fully-connected (map-level behavior).
