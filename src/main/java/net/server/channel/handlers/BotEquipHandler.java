@@ -96,23 +96,16 @@ public final class BotEquipHandler extends AbstractPacketHandler {
         c.sendPacket(PacketCreator.botEquipSnapshot(botIndex, bot));
     }
 
-    // The bots that fill this player's 1..5 window slots, stable order.
-    //  - GM: bots FOLLOWing the GM via the gm6 debug-commander override (say "botName follow") -> lets a
-    //    GM inspect botpop bots they don't own; the 5-min TTL or the owner reclaiming frees the slot.
-    //    Same state the tested chat-follow sets. See BotManager.getDebugCommanderFollowers.
-    //  - everyone else: their own owned bots.
+    // The characters that fill this player's 1..5 window slots, stable order.
+    //  - own bots first (stable slot index), then the GM's single !inspect target (any logged-in
+    //    character — bot or real player) appended, so a GM can inspect anyone's inventory.
+    //  - non-GMs only ever have owned bots (they can't run !inspect).
     private static List<Character> slotBots(Character player) {
         BotManager bm = BotManager.getInstance();
-        List<Character> owned = bm.getOwnedBotCharacters(player.getId());
-        if (player.gmLevel() < 6) {
-            return owned;
-        }
-        // GM: own bots first (stable slot index), then debug-commander followers they don't own.
-        List<Character> bots = new java.util.ArrayList<>(owned);
-        for (Character b : bm.getDebugCommanderFollowers(player.getId())) {
-            if (!bots.contains(b)) {
-                bots.add(b);
-            }
+        List<Character> bots = new java.util.ArrayList<>(bm.getOwnedBotCharacters(player.getId()));
+        Character inspect = bm.getInspectTarget(player.getId());
+        if (inspect != null && !bots.contains(inspect)) {
+            bots.add(inspect);
         }
         return bots.size() > 5 ? bots.subList(0, 5) : bots;
     }

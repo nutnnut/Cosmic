@@ -468,6 +468,7 @@ public class CommandsExecutor {
         addCommand("botllm", 3, BotLlmCommand.class);
         addCommand("botnav", 3, BotNavCommand.class);
         addCommand("botstatus", 3, BotStatusCommand.class);
+        addCommand("inspect", 3, client.command.commands.gm3.InspectCommand.class);
         addCommand("botpop", 3, client.command.commands.gm3.BotPopCommand.class);
         addCommand("botperfdebug", 3, BotPerfDebugCommand.class);
         addCommand("botperflog", 3, client.command.commands.gm3.BotPerfLogCommand.class);

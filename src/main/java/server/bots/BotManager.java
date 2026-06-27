@@ -288,6 +288,9 @@ public class BotManager {
     // portal in the return map; later bots warp to a randomized nearby offset.
     // Cleared when the owner becomes active again.
     private final Map<Integer, Point> townClusterAnchors = new ConcurrentHashMap<>();
+    // gmCharId → charId the GM is inspecting (!inspect). One target at a time; appended to the GM's
+    // bot-equip window roster so its inventory shows without any follow/formation side effect.
+    private final Map<Integer, Integer> inspectTargets = new ConcurrentHashMap<>();
     enum FormationType { STAGGER, RANDOM, STACK, SPREAD, LEFT, RIGHT }
 
     record FormationState(FormationType type, int px, int snapRange) {
@@ -2134,8 +2137,7 @@ public class BotManager {
     }
 
     /** Stagger the GM's debug-commander follow cohort so multiple followed bots fan out instead of
-     *  stacking. charId order matches {@link #getDebugCommanderFollowers}, so the F8 slot index and the
-     *  on-screen formation position line up. */
+     *  stacking on one point when several foreign bots follow the same GM. */
     private void assignDebugFollowFormation(int gmCharId) {
         List<BotEntry> cohort = new ArrayList<>();
         for (List<BotEntry> entries : bots.values()) {
@@ -6157,31 +6159,31 @@ public class BotManager {
     }
 
     /**
-     * Bots currently FOLLOWing the given GM via the gm6 debug-commander override — i.e. the tested
-     * "botName follow" chat path ({@link #bindDebugCommander} + {@code debugCommanderFollow} + the normal
-     * follow command, anchored in {@link #resolveFollowAnchor}). charId-sorted for a stable slot index,
-     * capped to the client's 5-button limit.
-     *
-     * This is how a GM curates the bot-inventory (F8) window over botpop bots they don't own: say
-     * "botName follow" to occupy a slot. A slot frees when the 5-min debug-commander TTL lapses or the
-     * bot's real owner reclaims it (both clear the binding). Reads the SAME state the chat command sets —
-     * no parallel follow plumbing.
+     * !inspect target curation for the bot-equip (F8) window. A GM picks ONE character (any logged-in
+     * character — bot or real player) to append to their window roster so its inventory is visible; no
+     * follow or formation side effect. {@code targetCharId <= 0} clears the binding.
      */
-    public List<Character> getDebugCommanderFollowers(int gmCharId) {
-        List<Character> result = new ArrayList<>();
-        for (List<BotEntry> entries : bots.values()) {
-            for (BotEntry e : entries) {
-                if (e.debugCommanderFollow && e.debugCommanderId == gmCharId
-                        && isDebugCommanderFresh(e) && e.getBot() != null) {
-                    result.add(e.getBot());
-                }
+    public void setInspectTarget(int gmCharId, int targetCharId) {
+        if (targetCharId > 0) {
+            inspectTargets.put(gmCharId, targetCharId);
+        } else {
+            inspectTargets.remove(gmCharId);
+        }
+    }
+
+    /** The GM's current !inspect target as a live Character, or null if unset/offline. */
+    public Character getInspectTarget(int gmCharId) {
+        Integer targetId = inspectTargets.get(gmCharId);
+        if (targetId == null) {
+            return null;
+        }
+        for (net.server.world.World w : Server.getInstance().getWorlds()) {
+            Character chr = w.getPlayerStorage().getCharacterById(targetId);
+            if (chr != null) {
+                return chr;
             }
         }
-        result.sort((a, b) -> Integer.compare(a.getId(), b.getId()));
-        if (result.size() > 5) {
-            return result.subList(0, 5);
-        }
-        return result;
+        return null;
     }
 
 }
