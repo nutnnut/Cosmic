@@ -76,8 +76,15 @@ final class BotShopManager {
         // Debug/verify aid: after a sell-trash visit, list the USE/ETC items that were sold so
         // the owner can spot a valuable being misclassified. Equips are excluded (well tested).
         public boolean REPORT_SOLD_USE_ETC = true;
-        // Per-item sold audit log (bot-sell:). Off by default — spams even at DEBUG with many bots.
-        public boolean LOG_SOLD_ITEMS = false;
+        // Per-item sold audit log (bot-sell:), split by why the item left the bag:
+        //  - whitelisted: routine junk the bot wants to sell anyway. Spammy with many bots — off.
+        //  - forced-by-value: an item the bot would otherwise keep, liquidated under bag/value
+        //    pressure (above-base equip shelf overflow, cramped USE shelf sales). The concerning
+        //    case (a good roll liquidated) — on.
+        public boolean LOG_SOLD_WHITELIST = false;
+        public boolean LOG_SOLD_FORCED_BY_VALUE = true;
+        // Cramped-bag "why isn't it selling" diagnostic (bot-sellblock:). Noisy; off by default.
+        public boolean LOG_SELLBLOCK_CRAMPED = false;
     }
     static Config cfg = new Config();
 
@@ -190,7 +197,7 @@ final class BotShopManager {
      * would otherwise be silent. Grep {@code bot-sellblock}.
      */
     static void logSellBlockIfCramped(BotEntry entry, Character bot) {
-        if (entry == null || bot == null) {
+        if (!cfg.LOG_SELLBLOCK_CRAMPED || entry == null || bot == null) {
             return;
         }
         boolean equipCramped = isCramped(bot, InventoryType.EQUIP);
@@ -656,6 +663,10 @@ final class BotShopManager {
         boolean explicitSell = sequence.entry().shopSellTrashPending;
         List<Item> items = new ArrayList<>(
                 BotInventoryManager.collectSellTrashItems(sequence.entry(), sequence.bot()));
+        // USE shelf stacks sold only under bag pressure (not routine junk) — tagged so the sell
+        // audit log can tell a forced liquidation from a whitelisted-junk sale. Equips re-derive
+        // this per-item via shouldKeepForSellTrash; ETC has no pressure-sale path.
+        Set<Item> forcedByValue = Collections.newSetFromMap(new IdentityHashMap<>());
         // Pressure-driven escalation: when the USE tab is cramped, sell the lowest value-per-slot
         // shelf stacks (worst first) on top of the always-junk, down to a healthy free-slot margin.
         // Junk already in the plan frees slots too, so it counts toward the margin and is excluded.
@@ -675,6 +686,7 @@ final class BotShopManager {
                     crampedSales.removeIf(it -> it.getItemId() == farmItemId);
                 }
                 items.addAll(crampedSales);
+                forcedByValue.addAll(crampedSales);
             }
         }
         if (items.isEmpty()) {
@@ -698,12 +710,13 @@ final class BotShopManager {
                         new ArrayList<>(),
                         Collections.newSetFromMap(new IdentityHashMap<>()),
                         plan,
+                        forcedByValue,
                         sequence.bought(),
                         sequence.firstShortfall()));
     }
 
     private static void runSellTrashStep(BotEntry entry, Character bot, Point npcPos, int soldCount, List<String> soldUseEtc,
-                                         Set<Item> failedItems, List<Item> plan,
+                                         Set<Item> failedItems, List<Item> plan, Set<Item> forcedByValue,
                                          List<String> bought, BuyReport firstShortfall) {
         if (!isShopSequenceValid(entry, bot, npcPos)) {
             abortShop(entry, bot, "couldn't stay at the shop to sell, never mind");
@@ -737,7 +750,7 @@ final class BotShopManager {
         Item item = items.get(0);
         if (!BotInventoryManager.hasItem(bot, item)) {
             scheduleShopStep(entry, SELL_TRASH_STEP_DELAY_MS,
-                    () -> runSellTrashStep(entry, bot, npcPos, soldCount, soldUseEtc, failedItems, plan, bought, firstShortfall));
+                    () -> runSellTrashStep(entry, bot, npcPos, soldCount, soldUseEtc, failedItems, plan, forcedByValue, bought, firstShortfall));
             return;
         }
 
@@ -760,39 +773,53 @@ final class BotShopManager {
                 && item.getQuantity() > beforeQuantity - soldQuantity) {
             failedItems.add(item);
             scheduleShopStep(entry, SELL_TRASH_STEP_DELAY_MS,
-                    () -> runSellTrashStep(entry, bot, npcPos, soldCount, soldUseEtc, failedItems, plan, bought, firstShortfall));
+                    () -> runSellTrashStep(entry, bot, npcPos, soldCount, soldUseEtc, failedItems, plan, forcedByValue, bought, firstShortfall));
             return;
         }
 
         if (item.getInventoryType() != InventoryType.EQUIP) {
             soldUseEtc.add(soldQuantity + " " + resolveItemName(item.getItemId(), "item"));
         }
-        logSoldItem(bot, item, soldQuantity);
+        logSoldItem(bot, item, soldQuantity, forcedByValue);
         int nextSoldCount = soldCount + 1;
         scheduleShopStep(entry, SELL_TRASH_STEP_DELAY_MS,
-                () -> runSellTrashStep(entry, bot, npcPos, nextSoldCount, soldUseEtc, failedItems, plan, bought, firstShortfall));
+                () -> runSellTrashStep(entry, bot, npcPos, nextSoldCount, soldUseEtc, failedItems, plan, forcedByValue, bought, firstShortfall));
     }
 
     /** Audit trail for every NPC sale a bot makes — equips include their above-base trade
      *  score so a concerning sale (a good roll liquidated) is findable in the server log. */
-    private static void logSoldItem(Character bot, Item item, short quantity) {
-        if (!cfg.LOG_SOLD_ITEMS) {
-            return;
-        }
+    private static void logSoldItem(Character bot, Item item, short quantity, Set<Item> forcedByValue) {
         String name = resolveItemName(item.getItemId(), "item");
         if (item instanceof Equip equip) {
             double score;
+            boolean forced;
             try {
-                score = BotInventoryManager.tradeValueScore(ItemInformationProvider.getInstance(), equip);
+                ItemInformationProvider ii = ItemInformationProvider.getInstance();
+                score = BotInventoryManager.tradeValueScore(ii, equip);
+                // Kept-valuable equips reach the sell list ONLY as shelf overflow — i.e. forced by
+                // value; whitelisted trash equips fail this keep gate.
+                forced = BotInventoryManager.shouldKeepForSellTrash(ii, equip);
             } catch (Throwable t) {
                 score = -1; // unit tests / WZ unavailable
+                forced = false;
             }
-            log.debug("bot-sell: {} sold equip {} (id {}, tradeScore {})",
-                    bot.getName(), name, item.getItemId(), String.format("%.1f", score));
+            if (!sellLogEnabled(forced)) {
+                return;
+            }
+            log.debug("bot-sell: {} sold {} equip {} (id {}, tradeScore {})",
+                    bot.getName(), forced ? "forced" : "whitelist", name, item.getItemId(), String.format("%.1f", score));
         } else {
-            log.debug("bot-sell: {} sold {}x {} (id {})",
-                    bot.getName(), quantity, name, item.getItemId());
+            boolean forced = forcedByValue.contains(item);
+            if (!sellLogEnabled(forced)) {
+                return;
+            }
+            log.debug("bot-sell: {} sold {} {}x {} (id {})",
+                    bot.getName(), forced ? "forced" : "whitelist", quantity, name, item.getItemId());
         }
+    }
+
+    private static boolean sellLogEnabled(boolean forcedByValue) {
+        return forcedByValue ? cfg.LOG_SOLD_FORCED_BY_VALUE : cfg.LOG_SOLD_WHITELIST;
     }
 
     // One or more ASCII chat lines listing the USE/ETC items sold, e.g. "unloaded: 12 Squid Ink, 3 Blue Potion".
