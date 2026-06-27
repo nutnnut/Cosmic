@@ -544,14 +544,22 @@ final class BotAutopilotManager {
         if (!BotBreakManager.startsBreak(avgFreq, avgIdle, ThreadLocalRandom.current().nextDouble())) {
             return true;
         }
-        // Group break! Low-level catch-up members keep grinding; everyone else takes a town-break.
+        // Group break! Low-level catch-up members keep grinding; everyone else breaks together. The
+        // leader picks ONE break spot (town or a nearby safe map) so the party rests as a group rather
+        // than each member rolling its own destination and scattering.
+        int dest = decideBreakDestination(entry, bot);
         int[] levels = cohort.stream().filter(m -> m.bot != null).mapToInt(m -> m.bot.getLevel()).sorted().toArray();
         int trigger = BotManager.cfg.PARTY_LEECH_GAP_TRIGGER;
         for (BotEntry m : cohort) {
             if (m.bot == null || BotBreakManager.catchUpSplit(m.bot.getLevel(), levels, trigger)) {
                 continue; // behind the pack -> skip the break, grind solo to catch up
             }
-            BotBreakManager.startTownBreak(m, m.bot, now);
+            if (dest != -1 && dest != m.bot.getMapId()) {
+                m.restErrand = true;
+                m.autopilotErrandMapId = dest; // shared, pre-resolved -> member skips its own re-roll
+            } else {
+                BotBreakManager.startTownBreak(m, m.bot, now); // already at dest / in town -> rest in place
+            }
         }
         return true;
     }
@@ -823,16 +831,38 @@ final class BotAutopilotManager {
             entry.restErrand = false;
             return;
         }
+        int dest = decideBreakDestination(entry, bot);
+        if (dest == -1 || dest == bot.getMapId()) {
+            entry.restErrand = false; // nowhere worth going -> keep grinding
+            return;
+        }
+        entry.autopilotErrandMapId = dest;
+        reply.accept(entry, "heading off for a breather");
+    }
+
+    /** Where this bot should take its break: usually a town (the arrival shop-visit sells trash +
+     *  resupplies + self-scrolls), but a deep grind spot (many hops to walk back from town) often rests
+     *  at a nearby safe map instead, to avoid wasting a full town round-trip. Returns the destination map
+     *  id, or -1 when already in a town / nowhere to go. Shared by the solo rest-errand and the group
+     *  break so a party decides one break spot together rather than each member rolling its own. */
+    static int decideBreakDestination(BotEntry entry, Character bot) {
+        if (bot.getMap() == null) {
+            return -1;
+        }
         Integer shopMap = BotShopManager.findNearestShopMap(bot, !BotShopManager.needsToBuySupplies(bot));
         int town = shopMap != null && shopMap != bot.getMapId()
                 ? shopMap
                 : (bot.getMap().getReturnMap() != null ? bot.getMap().getReturnMap().getId() : -1);
         if (town == -1 || town == bot.getMapId()) {
-            entry.restErrand = false; // nowhere worth resting -> keep grinding
-            return;
+            return -1; // already in a town / nowhere worth going -> rest in place
         }
-        entry.autopilotErrandMapId = town;
-        reply.accept(entry, "heading to town for a breather");
+        int grindMap = entry.autopilotMapId != -1 ? entry.autopilotMapId : bot.getMapId();
+        int townHops = BotBreakManager.hopsBack(town, grindMap);
+        if (ThreadLocalRandom.current().nextDouble() < BotBreakManager.townBreakChance(townHops)) {
+            return town;
+        }
+        int nearby = BotBreakManager.findNearbyBreakMap(grindMap, townHops);
+        return nearby != -1 ? nearby : town; // no closer safe map -> town anyway
     }
 
     static boolean requestResupplyErrand(BotEntry entry, Character bot) {

@@ -325,6 +325,9 @@ final class BotGachaponManager {
             if (travel >= 99_999.0) {
                 continue; // unreachable within the hop cap
             }
+            if (BotWorldGraph.route(fromMapId, mapId, GACHA_MAX_HOPS) == null) {
+                continue; // farther than GACHA_MAX_HOPS from the break spot — too far to wander for gacha
+            }
             // Whichever motive is stronger drives the roll - gear upgrades for THIS bot OR raw
             // resale/uniques - both already in NX, so no scale mixing. The need-aware term is the
             // grind-advisor's own gear-upgrade SSOT, so the bot values a pool the same way it values
@@ -343,6 +346,8 @@ final class BotGachaponManager {
     // Per-second NX-equivalent travel penalty (visible knob). At ~0.5 NX/s a 60s round trip costs
     // 30 NX of "score" - enough to break ties toward nearer pools without overriding a richer one.
     static final double TRAVEL_NX_PER_SECOND = 0.5;
+    /** Cap on how far (portal hops from the break spot) a bot will travel for a gacha trip. */
+    static final int GACHA_MAX_HOPS = 5;
 
     /** Rolls the bot can afford above the reserve, capped at the per-trip ceiling - the count travel
      *  is amortized over, so saving up enables (and justifies) a longer / farther trip. */
@@ -377,10 +382,9 @@ final class BotGachaponManager {
         if (!BotAutopilotManager.isActive(entry)) {
             return;
         }
-        // Gacha is a town-break activity, not a mid-grind detour: only roll while resting in a town.
-        // Town breaks park the bot in a town; in-place breaks idle on the grind map, so on-break +
-        // in-town distinguishes the town break the player wants gacha confined to.
-        if (!BotBreakManager.onBreak(entry, now) || !bot.getMap().isTown()) {
+        // Gacha is a rest-break activity, not a mid-grind detour: only roll while parked at a rest
+        // destination (a town or a chosen nearby safe map), never during a short in-place grind break.
+        if (!BotBreakManager.onRestBreak(entry, bot, now)) {
             return;
         }
         if (entry.gachaErrandMapId != -1 || entry.questErrandMapId != -1) {

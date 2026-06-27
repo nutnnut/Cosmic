@@ -2,6 +2,7 @@ package server.bots;
 
 import org.junit.jupiter.api.Test;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -74,5 +75,16 @@ class BotBreakManagerTest {
     void degenerateInputs_noSplit() {
         assertFalse(BotBreakManager.catchUpSplit(10, new int[] {10}, 3));     // solo
         assertFalse(BotBreakManager.catchUpSplit(10, new int[] {10, 20}, 0)); // trigger 0
+    }
+
+    // --- town-break probability ramp: 90% at 1 hop back -> 10% at 10 hops, soft-capped both ends ---
+
+    @Test
+    void townBreakChance_rampAndClamps() {
+        assertEquals(0.9, BotBreakManager.townBreakChance(1), 1e-9);   // near grind: almost always town
+        assertEquals(0.5, BotBreakManager.townBreakChance(5), 0.05);   // mid ramp
+        assertEquals(0.1, BotBreakManager.townBreakChance(10), 1e-9);  // soft cap reached
+        assertEquals(0.1, BotBreakManager.townBreakChance(25), 1e-9);  // deeper stays at the floor
+        assertEquals(0.9, BotBreakManager.townBreakChance(0), 1e-9);   // clamps above 90%
     }
 }

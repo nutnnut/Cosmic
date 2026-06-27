@@ -1,6 +1,7 @@
 package server.bots;
 
 import client.Character;
+import server.life.LifeFactory;
 
 import java.util.List;
 import java.util.concurrent.ThreadLocalRandom;
@@ -22,6 +23,13 @@ final class BotBreakManager {
 
     static boolean onBreak(BotEntry entry, long now) {
         return now < entry.breakUntilMs;
+    }
+
+    /** True during a deliberate rest break — parked in a town or at a chosen nearby safe map — where a
+     *  gacha side-trip is fine, as opposed to a short in-place break on the grind map (mobs around). */
+    static boolean onRestBreak(BotEntry entry, Character bot, long now) {
+        return onBreak(entry, now) && bot.getMap() != null
+                && (bot.getMap().isTown() || entry.restErrand);
     }
 
     /**
@@ -121,6 +129,90 @@ final class BotBreakManager {
         BotPersonality p = entry.personality != null ? entry.personality : BotPersonality.defaults();
         if (bot != null && ThreadLocalRandom.current().nextDouble() < p.chattiness()) {
             BotManager.getInstance().botSay(bot, BotManager.randomReply(RESUME_MSGS));
+        }
+    }
+
+    // ---- break-location choice: town vs a nearby safe map -------------------------------------------
+    // Deep grind spots shouldn't waste a full town round-trip every break. Getting TO town is a free
+    // return scroll; the cost is the walk BACK, measured in hops. The deeper that walk, the more often
+    // the bot rests at a nearby safe map instead.
+
+    /** Within this many hops of the grind map still counts as "nearby" for an in-the-field break.
+     *  ponytail: fixed small radius — a break map farther than this is barely closer than town anyway. */
+    private static final int NEARBY_BREAK_MAX_HOPS = 5;
+    private static final int HOP_CAP = 30;
+
+    /** Hop count of the walk back from {@code from} to {@code to}; large sentinel when unreachable. */
+    static int hopsBack(int from, int to) {
+        if (from == to) {
+            return 0;
+        }
+        List<Integer> route = BotWorldGraph.route(from, to, HOP_CAP);
+        return route == null ? 999 : route.size() - 1;
+    }
+
+    /** Chance of bothering with a full town break given the hops to walk back to the grind spot:
+     *  90% at 1 hop, linearly down to 10% at 10 hops (a soft cap — deeper just stays at 10%). */
+    static double townBreakChance(int hopsBackToGrind) {
+        double p = 0.9 - (hopsBackToGrind - 1) / 9.0 * 0.8;
+        return Math.max(0.1, Math.min(0.9, p));
+    }
+
+    /** Find a nearby map to rest on instead of trekking to town: closer to the grind map than town is,
+     *  preferring a no-mob map, then a map whose mobs can't fly (the on-arrival safe-idle picker parks
+     *  on a platform away from ground mobs). Returns -1 when nothing closer qualifies (caller falls back
+     *  to town). ponytail: "no mob can JUMP" and "a safe platform EXISTS" aren't checkable here — no jump
+     *  flag exists in the server and platform reachability needs the map loaded; we gate on fly-capability
+     *  only and trust the existing safe-idle picker once the bot arrives. */
+    static int findNearbyBreakMap(int grindMap, int townHops) {
+        int radius = Math.min(NEARBY_BREAK_MAX_HOPS, townHops - 1);
+        if (radius < 1) {
+            return -1; // town is already adjacent — nothing closer to find
+        }
+        BotSpawnIndex.Index idx = BotSpawnIndex.get();
+        int bestNoMob = -1, bestNoFly = -1;
+        int bestNoMobHops = Integer.MAX_VALUE, bestNoFlyHops = Integer.MAX_VALUE;
+        for (int mapId : BotWorldGraph.reachableWithin(grindMap, radius)) {
+            if (mapId == grindMap) {
+                continue;
+            }
+            int hops = hopsBack(grindMap, mapId);
+            if (hops < 1 || hops >= townHops) {
+                continue; // must be strictly closer to the grind map than town is
+            }
+            int tier = breakMapTier(idx, mapId);
+            if (tier == 1 && hops < bestNoMobHops) {
+                bestNoMob = mapId;
+                bestNoMobHops = hops;
+            } else if (tier == 2 && hops < bestNoFlyHops) {
+                bestNoFly = mapId;
+                bestNoFlyHops = hops;
+            }
+        }
+        return bestNoMob != -1 ? bestNoMob : bestNoFly; // no-mob beats no-fly; -1 if neither found
+    }
+
+    /** 1 = no monster spawns (safest), 2 = has mobs but none can fly, 0 = a flying mob makes any spot unsafe. */
+    private static int breakMapTier(BotSpawnIndex.Index idx, int mapId) {
+        BotSpawnIndex.MapSpawns sp = idx == null ? null : idx.byMap().get(mapId);
+        if (sp == null || sp.mobCounts().isEmpty()) {
+            return 1; // no spawn points at all
+        }
+        for (int mobId : sp.mobCounts().keySet()) {
+            if (mobCanFly(mobId)) {
+                return 0;
+            }
+        }
+        return 2;
+    }
+
+    /** Whether a mob has a "fly" animation (could reach an elevated idle platform). Unknown -> unsafe. */
+    static boolean mobCanFly(int mobId) {
+        try {
+            var m = LifeFactory.getMonster(mobId);
+            return m == null || m.getStats().animationTimes.containsKey("fly");
+        } catch (RuntimeException e) {
+            return true;
         }
     }
 
