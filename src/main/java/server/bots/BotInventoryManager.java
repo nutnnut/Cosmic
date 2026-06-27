@@ -153,9 +153,8 @@ class BotInventoryManager {
                 if (drop.getMeso() <= 0 && drop.getItemId() > 0) {
                     InventoryType type = ItemConstants.getInventoryType(drop.getItemId());
                     Inventory inventory = bot.getInventory(type);
-                    if (inventory != null && inventory.isFull() && entry.invFullWarnCooldownMs <= 0) {
-                        BotManager.getInstance().botReply(entry, type.name().toLowerCase() + " inventory is full!");
-                        entry.invFullWarnCooldownMs = BotMovementManager.delayAfterCurrentTick(BotManager.cfg.INV_FULL_WARN_CD_MS);
+                    if (inventory != null && inventory.isFull()) {
+                        warnInventoryFull(entry, type);
                     }
                 }
                 continue;
@@ -168,10 +167,7 @@ class BotInventoryManager {
                 InventoryType type = ItemConstants.getInventoryType(drop.getItemId());
                 Inventory inventory = bot.getInventory(type);
                 if (inventory != null && inventory.isFull()) {
-                    if (entry.invFullWarnCooldownMs <= 0) {
-                        BotManager.getInstance().botReply(entry, type.name().toLowerCase() + " inventory is full!");
-                        entry.invFullWarnCooldownMs = BotMovementManager.delayAfterCurrentTick(BotManager.cfg.INV_FULL_WARN_CD_MS);
-                    }
+                    warnInventoryFull(entry, type);
                     continue;
                 }
             }
@@ -200,6 +196,14 @@ class BotInventoryManager {
                 }
             }
         }
+    }
+
+    private static void warnInventoryFull(BotEntry entry, InventoryType type) {
+        if (entry.invFullWarnCooldownMs > 0) {
+            return;
+        }
+        BotManager.getInstance().botReply(entry, type.name().toLowerCase() + " inventory is full!");
+        entry.invFullWarnCooldownMs = BotMovementManager.delayAfterCurrentTick(BotManager.cfg.INV_FULL_WARN_CD_MS);
     }
 
     /**
