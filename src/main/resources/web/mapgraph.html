@@ -45,6 +45,12 @@
   <label class="sub" style="white-space:nowrap" title="Allow flash-jump (thief) skill edges in the route (default off = walk-only)."><input type="checkbox" id="pfFlashJump"> flash-jump</label>
   <span id="pfstat" class="sub" style="white-space:nowrap"></span>
   <label class="sub" style="white-space:nowrap">graph <select id="profile" title="cached movement-profile graph"></select></label>
+  <span class="sub" style="white-space:nowrap;border-left:1px solid #283143;padding-left:10px">show:
+    <label title="Colour regions by reachability component (walk-only, same adjacency as canReach). One colour = fully connected; multiple = a split map (e.g. an upper deck you can't climb back to)."><input type="checkbox" id="tgPartition"> partition</label>
+    <label title="Down-jump / drop-through-platform edges (DROP type). Off by default — they clutter the view."><input type="checkbox" id="tgDownjump"> downjumps</label>
+    <label title="Jump edges that land LOWER than they launch. Off by default."><input type="checkbox" id="tgJumpDown"> jump-downs</label>
+    <label title="Flash-jump edges that land LOWER than they launch. Off by default."><input type="checkbox" id="tgFjDown"> fj-downs</label>
+  </span>
   <div id="legend">
     <span><i class="ov" style="background:#39d353"></i>foothold</span>
     <span><i class="ov" style="background:#6cc6ff"></i>rope</span>
@@ -83,6 +89,7 @@ const hlLayer = new Konva.Layer();     // transient edge highlight (hover a regi
 const charLayer = new Konva.Layer();   // live characters (repainted on poll)
 stage.add(layer); stage.add(pathLayer); stage.add(hlLayer); stage.add(charLayer);
 let allEdges = [];     // every drawn edge {t,fromR,toR,fx,fy,tx,ty} — for per-region listing + highlight
+let edgeShapes = [];   // {l:Konva.Line, e} pairs — for the down-edge visibility toggles
 let B = {minX:0,minY:0,maxX:0,maxY:0};
 let markers = [];       // static markers: {resize(scale)}
 let charMarkers = [];   // char markers: {resize(scale)}
@@ -128,23 +135,80 @@ function addBox(x, y, sz, stroke, fill, html, layerRef, bucket){
   bucket.push({resize:s => { const w=sz/s; r.width(w); r.height(w); r.offsetX(w/2); r.offsetY(w/2); }});
 }
 
+// ---- view toggles: partition colouring + down-edge visibility (all default OFF) ----
+const tg = id => { const el = document.getElementById(id); return !!(el && el.checked); };
+// Which edges the visibility toggles hide. DROP = down-jump / drop-through-platform; a JUMP or FLASH_JUMP
+// that lands LOWER than it launches (ty>fy, screen y grows downward) is a "down" variant.
+function edgeHidden(e){
+  if(e.t === 'DROP') return !tg('tgDownjump');
+  if(e.t === 'JUMP' && e.ty > e.fy) return !tg('tgJumpDown');
+  if(e.t === 'FLASH_JUMP' && e.ty > e.fy) return !tg('tgFjDown');
+  return false;
+}
+function applyEdgeToggles(){ for(const {l,e} of edgeShapes) l.visible(!edgeHidden(e)); layer.batchDraw(); }
+
+// Reachability components (SCC) over the walk-only edge graph — the SAME adjacency BotNavigationGraph.canReach
+// uses (skill edges excluded, PORTAL/CLIMB/JUMP/DROP/WALK kept). Display only: colour regions by component so
+// a split map (e.g. an upper deck you can down-jump off but not climb back to) shows as distinct colours.
+// Iterative Kosaraju — no recursion (big maps have thousands of regions).
+function computeComponents(){
+  const adj = {}, radj = {}, nodes = [];
+  const ensure = n => { if(!(n in adj)){ adj[n] = []; radj[n] = []; nodes.push(n); } };
+  for(const id in regionShapes) ensure(+id);
+  for(const e of allEdges){
+    if(e.t === 'TELEPORT' || e.t === 'FLASH_JUMP') continue; // walk-only, like canReach(skillMask 0)
+    ensure(e.fromR); ensure(e.toR);
+    adj[e.fromR].push(e.toR); radj[e.toR].push(e.fromR);
+  }
+  const seen = new Set(), order = [];
+  for(const s of nodes){
+    if(seen.has(s)) continue;
+    const st = [[s,0]]; seen.add(s);
+    while(st.length){ const top = st[st.length-1], ch = adj[top[0]];
+      if(top[1] < ch.length){ const c = ch[top[1]++]; if(!seen.has(c)){ seen.add(c); st.push([c,0]); } }
+      else { order.push(top[0]); st.pop(); } }
+  }
+  const comp = {}; let k = 0;
+  for(let i = order.length-1; i >= 0; i--){ const root = order[i]; if(root in comp) continue;
+    const st = [root]; comp[root] = k;
+    while(st.length){ const n = st.pop(); for(const p of radj[n]){ if(!(p in comp)){ comp[p] = k; st.push(p); } } }
+    k++; }
+  return {comp, k};
+}
+const compColor = idx => 'hsl('+Math.round((idx*137.508) % 360)+',70%,55%)';
+function applyPartition(){
+  const on = tg('tgPartition');
+  const cc = on ? computeComponents() : null;
+  for(const id in regionShapes){
+    const rs = regionShapes[id];
+    const col = on ? compColor(cc.comp[id]) : rs.orig;
+    rs.base = col;
+    if(+id !== selRegion) for(const sh of rs.shapes) sh.stroke(col);
+  }
+  if(on) status('partition: '+cc.k+' reachability component'+(cc.k===1?'':'s')+' (walk-only)');
+  layer.batchDraw();
+}
+
 // ---- render ----
 function edgeStyle(t){ return t==='JUMP' ? COL.eJump : t==='PORTAL' ? COL.ePortal : COL.eRest; }
 function renderStatic(d){
   layer.destroyChildren(); markers = []; selRegion = null; hideInfo();
-  allEdges = d.edges || []; clearHl();
+  allEdges = d.edges || []; clearHl(); edgeShapes = [];
   if(typeof pfReset === 'function') pfReset(false);   // drop any stale route (region set may differ per profile)
   // edges first (under the structure), JUMP as a lifted arc
   for(const e of d.edges){
     const col = edgeStyle(e.t);
+    let l;
     if(e.t === 'JUMP'){
       const mx=(e.fx+e.tx)/2, top=Math.min(e.fy,e.ty);
       const h=Math.min(80, Math.max(14, Math.hypot(e.tx-e.fx, e.ty-e.fy)*0.25));
-      clickableEdge([e.fx,e.fy, mx,top-h, e.tx,e.ty], col, e.t==='PORTAL'?1.4:1.1, layer, true, null, e);
+      l = clickableEdge([e.fx,e.fy, mx,top-h, e.tx,e.ty], col, e.t==='PORTAL'?1.4:1.1, layer, true, null, e);
     } else {
-      clickableEdge([e.fx,e.fy, e.tx,e.ty], col, e.t==='PORTAL'?1.4:1.1, layer,
+      l = clickableEdge([e.fx,e.fy, e.tx,e.ty], col, e.t==='PORTAL'?1.4:1.1, layer,
               false, (e.t==='TELEPORT'||e.t==='FLASH_JUMP') ? [5,4] : null, e);
     }
+    l.visible(!edgeHidden(e));
+    edgeShapes.push({l, e});
   }
   // regions: foothold segments (green) + rope spans (light-blue, ladders dashed); clickable -> report
   regionShapes = {};
@@ -155,7 +219,8 @@ function renderStatic(d){
     } else {
       for(const s of r.segs) shapes.push(regionLine([s[0],s[1], s[2],s[3]], COL.fh, null));
     }
-    regionShapes[r.id] = {report:r.report||[], shapes, base:r.kind==='rope'?COL.rope:COL.fh};
+    const orig = r.kind==='rope'?COL.rope:COL.fh;
+    regionShapes[r.id] = {report:r.report||[], shapes, base:orig, orig};
     for(const sh of shapes) sh.on('click tap', e => { e.cancelBubble = true; onRegionClick(r.id); });
   }
   // npcs (yellow box) + portals (in=yellow oval, cross=white oval, collision=white box)
@@ -167,6 +232,7 @@ function renderStatic(d){
         '<b>'+(p.k==='in'?'in-map portal':'cross portal')+'</b><br>'+esc(p.n)+(p.tm>0&&p.k!=='in'?' &rarr; '+p.tm:''),
         layer, markers);
   }
+  applyPartition();   // re-apply component colouring (if the toggle is on) to the fresh region shapes
 }
 function renderChars(chars){
   charLayer.destroyChildren(); charMarkers = [];
@@ -353,6 +419,10 @@ function fit(){
   applyScale();
 }
 document.getElementById('fitBtn').onclick = fit;
+// view toggles: down-edge visibility re-shows/hides existing shapes; partition recolours regions.
+['tgDownjump','tgJumpDown','tgFjDown'].forEach(id =>
+  document.getElementById(id).addEventListener('change', applyEdgeToggles));
+document.getElementById('tgPartition').addEventListener('change', applyPartition);
 
 stage.on('wheel', e => {
   e.evt.preventDefault();
