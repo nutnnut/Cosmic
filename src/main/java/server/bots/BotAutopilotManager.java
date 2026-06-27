@@ -6,6 +6,7 @@ import client.inventory.WeaponType;
 import server.bots.BotGrindPlanner.MobCandidate;
 import server.bots.BotGrindPlanner.PartyPlan;
 import server.bots.BotGrindPlanner.Recommendation;
+import server.maps.MapFactory;
 import server.maps.MapleMap;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -997,7 +998,7 @@ final class BotAutopilotManager {
         }
 
         String destination = entry.autopilotDestinationName == null || entry.autopilotDestinationName.isBlank()
-                ? ("map " + entry.autopilotMapId)
+                ? mapName(entry.autopilotMapId)
                 : entry.autopilotDestinationName;
         String objective = presentObjective(entry.autopilotObjectiveSummary);
         boolean onDestination = bot.getMapId() == entry.autopilotMapId;
@@ -1060,7 +1061,13 @@ final class BotAutopilotManager {
         if (map != null && map.getMapName() != null && !map.getMapName().isBlank()) {
             return map.getMapName();
         }
-        return "map " + bot.getMapId();
+        return mapName(bot.getMapId());
+    }
+
+    /** Map name from String.wz by id (works for maps the bot isn't standing on); falls back to "map <id>". */
+    private static String mapName(int mapId) {
+        String name = MapFactory.loadPlaceName(mapId);
+        return name != null && !name.isBlank() ? name : "map " + mapId;
     }
 
     private static String presentObjective(String summary) {
