@@ -2104,6 +2104,13 @@ public class BotManager {
                 && System.currentTimeMillis() < entry.debugCommanderUntilMs;
     }
 
+    /** An admin has hijacked this bot to follow them and the binding is still fresh. While true the
+     *  bot is the admin's to drive: autopilot self-heal must not yank it back. The TTL-lapse handler
+     *  in tickEntry drops the binding and resumes autopilot once this goes stale. */
+    static boolean isAdminFollowActive(BotEntry entry) {
+        return entry != null && entry.debugCommanderFollow && isDebugCommanderFresh(entry);
+    }
+
     static void bindDebugCommander(BotEntry entry, Character commander) {
         if (entry == null || commander == null) {
             return;
@@ -5417,8 +5424,8 @@ public class BotManager {
      * resets it to nextDecisionAt() the moment a plan installs.
      */
     private void maybeRecoverInertAutopilot(BotEntry entry, Character bot) {
-        if (entry.operatorCmd != null) {
-            return; // an operator command (e.g. IDLE/FIDGET) deliberately holds the bot off autopilot
+        if (entry.operatorCmd != null || isAdminFollowActive(entry)) {
+            return; // an operator command (IDLE/FIDGET) or an admin hijack-follow deliberately holds the bot off autopilot
         }
         boolean selfOwned = entry.owner == null || entry.owner == entry.bot;
         if (!selfOwned || entry.loggingOut || entry.deadUntil != 0
