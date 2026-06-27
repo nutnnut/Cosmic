@@ -660,19 +660,27 @@ final class BotAutopilotManager {
                     || entry.autopilotErrandMapId != -1 || entry.jobErrandMapId != -1)) {
             clearWaitAnchor(entry);
         }
+        // A live operator command (RTS MOVE, or a companion `goto <map>`) pins the destination and
+        // suppresses autopilot self-direction: no job/quest/gachapon detours, no resupply/rest-break
+        // trips. The bot just travels there. Mirrors the same gate in maybeRedecide (no re-pick under a
+        // command). Errand fields are left intact, so any deferred errand resumes once the command lapses.
+        boolean operatorPinned = entry.operatorCmd != null;
         // Detour errands (job advance / quest piggyback / gachapon), in precedence order. maybeStart
         // re-arms an errand that should be running but isn't (e.g. job advance after a missed level-up
         // edge or a relog); an active errand that consumes the tick short-circuits the grind flow.
-        for (DetourErrand errand : DETOUR_ERRANDS) {
-            errand.maybeStart(entry, bot);
-            if (errand.active(entry) && errand.tick(entry, bot, runAiTick)) {
-                return true;
+        if (!operatorPinned) {
+            for (DetourErrand errand : DETOUR_ERRANDS) {
+                errand.maybeStart(entry, bot);
+                if (errand.active(entry) && errand.tick(entry, bot, runAiTick)) {
+                    return true;
+                }
             }
         }
-        if (entry.restErrand && entry.autopilotErrandMapId == -1) {
+        if (!operatorPinned && entry.restErrand && entry.autopilotErrandMapId == -1) {
             resolveTownRestDestination(entry, bot); // pick the rest town (or abort restErrand) before travel
         }
-        int destination = entry.autopilotErrandMapId != -1 ? entry.autopilotErrandMapId : entry.autopilotMapId;
+        int destination = (!operatorPinned && entry.autopilotErrandMapId != -1)
+                ? entry.autopilotErrandMapId : entry.autopilotMapId;
         if (bot.getMapId() == destination) {
             if (entry.autopilotTransitFollow) {
                 // Arrived with the group: swap the follow pipeline back out for grind combat.
@@ -735,7 +743,7 @@ final class BotAutopilotManager {
         // re-arm it. A truly-broke bot with nothing to sell keeps grinding (degenerate close-range
         // swing) to earn the meso first rather than bouncing to town forever.
         boolean ammoStranded = BotShopManager.isOutOfUsableAmmo(bot) && BotShopManager.canRecoverAmmo(entry, bot);
-        if (entry.autopilotErrandMapId == -1 && !entry.autopilotReturningFromErrand
+        if (!operatorPinned && entry.autopilotErrandMapId == -1 && !entry.autopilotReturningFromErrand
                 && (lowAndCanBuy || ammoStranded || bagFull.bagFull(entry, bot))) {
             requestResupplyErrand(entry, bot);
             if (entry.autopilotErrandMapId != -1) {

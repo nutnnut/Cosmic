@@ -220,6 +220,35 @@ class BotAutopilotManagerTest {
     }
 
     @Test
+    void operatorMovePinsDestinationAndSuppressesDetourErrands() {
+        // A companion `goto <map>` (and RTS MOVE) reuses the autopilot travel pipeline but must NOT
+        // wander off on resupply/gachapon/quest detours: the operator pinned the destination.
+        Fixture f = fixture(TOWN);
+        f.entry().autopilotMapId = HUNTING_GROUND; // destination elsewhere -> in transit
+        f.entry().autopilotNextDecisionAtMs = Long.MAX_VALUE;
+        f.entry().grinding = true;
+        f.entry().gachaErrandMapId = TOWN;         // a gachapon detour is armed
+
+        try (Seams seams = new Seams(null);
+             MockedStatic<BotTravelManager> travel = mockStatic(BotTravelManager.class);
+             MockedStatic<BotGachaponManager> gacha = mockStatic(BotGachaponManager.class)) {
+            travel.when(() -> BotTravelManager.tickTravel(any(), any(), anyInt(), anyInt(), anyBoolean(), anyBoolean()))
+                    .thenReturn(true);
+            gacha.when(() -> BotGachaponManager.tickErrand(any(), any(), anyBoolean())).thenReturn(true);
+
+            // Control: with no operator command the armed gachapon detour owns the tick.
+            assertTrue(BotAutopilotManager.tick(f.entry(), f.bot(), true));
+            gacha.verify(() -> BotGachaponManager.tickErrand(f.entry(), f.bot(), true));
+
+            // Under an operator MOVE the detour is skipped and the bot just travels to the pinned map.
+            f.entry().operatorCmd = BotEntry.OperatorCmd.MOVE;
+            assertTrue(BotAutopilotManager.tick(f.entry(), f.bot(), true));
+            travel.verify(() -> BotTravelManager.tickTravel(any(), any(), anyInt(), anyInt(), anyBoolean(), anyBoolean()));
+            gacha.verifyNoMoreInteractions(); // no second tickErrand call while the command pins the destination
+        }
+    }
+
+    @Test
     void shouldAnnounceArrivalOnceBeforeGrindingOnSite() {
         Fixture f = fixture(TOWN);
 
