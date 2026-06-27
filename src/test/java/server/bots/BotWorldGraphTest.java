@@ -178,13 +178,26 @@ class BotWorldGraphTest {
         assertNotNull(florina);
         assertEquals(1002002, florina.npcId());
         assertEquals(1500, florina.fare());
-        // Spinel world tour: Victoria towns -> Mushroom Shrine, Shrine -> Lith fallback, Boat Quay -> Malaysia.
+        // Spinel world tour: Victoria towns + Amoria -> Mushroom Shrine (3000); Boat Quay -> Malaysia.
         BotWorldGraph.TaxiEdge shrine = BotWorldGraph.findTaxiEdge(100000000, 800000000);
         assertNotNull(shrine);
         assertEquals(9000020, shrine.npcId());
         assertEquals(3000, shrine.fare());
-        assertEquals(104000000, BotWorldGraph.findTaxiEdge(800000000, 104000000).toMapId());
         assertEquals(550000000, BotWorldGraph.findTaxiEdge(541000000, 550000000).toMapId());
+        // The shrine return has no static destination: findTaxiEdge synthesizes a free Spinel ride to
+        // the requested origin (the saved WORLDTOUR), so taxiRide can drive it back to where it boarded.
+        BotWorldGraph.TaxiEdge shrineBack = BotWorldGraph.findTaxiEdge(800000000, 100000000);
+        assertNotNull(shrineBack);
+        assertEquals(9000020, shrineBack.npcId());
+        assertEquals(0, shrineBack.fare());
+        assertEquals(100000000, shrineBack.toMapId());
+        // Thomas Swift 9201022: free cab both ways Henesys <-> Amoria; Amoria also boards Spinel.
+        assertEquals(680000000, BotWorldGraph.findTaxiEdge(100000000, 680000000).toMapId());
+        BotWorldGraph.TaxiEdge amoriaCab = BotWorldGraph.findTaxiEdge(680000000, 100000000);
+        assertNotNull(amoriaCab);
+        assertEquals(9201022, amoriaCab.npcId());
+        assertEquals(0, amoriaCab.fare());
+        assertEquals(800000000, BotWorldGraph.findTaxiEdge(680000000, 800000000).toMapId());
         // Audrey: Singapore CBD -> Malaysia Metropolis -> Kampung, plus the return leg.
         BotWorldGraph.TaxiEdge singaporeToMalaysia = BotWorldGraph.findTaxiEdge(540000000, 550000000);
         assertNotNull(singaporeToMalaysia);
@@ -192,6 +205,27 @@ class BotWorldGraphTest {
         assertEquals(42000, singaporeToMalaysia.fare());
         assertEquals(551000000, BotWorldGraph.findTaxiEdge(550000000, 551000000).toMapId());
         assertEquals(550000000, BotWorldGraph.findTaxiEdge(551000000, 550000000).toMapId());
+    }
+
+    /** The Mushroom Shrine return is the saved WORLDTOUR origin, injected per-bot — never a static free
+     *  edge to Lith Harbor, so the shrine can't be abused as a flat-fee shortcut off a far continent. */
+    @Test
+    void mushroomShrineReturnIsStatefulNotALithShortcut() {
+        // Isolated nodes (no portals): the only links between them are the taxi table.
+        BotWorldGraph.Index graph = BotWorldGraph.indexOf(Map.of(
+                240000000, new int[0], 800000000, new int[0], 104000000, new int[0], 100000000, new int[0]));
+
+        // A bot NOT standing at the shrine has no saved origin, so the shrine is a dead end: Leafre can
+        // reach it (3000) but CANNOT continue through it to Lith Harbor — the old free shortcut is gone.
+        BotWorldGraph.RouteOptions noTour = new BotWorldGraph.RouteOptions(false, 3000, false);
+        assertEquals(List.of(800000000), BotWorldGraph.route(graph, 240000000, 800000000, 4, noTour));
+        assertNull(BotWorldGraph.route(graph, 240000000, 104000000, 4, noTour));
+
+        // A bot AT the shrine returns to its saved WORLDTOUR origin (set when it boarded) and only there.
+        BotWorldGraph.RouteOptions savedHenesys =
+                new BotWorldGraph.RouteOptions(false, 0, false, false, Integer.MAX_VALUE, 100000000);
+        assertEquals(List.of(100000000), BotWorldGraph.route(graph, 800000000, 100000000, 4, savedHenesys));
+        assertNull(BotWorldGraph.route(graph, 800000000, 104000000, 4, savedHenesys));
     }
 
     @Test

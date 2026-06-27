@@ -63,12 +63,23 @@ final class BotWorldGraph {
     private static final int NO_TARGET_MAPID = 999999999; // tm of spawn points / doors
     // A return scroll is only worth an edge when walking to the town would take this many hops.
     static final int RETURN_SCROLL_MIN_HOPS = 3;
+    // Spinel's world tour parks the bot here; its only ride back is to the saved WORLDTOUR origin
+    // (set when the bot boarded), resolved per-bot so the shrine is never a static cross-continent
+    // shortcut to Lith Harbor. See expand()/findTaxiEdge() and BotTravelManager.taxiRide.
+    static final int MUSHROOM_SHRINE = 800000000;
 
-    /** Per-query toggles for the consumable edges; pure portal walking ignores them all. */
-    record RouteOptions(boolean withReturnScroll, int meso, boolean withFerry, boolean isBeginner, int riderLevel) {
+    /** Per-query toggles for the consumable edges; pure portal walking ignores them all.
+     *  {@code worldTourReturn} is the bot's saved WORLDTOUR origin (or -1) — the only exit Spinel
+     *  offers from {@link #MUSHROOM_SHRINE}, so it's empty for any bot not standing there. */
+    record RouteOptions(boolean withReturnScroll, int meso, boolean withFerry, boolean isBeginner,
+                        int riderLevel, int worldTourReturn) {
+        /** Travel options for a specific rider, without a saved world-tour return. */
+        RouteOptions(boolean withReturnScroll, int meso, boolean withFerry, boolean isBeginner, int riderLevel) {
+            this(withReturnScroll, meso, withFerry, isBeginner, riderLevel, -1);
+        }
         /** Non-beginner options (the common case); unrestricted by level (abstract reachability probes). */
         RouteOptions(boolean withReturnScroll, int meso, boolean withFerry) {
-            this(withReturnScroll, meso, withFerry, false, Integer.MAX_VALUE);
+            this(withReturnScroll, meso, withFerry, false, Integer.MAX_VALUE, -1);
         }
         static final RouteOptions PORTALS_ONLY = new RouteOptions(false, 0, false);
     }
@@ -173,10 +184,15 @@ final class BotWorldGraph {
             // each way, no gate. No portal connects them, so model both legs as a taxi ride.
             new TaxiEdge(600000000, 9201056, 682000000, 15000),
             new TaxiEdge(682000000, 9201056, 600000000, 15000),
-            // Spinel / Maple Travel Agency: world-tour NPC 9000020. Most maps where Spinel stands use
+            // Thomas Swift 9201022: free cab Henesys <-> Amoria (9201022.js: warp 680000000 / 100000000,
+            // no fare). Amoria is its own island reachable ONLY by this cab, so model both legs as a ride.
+            new TaxiEdge(100000000, 9201022, 680000000, 0),
+            new TaxiEdge(680000000, 9201022, 100000000, 0),
+            // Spinel / Maple Travel Agency: world-tour NPC 9000020. Maps where Spinel stands use
             // travelType 0 -> Mushroom Shrine for 3000 mesos; Boat Quay uses travelType 1 -> Malaysia
-            // for 10000. Returning from Mushroom Shrine normally uses saved WORLDTOUR; this bot taxi
-            // edge has no saved-location state, so use the script's no-saved fallback (Lith Harbor).
+            // for 10000. The return from Mushroom Shrine is NOT a static edge: Spinel sends the bot back
+            // to its saved WORLDTOUR origin, injected per-bot in expand() (see MUSHROOM_SHRINE) so the
+            // shrine can't be abused as a flat-fee shortcut to Lith Harbor from any continent.
             new TaxiEdge(100000000, 9000020, 800000000, 3000),
             new TaxiEdge(101000000, 9000020, 800000000, 3000),
             new TaxiEdge(102000000, 9000020, 800000000, 3000),
@@ -187,7 +203,7 @@ final class BotWorldGraph {
             new TaxiEdge(240000000, 9000020, 800000000, 3000),
             new TaxiEdge(250000000, 9000020, 800000000, 3000),
             new TaxiEdge(260000000, 9000020, 800000000, 3000),
-            new TaxiEdge(800000000, 9000020, 104000000, 0),
+            new TaxiEdge(680000000, 9000020, 800000000, 3000),
             new TaxiEdge(541000000, 9000020, 550000000, 10000),
             // Audrey 9201135 connects Singapore CBD, Malaysia Metropolis and Kampung Village.
             // Metropolis -> Boat Quay is the script's no-saved-location return fallback.
@@ -199,10 +215,10 @@ final class BotWorldGraph {
     // NPCs whose "taxi" edge is a cross-continent scripted-warp ride with NO walking alternative
     // (the block above): Shanks (Maple Island exit), Dolphin (Aqua Road), Pason/Pison (Florina Beach),
     // Crane (Mu Lung <-> Herb Town), Jeff (Ice Valley II -> Sharp Cliff I), Spinel world tour, Audrey
-    // Malaysia/Singapore travel. These stay available even to a poor bot; the Victoria cab edges
-    // (optional shortcuts between towns that ARE walkable) are gated by the taxi meso tier in expand().
+    // Malaysia/Singapore travel, Thomas Swift (Henesys <-> Amoria). These stay available even to a poor
+    // bot; the Victoria cab edges (shortcuts between towns that ARE walkable) are gated by the taxi tier.
     private static final Set<Integer> CONTINENT_RIDE_NPCS = Set.of(
-            22000, 2060009, 1002002, 1081001, 2090005, 2030000, 9201056, 9000020, 9201135);
+            22000, 2060009, 1002002, 1081001, 2090005, 2030000, 9201056, 9000020, 9201135, 9201022);
 
     private static final Map<Integer, List<TaxiEdge>> TAXI_BY_MAP = buildTaxiByMap();
 
@@ -247,6 +263,12 @@ final class BotWorldGraph {
             if (fullPrice == null) {
                 fullPrice = edge;
             }
+        }
+        // The Spinel return out of the shrine has no static edge (its destination is the bot's saved
+        // WORLDTOUR origin, resolved at ride time in taxiRide); synthesize it so the executor can drive
+        // the walk-to-NPC-and-pay flow. Free, ungated — matches the script.
+        if (fullPrice == null && fromMapId == MUSHROOM_SHRINE && toMapId != MUSHROOM_SHRINE) {
+            return new TaxiEdge(MUSHROOM_SHRINE, 9000020, toMapId, 0);
         }
         return fullPrice;
     }
@@ -435,6 +457,12 @@ final class BotWorldGraph {
             if (gateOk && options.meso() >= taxi.fare()) {
                 out.add(taxi.toMapId());
             }
+        }
+        // Spinel's only ride out of the shrine is back to the saved WORLDTOUR origin (free). It exists
+        // only for the bot standing here (worldTourReturn != -1), so a remote bot can't route THROUGH
+        // the shrine to reach Lith Harbor cheaply — the exploit the static return edge used to allow.
+        if (mapId == MUSHROOM_SHRINE && options.worldTourReturn() != -1) {
+            out.add(options.worldTourReturn());
         }
         if (options.withFerry()) {
             for (BotFerryManager.FerryRoute ferry : BotFerryManager.routesBoardingAt(mapId)) {

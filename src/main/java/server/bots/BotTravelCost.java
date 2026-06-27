@@ -83,6 +83,12 @@ final class BotTravelCost {
                     offer(frontier, seconds, taxi.toMapId(), cost + TAXI_SECONDS, hops);
                 }
             }
+            // Spinel's free ride back out of the shrine to the saved WORLDTOUR origin (mirrors
+            // BotWorldGraph.expand): present only for the bot standing here, so it's costed as the
+            // first hop back to where it boarded — never a through shortcut to Lith Harbor.
+            if (mapId == BotWorldGraph.MUSHROOM_SHRINE && options.worldTourReturn() != -1) {
+                offer(frontier, seconds, options.worldTourReturn(), cost + TAXI_SECONDS, hops);
+            }
             if (options.withFerry()) {
                 for (BotFerryManager.FerryRoute ferry : BotFerryManager.routesBoardingAt(mapId)) {
                     if (options.meso() >= ferry.ticketCost()) {

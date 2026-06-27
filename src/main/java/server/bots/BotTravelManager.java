@@ -1,6 +1,7 @@
 package server.bots;
 
 import client.Character;
+import constants.id.MapId;
 import server.maps.Foothold;
 import server.maps.MapManager;
 import server.maps.MapleMap;
@@ -149,11 +150,24 @@ final class BotTravelManager {
         if (bot.getMeso() < edge.fare()) {
             return false;
         }
-        MapleMap dest = bot.getClient().getChannelServer().getMapFactory().getMap(edge.toMapId());
+        int destMapId = edge.toMapId();
+        boolean spinel = edge.npcId() == 9000020;
+        boolean shrineReturn = spinel && bot.getMapId() == BotWorldGraph.MUSHROOM_SHRINE;
+        if (shrineReturn) {
+            // Spinel sends the bot back to where it boarded (saved WORLDTOUR), consuming it — exactly
+            // what the script does. No saved origin -> the script's Lith Harbor fallback. Reusing the
+            // player's saved-location store keeps this stateful across restart.
+            int origin = bot.getSavedLocation("WORLDTOUR");
+            destMapId = origin != -1 ? origin : MapId.LITH_HARBOUR;
+        }
+        MapleMap dest = bot.getClient().getChannelServer().getMapFactory().getMap(destMapId);
         if (dest == null) {
             return false;
         }
         bot.gainMeso(-edge.fare(), false);
+        if (spinel && destMapId == BotWorldGraph.MUSHROOM_SHRINE) {
+            bot.saveLocation("WORLDTOUR"); // inbound ride: remember the origin for the return leg
+        }
         bot.changeMap(dest, dest.getPortal(0)); // cab scripts do cm.warp(dest, 0)
         return true;
     };
@@ -303,7 +317,7 @@ final class BotTravelManager {
             if (portal == null) {
                 BotWorldGraph.RouteOptions options = new BotWorldGraph.RouteOptions(
                         returnScrollCount.applyAsInt(bot) > 0, bot.getMeso(), allowFerry, bot.getJob().getId() == 0,
-                        bot.getLevel());
+                        bot.getLevel(), BotAutopilotManager.worldTourReturn(bot));
                 java.util.function.IntPredicate blocked = BotAutopilotManager.routeBlockFor(bot);
                 List<Integer> route = null;
                 // Partition routing is needed when the current platform is constrained, and also when a
@@ -590,7 +604,7 @@ final class BotTravelManager {
         if (portal == null) {
             BotWorldGraph.RouteOptions options = new BotWorldGraph.RouteOptions(
                     returnScrollCount.applyAsInt(bot) > 0, bot.getMeso(), false, bot.getJob().getId() == 0,
-                    bot.getLevel());
+                    bot.getLevel(), BotAutopilotManager.worldTourReturn(bot));
             List<Integer> route = routeLookup.route(bot.getMapId(), targetMapId, maxHops, options,
                     BotAutopilotManager.routeBlockFor(bot)); // SSOT danger gate: no <15 route through Sleepywood
             if (route == null || route.isEmpty()) {

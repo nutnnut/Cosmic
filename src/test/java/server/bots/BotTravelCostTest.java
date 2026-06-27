@@ -63,6 +63,28 @@ class BotTravelCostTest {
     }
 
     @Test
+    void shrineReturnCostsTheSavedOriginNotLith() {
+        // Mushroom Shrine, no portals and no static exit edge: the only way out is Spinel's return to
+        // the saved WORLDTOUR origin, injected (like expand()) only for the bot standing here.
+        BotWorldGraph.Index graph = BotWorldGraph.indexOf(Map.of(
+                800000000, new int[0], 103000000, new int[0], 104000000, new int[0]));
+
+        // Boarded from Kerning: the return is costed to Kerning, and Lith Harbor stays unreachable —
+        // pathfinding expects to be sent back where it came from, not handed a free shortcut to Lith.
+        BotWorldGraph.RouteOptions savedKerning =
+                new BotWorldGraph.RouteOptions(false, 0, false, false, Integer.MAX_VALUE, 103000000);
+        Map<Integer, Double> flood = BotTravelCost.floodSeconds(graph, 800000000, 8, savedKerning, RATE_100);
+        assertEquals(BotTravelCost.TAXI_SECONDS, flood.get(103000000), 1e-9);
+        assertFalse(flood.containsKey(104000000));
+
+        // No saved origin (-1): the shrine is a dead end in the cost model, never a free hop to Lith.
+        Map<Integer, Double> stranded = BotTravelCost.floodSeconds(graph, 800000000, 8,
+                new BotWorldGraph.RouteOptions(false, 0, false), RATE_100);
+        assertFalse(stranded.containsKey(103000000));
+        assertFalse(stranded.containsKey(104000000));
+    }
+
+    @Test
     void shouldPriceFerryThroughRuntimeTravelRateAtQueryTime() {
         // Half the 5-min departure window + the 10-min ride, both travelrate-scaled.
         assertEquals(750.0, BotTravelCost.ferrySeconds(RATE_100), 1e-9);

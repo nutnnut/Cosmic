@@ -226,11 +226,20 @@ final class BotAutopilotManager {
                 || !entry.owner.isLoggedinWorld();
     }
 
+    /** The bot's Spinel return target (saved WORLDTOUR origin) ONLY while it is standing in the
+     *  Mushroom Shrine, else -1. Tying it to actual presence means the world-tour return is just the
+     *  first hop back out — a stale saved location (left the shrine by death/relog) can never reopen
+     *  the shrine as a through-shortcut to Lith Harbor. Mirrored by BotWorldGraph.expand/findTaxiEdge
+     *  and BotTravelCost.floodSeconds. */
+    static int worldTourReturn(Character bot) {
+        return bot.getMapId() == BotWorldGraph.MUSHROOM_SHRINE ? bot.peekSavedLocation("WORLDTOUR") : -1;
+    }
+
     /** What the bot can spend on travel right now: scrolls if carried, taxis per meso,
      *  ferries per the caller's owner-permission gate ({@link #ferryAllowed}). */
     static BotWorldGraph.RouteOptions travelOptions(Character bot, boolean withFerry) {
         return new BotWorldGraph.RouteOptions(BotShopManager.countReturnScrolls(bot) > 0, bot.getMeso(), withFerry,
-                bot.getJob().getId() == 0, bot.getLevel());
+                bot.getJob().getId() == 0, bot.getLevel(), worldTourReturn(bot));
     }
 
     /**
