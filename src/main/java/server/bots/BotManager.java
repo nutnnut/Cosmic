@@ -3703,9 +3703,8 @@ public class BotManager {
             target = null;
         }
         long now = System.currentTimeMillis();
-        BotCombatManager.AttackPlan attackPlan = target == null
-                ? null
-                : BotCombatManager.planAttack(entry, bot, target);
+        BotCombatManager.AttackPlan attackPlan =
+                BotCombatManager.planAttackCadenced(entry, bot, target, runAiTick);
         // Validate cached loot target
         if (entry.grindLootTarget != null) {
             MapItem loot = entry.grindLootTarget;
@@ -3800,7 +3799,7 @@ public class BotManager {
             attackPlan = null;
         }
         if (attackPlan == null) {
-            attackPlan = BotCombatManager.planAttack(entry, bot, target);
+            attackPlan = BotCombatManager.planAttackCadenced(entry, bot, target, runAiTick);
         }
         WeaponType grindWeaponType = BotAttackExecutionProvider.getEquippedWeaponType(bot);
         // Proactive self-preservation: while HP is still healthy, disengage a touch-dangerous mob

@@ -167,6 +167,13 @@ class BotCombatManager {
         public int   RANGED_RETREAT_DISTANCE_X = 100;
         public int   BREAKOUT_MAX_MS = 3000; // cap on a committed surround-breakout run before re-deciding
 
+        // Attack planning is rebuilt on every physics tick (~20Hz), but the bot only attacks ~1-2/s and
+        // its decisions (which skill, reach, spacing) barely move in 50ms. Default: replan only on the
+        // heavier AI tick (~10Hz, AI_TICK_MS), reusing the last plan on the interleaved physics tick.
+        // Halves combat-plan CPU (was ~21% of the bot tick). Set true to restore per-physics-tick planning
+        // if a combat regression appears (the cadence reuse trades up to one physics tick of plan staleness).
+        public boolean COMBAT_PLAN_EVERY_TICK = false;
+
         // Ammo
         public int   AMMO_LOW_WARN = 500;
 
@@ -1051,6 +1058,30 @@ class BotCombatManager {
         } finally {
             BotPerformanceMonitor.record("combat-plan", System.nanoTime() - startedAt);
         }
+    }
+
+    // Cadenced wrapper over planAttack: replan on AI ticks (or whenever the target changed / no cached
+    // plan exists), and on the interleaved physics tick reuse the last plan. The plan's hitbox is anchored
+    // at plan-time positions, but reach/spacing tolerate one physics tick (~50ms, a few px of drift) of
+    // staleness — far inside the spacing hysteresis band — and the attack itself fires at most one tick
+    // late. COMBAT_PLAN_EVERY_TICK=true disables the reuse and restores per-tick planning.
+    static AttackPlan planAttackCadenced(BotEntry entry, Character bot, Monster target, boolean runAiTick) {
+        if (target == null) {
+            entry.cadencedPlan = null;
+            entry.cadencedPlanTarget = null;
+            return null;
+        }
+        boolean reuse = !cfg.COMBAT_PLAN_EVERY_TICK
+                && !runAiTick
+                && entry.cadencedPlan != null
+                && entry.cadencedPlanTarget == target;
+        if (reuse) {
+            return entry.cadencedPlan;
+        }
+        AttackPlan plan = planAttack(entry, bot, target);
+        entry.cadencedPlan = plan;
+        entry.cadencedPlanTarget = target;
+        return plan;
     }
 
     /**

@@ -134,6 +134,11 @@ public class BotEntry {
     long grindTargetCommitUntilMs = 0L;
     int attackCooldownMs = 0;
     int moveWindowMs = 0;    // movement-only gap after attack animation; attacks blocked, walking allowed
+    // AI-cadence attack planning (see Config.COMBAT_PLAN_EVERY_TICK): the plan built on the last AI tick,
+    // reused on the interleaved physics tick instead of rebuilding it. Keyed by target identity so a
+    // target switch always forces a fresh plan. Cleared when there is no target.
+    Monster cadencedPlanTarget = null;
+    BotCombatManager.AttackPlan cadencedPlan = null;
 
     // Skill cache
     int cachedSkillJob = -1;
