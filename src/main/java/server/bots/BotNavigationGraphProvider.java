@@ -723,7 +723,7 @@ final class BotNavigationGraphProvider {
             GraphBuildReport report = buildProfile.finish();
             LAST_BUILD_REPORTS.put(GraphCacheKey.from(map.getId(), movementProfile), report);
             log.debug("Built bot nav graph map {} speed={} jump={} in {} ms (regions={}, edges={}, drop={} ms, jump={} ms, jumpSamples={}, cacheHits={})",
-                    map.getId(),
+                    map.getMapName() + " (" + map.getId() + ")",
                     movementProfile.totalSpeedStat(),
                     movementProfile.totalJumpStat(),
                     String.format("%.2f", report.totalBuildNs / 1_000_000.0),
