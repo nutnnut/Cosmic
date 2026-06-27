@@ -20,6 +20,7 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.mockStatic;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -55,6 +56,7 @@ class BotTravelManagerTest {
         when(bot.getPosition()).thenReturn(botPos);
         when(bot.getJob()).thenReturn(Job.BEGINNER);
         when(anchor.getMapId()).thenReturn(anchorMapId);
+        when(map.getId()).thenReturn(botMapId);
         when(map.getPortals()).thenReturn(portals);
         for (Portal portal : portals) {
             when(map.getPortal(portal.getId())).thenReturn(portal);
@@ -175,6 +177,19 @@ class BotTravelManagerTest {
         }
     }
 
+    private static final class PartitionRouteStub implements AutoCloseable {
+        private final BotTravelManager.PartitionRouteLookup previous = BotTravelManager.partitionRouteLookup;
+
+        PartitionRouteStub(BotTravelManager.PartitionRouteLookup stub) {
+            BotTravelManager.partitionRouteLookup = stub;
+        }
+
+        @Override
+        public void close() {
+            BotTravelManager.partitionRouteLookup = previous;
+        }
+    }
+
     @Test
     void shouldTryPositiveTargetScriptedPortalAndFailFastWhenScriptDoesNotMove() {
         Portal portal = portal(1, HENESYS, Portal.MAP_PORTAL, "kpq0", Portal.OPEN, new Point(0, 0));
@@ -228,6 +243,41 @@ class BotTravelManagerTest {
             assertTrue(BotTravelManager.tickFollowTravel(f.entry(), f.bot(), f.anchor(), true));
             assertEquals(HENESYS, f.entry().followTravelNextHopMapId);
             assertEquals(new Point(-200, 0), movement.steps.get(movement.steps.size() - 1));
+        }
+    }
+
+    @Test
+    void shouldUsePartitionRouteEvenWhenCurrentMapCanReachAllExits() {
+        int startMap = 1;
+        int badSplitArrivalMap = 2;
+        int goodDetourMap = 3;
+        int targetMap = 4;
+        Portal badMapLevelHop = portal(1, badSplitArrivalMap, Portal.MAP_PORTAL, null, Portal.OPEN, new Point(100, 0));
+        Portal partitionHop = portal(2, goodDetourMap, Portal.MAP_PORTAL, null, Portal.OPEN, new Point(300, 0));
+        Fixture f = fixture(startMap, targetMap, new Point(0, 0), List.of(badMapLevelHop, partitionHop));
+
+        BotNavigationGraph graph = mock(BotNavigationGraph.class);
+        when(graph.findRegionId(f.map(), new Point(0, 0))).thenReturn(10);
+        when(graph.findRegionId(f.map(), new Point(100, 0))).thenReturn(11);
+        when(graph.findRegionId(f.map(), new Point(300, 0))).thenReturn(12);
+        when(graph.canReach(10, 11, 0)).thenReturn(true);
+        when(graph.canReach(10, 12, 0)).thenReturn(true);
+
+        try (var graphs = mockStatic(BotNavigationGraphProvider.class);
+             MovementRecorder movement = new MovementRecorder();
+             RouteStub route = new RouteStub((from, to, maxHops, options, blocked) ->
+                     List.of(badSplitArrivalMap, targetMap));
+             PartitionRouteStub partition = new PartitionRouteStub((provider, from, exits, to, maxHops, blocked) ->
+                     List.of(new BotWorldPartitionRouter.Node(goodDetourMap, "arrive_good"),
+                             new BotWorldPartitionRouter.Node(targetMap, "target")))) {
+            graphs.when(() -> BotNavigationGraphProvider.peekGraph(any(MapleMap.class), any(BotMovementProfile.class)))
+                    .thenReturn(graph);
+
+            assertTrue(BotTravelManager.tickTravel(f.entry(), f.bot(), targetMap, 8, true, false));
+
+            assertEquals(targetMap, f.entry().followTravelTargetMapId);
+            assertEquals(goodDetourMap, f.entry().followTravelNextHopMapId);
+            assertEquals(List.of(new Point(300, 0)), movement.steps);
         }
     }
 

@@ -97,6 +97,17 @@ final class BotTravelManager {
     }
 
     @FunctionalInterface
+    interface PartitionRouteLookup {
+        List<BotWorldPartitionRouter.Node> route(
+                java.util.function.IntFunction<BotMapPartition> partitionProvider,
+                int fromMapId,
+                List<BotMapPartition.PortalRef> startExits,
+                int toMapId,
+                int maxHops,
+                java.util.function.IntPredicate blocked);
+    }
+
+    @FunctionalInterface
     interface ScrollTargetLookup {
         int scrollTarget(int mapId);
     }
@@ -126,6 +137,7 @@ final class BotTravelManager {
     static EnRouteAttack enRouteAttack =
             (entry, bot) -> BotManager.getInstance().tryEnRouteOpportunityAttack(entry, bot);
     static RouteLookup routeLookup = BotWorldGraph::route;
+    static PartitionRouteLookup partitionRouteLookup = BotWorldPartitionRouter::route;
     static ScrollTargetLookup scrollTargetLookup = mapId -> BotWorldGraph.get().scrollTarget(mapId);
     static java.util.function.ToIntFunction<Character> returnScrollCount = BotShopManager::countReturnScrolls;
     static ReturnScrollUse returnScrollUse = bot -> BotManager.getInstance().tryUseReturnScroll(bot);
@@ -274,19 +286,19 @@ final class BotTravelManager {
                         bot.getLevel());
                 java.util.function.IntPredicate blocked = BotAutopilotManager.routeBlockFor(bot);
                 List<Integer> route = null;
-                // Only when the bot's platform genuinely can't reach every exit is partition routing needed;
-                // otherwise the plain world-graph route is identical (and cheaper). Partition routing honors
-                // the SAME danger gate as the map-level route — no routing a fragile bot through a trap map.
+                // Partition routing is needed when the current platform is constrained, and also when a
+                // fully-connected current map would enter a downstream split map on the wrong arrival
+                // platform. It honors the SAME danger gate as the map-level route.
                 if (canCheck) {
                     List<BotMapPartition.PortalRef> reachableExits = reachableCrossMapExits(map, navGraph, botRegion);
-                    if (reachableExits.size() < eligibleCrossMapExitCount(map)) {
-                        MapManager mf = bot.getClient().getChannelServer().getMapFactory();
-                        List<BotWorldPartitionRouter.Node> proute = BotWorldPartitionRouter.route(
-                                id -> BotMapPartitionProvider.forMapId(mf, id), bot.getMapId(), reachableExits,
-                                targetMapId, maxHops, blocked);
-                        if (proute != null && !proute.isEmpty()) {
-                            route = proute.stream().map(BotWorldPartitionRouter.Node::mapId).collect(Collectors.toList());
-                        }
+                    List<BotWorldPartitionRouter.Node> proute = partitionRouteLookup.route(
+                            id -> {
+                                MapManager mf = bot.getClient().getChannelServer().getMapFactory();
+                                return BotMapPartitionProvider.forMapId(mf, id);
+                            }, bot.getMapId(), reachableExits,
+                            targetMapId, maxHops, blocked);
+                    if (proute != null && !proute.isEmpty()) {
+                        route = proute.stream().map(BotWorldPartitionRouter.Node::mapId).collect(Collectors.toList());
                     }
                 }
                 if (route == null) {

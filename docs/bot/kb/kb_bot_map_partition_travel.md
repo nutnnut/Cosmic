@@ -52,10 +52,12 @@ the heavy lazy nav layer).
 ## Live wiring (`BotTravelManager.tickTravel`, plan branch)
 `navGraph = peekGraph(base)`, `botRegion = findRegionId`. `canCheck = navGraph != null && botRegion >= 0`.
 - Direct exit: reject when `isTravelCrossMapPortal` AND `!canReach(botRegion, portalRegion, 0)`.
-- Partition routing runs ONLY when the bot's platform is constrained (`reachableCrossMapExits.size() <
-  eligibleCrossMapExitCount` — i.e. some exit is unreachable); otherwise the plain map-level route is
-  identical and cheaper. **Partition routing honors the SAME danger gate** (`routeBlockFor(bot)` passed into
-  the router's `blocked` predicate) as the map-level route — never walks a fragile bot through a trap map.
+- Partition routing runs for multi-hop planning whenever the current map graph is known, even if the bot's
+  current platform can reach every local exit. A fully connected current map can still choose a bad next hop
+  into a downstream split map's lower/one-way arrival platform (live repro: Admin looped
+  `610010103 <-> 610010005`, entering Forgotten Path via `U6_3` instead of routing to the platform that can
+  reach `U6_2 -> 610020000`). **Partition routing honors the SAME danger gate** (`routeBlockFor(bot)` passed
+  into the router's `blocked` predicate) as the map-level route — never walks a fragile bot through a trap map.
   Falls back to `routeLookup`/`BotWorldGraph.route` (allowlisted scripted entrances, no graph, data gaps).
 - Next-hop portal: **when `canCheck`, only ever a `canReach`-verified portal** — `findReachableAdjacentPortal`,
   else `reachableScriptedEntrance` (allowlisted entrance, also `canReach`-checked), else `tryConsumableHop`.
