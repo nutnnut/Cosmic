@@ -46,6 +46,22 @@ final class BotNavigationGraphProvider {
     //     band edge) and no-input flight drags 1 x fs (100 x fs at terminal fall). Committed
     //     arcs still fly the launch key held, so constant-stepX arc sims stay exact.
     private static final int GRAPH_VERSION = 65; // 51: kinetic slippery model + snowshoes; 52: brake-to-stop landings; 53: glide-unless-edge stop policy (slipperyStopDir); 56: uncap straight-drop launch windows (full droppable span, no +/-20 fragmentation); 57: remove the (empirically wrong) 300px down-jump drop cap - down-jumps fall until landing; 58: rope-grab reach counts descent below the ledge (mid-rope jump-grabs from adjacent platforms); 59: fall-sim caps to map height not 1500ms - long single-fall descents (tall shafts: Ellinia tree, Perion) now generate DROP/JUMP/ROPE edges; 60: teleport (mage) + flash-jump (thief) skill edges; 61: teleport snap = physics SSOT intent (BotPhysicsEngine.teleportLanding — horizontal same-level priority, blocked-if-none); 62: rope-exit/transfer CLIMB edges carry a Y launch window [launchMinY,launchMaxY] (collapses ~anchorYs×3 near-duplicate same-region jump-offs into one windowed edge, mirroring ground-jump X windows); 63: serialized source-bucketed routes from every region to every portal region; 64: flash-jump edges carry an X launch window (same expand/boundary treatment as ground JUMP) — collapses ~per-anchor FJ point-edges into one windowed edge, mirroring JUMP/DROP/rope windows; 65: teleport edges carry an X launch window too (same treatment; exec computes the blink dest live from the bot's position via the physics SSOT) + down-teleport snaps to FURTHEST platform within range + horizontal y-snap band 70→75
+    /** The nav-graph cache version. The partition cache derives from these graphs, so it keys its own
+     *  on-disk cache by this number — a graph-version bump invalidates persisted partitions too. */
+    static int graphVersion() {
+        return GRAPH_VERSION;
+    }
+
+    // Fired (with the map id) whenever a graph is rebuilt, so higher layers can drop data derived from the
+    // old graph (e.g. BotMapPartitionProvider's cache). A listener slot — NOT a direct call — so this
+    // provider stays free of any dependency on those layers (the dependency only flows the other way).
+    private static volatile java.util.function.IntConsumer graphRebuildListener = id -> {};
+
+    /** Register the hook fired on every {@link #rebuildGraph}. */
+    static void setGraphRebuildListener(java.util.function.IntConsumer listener) {
+        graphRebuildListener = listener;
+    }
+
     private static final int ENDPOINT_ANCHOR_SPACING_PX = 10;
     private static final int SAME_SOLID_NEST_GAP_PX = 8;
     private static final int ROPE_ANCHOR_INTERVAL_PX = 30;
@@ -464,6 +480,7 @@ final class BotNavigationGraphProvider {
         GraphCacheKey key = GraphCacheKey.from(map.getId(), movementProfile);
         BotNavigationGraph rebuilt = buildGraph(map, movementProfile);
         GRAPHS.put(key, rebuilt);
+        graphRebuildListener.accept(map.getId()); // drop partitions derived from the superseded graph
         CompletableFuture<BotNavigationGraph> pending = PENDING_GRAPHS.remove(key);
         if (pending != null) {
             pending.complete(rebuilt);

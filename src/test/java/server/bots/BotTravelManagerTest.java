@@ -132,19 +132,20 @@ class BotTravelManagerTest {
     }
 
     @Test
-    void shouldPickNearestOpenUnscriptedPortalToTargetMap() {
+    void shouldPickNearestOpenTravelPortalToTargetMap() {
         Portal near = portal(1, HENESYS, Portal.MAP_PORTAL, null, Portal.OPEN, new Point(100, 0));
         Portal far = portal(2, HENESYS, Portal.MAP_PORTAL, null, Portal.OPEN, new Point(900, 0));
         Portal scripted = portal(3, HENESYS, Portal.MAP_PORTAL, "enter_secret", Portal.OPEN, new Point(10, 0));
         Portal closed = portal(4, HENESYS, Portal.MAP_PORTAL, null, Portal.CLOSED, new Point(20, 0));
         Portal otherMap = portal(5, HUNTING_GROUND, Portal.MAP_PORTAL, null, Portal.OPEN, new Point(30, 0));
         Portal door = portal(6, HENESYS, Portal.DOOR_PORTAL, null, Portal.OPEN, new Point(40, 0));
+        Portal scriptOnly = portal(7, 999999999, Portal.MAP_PORTAL, "enter_secret", Portal.OPEN, new Point(5, 0));
 
         Portal picked = BotTravelManager.findAdjacentPortal(
                 List.of(far, scripted, closed, otherMap, door, near), HENESYS, new Point(0, 0));
 
-        assertSame(near, picked);
-        assertNull(BotTravelManager.findAdjacentPortal(List.of(scripted, closed, otherMap, door),
+        assertSame(scripted, picked);
+        assertNull(BotTravelManager.findAdjacentPortal(List.of(scriptOnly, closed, otherMap, door),
                 HENESYS, new Point(0, 0)));
     }
 
@@ -172,6 +173,18 @@ class BotTravelManagerTest {
             assertTrue(BotTravelManager.tickFollowTravel(f.entry(), f.bot(), f.anchor(), true));
             assertEquals(1, movement.steps.size());
         }
+    }
+
+    @Test
+    void shouldTryPositiveTargetScriptedPortalAndFailFastWhenScriptDoesNotMove() {
+        Portal portal = portal(1, HENESYS, Portal.MAP_PORTAL, "kpq0", Portal.OPEN, new Point(0, 0));
+        Fixture f = fixture(HUNTING_GROUND, HENESYS, new Point(0, 0), List.of(portal));
+
+        assertFalse(BotTravelManager.tickFollowTravel(f.entry(), f.bot(), f.anchor(), true));
+
+        verify(portal).enterPortal(any());
+        assertEquals(0L, f.entry().followTravelEnteredAtMs);
+        assertEquals("script-no-land", f.entry().followTravelGiveUpReason);
     }
 
     @Test
@@ -220,9 +233,9 @@ class BotTravelManagerTest {
 
     @Test
     void shouldFallBackWhenRouteEdgeHasNoLiveUsablePortal() {
-        // The graph claims a hop into the hunting ground, but the only live portal there is scripted.
-        Portal scripted = portal(1, HUNTING_GROUND, Portal.MAP_PORTAL, "enter_gate", Portal.OPEN, new Point(50, 0));
-        Fixture f = fixture(999999, HENESYS, new Point(0, 0), List.of(scripted));
+        // The graph claims a hop into the hunting ground, but the only live portal there is closed.
+        Portal closed = portal(1, HUNTING_GROUND, Portal.MAP_PORTAL, null, Portal.CLOSED, new Point(50, 0));
+        Fixture f = fixture(999999, HENESYS, new Point(0, 0), List.of(closed));
 
         try (MovementRecorder movement = new MovementRecorder();
              ConsumableSeams seams = new ConsumableSeams();
@@ -424,7 +437,7 @@ class BotTravelManagerTest {
         List<Portal> portals = List.of(
                 portal(0, HENESYS, 0, "", false, new Point(0, 0)),                 // closed
                 portal(1, HENESYS, Portal.DOOR_PORTAL, "", true, new Point(10, 0)),// door
-                portal(2, HENESYS, 0, "MD00", true, new Point(20, 0)),             // scripted
+                portal(2, 999999999, 0, "MD00", true, new Point(20, 0)),           // script-only sentinel
                 portal(3, HUNTING_GROUND, 0, "", true, new Point(30, 0)),          // self-loop (current map)
                 good);                                                              // the only eligible portal
 
@@ -436,7 +449,7 @@ class BotTravelManagerTest {
     void pickRandomCrossMapPortalReturnsNullWhenNoneEligible() {
         List<Portal> portals = List.of(
                 portal(0, HUNTING_GROUND, 0, "", true, new Point(0, 0)),    // self-loop (current map)
-                portal(1, HENESYS, 0, "MD00", true, new Point(10, 0)));     // scripted
+                portal(1, 999999999, 0, "MD00", true, new Point(10, 0)));   // script-only sentinel
         assertNull(BotTravelManager.pickRandomCrossMapPortal(portals, HUNTING_GROUND, new java.util.Random(7)));
     }
 
@@ -498,9 +511,9 @@ class BotTravelManagerTest {
 
     @Test
     void nextHopPortalPositionReturnsNullWhenNextHopIsNotAWalkablePortal() {
-        // Route's next hop has no live walkable portal (only a scripted one) — nothing to stand at.
-        Portal scripted = portal(1, HUNTING_GROUND, Portal.MAP_PORTAL, "enter_gate", Portal.OPEN, new Point(50, 0));
-        Fixture f = fixture(999999, HENESYS, new Point(0, 0), List.of(scripted));
+        // Route's next hop has no live walkable portal (only a closed one) — nothing to stand at.
+        Portal closed = portal(1, HUNTING_GROUND, Portal.MAP_PORTAL, null, Portal.CLOSED, new Point(50, 0));
+        Fixture f = fixture(999999, HENESYS, new Point(0, 0), List.of(closed));
 
         try (ConsumableSeams seams = new ConsumableSeams();
              RouteStub route = new RouteStub((from, to, maxHops, options, blocked) -> List.of(HUNTING_GROUND, HENESYS))) {

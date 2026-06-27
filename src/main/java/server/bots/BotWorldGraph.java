@@ -57,7 +57,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 final class BotWorldGraph {
 
     private static final Logger log = LoggerFactory.getLogger(BotWorldGraph.class);
-    private static final int GRAPH_VERSION = 3;
+    private static final int GRAPH_VERSION = 4;
     private static final Path CACHE_FILE =
             Path.of("cache", "bot-world", "v" + GRAPH_VERSION, "portal-graph.tsv");
     private static final int NO_TARGET_MAPID = 999999999; // tm of spawn points / doors
@@ -619,10 +619,6 @@ final class BotWorldGraph {
                 continue;
             }
             if (DataTool.getInt("pt", portal, 0) == Portal.DOOR_PORTAL) {
-                continue;
-            }
-            String script = DataTool.getString("script", portal, "");
-            if (!script.isEmpty()) {
                 continue;
             }
             targets.add(targetMapId);

@@ -2,6 +2,7 @@ package server.bots;
 
 import client.Character;
 import server.maps.Foothold;
+import server.maps.MapManager;
 import server.maps.MapleMap;
 import server.maps.Portal;
 
@@ -10,6 +11,7 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.concurrent.ThreadLocalRandom;
+import java.util.stream.Collectors;
 
 /**
  * Follow-mode cross-map travel: when the owner is within a few portal hops, walk to the
@@ -253,19 +255,59 @@ final class BotTravelManager {
             // Direct hop when the owner's map is adjacent; otherwise take the first hop of the
             // shortest world-graph route. Each landing re-plans, so only the next hop matters.
             int nextHopMapId = targetMapId;
+            // Partition awareness (split maps): consult BotNavigationGraph.canReach (the SSOT for intra-map
+            // reachability) so we never commit to a cross-map portal the bot's platform can't walk to, and
+            // route AROUND when the only direct exit is stranded on another platform. When the graph isn't
+            // warm or the bot's region is unknown we can't decide reachability, so behave exactly as before.
+            BotNavigationGraph navGraph = BotNavigationGraphProvider.peekGraph(map, BotMovementProfile.base());
+            int botRegion = navGraph != null ? navGraph.findRegionId(map, bot.getPosition()) : -1;
+            boolean canCheck = navGraph != null && botRegion >= 0;
+
             portal = adjacentOrScriptedPortal(map, targetMapId, bot.getPosition());
+            if (portal != null && canCheck && BotMapPartition.isTravelCrossMapPortal(portal, map.getId())
+                    && !navGraph.canReach(botRegion, navGraph.findRegionId(map, portal.getPosition()), 0)) {
+                portal = null; // direct exit exists but this platform can't reach it — must route around
+            }
             if (portal == null) {
                 BotWorldGraph.RouteOptions options = new BotWorldGraph.RouteOptions(
                         returnScrollCount.applyAsInt(bot) > 0, bot.getMeso(), allowFerry, bot.getJob().getId() == 0,
                         bot.getLevel());
-                List<Integer> route = routeLookup.route(bot.getMapId(), targetMapId, maxHops, options,
-                        BotAutopilotManager.routeBlockFor(bot)); // SSOT danger gate: no <15 route through Sleepywood
+                java.util.function.IntPredicate blocked = BotAutopilotManager.routeBlockFor(bot);
+                List<Integer> route = null;
+                // Only when the bot's platform genuinely can't reach every exit is partition routing needed;
+                // otherwise the plain world-graph route is identical (and cheaper). Partition routing honors
+                // the SAME danger gate as the map-level route — no routing a fragile bot through a trap map.
+                if (canCheck) {
+                    List<BotMapPartition.PortalRef> reachableExits = reachableCrossMapExits(map, navGraph, botRegion);
+                    if (reachableExits.size() < eligibleCrossMapExitCount(map)) {
+                        MapManager mf = bot.getClient().getChannelServer().getMapFactory();
+                        List<BotWorldPartitionRouter.Node> proute = BotWorldPartitionRouter.route(
+                                id -> BotMapPartitionProvider.forMapId(mf, id), bot.getMapId(), reachableExits,
+                                targetMapId, maxHops, blocked);
+                        if (proute != null && !proute.isEmpty()) {
+                            route = proute.stream().map(BotWorldPartitionRouter.Node::mapId).collect(Collectors.toList());
+                        }
+                    }
+                }
+                if (route == null) {
+                    route = routeLookup.route(bot.getMapId(), targetMapId, maxHops, options,
+                            blocked); // SSOT danger gate: no <15 route through Sleepywood
+                }
                 if (route == null || route.isEmpty()) {
                     return false; // too far or unreachable by walking — warp fallback
                 }
                 routePrewarm.prewarm(entry, bot, route);
                 nextHopMapId = route.get(0);
-                portal = adjacentOrScriptedPortal(map, nextHopMapId, bot.getPosition());
+                if (canCheck) {
+                    // When we can decide reachability, NEVER fall back to an unfiltered pick — that could
+                    // re-select the very portal canReach just rejected and collapse the split-map fix.
+                    portal = findReachableAdjacentPortal(map, navGraph, botRegion, nextHopMapId, bot.getPosition());
+                    if (portal == null) {
+                        portal = reachableScriptedEntrance(map, navGraph, botRegion, nextHopMapId);
+                    }
+                } else {
+                    portal = adjacentOrScriptedPortal(map, nextHopMapId, bot.getPosition());
+                }
                 if (portal == null) {
                     return tryConsumableHop(entry, bot, map, targetMapId, nextHopMapId, now, runAiTick);
                 }
@@ -331,9 +373,16 @@ final class BotTravelManager {
             }
             entry.portalEnterDwellUntilMs = 0L;
             clearMoveTargetPin(entry);
+            int beforeMapId = bot.getMapId();
+            String script = portal.getScriptName();
+            boolean scripted = script != null && !script.isEmpty();
             entry.followTravelEnteredAtMs = now;
             entry.portalUseCooldownUntilMs = now + PORTAL_USE_COOLDOWN_MS;
             portal.enterPortal(bot.getClient());
+            if (scripted && bot.getMapId() == beforeMapId) {
+                giveUp(entry, now, "script-no-land");
+                return false;
+            }
             return true;
         }
         entry.portalEnterDwellUntilMs = 0L; // not at the portal yet — re-arm on the next arrival
@@ -487,10 +536,9 @@ final class BotTravelManager {
     }
 
     /**
-     * Nearest open, unscripted, non-door portal leading directly to targetMapId; null when
+     * Nearest open, non-door targeted portal leading directly to targetMapId; null when
      * the map has no such portal (multi-hop or unreachable — caller warps). Scripted portals
-     * are skipped because their scripts can gate on quests/items and silently no-op or warp
-     * somewhere else entirely.
+     * are allowed so their own script can decide whether entry succeeds.
      */
     /**
      * The position of the walkable portal this map's next hop toward {@code targetMapId} would
@@ -540,14 +588,74 @@ final class BotTravelManager {
         return scripted == null ? null : map.getPortal(scripted);
     }
 
+    /** Like {@link #findAdjacentPortal} but skips portals whose platform the bot (standing in
+     *  {@code botRegion}) can't physically walk to, per {@link BotNavigationGraph#canReach} (the SSOT) —
+     *  so a split map never commits the bot to an exit stranded on another platform. Returns null when no
+     *  reachable adjacent portal exists. */
+    static Portal findReachableAdjacentPortal(MapleMap map, BotNavigationGraph navGraph, int botRegion,
+                                              int targetMapId, Point fromPos) {
+        Portal best = null;
+        int bestDist = Integer.MAX_VALUE;
+        for (Portal portal : map.getPortals()) {
+            if (portal.getTargetMapId() != targetMapId || !BotMapPartition.isTravelPortal(portal)
+                    || !navGraph.canReach(botRegion, navGraph.findRegionId(map, portal.getPosition()), 0)) {
+                continue;
+            }
+            int dist = manhattan(fromPos, portal.getPosition());
+            if (dist < bestDist) {
+                bestDist = dist;
+                best = portal;
+            }
+        }
+        return best;
+    }
+
+    /** The allowlisted scripted-entrance portal for this hop (its tm is the spawn sentinel, so
+     *  {@link #findReachableAdjacentPortal} can't match it) — but only when the bot can physically reach
+     *  it. Returns null otherwise, so the caller never commits to a portal off the bot's platform. */
+    static Portal reachableScriptedEntrance(MapleMap map, BotNavigationGraph navGraph, int botRegion,
+                                            int nextHopMapId) {
+        String scriptedName = BotWorldGraph.scriptedEntrancePortal(map.getId(), nextHopMapId);
+        if (scriptedName == null) {
+            return null;
+        }
+        Portal sp = map.getPortal(scriptedName);
+        if (sp != null && navGraph.canReach(botRegion, navGraph.findRegionId(map, sp.getPosition()), 0)) {
+            return sp;
+        }
+        return null;
+    }
+
+    /** The plain cross-map exits the bot can actually walk to from {@code botRegion} (canReach SSOT). */
+    static List<BotMapPartition.PortalRef> reachableCrossMapExits(MapleMap map, BotNavigationGraph navGraph,
+                                                                  int botRegion) {
+        List<BotMapPartition.PortalRef> out = new ArrayList<>();
+        for (Portal p : map.getPortals()) {
+            if (BotMapPartition.isTravelCrossMapPortal(p, map.getId())
+                    && navGraph.canReach(botRegion, navGraph.findRegionId(map, p.getPosition()), 0)) {
+                out.add(new BotMapPartition.PortalRef(p.getName(), p.getPosition(), p.getTargetMapId(), p.getTarget()));
+            }
+        }
+        return out;
+    }
+
+    /** How many plain cross-map exits the map has at all (reachable or not) — used to detect when the
+     *  bot's platform is constrained (fewer reachable than exist) and partition routing is worthwhile. */
+    static int eligibleCrossMapExitCount(MapleMap map) {
+        int n = 0;
+        for (Portal p : map.getPortals()) {
+            if (BotMapPartition.isTravelCrossMapPortal(p, map.getId())) {
+                n++;
+            }
+        }
+        return n;
+    }
+
     static Portal findAdjacentPortal(Collection<Portal> portals, int targetMapId, Point fromPos) {
         Portal best = null;
         int bestDist = Integer.MAX_VALUE;
         for (Portal portal : portals) {
-            if (portal.getTargetMapId() != targetMapId
-                    || !portal.getPortalStatus()
-                    || portal.getType() == Portal.DOOR_PORTAL
-                    || (portal.getScriptName() != null && !portal.getScriptName().isEmpty())) {
+            if (portal.getTargetMapId() != targetMapId || !BotMapPartition.isTravelPortal(portal)) {
                 continue;
             }
             int dist = manhattan(fromPos, portal.getPosition());
@@ -569,16 +677,9 @@ final class BotTravelManager {
     static Portal pickRandomCrossMapPortal(Collection<Portal> portals, int currentMapId, java.util.Random rng) {
         List<Portal> eligible = new ArrayList<>();
         for (Portal portal : portals) {
-            int target = portal.getTargetMapId();
-            if (target <= 0
-                    || target == NO_DESTINATION_MAPID
-                    || target == currentMapId
-                    || !portal.getPortalStatus()
-                    || portal.getType() == Portal.DOOR_PORTAL
-                    || (portal.getScriptName() != null && !portal.getScriptName().isEmpty())) {
-                continue;
+            if (BotMapPartition.isTravelCrossMapPortal(portal, currentMapId)) {
+                eligible.add(portal);
             }
-            eligible.add(portal);
         }
         if (eligible.isEmpty()) {
             return null;
