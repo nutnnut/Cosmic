@@ -176,6 +176,32 @@ class BotStarterKitManagerTest {
     }
 
     @Test
+    void jobErrandUsesDedicatedLongDistanceTravelBudget() {
+        Character bot = mock(Character.class);
+        Character owner = mock(Character.class);
+        BotEntry entry = new BotEntry(bot, owner, mock(ScheduledFuture.class));
+        entry.jobErrandTarget = Job.FIGHTER;
+        entry.jobErrandNpcId = 1072000;
+        entry.jobErrandMapId = 102020300;
+        entry.jobErrandProgress.begin(System.currentTimeMillis());
+
+        when(bot.getMapId()).thenReturn(221020200);
+
+        try (MockedStatic<BotTravelManager> travel = mockStatic(BotTravelManager.class)) {
+            travel.when(() -> BotTravelManager.tickApproachNpc(entry, bot, 102020300, 1072000,
+                            BotStarterKitManager.JOB_ERRAND_MAX_TRAVEL_HOPS, true, true,
+                            BotStarterKitManager.NPC_TRIGGER_RADIUS_PX))
+                    .thenReturn(BotTravelManager.ApproachStatus.TRAVELING);
+
+            assertTrue(BotStarterKitManager.tickJobErrand(entry, bot, true));
+
+            travel.verify(() -> BotTravelManager.tickApproachNpc(entry, bot, 102020300, 1072000,
+                    BotStarterKitManager.JOB_ERRAND_MAX_TRAVEL_HOPS, true, true,
+                    BotStarterKitManager.NPC_TRIGGER_RADIUS_PX));
+        }
+    }
+
+    @Test
     void advanceJobAlwaysReevaluatesAutoEquip() {
         Character bot = mock(Character.class);
         Character owner = mock(Character.class);

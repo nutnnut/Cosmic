@@ -182,6 +182,10 @@ final class BotStarterKitManager {
 
     /** Within this many px of the instructor counts as "talked to it" — matches the quest/cab radius. */
     static final int NPC_TRIGGER_RADIUS_PX = 500;
+    // Job changes are mandatory progress, not grind-target exploration. A bot can legitimately be deep in
+    // Eos Tower/Omega when it hits lv30; the generic grind travel cap rejects that route even though the
+    // legal portal chain exists.
+    static final int JOB_ERRAND_MAX_TRAVEL_HOPS = 100;
     /** With the fallback ON, give up after this long WITHOUT PROGRESS (no map hop and not actively
      *  traveling) so it force-advances instead of wedging. It is a no-progress deadline, NOT a total
      *  trip budget — a legal cross-continent route (incl. boat waits longer than this) keeps refreshing
@@ -236,7 +240,7 @@ final class BotStarterKitManager {
         boolean forceFallback = BotManager.cfg.JOB_CHANGE_FALLBACK_ANYWHERE;
         BotTravelManager.ApproachStatus status = BotTravelManager.tickApproachNpc(
                 entry, bot, entry.jobErrandMapId, entry.jobErrandNpcId,
-                BotAutopilotManager.MAX_TRAVEL_HOPS, runAiTick, true, NPC_TRIGGER_RADIUS_PX); // ferry: instructor may be cross-continent
+                JOB_ERRAND_MAX_TRAVEL_HOPS, runAiTick, true, NPC_TRIGGER_RADIUS_PX); // ferry: instructor may be cross-continent
         long now = System.currentTimeMillis();
         entry.jobErrandProgress.record(bot, status == BotTravelManager.ApproachStatus.TRAVELING, now);
         boolean noProgressTooLong = forceFallback && entry.jobErrandProgress.stalled(now, ERRAND_NO_PROGRESS_MS);
@@ -314,7 +318,7 @@ final class BotStarterKitManager {
         // bot that can't afford a fare genuinely can't route there), so the log doesn't falsely claim
         // unreachable for a cross-continent instructor the bot could ferry to.
         java.util.List<Integer> liveRoute = BotAutopilotManager.routeForBot(bot,
-                bot.getMapId(), entry.jobErrandMapId, BotAutopilotManager.MAX_TRAVEL_HOPS,
+                bot.getMapId(), entry.jobErrandMapId, JOB_ERRAND_MAX_TRAVEL_HOPS,
                 new BotWorldGraph.RouteOptions(false, bot.getMeso(), true, bot.getJob().getId() == 0, bot.getLevel()));
         boolean reachable = liveRoute != null;
         // Surface WHY travel actually gave up (deadline / taxi-fare-fail / ferry-board-fail / portal-closed
