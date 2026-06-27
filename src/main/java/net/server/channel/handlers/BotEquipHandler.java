@@ -103,9 +103,18 @@ public final class BotEquipHandler extends AbstractPacketHandler {
     //  - everyone else: their own owned bots.
     private static List<Character> slotBots(Character player) {
         BotManager bm = BotManager.getInstance();
-        return player.gmLevel() >= 6   // matches the gm6 debug-commander override that fills the roster
-                ? bm.getDebugCommanderFollowers(player.getId())
-                : bm.getOwnedBotCharacters(player.getId());
+        List<Character> owned = bm.getOwnedBotCharacters(player.getId());
+        if (player.gmLevel() < 6) {
+            return owned;
+        }
+        // GM: own bots first (stable slot index), then debug-commander followers they don't own.
+        List<Character> bots = new java.util.ArrayList<>(owned);
+        for (Character b : bm.getDebugCommanderFollowers(player.getId())) {
+            if (!bots.contains(b)) {
+                bots.add(b);
+            }
+        }
+        return bots.size() > 5 ? bots.subList(0, 5) : bots;
     }
 
     // botIndex 1..5 -> the player's Nth slot bot (stable order), or null.
