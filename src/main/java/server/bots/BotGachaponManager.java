@@ -377,6 +377,12 @@ final class BotGachaponManager {
         if (!BotAutopilotManager.isActive(entry)) {
             return;
         }
+        // Gacha is a town-break activity, not a mid-grind detour: only roll while resting in a town.
+        // Town breaks park the bot in a town; in-place breaks idle on the grind map, so on-break +
+        // in-town distinguishes the town break the player wants gacha confined to.
+        if (!BotBreakManager.onBreak(entry, now) || !bot.getMap().isTown()) {
+            return;
+        }
         if (entry.gachaErrandMapId != -1 || entry.questErrandMapId != -1) {
             return; // one errand at a time
         }

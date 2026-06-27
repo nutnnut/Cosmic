@@ -699,7 +699,8 @@ final class BotAutopilotManager {
                     // Town-break: shop done -> linger to rest + self-scroll for the 10-30min window.
                     long nowRest = System.currentTimeMillis();
                     if (entry.breakUntilMs == 0L) {
-                        entry.breakUntilMs = nowRest + BotBreakManager.townBreakDurationMs();
+                        BotPersonality p = entry.personality != null ? entry.personality : BotPersonality.defaults();
+                        entry.breakUntilMs = nowRest + BotBreakManager.townBreakDurationMs(p.laziness());
                         entry.breakIdleAnchor = null;
                     }
                     if (nowRest < entry.breakUntilMs) {

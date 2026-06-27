@@ -164,6 +164,12 @@ public record BotPersonality(
         return 1.0 - (1.0 - floor) * t;
     }
 
+    /** 0..1 "laziness": the inverse of farm/idle diligence, normalized over the rolled trait range
+     *  (farm 0.95 -> 0 diligent, farm 0.45 -> 1 fully lazy). Lazier bots take longer town breaks. */
+    public double laziness() {
+        return Math.max(0.0, Math.min(1.0, (0.95 - farmIdleRatio) / 0.5));
+    }
+
     /** Base per-decision wanderlust probability before trait scaling. */
     private static final double WANDERLUST_BASE = 0.12;
 

@@ -42,9 +42,13 @@ final class BotBreakManager {
         return Math.round(meanMin * 60_000L * factor);
     }
 
-    /** A town-break lingers 10-30 min in town (sell/resupply + self-scroll), longer than an in-place break. */
-    static long townBreakDurationMs() {
-        return 10 * 60_000L + (long) (ThreadLocalRandom.current().nextDouble() * 20 * 60_000L);
+    /** A town-break lingers in town (sell/resupply + self-scroll), longer than an in-place break. Scales
+     *  with laziness: a diligent bot rests 10-30 min, a maximally lazy one 20-60 min. */
+    static long townBreakDurationMs(double laziness) {
+        double lazy = clamp01(laziness);
+        long lowMs = Math.round((10 + 10 * lazy) * 60_000.0);   // 10..20 min floor
+        long spanMs = Math.round((20 + 40 * lazy) * 60_000.0);  // 20..60 min span
+        return lowMs + (long) (ThreadLocalRandom.current().nextDouble() * spanMs);
     }
 
     /**
@@ -82,7 +86,8 @@ final class BotBreakManager {
      *  break roll and the leader-driven group break. */
     static void startTownBreak(BotEntry entry, Character bot, long now) {
         if (bot.getMap() != null && bot.getMap().isTown()) {
-            entry.breakUntilMs = now + townBreakDurationMs();
+            BotPersonality p = entry.personality != null ? entry.personality : BotPersonality.defaults();
+            entry.breakUntilMs = now + townBreakDurationMs(p.laziness());
             entry.breakIdleAnchor = null;
         } else {
             entry.restErrand = true;
