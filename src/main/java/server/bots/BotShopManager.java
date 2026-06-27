@@ -515,7 +515,7 @@ final class BotShopManager {
      *  errand-destination filter for a supply trip — a potion-stocking shop reliably also stocks the
      *  other consumables, so it's a sufficient, bag-state-independent proxy for "can resupply here".
      *  {@link BotInventoryManager#isRecoveryPotion} is the recovery-potion SSOT. */
-    private static boolean shopSellsAnyPotion(Shop shop) {
+    static boolean shopSellsAnyPotion(Shop shop) {
         for (ShopItem si : shop.getItems()) {
             if (si.getPrice() > 0 && BotInventoryManager.isRecoveryPotion(si.getItemId())) {
                 return true;

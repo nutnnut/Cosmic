@@ -1,6 +1,8 @@
 package server.bots;
 
 import client.Character;
+import server.Shop;
+import server.ShopFactory;
 import server.life.LifeFactory;
 
 import java.util.List;
@@ -159,19 +161,18 @@ final class BotBreakManager {
     }
 
     /** Find a nearby map to rest on instead of trekking to town: closer to the grind map than town is,
-     *  preferring a no-mob map, then a map whose mobs can't fly (the on-arrival safe-idle picker parks
-     *  on a platform away from ground mobs). Returns -1 when nothing closer qualifies (caller falls back
-     *  to town). ponytail: "no mob can JUMP" and "a safe platform EXISTS" aren't checkable here — no jump
-     *  flag exists in the server and platform reachability needs the map loaded; we gate on fly-capability
-     *  only and trust the existing safe-idle picker once the bot arrives. */
+     *  ranked by {@link #breakMapTier} (a resupply shop is best, then any NPC, then quiet/safe maps).
+     *  Returns -1 when nothing closer qualifies (caller falls back to town). ponytail: "no mob can JUMP"
+     *  and "a safe platform EXISTS" aren't checkable here — no jump flag exists in the server and platform
+     *  reachability needs the map loaded; we gate on fly-capability only and trust the existing safe-idle
+     *  picker once the bot arrives. */
     static int findNearbyBreakMap(int grindMap, int townHops) {
         int radius = Math.min(NEARBY_BREAK_MAX_HOPS, townHops - 1);
         if (radius < 1) {
             return -1; // town is already adjacent — nothing closer to find
         }
         BotSpawnIndex.Index idx = BotSpawnIndex.get();
-        int bestNoMob = -1, bestNoFly = -1;
-        int bestNoMobHops = Integer.MAX_VALUE, bestNoFlyHops = Integer.MAX_VALUE;
+        int bestMap = -1, bestTier = 0, bestHops = Integer.MAX_VALUE;
         for (int mapId : BotWorldGraph.reachableWithin(grindMap, radius)) {
             if (mapId == grindMap) {
                 continue;
@@ -181,29 +182,47 @@ final class BotBreakManager {
                 continue; // must be strictly closer to the grind map than town is
             }
             int tier = breakMapTier(idx, mapId);
-            if (tier == 1 && hops < bestNoMobHops) {
-                bestNoMob = mapId;
-                bestNoMobHops = hops;
-            } else if (tier == 2 && hops < bestNoFlyHops) {
-                bestNoFly = mapId;
-                bestNoFlyHops = hops;
+            if (tier > 0 && (tier > bestTier || (tier == bestTier && hops < bestHops))) {
+                bestMap = mapId;
+                bestTier = tier;
+                bestHops = hops; // higher tier wins; same tier -> fewer hops back to grind
             }
         }
-        return bestNoMob != -1 ? bestNoMob : bestNoFly; // no-mob beats no-fly; -1 if neither found
+        return bestMap;
     }
 
-    /** 1 = no monster spawns (safest), 2 = has mobs but none can fly, 0 = a flying mob makes any spot unsafe. */
+    /** Desirability of a candidate break map, higher = better; 0 = reject (a flying mob can reach any
+     *  idle platform). Above that safety floor we prefer utility, matching the requested priority:
+     *  5 = a potion shop (resupply + sell), 4 = any shop, 3 = any NPC, 2 = no monsters, 1 = ground mobs
+     *  only (the on-arrival safe-idle picker parks away from them). */
     private static int breakMapTier(BotSpawnIndex.Index idx, int mapId) {
         BotSpawnIndex.MapSpawns sp = idx == null ? null : idx.byMap().get(mapId);
-        if (sp == null || sp.mobCounts().isEmpty()) {
-            return 1; // no spawn points at all
+        if (sp == null) {
+            return 2; // no spawn data -> treat as a quiet, mob-free map
         }
         for (int mobId : sp.mobCounts().keySet()) {
             if (mobCanFly(mobId)) {
-                return 0;
+                return 0; // a flyer makes every platform reachable -> never a safe rest spot
             }
         }
-        return 2;
+        boolean hasShop = false;
+        for (int npcId : sp.npcs()) {
+            Shop shop = ShopFactory.getInstance().getShopForNPC(npcId);
+            if (shop == null) {
+                continue;
+            }
+            hasShop = true;
+            if (BotShopManager.shopSellsAnyPotion(shop)) {
+                return 5; // best substitute for town: can resupply potions + sell trash here
+            }
+        }
+        if (hasShop) {
+            return 4;
+        }
+        if (!sp.npcs().isEmpty()) {
+            return 3;
+        }
+        return sp.mobCounts().isEmpty() ? 2 : 1;
     }
 
     /** Whether a mob has a "fly" animation (could reach an elevated idle platform). Unknown -> unsafe. */
