@@ -178,6 +178,12 @@ public class BotEntry {
     boolean spacingRetreatActive = false; // hysteresis memory: are we mid spacing-retreat? (enter 80px / exit 140px)
     long retreatHoldUntilMs = 0L; // hysteresis: lock the local retreat goal for a short window
     Point retreatHoldPos = null;  // the locked retreat target — reused while hold is active
+    // Cross-region retreat hold (SSOT with the committed-route layer): once a flee region/point is chosen,
+    // reuse it instead of re-scanning every region (findPath per region) each tick. Cleared on cheap (no
+    // pathfind) invalidation — arrival, mob out of projectile reach, flee region crowded, or timeout.
+    long crossRetreatHoldUntilMs = 0L;
+    Point crossRetreatHoldPos = null;
+    int crossRetreatHoldRegionId = -1;
     long dangerRetreatUntilMs = 0L; // proactive self-preservation: keep disengaging a touch-dangerous mob until this expires (anti-flip-flop)
     // Anti-freeze watchdogs (shared logic, independent state per reason). A retreat that never opens
     // distance forces a fight window instead of looping forever. See RetreatGiveUp.

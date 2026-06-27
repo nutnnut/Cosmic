@@ -2648,46 +2648,78 @@ public class BotManager {
                 + BotCombatManager.passiveProjectileRangeBonus(bot);
         int yReachable = BotCombatManager.cfg.RANGED_DEGENERATE_RANGE_Y * 2;
 
-        Point reachableRetreat = selectReachableProjectileRetreatTarget(
+        // SSOT stickiness with the committed-route layer: hold the chosen cross-region flee point instead
+        // of re-scanning every region (findPath per region) each tick. Invalidations are cheap (no
+        // pathfind): arrival, mob no longer in projectile reach of the held point, flee region became
+        // crowded, or the hold timed out — any of which forces a fresh scan below.
+        long now = System.currentTimeMillis();
+        if (entry.crossRetreatHoldPos != null) {
+            Point held = entry.crossRetreatHoldPos;
+            BotNavigationGraph.Region holdRegion = graph.getRegion(entry.crossRetreatHoldRegionId);
+            boolean invalid = now >= entry.crossRetreatHoldUntilMs
+                    || Math.abs(held.x - botPos.x) <= RETREAT_ARRIVAL_TOLERANCE_X
+                    || Math.abs(held.x - combatTargetPos.x) > projectileRange
+                    || Math.abs(held.y - combatTargetPos.y) > yReachable
+                    || holdRegion == null
+                    || countMobsInRegion(graph, map, holdRegion) > 0;
+            if (invalid) {
+                clearCrossRetreatHold(entry);
+            } else {
+                return new Point(held);
+            }
+        }
+
+        Point result = selectReachableProjectileRetreatTarget(
                 graph, map, botPos, botRegionId, targetRegionId, combatTargetPos, projectileRange, yReachable);
-        if (reachableRetreat != null) {
-            return reachableRetreat;
+        if (result == null) {
+            BotNavigationGraph.Edge bestEdge = null;
+            int bestScore = Integer.MIN_VALUE;
+            for (BotNavigationGraph.Edge edge : graph.getOutgoing(botRegionId)) {
+                if (edge.type != BotNavigationGraph.EdgeType.WALK) {
+                    continue;
+                }
+                int toRegionId = edge.toRegionId;
+                if (toRegionId == botRegionId || toRegionId == targetRegionId) {
+                    continue;
+                }
+                BotNavigationGraph.Region region = graph.getRegion(toRegionId);
+                if (region == null || region.isRopeRegion) {
+                    continue;
+                }
+                Point anchor = edge.endPoint;
+                int dx = Math.abs(anchor.x - combatTargetPos.x);
+                int dy = Math.abs(anchor.y - combatTargetPos.y);
+                if (dx > projectileRange || dy > yReachable) {
+                    continue;
+                }
+                // Don't land back inside the degenerate band — that defeats the retreat.
+                if (dx <= BotCombatManager.cfg.RANGED_DEGENERATE_RANGE_X) {
+                    continue;
+                }
+
+                int mobsInRegion = countMobsInRegion(graph, map, region);
+                int score = (mobsInRegion == 0 ? 1000 : 0) - mobsInRegion * 100 - dx / 10;
+                if (score > bestScore) {
+                    bestScore = score;
+                    bestEdge = edge;
+                }
+            }
+            result = bestEdge != null ? new Point(bestEdge.endPoint) : null;
         }
 
-        BotNavigationGraph.Edge bestEdge = null;
-        int bestScore = Integer.MIN_VALUE;
-        for (BotNavigationGraph.Edge edge : graph.getOutgoing(botRegionId)) {
-            if (edge.type != BotNavigationGraph.EdgeType.WALK) {
-                continue;
-            }
-            int toRegionId = edge.toRegionId;
-            if (toRegionId == botRegionId || toRegionId == targetRegionId) {
-                continue;
-            }
-            BotNavigationGraph.Region region = graph.getRegion(toRegionId);
-            if (region == null || region.isRopeRegion) {
-                continue;
-            }
-            Point anchor = edge.endPoint;
-            int dx = Math.abs(anchor.x - combatTargetPos.x);
-            int dy = Math.abs(anchor.y - combatTargetPos.y);
-            if (dx > projectileRange || dy > yReachable) {
-                continue;
-            }
-            // Don't land back inside the degenerate band — that defeats the retreat.
-            if (dx <= BotCombatManager.cfg.RANGED_DEGENERATE_RANGE_X) {
-                continue;
-            }
-
-            int mobsInRegion = countMobsInRegion(graph, map, region);
-            int score = (mobsInRegion == 0 ? 1000 : 0) - mobsInRegion * 100 - dx / 10;
-            if (score > bestScore) {
-                bestScore = score;
-                bestEdge = edge;
-            }
+        // Commit the freshly chosen flee point so the next ticks reuse it instead of re-scanning.
+        if (result != null) {
+            entry.crossRetreatHoldPos = new Point(result);
+            entry.crossRetreatHoldRegionId = BotNavigationManager.resolvePointTargetRegionId(graph, map, result);
+            entry.crossRetreatHoldUntilMs = now + RETREAT_HOLD_MS;
         }
+        return result;
+    }
 
-        return bestEdge != null ? new Point(bestEdge.endPoint) : null;
+    private static void clearCrossRetreatHold(BotEntry entry) {
+        entry.crossRetreatHoldPos = null;
+        entry.crossRetreatHoldRegionId = -1;
+        entry.crossRetreatHoldUntilMs = 0L;
     }
 
     private static Point selectReachableProjectileRetreatTarget(BotNavigationGraph graph,
