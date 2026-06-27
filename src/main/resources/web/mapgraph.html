@@ -7,10 +7,14 @@
 <script src="https://unpkg.com/konva@9/konva.min.js"></script>
 <style>
   html,body{margin:0;height:100%;font:13px system-ui,sans-serif;background:#10141c;color:#cdd6e4;overflow:hidden}
-  #bar{position:absolute;top:0;left:0;right:0;height:42px;box-sizing:border-box;display:flex;align-items:center;
-       gap:12px;padding:0 12px;background:#171c26;border-bottom:1px solid #283143;z-index:5;overflow:hidden}
-  #bar h1{font-size:14px;margin:0;color:#9fb0c8;white-space:nowrap}
+  /* The bar WRAPS to as many rows as it needs (no clipping); JS keeps the canvas top in sync with its
+     actual height. Controls are grouped into .grp pills so related toggles wrap together, not individually. */
+  #bar{position:absolute;top:0;left:0;right:0;min-height:42px;box-sizing:border-box;display:flex;align-items:center;
+       flex-wrap:wrap;gap:5px 10px;padding:5px 10px;background:#171c26;border-bottom:1px solid #283143;z-index:5}
+  #bar h1{font-size:14px;margin:0;color:#9fb0c8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:28vw}
   #bar .sub{color:#67748c;font-size:11px}
+  #bar .grp{display:inline-flex;align-items:center;gap:8px;white-space:nowrap;
+       padding-left:10px;border-left:1px solid #283143}
   button{background:#2a3346;color:#cdd6e4;border:1px solid #3a4761;border-radius:4px;padding:5px 9px;cursor:pointer}
   button:hover{background:#34405a}
   #legend{display:flex;gap:10px;flex-wrap:wrap;font-size:11px;color:#8a99b3;margin-left:auto}
@@ -22,6 +26,10 @@
        border-radius:4px;padding:5px 8px;font-size:11px;line-height:1.4;z-index:10;max-width:240px;
        box-shadow:0 2px 8px rgba(0,0,0,.5)}
   #status{position:absolute;left:10px;bottom:8px;font-size:11px;color:#67748c;z-index:6}
+  #navConfirm{position:fixed;display:none;cursor:pointer;z-index:11;background:#3b5bdb;color:#fff;
+       border:1px solid #5b7bf5;border-radius:5px;padding:5px 9px;font-size:11px;font-weight:bold;
+       white-space:nowrap;box-shadow:0 2px 8px rgba(0,0,0,.5)}
+  #navConfirm:hover{background:#4a6af0}
   #bar select{background:#0d1017;color:#cdd6e4;border:1px solid #3a4761;border-radius:4px;padding:4px 6px;font-size:11px}
   #info{position:absolute;right:10px;top:52px;width:300px;max-height:calc(100% - 64px);overflow:auto;
         background:#0d1017;border:1px solid #3a4761;border-radius:6px;padding:8px 10px;font:11px/1.55 monospace;
@@ -31,6 +39,15 @@
   #info .edge{cursor:pointer;padding:1px 4px;border-radius:3px}
   #info .edge:hover{background:#283143;color:#ffe066}
   #info .x{float:right;cursor:pointer;color:#8a99b3}
+  /* Phone: tighten the bar, drop the verbose reference legend + composition stats, full-width info panel. */
+  @media (max-width:760px){
+    #bar{gap:5px 8px;padding:5px 8px}
+    #bar h1{max-width:46vw;font-size:13px}
+    #bar .grp{padding-left:8px;gap:6px}
+    #legend,#stats{display:none}
+    button{padding:6px 8px}
+    #info{left:8px;right:8px;width:auto}
+  }
 </style>
 </head>
 <body>
@@ -39,13 +56,15 @@
   <h1 id="title">Map Graph</h1>
   <span id="stats" class="sub" style="white-space:nowrap" title="region & edge composition"></span>
   <button id="fitBtn" title="reset view">Fit</button>
-  <button id="pfBtn" title="pick a source region then a target region to preview the route">Pathfind</button>
-  <label class="sub" style="white-space:nowrap" title="Normal = live bot's bounded best-effort search. Exhaustive = uncapped strict search that exhausts the graph to prove unreachability."><input type="checkbox" id="pfExhaustive"> exhaustive</label>
-  <label class="sub" style="white-space:nowrap" title="Allow teleport (mage) skill edges in the route (default off = walk-only)."><input type="checkbox" id="pfTeleport"> teleport</label>
-  <label class="sub" style="white-space:nowrap" title="Allow flash-jump (thief) skill edges in the route (default off = walk-only)."><input type="checkbox" id="pfFlashJump"> flash-jump</label>
-  <span id="pfstat" class="sub" style="white-space:nowrap"></span>
-  <label class="sub" style="white-space:nowrap">graph <select id="profile" title="cached movement-profile graph"></select></label>
-  <span class="sub" style="white-space:nowrap;border-left:1px solid #283143;padding-left:10px">show:
+  <span class="grp">
+    <button id="pfBtn" title="pick a source region then a target region to preview the route">Pathfind</button>
+    <label class="sub" title="Normal = live bot's bounded best-effort search. Exhaustive = uncapped strict search that exhausts the graph to prove unreachability."><input type="checkbox" id="pfExhaustive"> exhaustive</label>
+    <label class="sub" title="Allow teleport (mage) skill edges in the route (default off = walk-only)."><input type="checkbox" id="pfTeleport"> teleport</label>
+    <label class="sub" title="Allow flash-jump (thief) skill edges in the route (default off = walk-only)."><input type="checkbox" id="pfFlashJump"> flash-jump</label>
+  </span>
+  <span id="pfstat" class="sub" style="flex:0 1 340px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></span>
+  <span class="grp"><label class="sub">graph <select id="profile" title="cached movement-profile graph"></select></label></span>
+  <span class="grp" title="layer visibility">show:
     <label title="Colour regions by reachability component (walk-only, same adjacency as canReach). One colour = fully connected; multiple = a split map (e.g. an upper deck you can't climb back to)."><input type="checkbox" id="tgPartition"> partition</label>
     <label title="Down-jump / drop-through-platform edges (DROP type). Off by default — they clutter the view."><input type="checkbox" id="tgDownjump"> downjumps</label>
     <label title="Jump edges that land LOWER than they launch. Off by default."><input type="checkbox" id="tgJumpDown"> jump-downs</label>
@@ -66,6 +85,7 @@
   </div>
 </div>
 <div id="c"></div>
+<div id="navConfirm"></div>
 <div id="tip"></div>
 <div id="info"></div>
 <div id="status">loading…</div>
@@ -97,6 +117,18 @@ let regionShapes = {};  // regionId -> {report:[str], shapes:[Konva.Line], base:
 let selRegion = null;   // currently selected region id (highlighted + shown in #info)
 let prof = null;        // selected movement profile {sp,jmp,snow}; null = server default (base)
 
+// Keep the canvas (and info panel) below the bar's ACTUAL height. The bar wraps to multiple rows on narrow
+// / phone screens, so a fixed 42px offset would tuck content under it. Call on load and every resize.
+const barEl = document.getElementById('bar');
+function syncLayout(){
+  const h = barEl.offsetHeight;
+  host.style.top = h + 'px';
+  const info = document.getElementById('info');
+  if(info){ info.style.top = (h + 8) + 'px'; info.style.maxHeight = 'calc(100vh - ' + (h + 18) + 'px)'; }
+  stage.size({width:host.clientWidth, height:host.clientHeight});
+  stage.batchDraw();
+}
+
 // ---- tooltip ----
 const tip = document.getElementById('tip');
 function showTip(html, ev){ tip.innerHTML = html; tip.style.display='block';
@@ -108,6 +140,31 @@ function bindTip(shape, html){
   shape.on('mouseout', () => { document.body.style.cursor='default'; hideTip(); });
 }
 const esc = s => String(s==null?'':s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+
+// ---- portal click -> "change map" confirm pill ----
+// Click a cross/collision portal -> a pill appears under the cursor; click it (or click the portal again,
+// i.e. a quick double-click) to load the target map's graph; click anywhere else to cancel.
+const navEl = document.getElementById('navConfirm');
+let navTarget = null;
+function bindNav(shape, tm, name){
+  shape.on('click tap', ev => { ev.cancelBubble = true; if(ev.evt) ev.evt.stopPropagation(); showNav(tm, name, ev.evt); });
+}
+function showNav(tm, name, evt){
+  navTarget = tm;
+  navEl.innerHTML = '&rarr; map ' + tm + (name ? ' <span style="opacity:.7">('+esc(name)+')</span>' : '');
+  navEl.style.display = 'block';
+  const x = evt ? evt.clientX : innerWidth/2, y = evt ? evt.clientY : innerHeight/2;  // sit under the cursor
+  navEl.style.left = (x - 16) + 'px';
+  navEl.style.top  = (y - 10) + 'px';
+}
+function hideNav(){ navEl.style.display = 'none'; navTarget = null; }
+navEl.onclick = e => { e.stopPropagation(); if(navTarget != null){ const tm = navTarget; hideNav(); gotoMap(tm); } };
+document.addEventListener('click', () => { if(navEl.style.display === 'block') hideNav(); });  // click elsewhere = cancel
+function gotoMap(tm){
+  let q = 'id=' + tm;
+  if(prof) q += '&sp='+prof.sp+'&jmp='+prof.jmp+'&snow='+(prof.snow?1:0);
+  location.href = '/mapgraph?' + q;
+}
 
 // ---- shape helpers (markers keep a constant screen size via resize(scale)) ----
 // a clickable region line (thin visual, fat hit area) — click shows the region's report in #info
@@ -126,6 +183,7 @@ function addOval(x, y, rx, ry, fill, stroke, html, layerRef, bucket){
   if(html) bindTip(e, html);
   (layerRef||layer).add(e);
   bucket.push({resize:s => { e.radiusX(rx/s); e.radiusY(ry/s); }});
+  return e;
 }
 function addBox(x, y, sz, stroke, fill, html, layerRef, bucket){
   const r = new Konva.Rect({x, y, width:sz, height:sz, offsetX:sz/2, offsetY:sz/2,
@@ -133,6 +191,7 @@ function addBox(x, y, sz, stroke, fill, html, layerRef, bucket){
   if(html) bindTip(r, html);
   (layerRef||layer).add(r);
   bucket.push({resize:s => { const w=sz/s; r.width(w); r.height(w); r.offsetX(w/2); r.offsetY(w/2); }});
+  return r;
 }
 
 // ---- view toggles: partition colouring + down-edge visibility (all default OFF) ----
@@ -226,11 +285,14 @@ function renderStatic(d){
   // npcs (yellow box) + portals (in=yellow oval, cross=white oval, collision=white box)
   for(const n of d.npcs) addBox(n.x, n.y, 11, COL.npc, null, '<b>NPC</b> '+esc(n.n), layer, markers);
   for(const p of d.portals){
-    if(p.k === 'coll') addBox(p.x, p.y, 14, COL.pcoll, null,
+    let sh;
+    if(p.k === 'coll') sh = addBox(p.x, p.y, 14, COL.pcoll, null,
         '<b>collision warp</b><br>'+esc(p.n)+(p.tm>0?' &rarr; '+p.tm:''), layer, markers);
-    else addOval(p.x, p.y, 5.5, 4.2, p.k==='in'?COL.pin:COL.pcross, '#0d1017',
+    else sh = addOval(p.x, p.y, 5.5, 4.2, p.k==='in'?COL.pin:COL.pcross, '#0d1017',
         '<b>'+(p.k==='in'?'in-map portal':'cross portal')+'</b><br>'+esc(p.n)+(p.tm>0&&p.k!=='in'?' &rarr; '+p.tm:''),
         layer, markers);
+    // cross / collision portals to ANOTHER map are clickable -> confirm pill -> load that map's graph
+    if(p.tm > 0 && p.tm !== d.map && p.k !== 'in') bindNav(sh, p.tm, p.n);
   }
   applyPartition();   // re-apply component colouring (if the toggle is on) to the fresh region shapes
 }
@@ -433,7 +495,7 @@ stage.on('wheel', e => {
   stage.position({x:p.x-to.x*ns, y:p.y-to.y*ns});
   applyScale();
 });
-window.addEventListener('resize', () => { stage.size({width:host.clientWidth, height:host.clientHeight}); stage.batchDraw(); });
+window.addEventListener('resize', syncLayout);
 
 function curQuery(){
   let q = 'id=' + encodeURIComponent(mapId);
@@ -451,6 +513,7 @@ async function load(refit){
   buildProfileDropdown(d.profiles, d.active);
   renderStatic(d);
   renderStats(d);
+  syncLayout();   // bar height may have changed (title / stats / dropdown widths -> wrap) before we fit
   renderChars(d.chars||[]);
   if(refit) fit(); else applyScale();
   status(d.regions.length+' regions · '+d.edges.length+' edges · '+d.portals.length+' portals · '
