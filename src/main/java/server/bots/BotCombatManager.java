@@ -626,9 +626,17 @@ class BotCombatManager {
             noteSkillBuffDecision(entry, "no buff skills in cache");
             return;
         }
+
+        // Throttle the (re)buff evaluation. Casting is already gated by the per-skill nextBuffAt /
+        // nextSupportBuffAt timers, so the monster-liveness scan + party-support scan below only need
+        // to run a few times a second, not every tick. Mirrors BotBuffManager.tick's TICK_MS throttle;
+        // without it this scan was ~33% of all bot CPU. A sub-second delay to a rebuff is invisible.
+        long now = System.currentTimeMillis();
+        if (now - entry.lastSkillBuffScanMs < SKILL_BUFF_SCAN_MS) return;
+        entry.lastSkillBuffScanMs = now;
+
         if (bot.getMap().getAllMonsters().stream().noneMatch(Monster::isAlive)) return;
 
-        long now = System.currentTimeMillis();
         if (trySupportBuff(entry, bot, now)) {
             return;
         }
@@ -1420,6 +1428,15 @@ class BotCombatManager {
     // Matches maplestory-wasm CharLook::set_alerted(5000): called on attack, skill cast, and
     // damage taken. Always an absolute reset to now+5s (never additive), mirroring TimedBool::set_for.
     private static final long ALERT_DURATION_MS = 5000L;
+
+    // How often tickBuffs re-evaluates rebuff/support state. Buffs last seconds-to-minutes and casting
+    // is gated by per-skill nextBuffAt timers, so a ~1s cadence is plenty; running it every tick made
+    // the monster + party scans the single biggest bot CPU cost.
+    private static final long SKILL_BUFF_SCAN_MS = 1000L;
+
+    // Rebuff threshold: refresh a buff once <10% of its duration remains. Matches the self-rebuff
+    // schedule (castSupportSkill sets nextBuffAt to 90% of duration), applied to party members too.
+    private static final double REBUFF_FRACTION = 0.10;
 
     static void markAlerted(BotEntry entry) {
         entry.alertedUntilMs = System.currentTimeMillis() + ALERT_DURATION_MS;
@@ -3116,13 +3133,38 @@ class BotCombatManager {
 
         for (Character target : getNearbyPartyMembers(bot)) {
             for (var statup : fx.getStatups()) {
-                if (target.getBuffedValue(statup.getLeft()) == null) {
-                    return true;
+                BuffStat stat = statup.getLeft();
+                if (target.getBuffedValue(stat) == null) {
+                    return true;                                    // missing entirely
+                }
+                if (buffRemainingFraction(target, stat) < REBUFF_FRACTION) {
+                    return true;                                    // <10% left: refresh before it drops
                 }
             }
         }
 
         return false;
+    }
+
+    /** Remaining fraction (0..1) of the timed buff granting {@code stat} on {@code target}; 1 if the
+     *  stat is untimed or its source can't be found (never triggers a rebuff on its own). */
+    private static double buffRemainingFraction(Character target, BuffStat stat) {
+        for (PlayerBuffValueHolder holder : target.getAllBuffs()) {
+            StatEffect fx = holder.effect;
+            if (fx == null) {
+                continue;
+            }
+            long dur = fx.getDuration();
+            if (dur <= 0) {
+                continue;
+            }
+            for (var statup : fx.getStatups()) {
+                if (statup.getLeft() == stat) {
+                    return Math.max(0d, (dur - holder.usedTime) / (double) dur);
+                }
+            }
+        }
+        return 1d;
     }
 
     /**

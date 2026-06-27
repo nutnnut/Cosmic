@@ -673,6 +673,7 @@ public class BotEntry {
     long    lastAutoBuffEvalMs     = 0L;
 
     // Skill buff tracking (always enabled; tracks last decision for debug)
+    long   lastSkillBuffScanMs        = 0L;
     long   lastSkillBuffActionAtMs    = 0L;
     String lastSkillBuffActionSummary = "no skill buff checks yet";
 
