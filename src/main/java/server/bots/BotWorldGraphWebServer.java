@@ -1801,7 +1801,12 @@ public final class BotWorldGraphWebServer {
     private static Set<Integer> unreturnable(Set<Integer> shown) {
         Set<Integer> fromAnchor = BotWorldGraph.reachableWithin(RETURN_ANCHOR, 1000,
                 new BotWorldGraph.RouteOptions(false, Integer.MAX_VALUE, true));
-        BotWorldGraph.RouteOptions back = new BotWorldGraph.RouteOptions(true, Integer.MAX_VALUE, true);
+        // The Mushroom Shrine's only exit is Spinel's return to the boarding origin (worldTourReturn),
+        // which is dynamic and absent from the static edge table — so a plain flood treats the shrine as
+        // a one-way trap. Lith is itself a Spinel boarding map (a bot that boards there returns there),
+        // so model the return to the anchor here: the shrine returns to where it boarded, not a trap.
+        BotWorldGraph.RouteOptions back = new BotWorldGraph.RouteOptions(
+                true, Integer.MAX_VALUE, true, false, Integer.MAX_VALUE, RETURN_ANCHOR);
         Set<Integer> danger = new HashSet<>();
         for (int m : shown) {
             if (m != RETURN_ANCHOR && fromAnchor.contains(m)
