@@ -1106,6 +1106,15 @@ public class BotChatManager {
             return;
         }
 
+        // "goto <map>" reaching a single bot (name-directed "Jason goto X", or via the ops console "say"):
+        // travel there and stay put. The not-directed/party form is intercepted in BotManager.handleChat
+        // -> handlePartyGoto (whole cohort together), so this branch is the directed/solo case.
+        String gotoArgs = matchGotoArgs(message);
+        if (gotoArgs != null) {
+            handleGotoCommand(entry, gotoArgs);
+            return;
+        }
+
         // "farm <item name|id>": autopilot with the objective pinned to that item.
         String farmItemArgs = matchFarmItemArgs(message);
         if (farmItemArgs != null) {
@@ -2004,6 +2013,144 @@ public class BotChatManager {
         }
         Matcher matcher = FARM_ITEM_PATTERN.matcher(message);
         return matcher.matches() ? matcher.group(1) : null;
+    }
+
+    // "goto <map name|id>" / "go to <...>" / "go to map <...>": travel to that map and settle there.
+    // Checked AFTER the party-autopilot / autopilot matchers so "go grind together" / "go solo" win.
+    private static final Pattern GOTO_PATTERN = Pattern.compile(
+            "^\\s*go\\s*to\\s+(?:the\\s+)?(?:map\\s+)?(.+?)\\s*[?!.]*\\s*$", Pattern.CASE_INSENSITIVE);
+
+    static boolean isGotoCommand(String message) {
+        return matchGotoArgs(message) != null;
+    }
+
+    /** The map name/id token of a "goto <map>" command, or null when it isn't one. */
+    static String matchGotoArgs(String message) {
+        if (message == null) {
+            return null;
+        }
+        Matcher m = GOTO_PATTERN.matcher(message);
+        return m.matches() ? m.group(1).trim() : null;
+    }
+
+    // Lazy, cached name->id index over the world graph's map ids. MapFactory.loadPlaceName is the SSOT for
+    // map names but walks String.wz per call, so build the whole index ONCE off the chat thread.
+    private static volatile Map<String, Integer> mapNameIndex;
+    private static volatile boolean mapNameIndexBuilding;
+
+    private static Map<String, Integer> mapNameIndexIfReady() {
+        Map<String, Integer> idx = mapNameIndex;
+        if (idx != null) {
+            return idx;
+        }
+        if (!mapNameIndexBuilding) {
+            mapNameIndexBuilding = true;
+            Thread t = new Thread(() -> {
+                Map<String, Integer> built = new java.util.HashMap<>();
+                for (int id : BotWorldGraph.get().edges().keySet()) {
+                    try {
+                        String n = server.maps.MapFactory.loadPlaceName(id);
+                        if (n != null && !n.isBlank()) {
+                            built.putIfAbsent(n.toLowerCase(Locale.ROOT), id);
+                        }
+                    } catch (RuntimeException ignored) {
+                        // unreadable name -> skip this map
+                    }
+                }
+                mapNameIndex = built;
+            }, "bot-mapname-index");
+            t.setDaemon(true);
+            t.start();
+        }
+        return null;
+    }
+
+    /** Resolve a goto token to a map id: a numeric id verbatim (when a known map), else a case-insensitive
+     *  map-name match (exact first, then the shortest containing name). -1 = unknown, -2 = still indexing. */
+    static int resolveGotoMap(String token) {
+        if (token == null) {
+            return -1;
+        }
+        token = token.trim();
+        if (token.isEmpty()) {
+            return -1;
+        }
+        if (token.matches("\\d+")) {
+            int id = Integer.parseInt(token);
+            return BotWorldGraph.get().edges().containsKey(id) ? id : -1;
+        }
+        Map<String, Integer> idx = mapNameIndexIfReady();
+        if (idx == null) {
+            return -2;
+        }
+        String key = token.toLowerCase(Locale.ROOT);
+        Integer exact = idx.get(key);
+        if (exact != null) {
+            return exact;
+        }
+        int best = -1, bestLen = Integer.MAX_VALUE;
+        for (Map.Entry<String, Integer> e : idx.entrySet()) {
+            if (e.getKey().contains(key) && e.getKey().length() < bestLen) {
+                best = e.getValue();
+                bestLen = e.getKey().length();
+            }
+        }
+        return best;
+    }
+
+    private static String gotoMapName(int mapId) {
+        try {
+            String n = server.maps.MapFactory.loadPlaceName(mapId);
+            if (n != null && !n.isBlank()) {
+                return n;
+            }
+        } catch (RuntimeException ignored) {
+            // fall through to the numeric label
+        }
+        return "map " + mapId;
+    }
+
+    /** Directed "goto <map>" (one named bot, or via the ops console "say"): travel there and stay put. */
+    static void handleGotoCommand(BotEntry entry, String token) {
+        int mapId = resolveGotoMap(token);
+        if (mapId == -2) {
+            BotManager.getInstance().botReply(entry, "looking up maps, one sec - try again");
+            return;
+        }
+        if (mapId <= 0) {
+            BotManager.getInstance().botReply(entry, "i don't know a map called '" + token + "'");
+            return;
+        }
+        String name = gotoMapName(mapId);
+        BotManager.after(BotManager.randMs(900, 1600), () -> {
+            BotManager.getInstance().applyGotoCommand(entry, mapId);
+            BotManager.getInstance().botReply(entry, "heading to " + name + "!");
+        });
+    }
+
+    /** Party-wide "goto <map>" (not name-directed): the whole cohort travels there together and stays. */
+    static void handlePartyGoto(Character owner, List<BotEntry> cohort, String token) {
+        if (cohort == null || cohort.isEmpty()) {
+            return;
+        }
+        BotEntry head = cohort.get(0);
+        int mapId = resolveGotoMap(token);
+        if (mapId == -2) {
+            BotManager.getInstance().botReply(head, "looking up maps, one sec - try again");
+            return;
+        }
+        if (mapId <= 0) {
+            BotManager.getInstance().botReply(head, "i don't know a map called '" + token + "'");
+            return;
+        }
+        String name = gotoMapName(mapId);
+        BotManager.after(BotManager.randMs(900, 1600), () -> {
+            for (BotEntry e : cohort) {
+                prepareActiveModeEntry(e);
+            }
+            BotAutopilotManager.startPartyToMap(owner, cohort, mapId);
+            BotManager.getInstance().botReply(head, "let's all head to " + name + "!");
+        });
     }
 
     // Test seams: ItemInformationProvider's static init needs WZ/DB.

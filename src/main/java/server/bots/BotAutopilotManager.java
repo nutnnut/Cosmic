@@ -477,6 +477,36 @@ final class BotAutopilotManager {
     }
 
     /**
+     * Owner ordered the whole cohort to a SPECIFIC map ("goto"): travel together via the party cohort
+     * (leader routes, co-located members formation-follow), then settle there — pinned so the group does
+     * NOT re-decide and wander off into a grind trip. Reuses {@link #applyPartyPlan}; the forced plan
+     * carries no per-member grind objective (each idles / backs up on arrival, exactly like a party plan
+     * that found nothing worthwhile there). Mobless maps idle; maps with mobs grind, same as the RTS move.
+     */
+    static void startPartyToMap(Character owner, List<BotEntry> entries, int mapId) {
+        if (owner == null || entries == null || mapId <= 0) {
+            return;
+        }
+        List<BotEntry> members = new ArrayList<>();
+        for (BotEntry e : entries) {
+            if (e != null && e.bot != null && e.bot.getMap() != null) {
+                members.add(e);
+            }
+        }
+        if (members.isEmpty()) {
+            return;
+        }
+        List<Recommendation> per = new ArrayList<>(members.size());
+        for (int i = 0; i < members.size(); i++) {
+            per.add(null); // no grind objective: travel together, then idle / back the party up
+        }
+        applyPartyPlan(members, new PartyPlan(mapId, per));
+        for (BotEntry m : members) {
+            m.autopilotNextDecisionAtMs = Long.MAX_VALUE; // directed goto: stay put, never re-decide away
+        }
+    }
+
+    /**
      * Group-synced break for a party cohort: only the leader (first cohort member) rolls, once a minute,
      * on the AVERAGE of the members' break traits. When it fires the whole cohort breaks together — each
      * member takes its own town-break (sell/resupply + rest + self-scroll) EXCEPT low-cluster members

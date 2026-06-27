@@ -1860,6 +1860,18 @@ public class BotManager {
             return;
         }
 
+        // Party-wide "goto <map>" (no name prefix): the whole cohort travels there together (movement-group
+        // cohort: leader routes, co-located members formation-follow) and stays. Like the party-autopilot
+        // case, intercept BEFORE the broadcast so it's ONE shared group action, not N independent trips.
+        if (BotChatManager.isGotoCommand(message)) {
+            List<BotEntry> cohort = partyAutopilotCohort(entries.get(0));
+            for (BotEntry e : cohort) {
+                e.replyChannel = channel;
+            }
+            BotChatManager.handlePartyGoto(owner, cohort, BotChatManager.matchGotoArgs(message));
+            return;
+        }
+
         // Group supply requests ("need pots", "anyone have hp pots", "need arrows"
         // etc.) elicit a single response from the bot group. Broadcasting these
         // would have every bot run handleNeedPotionCommand independently, each
@@ -4704,6 +4716,23 @@ public class BotManager {
         entry.operatorStuck = false;
         entry.operatorCmdPending = true;
         entry.operatorCmd = cmd; // volatile, published last (safe publication of the fields above)
+    }
+
+    /** "goto &lt;map&gt;" (chat command): reuse the operator MOVE travel + arrival behavior (idle at a
+     *  safe spot if the map is mobless, grind if it has mobs) but pin it so it NEVER expires back into
+     *  autopilot — the bot goes there and stays put. SSOT with the RTS move; only the
+     *  {@link #OPERATOR_CMD_WINDOW_MS} expiry is dropped (window = forever). */
+    public void applyGotoCommand(BotEntry entry, int mapId) {
+        if (entry == null || mapId <= 0) {
+            return;
+        }
+        entry.operatorMovePos = null;                  // go-to-map, not go-to-(x,y): arrival uses idle-at-spot
+        entry.operatorMoveMapId = mapId;
+        entry.operatorFollowTargetId = 0;
+        entry.operatorCmdUntilMs = Long.MAX_VALUE;     // no expire-into-autopilot: stay until a new command
+        entry.operatorStuck = false;
+        entry.operatorCmdPending = true;
+        entry.operatorCmd = BotEntry.OperatorCmd.MOVE; // volatile, published last (safe publication)
     }
 
     /** Operator "moveto" (HTTP/RTS): walk the bot to a precise (x,y) on its CURRENT map and hold there.
