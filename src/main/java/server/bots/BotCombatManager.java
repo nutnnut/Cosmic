@@ -1047,7 +1047,7 @@ class BotCombatManager {
             if (basicAttack != null) {
                 candidates.add(basicAttack);
             }
-            return selectBestAttackPlan(bot, candidates);
+            return selectBestAttackPlan(entry, bot, candidates);
         } finally {
             BotPerformanceMonitor.record("combat-plan", System.nanoTime() - startedAt);
         }
@@ -1149,10 +1149,10 @@ class BotCombatManager {
         return mirrored != originalTarget ? mirrored : null;
     }
 
-    private static AttackPlan selectBestAttackPlan(Character bot, List<AttackPlan> candidates) {
+    private static AttackPlan selectBestAttackPlan(BotEntry entry, Character bot, List<AttackPlan> candidates) {
         List<PlanScore> scores = new ArrayList<>(candidates.size());
         for (AttackPlan candidate : candidates) {
-            scores.add(scoreAttackPlan(bot, candidate));
+            scores.add(scoreAttackPlan(entry, bot, candidate));
         }
 
         boolean hasGuaranteedFullHpKill = scores.stream().anyMatch(score -> score.minimumKillsFullHpTargets);
@@ -1194,9 +1194,54 @@ class BotCombatManager {
                 bot, skillId, skillLevel, route == AttackRoute.MAGIC, damageWeaponType);
     }
 
-    private static PlanScore scoreAttackPlan(Character bot, AttackPlan attackPlan) {
+    // Entry-cached variant of resolveAttackDamageProfile: the profile is a pure function of the bot's
+    // stats (watk/magic/str/dex/luk) and the skill, so it repeats identically across the ~1.75 plans/tick
+    // an engaged bot runs. We key the cache by (skillId,skillLevel,route,weapon) and gate the whole map on
+    // a cheap stat fingerprint — any equip/level/buff change runs recalcLocalStats, the fingerprint moves,
+    // and the map is flushed. This is the SSOT for cache validity: staleness is derived from the live stat
+    // values rather than hooked at each mutation site.
+    static CombatFormulaProvider.DamageProfile resolveAttackDamageProfile(
+            BotEntry entry, Character bot, int skillId, int skillLevel, AttackRoute route, WeaponType damageWeaponType) {
+        if (entry == null) {
+            return resolveAttackDamageProfile(bot, skillId, skillLevel, route, damageWeaponType);
+        }
+        int sig = damageStatSignature(bot);
+        if (sig != entry.dmgProfileStatSig) {
+            entry.dmgProfileCache.clear();
+            entry.dmgProfileStatSig = sig;
+        }
+        long key = damageProfileKey(skillId, skillLevel, route, damageWeaponType);
+        CombatFormulaProvider.DamageProfile cached = entry.dmgProfileCache.get(key);
+        if (cached != null) {
+            return cached;
+        }
+        CombatFormulaProvider.DamageProfile profile =
+                resolveAttackDamageProfile(bot, skillId, skillLevel, route, damageWeaponType);
+        entry.dmgProfileCache.put(key, profile);
+        return profile;
+    }
+
+    // Cheap fingerprint over every stat the damage profile reads, plus level (covers mastery-passive
+    // gains that level-ups bring). All are stored local-stat field reads, recomputed only on stat change.
+    private static int damageStatSignature(Character bot) {
+        int sig = bot.getTotalWatk();
+        sig = sig * 31 + bot.getTotalMagic();
+        sig = sig * 31 + bot.getTotalStr();
+        sig = sig * 31 + bot.getTotalDex();
+        sig = sig * 31 + bot.getTotalLuk();
+        sig = sig * 31 + bot.getLevel();
+        return sig;
+    }
+
+    static long damageProfileKey(int skillId, int skillLevel, AttackRoute route, WeaponType weaponType) {
+        long routeBits = route == null ? 3 : route.ordinal();
+        long weaponBits = weaponType == null ? 31 : weaponType.ordinal();
+        return ((long) skillId << 12) | ((long) (skillLevel & 0x1F) << 7) | (routeBits << 5) | weaponBits;
+    }
+
+    private static PlanScore scoreAttackPlan(BotEntry entry, Character bot, AttackPlan attackPlan) {
         CombatFormulaProvider.DamageProfile damageProfile = resolveAttackDamageProfile(
-                bot, attackPlan.skillId, attackPlan.skillLevel, attackPlan.route, attackPlan.damageWeaponType);
+                entry, bot, attackPlan.skillId, attackPlan.skillLevel, attackPlan.route, attackPlan.damageWeaponType);
         double usefulDamage = 0.0d;
         double rawDamage = 0.0d;
         boolean minimumKillsFullHpTargets = !attackPlan.targets.isEmpty();
@@ -2235,7 +2280,7 @@ class BotCombatManager {
         }
         // Geometry is promising — now pay for scoring. scoreAttackPlan is position-independent
         // (target HP + damage profile), so the translated plan scores validly.
-        PlanScore fireNowScore = scoreAttackPlan(bot, fireNowBest);
+        PlanScore fireNowScore = scoreAttackPlan(entry, bot, fireNowBest);
         // Preserve kill priority: if the fire-now plan already one-shots a full-HP target, just fire.
         if (fireNowScore.minimumKillsFullHpTargets) {
             return null;
@@ -2243,7 +2288,7 @@ class BotCombatManager {
         AttackPlan sweetPlan = new AttackPlan(aoeNow.skillId, aoeNow.skillLevel, aoeNow.numDamage, shifted,
                 sweetTargets, aoeNow.route, aoeNow.display, aoeNow.direction, aoeNow.rangedDirection,
                 aoeNow.stance, aoeNow.speed, aoeNow.hitDelayMs, aoeNow.cooldownMs, aoeNow.damageWeaponType);
-        PlanScore sweetScore = scoreAttackPlan(bot, sweetPlan);
+        PlanScore sweetScore = scoreAttackPlan(entry, bot, sweetPlan);
         if (sweetScore.rawDps >= fireNowScore.rawDps * cfg.AOE_REPOSITION_DPS_FACTOR) {
             if (cfg.AOE_REPOSITION_DEBUG) {
                 double pct = fireNowScore.rawDps > 0 ? sweetScore.rawDps / fireNowScore.rawDps * 100.0d : 0.0d;
@@ -2275,7 +2320,7 @@ class BotCombatManager {
         if (botPos == null || tp == null) {
             return null;
         }
-        PlanScore fireNowScore = scoreAttackPlan(bot, fireNowBest);
+        PlanScore fireNowScore = scoreAttackPlan(entry, bot, fireNowBest);
         // Kill priority: if the fire-now plan already one-shots a full-HP target, don't walk — fire.
         if (fireNowScore.minimumKillsFullHpTargets || fireNowScore.rawDps <= 0) {
             return null;

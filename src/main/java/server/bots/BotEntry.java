@@ -143,6 +143,12 @@ public class BotEntry {
     int attackSkillId = 0;
     int aoeSkillId = 0;
     int aoeSkillMobs = 1;
+    // Damage-profile cache: a skill's damage range is a pure function of the bot's stats, yet it is
+    // re-derived on every attack plan (~1.75 plans/tick per engaged bot). Stats only shift on
+    // level/gear/buff changes, so memoize keyed by (skillId,skillLevel,route,weapon) and flush the
+    // whole map when the cheap stat fingerprint moves. Single-threaded per entry (one tick at a time).
+    final java.util.Map<Long, server.combat.CombatFormulaProvider.DamageProfile> dmgProfileCache = new java.util.HashMap<>();
+    int dmgProfileStatSig = Integer.MIN_VALUE;
     int healSkillId = 0;
     List<Integer> buffSkillIds = new ArrayList<>();
     // Summon skills (Phoenix, Puppet, Beholder, ...) classified into their own bucket: they are

@@ -59,7 +59,10 @@ public class TimerManager implements TimerManagerMBean {
         if (ses != null && !ses.isShutdown() && !ses.isTerminated()) {
             return;
         }
-        ScheduledThreadPoolExecutor stpe = new ScheduledThreadPoolExecutor(4, new ThreadFactory() {
+        // ponytail: bot tick work is CPU-bound and was capped at 4 threads on a 6-core box (bots alone
+        // pull 2.4-3.8 cores at 200-400 bots). Size to all cores; never below the historical 4.
+        int poolSize = Math.max(4, Runtime.getRuntime().availableProcessors());
+        ScheduledThreadPoolExecutor stpe = new ScheduledThreadPoolExecutor(poolSize, new ThreadFactory() {
             private final AtomicInteger threadNumber = new AtomicInteger(1);
 
             @Override
