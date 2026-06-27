@@ -239,6 +239,30 @@ final class BotTravelManager {
             return true; // warp is in flight — hold still
         }
 
+        // Reachability inputs (split maps): consult BotNavigationGraph.canReach (the SSOT for intra-map
+        // reachability), shared by the commit-revalidation below and the fresh-plan branch. Use the bot's
+        // active movement profile, not the base reference graph: fast/jump-geared bots may only have their
+        // exact profile graph warm when travel plans this hop.
+        BotNavigationGraph navGraph = BotNavigationGraphProvider.peekBestGraph(map, entry.movementProfile);
+        if (BotNavigationGraphProvider.peekGraph(map, entry.movementProfile) == null) {
+            BotNavigationGraphProvider.warmGraphAsync(map, entry.movementProfile);
+        }
+        int botRegion = navGraph != null ? navGraph.findRegionId(map, bot.getPosition()) : -1;
+        boolean canCheck = navGraph != null && botRegion >= 0;
+
+        // Revalidate a committed cross-map portal once the graph is warm. An earlier hop may have pinned it
+        // while the graph was cold (canCheck false, canReach unavailable); if this platform actually can't
+        // walk to it, drop the pin and re-plan THIS tick instead of walking at an unreachable portal until
+        // the deadline trips (the split-map stall — Dead Man's Gorge R6 pinned to top-left U5_1).
+        if (active && canCheck && !entry.followTravelFerry && entry.followTravelTaxiNpcId == 0) {
+            Portal committed = map.getPortal(entry.followTravelPortalId);
+            if (committed != null && BotMapPartition.isTravelCrossMapPortal(committed, map.getId())
+                    && !navGraph.canReach(botRegion, navGraph.findRegionId(map, committed.getPosition()), 0)) {
+                clear(entry);
+                active = false;
+            }
+        }
+
         Portal portal;
         if (active) {
             if (entry.followTravelFerry) {
@@ -267,13 +291,9 @@ final class BotTravelManager {
             // Direct hop when the owner's map is adjacent; otherwise take the first hop of the
             // shortest world-graph route. Each landing re-plans, so only the next hop matters.
             int nextHopMapId = targetMapId;
-            // Partition awareness (split maps): consult BotNavigationGraph.canReach (the SSOT for intra-map
-            // reachability) so we never commit to a cross-map portal the bot's platform can't walk to, and
-            // route AROUND when the only direct exit is stranded on another platform. When the graph isn't
-            // warm or the bot's region is unknown we can't decide reachability, so behave exactly as before.
-            BotNavigationGraph navGraph = BotNavigationGraphProvider.peekGraph(map, BotMovementProfile.base());
-            int botRegion = navGraph != null ? navGraph.findRegionId(map, bot.getPosition()) : -1;
-            boolean canCheck = navGraph != null && botRegion >= 0;
+            // navGraph/botRegion/canCheck are computed above (shared with the commit-revalidation): we never
+            // commit a cross-map portal this platform can't reach, and route AROUND when the only direct exit
+            // is stranded on another platform.
 
             portal = adjacentOrScriptedPortal(map, targetMapId, bot.getPosition());
             if (portal != null && canCheck && BotMapPartition.isTravelCrossMapPortal(portal, map.getId())

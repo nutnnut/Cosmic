@@ -68,13 +68,17 @@ the heavy lazy nav layer).
 ## Notes / deferred
 - Live repro 2026-06-27, Dead Man's Gorge (`610010004`): the persisted partition row was correct
   (`U5_4/U5_5/U5_6` bottom arrivals cannot use top-left `U5_1 -> 610010005`), and `/api/pathfind`
-  proved `R6 -> R4/R5` unreachable even with flash-jump enabled. The failure mode is not bad partition
-  derivation; it is the travel planner's cold-current-map fallback. `tickTravel` uses
-  `BotNavigationGraphProvider.peekGraph(base)` and, when it returns null / unknown region, falls back to
-  the old direct map-level portal pick. That can pin `U5_1` before `canReach` is available, and the active
-  travel branch does not revalidate the committed portal after graph warmup. Root fix: do not commit a
-  cross-map portal on a split-sensitive route until the current map graph can prove reachability, or
-  revalidate and clear/replan any active portal once the graph becomes available.
+  proved `R6 -> R4/R5` unreachable even with flash-jump enabled. The failure mode was not bad partition
+  derivation; it was the travel planner's cold-current-map fallback. When `peekGraph` returned null /
+  unknown region, `tickTravel` fell back to the unfiltered map-level portal pick and committed `U5_1`
+  before `canReach` was available — and the **active** travel branch never revalidated the committed
+  portal after graph warmup (pathlog `pathlog-Admin-2026-06-27T075056.txt`: R6 pinned to portalId=5 / 
+  region 4, stuck 15s until deadline, then re-pinned). **FIXED:** `tickTravel` now hoists
+  `navGraph`/`botRegion`/`canCheck` above the active/plan branches and, on every active tick once the
+  graph is warm, revalidates the committed cross-map portal with `canReach`; an unreachable pin is
+  cleared and re-planned that same tick (ferry/taxi hops exempt). No more walk-at-unreachable-portal
+  until the deadline. The only remaining trial-and-error window is the brief cold-graph spell before
+  `canCheck` flips true, which self-heals on the first warm tick.
 - `nextHopPortalPosition` (party-loiter hint) not canReach-filtered yet — low stakes; follow-up.
 - No all-maps precompute; cache fills as maps are visited/warmed; unseen downstream maps degrade to
   fully-connected (map-level behavior).

@@ -272,12 +272,61 @@ class BotTravelManagerTest {
                              new BotWorldPartitionRouter.Node(targetMap, "target")))) {
             graphs.when(() -> BotNavigationGraphProvider.peekGraph(any(MapleMap.class), any(BotMovementProfile.class)))
                     .thenReturn(graph);
+            graphs.when(() -> BotNavigationGraphProvider.peekBestGraph(any(MapleMap.class), any(BotMovementProfile.class)))
+                    .thenReturn(graph);
 
             assertTrue(BotTravelManager.tickTravel(f.entry(), f.bot(), targetMap, 8, true, false));
 
             assertEquals(targetMap, f.entry().followTravelTargetMapId);
             assertEquals(goodDetourMap, f.entry().followTravelNextHopMapId);
             assertEquals(List.of(new Point(300, 0)), movement.steps);
+        }
+    }
+
+    @Test
+    void shouldUseActiveProfileGraphForPartitionTravel() {
+        int deadMansGorge = 610010004;
+        int unreachableTopLeft = 610010005;
+        int reachableDetour = 610010103;
+        int targetMap = 610020002;
+        Point bottom = new Point(-681, 208);
+        Portal badMapLevelHop = portal(5, unreachableTopLeft, Portal.MAP_PORTAL, null, Portal.OPEN,
+                new Point(-989, -97));
+        Portal goodPartitionHop = portal(3, reachableDetour, Portal.MAP_PORTAL, null, Portal.OPEN,
+                new Point(189, 196));
+        when(badMapLevelHop.getName()).thenReturn("U5_1");
+        when(goodPartitionHop.getName()).thenReturn("U5_6");
+        Fixture f = fixture(deadMansGorge, targetMap, bottom, List.of(badMapLevelHop, goodPartitionHop));
+        f.entry().movementProfile = new BotMovementProfile(180, 120, false);
+
+        BotNavigationGraph graph = mock(BotNavigationGraph.class);
+        when(graph.findRegionId(f.map(), bottom)).thenReturn(6);
+        when(graph.findRegionId(f.map(), badMapLevelHop.getPosition())).thenReturn(4);
+        when(graph.findRegionId(f.map(), goodPartitionHop.getPosition())).thenReturn(6);
+        when(graph.canReach(6, 4, 0)).thenReturn(false);
+        when(graph.canReach(6, 6, 0)).thenReturn(true);
+
+        try (var graphs = mockStatic(BotNavigationGraphProvider.class);
+             MovementRecorder movement = new MovementRecorder();
+             RouteStub route = new RouteStub((from, to, maxHops, options, blocked) ->
+                     List.of(unreachableTopLeft, 610020000, 610020001, targetMap));
+             PartitionRouteStub partition = new PartitionRouteStub((provider, from, exits, to, maxHops, blocked) -> {
+                 assertEquals(List.of("U5_6"), exits.stream().map(BotMapPartition.PortalRef::name).toList());
+                 return List.of(new BotWorldPartitionRouter.Node(reachableDetour, "A4_3"),
+                         new BotWorldPartitionRouter.Node(610010104, "A5_8"),
+                         new BotWorldPartitionRouter.Node(targetMap, "CM3_1"));
+             })) {
+            graphs.when(() -> BotNavigationGraphProvider.peekBestGraph(any(MapleMap.class), any(BotMovementProfile.class)))
+                    .thenReturn(graph);
+            graphs.when(() -> BotNavigationGraphProvider.peekGraph(any(MapleMap.class), any(BotMovementProfile.class)))
+                    .thenReturn(graph);
+
+            assertTrue(BotTravelManager.tickTravel(f.entry(), f.bot(), targetMap, 30, true, false));
+
+            assertEquals(targetMap, f.entry().followTravelTargetMapId);
+            assertEquals(reachableDetour, f.entry().followTravelNextHopMapId);
+            assertEquals(goodPartitionHop.getId(), f.entry().followTravelPortalId);
+            assertEquals(List.of(new Point(189, 196)), movement.steps);
         }
     }
 
