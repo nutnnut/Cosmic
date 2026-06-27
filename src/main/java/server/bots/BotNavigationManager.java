@@ -14,6 +14,7 @@ import constants.skills.NightWalker;
 import server.StatEffect;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import server.maps.FieldLimit;
 import server.maps.MapleMap;
 import server.maps.Foothold;
 import server.maps.Portal;
@@ -1470,12 +1471,20 @@ final class BotNavigationManager {
         return best;
     }
 
+    /** Maps with the MOVEMENTSKILLS field limit forbid teleport/flash-jump (same flag that forces base
+     *  speed/jump in {@link BotMovementProfile}). Gating here is the SSOT for every skill-edge decision:
+     *  planner mask, execution gate, and intra-platform express all funnel through has*(). */
+    private static boolean movementSkillsForbidden(Character bot) {
+        MapleMap map = bot == null ? null : bot.getMap();
+        return map != null && FieldLimit.MOVEMENTSKILLS.check(map.getFieldLimit());
+    }
+
     private static boolean hasTeleport(Character bot) {
-        return botSkillLevel(bot, TELEPORT_SKILL_IDS) > 0;
+        return !movementSkillsForbidden(bot) && botSkillLevel(bot, TELEPORT_SKILL_IDS) > 0;
     }
 
     private static boolean hasFlashJump(Character bot) {
-        return botSkillLevel(bot, FLASH_JUMP_SKILL_IDS) > 0;
+        return !movementSkillsForbidden(bot) && botSkillLevel(bot, FLASH_JUMP_SKILL_IDS) > 0;
     }
 
     /** The skill-edge mask a live bot is actually eligible for (teleport / flash-jump), the SSOT both the

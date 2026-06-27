@@ -20,7 +20,8 @@ record BotMovementProfile(int totalSpeedStat, int totalJumpStat, boolean snowSho
 
     static final int BASE_TOTAL_STAT = 100;
     static final int STAT_BUCKET_SIZE = 5;
-    static final int MAX_EFFECTIVE_SPEED_STAT = 200;
+    // Maple client movement caps: speed 140%, jump 123%. Excess equip/buff stat is dead.
+    static final int MAX_EFFECTIVE_SPEED_STAT = 140;
     static final int MAX_EFFECTIVE_JUMP_STAT = 123;
     static final BotMovementProfile BASE = new BotMovementProfile(BASE_TOTAL_STAT, BASE_TOTAL_STAT);
 

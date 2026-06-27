@@ -32,7 +32,7 @@ class BotMovementProfileTest {
     void shouldCapEffectivePhysicsStats() {
         BotMovementProfile profile = new BotMovementProfile(240, 130);
 
-        assertEquals(200, profile.totalSpeedStat());
+        assertEquals(140, profile.totalSpeedStat());
         assertEquals(123, profile.totalJumpStat());
     }
 
