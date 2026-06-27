@@ -645,7 +645,8 @@ function mapHitsHtml(hits){
       const inst = {id:nd.id, maps:nd.maps, names:nd.names, name:nd.names.join(' / '),
                     wm:wm.id, lx:nd.x, ly:nd.y, lx0:nd.x, ly0:nd.y,
                     anchor:nd.anchor, hub:nd.hub, dup:nd.dup, danger:nd.danger, leaf:nd.leaf,
-                    unreachable:nd.unreachable, custom:false, absolute:false, absX:0, absY:0,
+                    unreachable:nd.unreachable, custom:!!nd.custom, absolute:!!nd.absolute,
+                    absX:nd.absX||0, absY:nd.absY||0,
                     circle, center:null};
       circle.on('mouseover', e => { document.body.style.cursor='pointer'; showTip(inst, e.evt); });
       circle.on('mousemove', e => { tipXY={x:e.evt.clientX,y:e.evt.clientY}; if(tipNode===inst) paintTip(inst); });

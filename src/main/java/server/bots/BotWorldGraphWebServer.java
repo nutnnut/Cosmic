@@ -77,12 +77,12 @@ public final class BotWorldGraphWebServer {
 
     private static Map<String, double[]> buildWorldMapLayout() {
         Map<String, double[]> m = new HashMap<>();
-        m.put("000", new double[]{-406, -517, 0.347});
+        m.put("000", new double[]{-154, -216, 0.447});
         m.put("010", new double[]{323, -231, 0.997});
         m.put("011", new double[]{729, 238, 0.270});
-        m.put("012", new double[]{497, -454, 0.450});
-        m.put("013", new double[]{86, -468, 0.450});
-        m.put("014", new double[]{182, 243, 0.469});
+        m.put("012", new double[]{973, -82, 0.450});
+        m.put("013", new double[]{-154, -426, 0.450});
+        m.put("014", new double[]{185, 263, 0.469});
         m.put("020", new double[]{1945, -728, 1.206});
         m.put("021", new double[]{2768, -326, 1.161});
         m.put("030", new double[]{1964, 355, 1.003});
@@ -93,21 +93,21 @@ public final class BotWorldGraphWebServer {
         m.put("060", new double[]{2695, 279, 1.075});
         m.put("070", new double[]{1623, 1045, 1.394});
         m.put("080", new double[]{317, 677, 0.731});
-        m.put("090", new double[]{897, -787, 0.450});
-        m.put("100", new double[]{-462, -204, 0.450});
-        m.put("140", new double[]{-457, 80, 0.450});
-        m.put("141", new double[]{-14, -19, 0.450});
-        m.put("142", new double[]{-13, -250, 0.450});
-        m.put("143", new double[]{1549, 2323, 0.450});
+        m.put("090", new double[]{1137, -710, 0.450});
+        m.put("100", new double[]{-155, -13, 0.450});
+        m.put("140", new double[]{-156, 201, 0.450});
+        m.put("141", new double[]{-165, -630, 0.450});
+        m.put("142", new double[]{-156, -850, 0.450});
+        m.put("143", new double[]{314, -590, 0.450});
         m.put("144", new double[]{314, 1033, 0.721});
         m.put("145", new double[]{2959, -877, 1.092});
-        m.put("146", new double[]{1890, 2346, 0.450});
-        m.put("147", new double[]{2251, 2325, 0.450});
-        m.put("148", new double[]{2638, 2375, 0.450});
+        m.put("146", new double[]{688, -588, 0.450});
+        m.put("147", new double[]{688, -803, 0.450});
+        m.put("148", new double[]{315, -799, 0.450});
         m.put("149", new double[]{3030, 2485, 0.450});
         m.put("150", new double[]{938, 3026, 0.450});
         m.put("151", new double[]{1275, 3012, 0.450});
-        m.put("152", new double[]{1599, 3000, 0.450});
+        m.put("152", new double[]{315, 1380, 0.450});
         m.put("153", new double[]{1945, 2991, 0.450});
         m.put("154", new double[]{2326, 2991, 0.450});
         m.put("155", new double[]{2698, 2984, 0.450});
@@ -119,6 +119,31 @@ public final class BotWorldGraphWebServer {
         m.put("161", new double[]{2312, 3272, 0.450});
         m.put("162", new double[]{2682, 3304, 0.450});
         m.put("163", new double[]{3031, 3354, 0.450});
+        return m;
+    }
+
+    private static final Map<Integer, WorldMapAnchorOverride> WORLDMAP_ANCHOR_OVERRIDES =
+            buildWorldMapAnchorOverrides();
+
+    private static Map<Integer, WorldMapAnchorOverride> buildWorldMapAnchorOverrides() {
+        Map<Integer, WorldMapAnchorOverride> m = new HashMap<>();
+        m.put(610010003, new WorldMapAnchorOverride("141", 295, 134));
+        m.put(610010010, new WorldMapAnchorOverride("141", 396, 234));
+        m.put(610010011, new WorldMapAnchorOverride("141", 339, 175));
+        m.put(610010012, new WorldMapAnchorOverride("141", 297, 104));
+        m.put(610010013, new WorldMapAnchorOverride("141", 198, 261));
+        m.put(610010100, new WorldMapAnchorOverride("141", 243, 172));
+        m.put(610010101, new WorldMapAnchorOverride("141", 248, 117));
+        m.put(610010102, new WorldMapAnchorOverride("141", 268, 155));
+        m.put(610010103, new WorldMapAnchorOverride("141", 207, 193));
+        m.put(610010104, new WorldMapAnchorOverride("141", 215, 155));
+        m.put(610020010, new WorldMapAnchorOverride("141", 69, 201));
+        m.put(610020011, new WorldMapAnchorOverride("141", 90, 209));
+        m.put(610020012, new WorldMapAnchorOverride("141", 125, 114));
+        m.put(610020013, new WorldMapAnchorOverride("141", 35, 155));
+        m.put(610020014, new WorldMapAnchorOverride("141", 51, 107));
+        m.put(610020015, new WorldMapAnchorOverride("141", 44, 126));
+        m.put(682000001, new WorldMapAnchorOverride("141", 263, 313));
         return m;
     }
 
@@ -232,6 +257,9 @@ public final class BotWorldGraphWebServer {
 
     /** One MapList entry: a single dot that may stand for several map ids (multiple {@code mapNo}). */
     private record WorldSpot(List<Integer> maps, double x, double y) {
+    }
+
+    private record WorldMapAnchorOverride(String wm, double x, double y) {
     }
 
     /** WorldMap spots in image-local pixels. A dot may stand for several maps (merged mapNo); merging is
@@ -357,11 +385,19 @@ public final class BotWorldGraphWebServer {
             StringBuilder nodes = new StringBuilder();
             for (WorldSpot s : spots) {
                 boolean dup = ws.occur().getOrDefault(s.maps().get(0), 1) > 1;
-                appendWorldNode(nodes, g, s.maps(), s.x(), s.y(), true, dup);
+                WorldMapAnchorOverride override = worldMapAnchorOverride(wm, s.maps());
+                appendWorldNode(nodes, g, s.maps(),
+                        override != null ? override.x() : s.x(),
+                        override != null ? override.y() : s.y(),
+                        true, dup, override != null);
             }
             for (int m : naByWm.getOrDefault(wm, List.of())) {
                 double[] p = naLocal.get(m);
-                appendWorldNode(nodes, g, List.of(m), p[0], p[1], false, false);
+                WorldMapAnchorOverride override = worldMapAnchorOverride(wm, List.of(m));
+                appendWorldNode(nodes, g, List.of(m),
+                        override != null ? override.x() : p[0],
+                        override != null ? override.y() : p[1],
+                        false, false, override != null);
             }
             wmsOut.add("{\"id\":\"" + wm + "\",\"x\":" + Math.round(tx) + ",\"y\":" + Math.round(ty)
                     + ",\"scale\":" + ts + ",\"nodes\":[" + nodes + "]}");
@@ -409,7 +445,7 @@ public final class BotWorldGraphWebServer {
     /** Emit one node for a (possibly merged) set of maps; flags aggregate over the constituents
      *  (hub/danger/leaf if ANY is; unreachable only if NONE is reachable). */
     private static void appendWorldNode(StringBuilder sb, GraphData g, List<Integer> maps,
-                                        double x, double y, boolean anchor, boolean dup) {
+                                        double x, double y, boolean anchor, boolean dup, boolean custom) {
         boolean hub = false;
         boolean danger = false;
         boolean leaf = false;
@@ -442,7 +478,18 @@ public final class BotWorldGraphWebServer {
                 .append(",\"danger\":").append(danger)
                 .append(",\"leaf\":").append(leaf)
                 .append(",\"unreachable\":").append(!reachable)
+                .append(",\"custom\":").append(custom)
                 .append('}');
+    }
+
+    private static WorldMapAnchorOverride worldMapAnchorOverride(String wm, List<Integer> maps) {
+        for (int map : maps) {
+            WorldMapAnchorOverride override = WORLDMAP_ANCHOR_OVERRIDES.get(map);
+            if (override != null && override.wm().equals(wm)) {
+                return override;
+            }
+        }
+        return null;
     }
 
     /** A hub = a return-map root that some OTHER reachable map returns to (a town maps cluster on), as
