@@ -2065,6 +2065,24 @@ public class BotChatManager {
         return null;
     }
 
+    /** Kick the off-thread map-name index build (idempotent) so the first "goto <name>" resolves without a
+     *  retry. Called at bot spawn alongside the other cache warmups. */
+    static void warmMapNameIndex() {
+        mapNameIndexIfReady();
+    }
+
+    private static final int MAP_INDEX_WAIT_TRIES = 20; // ponytail: poll ~10s (500ms x20) for the off-thread build; warmed at spawn so this rarely loops
+
+    /** Re-run {@code retry} after a short delay while the map-name index is still building, so a goto issued
+     *  before the index is warm auto-completes instead of making the owner retry. False once the cap is hit. */
+    private static boolean deferUntilMapIndexReady(int attempt, Runnable retry) {
+        if (attempt >= MAP_INDEX_WAIT_TRIES) {
+            return false;
+        }
+        BotManager.after(500, retry);
+        return true;
+    }
+
     /** Resolve a goto token to a map id: a numeric id verbatim (when a known map), else a case-insensitive
      *  map-name match (exact first, then the shortest containing name). -1 = unknown, -2 = still indexing. */
     static int resolveGotoMap(String token) {
@@ -2112,9 +2130,19 @@ public class BotChatManager {
 
     /** Directed "goto <map>" (one named bot, or via the ops console "say"): travel there and stay put. */
     static void handleGotoCommand(BotEntry entry, String token) {
+        handleGotoCommand(entry, token, 0);
+    }
+
+    private static void handleGotoCommand(BotEntry entry, String token, int attempt) {
         int mapId = resolveGotoMap(token);
         if (mapId == -2) {
-            BotManager.getInstance().botReply(entry, "looking up maps, one sec - try again");
+            if (deferUntilMapIndexReady(attempt, () -> handleGotoCommand(entry, token, attempt + 1))) {
+                if (attempt == 0) {
+                    BotManager.getInstance().botReply(entry, "looking up maps, one sec...");
+                }
+                return; // auto-retries when the index warms — no manual retry needed
+            }
+            BotManager.getInstance().botReply(entry, "still loading maps - try again shortly");
             return;
         }
         if (mapId <= 0) {
@@ -2130,13 +2158,23 @@ public class BotChatManager {
 
     /** Party-wide "goto <map>" (not name-directed): the whole cohort travels there together and stays. */
     static void handlePartyGoto(Character owner, List<BotEntry> cohort, String token) {
+        handlePartyGoto(owner, cohort, token, 0);
+    }
+
+    private static void handlePartyGoto(Character owner, List<BotEntry> cohort, String token, int attempt) {
         if (cohort == null || cohort.isEmpty()) {
             return;
         }
         BotEntry head = cohort.get(0);
         int mapId = resolveGotoMap(token);
         if (mapId == -2) {
-            BotManager.getInstance().botReply(head, "looking up maps, one sec - try again");
+            if (deferUntilMapIndexReady(attempt, () -> handlePartyGoto(owner, cohort, token, attempt + 1))) {
+                if (attempt == 0) {
+                    BotManager.getInstance().botReply(head, "looking up maps, one sec...");
+                }
+                return; // auto-retries when the index warms — no manual retry needed
+            }
+            BotManager.getInstance().botReply(head, "still loading maps - try again shortly");
             return;
         }
         if (mapId <= 0) {

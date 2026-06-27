@@ -518,6 +518,7 @@ public class BotManager {
         // Pre-build the spawn index + world graph off-thread: the first grind/autopilot
         // decision otherwise pays ~30s of WZ scanning right when the owner asks for it.
         BotGrindAdvisor.warmCachesAsync();
+        BotChatManager.warmMapNameIndex(); // off-thread map-name index so the first "goto <name>" resolves without a retry
         return registerBotInternal(ownerCharId, owner, bot, true);
     }
 
