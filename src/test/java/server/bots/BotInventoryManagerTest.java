@@ -27,6 +27,7 @@ import java.util.function.IntPredicate;
 import java.util.function.IntUnaryOperator;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -716,13 +717,16 @@ class BotInventoryManagerTest {
         IntPredicate prevQuest = BotInventoryManager.questItem;
         BotInventoryManager.QuestReqsLookup prevReqs = BotInventoryManager.questReqsLookup;
         BotInventoryManager.QuestStatusLookup prevStatus = BotInventoryManager.questStatus;
+        java.util.function.BiPredicate<Character, Integer> prevBugged = BotInventoryManager.questBugged;
         BotInventoryManager.questItem = isQuestItem;
         BotInventoryManager.questReqsLookup = reqs;
         BotInventoryManager.questStatus = status;
+        BotInventoryManager.questBugged = (bot, q) -> false; // no proven-unfinishable quests by default
         return () -> {
             BotInventoryManager.questItem = prevQuest;
             BotInventoryManager.questReqsLookup = prevReqs;
             BotInventoryManager.questStatus = prevStatus;
+            BotInventoryManager.questBugged = prevBugged;
         };
     }
 
@@ -878,6 +882,22 @@ class BotInventoryManagerTest {
     }
 
     @Test
+    void buggedQuestMakesItemDisposableEvenWhenStarted() throws Exception {
+        Character bot = mock(Character.class);
+        when(bot.getLevel()).thenReturn(50);
+        // STARTED (would normally keep the item) but proven unfinishable (unreachable turn-in NPC).
+        try (AutoCloseable s = withQuestSeams(id -> id == 4032000,
+                reqs(4032000, new BotQuestIndex.QuestItemReq(5000, 20, 30)),
+                status(Set.of(5000) /*started*/, Set.of() /*not completed*/))) {
+            assertFalse(BotInventoryManager.isStaleQuestItem(bot, 4032000),
+                    "a started, finishable quest's item is kept");
+            BotInventoryManager.questBugged = (b, q) -> q == 5000;
+            assertTrue(BotInventoryManager.isStaleQuestItem(bot, 4032000),
+                    "a started-but-bugged quest's item is dead weight -> disposable");
+        }
+    }
+
+    @Test
     void shouldKeepRareAndCraftingEtcOutOfSellTrash() {
         Character bot = mock(Character.class);
         Inventory etc = new Inventory(bot, InventoryType.ETC, (byte) 24);
@@ -887,9 +907,10 @@ class BotInventoryManagerTest {
         etc.addItem(Items.itemWithQuantity(4006000, 5));    // magic rock (skill-consumed) -> keep
         etc.addItem(Items.itemWithQuantity(4006001, 5));    // summoning rock (skill-consumed) -> keep
         etc.addItem(Items.itemWithQuantity(4000100, 45));   // small crystal leftover stack -> trash
-        etc.addItem(Items.itemWithQuantity(4000101, 1252)); // crystal leftover stack >=100 -> keep
-        etc.addItem(Items.itemWithQuantity(4000102, 200));  // crystal leftover stack >=100 -> keep
-        etc.addItem(Items.itemWithQuantity(4000200, 9));    // NPC pays nothing -> keep
+        etc.addItem(Items.itemWithQuantity(4000101, 1252)); // crystal leftover >=100, has Maker -> keep
+        etc.addItem(Items.itemWithQuantity(4000102, 200));  // crystal leftover >=100, has Maker -> keep
+        etc.addItem(Items.itemWithQuantity(4000200, 9));    // NPC pays nothing -> trash (generic 0-sell)
+        etc.addItem(Items.itemWithQuantity(4030014, 100));  // omok piece (rare) -> trash (omok whitelist)
         etc.addItem(Items.itemWithQuantity(4004000, 7));    // stat crystal ore -> keep
         etc.addItem(Items.itemWithQuantity(4005004, 1));    // stat crystal -> keep
         etc.addItem(Items.itemWithQuantity(4007003, 11));   // magic powder -> keep
@@ -902,42 +923,82 @@ class BotInventoryManagerTest {
         etc.addItem(Items.itemWithQuantity(4260000, 4));    // monster crystal -> keep
         when(bot.getInventory(InventoryType.ETC)).thenReturn(etc);
 
+        // 4030014 (omok) is also a rare drop, proving the omok sell-whitelist overrides the keep.
         BotInventoryManager.SellPriceLookup price = (id, qty) -> id == 4000200 ? -1 : 10;
         IntUnaryOperator leftover = id -> isIn(id, 4000100, 4000101, 4000102) ? 4260000 : -1;
-        IntUnaryOperator dropChance = id -> id == 4000001 ? 5000 : 600000;
+        IntUnaryOperator dropChance = id -> isIn(id, 4000001, 4030014) ? 5000 : 600000;
 
-        try (AutoCloseable seams = withSellSeams(price, leftover, dropChance)) {
+        try (AutoCloseable seams = withSellSeams(price, leftover, dropChance, 2 /* has Maker */)) {
             List<Item> trash = BotInventoryManager.collectSellTrashEtcItems(bot);
-            assertEquals(2, trash.size());
+            assertEquals(4, trash.size());
             assertTrue(trash.stream().anyMatch(item -> item.getItemId() == 4000000));
             assertTrue(trash.stream().anyMatch(item ->
                     item.getItemId() == 4000100 && BotInventoryManager.sellTrashQuantity(item) == 45));
+            assertTrue(trash.stream().anyMatch(item -> item.getItemId() == 4000200),
+                    "0-NPC-price clutter should now be sold");
+            assertTrue(trash.stream().anyMatch(item -> item.getItemId() == 4030014),
+                    "omok pieces are always sold, even when they read as a rare drop");
         } catch (Exception e) {
             throw new AssertionError(e);
         }
     }
 
-    // Swap the ItemInformationProvider/DB-backed seams (restored on close); quest lookup
-    // always answers "not a quest item" so collectFromBag's isSafeToDrop stays inert.
+    @Test
+    void shouldSellCrystalLeftoversWhenBotLacksMakerSkill() {
+        Character bot = mock(Character.class);
+        Inventory etc = new Inventory(bot, InventoryType.ETC, (byte) 12);
+        etc.addItem(Items.itemWithQuantity(4000101, 1252)); // big crystal-leftover stack
+        etc.addItem(Items.itemWithQuantity(4000102, 200));  // big crystal-leftover stack
+        etc.addItem(Items.itemWithQuantity(4250000, 3));    // maker reagent -> always keep
+        when(bot.getInventory(InventoryType.ETC)).thenReturn(etc);
+
+        BotInventoryManager.SellPriceLookup price = (id, qty) -> 10;
+        IntUnaryOperator leftover = id -> isIn(id, 4000101, 4000102) ? 4260000 : -1;
+        IntUnaryOperator dropChance = id -> 600000;
+
+        try (AutoCloseable seams = withSellSeams(price, leftover, dropChance, 0 /* no Maker */)) {
+            List<Item> trash = BotInventoryManager.collectSellTrashEtcItems(bot);
+            assertEquals(2, trash.size(), "crystal leftovers are clutter without the Maker skill");
+            assertTrue(trash.stream().anyMatch(item -> item.getItemId() == 4000101));
+            assertTrue(trash.stream().anyMatch(item -> item.getItemId() == 4000102));
+            assertFalse(trash.stream().anyMatch(item -> item.getItemId() == 4250000));
+        } catch (Exception e) {
+            throw new AssertionError(e);
+        }
+    }
+
     private static AutoCloseable withSellSeams(BotInventoryManager.SellPriceLookup price,
                                                IntUnaryOperator leftover,
                                                IntUnaryOperator dropChance) {
+        return withSellSeams(price, leftover, dropChance, 0); // default: bot has no Maker skill
+    }
+
+    // Swap the ItemInformationProvider/DB-backed seams (restored on close); quest lookup always
+    // answers "not a quest item" so collectFromBag's isSafeToDrop stays inert. makerLevel feeds the
+    // crystal-leftover keep gate (>=1 = can convert leftovers to monster crystals).
+    private static AutoCloseable withSellSeams(BotInventoryManager.SellPriceLookup price,
+                                               IntUnaryOperator leftover,
+                                               IntUnaryOperator dropChance,
+                                               int makerLevel) {
         BotInventoryManager.SellPriceLookup prevPrice = BotInventoryManager.sellPrice;
         IntUnaryOperator prevLeftover = BotInventoryManager.makerCrystalFromLeftover;
         IntUnaryOperator prevDrop = BotInventoryManager.bestDropChance;
         IntPredicate prevQuest = BotInventoryManager.questItem;
         java.util.function.Predicate<Item> prevUntradeable = BotInventoryManager.untradeable;
+        java.util.function.ToIntFunction<Character> prevMaker = BotInventoryManager.makerSkillLevel;
         BotInventoryManager.sellPrice = price;
         BotInventoryManager.makerCrystalFromLeftover = leftover;
         BotInventoryManager.bestDropChance = dropChance;
         BotInventoryManager.questItem = id -> false;
         BotInventoryManager.untradeable = item -> false;
+        BotInventoryManager.makerSkillLevel = bot -> makerLevel;
         return () -> {
             BotInventoryManager.sellPrice = prevPrice;
             BotInventoryManager.makerCrystalFromLeftover = prevLeftover;
             BotInventoryManager.bestDropChance = prevDrop;
             BotInventoryManager.questItem = prevQuest;
             BotInventoryManager.untradeable = prevUntradeable;
+            BotInventoryManager.makerSkillLevel = prevMaker;
         };
     }
 

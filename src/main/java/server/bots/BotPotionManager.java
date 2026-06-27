@@ -418,6 +418,9 @@ final class BotPotionManager {
         // unless there's maker skill + a cramped tab + actual work, so it's cheap to attempt each tick.
         if (BotAutopilotManager.isActive(entry)) {
             BotMakerManager.autoCompactIfCramped(entry, bot);
+            // Ditch dead quest junk the shop can't take (untradeable, uncompletable/unreachable) by
+            // dropping it like a player would - a disappearing ground drop, no town trip needed.
+            BotInventoryManager.discardDisposableQuestItems(bot);
         }
         startedAt = BotPerformanceMonitor.start();
         // Affordability gate: a broke bot can't buy pots, so don't send it on a futile buy trip

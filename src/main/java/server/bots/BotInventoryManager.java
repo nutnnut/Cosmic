@@ -1870,10 +1870,36 @@ class BotInventoryManager {
     static IntUnaryOperator makerCrystalFromLeftover =
             id -> ItemInformationProvider.getInstance().getMakerCrystalFromLeftover(id);
     static IntUnaryOperator bestDropChance = BotScrollManager::bestDropChance;
+    // Maker skill level of the bot; seam so the crystal-leftover keep gate (a leftover is only worth
+    // hoarding when the bot can actually convert it) stays testable without WZ/skill data.
+    static java.util.function.ToIntFunction<Character> makerSkillLevel =
+            client.processor.action.MakerProcessor::getMakerSkillLevel;
 
     private static boolean isRareDrop(int itemId) {
         int chance = bestDropChance.applyAsInt(itemId);
         return chance > 0 && chance <= RARE_DROP_KEEP_CHANCE;
+    }
+
+    // Omok pieces (4030000-4030016) and assembled Omok sets (4080000-4080011): minigame clutter the
+    // bot will never use, always sold even when they'd otherwise read as rare drops / crystal
+    // leftovers (this whitelist forces the sale, overriding those keeps).
+    private static boolean isOmokItem(int itemId) {
+        return isInRange(itemId, 4030000, 4030016) || isInRange(itemId, 4080000, 4080011);
+    }
+
+    // A monster-crystal leftover is only worth keeping if the bot can actually convert it: the Maker
+    // leftover->crystal recipe (MakerItemFactory.generateLeftoverCrystalEntry) requires Maker skill
+    // level >= 1. Without Maker, 100-stacks of leftovers are pure clutter and should be sold.
+    private static boolean canMakeMonsterCrystals(Character bot) {
+        return bot != null && makerSkillLevel.applyAsInt(bot) >= 1;
+    }
+
+    // A crystal-leftover stack the bot should keep: convertible to a Maker monster crystal, big
+    // enough for the 100-count recipe, and the bot has the Maker skill to do it.
+    private static boolean keepCrystalLeftover(Character bot, Item item) {
+        return canMakeMonsterCrystals(bot)
+                && makerCrystalFromLeftover.applyAsInt(item.getItemId()) != -1
+                && item.getQuantity() >= MONSTER_CRYSTAL_LEFTOVER_KEEP_QUANTITY;
     }
 
     private static boolean isMakerMaterial(int itemId) {
@@ -2215,27 +2241,67 @@ class BotInventoryManager {
         };
     }
 
-    // Trash ETC = anything an NPC pays for. Quest items/untradeables are already excluded by
-    // collectFromBag (isSafeToDrop). Kept: skill-consumed rocks, Maker/crafting materials,
-    // rare drops, and crystal leftovers that can become Maker monster crystals.
+    // Trash ETC = anything not on a keep whitelist. Quest items/untradeables are already excluded by
+    // collectFromBag (isSafeToDrop). Kept: omok collectibles, skill-consumed rocks, Maker/crafting
+    // materials, rare drops, and (only if the bot has the Maker skill) crystal leftovers convertible
+    // to monster crystals. Everything else is sold even at 0 NPC price - 0-value clutter (e.g. Pig
+    // Vein) only leaves the bag if it's collected here.
     static List<Item> collectSellTrashEtcItems(Character bot) {
         List<Item> result = new ArrayList<>();
-        // botAwareSafety: stale ETC quest items pass the quest-item exclusion; the keeps below
-        // (skill-consumed, maker material, rare drop, crystal leftovers) still protect anything
-        // with other value, so only pure quest clutter with a positive NPC price is collected.
-        // NOTE: many ETC quest items have NPC price 0, so they stay unsold here (see report).
+        // botAwareSafety: stale ETC quest items pass the quest-item exclusion; the keeps below still
+        // protect anything with genuine value, so only true clutter is collected.
         collectFromBag(bot, result, InventoryType.ETC, item -> {
             int id = item.getItemId();
-            if (SKILL_CONSUMED_ETC.contains(id) || isMakerMaterial(id) || isRareDrop(id)) {
+            if (isOmokItem(id)) {
+                return true; // omok clutter: always sold, overrides the rare-drop/leftover keeps below
+            }
+            if (SKILL_CONSUMED_ETC.contains(id) || isMakerMaterial(id) || isRareDrop(id)
+                    || keepCrystalLeftover(bot, item)) {
                 return false;
             }
-            if (makerCrystalFromLeftover.applyAsInt(id) != -1
-                    && item.getQuantity() >= MONSTER_CRYSTAL_LEFTOVER_KEEP_QUANTITY) {
-                return false;
-            }
-            return sellPrice.price(id, item.getQuantity()) > 0;
+            return true;
         }, true);
         return result;
+    }
+
+    /** Drop disposable quest items the sell pipeline can't clear - untradeable ones a shop refuses -
+     *  the same way a player ditches dead quest junk: {@link InventoryManipulator#drop}, which makes a
+     *  quest item vanish on the ground (a disappearing drop). "Disposable" = {@link #isStaleQuestItem}
+     *  (every using-quest is completed, severely outleveled, or proven unfinishable). Tradeable
+     *  disposables are left for the shop sell trip, which recovers their NPC value. No-op when the bot
+     *  holds none, so it's cheap to attempt on the autopilot hygiene tick. */
+    static void discardDisposableQuestItems(Character bot) {
+        if (bot == null || bot.getClient() == null) {
+            return;
+        }
+        for (InventoryType type : List.of(InventoryType.EQUIP, InventoryType.USE, InventoryType.ETC)) {
+            Inventory inv = bot.getInventory(type);
+            if (inv == null) {
+                continue;
+            }
+            // Snapshot the slots first: drop() mutates the inventory we'd be iterating.
+            List<Short> slots = new ArrayList<>();
+            for (short slot = 1; slot <= inv.getSlotLimit(); slot++) {
+                Item it = inv.getItem(slot);
+                if (it != null && shouldDiscardQuestItem(bot, it)) {
+                    slots.add(slot);
+                }
+            }
+            for (short slot : slots) {
+                Item it = inv.getItem(slot);
+                if (it != null && shouldDiscardQuestItem(bot, it)) {
+                    InventoryManipulator.drop(bot.getClient(), type, slot, it.getQuantity());
+                }
+            }
+        }
+    }
+
+    /** A disposable quest item the shop can't buy (untradeable under the server config) - dropping is
+     *  the only way to free its slot. {@code !isSafeToDrop} is exactly the unsellable case: a stale
+     *  quest item that the untradeable gate still blocks from the sell pipeline. */
+    private static boolean shouldDiscardQuestItem(Character bot, Item item) {
+        int id = item.getItemId();
+        return questItem.test(id) && isStaleQuestItem(bot, id) && !isSafeToDrop(bot, item);
     }
 
     // Everything a "sell trash" shop visit should unload: trash equips + trash USE + trash ETC.
@@ -2527,6 +2593,7 @@ class BotInventoryManager {
     private static String etcVerdictReason(Character bot, Item item, boolean sell) {
         int id = item.getItemId();
         if (sell) {
+            if (isOmokItem(id)) return "omok-sell";
             return isStaleQuestItem(bot, id) ? "quest-stale" : "sell";
         }
         if (!isSafeToDrop(bot, item)) {
@@ -2541,8 +2608,7 @@ class BotInventoryManager {
         if (isRareDrop(id)) {
             return "rare-drop";
         }
-        if (makerCrystalFromLeftover.applyAsInt(id) != -1
-                && item.getQuantity() >= MONSTER_CRYSTAL_LEFTOVER_KEEP_QUANTITY) {
+        if (keepCrystalLeftover(bot, item)) {
             return "crystal-leftover-keep";
         }
         return "no-npc-price";
@@ -2828,15 +2894,26 @@ class BotInventoryManager {
 
     static QuestReqsLookup questReqsLookup = BotQuestIndex::questsRequiringItem;
 
+    /** Whether a quest has been proven unfinishable for this bot — the turn-in NPC is on an
+     *  unreachable map, or {@code complete()} refused to register (scripted/edge quests). Reuses the
+     *  per-entry {@link BotEntry#buggedQuestIds} SSOT (set by {@link BotQuestManager#markQuestBugged})
+     *  rather than re-deriving reachability here. Seam so tests stay BotManager-free. */
+    static java.util.function.BiPredicate<Character, Integer> questBugged = (bot, questId) -> {
+        BotEntry entry = BotManager.getInstance().getEntryByBotCharId(bot.getId());
+        return entry != null && entry.buggedQuestIds.contains(questId);
+    };
+
     /**
-     * Is {@code itemId} a quest item this bot no longer needs - so it can be sold as clutter
+     * Is {@code itemId} a quest item this bot no longer needs - so it can be cleared as clutter
      * instead of being kept forever? CONSERVATIVE: true only when it IS a quest item AND every
-     * indexed quest that requires it is, for this bot, either COMPLETED or severely outleveled
-     * (and none is currently STARTED). Any of:
+     * indexed quest that requires it is, for this bot, disposable - COMPLETED, severely outleveled,
+     * or proven unfinishable ({@link #questBugged}: unreachable turn-in NPC, or a complete() that
+     * won't register). A quest the bot has STARTED still keeps the item UNLESS it's bugged (a started
+     * quest whose NPC the bot can never reach is dead weight). Any of:
      * <ul>
      *   <li>not a quest item, or used by NO indexed quest -> NOT stale (out of scope);</li>
-     *   <li>ANY using-quest is STARTED -> NOT stale (it's needed right now);</li>
-     *   <li>any using-quest is still doable (not completed, not severely past) -> NOT stale.</li>
+     *   <li>ANY using-quest is STARTED and not bugged -> NOT stale (needed right now);</li>
+     *   <li>any using-quest is still doable (not completed, not past, not bugged) -> NOT stale.</li>
      * </ul>
      * "Severely outleveled" needs a real level cap ({@code > 0}); a quest with no level info is
      * undeterminable and treated as still-doable (kept). The permanently-unstartable-prereq branch
@@ -2851,15 +2928,15 @@ class BotInventoryManager {
         if (reqs.isEmpty()) {
             return false; // used by no indexed quest -> not our scope
         }
-        // Absolute override: an item needed by a quest the bot has STARTED is never stale.
+        // A STARTED, still-finishable quest keeps the item; a started-but-bugged one does not.
         for (BotQuestIndex.QuestItemReq r : reqs) {
-            if (questStatus.isStarted(bot, r.questId())) {
+            if (questStatus.isStarted(bot, r.questId()) && !questBugged.test(bot, r.questId())) {
                 return false;
             }
         }
-        // Stale only if EVERY using-quest is done-or-past for this bot.
+        // Stale only if EVERY using-quest is done-or-past or proven unfinishable for this bot.
         for (BotQuestIndex.QuestItemReq r : reqs) {
-            if (!isQuestDoneOrPast(bot, r)) {
+            if (!isQuestDoneOrPast(bot, r) && !questBugged.test(bot, r.questId())) {
                 return false;
             }
         }
