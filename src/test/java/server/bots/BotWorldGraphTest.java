@@ -104,7 +104,8 @@ class BotWorldGraphTest {
         // Stations only, no portal edges: the EventManager rides (subway/train/crane/elevator) must carry
         // the cross-region edge exactly like the boats. Verified ids in BotFerryManager.
         BotWorldGraph.Index graph = BotWorldGraph.indexOf(Map.of(
-                103000100, new int[0], 600010001, new int[0], 103000310, new int[0],
+                103000000, new int[0], 103000100, new int[0], 600010001, new int[0],
+                540010000, new int[0], 103000310, new int[0],
                 200000141, new int[0], 250000100, new int[0],
                 222020100, new int[0], 222020200, new int[0]));
         BotWorldGraph.RouteOptions ferryRich = new BotWorldGraph.RouteOptions(false, 30000, true);
@@ -112,6 +113,8 @@ class BotWorldGraphTest {
         // Kerning City subway to NLC (5k) and the free train to Kerning Square — same hall boards both.
         assertEquals(List.of(600010001), BotWorldGraph.route(graph, 103000100, 600010001, 4, ferryRich));
         assertEquals(List.of(103000310), BotWorldGraph.route(graph, 103000100, 103000310, 4, ferryRich));
+        assertEquals(List.of(540010000), BotWorldGraph.route(graph, 103000000, 540010000, 4, ferryRich));
+        assertEquals(List.of(103000000), BotWorldGraph.route(graph, 540010000, 103000000, 4, ferryRich));
         // Orbis cabin -> Mu Lung crane (1500).
         assertEquals(List.of(250000100), BotWorldGraph.route(graph, 200000141, 250000100, 4, ferryRich));
         // Helios elevator 2F <-> 99F (free, intra-tower).
@@ -175,6 +178,20 @@ class BotWorldGraphTest {
         assertNotNull(florina);
         assertEquals(1002002, florina.npcId());
         assertEquals(1500, florina.fare());
+        // Spinel world tour: Victoria towns -> Mushroom Shrine, Shrine -> Lith fallback, Boat Quay -> Malaysia.
+        BotWorldGraph.TaxiEdge shrine = BotWorldGraph.findTaxiEdge(100000000, 800000000);
+        assertNotNull(shrine);
+        assertEquals(9000020, shrine.npcId());
+        assertEquals(3000, shrine.fare());
+        assertEquals(104000000, BotWorldGraph.findTaxiEdge(800000000, 104000000).toMapId());
+        assertEquals(550000000, BotWorldGraph.findTaxiEdge(541000000, 550000000).toMapId());
+        // Audrey: Singapore CBD -> Malaysia Metropolis -> Kampung, plus the return leg.
+        BotWorldGraph.TaxiEdge singaporeToMalaysia = BotWorldGraph.findTaxiEdge(540000000, 550000000);
+        assertNotNull(singaporeToMalaysia);
+        assertEquals(9201135, singaporeToMalaysia.npcId());
+        assertEquals(42000, singaporeToMalaysia.fare());
+        assertEquals(551000000, BotWorldGraph.findTaxiEdge(550000000, 551000000).toMapId());
+        assertEquals(550000000, BotWorldGraph.findTaxiEdge(551000000, 550000000).toMapId());
     }
 
     @Test
@@ -188,6 +205,7 @@ class BotWorldGraphTest {
         assertEquals("east00", BotWorldGraph.scriptedEntrancePortal(140020200, 140020300));   // Snow Island -> Puro dock
         assertEquals("west00", BotWorldGraph.scriptedEntrancePortal(222010300, 222010200));   // KFT Fox Ridge return
         assertEquals("out00", BotWorldGraph.scriptedEntrancePortal(240040700, 240040600));    // Leafre Cave of Life return
+        assertEquals("in01", BotWorldGraph.scriptedEntrancePortal(222020400, 300000100));     // Ellin Forest
         assertNull(BotWorldGraph.scriptedEntrancePortal(101000000, 100000201)); // wrong dest for that map
         assertNull(BotWorldGraph.scriptedEntrancePortal(100000000, 100000201)); // not the entrance map
     }

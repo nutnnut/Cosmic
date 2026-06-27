@@ -172,14 +172,37 @@ final class BotWorldGraph {
             // (Bent Tree, Valley of Heroes, 40 maps): 9201056.js warps NLC <-> 682000000 for 15000 meso
             // each way, no gate. No portal connects them, so model both legs as a taxi ride.
             new TaxiEdge(600000000, 9201056, 682000000, 15000),
-            new TaxiEdge(682000000, 9201056, 600000000, 15000));
+            new TaxiEdge(682000000, 9201056, 600000000, 15000),
+            // Spinel / Maple Travel Agency: world-tour NPC 9000020. Most maps where Spinel stands use
+            // travelType 0 -> Mushroom Shrine for 3000 mesos; Boat Quay uses travelType 1 -> Malaysia
+            // for 10000. Returning from Mushroom Shrine normally uses saved WORLDTOUR; this bot taxi
+            // edge has no saved-location state, so use the script's no-saved fallback (Lith Harbor).
+            new TaxiEdge(100000000, 9000020, 800000000, 3000),
+            new TaxiEdge(101000000, 9000020, 800000000, 3000),
+            new TaxiEdge(102000000, 9000020, 800000000, 3000),
+            new TaxiEdge(103000000, 9000020, 800000000, 3000),
+            new TaxiEdge(104000000, 9000020, 800000000, 3000),
+            new TaxiEdge(200000000, 9000020, 800000000, 3000),
+            new TaxiEdge(220000000, 9000020, 800000000, 3000),
+            new TaxiEdge(240000000, 9000020, 800000000, 3000),
+            new TaxiEdge(250000000, 9000020, 800000000, 3000),
+            new TaxiEdge(260000000, 9000020, 800000000, 3000),
+            new TaxiEdge(800000000, 9000020, 104000000, 0),
+            new TaxiEdge(541000000, 9000020, 550000000, 10000),
+            // Audrey 9201135 connects Singapore CBD, Malaysia Metropolis and Kampung Village.
+            // Metropolis -> Boat Quay is the script's no-saved-location return fallback.
+            new TaxiEdge(540000000, 9201135, 550000000, 42000),
+            new TaxiEdge(550000000, 9201135, 551000000, 10000),
+            new TaxiEdge(551000000, 9201135, 550000000, 10000),
+            new TaxiEdge(550000000, 9201135, 541000000, 0));
 
     // NPCs whose "taxi" edge is a cross-continent scripted-warp ride with NO walking alternative
     // (the block above): Shanks (Maple Island exit), Dolphin (Aqua Road), Pason/Pison (Florina Beach),
-    // Crane (Mu Lung <-> Herb Town), Jeff (Ice Valley II -> Sharp Cliff I). These stay available even to
-    // a poor bot; the Victoria cab edges
+    // Crane (Mu Lung <-> Herb Town), Jeff (Ice Valley II -> Sharp Cliff I), Spinel world tour, Audrey
+    // Malaysia/Singapore travel. These stay available even to a poor bot; the Victoria cab edges
     // (optional shortcuts between towns that ARE walkable) are gated by the taxi meso tier in expand().
-    private static final Set<Integer> CONTINENT_RIDE_NPCS = Set.of(22000, 2060009, 1002002, 1081001, 2090005, 2030000, 9201056);
+    private static final Set<Integer> CONTINENT_RIDE_NPCS = Set.of(
+            22000, 2060009, 1002002, 1081001, 2090005, 2030000, 9201056, 9000020, 9201135);
 
     private static final Map<Integer, List<TaxiEdge>> TAXI_BY_MAP = buildTaxiByMap();
 
@@ -485,7 +508,9 @@ final class BotWorldGraph {
             // Korean Folk Town: Fox Ridge -> KFT-side return map 222010200, script foxLaidy_map
             new ScriptedEntrance(222010300, "west00", 222010200),
             // Leafre: Cave of Life entrance -> Leafre field 240040600, script hontale_morph2
-            new ScriptedEntrance(240040700, "out00", 240040600)
+            new ScriptedEntrance(240040700, "out00", 240040600),
+            // Helios Tower Time Control Room -> Ellin Forest Small Forest, script move_elin.
+            new ScriptedEntrance(222020400, "in01", 300000100)
     );
 
     /** The scripted-entrance portal name to walk for a {@code fromMap -> destMap} hop, or null when that

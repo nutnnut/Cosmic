@@ -299,6 +299,8 @@ class BotFerryManagerTest {
         assertFalse(BotFerryManager.findFerryEdge(200000100, 999999999) != null);
         // Solo rides (ticketItemId 0) resolve as edges too.
         assertTrue(BotFerryManager.findFerryEdge(200000161, 130000210) == BotFerryManager.ORBIS_TO_EREVE);
+        assertTrue(BotFerryManager.findFerryEdge(101000400, 130000210) == BotFerryManager.ELLINIA_TO_EREVE);
+        assertTrue(BotFerryManager.findFerryEdge(130000210, 101000400) == BotFerryManager.EREVE_TO_ELLINIA);
         assertTrue(BotFerryManager.findFerryEdge(104000000, 140020300) == BotFerryManager.LITH_TO_RIEN);
         assertTrue(BotFerryManager.findFerryEdge(140020300, 104000000) == BotFerryManager.RIEN_TO_LITH);
     }
@@ -375,14 +377,18 @@ class BotFerryManagerTest {
     void shouldResolveTheNewEventManagerTransitEdges() {
         assertTrue(BotFerryManager.findFerryEdge(103000100, 600010001) == BotFerryManager.KC_TO_NLC);
         assertTrue(BotFerryManager.findFerryEdge(600010001, 103000100) == BotFerryManager.NLC_TO_KC);
+        assertTrue(BotFerryManager.findFerryEdge(103000000, 540010000) == BotFerryManager.KC_TO_SINGAPORE);
+        assertTrue(BotFerryManager.findFerryEdge(540010000, 103000000) == BotFerryManager.SINGAPORE_TO_KC);
         assertTrue(BotFerryManager.findFerryEdge(103000100, 103000310) == BotFerryManager.KC_TO_KSQUARE);
         assertTrue(BotFerryManager.findFerryEdge(103000310, 103000100) == BotFerryManager.KSQUARE_TO_KC);
         assertTrue(BotFerryManager.findFerryEdge(200000141, 250000100) == BotFerryManager.ORBIS_TO_MULUNG);
         assertTrue(BotFerryManager.findFerryEdge(250000100, 200000141) == BotFerryManager.MULUNG_TO_ORBIS);
         assertTrue(BotFerryManager.findFerryEdge(222020100, 222020200) == BotFerryManager.HELIOS_UP);
         assertTrue(BotFerryManager.findFerryEdge(222020200, 222020100) == BotFerryManager.HELIOS_DOWN);
-        // The Kerning City hall boards two lines now (NLC subway + Kerning Square train).
+        // The Kerning City subway hall boards two lines (NLC subway + Kerning Square train), and Kerning
+        // town itself now boards the Singapore airplane.
         assertTrue(BotFerryManager.routesBoardingAt(103000100).size() >= 2);
+        assertTrue(BotFerryManager.routesBoardingAt(103000000).contains(BotFerryManager.KC_TO_SINGAPORE));
     }
 
     @Test

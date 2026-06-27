@@ -72,3 +72,4 @@ Each file is one fact/area. One-line hooks below — open the file for detail.
 - [feedback_client_side_formulas_in_bot.md](feedback_client_side_formulas_in_bot.md) — Client-side formulas (damage rolls, cast stance bytes) go in bot code, never in StatEffect / damage handlers
 - [feedback_verify_ids_against_handbook.md](feedback_verify_ids_against_handbook.md) — Verify NPC/item/map IDs against handbook/NPC.txt etc., never guess
 - [feedback_wz_worktree_junction_hazard.md](feedback_wz_worktree_junction_hazard.md) — WZ wipe hazard: remove any inner wz junction with a non-recursive rmdir FIRST (CLAUDE.md rule #7)
+- [feedback_codex_mojibake.md](feedback_codex_mojibake.md) — Windows PowerShell mojibake trap: read Unicode repo docs as UTF-8 before copying patch context

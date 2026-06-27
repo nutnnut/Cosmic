@@ -141,7 +141,8 @@ final class BotFerryManager {
     // Solo rides (ticketItemId 0 = pay meso to the boat NPC, no ticket/usher/gate). The NPC warps the
     // bot onto the ride map (waiting=deck=cabin), whose coded MapleMap onUserEnter timer delivers it to
     // the destination (FROM_*_EREVE / FROM_*_RIEN handlers - run for bots, not behind the client guard).
-    // Verified: scripts/npc/{1100008,1100004,1200004,1200003} + MapleMap.java:2364+ + MapId arrival ids.
+    // Verified: scripts/npc/{1100008,1100004,1100007,1100003,1200004,1200003} + MapleMap.java:2364+
+    // + MapId arrival ids.
     static final FerryRoute ORBIS_TO_EREVE = new FerryRoute(
             130000210, 0, 1000,
             1100008, 200000161,
@@ -154,6 +155,20 @@ final class BotFerryManager {
             1100004, 130000210,
             0, -1, 0, -1, -1,
             200090021, 200090021, 200090021,
+            List.of(130000210), "");
+
+    static final FerryRoute ELLINIA_TO_EREVE = new FerryRoute(
+            130000210, 0, 1000,
+            1100007, 101000400,
+            0, -1, 0, -1, -1,
+            200090030, 200090030, 200090030,
+            List.of(101000400), "");
+
+    static final FerryRoute EREVE_TO_ELLINIA = new FerryRoute(
+            101000400, 0, 1000,
+            1100003, 130000210,
+            0, -1, 0, -1, -1,
+            200090031, 200090031, 200090031,
             List.of(130000210), "");
 
     static final FerryRoute LITH_TO_RIEN = new FerryRoute(
@@ -195,6 +210,24 @@ final class BotFerryManager {
             0, -1, -1,
             600010002, 600010003, 600010003,
             List.of(600010001), "Subway");
+
+    // Kerning City <-> Singapore CBD airplane (AirPlane event, ticket 4031731 KC / 4031732 CBD, 5k).
+    // The same ticketing NPC sells the ticket and admits the player into the boarding room on each side.
+    static final FerryRoute KC_TO_SINGAPORE = new FerryRoute(
+            540010000, 4031731, 5000,
+            9270041, 103000000,
+            9270041, 103000000,
+            0, -1, -1,
+            540010100, 540010101, 540010101,
+            List.of(103000000), "AirPlane");
+
+    static final FerryRoute SINGAPORE_TO_KC = new FerryRoute(
+            103000000, 4031732, 5000,
+            9270038, 540010000,
+            9270038, 540010000,
+            0, -1, -1,
+            540010001, 540010002, 540010002,
+            List.of(540010000), "AirPlane");
 
     // Kerning City <-> Kerning Square (KerningTrain event). KC->Square boards at the ticket gate 1052007
     // (free); Square->KC boards at the scripted portal out00 (Depart_ToKerning). Lands at the station, a
@@ -255,8 +288,9 @@ final class BotFerryManager {
             ELLINIA_TO_ORBIS, ORBIS_TO_ELLINIA,
             ORBIS_TO_LUDIBRIUM, ORBIS_TO_LEAFRE, ORBIS_TO_ARIANT,
             LUDIBRIUM_TO_ORBIS, LEAFRE_TO_ORBIS, ARIANT_TO_ORBIS,
-            ORBIS_TO_EREVE, EREVE_TO_ORBIS, LITH_TO_RIEN, RIEN_TO_LITH,
-            KC_TO_NLC, NLC_TO_KC, KC_TO_KSQUARE, KSQUARE_TO_KC,
+            ORBIS_TO_EREVE, EREVE_TO_ORBIS, ELLINIA_TO_EREVE, EREVE_TO_ELLINIA,
+            LITH_TO_RIEN, RIEN_TO_LITH,
+            KC_TO_NLC, NLC_TO_KC, KC_TO_SINGAPORE, SINGAPORE_TO_KC, KC_TO_KSQUARE, KSQUARE_TO_KC,
             ORBIS_TO_MULUNG, MULUNG_TO_ORBIS, HELIOS_UP, HELIOS_DOWN);
 
     // A hub map (Orbis 200000100) carries SEVERAL ferry lines, so each boarding map maps to a LIST.
