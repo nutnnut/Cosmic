@@ -205,6 +205,29 @@ public class BotEntry {
     boolean dbgCrossRegionRetreat = false; // retreat vantage is in another nav region (jump/edge away)
     boolean dbgRangedSpacingGaveUp = false; // anti-freeze fired: spacing never opened, fighting in place
     boolean dbgRangedSpacingCrowded = false; // mob inside the ranged retreat band this tick (spacing want)
+    long dbgAttackExecAtMs = 0L;      // last BotCombatManager.attackMonster executor attempt
+    String dbgAttackExecResult = "";  // sent / sent:no-hp-change / blocked:<reason>
+    int dbgAttackExecSkillId = 0;
+    String dbgAttackExecRoute = "";
+    int dbgAttackExecTargetId = 0;
+    int dbgAttackExecTargetOid = 0;
+    int dbgAttackExecTargetHpBefore = -1;
+    int dbgAttackExecTargetHpAfter = -1;
+    int dbgAttackExecDamage = 0;      // planned packet damage lines, before server-side caps/immunity
+    int dbgAttackExecCooldownMs = 0;
+    int dbgAttackExecMpBefore = -1;
+    int dbgAttackExecMpAfter = -1;
+    long dbgAttackSentAtMs = 0L;       // last executor attempt that reached the shared attack handler
+    String dbgAttackSentResult = "";   // sent / sent:no-hp-change
+    int dbgAttackSentSkillId = 0;
+    String dbgAttackSentRoute = "";
+    int dbgAttackSentTargetId = 0;
+    int dbgAttackSentTargetOid = 0;
+    int dbgAttackSentTargetHpBefore = -1;
+    int dbgAttackSentTargetHpAfter = -1;
+    int dbgAttackSentDamage = 0;
+    int dbgAttackSentMpBefore = -1;
+    int dbgAttackSentMpAfter = -1;
     int wanderDirection = 0;      // -1 left, +1 right, 0 = unset (picked when grind has no target)
 
     // Shop auto-buy (triggered once per map change)

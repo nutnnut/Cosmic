@@ -3950,6 +3950,7 @@ public class BotManager {
                 // Don't short-circuit when a cross-region retreat is in progress — the
                 // bot must still walk to the edge launch this tick.
                 if (attacked && !entry.inAir && crossRegionRetreatPos == null) {
+                    recordCombatPathTick(entry, targetPos, true, runAiTick);
                     return new LocalOpportunityAttackResult(true, targetPos);
                 }
             } else if (!entry.inAir
@@ -3959,6 +3960,7 @@ public class BotManager {
                     && grindWeaponType != WeaponType.WAND && grindWeaponType != WeaponType.STAFF) {
                 // Target is above but within jump height — jump toward it
                 BotMovementManager.initiateJump(entry, bot, tp.x - botPos.x);
+                recordCombatPathTick(entry, targetPos, true, runAiTick);
                 return new LocalOpportunityAttackResult(true, targetPos);
             }
         }
@@ -3973,6 +3975,7 @@ public class BotManager {
                 && BotCombatManager.isTargetInAttackRange(attackPlan, bot, target)) {
             BotPhysicsEngine.idleOnGround(entry, bot);
             BotMovementManager.broadcastMovement(entry);
+            recordCombatPathTick(entry, targetPos, true, runAiTick);
             return new LocalOpportunityAttackResult(true, targetPos);
         }
         // Retreat positioning is a local combat adjustment, not an inter-region path target.
@@ -3998,6 +4001,17 @@ public class BotManager {
             if (lootPos != null) targetPos = lootPos;
         }
         return new LocalOpportunityAttackResult(false, targetPos);
+    }
+
+    private void recordCombatPathTick(BotEntry entry, Point targetPos, boolean consumedTick, boolean runAiTick) {
+        if (entry.pathLogger == null || entry.bot == null || entry.bot.getMap() == null) {
+            return;
+        }
+        BotNavigationGraph graph = BotNavigationGraphProvider.peekGraph(entry.bot.getMap(), entry.movementProfile);
+        int regionId = graph != null
+                ? BotNavigationManager.resolveCurrentRegionId(graph, entry, entry.bot.getMap(), entry.bot.getPosition())
+                : -1;
+        entry.pathLogger.record(entry, captureTargetSnapshot(entry), regionId, consumedTick, runAiTick);
     }
 
     private void handleBotTickFailure(BotEntry entry, int ownerCharId, int botCharId, Throwable t) {

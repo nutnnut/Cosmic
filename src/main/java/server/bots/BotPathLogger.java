@@ -349,17 +349,20 @@ final class BotPathLogger {
             BotCombatManager.AttackPlan plan = BotCombatManager.planAttack(entry, bot, mob);
             boolean inRange = BotCombatManager.isTargetInAttackRange(plan, bot, mob);
             boolean canUseNow = BotCombatManager.canUseAttackPlanNow(entry, wt, plan);
-            boolean cooling = entry.attackSkillId != 0 && bot.skillIsCooling(entry.attackSkillId);
+            boolean actionLocked = entry.attackCooldownMs > 0;
+            boolean skillCooling = plan != null && plan.skillId != 0 && bot.skillIsCooling(plan.skillId);
             sb.append("            firePath: plan=")
                     .append(plan == null ? "NULL"
                             : plan.route + " skill=" + plan.skillId + " hitBox=" + (plan.hasHitBox() ? "yes" : "no"))
                     .append("  inRange=").append(inRange)
                     .append("  canUseNow=").append(canUseNow)
-                    .append("  atkCooling=").append(cooling)
+                    .append("  actionLocked=").append(actionLocked)
+                    .append("  skillCooling=").append(skillCooling)
                     .append("  cdLeftMs=").append(Math.max(0, entry.attackCooldownMs))
-                    .append(plan != null && inRange && canUseNow && entry.dbgAttackGateOpen
+                    .append(plan != null && inRange && canUseNow && entry.dbgAttackGateOpen && !actionLocked
                             ? "  => SHOULD FIRE (freeze is downstream in movement/nav)" : "  => NO FIRE")
                     .append("\n");
+            appendAttackExecState(sb, entry);
         }
         if (entry.dbgCombatDecisionAtMs == 0L) {
             sb.append("            decision=<no grind-combat tick recorded yet>\n");
@@ -399,6 +402,49 @@ final class BotPathLogger {
                         : "(" + entry.retreatHoldPos.x + "," + entry.retreatHoldPos.y + ")")
                 .append("  retreatHoldLeftMs=").append(Math.max(0L, entry.retreatHoldUntilMs - now))
                 .append("  breakoutDir=").append(entry.breakoutDirection)
+                .append("\n");
+    }
+
+    private void appendAttackExecState(StringBuilder sb, BotEntry entry) {
+        if (entry.dbgAttackExecAtMs == 0L) {
+            sb.append("            lastExec=<none>\n");
+            appendAttackSentState(sb, entry);
+            return;
+        }
+        long agoMs = System.currentTimeMillis() - entry.dbgAttackExecAtMs;
+        sb.append("            lastExec: result=").append(entry.dbgAttackExecResult)
+                .append(" skill=").append(entry.dbgAttackExecSkillId)
+                .append(" route=").append(entry.dbgAttackExecRoute.isEmpty() ? "none" : entry.dbgAttackExecRoute)
+                .append(" target=").append(entry.dbgAttackExecTargetId)
+                .append("/oid=").append(entry.dbgAttackExecTargetOid)
+                .append(" hp=").append(entry.dbgAttackExecTargetHpBefore)
+                .append("->").append(entry.dbgAttackExecTargetHpAfter)
+                .append(" plannedDmg=").append(entry.dbgAttackExecDamage)
+                .append(" mp=").append(entry.dbgAttackExecMpBefore)
+                .append("->").append(entry.dbgAttackExecMpAfter)
+                .append(" cdSetMs=").append(entry.dbgAttackExecCooldownMs)
+                .append(" agoMs=").append(agoMs)
+                .append("\n");
+        appendAttackSentState(sb, entry);
+    }
+
+    private void appendAttackSentState(StringBuilder sb, BotEntry entry) {
+        if (entry.dbgAttackSentAtMs == 0L) {
+            sb.append("            lastSent=<none>\n");
+            return;
+        }
+        long agoMs = System.currentTimeMillis() - entry.dbgAttackSentAtMs;
+        sb.append("            lastSent: result=").append(entry.dbgAttackSentResult)
+                .append(" skill=").append(entry.dbgAttackSentSkillId)
+                .append(" route=").append(entry.dbgAttackSentRoute.isEmpty() ? "none" : entry.dbgAttackSentRoute)
+                .append(" target=").append(entry.dbgAttackSentTargetId)
+                .append("/oid=").append(entry.dbgAttackSentTargetOid)
+                .append(" hp=").append(entry.dbgAttackSentTargetHpBefore)
+                .append("->").append(entry.dbgAttackSentTargetHpAfter)
+                .append(" plannedDmg=").append(entry.dbgAttackSentDamage)
+                .append(" mp=").append(entry.dbgAttackSentMpBefore)
+                .append("->").append(entry.dbgAttackSentMpAfter)
+                .append(" agoMs=").append(agoMs)
                 .append("\n");
     }
 

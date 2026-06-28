@@ -1364,7 +1364,14 @@ class BotCombatManager {
     }
 
     static void attackMonster(BotEntry entry, Character bot, AttackPlan attackPlan) {
+        if (attackPlan == null) {
+            recordAttackExec(entry, null, null, "blocked:no-plan", 0, -1, -1, botMp(bot), botMp(bot));
+            return;
+        }
+        Monster primary = attackPlan != null && !attackPlan.targets.isEmpty() ? attackPlan.targets.get(0) : null;
         if (entry.attackCooldownMs > 0) {
+            recordAttackExec(entry, attackPlan, primary, "blocked:action-lock", 0, primaryHp(primary), primaryHp(primary),
+                    botMp(bot), botMp(bot));
             return;
         }
         // No ammo blocks RANGED attacks (would consume stars/bullets we don't have), but NOT the
@@ -1372,16 +1379,27 @@ class BotCombatManager {
         // CLOSE route, consumes no ammo). Letting CLOSE through is the last-resort guardrail so a
         // truly-broke bot can still farm its way back to affording ammo instead of standing inert.
         if (entry.noAmmo && attackPlan.route != AttackRoute.CLOSE) {
+            recordAttackExec(entry, attackPlan, primary, "blocked:no-ammo", 0, primaryHp(primary), primaryHp(primary),
+                    botMp(bot), botMp(bot));
             return;
         }
         if (attackPlan.skillId != 0 && !canUseSkill(bot, attackPlan.skillId, attackPlan.skillLevel)) {
+            recordAttackExec(entry, attackPlan, primary, "blocked:skill-cost", 0, primaryHp(primary), primaryHp(primary),
+                    botMp(bot), botMp(bot));
             return;
         }
         if (!canUseAttackPlanNow(entry, BotAttackExecutionProvider.getEquippedWeaponType(bot), attackPlan)) {
+            recordAttackExec(entry, attackPlan, primary, "blocked:airborne-route", 0, primaryHp(primary), primaryHp(primary),
+                    botMp(bot), botMp(bot));
             return;
         }
 
         int numAttacked = attackPlan.targets.size();
+        if (numAttacked <= 0) {
+            recordAttackExec(entry, attackPlan, primary, "blocked:no-targets", 0, primaryHp(primary), primaryHp(primary),
+                    botMp(bot), botMp(bot));
+            return;
+        }
         AbstractDealDamageHandler.AttackInfo attack = new AbstractDealDamageHandler.AttackInfo();
         attack.skill = attackPlan.skillId;
         attack.skilllevel = attackPlan.skillLevel;
@@ -1405,10 +1423,71 @@ class BotCombatManager {
                             attackPlan.skillId, damageProfile, attackPlan.hitDelayMs));
         }
 
+        int hpBefore = primaryHp(primary);
+        int mpBefore = botMp(bot);
+        int plannedDamage = plannedAttackDamage(attack.targets);
         BotAttackExecutionProvider.applyAttackRoute(attackPlan.route, attack, bot);
+        int hpAfter = primaryHp(primary);
+        int mpAfter = botMp(bot);
         entry.attackCooldownMs = Math.max(entry.attackCooldownMs, attackPlan.cooldownMs);
+        String result = hpBefore >= 0 && hpAfter == hpBefore && plannedDamage > 0 ? "sent:no-hp-change" : "sent";
+        recordAttackExec(entry, attackPlan, primary, result, plannedDamage, hpBefore, hpAfter, mpBefore, mpAfter);
         rememberAttackFacing(entry, attackPlan.stance);
         markAlerted(entry);
+    }
+
+    private static int primaryHp(Monster primary) {
+        return primary != null ? primary.getHp() : -1;
+    }
+
+    private static int botMp(Character bot) {
+        return bot != null ? bot.getMp() : -1;
+    }
+
+    private static int plannedAttackDamage(Map<Integer, AbstractDealDamageHandler.AttackTarget> targets) {
+        int total = 0;
+        for (AbstractDealDamageHandler.AttackTarget target : targets.values()) {
+            for (Integer line : target.damageLines()) {
+                if (line == null) {
+                    continue;
+                }
+                int damage = line;
+                if (damage < 0) {
+                    damage += Integer.MAX_VALUE;
+                }
+                total += Math.max(0, damage);
+            }
+        }
+        return total;
+    }
+
+    private static void recordAttackExec(BotEntry entry, AttackPlan attackPlan, Monster primary, String result,
+                                         int plannedDamage, int hpBefore, int hpAfter, int mpBefore, int mpAfter) {
+        entry.dbgAttackExecAtMs = System.currentTimeMillis();
+        entry.dbgAttackExecResult = result;
+        entry.dbgAttackExecSkillId = attackPlan != null ? attackPlan.skillId : 0;
+        entry.dbgAttackExecRoute = attackPlan != null && attackPlan.route != null ? attackPlan.route.name() : "";
+        entry.dbgAttackExecTargetId = primary != null ? primary.getId() : 0;
+        entry.dbgAttackExecTargetOid = primary != null ? primary.getObjectId() : 0;
+        entry.dbgAttackExecTargetHpBefore = hpBefore;
+        entry.dbgAttackExecTargetHpAfter = hpAfter;
+        entry.dbgAttackExecDamage = plannedDamage;
+        entry.dbgAttackExecCooldownMs = attackPlan != null ? attackPlan.cooldownMs : 0;
+        entry.dbgAttackExecMpBefore = mpBefore;
+        entry.dbgAttackExecMpAfter = mpAfter;
+        if (result != null && result.startsWith("sent")) {
+            entry.dbgAttackSentAtMs = entry.dbgAttackExecAtMs;
+            entry.dbgAttackSentResult = result;
+            entry.dbgAttackSentSkillId = entry.dbgAttackExecSkillId;
+            entry.dbgAttackSentRoute = entry.dbgAttackExecRoute;
+            entry.dbgAttackSentTargetId = entry.dbgAttackExecTargetId;
+            entry.dbgAttackSentTargetOid = entry.dbgAttackExecTargetOid;
+            entry.dbgAttackSentTargetHpBefore = hpBefore;
+            entry.dbgAttackSentTargetHpAfter = hpAfter;
+            entry.dbgAttackSentDamage = plannedDamage;
+            entry.dbgAttackSentMpBefore = mpBefore;
+            entry.dbgAttackSentMpAfter = mpAfter;
+        }
     }
 
     static void rememberAttackFacing(BotEntry entry, int attackPacketStance) {
