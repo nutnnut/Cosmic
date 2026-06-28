@@ -288,6 +288,9 @@ public final class BotScheduler {
             if (leaderDesire(e.getValue(), hour, epochDay) <= 0.0) {
                 continue;
             }
+            if (liveNow + e.getValue().size() > target) {
+                continue; // crew would overshoot; soloists fill the remaining gap
+            }
             boolean broughtAny = false;
             for (ManagedBot m : e.getValue()) {
                 if (bm.spawnManagedBot(m.botCharId())) {

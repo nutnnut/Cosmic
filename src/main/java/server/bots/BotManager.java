@@ -203,9 +203,9 @@ public class BotManager {
         public long POPULATION_FASTSTART_MS = 30_000L;     // on enable, ramp the population in over this window
         public long POPULATION_FASTSTART_INTERVAL_MS = 5_000L; // ...sweeping this often during the ramp (vs the
                                                            // POPULATION_SWEEP_MS steady cadence afterwards)
-        public double POPULATION_CREW_CHANCE = 0.20;       // chance an autogen event spawns a fresh CREW (vs a soloist)
+        public double POPULATION_CREW_CHANCE = 0.30;       // chance an autogen event spawns a fresh CREW (vs a soloist)
         public int POPULATION_CREW_MIN = 2;                // crew size range when auto-generating a crew
-        public int POPULATION_CREW_MAX = 4;
+        public int POPULATION_CREW_MAX = 6;
 
         // Grind dispersion: each other bot/player already on (or committed to) a candidate map counts as
         // this many extra spawn-competitors, so crowded maps yield fewer kills/h and bots spread out
