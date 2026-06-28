@@ -72,6 +72,10 @@ final class BotScrollManager {
     /** Meso cost assumed for an owned scroll with no NPC-shop price (drop-only). Stub until the
      *  drop-effort→meso / economy ledger lands. */
     private static final int DEFAULT_SCROLL_COST_MESO = 1_000_000;
+    /** Meso per unit of expected best-buyer combat value (successRate × stat worth) for the scroll
+     *  combat-demand ceiling. Single anchor: Attack 60% (ev = 0.6 × 5×2 = 6) → 4.5M, matching the live
+     *  attack-scroll market. ponytail: one knob, retune here; same min(obtainCost, ceiling) shape as ammo. */
+    private static final double SCROLL_CEILING_PER_EV = 750_000.0;
     /** Opportunity cost of USING an owned scroll, as a fraction of its market price: scrolls are
      *  liquid/valuable, so consuming one forgoes nearly its full sale value. Near 1.0; this is the
      *  per-apply action cost only (the value curve still uses full market price). Could later be a
@@ -981,6 +985,18 @@ final class BotScrollManager {
                 + SECONDARY_STAT_WEIGHT * st.getOrDefault(statKey(ms[1]), 0);
     }
 
+    /** Job-agnostic best-buyer worth of the stats a scroll grants, for market/trade pricing: attack at
+     *  ATT_WEIGHT, magic attack at MATK_WEIGHT, every base stat at its main weight (so an INT scroll keeps
+     *  a mage's value even when a warrior bot holds it), plus the small survival terms. SSOT weights, no
+     *  job lookup — the counterpart to {@link #offenseValueFromStats} for a tradeable economy. */
+    static double marketStatValue(Map<String, Integer> st) {
+        double offense = ATT_WEIGHT * st.getOrDefault("PAD", 0)
+                + MATK_WEIGHT * st.getOrDefault("MAD", 0)
+                + MAIN_STAT_WEIGHT * (st.getOrDefault("STR", 0) + st.getOrDefault("DEX", 0)
+                        + st.getOrDefault("INT", 0) + st.getOrDefault("LUK", 0));
+        return offense + survivalValueFromStats(st);
+    }
+
     /** Survivability/utility worth of an equip: WDEF/MDEF/HP/MP/avoid/move, each small-weighted so a
      *  defensive piece registers without rivaling attack gear. The counterpart to {@link #offenseValue}
      *  for the stats it ignores. */
@@ -1326,6 +1342,22 @@ final class BotScrollManager {
     static double scrollMarketValueMeso(Character bot, int scrollId) {
         BotEntry entry = bot == null ? null : BotManager.getInstance().getEntryByBotCharId(bot.getId());
         return scrollPriceMeso(resolveProducerCombat(entry, bot), scrollId);
+    }
+
+    /** Combat-demand ceiling for an equip scroll, in meso: the most a best-buyer pays for the combat
+     *  value it injects = {@link #SCROLL_CEILING_PER_EV} × successRate × {@link #marketStatValue}. The
+     *  USE-shelf keeper caps a scroll's worth at min(obtainCost, this) — a flooded/shop-cheap scroll
+     *  stays at its obtain cost, an overpriced-but-weak one is pulled down to its real combat value.
+     *  Returns 0 for stat-less scrolls (clean slate, chaos, enhancement) so they keep obtain-cost worth. */
+    static double scrollCombatCeilingMeso(int scrollId) {
+        Map<String, Integer> st = ItemInformationProvider.getInstance().getEquipStats(scrollId);
+        if (st == null) {
+            return 0.0;
+        }
+        int success = st.getOrDefault("success", 0);
+        double statWorth = marketStatValue(st);
+        return success <= 0 || statWorth <= 0 ? 0.0
+                : SCROLL_CEILING_PER_EV * (success / 100.0) * statWorth;
     }
 
     /** Market (acquisition) value of any shop-bought item — the cheapest legitimate NPC buy price.

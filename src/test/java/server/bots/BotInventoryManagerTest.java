@@ -577,6 +577,7 @@ class BotInventoryManagerTest {
         IntUnaryOperator pmk = BotInventoryManager.ammoMarketValue;
         BotInventoryManager.SellPriceLookup ps = BotInventoryManager.sellPrice;
         BotInventoryManager.ScrollMarketValueLookup pm = BotInventoryManager.scrollMarketValue;
+        java.util.function.IntToDoubleFunction pcc = BotInventoryManager.scrollCombatCeiling;
         BotInventoryManager.ScrollMarketValueLookup poc = BotInventoryManager.ammoObtainCost;
         IntPredicate pq = BotInventoryManager.questItem;
         java.util.function.Predicate<Item> pu = BotInventoryManager.untradeable;
@@ -586,6 +587,7 @@ class BotInventoryManagerTest {
         BotInventoryManager.ammoMarketValue = id -> 0;   // hermetic: no DB shop-price lookup in tests
         BotInventoryManager.sellPrice = price;
         BotInventoryManager.scrollMarketValue = (bot, id) -> 0.0;
+        BotInventoryManager.scrollCombatCeiling = id -> 0.0;     // hermetic: no WZ stat lookup in tests
         BotInventoryManager.ammoObtainCost = (bot, id) -> 0.0;   // hermetic: no DB shop/farm lookup in tests
         BotInventoryManager.questItem = id -> false;
         BotInventoryManager.untradeable = item -> false;
@@ -596,6 +598,7 @@ class BotInventoryManagerTest {
             BotInventoryManager.ammoMarketValue = pmk;
             BotInventoryManager.sellPrice = ps;
             BotInventoryManager.scrollMarketValue = pm;
+            BotInventoryManager.scrollCombatCeiling = pcc;
             BotInventoryManager.ammoObtainCost = poc;
             BotInventoryManager.questItem = pq;
             BotInventoryManager.untradeable = pu;
@@ -624,12 +627,14 @@ class BotInventoryManagerTest {
         IntUnaryOperator pmk = BotInventoryManager.ammoMarketValue;
         BotInventoryManager.SellPriceLookup ps = BotInventoryManager.sellPrice;
         BotInventoryManager.ScrollMarketValueLookup pm = BotInventoryManager.scrollMarketValue;
+        java.util.function.IntToDoubleFunction pcc = BotInventoryManager.scrollCombatCeiling;
         BotInventoryManager.ScrollMarketValueLookup poc = BotInventoryManager.ammoObtainCost;
         BotInventoryManager.projectileWatk = BotInventoryManagerTest::starWatk;
         BotInventoryManager.ammoSetValue = id -> 200;
         BotInventoryManager.ammoMarketValue = id -> 0;
         BotInventoryManager.sellPrice = (id, qty) -> 5 * qty;
         BotInventoryManager.scrollMarketValue = (bot, id) -> 8000.0;   // a genuinely valuable scroll
+        BotInventoryManager.scrollCombatCeiling = id -> 0.0;           // keep scroll worth at obtain cost
         BotInventoryManager.ammoObtainCost = (bot, id) -> 3000.0;      // Ilbi flooded: cheap to obtain
         try {
             Character bot = mock(Character.class);
@@ -643,6 +648,7 @@ class BotInventoryManagerTest {
             BotInventoryManager.ammoMarketValue = pmk;
             BotInventoryManager.sellPrice = ps;
             BotInventoryManager.scrollMarketValue = pm;
+            BotInventoryManager.scrollCombatCeiling = pcc;
             BotInventoryManager.ammoObtainCost = poc;
         }
     }
@@ -699,6 +705,51 @@ class BotInventoryManagerTest {
                     prevWatk = starWatk(r[0]);
                 }
             }
+        } finally {
+            BotInventoryManager.projectileWatk = pp;
+        }
+    }
+
+    @Test
+    void scrollKeepValueCappedByCombatCeiling() {
+        // Same min(obtainCost, combatCeiling) shape as ammo: a combat-weak scroll is pulled down to its
+        // ceiling, a strong one is held at obtain cost (supply binds), a stat-less one keeps obtain worth.
+        BotInventoryManager.ScrollMarketValueLookup pm = BotInventoryManager.scrollMarketValue;
+        java.util.function.IntToDoubleFunction pcc = BotInventoryManager.scrollCombatCeiling;
+        BotInventoryManager.SellPriceLookup ps = BotInventoryManager.sellPrice;
+        BotInventoryManager.sellPrice = (id, qty) -> 100 * qty;
+        BotInventoryManager.scrollMarketValue = (bot, id) -> 500_000.0;   // 500k to obtain
+        try {
+            Character bot = mock(Character.class);
+            BotInventoryManager.scrollCombatCeiling = id -> 75_000.0;     // weak: ceiling below obtain
+            double weak = BotInventoryManager.useShelfKeepValue(bot, Items.itemWithQuantity(2041014, 1));
+            assertEquals(75_000.0, weak, 0.001, "weak scroll capped to its combat ceiling");
+
+            BotInventoryManager.scrollCombatCeiling = id -> 4_500_000.0;  // strong: obtain binds
+            double strong = BotInventoryManager.useShelfKeepValue(bot, Items.itemWithQuantity(2044701, 1));
+            assertEquals(500_000.0, strong, 0.001, "strong scroll capped to obtain cost (supply binds)");
+
+            BotInventoryManager.scrollCombatCeiling = id -> 0.0;          // stat-less (clean slate)
+            double clean = BotInventoryManager.useShelfKeepValue(bot, Items.itemWithQuantity(2049000, 1));
+            assertEquals(500_000.0, clean, 0.001, "stat-less scroll keeps full obtain cost, not crushed");
+        } finally {
+            BotInventoryManager.scrollMarketValue = pm;
+            BotInventoryManager.scrollCombatCeiling = pcc;
+            BotInventoryManager.sellPrice = ps;
+        }
+    }
+
+    @Test
+    void bulletCurveFloorAlignsWithWeakestStar() {
+        // Bullets (WATK 10-20) share the star slope with the anchor shifted down 5: the weakest bullet
+        // (10 WATK) must value exactly the weakest star (15 WATK), and bullets stay below same-WATK stars.
+        IntUnaryOperator pp = BotInventoryManager.projectileWatk;
+        BotInventoryManager.projectileWatk = id -> id == 2330000 ? 10 : 15; // bullet 10, star 15
+        try {
+            double bullet10 = BotInventoryManager.ammoCombatCeiling(2330000); // bullet
+            double star15 = BotInventoryManager.ammoCombatCeiling(2070000);   // star
+            assertEquals(star15, bullet10, 0.001, "10-WATK bullet matches 15-WATK star floor");
+            assertTrue(bullet10 > 0);
         } finally {
             BotInventoryManager.projectileWatk = pp;
         }
@@ -1130,6 +1181,7 @@ class BotInventoryManagerTest {
                                                int makerLevel) {
         BotInventoryManager.SellPriceLookup prevPrice = BotInventoryManager.sellPrice;
         BotInventoryManager.ScrollMarketValueLookup prevScrollValue = BotInventoryManager.scrollMarketValue;
+        java.util.function.IntToDoubleFunction prevCeiling = BotInventoryManager.scrollCombatCeiling;
         IntUnaryOperator prevLeftover = BotInventoryManager.makerCrystalFromLeftover;
         IntUnaryOperator prevDrop = BotInventoryManager.bestDropChance;
         IntPredicate prevQuest = BotInventoryManager.questItem;
@@ -1137,6 +1189,7 @@ class BotInventoryManagerTest {
         java.util.function.ToIntFunction<Character> prevMaker = BotInventoryManager.makerSkillLevel;
         BotInventoryManager.sellPrice = price;
         BotInventoryManager.scrollMarketValue = (bot, id) -> 0.0;
+        BotInventoryManager.scrollCombatCeiling = id -> 0.0;   // hermetic: no WZ stat lookup in tests
         BotInventoryManager.makerCrystalFromLeftover = leftover;
         BotInventoryManager.bestDropChance = dropChance;
         BotInventoryManager.questItem = id -> false;
@@ -1145,6 +1198,7 @@ class BotInventoryManagerTest {
         return () -> {
             BotInventoryManager.sellPrice = prevPrice;
             BotInventoryManager.scrollMarketValue = prevScrollValue;
+            BotInventoryManager.scrollCombatCeiling = prevCeiling;
             BotInventoryManager.makerCrystalFromLeftover = prevLeftover;
             BotInventoryManager.bestDropChance = prevDrop;
             BotInventoryManager.questItem = prevQuest;

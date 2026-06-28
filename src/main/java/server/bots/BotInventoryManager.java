@@ -1871,6 +1871,9 @@ class BotInventoryManager {
     static final double AMMO_CEILING_BASE = 2.0;        // worth ×2 per +1 projectile WATK
     static final int AMMO_CEILING_ANCHOR_WATK = 19;     // weakest live star tier
     static final double AMMO_CEILING_ANCHOR_MESO = 75_000.0;
+    // Bullets span WATK 10-20 vs stars' 15-30; same slope, anchor shifted so the weakest bullet (10 WATK)
+    // lands on the weakest star's value (15 WATK). ponytail: one anchor point given, keep the star slope.
+    static final int BULLET_CEILING_ANCHOR_WATK = AMMO_CEILING_ANCHOR_WATK - 5;
     // A USE item effect, cached, for the recovery/cure/buff category predicates.
     @FunctionalInterface
     interface ItemEffectLookup {
@@ -1889,6 +1892,10 @@ class BotInventoryManager {
     }
     static ScrollMarketValueLookup scrollMarketValue =
             BotScrollManager::scrollMarketValueMeso;
+    // Combat-demand ceiling for a scroll (best-buyer combat value × success), capping its keep-worth the
+    // same way ammoCombatCeiling caps ammo. 0 for stat-less scrolls. Seam for tests.
+    static java.util.function.IntToDoubleFunction scrollCombatCeiling =
+            BotScrollManager::scrollCombatCeilingMeso;
     static IntUnaryOperator makerCrystalFromLeftover =
             id -> ItemInformationProvider.getInstance().getMakerCrystalFromLeftover(id);
     static IntUnaryOperator bestDropChance = BotScrollManager::bestDropChance;
@@ -2187,8 +2194,11 @@ class BotInventoryManager {
      */
     static double ammoCombatCeiling(int id) {
         int watk = projectileWatk.applyAsInt(id);
-        return watk <= 0 ? 0.0
-                : AMMO_CEILING_ANCHOR_MESO * Math.pow(AMMO_CEILING_BASE, watk - AMMO_CEILING_ANCHOR_WATK);
+        if (watk <= 0) {
+            return 0.0;
+        }
+        int anchor = ItemConstants.isBullet(id) ? BULLET_CEILING_ANCHOR_WATK : AMMO_CEILING_ANCHOR_WATK;
+        return AMMO_CEILING_ANCHOR_MESO * Math.pow(AMMO_CEILING_BASE, watk - anchor);
     }
 
     /**
@@ -2218,8 +2228,13 @@ class BotInventoryManager {
                     sellPrice.price(id, it.getQuantity()));
         }
         if (ItemConstants.isEquipScroll(id)) {
-            return Math.max(sellPrice.price(id, it.getQuantity()),
-                    scrollMarketValue.value(bot, id) * it.getQuantity());
+            double obtain = scrollMarketValue.value(bot, id);
+            double ceiling = scrollCombatCeiling.applyAsDouble(id);
+            // Combat-demand cap, same shape as ammo: a stat scroll is worth at most the combat value it
+            // injects, but never above what it costs to obtain. Stat-less scrolls (clean slate, chaos)
+            // have no ceiling -> keep full obtain-cost worth. NPC sell-back is the floor under all.
+            double worth = ceiling > 0 ? Math.min(obtain, ceiling) : obtain;
+            return Math.max(sellPrice.price(id, it.getQuantity()), worth * it.getQuantity());
         }
         return sellPrice.price(id, it.getQuantity());
     }
