@@ -2406,6 +2406,141 @@ class BotInventoryManager {
                 + " for " + mesoGained + " meso");
     }
 
+    // !inspectsell (admin debug): rearrange a character's bag so each tab is laid out the way the bot
+    // would shed it under bag pressure — slot 1 the most-disposable trash, the last slot the most
+    // prized keep, working back from there. Ordering is the SSOT pressure-sale score per section
+    // ({@link #inspectSellRank}): equips by RESV/HOARD/HLIM/TRASH bucket + tradeValueScore, USE by
+    // JUNK/SHELF(keepValue)/RUNWAY/quest, ETC by sell-trash vs whitelist. The split point between
+    // "would sell now" ({@link #collectSellTrashItems}) and "would keep" is the divider: keeps are
+    // back-anchored to the tab's tail so every empty slot pools in the MIDDLE, not the end. A packed
+    // tab NPC-sells one already-doomed item (illegal sale allowed, debug only) to open that gap.
+    // Server-side slot rebuild like {@link #sortOwnAmmoSlots}; the F8 window reads it fresh on reopen.
+    static List<String> inspectSellArrange(Character chr) {
+        Client c = chr.getClient();
+        if (c == null) {
+            return List.of("inspectsell: target is offline");
+        }
+        ItemInformationProvider ii = ItemInformationProvider.getInstance();
+        // SSOT classifiers: the exact verdicts/scores the real sell pipeline applies.
+        Map<Item, BagEquipClass> eqClass = classifyBagEquips(null, chr);
+        Map<Item, UseClass> useClass = classifyBagUse(chr);
+        Set<Item> etcSell = Collections.newSetFromMap(new IdentityHashMap<>());
+        etcSell.addAll(collectSellTrashEtcItems(chr));
+        Set<Item> selling = Collections.newSetFromMap(new IdentityHashMap<>());
+        selling.addAll(collectSellTrashItems(null, chr));
+        Comparator<Item> byRank =
+                Comparator.comparingDouble(it -> inspectSellRank(ii, it, eqClass, useClass, etcSell));
+
+        List<String> lines = new ArrayList<>();
+        for (InventoryType type : List.of(InventoryType.EQUIP, InventoryType.USE, InventoryType.ETC)) {
+            Inventory inv = chr.getInventory(type);
+
+            // Packed tab: NPC the most-disposable selling item (going anyway) so a divider can exist.
+            long meso = 0;
+            boolean soldForGap = false;
+            if (inv.getNumFreeSlot() == 0) {
+                Item victim = null;
+                for (short i = 1; i <= inv.getSlotLimit(); i++) {
+                    Item it = inv.getItem(i);
+                    if (it != null && selling.contains(it)
+                            && (victim == null || byRank.compare(it, victim) < 0)) {
+                        victim = it;
+                    }
+                }
+                short qty = victim == null ? 0 : sellTrashQuantity(victim);
+                if (qty > 0) {
+                    int price = ii.getPrice(victim.getItemId(), qty);
+                    InventoryManipulator.removeFromSlot(c, type, (byte) victim.getPosition(), qty, false);
+                    if (price > 0) {
+                        chr.gainMeso(price, false);
+                        meso += price;
+                    }
+                    selling.remove(victim);
+                    soldForGap = true;
+                }
+            }
+
+            inv.lockInventory();
+            try {
+                List<Item> sells = new ArrayList<>();
+                List<Item> keeps = new ArrayList<>();
+                for (short i = 1; i <= inv.getSlotLimit(); i++) {
+                    Item it = inv.getItem(i);
+                    if (it == null) {
+                        continue;
+                    }
+                    (selling.contains(it) ? sells : keeps).add(it);
+                }
+                if (sells.isEmpty()) {
+                    continue;   // nothing this tab would sell — leave it untouched
+                }
+                sells.sort(byRank);   // most disposable first
+                keeps.sort(byRank);   // least prized first, most prized last
+
+                for (Item it : sells) inv.removeSlot(it.getPosition());
+                for (Item it : keeps) inv.removeSlot(it.getPosition());
+
+                // Sells front-anchored (slot 1 = most trash); keeps back-anchored (last slot = most
+                // prized). Every free slot falls in the middle band between them.
+                short pos = 1;
+                for (Item it : sells) { it.setPosition(pos++); inv.addItemFromDB(it); }
+                short keepStart = (short) (inv.getSlotLimit() - keeps.size() + 1);
+                pos = (short) Math.max(pos, keepStart);   // abut sells if the tab is genuinely full
+                for (Item it : keeps) { it.setPosition(pos++); inv.addItemFromDB(it); }
+
+                int gapSlots = inv.getSlotLimit() - sells.size() - keeps.size();
+                lines.add(String.format("%s: %d sell | %d-slot gap | %d keep%s",
+                        type.name().toLowerCase(), sells.size(), Math.max(0, gapSlots),
+                        keeps.size(), soldForGap ? " (sold 1 for " + meso + " to open gap)" : ""));
+            } finally {
+                inv.unlockInventory();
+            }
+        }
+        if (lines.isEmpty()) {
+            lines.add("inspectsell: nothing the bot pipeline would sell");
+        }
+        return lines;
+    }
+
+    // Pressure-sale rank for !inspectsell: lower = shed sooner (front slots), higher = more prized
+    // (tail slots). Each section reuses its own SSOT score, offset into a band so the section order
+    // holds regardless of raw magnitudes: sell-now buckets sit below keep buckets, reserved/quest on
+    // top. EQUIP TRASH<HLIM<HOARD<RESV by tradeValueScore; USE JUNK<SHELF(keepValue)<RUNWAY<quest;
+    // ETC sell-trash<whitelist.
+    private static double inspectSellRank(ItemInformationProvider ii, Item it,
+            Map<Item, BagEquipClass> eqClass, Map<Item, UseClass> useClass, Set<Item> etcSell) {
+        final double BAND = 1e12;
+        int id = it.getItemId();
+        switch (it.getInventoryType()) {
+            case EQUIP -> {
+                double score = it instanceof Equip e ? tradeValueScore(ii, e) : 0;
+                BagEquipClass bc = eqClass.get(it);
+                int band = bc == null ? 0 : switch (bc.status()) {
+                    case TRASH -> 0;
+                    case HLIM -> 1;
+                    case HOARD -> 2;
+                    case RESV_OTHER -> 3;
+                    case RESV_SELF -> 4;
+                };
+                return band * BAND + score;
+            }
+            case USE -> {
+                UseClass uc = useClass.get(it);
+                if (uc == null) {
+                    return 3 * BAND + id;   // quest/untradeable: can't be sold, most stuck → tail
+                }
+                return switch (uc.tier()) {
+                    case JUNK -> 0 * BAND + sellPrice.price(id, it.getQuantity());
+                    case SHELF -> 1 * BAND + uc.keepValue();
+                    case RUNWAY -> 2 * BAND + sellPrice.price(id, it.getQuantity());
+                };
+            }
+            default -> {   // ETC
+                return (etcSell.contains(it) ? 0 : 1) * BAND + id;
+            }
+        }
+    }
+
     private static String autoSellTypeLabel(InventoryType type) {
         return switch (type) {
             case EQUIP -> "Equip";

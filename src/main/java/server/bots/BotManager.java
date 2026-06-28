@@ -678,6 +678,11 @@ public class BotManager {
         return BotInventoryManager.autoSellExecute(c);
     }
 
+    /** !inspectsell (admin debug): reorder a character's bag as sells | divider gap | keeps. */
+    public List<String> inspectSellArrange(Character target) {
+        return BotInventoryManager.inspectSellArrange(target);
+    }
+
     /**
      * Disconnect the client and respawn its character as a self-owned autopilot bot.
      * Returns an error message to show the player, or null when the takeover is underway.
