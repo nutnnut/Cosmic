@@ -1,0 +1,14 @@
+<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="Cosmic Server" type="Application" factoryName="Application">
+    <option name="MAIN_CLASS_NAME" value="net.server.Server" />
+    <module name="Cosmic" />
+    <!-- Heap + GC tuning shared across all devs. The bot tick is single-threaded, so a
+         stop-the-world GC pause freezes every bot. Cap the heap, give G1 a pause target,
+         and log GC so a multi-second freeze can be told apart from host CPU starvation. -->
+    <option name="VM_PARAMETERS" value="-Xmx4g -XX:+UseG1GC -XX:MaxGCPauseMillis=200 -Xlog:gc*:file=logs/gc.log:time,uptime,level,tags:filecount=5,filesize=20m -Dwz-path=wz" />
+    <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$" />
+    <method v="2">
+      <option name="Make" enabled="true" />
+    </method>
+  </configuration>
+</component>

@@ -558,25 +558,32 @@ function rowHtml(it, opts){
     + (meta!=='' ? '<br><span class="meta">'+meta+'</span>' : '') + '</div>';
 }
 // nesting: party (outer box) > crew (inner box) > loose rows. Boxes only form at >=2 members.
+// A group sorts as a whole by its best member (cmpRows), so a party stays together and ranks by its
+// strongest/first member — never split because one member would sort elsewhere. Groups and loose rows
+// are ordered together by the same key, so a player group > companion group > managed group falls out.
+function bestOf(items){ return sortRows(items)[0]; }
+function renderUnits(units){ return units.sort((a,b)=>cmpRows(a.best,b.best)).map(u=>u.html).join(''); }
 function renderGrouped(items){
   const parties = new Map(), noParty = [];
   for(const it of items){ const p = it.c.p||0; if(p){ if(!parties.has(p)) parties.set(p,[]); parties.get(p).push(it); } else noParty.push(it); }
-  let out = '';
+  const units = [];
   for(const [, members] of parties){
-    if(members.length >= 2) out += groupBox('party','Party', members, renderCrewsAndLoose(members));
+    if(members.length >= 2) units.push({best: bestOf(members), html: groupBox('party','Party', members, renderCrewsAndLoose(members))});
     else noParty.push(...members);
   }
-  return out + renderCrewsAndLoose(noParty);
+  return renderUnits(units.concat(crewUnits(noParty)));
 }
-function renderCrewsAndLoose(items){
+function renderCrewsAndLoose(items){ return renderUnits(crewUnits(items)); }
+function crewUnits(items){
   const crews = new Map(), loose = [];
   for(const it of items){ const g = it.bot ? (it.c.g||0) : 0; if(g){ if(!crews.has(g)) crews.set(g,[]); crews.get(g).push(it); } else loose.push(it); }
-  let out = '';
+  const units = [];
   for(const [gid, members] of crews){
-    if(members.length >= 2) out += groupBox('crew','Crew #'+gid, members, sortRows(members).map(rowHtml).join(''));
+    if(members.length >= 2) units.push({best: bestOf(members), html: groupBox('crew','Crew #'+gid, members, sortRows(members).map(rowHtml).join(''))});
     else loose.push(...members);
   }
-  return out + sortRows(loose).map(rowHtml).join('');
+  for(const it of loose) units.push({best: it, html: rowHtml(it)});
+  return units;
 }
 function groupBox(type, label, members, innerHtml){
   const ids = members.filter(it => it.bot && it.c.c).map(it => it.c.id);
