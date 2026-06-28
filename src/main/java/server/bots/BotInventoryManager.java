@@ -1868,6 +1868,12 @@ class BotInventoryManager {
     }
     static ScrollStatsLookup scrollStats =
             id -> ItemInformationProvider.getInstance().getEquipStats(id);
+    @FunctionalInterface
+    interface ScrollMarketValueLookup {
+        double value(Character bot, int itemId);
+    }
+    static ScrollMarketValueLookup scrollMarketValue =
+            BotScrollManager::scrollMarketValueMeso;
     static IntUnaryOperator makerCrystalFromLeftover =
             id -> ItemInformationProvider.getInstance().getMakerCrystalFromLeftover(id);
     static IntUnaryOperator bestDropChance = BotScrollManager::bestDropChance;
@@ -2027,7 +2033,7 @@ class BotInventoryManager {
 
         classifyOwnAmmoRunway(ownAmmo, out, shelf);
         classifyBuffRunway(buffs, bot, out, shelf);
-        rankUseShelf(shelf, out);
+        rankUseShelf(bot, shelf, out);
         return out;
     }
 
@@ -2126,7 +2132,7 @@ class BotInventoryManager {
     // Rank the shelf by value-per-slot ascending (sold first). Rechargeable ammo is valued per-set
     // (quantity-independent): the first slot of each tier carries the set value, every further slot
     // of that same tier is a redundant duplicate worth ~0 and leads the sale.
-    private static void rankUseShelf(List<Item> shelf, Map<Item, UseClass> out) {
+    private static void rankUseShelf(Character bot, List<Item> shelf, Map<Item, UseClass> out) {
         java.util.Set<Integer> seenRechargeableTier = new java.util.HashSet<>();
         // A rechargeable tier already kept in the runway is "seen", so its first shelf slot is a
         // redundant duplicate.
@@ -2146,6 +2152,9 @@ class BotInventoryManager {
             double v;
             if (ammoWeaponType(id) != null && ItemConstants.isRechargeable(id)) {
                 v = seenRechargeableTier.add(id) ? ammoSetValue.applyAsInt(id) : 0;
+            } else if (ItemConstants.isEquipScroll(id)) {
+                v = Math.max(sellPrice.price(id, it.getQuantity()),
+                        scrollMarketValue.value(bot, id) * it.getQuantity());
             } else {
                 v = sellPrice.price(id, it.getQuantity());
             }
@@ -2164,6 +2173,7 @@ class BotInventoryManager {
         if (ammoWeaponType(id) != null) {
             return value <= 0 ? "ammo-dup-set" : "ammo-shelf";
         }
+        if (ItemConstants.isEquipScroll(id)) return "scroll";
         if (isBuffConsumable(id)) return "buff";
         if (isRecoveryPotion(id)) return "recovery-extra";
         if (isAllCurePotion(id)) return "allcure-extra";

@@ -39,10 +39,9 @@ import java.util.function.DoubleUnaryOperator;
  * at a time, and on confirmation applies the scroll through the same path the player
  * {@code ScrollHandler} uses ({@link ItemInformationProvider#scrollEquipWithId}).
  *
- * <p>v1 scope: only NON-destroying scrolls are auto-proposed (any scroll with a boom/{@code cursed}
- * chance is skipped), so this first build cannot destroy gear. {@link BotScrollPlanner} already
- * handles boom-capable scrolls (fallback + strongly-positive EV); wiring those in — with slot
- * fallback detection — is the next increment.
+ * <p>Destroy-capable scrolls carry their boom chance into {@link BotScrollPlanner}. They are only
+ * proposed when the candidate has fallback gear for the slot and the expected value still clears
+ * stopping after pricing the destroyed branch at zero.
  *
  * <p>Equip value here is a transparent job-weighted offense metric (attack >> main stat > secondary),
  * a v1 stand-in for the full equip-optimizer / reproduction-cost DP in docs/bot/economy-design.md.
@@ -596,8 +595,7 @@ final class BotScrollManager {
     /**
      * List EVERY scroll in the bot's USE inventory (not just ones tied to a candidate equip), with the
      * raw facts the planner reads and a tag for why each is/ isn't usable. Gives full visibility into
-     * the bot's scroll stock — boom-risk, slate/modifier/white, and no-gain scrolls all show here even
-     * though the planner skips them.
+     * the bot's scroll stock — boom-risk, slate/modifier/white, and no-gain scrolls all show here.
      */
     private static void appendScrollInventory(StringBuilder sb, ProducerCombat pc, Character bot, ItemInformationProvider ii) {
         List<Item> scrolls = new ArrayList<>();
@@ -636,7 +634,7 @@ final class BotScrollManager {
             return "[modifier]";
         }
         if (cursed > 0) {
-            return "[boom " + cursed + "% - v1 skip]";
+            return "[boom " + cursed + "%]";
         }
         if (gain <= 0) {
             return "[no offense gain for this bot]";
@@ -829,8 +827,8 @@ final class BotScrollManager {
     /**
      * Cheap "why nothing?" explanation for when {@link #buildBestPlan} yields no play. Re-walks the
      * same gear/scroll scan at a coarse level (only runs on the no-op path, so cost is irrelevant) and
-     * picks the most specific reason: no slots, no fitting scrolls, only boom scrolls (v1 skips those),
-     * useless stats, gear too low to be worth it, or simply unfavorable odds.
+     * picks the most specific reason: no slots, no fitting scrolls, useless stats, gear too low to be
+     * worth it, boom scrolls without backup gear, or simply unfavorable odds.
      */
     private static String explainNoPlan(Character bot, ItemInformationProvider ii) {
         List<Equip> all = collectEquips(bot, ii);
@@ -844,8 +842,8 @@ final class BotScrollManager {
 
         boolean anySlotted = false;          // an equip (worn or bagged) with a free upgrade slot
         boolean anyApplicableScroll = false; // a scroll that fits some slotted equip
-        boolean anyBoomSkipped = false;      // a fitting scroll skipped only for boom risk (v1)
-        boolean anyUsableOption = false;     // fitting + non-boom + positive stat gain
+        boolean anyBoomWithoutFallback = false; // a fitting boom scroll, but no backup gear for the slot
+        boolean anyUsableOption = false;     // fitting + positive stat gain
         boolean anyUndominatedUsable = false; // a usable option on gear not already out-classed
 
         for (Equip eq : all) {
@@ -874,14 +872,13 @@ final class BotScrollManager {
                 }
                 int success = st.getOrDefault("success", 0);
                 int cursed = st.getOrDefault("cursed", 0);
-                if (cursed > 0) {
-                    anyBoomSkipped = true;
-                    continue;
-                }
                 if (success <= 0 || offenseValueFromStats(bot, st) <= 0) {
                     continue;
                 }
                 anyUsableOption = true;
+                if (cursed > 0 && !hasFallbackForSlot(all, slotOf, eq, slot)) {
+                    anyBoomWithoutFallback = true;
+                }
                 if (!dominated) {
                     anyUndominatedUsable = true;
                 }
@@ -895,12 +892,13 @@ final class BotScrollManager {
             return "i dont have any scrolls that fit my gear";
         }
         if (!anyUsableOption) {
-            return anyBoomSkipped
-                    ? "i only have boom-risk scrolls, ill skip those for now"
-                    : "those scrolls wouldnt add anything useful for me";
+            return "those scrolls wouldnt add anything useful for me";
         }
         if (!anyUndominatedUsable) {
             return "i already have better gear for those slots, saving the scrolls";
+        }
+        if (anyBoomWithoutFallback) {
+            return "those boom-risk scrolls need backup gear first";
         }
         return "not worth it - the odds dont pay off, ill save the scrolls";
     }
@@ -1321,6 +1319,13 @@ final class BotScrollManager {
         }
         double farm = farmingCostMeso(pc, scrollId);
         return Double.isFinite(farm) ? farm : DEFAULT_SCROLL_COST_MESO;
+    }
+
+    /** USE-bag shelf valuation hook: kept scrolls should be protected by the same market/farm value
+     *  self-scrolling uses, not by their usually-low NPC sell-back price. */
+    static double scrollMarketValueMeso(Character bot, int scrollId) {
+        BotEntry entry = bot == null ? null : BotManager.getInstance().getEntryByBotCharId(bot.getId());
+        return scrollPriceMeso(resolveProducerCombat(entry, bot), scrollId);
     }
 
     /**

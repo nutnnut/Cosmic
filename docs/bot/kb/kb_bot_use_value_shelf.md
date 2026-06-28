@@ -38,3 +38,10 @@ USE-bag hoarding (Preston: 20+ slots cheap recovery pots; Clawer: 28 slots / 191
 - **Quest items always vanish on drop** — fixed `InventoryManipulator.isDisappearingItemDrop`: the `UNTRADEABLE_ITEMS_TRADEABLE → return false` (nothing disappears) early-out now exempts quest items (`&& !ii.isQuestItem`), so a dropped quest item still hits the isDropRestricted SSOT branch and disappears instead of littering. Player-path fix, benefits players too.
 - **Part 4 "walk to NPC to turn in" was already built**: `BotQuestManager.readyToTurnIn` (started + `countsMet`, i.e. items held + counts) queues a TURNIN errand ahead of pickStartable/grinding in `tickScan`. No new priority code needed — held-item completable quests already preempt.
 - New seams (BotInventoryManagerTest `withSellSeams`/`withQuestSeams`): `makerSkillLevel` (int level), `questBugged` (BiPredicate, default false). 36 tests green.
+
+**Scroll pressure-sale fix (2026-06-28):** kept equip scrolls still live on the USE shelf, but their
+pressure-sale `keepValue` now uses BotScrollManager's market/farm scroll value, not low WZ NPC
+sell-back. This prevents forced liquidation of valuable dark ATT/stat scrolls before cheap
+off-class ammo or other low-value shelf stacks. The self-scroll planner already includes
+destroy-capable scrolls cleanly: `EV = success * value(success) + fail_no_boom * value(fail) +
+boom * 0 - scroll_cost`, gated by fallback gear for the slot.

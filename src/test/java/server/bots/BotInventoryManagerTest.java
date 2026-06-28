@@ -348,6 +348,39 @@ class BotInventoryManagerTest {
     }
 
     @Test
+    void crampedSalesUseScrollMarketValueSoDarkAttackScrollBeatsCheapAmmo() {
+        Character bot = mock(Character.class);
+        Inventory use = new Inventory(bot, InventoryType.USE, (byte) 96);
+        Item darkAtt = Items.itemWithQuantity(2043002, 1);  // dark ATT scroll, low NPC sell-back
+        Item offClassAmmo = Items.itemWithQuantity(2061000, 500);
+        use.addItem(darkAtt);
+        use.addItem(offClassAmmo);
+        when(bot.getInventory(InventoryType.USE)).thenReturn(use);
+
+        BotInventoryManager.ScrollStatsLookup prevScroll = BotInventoryManager.scrollStats;
+        try (AutoCloseable seams = withUseSeams(id -> null, id -> 0, id -> 0,
+                    (id, qty) -> id == 2043002 ? 1 : 10 * qty);
+             MockedStatic<BotAttackExecutionProvider> attacks = mockStatic(BotAttackExecutionProvider.class)) {
+            BotInventoryManager.scrollStats = id -> id == 2043002
+                    ? Map.of("success", 30, "cursed", 50, "PAD", 5)
+                    : null;
+            BotInventoryManager.scrollMarketValue = (b, id) -> id == 2043002 ? 2_000_000.0 : 0.0;
+            attacks.when(() -> BotAttackExecutionProvider.getEquippedWeaponType(bot))
+                    .thenReturn(client.inventory.WeaponType.BOW);
+
+            List<Item> sales = BotInventoryManager.collectCrampedUseSales(bot, 1, null);
+
+            assertEquals(1, sales.size());
+            assertEquals(2061000, sales.get(0).getItemId());
+            assertFalse(sales.contains(darkAtt));
+        } catch (Exception e) {
+            throw new AssertionError(e);
+        } finally {
+            BotInventoryManager.scrollStats = prevScroll;
+        }
+    }
+
+    @Test
     void recoveryRunwayCoversTarget_surplusShelfedAndNeverSoldBelowTarget() {
         int prevWarn = BotManager.cfg.POT_LOW_WARN;
         BotManager.cfg.POT_LOW_WARN = 2; // potResupplyTarget = 2 * 5 = 10 (HP and MP)
@@ -538,12 +571,14 @@ class BotInventoryManagerTest {
         IntUnaryOperator pp = BotInventoryManager.projectileWatk;
         IntUnaryOperator pa = BotInventoryManager.ammoSetValue;
         BotInventoryManager.SellPriceLookup ps = BotInventoryManager.sellPrice;
+        BotInventoryManager.ScrollMarketValueLookup pm = BotInventoryManager.scrollMarketValue;
         IntPredicate pq = BotInventoryManager.questItem;
         java.util.function.Predicate<Item> pu = BotInventoryManager.untradeable;
         BotInventoryManager.useEffect = effect;
         BotInventoryManager.projectileWatk = projectileWatk;
         BotInventoryManager.ammoSetValue = ammoSetValue;
         BotInventoryManager.sellPrice = price;
+        BotInventoryManager.scrollMarketValue = (bot, id) -> 0.0;
         BotInventoryManager.questItem = id -> false;
         BotInventoryManager.untradeable = item -> false;
         return () -> {
@@ -551,6 +586,7 @@ class BotInventoryManagerTest {
             BotInventoryManager.projectileWatk = pp;
             BotInventoryManager.ammoSetValue = pa;
             BotInventoryManager.sellPrice = ps;
+            BotInventoryManager.scrollMarketValue = pm;
             BotInventoryManager.questItem = pq;
             BotInventoryManager.untradeable = pu;
         };
@@ -981,12 +1017,14 @@ class BotInventoryManagerTest {
                                                IntUnaryOperator dropChance,
                                                int makerLevel) {
         BotInventoryManager.SellPriceLookup prevPrice = BotInventoryManager.sellPrice;
+        BotInventoryManager.ScrollMarketValueLookup prevScrollValue = BotInventoryManager.scrollMarketValue;
         IntUnaryOperator prevLeftover = BotInventoryManager.makerCrystalFromLeftover;
         IntUnaryOperator prevDrop = BotInventoryManager.bestDropChance;
         IntPredicate prevQuest = BotInventoryManager.questItem;
         java.util.function.Predicate<Item> prevUntradeable = BotInventoryManager.untradeable;
         java.util.function.ToIntFunction<Character> prevMaker = BotInventoryManager.makerSkillLevel;
         BotInventoryManager.sellPrice = price;
+        BotInventoryManager.scrollMarketValue = (bot, id) -> 0.0;
         BotInventoryManager.makerCrystalFromLeftover = leftover;
         BotInventoryManager.bestDropChance = dropChance;
         BotInventoryManager.questItem = id -> false;
@@ -994,6 +1032,7 @@ class BotInventoryManagerTest {
         BotInventoryManager.makerSkillLevel = bot -> makerLevel;
         return () -> {
             BotInventoryManager.sellPrice = prevPrice;
+            BotInventoryManager.scrollMarketValue = prevScrollValue;
             BotInventoryManager.makerCrystalFromLeftover = prevLeftover;
             BotInventoryManager.bestDropChance = prevDrop;
             BotInventoryManager.questItem = prevQuest;
