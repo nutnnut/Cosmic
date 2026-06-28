@@ -194,15 +194,17 @@ public final class BotScheduler {
             }
         }
 
-        // --- 2. crews: keep each crew online together as one unit on its leader's schedule ---
-        int crewLive = cohereCrews(bm, managed, hour, epochDay, now, target, soloLive.size());
+        // --- 2. crews: keep each crew online together as one unit on its leader's schedule, capped at the
+        // crew SHARE of the target so crews don't crowd out soloists. ---
+        int crewTarget = (int) Math.round(target * BotManager.cfg.POPULATION_CREW_FRACTION);
+        int crewLive = cohereCrews(bm, managed, hour, epochDay, now, crewTarget);
 
-        // --- 3. reconcile the SOLOIST count so total (crew + solo) tracks the target ---
-        int live = soloLive.size() + crewLive;
-        if (live < target) {
-            bringOnline(bm, managed, hour, epochDay, target - live, now);
-        } else if (live > target) {
-            logOutExcess(bm, soloLive, hour, epochDay, live - target);
+        // --- 3. reconcile the SOLOIST count to fill the rest of the target (whatever crews didn't) ---
+        int soloTarget = Math.max(0, target - crewLive);
+        if (soloLive.size() < soloTarget) {
+            bringOnline(bm, managed, hour, epochDay, soloTarget - soloLive.size(), now);
+        } else if (soloLive.size() > soloTarget) {
+            logOutExcess(bm, soloLive, hour, epochDay, soloLive.size() - soloTarget);
         }
     }
 
@@ -225,11 +227,12 @@ public final class BotScheduler {
      * Persistent crews ({@code managed_bot.group_id}): a crew logs in TOGETHER and parties up, on its
      * leader's personality schedule, and logs out together when that session elapses. Returns how many
      * crew members are live after this pass (counted toward the population target). New crews are brought
-     * up only while under target (so crews still respect the curve), but once up the whole crew stays
-     * together until its shared session ends — it's never thinned by the soloist reconcile.
+     * up (or generated) only while under {@code crewTarget} (the crew share of the population), so crews
+     * track the curve AND their target distribution instead of crowding out soloists. Once up the whole
+     * crew stays together until its shared session ends — it's never thinned by the soloist reconcile.
      */
     private int cohereCrews(BotManager bm, List<ManagedBot> managed, int hour, long epochDay, long now,
-                            int target, int soloLiveCount) {
+                            int crewTarget) {
         Map<Integer, List<ManagedBot>> crews = new java.util.HashMap<>();
         for (ManagedBot m : managed) {
             if (m.schedulable() && m.groupId() != null) {
@@ -277,19 +280,18 @@ public final class BotScheduler {
             crewLive += liveCount(bm, members);
         }
 
-        // Pass B: bring up fully-offline crews (whole-crew), most-eager leader first, while under target.
+        // Pass B: bring up fully-offline crews (whole-crew), most-eager leader first, up to the crew share.
         offlineCrews.sort((a, b) -> Double.compare(
                 leaderDesire(b.getValue(), hour, epochDay), leaderDesire(a.getValue(), hour, epochDay)));
-        int liveNow = soloLiveCount + crewLive;
         for (Map.Entry<Integer, List<ManagedBot>> e : offlineCrews) {
-            if (liveNow >= target) {
+            if (crewLive >= crewTarget) {
                 break;
             }
             if (leaderDesire(e.getValue(), hour, epochDay) <= 0.0) {
                 continue;
             }
-            if (liveNow + e.getValue().size() > target) {
-                continue; // crew would overshoot; soloists fill the remaining gap
+            if (crewLive + e.getValue().size() > crewTarget) {
+                continue; // crew would overshoot its share; a smaller crew (or soloists) fills the gap
             }
             boolean broughtAny = false;
             for (ManagedBot m : e.getValue()) {
@@ -300,12 +302,46 @@ public final class BotScheduler {
             if (broughtAny) {
                 crewOnlineSince.put(e.getKey(), now);
                 formCrewParty(bm, e.getValue(), true);
-                int n = liveCount(bm, e.getValue());
-                crewLive += n;
-                liveNow += n;
+                crewLive += liveCount(bm, e.getValue());
             }
         }
+        // Still short of the crew share after waking every offline crew: generate fresh crews. Crews erode
+        // via career retirement, so without this the live crew share would decay to zero over time.
+        if (crewLive < crewTarget) {
+            crewLive += autogenCrews(bm, managed, crewTarget - crewLive, now);
+        }
         return crewLive;
+    }
+
+    /** Generate fresh crews to fill up to {@code crewGap} more live crew members, so the crew share holds
+     *  as crews retire. Shares the soloist autogen budget (flag + per-sweep batch + pool cap). Returns the
+     *  number of crew members actually brought online. */
+    private int autogenCrews(BotManager bm, List<ManagedBot> managed, int crewGap, long now) {
+        int poolSize = 0;
+        for (ManagedBot m : managed) {
+            if (!m.retired()) {
+                poolSize++;
+            }
+        }
+        int gen = BotScheduleMath.autogenCount(BotManager.cfg.POPULATION_AUTOGEN, crewGap, 0, 0,
+                poolSize, BotManager.cfg.MANAGED_POOL_MAX,
+                BotManager.cfg.POPULATION_AUTOGEN_FILL, BotManager.cfg.POPULATION_AUTOGEN_MAX);
+        if (gen < 2) {
+            return 0; // no room this sweep for even a 2-member crew
+        }
+        int hardcore = BotGenerator.countHardcore(managed);
+        int brought = 0;
+        int remaining = gen;
+        while (remaining >= 2) {
+            int size = crewSize(remaining);
+            int n = generateCrew(bm, managed, size, now, hardcore);
+            if (n == 0) {
+                break; // generation failing — don't spin
+            }
+            brought += n;
+            remaining -= size;
+        }
+        return brought;
     }
 
     private static double leaderDesire(List<ManagedBot> members, int hour, long epochDay) {
@@ -429,21 +465,13 @@ public final class BotScheduler {
                 // loads a personality blob per managed bot, so calling it per-create would be the cost
                 // this batching was meant to avoid. Slight staleness within a sweep is fine (soft cap).
                 int hardcore = BotGenerator.countHardcore(managed);
-                // Generate the batch as a mix of lone newcomers and emergent CREWs (friend groups that
-                // arrive together); each is bounded by the budget still left this sweep.
-                int remaining = gen;
-                while (remaining > 0) {
-                    int crewSize = rollCrewSize(remaining);
-                    if (crewSize >= 2) {
-                        generateCrew(bm, managed, crewSize, now, hardcore);
-                        remaining -= crewSize;
-                    } else {
-                        int newId = BotGenerator.generateManaged(BotManager.cfg.POPULATION_WORLD,
-                                BotManager.cfg.POPULATION_CHANNEL, hardcore, BotManager.cfg.HARDCORE_CAP);
-                        if (newId > 0 && bm.spawnManagedBot(newId)) {
-                            onlineSince.put(newId, now);
-                        }
-                        remaining -= 1;
+                // Soloist deficit → generate soloists only; crews are generated by cohereCrews so they stay
+                // bounded by the crew share (POPULATION_CREW_FRACTION) instead of skewing the live split.
+                for (int i = 0; i < gen; i++) {
+                    int newId = BotGenerator.generateManaged(BotManager.cfg.POPULATION_WORLD,
+                            BotManager.cfg.POPULATION_CHANNEL, hardcore, BotManager.cfg.HARDCORE_CAP);
+                    if (newId > 0 && bm.spawnManagedBot(newId)) {
+                        onlineSince.put(newId, now);
                     }
                 }
             } else {
@@ -452,20 +480,17 @@ public final class BotScheduler {
         }
     }
 
-    /** Crew size for an autogen event: with {@code POPULATION_CREW_CHANCE} a 2..MAX crew (capped by the
-     *  remaining pool room), else 1 (a lone newcomer). Returns 1 when there's no room for a crew. */
-    private static int rollCrewSize(int room) {
-        if (room < 2 || ThreadLocalRandom.current().nextDouble() >= BotManager.cfg.POPULATION_CREW_CHANCE) {
-            return 1;
-        }
+    /** A crew's size, in [CREW_MIN, CREW_MAX], capped by the remaining {@code room} this sweep. */
+    private static int crewSize(int room) {
         int lo = Math.max(2, BotManager.cfg.POPULATION_CREW_MIN);
         int hi = Math.min(room, Math.max(lo, BotManager.cfg.POPULATION_CREW_MAX));
         return lo >= hi ? lo : lo + ThreadLocalRandom.current().nextInt(hi - lo + 1);
     }
 
     /** Generate a fresh crew that arrives together: {@code size} new managed bots sharing one group id
-     *  (the leader's char id), brought online and partied immediately. */
-    private void generateCrew(BotManager bm, List<ManagedBot> managed, int size, long now, int hardcore) {
+     *  (the leader's char id), brought online and partied immediately. Returns the number of CREW members
+     *  brought online (0 if it degenerated to a lone soloist). */
+    private int generateCrew(BotManager bm, List<ManagedBot> managed, int size, long now, int hardcore) {
         ManagedBotService svc = ManagedBotService.getInstance();
         List<Integer> ids = new ArrayList<>();
         Integer gid = null;
@@ -489,7 +514,7 @@ public final class BotScheduler {
                     onlineSince.put(id, now);
                 }
             }
-            return;
+            return 0;
         }
         List<ManagedBot> crew = new ArrayList<>();
         for (int id : ids) {
@@ -499,6 +524,7 @@ public final class BotScheduler {
         }
         crewOnlineSince.put(gid, now);
         formCrewParty(bm, crew, true);
+        return crew.size();
     }
 
     /** Log out the least-eager live bots down to the target. */

@@ -203,7 +203,11 @@ public class BotManager {
         public long POPULATION_FASTSTART_MS = 30_000L;     // on enable, ramp the population in over this window
         public long POPULATION_FASTSTART_INTERVAL_MS = 5_000L; // ...sweeping this often during the ramp (vs the
                                                            // POPULATION_SWEEP_MS steady cadence afterwards)
-        public double POPULATION_CREW_CHANCE = 0.30;       // chance an autogen event spawns a fresh CREW (vs a soloist)
+        public double POPULATION_CREW_FRACTION = 0.30;     // target share of the LIVE population that should be
+                                                           // crew members (the rest are soloists). Each sweep
+                                                           // brings crews/soloists up (or thins soloists) to keep
+                                                           // the live split roughly here, so crews don't crowd out
+                                                           // soloists.
         public int POPULATION_CREW_MIN = 2;                // crew size range when auto-generating a crew
         public int POPULATION_CREW_MAX = 6;
 
