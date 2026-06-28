@@ -283,6 +283,22 @@ A grid-sampled swim graph (60×60 px, 4-neighbor, line-of-sight wall
 checks) would be needed for obstacle avoidance in mob-cluttered swim
 maps. Plan in `D:/GameServers/Maplestory/Cosmic/notes/swim-and-downjump-plan.md` §3 Phase C.
 
+## Travel portal reachability in swim maps
+
+Do not use the ground nav graph or map-partition reachability to reject
+cross-map portals while the current map is a swim map. The movement
+runtime bypasses A* and swims directly to the raw target, so the ground
+graph can falsely mark valid swim portals unreachable. Live repro:
+`iArroWLanE` job-advancing from `230010400` (Forked Road : West Sea) to
+Bowman instructor map `106010000` stood at `east00` on the lower
+platform while the route wanted `west00` on the upper platform. The
+ground graph had only top-to-bottom edges, so travel yielded forever with
+`route-reachable=true` / `warp-no-land`. Fix: `BotTravelManager`
+disables ground reachability filtering and partition routing for
+`map.isSwim()`, and `BotMapPartitionProvider.forMap` returns a
+fully-connected partition for swim maps instead of persisting false
+ground-only splits.
+
 ## Transition rebase
 
 `applySwimMotion` checks `!entry.swimming` at top and re-anchors

@@ -127,12 +127,21 @@ final class BotMapPartitionProvider {
             return null;
         }
         ensureLoaded();
+        List<BotMapPartition.PortalRef> portals = portalsOf(map);
+        java.util.Set<String> exitNames = exitNamesOf(map);
+        if (map.isSwim()) {
+            List<BotMapPartition.PortalRef> exits = new ArrayList<>();
+            for (BotMapPartition.PortalRef p : portals) {
+                if (exitNames.contains(p.name())) {
+                    exits.add(p);
+                }
+            }
+            return BotMapPartition.fullyConnected(map.getId(), exits);
+        }
         BotMapPartition cached = CACHE.get(map.getId());
         if (cached != null) {
             return cached;
         }
-        List<BotMapPartition.PortalRef> portals = portalsOf(map);
-        java.util.Set<String> exitNames = exitNamesOf(map);
         BotNavigationGraph graph = BotNavigationGraphProvider.peekGraph(map, BotMovementProfile.base());
         if (graph == null) {
             BotNavigationGraphProvider.warmGraphAsync(map, BotMovementProfile.base());

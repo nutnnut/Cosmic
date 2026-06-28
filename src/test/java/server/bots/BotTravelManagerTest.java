@@ -331,6 +331,39 @@ class BotTravelManagerTest {
     }
 
     @Test
+    void shouldNotUseGroundReachabilityToRejectSwimMapPortal() {
+        int forkedRoadWestSea = 230010400;
+        int westSea = 230010300;
+        int instructorMap = 106010000;
+        Point bottomArrival = new Point(229, 590);
+        Portal westPortal = portal(7, westSea, Portal.MAP_PORTAL, null, Portal.OPEN, new Point(-2085, 39));
+        Fixture f = fixture(forkedRoadWestSea, instructorMap, bottomArrival, List.of(westPortal));
+        when(f.map().isSwim()).thenReturn(true);
+
+        BotNavigationGraph groundGraph = mock(BotNavigationGraph.class);
+        when(groundGraph.findRegionId(f.map(), bottomArrival)).thenReturn(2);
+        when(groundGraph.findRegionId(f.map(), westPortal.getPosition())).thenReturn(1);
+        when(groundGraph.canReach(2, 1, 0)).thenReturn(false);
+
+        try (var graphs = mockStatic(BotNavigationGraphProvider.class);
+             MovementRecorder movement = new MovementRecorder();
+             RouteStub route = new RouteStub((from, to, maxHops, options, blocked) ->
+                     List.of(westSea, instructorMap))) {
+            graphs.when(() -> BotNavigationGraphProvider.peekBestGraph(any(MapleMap.class), any(BotMovementProfile.class)))
+                    .thenReturn(groundGraph);
+            graphs.when(() -> BotNavigationGraphProvider.peekGraph(any(MapleMap.class), any(BotMovementProfile.class)))
+                    .thenReturn(groundGraph);
+
+            assertTrue(BotTravelManager.tickTravel(f.entry(), f.bot(), instructorMap, 30, true, true));
+
+            assertEquals(instructorMap, f.entry().followTravelTargetMapId);
+            assertEquals(westSea, f.entry().followTravelNextHopMapId);
+            assertEquals(westPortal.getId(), f.entry().followTravelPortalId);
+            assertEquals(List.of(westPortal.getPosition()), movement.steps);
+        }
+    }
+
+    @Test
     void shouldFallBackWhenRouteEdgeHasNoLiveUsablePortal() {
         // The graph claims a hop into the hunting ground, but the only live portal there is closed.
         Portal closed = portal(1, HUNTING_GROUND, Portal.MAP_PORTAL, null, Portal.CLOSED, new Point(50, 0));

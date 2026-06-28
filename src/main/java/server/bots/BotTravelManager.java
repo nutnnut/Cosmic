@@ -263,12 +263,13 @@ final class BotTravelManager {
         }
         int botRegion = navGraph != null ? navGraph.findRegionId(map, bot.getPosition()) : -1;
         boolean canCheck = navGraph != null && botRegion >= 0;
+        boolean useGroundReachability = canCheck && !map.isSwim();
 
         // Revalidate a committed cross-map portal once the graph is warm. An earlier hop may have pinned it
         // while the graph was cold (canCheck false, canReach unavailable); if this platform actually can't
         // walk to it, drop the pin and re-plan THIS tick instead of walking at an unreachable portal until
         // the deadline trips (the split-map stall — Dead Man's Gorge R6 pinned to top-left U5_1).
-        if (active && canCheck && !entry.followTravelFerry && entry.followTravelTaxiNpcId == 0) {
+        if (active && useGroundReachability && !entry.followTravelFerry && entry.followTravelTaxiNpcId == 0) {
             Portal committed = map.getPortal(entry.followTravelPortalId);
             if (committed != null && BotMapPartition.isTravelCrossMapPortal(committed, map.getId())
                     && !navGraph.canReach(botRegion, navGraph.findRegionId(map, committed.getPosition()), 0)) {
@@ -310,7 +311,7 @@ final class BotTravelManager {
             // is stranded on another platform.
 
             portal = adjacentOrScriptedPortal(map, targetMapId, bot.getPosition());
-            if (portal != null && canCheck && BotMapPartition.isTravelCrossMapPortal(portal, map.getId())
+            if (portal != null && useGroundReachability && BotMapPartition.isTravelCrossMapPortal(portal, map.getId())
                     && !navGraph.canReach(botRegion, navGraph.findRegionId(map, portal.getPosition()), 0)) {
                 portal = null; // direct exit exists but this platform can't reach it — must route around
             }
@@ -323,7 +324,7 @@ final class BotTravelManager {
                 // Partition routing is needed when the current platform is constrained, and also when a
                 // fully-connected current map would enter a downstream split map on the wrong arrival
                 // platform. It honors the SAME danger gate as the map-level route.
-                if (canCheck) {
+                if (useGroundReachability) {
                     List<BotMapPartition.PortalRef> reachableExits = reachableCrossMapExits(map, navGraph, botRegion);
                     List<BotWorldPartitionRouter.Node> proute = partitionRouteLookup.route(
                             id -> {
@@ -344,7 +345,7 @@ final class BotTravelManager {
                 }
                 routePrewarm.prewarm(entry, bot, route);
                 nextHopMapId = route.get(0);
-                if (canCheck) {
+                if (useGroundReachability) {
                     // When we can decide reachability, NEVER fall back to an unfiltered pick — that could
                     // re-select the very portal canReach just rejected and collapse the split-map fix.
                     portal = findReachableAdjacentPortal(map, navGraph, botRegion, nextHopMapId, bot.getPosition());
