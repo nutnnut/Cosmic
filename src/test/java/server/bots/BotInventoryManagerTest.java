@@ -577,6 +577,7 @@ class BotInventoryManagerTest {
         IntUnaryOperator pmk = BotInventoryManager.ammoMarketValue;
         BotInventoryManager.SellPriceLookup ps = BotInventoryManager.sellPrice;
         BotInventoryManager.ScrollMarketValueLookup pm = BotInventoryManager.scrollMarketValue;
+        BotInventoryManager.ScrollMarketValueLookup poc = BotInventoryManager.ammoObtainCost;
         IntPredicate pq = BotInventoryManager.questItem;
         java.util.function.Predicate<Item> pu = BotInventoryManager.untradeable;
         BotInventoryManager.useEffect = effect;
@@ -585,6 +586,7 @@ class BotInventoryManagerTest {
         BotInventoryManager.ammoMarketValue = id -> 0;   // hermetic: no DB shop-price lookup in tests
         BotInventoryManager.sellPrice = price;
         BotInventoryManager.scrollMarketValue = (bot, id) -> 0.0;
+        BotInventoryManager.ammoObtainCost = (bot, id) -> 0.0;   // hermetic: no DB shop/farm lookup in tests
         BotInventoryManager.questItem = id -> false;
         BotInventoryManager.untradeable = item -> false;
         return () -> {
@@ -594,47 +596,111 @@ class BotInventoryManagerTest {
             BotInventoryManager.ammoMarketValue = pmk;
             BotInventoryManager.sellPrice = ps;
             BotInventoryManager.scrollMarketValue = pm;
+            BotInventoryManager.ammoObtainCost = poc;
             BotInventoryManager.questItem = pq;
             BotInventoryManager.untradeable = pu;
         };
     }
 
+    // Real WATK per live star tier (WZ incPAD), for the ammo combat-ceiling calibration tests.
+    private static int starWatk(int id) {
+        return switch (id) {
+            case 2070002 -> 19; // Mokbi
+            case 2070003, 2070010 -> 21; // Kumbi / Icicles
+            case 2070004 -> 23; // Tobi
+            case 2070005 -> 25; // Steely
+            case 2070006, 2070007 -> 27; // Ilbi / Hwabi
+            case 2070016 -> 29; // Crystal Ilbi
+            default -> 0;
+        };
+    }
+
     @Test
-    void shelfKeepValueIsRealMesoCrossType_powerDoesNotInflateAmmoOverScrolls() {
-        // The cross-type keep value must stay on one real-meso axis: a cheap star must never out-value
-        // a good scroll just because it's powerful (combat power is an intra-ammo tiebreak, not value).
+    void floodedAmmoCollapsesToObtainCost_neverBeatsGoodScroll() {
+        // Supply binds the worth: a powerful but cheap-to-obtain (flooded) star falls to its obtain cost
+        // and stays on the shared real-meso axis — it must not out-value a good scroll just for power.
         IntUnaryOperator pp = BotInventoryManager.projectileWatk;
         IntUnaryOperator pa = BotInventoryManager.ammoSetValue;
         IntUnaryOperator pmk = BotInventoryManager.ammoMarketValue;
         BotInventoryManager.SellPriceLookup ps = BotInventoryManager.sellPrice;
         BotInventoryManager.ScrollMarketValueLookup pm = BotInventoryManager.scrollMarketValue;
-        BotInventoryManager.projectileWatk = id -> id;              // 2070005 stronger than 2070000
-        BotInventoryManager.ammoSetValue = id -> 200;               // both star tiers NPC the same
-        BotInventoryManager.ammoMarketValue = id -> 0;              // not shop-sold
-        BotInventoryManager.sellPrice = (id, qty) -> 5 * qty;       // cheap NPC for everything
-        BotInventoryManager.scrollMarketValue = (bot, id) -> 8000.0; // a genuinely valuable scroll
+        BotInventoryManager.ScrollMarketValueLookup poc = BotInventoryManager.ammoObtainCost;
+        BotInventoryManager.projectileWatk = BotInventoryManagerTest::starWatk;
+        BotInventoryManager.ammoSetValue = id -> 200;
+        BotInventoryManager.ammoMarketValue = id -> 0;
+        BotInventoryManager.sellPrice = (id, qty) -> 5 * qty;
+        BotInventoryManager.scrollMarketValue = (bot, id) -> 8000.0;   // a genuinely valuable scroll
+        BotInventoryManager.ammoObtainCost = (bot, id) -> 3000.0;      // Ilbi flooded: cheap to obtain
         try {
             Character bot = mock(Character.class);
-            Item weakStar = Items.itemWithQuantity(2070000, 1);
-            Item strongStar = Items.itemWithQuantity(2070005, 1);
-            Item goodScroll = Items.itemWithQuantity(2040000, 1); // equip scroll
-
-            double weak = BotInventoryManager.useShelfKeepValue(bot, weakStar);
-            double strong = BotInventoryManager.useShelfKeepValue(bot, strongStar);
-            double scroll = BotInventoryManager.useShelfKeepValue(bot, goodScroll);
-
-            // Power is NOT folded into the keep value: both star tiers value the same (max market/npc).
-            assertEquals(200.0, weak, 0.001);
-            assertEquals(strong, weak, 0.001);
-            // Cross-type: a cheap star never out-values a good scroll on the shared axis.
-            assertTrue(scroll > weak, "good scroll must outvalue a cheap star");
-            assertEquals(8000.0, scroll, 0.001);
+            double ilbi = BotInventoryManager.useShelfKeepValue(bot, Items.itemWithQuantity(2070006, 1));
+            double scroll = BotInventoryManager.useShelfKeepValue(bot, Items.itemWithQuantity(2040000, 1));
+            assertEquals(3000.0, ilbi, 0.001, "flooded star collapses to its obtain cost");
+            assertTrue(scroll > ilbi, "a cheap (flooded) star must not out-value a good scroll");
         } finally {
             BotInventoryManager.projectileWatk = pp;
             BotInventoryManager.ammoSetValue = pa;
             BotInventoryManager.ammoMarketValue = pmk;
             BotInventoryManager.sellPrice = ps;
             BotInventoryManager.scrollMarketValue = pm;
+            BotInventoryManager.ammoObtainCost = poc;
+        }
+    }
+
+    @Test
+    void scarceAmmoRidesCombatCeiling_steepTowardBest() {
+        // When a tier is scarce (obtain cost above its ceiling), worth = the convex combat ceiling, so
+        // value climbs steeply toward the best star — Ilbi (27 WATK) far above Steely (25 WATK).
+        IntUnaryOperator pp = BotInventoryManager.projectileWatk;
+        IntUnaryOperator pa = BotInventoryManager.ammoSetValue;
+        IntUnaryOperator pmk = BotInventoryManager.ammoMarketValue;
+        BotInventoryManager.ScrollMarketValueLookup poc = BotInventoryManager.ammoObtainCost;
+        BotInventoryManager.projectileWatk = BotInventoryManagerTest::starWatk;
+        BotInventoryManager.ammoSetValue = id -> 200;
+        BotInventoryManager.ammoMarketValue = id -> 0;
+        BotInventoryManager.ammoObtainCost = (bot, id) -> 500_000_000.0;   // brutal to farm: ceiling binds
+        try {
+            Character bot = mock(Character.class);
+            double ilbi = BotInventoryManager.useShelfKeepValue(bot, Items.itemWithQuantity(2070006, 1));
+            double steely = BotInventoryManager.useShelfKeepValue(bot, Items.itemWithQuantity(2070005, 1));
+            // Ceiling binds (well below the 500M obtain cost) and Ilbi's +2 WATK is worth ~4x Steely.
+            assertEquals(BotInventoryManager.ammoCombatCeiling(2070006), ilbi, 1.0);
+            assertTrue(ilbi > steely * 3, "two WATK steps up should be steeply (>3x) more valuable");
+        } finally {
+            BotInventoryManager.projectileWatk = pp;
+            BotInventoryManager.ammoSetValue = pa;
+            BotInventoryManager.ammoMarketValue = pmk;
+            BotInventoryManager.ammoObtainCost = poc;
+        }
+    }
+
+    @Test
+    void ammoCombatCeilingTracksLiveStarMarketWithinTolerance() {
+        // Calibration guard: the convex ceiling must stay within ~2x of the observed star market across
+        // every tier and rise monotonically with WATK — a regression alarm, not an overfit per-point fit.
+        IntUnaryOperator pp = BotInventoryManager.projectileWatk;
+        BotInventoryManager.projectileWatk = BotInventoryManagerTest::starWatk;
+        try {
+            // Observed market (SoloMapling reference): id -> meso.
+            int[][] ref = {
+                {2070002, 75_000}, {2070003, 200_000}, {2070004, 2_000_000},
+                {2070005, 8_000_000}, {2070006, 17_500_000}, {2070016, 90_000_000},
+            };
+            double prev = 0;
+            int prevWatk = 0;
+            for (int[] r : ref) {
+                double ceil = BotInventoryManager.ammoCombatCeiling(r[0]);
+                double factor = ceil / r[1];
+                assertTrue(factor > 0.5 && factor < 2.0,
+                        "tier " + r[0] + " ceiling " + ceil + " within 2x of market " + r[1]);
+                if (starWatk(r[0]) > prevWatk) {
+                    assertTrue(ceil > prev, "ceiling must rise with WATK");
+                    prev = ceil;
+                    prevWatk = starWatk(r[0]);
+                }
+            }
+        } finally {
+            BotInventoryManager.projectileWatk = pp;
         }
     }
 

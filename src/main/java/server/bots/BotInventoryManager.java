@@ -1861,6 +1861,16 @@ class BotInventoryManager {
     // Market (acquisition) value of ammo — what it costs to buy back, like scrollMarketValue. 0 if not
     // sold anywhere legit. The real-meso floor for shelf ammo; see useShelfKeepValue.
     static IntUnaryOperator ammoMarketValue = BotScrollManager::marketBuyPriceMeso;
+    // Obtain (replacement) cost of any item to this bot: cheapest of NPC shop / drop-farm effort — the
+    // same supply-side number scrolls price with (rarity + dropper difficulty). Seam for tests.
+    static ScrollMarketValueLookup ammoObtainCost = BotScrollManager::scrollMarketValueMeso;
+    // Convex combat-demand ceiling for projectile ammo (throwing stars/bullets), calibrated to the live
+    // star market: ~75k meso at 19 WATK (Mokbi), doubling each +1 WATK to ~77M at 29 WATK (Crystal
+    // Ilbi) — fits all eight star tiers within ~1.6x on a single base. ponytail: one base + one anchor,
+    // retune here if the star market shifts; do not fit per tier.
+    static final double AMMO_CEILING_BASE = 2.0;        // worth ×2 per +1 projectile WATK
+    static final int AMMO_CEILING_ANCHOR_WATK = 19;     // weakest live star tier
+    static final double AMMO_CEILING_ANCHOR_MESO = 75_000.0;
     // A USE item effect, cached, for the recovery/cure/buff category predicates.
     @FunctionalInterface
     interface ItemEffectLookup {
@@ -2170,20 +2180,39 @@ class BotInventoryManager {
     }
 
     /**
+     * Convex combat-demand ceiling (meso) for a projectile tier: what a buyer pays for its raw attack
+     * when supply is constrained. Calibrated to the live star market — see {@link #AMMO_CEILING_BASE}.
+     * The keep value is {@code min(this, obtain cost)}, so this only bites when a tier is scarce; a
+     * flooded/shop-cheap tier falls to its obtain cost instead. 0 for non-projectiles.
+     */
+    static double ammoCombatCeiling(int id) {
+        int watk = projectileWatk.applyAsInt(id);
+        return watk <= 0 ? 0.0
+                : AMMO_CEILING_ANCHOR_MESO * Math.pow(AMMO_CEILING_BASE, watk - AMMO_CEILING_ANCHOR_WATK);
+    }
+
+    /**
      * SSOT keep-worth (estimated meso) of one USE shelf stack — the single cross-type axis the sell
      * shelf ranks on and the never-sell gate ({@link #USE_NEVER_SELL_MESO}) compares against, so ammo,
-     * scrolls and misc stay commensurable (all REAL meso). Combat power is deliberately NOT folded in
-     * here — it would pollute the scale (a cheap star out-ranking a good scroll); WATK is applied only
-     * as an intra-ammo sort tiebreak in {@link #rankUseShelf}, and powerful ammo is protected
-     * structurally by {@link #classifyOtherAmmoReserve}. Per-set for rechargeable ammo.
-     * ponytail: estimate is shop/market/NPC price today — this is the seam the population supply/demand
-     * value model replaces when bot trading lands; callers won't change.
+     * scrolls and misc stay commensurable (all REAL meso). For rechargeable ammo, combat power IS folded
+     * in via {@link #ammoCombatCeiling} but capped by obtain cost, so a powerful star is worth more only
+     * when it is also scarce — a cheap/flooded one still can't out-value a good scroll. Per-set for
+     * rechargeable ammo. WATK also breaks intra-ammo sort ties in {@link #rankUseShelf}, and powerful
+     * ammo is protected structurally by {@link #classifyOtherAmmoReserve}.
+     * ponytail: obtain cost is shop/farm-rarity today — the seam the population supply/demand model
+     * refines when bot trading lands; callers won't change.
      */
     static double useShelfKeepValue(Character bot, Item it) {
         int id = it.getItemId();
         if (ammoWeaponType(id) != null) {
             if (ItemConstants.isRechargeable(id)) {
-                return Math.max(ammoMarketValue.applyAsInt(id), ammoSetValue.applyAsInt(id)); // per set
+                double sellback = Math.max(ammoMarketValue.applyAsInt(id), ammoSetValue.applyAsInt(id)); // per set
+                double ceiling = ammoCombatCeiling(id);
+                // Worth = the convex combat-demand ceiling, capped by what it costs to obtain: a
+                // flooded/cheap tier collapses to its obtain cost, a scarce top tier rides the ceiling.
+                // NPC/market sell-back is the floor under either. Steep toward the best, but real-meso.
+                return ceiling <= 0 ? sellback
+                        : Math.max(sellback, Math.min(ammoObtainCost.value(bot, id), ceiling));
             }
             return Math.max((double) ammoMarketValue.applyAsInt(id) * it.getQuantity(),
                     sellPrice.price(id, it.getQuantity()));
