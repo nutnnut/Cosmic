@@ -485,9 +485,10 @@ class BotManagerTest {
 
     @Test
     void shouldCommitToBreakoutDirectionWhenSurroundedDespiteTargetSwap() {
-        MapleMap map = spy(createEmptyTestMap(910000063));
-        map.getFootholds().insert(new Foothold(new Point(-500, 100), new Point(500, 100), 1));
-        BotNavigationGraphProvider.rebuildGraph(map);
+        MapleMap realMap = createEmptyTestMap(910000063);
+        realMap.getFootholds().insert(new Foothold(new Point(-500, 100), new Point(500, 100), 1));
+        BotNavigationGraphProvider.rebuildGraph(realMap);   // build on the bare map; rebuildGraph through a spy OOMs
+        MapleMap map = spy(realMap);
         Character bot = mock(Character.class);
         Point botPos = new Point(100, 100);
         when(bot.getMap()).thenReturn(map);
@@ -519,9 +520,10 @@ class BotManagerTest {
 
     @Test
     void shouldClearBreakoutOnceNoLongerSurrounded() {
-        MapleMap map = spy(createEmptyTestMap(910000064));
-        map.getFootholds().insert(new Foothold(new Point(-500, 100), new Point(500, 100), 1));
-        BotNavigationGraphProvider.rebuildGraph(map);
+        MapleMap realMap = createEmptyTestMap(910000064);
+        realMap.getFootholds().insert(new Foothold(new Point(-500, 100), new Point(500, 100), 1));
+        BotNavigationGraphProvider.rebuildGraph(realMap);   // build on the bare map; rebuildGraph through a spy OOMs
+        MapleMap map = spy(realMap);
         Character bot = mock(Character.class);
         Point botPos = new Point(100, 100);
         when(bot.getMap()).thenReturn(map);
@@ -545,9 +547,10 @@ class BotManagerTest {
 
     @Test
     void shouldNotEngageBreakoutForSingleMobKiting() {
-        MapleMap map = spy(createEmptyTestMap(910000065));
-        map.getFootholds().insert(new Foothold(new Point(-500, 100), new Point(500, 100), 1));
-        BotNavigationGraphProvider.rebuildGraph(map);
+        MapleMap realMap = createEmptyTestMap(910000065);
+        realMap.getFootholds().insert(new Foothold(new Point(-500, 100), new Point(500, 100), 1));
+        BotNavigationGraphProvider.rebuildGraph(realMap);   // build on the bare map; rebuildGraph through a spy OOMs
+        MapleMap map = spy(realMap);
         Character bot = mock(Character.class);
         Point botPos = new Point(100, 100);
         when(bot.getMap()).thenReturn(map);

@@ -1518,12 +1518,13 @@ class BotCombatManagerTest {
 
     @Test
     void shouldAllowPathScoringToBeatFarCurrentFootholdTarget() {
-        MapleMap map = spy(new MapleMap(910009050, 0, 0, 910009050, 1.0f));
+        MapleMap realMap = new MapleMap(910009050, 0, 0, 910009050, 1.0f);
         server.maps.FootholdTree footholds = new server.maps.FootholdTree(new Point(-2000, -2000), new Point(2000, 2000));
         footholds.insert(new Foothold(new Point(0, 100), new Point(300, 100), 1));
         footholds.insert(new Foothold(new Point(0, 200), new Point(300, 200), 2));
-        map.setFootholds(footholds);
-        BotNavigationGraphProvider.rebuildGraph(map);
+        realMap.setFootholds(footholds);
+        BotNavigationGraphProvider.rebuildGraph(realMap);   // build on the bare map; rebuildGraph through a spy OOMs
+        MapleMap map = spy(realMap);
 
         Character bot = mockBot(new Point(100, 100), map, 20_000, null);
         Monster currentFootholdMob = mockMob(new Point(180, 100), 100100);
@@ -1541,11 +1542,12 @@ class BotCombatManagerTest {
         // farther in the opposite direction. without an AoE skill the close lone mob
         // wins on distance score; with an AoE skill, the cluster anchor must win so
         // planAttack can fire an AoE plan that out-DPSes the basic single shot.
-        MapleMap map = spy(new MapleMap(910009060, 0, 0, 910009060, 1.0f));
+        MapleMap realMap = new MapleMap(910009060, 0, 0, 910009060, 1.0f);
         server.maps.FootholdTree footholds = new server.maps.FootholdTree(new Point(-2000, -2000), new Point(2000, 2000));
         footholds.insert(new Foothold(new Point(-400, 100), new Point(400, 100), 1));
-        map.setFootholds(footholds);
-        BotNavigationGraphProvider.rebuildGraph(map);
+        realMap.setFootholds(footholds);
+        BotNavigationGraphProvider.rebuildGraph(realMap);   // build on the bare map; rebuildGraph through a spy OOMs
+        MapleMap map = spy(realMap);
 
         Character bot = mockBot(new Point(100, 100), map, 20_000, null);
         Monster loneClose = mockMob(new Point(160, 100), 100100);
@@ -1630,12 +1632,13 @@ class BotCombatManagerTest {
 
     @Test
     void shouldUseRangedHitBoxTargetOutsideCurrentRegionWithoutPathingThere() {
-        MapleMap map = spy(new MapleMap(910009051, 0, 0, 910009051, 1.0f));
+        MapleMap realMap = new MapleMap(910009051, 0, 0, 910009051, 1.0f);
         server.maps.FootholdTree footholds = new server.maps.FootholdTree(new Point(-2000, -2000), new Point(2000, 2000));
         footholds.insert(new Foothold(new Point(0, 100), new Point(200, 100), 1));
         footholds.insert(new Foothold(new Point(250, 130), new Point(450, 130), 2));
-        map.setFootholds(footholds);
-        BotNavigationGraphProvider.rebuildGraph(map);
+        realMap.setFootholds(footholds);
+        BotNavigationGraphProvider.rebuildGraph(realMap);   // build on the bare map; rebuildGraph through a spy OOMs
+        MapleMap map = spy(realMap);
 
         Character bot = mockBot(new Point(100, 100), map, 20_000, null);
         Monster otherRegionMob = mockMob(new Point(300, 130), 100100);
