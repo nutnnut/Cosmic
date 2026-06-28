@@ -577,6 +577,9 @@ public class BotEntry {
     // it's stuck on. avoid < 0 = unset (no grind pass yet) -> callers fall back to the current map.
     volatile int aspirationalMobLevel = 0;
     volatile int aspirationalMobAvoid = -1;
+    // Aspirational mob's exp/kill (exp-rate scaled, same basis as MobProfile.exp()). 0 = unset.
+    // Baseline for the en-route opportunity-attack "is this kill worth the exp" gate (BotCombatManager).
+    volatile double aspirationalMobExp = 0.0;
     // Owner opted into self-managed AP ("auto" at the build prompt): the bot resolves + ratchets its
     // own AP exactly like an ownerless bot, and never re-prompts. Runtime-only (like apBuild itself).
     boolean apAuto = false;

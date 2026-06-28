@@ -461,10 +461,12 @@ final class BotGrindAdvisor {
         }
         if (asp == null) {
             entry.aspirationalMobAvoid = -1;
+            entry.aspirationalMobExp = 0.0;
             return;
         }
         entry.aspirationalMobLevel = asp.level();
         entry.aspirationalMobAvoid = asp.avoid();
+        entry.aspirationalMobExp = asp.exp();
     }
 
     /** The bot's current physical hit chance on the aspirational mob — the denominator of

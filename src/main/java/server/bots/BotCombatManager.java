@@ -226,6 +226,17 @@ class BotCombatManager {
         //  - proactive retreat: a healthy bot disengages a touch-dangerous mob before it ever drops
         //    to the reactive heal threshold (BotManager).
         public int   TOUCH_HITS_TO_KILL = 3;     // lower = more cautious; !botcfg-tunable
+        // En-route opportunity attacks (passing a mob while travelling) only fire when the bot can
+        // finish it in <= this many expected hits. Expected damage already folds in hit chance, so a
+        // strong mob (high HP) OR a mob the bot keeps missing (low expected dmg) both push hits-to-kill
+        // over the cap and the bot walks past instead of wasting travel time on it. !botcfg-tunable.
+        public double OPPORTUNITY_MAX_HITS_TO_KILL = 5.0d;
+        // Other end: also walk past a mob that's both harmless AND worthless. Harmless = expected
+        // touch damage per attempt (folds in the mob's miss chance) <= this many HP. Worthless = its
+        // exp/kill is below OPPORTUNITY_MIN_EXP_FRACTION of the bot's aspirational grind mob. Low risk
+        // + low reward = not worth interrupting travel for. Either knob at 0 disables this gate.
+        public double OPPORTUNITY_TRIVIAL_TOUCH_DAMAGE = 1.0d;
+        public double OPPORTUNITY_MIN_EXP_FRACTION = 0.05d;
         public long  TOUCH_DANGER_PENALTY = 1500L; // soft scorer penalty (~ the cross-foothold penalty)
         public int   TOUCH_FRAGILE_MAXHP = 600;  // below this max-HP a bot counts as fragile for targeting
         public boolean PROACTIVE_RETREAT_ENABLED = true;
@@ -1129,6 +1140,55 @@ class BotCombatManager {
             }
         }
         return best;
+    }
+
+    /**
+     * Worth taking this en-route shot? True when the bot can finish {@code target} in
+     * {@link Config#OPPORTUNITY_MAX_HITS_TO_KILL} expected hits or fewer. Uses the same
+     * hit-chance-folded expected damage as {@link #scoreAttackPlan}, against current HP — so a tanky
+     * mob and a mob the bot keeps whiffing on are both rejected, and a near-dead mob still gets the tap.
+     */
+    static boolean isEnRouteAttackWorthwhile(BotEntry entry, Character bot, AttackPlan attackPlan, Monster target) {
+        if (attackPlan == null || target == null) {
+            return false;
+        }
+        int hp = target.getHp();
+        if (hp <= 0) {
+            return true; // already dead/unknown HP — let the normal range/plan checks decide
+        }
+        if (isTrivialAndNotWorthExp(entry, bot, target)) {
+            return false; // harmless + negligible exp — not worth interrupting travel for
+        }
+        CombatFormulaProvider.DamageProfile profile = resolveAttackDamageProfile(
+                entry, bot, attackPlan.skillId, attackPlan.skillLevel, attackPlan.route, attackPlan.damageWeaponType);
+        double expectedDamage = CombatFormulaProvider.getInstance().estimateExpectedDamage(
+                bot, target, attackPlan.numDamage, attackPlan.skillId, profile);
+        if (expectedDamage <= 0.0d) {
+            return false; // can't meaningfully hurt it (no usable attack / hopeless accuracy) — walk on
+        }
+        return hp / expectedDamage <= cfg.OPPORTUNITY_MAX_HITS_TO_KILL;
+    }
+
+    /** A mob the bot can safely ignore en route: it can barely scratch the bot (expected per-attempt
+     *  touch damage <= {@link Config#OPPORTUNITY_TRIVIAL_TOUCH_DAMAGE}) AND its exp is below
+     *  {@link Config#OPPORTUNITY_MIN_EXP_FRACTION} of the bot's aspirational grind mob. Returns false
+     *  (i.e. "do engage") until a grind pass has cached an aspirational exp baseline. */
+    private static boolean isTrivialAndNotWorthExp(BotEntry entry, Character bot, Monster target) {
+        if (entry == null || entry.aspirationalMobExp <= 0.0d
+                || cfg.OPPORTUNITY_TRIVIAL_TOUCH_DAMAGE <= 0.0d || cfg.OPPORTUNITY_MIN_EXP_FRACTION <= 0.0d) {
+            return false;
+        }
+        double expectedTouch = server.bots.combat.BotDefenseDataProvider.getInstance()
+                .expectedTouchHpLossFraction(bot, target) * bot.getCurrentMaxHp();
+        if (expectedTouch > cfg.OPPORTUNITY_TRIVIAL_TOUCH_DAMAGE) {
+            return false; // can actually hurt the bot — worth clearing regardless of exp
+        }
+        var stats = target.getStats();
+        if (stats == null) {
+            return false;
+        }
+        double targetExp = stats.getExp() * bot.getExpRate();
+        return targetExp < cfg.OPPORTUNITY_MIN_EXP_FRACTION * entry.aspirationalMobExp;
     }
 
     private static List<Integer> cachedAttackSkillIds(BotEntry entry) {

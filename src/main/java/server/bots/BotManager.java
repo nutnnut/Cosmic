@@ -3594,11 +3594,11 @@ public class BotManager {
             LocalOpportunityAttackResult result;
             if (!perf) {
                 result = tryLocalOpportunityAttack(
-                        entry, bot, botPos, targetPos, targetSnapshot.followTargetPos(), true, true);
+                        entry, bot, botPos, targetPos, targetSnapshot.followTargetPos(), true, true, false);
             } else {
                 long tOpp = System.nanoTime();
                 result = tryLocalOpportunityAttack(
-                        entry, bot, botPos, targetPos, targetSnapshot.followTargetPos(), true, true);
+                        entry, bot, botPos, targetPos, targetSnapshot.followTargetPos(), true, true, false);
                 BotPerformanceMonitor.record("opportunity-attack", System.nanoTime() - tOpp);
             }
             targetPos = result.targetPos();
@@ -3616,11 +3616,11 @@ public class BotManager {
             LocalOpportunityAttackResult result;
             if (!perf) {
                 result = tryLocalOpportunityAttack(
-                        entry, bot, botPos, targetPos, targetPos, true, true);
+                        entry, bot, botPos, targetPos, targetPos, true, true, false);
             } else {
                 long tOppS = System.nanoTime();
                 result = tryLocalOpportunityAttack(
-                        entry, bot, botPos, targetPos, targetPos, true, true);
+                        entry, bot, botPos, targetPos, targetPos, true, true, false);
                 BotPerformanceMonitor.record("opportunity-attack", System.nanoTime() - tOppS);
             }
             if (result.consumedTick()) {
@@ -3813,7 +3813,7 @@ public class BotManager {
                 // us back home first.
                 if (entry.patrolRegionId >= 0 && isBotInPatrolRegion(entry, bot, botPos)) {
                     LocalOpportunityAttackResult oa = tryLocalOpportunityAttack(
-                            entry, bot, botPos, botPos, botPos, true, true);
+                            entry, bot, botPos, botPos, botPos, true, true, false);
                     if (oa.consumedTick()) {
                         return oa;
                     }
@@ -4163,7 +4163,7 @@ public class BotManager {
     void loiterAtAnchor(BotEntry entry, Character bot, Point botPos, Point anchor, boolean runAiTick) {
         if (runAiTick) {
             LocalOpportunityAttackResult attackResult = tryLocalOpportunityAttack(
-                    entry, bot, botPos, anchor, anchor, false, false);
+                    entry, bot, botPos, anchor, anchor, false, false, false);
             if (attackResult.consumedTick()) {
                 return;
             }
@@ -4214,7 +4214,7 @@ public class BotManager {
         if (botPos == null) {
             return false;
         }
-        return tryLocalOpportunityAttack(entry, bot, botPos, botPos, botPos, false, false).consumedTick();
+        return tryLocalOpportunityAttack(entry, bot, botPos, botPos, botPos, false, false, true).consumedTick();
     }
 
     private LocalOpportunityAttackResult tryLocalOpportunityAttack(BotEntry entry,
@@ -4223,7 +4223,8 @@ public class BotManager {
                                                                   Point movementTargetPos,
                                                                   Point moveWindowReferencePos,
                                                                   boolean allowCombatMovement,
-                                                                  boolean allowJumpTowardTarget) {
+                                                                  boolean allowJumpTowardTarget,
+                                                                  boolean enRouteGate) {
         Point targetPos = movementTargetPos;
         // entry.idleLeech: party level-gap idle-leech suppresses ALL damage, including opportunity
         // shots, so the over-levelled member truly drops out of the exp-share interval.
@@ -4250,6 +4251,11 @@ public class BotManager {
 
         BotCombatManager.AttackPlan attackPlan = BotCombatManager.planAttack(entry, bot, localTarget);
         if (attackPlan == null) {
+            return new LocalOpportunityAttackResult(false, targetPos);
+        }
+        // En-route only: don't burn travel time whaling on a mob we can't promptly kill (too tanky,
+        // or accuracy too low to land hits). Grind/follow/patrol/loiter callers aren't gated.
+        if (enRouteGate && !BotCombatManager.isEnRouteAttackWorthwhile(entry, bot, attackPlan, localTarget)) {
             return new LocalOpportunityAttackResult(false, targetPos);
         }
         if (entry.inAir) {
