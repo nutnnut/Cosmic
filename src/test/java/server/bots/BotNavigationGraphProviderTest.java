@@ -9,9 +9,14 @@ import server.maps.MapleMap;
 import server.maps.Rope;
 
 import java.awt.*;
+import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+import java.util.stream.Stream;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
@@ -1375,5 +1380,43 @@ class BotNavigationGraphProviderTest {
     }
 
     private record RopeEntryReuseCase(BotNavigationGraph.Edge edge, Rope rope, Point botPosition, Point rawTarget) {
+    }
+
+    // Hygiene guard: building a nav graph via rebuildGraph(spy(map)) OOMs the box — buildGraph
+    // hammers map methods in tight loops and Mockito records every invocation on a spy. A runtime
+    // guard can't catch it (Mockito's inline mock maker makes a spy report the REAL MapleMap class),
+    // so scan the bot test sources instead: build on the real map FIRST, then spy(realMap). Fails
+    // fast at `mvn test` for everyone (CI + local) instead of melting the machine.
+    @Test
+    void noBotTestBuildsNavGraphThroughAMockitoSpy() throws IOException {
+        Pattern spyAssign = Pattern.compile("(\\w+)\\s*=\\s*spy\\(");
+        List<String> offenders = new ArrayList<>();
+        try (Stream<Path> paths = Files.walk(Path.of("src/test/java/server/bots"))) {
+            for (Path p : (Iterable<Path>) paths.filter(f -> f.toString().endsWith(".java"))::iterator) {
+                String src = Files.readString(p);
+                Matcher m = spyAssign.matcher(src);
+                while (m.find()) {
+                    String var = m.group(1);
+                    // Method-local: only flag rebuildGraph(var) within ~12 lines AFTER `var = spy(...)`,
+                    // before var is reassigned. `map` is reused across methods (some spy it, others use
+                    // a real map of the same name), so a file-wide search false-positives. The correct
+                    // pattern (rebuildGraph(realMap) BEFORE map = spy(realMap)) has no match in-window.
+                    int from = m.end();
+                    String window = src.substring(from, Math.min(src.length(), from + 600));
+                    int reassign = window.indexOf(var + " =");
+                    if (reassign >= 0) {
+                        window = window.substring(0, reassign);
+                    }
+                    if (Pattern.compile("\\brebuildGraph\\(\\s*" + Pattern.quote(var) + "\\s*[,)]")
+                            .matcher(window).find()) {
+                        offenders.add(p.getFileName() + ": rebuildGraph(" + var + ") right after "
+                                + var + " = spy(...)");
+                    }
+                }
+            }
+        }
+        assertTrue(offenders.isEmpty(),
+                "Build the nav graph on the REAL map before spying (spy + rebuildGraph OOMs):\n"
+                        + String.join("\n", offenders));
     }
 }
