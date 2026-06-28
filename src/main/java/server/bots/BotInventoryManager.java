@@ -3323,6 +3323,7 @@ class BotInventoryManager {
 
     private static WeaponType tradeAmmoWeaponType(Character bot) {
         WeaponType weaponType = BotAttackExecutionProvider.getEquippedWeaponType(bot);
+        if (weaponType == null) return null;
         return switch (weaponType) {
             case BOW, CROSSBOW, CLAW, GUN -> weaponType;
             default -> null;
