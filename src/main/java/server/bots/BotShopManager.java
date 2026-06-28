@@ -70,7 +70,7 @@ final class BotShopManager {
     private static final int RETURN_SCROLL_TARGET_QTY = 10;
     private static final int RECHARGE_MAX_SETS = 10; // cap recharge to the best N own-type stacks
     private static final int AUTO_SELL_FREE_SLOT_THRESHOLD = 2; // bag tab "cramped" when this few slots left
-    private static final int USE_HEALTHY_FREE_SLOTS = 6; // cramped USE escalation sells down to this many free slots
+    private static final int USE_HEALTHY_FREE_SLOTS = 16; // cramped USE escalation sells down to this many free slots (farming runway)
 
     static class Config {
         // Debug/verify aid: after a sell-trash visit, list the USE/ETC items that were sold so

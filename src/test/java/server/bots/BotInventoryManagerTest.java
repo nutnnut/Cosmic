@@ -257,8 +257,9 @@ class BotInventoryManagerTest {
         Character bot = mock(Character.class);
         Inventory use = new Inventory(bot, InventoryType.USE, (byte) 96);
         use.addItem(Items.itemWithQuantity(2060000, 500));  // bow arrows = own ammo -> runway
-        use.addItem(Items.itemWithQuantity(2061000, 500));  // xbow bolts = off-weapon -> shelf
-        use.addItem(Items.itemWithQuantity(2070000, 200));  // stars = off-weapon rechargeable -> shelf
+        use.addItem(Items.itemWithQuantity(2061000, 500));  // xbow bolts = off-weapon, LONE stack -> shelf
+        use.addItem(Items.itemWithQuantity(2070000, 200));  // weaker star = off-weapon, redundant lower tier -> shelf
+        use.addItem(Items.itemWithQuantity(2070005, 200));  // stronger star = off-weapon, redundant best tier -> kept
         use.addItem(Items.itemWithQuantity(2000000, 100));  // recovery potion -> runway
         when(bot.getInventory(InventoryType.USE)).thenReturn(use);
 
@@ -271,14 +272,17 @@ class BotInventoryManagerTest {
 
             // A normal sell trip sells only JUNK -> nothing here (no single cures / junk scrolls / stale quest).
             assertTrue(BotInventoryManager.collectSellTrashUseItems(bot).isEmpty());
-            // But the bag holds shelf stacks a cramped trip could shed.
+            // But the bag holds a shelf stack (the weaker off-class star) a cramped trip could shed.
             assertTrue(BotInventoryManager.crampedUseSalesAvailable(bot));
 
             var classes = BotInventoryManager.classifyBagUse(bot);
-            assertEquals(BotInventoryManager.UseTier.RUNWAY, tierOf(classes, 2060000));
-            assertEquals(BotInventoryManager.UseTier.RUNWAY, tierOf(classes, 2000000));
-            assertEquals(BotInventoryManager.UseTier.SHELF, tierOf(classes, 2061000));
-            assertEquals(BotInventoryManager.UseTier.SHELF, tierOf(classes, 2070000));
+            assertEquals(BotInventoryManager.UseTier.RUNWAY, tierOf(classes, 2060000)); // own ammo
+            assertEquals(BotInventoryManager.UseTier.RUNWAY, tierOf(classes, 2000000)); // recovery
+            // Off-class ammo: among REDUNDANT stacks the best tier is kept, the rest sheds; a LONE
+            // off-class stack (the bolts) just shelves and is valued normally.
+            assertEquals(BotInventoryManager.UseTier.SHELF, tierOf(classes, 2061000));  // lone crossbow stack
+            assertEquals(BotInventoryManager.UseTier.RUNWAY, tierOf(classes, 2070005)); // redundant best star tier
+            assertEquals(BotInventoryManager.UseTier.SHELF, tierOf(classes, 2070000));  // redundant weaker star tier
         } catch (Exception e) {
             throw new AssertionError(e);
         }
@@ -570,6 +574,7 @@ class BotInventoryManagerTest {
         BotInventoryManager.ItemEffectLookup pe = BotInventoryManager.useEffect;
         IntUnaryOperator pp = BotInventoryManager.projectileWatk;
         IntUnaryOperator pa = BotInventoryManager.ammoSetValue;
+        IntUnaryOperator pmk = BotInventoryManager.ammoMarketValue;
         BotInventoryManager.SellPriceLookup ps = BotInventoryManager.sellPrice;
         BotInventoryManager.ScrollMarketValueLookup pm = BotInventoryManager.scrollMarketValue;
         IntPredicate pq = BotInventoryManager.questItem;
@@ -577,6 +582,7 @@ class BotInventoryManagerTest {
         BotInventoryManager.useEffect = effect;
         BotInventoryManager.projectileWatk = projectileWatk;
         BotInventoryManager.ammoSetValue = ammoSetValue;
+        BotInventoryManager.ammoMarketValue = id -> 0;   // hermetic: no DB shop-price lookup in tests
         BotInventoryManager.sellPrice = price;
         BotInventoryManager.scrollMarketValue = (bot, id) -> 0.0;
         BotInventoryManager.questItem = id -> false;
@@ -585,11 +591,51 @@ class BotInventoryManagerTest {
             BotInventoryManager.useEffect = pe;
             BotInventoryManager.projectileWatk = pp;
             BotInventoryManager.ammoSetValue = pa;
+            BotInventoryManager.ammoMarketValue = pmk;
             BotInventoryManager.sellPrice = ps;
             BotInventoryManager.scrollMarketValue = pm;
             BotInventoryManager.questItem = pq;
             BotInventoryManager.untradeable = pu;
         };
+    }
+
+    @Test
+    void shelfKeepValueIsRealMesoCrossType_powerDoesNotInflateAmmoOverScrolls() {
+        // The cross-type keep value must stay on one real-meso axis: a cheap star must never out-value
+        // a good scroll just because it's powerful (combat power is an intra-ammo tiebreak, not value).
+        IntUnaryOperator pp = BotInventoryManager.projectileWatk;
+        IntUnaryOperator pa = BotInventoryManager.ammoSetValue;
+        IntUnaryOperator pmk = BotInventoryManager.ammoMarketValue;
+        BotInventoryManager.SellPriceLookup ps = BotInventoryManager.sellPrice;
+        BotInventoryManager.ScrollMarketValueLookup pm = BotInventoryManager.scrollMarketValue;
+        BotInventoryManager.projectileWatk = id -> id;              // 2070005 stronger than 2070000
+        BotInventoryManager.ammoSetValue = id -> 200;               // both star tiers NPC the same
+        BotInventoryManager.ammoMarketValue = id -> 0;              // not shop-sold
+        BotInventoryManager.sellPrice = (id, qty) -> 5 * qty;       // cheap NPC for everything
+        BotInventoryManager.scrollMarketValue = (bot, id) -> 8000.0; // a genuinely valuable scroll
+        try {
+            Character bot = mock(Character.class);
+            Item weakStar = Items.itemWithQuantity(2070000, 1);
+            Item strongStar = Items.itemWithQuantity(2070005, 1);
+            Item goodScroll = Items.itemWithQuantity(2040000, 1); // equip scroll
+
+            double weak = BotInventoryManager.useShelfKeepValue(bot, weakStar);
+            double strong = BotInventoryManager.useShelfKeepValue(bot, strongStar);
+            double scroll = BotInventoryManager.useShelfKeepValue(bot, goodScroll);
+
+            // Power is NOT folded into the keep value: both star tiers value the same (max market/npc).
+            assertEquals(200.0, weak, 0.001);
+            assertEquals(strong, weak, 0.001);
+            // Cross-type: a cheap star never out-values a good scroll on the shared axis.
+            assertTrue(scroll > weak, "good scroll must outvalue a cheap star");
+            assertEquals(8000.0, scroll, 0.001);
+        } finally {
+            BotInventoryManager.projectileWatk = pp;
+            BotInventoryManager.ammoSetValue = pa;
+            BotInventoryManager.ammoMarketValue = pmk;
+            BotInventoryManager.sellPrice = ps;
+            BotInventoryManager.scrollMarketValue = pm;
+        }
     }
 
     @Test

@@ -1328,6 +1328,14 @@ final class BotScrollManager {
         return scrollPriceMeso(resolveProducerCombat(entry, bot), scrollId);
     }
 
+    /** Market (acquisition) value of any shop-bought item — the cheapest legitimate NPC buy price.
+     *  Same SSOT map scrolls use, exposed so the USE-shelf ranker can value ammo by what it costs to
+     *  re-acquire instead of its near-zero NPC sell-back. 0 when nothing legit sells the item. */
+    static int marketBuyPriceMeso(int itemId) {
+        Integer buy = shopPrices().get(itemId);
+        return buy == null ? 0 : buy;
+    }
+
     /**
      * Lazily-loaded cheapest <em>legitimate</em> NPC-shop buy price per item id — all shop items
      * (scrolls AND bases). GM/junk shop listings are excluded: a real shop never sells an item below

@@ -8,6 +8,7 @@ import client.inventory.Equip;
 import client.inventory.Inventory;
 import client.inventory.InventoryType;
 import client.inventory.Item;
+import client.inventory.ModifyInventory;
 import client.inventory.WeaponType;
 import client.inventory.manipulator.InventoryManipulator;
 import config.YamlConfig;
@@ -29,6 +30,7 @@ import java.awt.*;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.IdentityHashMap;
 import java.util.List;
@@ -1856,6 +1858,9 @@ class BotInventoryManager {
     // Projectile attack, for picking a bot's best ammo tier.
     static IntUnaryOperator projectileWatk =
             id -> ItemInformationProvider.getInstance().getWatkForProjectile(id);
+    // Market (acquisition) value of ammo — what it costs to buy back, like scrollMarketValue. 0 if not
+    // sold anywhere legit. The real-meso floor for shelf ammo; see useShelfKeepValue.
+    static IntUnaryOperator ammoMarketValue = BotScrollManager::marketBuyPriceMeso;
     // A USE item effect, cached, for the recovery/cure/buff category predicates.
     @FunctionalInterface
     interface ItemEffectLookup {
@@ -1999,8 +2004,9 @@ class BotInventoryManager {
         List<Item> recovery = new ArrayList<>();
         List<Item> allCure = new ArrayList<>();
         List<Item> ownAmmo = new ArrayList<>();
+        List<Item> otherAmmo = new ArrayList<>();
         List<Item> buffs = new ArrayList<>();
-        List<Item> shelf = new ArrayList<>(); // other-class/surplus ammo, misc -> kept unless cramped
+        List<Item> shelf = new ArrayList<>(); // surplus ammo, misc -> kept unless cramped
 
         for (Item item : all) {
             int id = item.getItemId();
@@ -2011,6 +2017,8 @@ class BotInventoryManager {
             WeaponType ammoType = ammoWeaponType(id);
             if (ammoType != null && ammoType == ownAmmoType) {
                 ownAmmo.add(item);
+            } else if (ammoType != null) {
+                otherAmmo.add(item); // ammo for a class the bot can't fire
             } else if (isRecoveryPotion(id)) {
                 recovery.add(item);
             } else if (isAllCurePotion(id)) {
@@ -2018,11 +2026,12 @@ class BotInventoryManager {
             } else if (isBuffConsumable(id)) {
                 buffs.add(item);
             } else {
-                shelf.add(item); // other-class ammo, uncategorized -> kept unless cramped
+                shelf.add(item); // uncategorized -> kept unless cramped
             }
         }
 
         classifyRecoveryRunway(recovery, out, shelf);
+        classifyOtherAmmoReserve(otherAmmo, out, shelf);
 
         // RUNWAY: a little all-cure insurance; surplus to the shelf. (Not resupplied -> no buy loop.)
         allCure.sort(Comparator.comparingInt(Item::getQuantity).reversed());
@@ -2086,6 +2095,37 @@ class BotInventoryManager {
         }
     }
 
+    // Other-class ammo the bot can't fire: among REDUNDANT off-class ammo (a weapon class with >=2
+    // stacks), keep the single best-WATK stack (worth holding to gift a party member who uses it /
+    // the strongest to re-sell) and drop the rest to the shelf. A LONE off-class stack has no "rest"
+    // to protect it from, so it just shelves and is valued normally by useShelfKeepValue — cheap lone
+    // ammo still sheds under bag pressure (a 2M scroll must always beat 500 basic bolts).
+    private static void classifyOtherAmmoReserve(List<Item> otherAmmo, Map<Item, UseClass> out, List<Item> shelf) {
+        Map<WeaponType, List<Item>> byType = new HashMap<>();
+        for (Item it : otherAmmo) {
+            byType.computeIfAbsent(ammoWeaponType(it.getItemId()), k -> new ArrayList<>()).add(it);
+        }
+        for (List<Item> stacks : byType.values()) {
+            if (stacks.size() < 2) {
+                shelf.addAll(stacks); // no redundancy: value decides, like any other shelf stack
+                continue;
+            }
+            Item best = stacks.get(0);
+            for (Item it : stacks) {
+                if (projectileWatk.applyAsInt(it.getItemId()) > projectileWatk.applyAsInt(best.getItemId())) {
+                    best = it;
+                }
+            }
+            for (Item it : stacks) {
+                if (it == best) {
+                    out.put(it, new UseClass(UseTier.RUNWAY, 0, 0, "ammo-other-best-tier"));
+                } else {
+                    shelf.add(it);
+                }
+            }
+        }
+    }
+
     // Sort own ammo slots strongest-first so RangedAttackHandler's first-slot-wins pick always
     // uses the best available tier. Rechargeable stacks are left as-is (1 stack = 1 full set).
     static void sortOwnAmmoSlots(Character bot) {
@@ -2129,7 +2169,33 @@ class BotInventoryManager {
         }
     }
 
-    // Rank the shelf by value-per-slot ascending (sold first). Rechargeable ammo is valued per-set
+    /**
+     * SSOT keep-worth (estimated meso) of one USE shelf stack — the single cross-type axis the sell
+     * shelf ranks on and the never-sell gate ({@link #USE_NEVER_SELL_MESO}) compares against, so ammo,
+     * scrolls and misc stay commensurable (all REAL meso). Combat power is deliberately NOT folded in
+     * here — it would pollute the scale (a cheap star out-ranking a good scroll); WATK is applied only
+     * as an intra-ammo sort tiebreak in {@link #rankUseShelf}, and powerful ammo is protected
+     * structurally by {@link #classifyOtherAmmoReserve}. Per-set for rechargeable ammo.
+     * ponytail: estimate is shop/market/NPC price today — this is the seam the population supply/demand
+     * value model replaces when bot trading lands; callers won't change.
+     */
+    static double useShelfKeepValue(Character bot, Item it) {
+        int id = it.getItemId();
+        if (ammoWeaponType(id) != null) {
+            if (ItemConstants.isRechargeable(id)) {
+                return Math.max(ammoMarketValue.applyAsInt(id), ammoSetValue.applyAsInt(id)); // per set
+            }
+            return Math.max((double) ammoMarketValue.applyAsInt(id) * it.getQuantity(),
+                    sellPrice.price(id, it.getQuantity()));
+        }
+        if (ItemConstants.isEquipScroll(id)) {
+            return Math.max(sellPrice.price(id, it.getQuantity()),
+                    scrollMarketValue.value(bot, id) * it.getQuantity());
+        }
+        return sellPrice.price(id, it.getQuantity());
+    }
+
+    // Rank the shelf by keep-worth ascending (sold first). Rechargeable ammo is valued per-set
     // (quantity-independent): the first slot of each tier carries the set value, every further slot
     // of that same tier is a redundant duplicate worth ~0 and leads the sale.
     private static void rankUseShelf(Character bot, List<Item> shelf, Map<Item, UseClass> out) {
@@ -2149,19 +2215,20 @@ class BotInventoryManager {
         Map<Item, Double> value = new IdentityHashMap<>();
         for (Item it : ordered) {
             int id = it.getItemId();
-            double v;
-            if (ammoWeaponType(id) != null && ItemConstants.isRechargeable(id)) {
-                v = seenRechargeableTier.add(id) ? ammoSetValue.applyAsInt(id) : 0;
-            } else if (ItemConstants.isEquipScroll(id)) {
-                v = Math.max(sellPrice.price(id, it.getQuantity()),
-                        scrollMarketValue.value(bot, id) * it.getQuantity());
-            } else {
-                v = sellPrice.price(id, it.getQuantity());
+            double v = useShelfKeepValue(bot, it);
+            // Rechargeable ammo is per-SET: a duplicate stack of an already-counted tier is worth ~0.
+            if (ammoWeaponType(id) != null && ItemConstants.isRechargeable(id) && !seenRechargeableTier.add(id)) {
+                v = 0;
             }
             value.put(it, Math.max(0, v));
         }
         List<Item> ranked = new ArrayList<>(shelf);
-        ranked.sort(Comparator.comparingDouble(value::get));
+        // Worst real-meso worth first (sold first). Among equal-worth AMMO, the weaker tier (lower
+        // projectile WATK) sheds first so the strongest is kept last — a tiebreak ONLY, so it can
+        // never lift ammo above a higher-worth non-ammo stack (the cross-type scale stays meso).
+        ranked.sort(Comparator.<Item>comparingDouble(value::get)
+                .thenComparingInt((Item it) -> ammoWeaponType(it.getItemId()) != null
+                        ? projectileWatk.applyAsInt(it.getItemId()) : 0));
         for (int i = 0; i < ranked.size(); i++) {
             Item it = ranked.get(i);
             out.put(it, new UseClass(UseTier.SHELF, value.get(it), i + 1, shelfReason(it, value.get(it))));
@@ -2214,7 +2281,9 @@ class BotInventoryManager {
             if (sellPrice.price(item.getItemId(), item.getQuantity()) <= 0) continue;
             shelf.add(e);
         }
-        shelf.sort(Comparator.comparingDouble(en -> en.getValue().keepValue()));
+        // Worst shelf rank first: shelfRank already folds in keep-worth then the ammo WATK tiebreak
+        // from rankUseShelf, so a cheap/weak stack sheds before a pricier or stronger one.
+        shelf.sort(Comparator.comparingInt(en -> en.getValue().shelfRank()));
         List<Item> result = new ArrayList<>();
         for (var en : shelf) {
             if (result.size() >= slotsToFree) break;
@@ -2414,7 +2483,10 @@ class BotInventoryManager {
     // "would sell now" ({@link #collectSellTrashItems}) and "would keep" is the divider: keeps are
     // back-anchored to the tab's tail so every empty slot pools in the MIDDLE, not the end. A packed
     // tab NPC-sells one already-doomed item (illegal sale allowed, debug only) to open that gap.
-    // Server-side slot rebuild like {@link #sortOwnAmmoSlots}; the F8 window reads it fresh on reopen.
+    // A REAL physical slot move: the rebuild is mirrored to the owner's client as remove+add mods
+    // (same wire path as the game's inventory sort), so it's not just an F8-snapshot illusion.
+    // Every tab is always re-sorted, even one with nothing to sell — the pressure layout is itself
+    // a useful sort.
     static List<String> inspectSellArrange(Character chr) {
         Client c = chr.getClient();
         if (c == null) {
@@ -2471,22 +2543,31 @@ class BotInventoryManager {
                     }
                     (selling.contains(it) ? sells : keeps).add(it);
                 }
-                if (sells.isEmpty()) {
-                    continue;   // nothing this tab would sell — leave it untouched
+                if (sells.isEmpty() && keeps.isEmpty()) {
+                    continue;   // empty tab: nothing to arrange (saves compute, never skips a sort)
                 }
                 sells.sort(byRank);   // most disposable first
                 keeps.sort(byRank);   // least prized first, most prized last
 
-                for (Item it : sells) inv.removeSlot(it.getPosition());
-                for (Item it : keeps) inv.removeSlot(it.getPosition());
+                // Mirror the rebuild to the owner's client as remove+add mods (same wire path as the
+                // game's inventory sort) so it's a real, visible move. A bot has no client UI
+                // (BotClient.sendPacket no-ops anyway), so skip all packet work for bot targets.
+                boolean notify = !(c instanceof BotClient);
+                List<ModifyInventory> mods = notify ? new ArrayList<>() : null;
+                // Freeze each item's OLD slot in a remove mod (a copy, since setPosition mutates the
+                // live item below), clear the slot, then re-place and emit an add mod with the NEW slot.
+                for (Item it : sells) { if (notify) mods.add(new ModifyInventory(3, it.copy())); inv.removeSlot(it.getPosition()); }
+                for (Item it : keeps) { if (notify) mods.add(new ModifyInventory(3, it.copy())); inv.removeSlot(it.getPosition()); }
 
                 // Sells front-anchored (slot 1 = most trash); keeps back-anchored (last slot = most
                 // prized). Every free slot falls in the middle band between them.
                 short pos = 1;
-                for (Item it : sells) { it.setPosition(pos++); inv.addItemFromDB(it); }
+                for (Item it : sells) { it.setPosition(pos++); inv.addItemFromDB(it); if (notify) mods.add(new ModifyInventory(0, it.copy())); }
                 short keepStart = (short) (inv.getSlotLimit() - keeps.size() + 1);
                 pos = (short) Math.max(pos, keepStart);   // abut sells if the tab is genuinely full
-                for (Item it : keeps) { it.setPosition(pos++); inv.addItemFromDB(it); }
+                for (Item it : keeps) { it.setPosition(pos++); inv.addItemFromDB(it); if (notify) mods.add(new ModifyInventory(0, it.copy())); }
+
+                if (notify) c.sendPacket(PacketCreator.modifyInventory(true, mods));
 
                 int gapSlots = inv.getSlotLimit() - sells.size() - keeps.size();
                 lines.add(String.format("%s: %d sell | %d-slot gap | %d keep%s",
@@ -2529,10 +2610,15 @@ class BotInventoryManager {
                 if (uc == null) {
                     return 3 * BAND + id;   // quest/untradeable: can't be sold, most stuck → tail
                 }
+                // Ammo carries no per-slot sell value (redundant sets rank 0, so equal-value stacks
+                // would order arbitrarily); within a band order it by projectile WATK so the weakest
+                // tier sheds first and the strongest is kept last. Scaled < 1 to break value-ties
+                // only, never reorder across genuinely different keep values.
+                double ammoTie = ammoWeaponType(id) != null ? projectileWatk.applyAsInt(id) / 1000.0 : 0;
                 return switch (uc.tier()) {
                     case JUNK -> 0 * BAND + sellPrice.price(id, it.getQuantity());
-                    case SHELF -> 1 * BAND + uc.keepValue();
-                    case RUNWAY -> 2 * BAND + sellPrice.price(id, it.getQuantity());
+                    case SHELF -> 1 * BAND + uc.keepValue() + ammoTie;
+                    case RUNWAY -> 2 * BAND + sellPrice.price(id, it.getQuantity()) + ammoTie;
                 };
             }
             default -> {   // ETC
