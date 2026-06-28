@@ -207,6 +207,8 @@ class BotMovementManager {
         entry.navJumpLaunchX = Integer.MIN_VALUE;
         entry.navJumpLaunchDelaySteps = Integer.MIN_VALUE;
         entry.navTargetRegionId = -1;
+        entry.navFootholdDetourEdge = null;
+        entry.navFootholdDetourTarget = null;
         entry.navPreciseTarget = false;
         entry.navBlockedPosTicks = 0;
         // NOTE: committedRoute is deliberately NOT cleared here. clearNavigationState fires on many
@@ -650,7 +652,9 @@ class BotMovementManager {
 
     private static MoveAction planGroundAction(BotEntry entry, Foothold currentFh, Point botPos, Point targetPos) {
         boolean directionalDrop = isDirectionalDropEdge(entry.navEdge);
-        int stopDist = directionalDrop ? 0 : entry.navPreciseTarget ? preciseNavStopDist(entry.navEdge) : cfg.STOP_DIST;
+        boolean footholdDetour = entry.navFootholdDetourTarget != null;
+        int stopDist = directionalDrop || footholdDetour ? 0
+                : entry.navPreciseTarget ? preciseNavStopDist(entry.navEdge) : cfg.STOP_DIST;
         // No hysteresis when navigating to an edge — always move toward the waypoint. FOLLOW_DIST
         // hysteresis exists to stop owner-follow spacing jitter; a grind-wander/objective target must be
         // reached, so it restarts at stopDist (else the bot parks within 80px of its goal and never

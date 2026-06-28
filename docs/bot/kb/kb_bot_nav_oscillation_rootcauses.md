@@ -88,6 +88,21 @@ Fix: capped best-effort frontier selection now uses Manhattan raw distance (`raw
 keeps the existing cost heuristic. Regression:
 `BotNavigationGraphProviderTest.committedBestEffortRouteDoesNotCycleWhenPortalRegionSearchCaps`.
 
+## 5. Foothold branch detour disarms too early
+Symptom (`pathlog-MemoryCovert-2026-06-28T144650`, map 100040000): path and edge are stable
+(`CLIMB r11->r48`), but the waypoint alternates between the rope-entry launch approach
+(`~1014,233`) and a left branch detour (`883,294`). The bot walks right, then left, forever, with
+`blocked: climb-pos`.
+
+Root cause: `footholdDetourWaypoint` correctly detected that the lower branch must first walk left
+through a shared endpoint, but after one 6px walk tick foothold resolution could see the adjacent
+upper branch and return `null`. Normal CLIMB steering then resumed toward the launch x before the bot
+had actually crossed the detour waypoint, sending it back onto the lower branch.
+
+Fix: store the active foothold detour on `BotEntry` and keep returning that waypoint until the bot
+reaches/crosses it; active detours use zero stop distance so they do not park one pixel short.
+Regression: `BotNavStuckAnalysisTest.footholdDetourDoesNotFightLegalClimbApproachInMemoryCovert`.
+
 ## Not-a-bug
 `pathlog-fictionxD` "jumping back-forth" = a single clean walk-off DROP mid-descent (`Stuck:no`,
 `r=-1` is the normal airborne reading). No oscillation.

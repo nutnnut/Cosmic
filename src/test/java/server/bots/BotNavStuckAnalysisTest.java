@@ -6,6 +6,7 @@ import server.maps.MapleMap;
 import java.awt.Point;
 import java.util.List;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -25,6 +26,9 @@ class BotNavStuckAnalysisTest {
     private static final int MAP = 101020000;
     private static final Point UPPER_ARM = new Point(-288, -1717); // where JUMP r31->r29 lands
     private static final Point ROPE_LAUNCH = new Point(-160, -1912); // CLIMB r29->rope launch (lower arm)
+    private static final int MEMORY_COVERT = 100040000;
+    private static final Point MEMORY_COVERT_APPROACH = new Point(888, 295);
+    private static final Point MEMORY_COVERT_GOAL = new Point(1120, -174);
 
     @Test
     void branchDetourSteersAwayFromLaunchTowardStem() {
@@ -56,6 +60,33 @@ class BotNavStuckAnalysisTest {
         BotEntry atLaunch = lab.spawnBot("atLaunch", 2, map, ROPE_LAUNCH);
         assertNull(BotNavigationManager.footholdDetourWaypoint(atLaunch, graph, ROPE_LAUNCH, climb),
                 "no detour when already on the launch foothold");
+    }
+
+    @Test
+    void footholdDetourDoesNotFightLegalClimbApproachInMemoryCovert() {
+        MapleMap map = BotNavigationMapLoader.loadMapGeometry(MEMORY_COVERT);
+        BotNavigationGraph graph = BotNavigationGraphProvider.rebuildGraph(map);
+        BotMovementSimulationLab lab = BotMovementSimulationLab.fromMap(map);
+
+        int startRegion = regionAt(graph, MEMORY_COVERT_APPROACH);
+        int targetRegion = regionAt(graph, MEMORY_COVERT_GOAL);
+        List<BotNavigationGraph.Edge> path = BotNavigationManager.findPath(
+                graph, map, MEMORY_COVERT_APPROACH, startRegion, targetRegion, MEMORY_COVERT_GOAL);
+        assertTrue(!path.isEmpty(), "pathlog fixture should produce a path");
+        BotNavigationGraph.Edge climb = path.getFirst();
+        assertTrue(climb.type == BotNavigationGraph.EdgeType.CLIMB,
+                "pathlog first edge should be the r11->rope CLIMB");
+
+        BotEntry entry = lab.spawnBot("MemoryCovert", 1, map, new Point(892, MEMORY_COVERT_APPROACH.y));
+        Point firstDetour = BotNavigationManager.footholdDetourWaypoint(
+                entry, graph, new Point(892, MEMORY_COVERT_APPROACH.y), climb);
+        assertNotNull(firstDetour, "lower branch should first detour left through the shared endpoint");
+        assertTrue(firstDetour.x < 892);
+
+        Point stickyDetour = BotNavigationManager.footholdDetourWaypoint(
+                entry, graph, new Point(887, MEMORY_COVERT_APPROACH.y), climb);
+        assertEquals(firstDetour, stickyDetour,
+                "detour must remain active until crossed; dropping here makes the bot steer right and oscillate");
     }
 
     private static int regionAt(BotNavigationGraph g, Point p) {

@@ -1052,8 +1052,10 @@ final class BotNavigationManager {
                         return detour;
                     }
                 }
-                default -> { }
+                default -> clearFootholdDetour(entry);
             }
+        } else {
+            clearFootholdDetour(entry);
         }
         return switch (edge.type) {
             case WALK -> new Point(edge.endPoint);
@@ -1083,32 +1085,68 @@ final class BotNavigationManager {
      */
     static Point footholdDetourWaypoint(BotEntry entry, BotNavigationGraph graph, Point botPos,
                                         BotNavigationGraph.Edge edge) {
+        Point active = activeFootholdDetourWaypoint(entry, botPos, edge);
+        if (active != null) {
+            return active;
+        }
+
         MapleMap map = entry.bot.getMap();
         BotNavigationGraph.Region region = graph.getRegion(edge.fromRegionId);
         if (map == null || region == null || region.isRopeRegion) {
+            clearFootholdDetour(entry);
             return null;
         }
         Point launchPt = edge.startPoint;
         Foothold curFh = BotPhysicsEngine.findGroundFoothold(map, botPos);
         Foothold launchFh = BotPhysicsEngine.findGroundFoothold(map, launchPt);
         if (curFh == null || launchFh == null || curFh.getId() == launchFh.getId()) {
+            clearFootholdDetour(entry);
             return null;
         }
         List<Foothold> path = walkFootholdPath(map, region, curFh, launchFh);
         if (path == null || path.size() < 2) {
+            clearFootholdDetour(entry);
             return null;
         }
         Foothold next = path.get(1);
         Point cross = sharedEndpoint(curFh, next);
         if (cross == null) {
+            clearFootholdDetour(entry);
             return null;
         }
         int awayDir = Integer.signum(cross.x - botPos.x);
         int launchDir = Integer.signum(launchPt.x - botPos.x);
         if (awayDir == 0 || awayDir == launchDir) {
+            clearFootholdDetour(entry);
             return null; // chain already heads toward the launch x -> normal monotone steering reaches it
         }
-        return farEndpoint(next, cross); // detour: walk across 'next' toward the shared vertex
+        Point detour = farEndpoint(next, cross); // detour: walk across 'next' toward the shared vertex
+        entry.navFootholdDetourEdge = edge;
+        entry.navFootholdDetourTarget = new Point(detour);
+        return detour;
+    }
+
+    private static Point activeFootholdDetourWaypoint(BotEntry entry, Point botPos, BotNavigationGraph.Edge edge) {
+        if (entry == null || botPos == null || edge == null
+                || entry.navFootholdDetourTarget == null
+                || !sameEdge(entry.navFootholdDetourEdge, edge)) {
+            clearFootholdDetour(entry);
+            return null;
+        }
+        int dx = entry.navFootholdDetourTarget.x - botPos.x;
+        int dir = Integer.signum(entry.navFootholdDetourTarget.x - edge.startPoint.x);
+        if (dx == 0 || dir == 0 || Integer.signum(dx) != dir) {
+            clearFootholdDetour(entry);
+            return null;
+        }
+        return new Point(entry.navFootholdDetourTarget);
+    }
+
+    private static void clearFootholdDetour(BotEntry entry) {
+        if (entry != null) {
+            entry.navFootholdDetourEdge = null;
+            entry.navFootholdDetourTarget = null;
+        }
     }
 
     /** BFS over a region's footholds via walkable prev/next links. Returns the foothold chain from

@@ -728,6 +728,8 @@ public class BotEntry {
     // launching at the identical spot when an arc is borderline.
     int navJumpLaunchDelaySteps = Integer.MIN_VALUE;
     int navTargetRegionId = -1;
+    BotNavigationGraph.Edge navFootholdDetourEdge = null;
+    Point navFootholdDetourTarget = null;
     // Committed route: the full planned hop sequence to the current goal region. The bot follows it
     // hop-by-hop (sticking to ONE route) instead of re-deciding the next hop per region. The best
     // first hop OUT of a region is position-dependent (it depends on the bot's x within the region —
