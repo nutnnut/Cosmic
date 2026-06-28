@@ -967,6 +967,7 @@ class BotInventoryManager {
         }
         boolean receivedSomething = trade.getPartner() != null && trade.getPartner().hasAnyOffer();
         Trade.completeTrade(bot);
+        sortOwnAmmoSlots(bot);
         long replyDelay = BotManager.randMs(800, 1300);
         if (receivedSomething) {
             bot.changeFaceExpression(Emote.HAPPY.getValue());
@@ -2076,6 +2077,32 @@ class BotInventoryManager {
             } else {
                 shelf.add(it);
             }
+        }
+    }
+
+    // Sort own ammo slots strongest-first so RangedAttackHandler's first-slot-wins pick always
+    // uses the best available tier. Rechargeable stacks are left as-is (1 stack = 1 full set).
+    static void sortOwnAmmoSlots(Character bot) {
+        WeaponType ownType = tradeAmmoWeaponType(bot);
+        if (ownType == null) return;
+
+        Inventory use = bot.getInventory(InventoryType.USE);
+        List<Item> ammo = new ArrayList<>();
+
+        use.lockInventory();
+        try {
+            for (short i = 1; i <= use.getSlotLimit(); i++) {
+                Item item = use.getItem(i);
+                if (item != null && ammoWeaponType(item.getItemId()) == ownType) {
+                    ammo.add(item);
+                }
+            }
+            if (ammo.size() <= 1) return;
+            for (Item item : ammo) use.removeSlot(item.getPosition());
+            ammo.sort(Comparator.comparingInt((Item it) -> projectileWatk.applyAsInt(it.getItemId())).reversed());
+            for (Item item : ammo) use.addItem(item);
+        } finally {
+            use.unlockInventory();
         }
     }
 

@@ -648,6 +648,7 @@ final class BotShopManager {
             BotManager.getInstance().botSay(sequence.bot(), "bought " + String.join(", ", sequence.bought()));
             BotPotionManager.setupAutopotForBot(sequence.bot());
             BotCombatManager.tickAmmoCheck(sequence.entry(), sequence.bot());
+            BotInventoryManager.sortOwnAmmoSlots(sequence.bot());
             scheduleShopStep(sequence.entry(), finish);
             return;
         }
