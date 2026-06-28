@@ -132,6 +132,9 @@ public class BotManager {
         // whose kills overlap the current grind. Kill switches - both default on.
         public boolean AUTO_QUESTS = true;
         public boolean QUEST_PIGGYBACK = true;
+        // Tell the owner in chat when a quest is skipped as bugged (internal-state debug chatter).
+        // Off by default — it leaks "X seems bugged" noise to players.
+        public boolean QUEST_BUGGED_CHAT = false;
 
         // Job advancement fallback: when an autopilot bot can't reach its job instructor (3rd/4th-job
         // NPCs live in deep dungeon / Leafre maps that may be unroutable), force the advance on the

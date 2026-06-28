@@ -867,7 +867,7 @@ final class BotQuestManager {
      *  so every scan skips it instead of looping the same doomed start/turn-in/complete + announcement.
      *  Tells the owner once (autopilot bots with no owner online just suppress silently). */
     static void markQuestBugged(BotEntry entry, int questId, String why) {
-        if (entry.buggedQuestIds.add(questId)) {
+        if (entry.buggedQuestIds.add(questId) && BotManager.cfg.QUEST_BUGGED_CHAT) {
             reply.accept(entry, questName.name(questId) + " seems bugged (" + why + "), skipping it");
         }
     }
