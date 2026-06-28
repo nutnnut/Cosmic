@@ -64,18 +64,22 @@ class BotWorldGraphTest {
     }
 
     @Test
-    void shouldRideTaxiOnlyWhenMesoCoversTheFare() {
+    void shouldRideTaxiOnlyAboveTheSpendTier() {
         // Towns only, no portal edges: any cross-town route must use the hardcoded cab table.
         BotWorldGraph.Index graph = BotWorldGraph.indexOf(Map.of(
                 100000000, new int[0], 101000000, new int[0], 104000000, new int[0]));
+        int tier = BotManager.cfg.TAXI_MIN_MESO;
 
-        // Henesys→Lith costs 1000.
+        // Spend policy: paid cabs between WALKABLE towns cost a route hop only above the taxi tier; below
+        // it the bot walks, so with no portal edges there's no route at all.
+        assertNull(BotWorldGraph.route(graph, 100000000, 104000000, 4, new BotWorldGraph.RouteOptions(false, tier - 1, false)));
+        // At/above the tier the cab is a single ride (Victoria fares 800-1000 sit well under the tier, so
+        // meso always covers them once the tier is met). The per-fare gate is exercised by the cost model
+        // in BotTravelCostTest, which prices reachability without the executor's spend thrift.
         assertEquals(List.of(104000000),
-                BotWorldGraph.route(graph, 100000000, 104000000, 4, new BotWorldGraph.RouteOptions(false, 1000, false)));
-        assertNull(BotWorldGraph.route(graph, 100000000, 104000000, 4, new BotWorldGraph.RouteOptions(false, 999, false)));
-        // Henesys→Ellinia costs only 800.
+                BotWorldGraph.route(graph, 100000000, 104000000, 4, new BotWorldGraph.RouteOptions(false, tier, false)));
         assertEquals(List.of(101000000),
-                BotWorldGraph.route(graph, 100000000, 101000000, 4, new BotWorldGraph.RouteOptions(false, 800, false)));
+                BotWorldGraph.route(graph, 100000000, 101000000, 4, new BotWorldGraph.RouteOptions(false, tier, false)));
         // Broke bots don't see taxi edges at all.
         assertNull(BotWorldGraph.route(graph, 100000000, 101000000, 4, PORTALS_ONLY));
     }

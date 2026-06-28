@@ -21,6 +21,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.PriorityQueue;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.concurrent.ConcurrentHashMap;
@@ -95,6 +96,11 @@ final class BotWorldGraph {
             this(fromMapId, npcId, toMapId, fare, beginnerOnly, 0);
         }
     }
+
+    /** One outgoing travel edge from a map: ride to {@code toMapId} costing {@code seconds}. The SSOT
+     *  edge type shared by the time-Dijkstra {@link #route}, the reachability flood ({@link #expand})
+     *  and {@link BotTravelCost#floodSeconds}, so the edge set and per-kind costs never drift apart. */
+    record WeightedEdge(int toMapId, double seconds) {}
 
     // Victoria cab rides, mirrored from the NPC scripts (scripts/npc/<npcId>.js): each cab
     // warps to portal 0 of the destination for the listed fare. The 10k VIP cabs go to the
@@ -353,27 +359,40 @@ final class BotWorldGraph {
         if (maxHops <= 0) {
             return null;
         }
+        // Shortest-TIME path (uniform-cost / Dijkstra over the same edges {@link BotTravelCost#floodSeconds}
+        // floods), bounded by maxHops. Portal hops are uniform, so a portals-only route is still the
+        // fewest-hop one; the difference shows when a return scroll (5s) or town cab (30s) actually beats
+        // walking it (25s/hop) — those legs now win on real travel time instead of being a wash at 1 hop.
+        // Ferry uses the nominal travelrate (the flood reads the live rate); cross-continent boats have no
+        // portal alternative anyway, so the magnitude never flips the pick — but a slow boat now loses to a
+        // shorter walk that exists, which the old hop count wrongly preferred.
+        double ferrySeconds = BotTravelCost.ferrySeconds(ms -> ms);
         Map<Integer, Integer> cameFrom = new HashMap<>();
-        ArrayDeque<Integer> frontier = new ArrayDeque<>();
-        cameFrom.put(fromMapId, fromMapId);
-        frontier.add(fromMapId);
-        int depth = 0;
-        while (!frontier.isEmpty() && depth < maxHops) {
-            depth++;
-            for (int level = frontier.size(); level > 0; level--) {
-                int current = frontier.poll();
-                for (int next : expand(graph, current, options)) {
-                    if (blocked.test(next)) {
-                        continue; // never path into a blocked map -> any route through it is pruned
-                    }
-                    if (cameFrom.putIfAbsent(next, current) != null) {
-                        continue;
-                    }
-                    if (next == toMapId) {
-                        return reconstruct(cameFrom, fromMapId, toMapId);
-                    }
-                    frontier.add(next);
+        Set<Integer> settled = new HashSet<>();
+        // {seconds, mapId, hops, prevMapId}; cheapest seconds first, fewest hops breaks time ties so the
+        // path stays as short as the old BFS when costs are equal.
+        PriorityQueue<double[]> frontier = new PriorityQueue<>(
+                (a, b) -> a[0] != b[0] ? Double.compare(a[0], b[0]) : Double.compare(a[2], b[2]));
+        frontier.add(new double[]{0.0, fromMapId, 0, fromMapId});
+        while (!frontier.isEmpty()) {
+            double[] current = frontier.poll();
+            int mapId = (int) current[1];
+            int hops = (int) current[2];
+            if (!settled.add(mapId)) {
+                continue; // already reached at a cheaper time
+            }
+            cameFrom.put(mapId, (int) current[3]); // commit the predecessor on the settling (cheapest) path
+            if (mapId == toMapId) {
+                return reconstruct(cameFrom, fromMapId, toMapId);
+            }
+            if (hops >= maxHops) {
+                continue;
+            }
+            for (WeightedEdge edge : weightedNeighbors(graph, mapId, options, ferrySeconds)) {
+                if (blocked.test(edge.toMapId()) || settled.contains(edge.toMapId())) {
+                    continue; // never path into a blocked map; skip already-settled targets
                 }
+                frontier.add(new double[]{current[0] + edge.seconds(), edge.toMapId(), hops + 1, mapId});
             }
         }
         return null;
@@ -424,24 +443,33 @@ final class BotWorldGraph {
         return seen;
     }
 
-    /** A map's outgoing edges under the given options: portals, then scroll/taxi when affordable. */
-    private static List<Integer> expand(Index graph, int mapId, RouteOptions options) {
-        int[] portals = graph.neighbors(mapId);
-        List<Integer> out = new ArrayList<>(portals.length + 6);
-        for (int next : portals) {
-            out.add(next);
+    /**
+     * SSOT for a map's outgoing time-weighted travel edges under {@code options}: portal hops, then
+     * the affordable consumable rides (return scroll, taxi, world-tour return, ferry). The time-Dijkstra
+     * {@link #route}, the reachability flood ({@link #expand}) and {@link BotTravelCost#floodSeconds} all
+     * enumerate over exactly this, so the edge set and per-kind seconds can never drift apart.
+     *
+     * <p>{@code ferrySeconds} is supplied by the caller because ferry time scales with the runtime-mutable
+     * travelrate — portal/scroll/taxi costs are fixed (see {@link BotTravelCost}). {@code taxiSpendGate}
+     * applies the executor's spend policy (paid town cabs only above {@link BotManager.cfg#TAXI_MIN_MESO},
+     * since those towns are walkable) for the route/reachability callers; the cost model passes {@code false}
+     * so it values a destination by what the bot COULD reach if it chose to cab, not by current thrift. Hard
+     * gates — beginner-only, level, fare, ferry opt-in/ticket — always apply.
+     */
+    static List<WeightedEdge> weightedNeighbors(Index graph, int mapId, RouteOptions options,
+                                                double ferrySeconds, boolean taxiSpendGate) {
+        List<WeightedEdge> out = new ArrayList<>();
+        for (int next : graph.neighbors(mapId)) {
+            out.add(new WeightedEdge(next, BotTravelCost.PORTAL_HOP_SECONDS));
         }
         if (options.withReturnScroll()) {
             int scrollTarget = graph.scrollTarget(mapId);
             if (scrollTarget != -1) {
-                out.add(scrollTarget);
+                out.add(new WeightedEdge(scrollTarget, BotTravelCost.SCROLL_SECONDS));
             }
         }
-        // Fares are gated per edge, not cumulatively along the route — the travel executor
-        // re-checks meso at every ride, and a broke bot mid-route just falls back/re-plans.
-        // Spend policy: paid taxi SHORTCUTS (walkable town-to-town cabs) only when meso is above the
-        // taxi tier; below it the bot walks. Cross-continent rides (CONTINENT_RIDE_NPCS) have no walk
-        // alternative, so they're always allowed (still subject to the per-edge fare check).
+        // Fares are gated per edge, not cumulatively along the route — the travel executor re-checks meso
+        // at every ride, and a broke bot mid-route just falls back/re-plans.
         boolean taxiShortcuts = options.meso() >= BotManager.cfg.TAXI_MIN_MESO;
         for (TaxiEdge taxi : TAXI_BY_MAP.getOrDefault(mapId, List.of())) {
             if (taxi.beginnerOnly() && !options.isBeginner()) {
@@ -451,25 +479,43 @@ final class BotWorldGraph {
                 continue; // level-gated ride (Shanks: lv7+ to leave Maple Island)
             }
             boolean continentRide = CONTINENT_RIDE_NPCS.contains(taxi.npcId());
-            // Beginner cabs are exempt from the meso-shortcut gate: the 90% discount makes them cheap
-            // enough that a broke beginner should still hop towns rather than walk.
-            boolean gateOk = continentRide || taxi.beginnerOnly() || taxiShortcuts;
+            // Spend policy (route/reachability only): paid town-to-town cabs cost a hop only when meso is
+            // above the taxi tier; below it the bot walks. Cross-continent rides have no walk alternative,
+            // and beginner cabs are cheap (90% off), so both stay available regardless of the tier.
+            boolean gateOk = !taxiSpendGate || continentRide || taxi.beginnerOnly() || taxiShortcuts;
             if (gateOk && options.meso() >= taxi.fare()) {
-                out.add(taxi.toMapId());
+                out.add(new WeightedEdge(taxi.toMapId(), BotTravelCost.TAXI_SECONDS));
             }
         }
         // Spinel's only ride out of the shrine is back to the saved WORLDTOUR origin (free). It exists
         // only for the bot standing here (worldTourReturn != -1), so a remote bot can't route THROUGH
         // the shrine to reach Lith Harbor cheaply — the exploit the static return edge used to allow.
         if (mapId == MUSHROOM_SHRINE && options.worldTourReturn() != -1) {
-            out.add(options.worldTourReturn());
+            out.add(new WeightedEdge(options.worldTourReturn(), BotTravelCost.TAXI_SECONDS));
         }
         if (options.withFerry()) {
             for (BotFerryManager.FerryRoute ferry : BotFerryManager.routesBoardingAt(mapId)) {
                 if (options.meso() >= ferry.ticketCost()) {
-                    out.add(ferry.destinationMapId());
+                    out.add(new WeightedEdge(ferry.destinationMapId(), ferrySeconds));
                 }
             }
+        }
+        return out;
+    }
+
+    /** Convenience overload for the time-weighted route/flood callers (spend gate applied). */
+    static List<WeightedEdge> weightedNeighbors(Index graph, int mapId, RouteOptions options, double ferrySeconds) {
+        return weightedNeighbors(graph, mapId, options, ferrySeconds, true);
+    }
+
+    /** A map's outgoing edges as plain target ids — the reachability projection of
+     *  {@link #weightedNeighbors} (same edge set, spend gate applied; weights and ferry time irrelevant
+     *  to who-can-reach-what). */
+    private static List<Integer> expand(Index graph, int mapId, RouteOptions options) {
+        List<WeightedEdge> edges = weightedNeighbors(graph, mapId, options, 0.0, true);
+        List<Integer> out = new ArrayList<>(edges.size());
+        for (WeightedEdge edge : edges) {
+            out.add(edge.toMapId());
         }
         return out;
     }

@@ -69,32 +69,12 @@ final class BotTravelCost {
             if (hops >= maxHops) {
                 continue;
             }
-            for (int next : graph.neighbors(mapId)) {
-                offer(frontier, seconds, next, cost + PORTAL_HOP_SECONDS, hops);
-            }
-            if (options.withReturnScroll()) {
-                int scrollTarget = graph.scrollTarget(mapId);
-                if (scrollTarget != -1) {
-                    offer(frontier, seconds, scrollTarget, cost + SCROLL_SECONDS, hops);
-                }
-            }
-            for (BotWorldGraph.TaxiEdge taxi : BotWorldGraph.taxiEdgesFrom(mapId)) {
-                if (options.meso() >= taxi.fare()) {
-                    offer(frontier, seconds, taxi.toMapId(), cost + TAXI_SECONDS, hops);
-                }
-            }
-            // Spinel's free ride back out of the shrine to the saved WORLDTOUR origin (mirrors
-            // BotWorldGraph.expand): present only for the bot standing here, so it's costed as the
-            // first hop back to where it boarded — never a through shortcut to Lith Harbor.
-            if (mapId == BotWorldGraph.MUSHROOM_SHRINE && options.worldTourReturn() != -1) {
-                offer(frontier, seconds, options.worldTourReturn(), cost + TAXI_SECONDS, hops);
-            }
-            if (options.withFerry()) {
-                for (BotFerryManager.FerryRoute ferry : BotFerryManager.routesBoardingAt(mapId)) {
-                    if (options.meso() >= ferry.ticketCost()) {
-                        offer(frontier, seconds, ferry.destinationMapId(), cost + ferrySeconds, hops);
-                    }
-                }
+            // Same edges/costs the executor's route() flood over (SSOT), but with taxiSpendGate=false: the
+            // cost model values a destination by what the bot COULD reach if it chose to cab, not by the
+            // executor's thrift (walk short town hops unless rich). Hard gates (fare, beginner, level, ferry
+            // ticket) still apply. ferrySeconds is the runtime travelrate-priced ride, never cached.
+            for (BotWorldGraph.WeightedEdge edge : BotWorldGraph.weightedNeighbors(graph, mapId, options, ferrySeconds, false)) {
+                offer(frontier, seconds, edge.toMapId(), cost + edge.seconds(), hops);
             }
         }
         return seconds;
