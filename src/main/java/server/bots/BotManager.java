@@ -6076,8 +6076,10 @@ public class BotManager {
 
     void botSay(Character bot, String text) {
         String s = sanitizeChat(text);
-        if (bot.getMap().isObservedByPlayer()) {
-            bot.getMap().broadcastMessage(PacketCreator.getChatText(bot.getId(), s, false, 0));
+        MapleMap map = bot.getMap();
+        if (map == null) return; // bot left the world between scheduling and firing this chat
+        if (map.isObservedByPlayer()) {
+            map.broadcastMessage(PacketCreator.getChatText(bot.getId(), s, false, 0));
         }
         BotWorldGraphWebServer.recordChat(bot.getMapId(), bot.getName(), s);
     }

@@ -871,7 +871,12 @@ final class BotTravelManager {
         if (bot == null || map == null || botPos == null || targetPos == null) {
             return Integer.MAX_VALUE;
         }
-        BotNavigationGraph graph = BotNavigationGraphProvider.getGraph(map, entry.movementProfile);
+        // Non-blocking peek only: this is a per-tick watchdog scalar, not a navigation decision. The
+        // blocking getGraph() would build this bot's exact-profile graph INLINE on the tick thread on a
+        // cache miss (companions have unique speed/jump, so they always miss), stalling follow-travel for
+        // the whole build. A null here is the designed fallback — refreshTravelDeadlineOnProgress keeps
+        // the hop alive on physical progress until the warm completes.
+        BotNavigationGraph graph = BotNavigationGraphProvider.peekBestGraph(map, entry.movementProfile);
         if (graph == null) {
             return Integer.MAX_VALUE;
         }
