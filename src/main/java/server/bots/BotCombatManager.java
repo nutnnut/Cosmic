@@ -359,17 +359,31 @@ class BotCombatManager {
 
     /** Check every alive monster on the map; if bot is inside its bounding box, apply a hit. */
     static void tickMobDamage(BotEntry entry, Character bot) {
+        tickMobDamage(entry, bot, true);
+    }
+
+    /**
+     * @param runSweep when false, only the invuln-cooldown tick-down and the dead check run; the
+     *   expensive O(monsters) contact sweep is skipped. The cooldown still decrements on every call
+     *   ({@link BotMovementManager#tickDown} subtracts a fixed {@code TICK_MS} per call), so cadencing
+     *   the sweep does NOT stretch the invulnerability window. The swept touch rectangle naturally
+     *   spans movement since the last sweep, so cadencing also can't miss a mob walked through between
+     *   checks.
+     */
+    static void tickMobDamage(BotEntry entry, Character bot, boolean runSweep) {
+        if (entry.mobHitCooldownMs > 0) {
+            entry.mobHitCooldownMs = BotMovementManager.tickDown(entry.mobHitCooldownMs);
+            return;
+        }
+        if (bot.getHp() <= 0) return;
+        if (!runSweep) return;
+
         Point botPos = bot.getPosition();
         try {
-            if (entry.mobHitCooldownMs > 0) {
-                entry.mobHitCooldownMs = BotMovementManager.tickDown(entry.mobHitCooldownMs);
-                return;
-            }
-            if (bot.getHp() <= 0) return;
-
+            Rectangle botBounds = getBotTouchBounds(entry, bot); // computed once per sweep, not per mob
             for (Monster mob : bot.getMap().getAllMonsters()) {
                 if (!isHostileLivingMonster(mob)) continue;
-                if (isMobTouchingBot(entry, bot, mob)) {
+                if (isMobTouchingBot(botBounds, mob)) {
                     applyMobHit(entry, bot, mob);
                     return;
                 }
@@ -2733,7 +2747,10 @@ class BotCombatManager {
     }
 
     static boolean isMobTouchingBot(BotEntry entry, Character bot, Monster mob) {
-        Rectangle botBounds = getBotTouchBounds(entry, bot);
+        return isMobTouchingBot(getBotTouchBounds(entry, bot), mob);
+    }
+
+    static boolean isMobTouchingBot(Rectangle botBounds, Monster mob) {
         Rectangle mobBounds = BotMobHitboxProvider.getInstance().getMobBounds(mob);
         if (mobBounds == null) {
             return false;

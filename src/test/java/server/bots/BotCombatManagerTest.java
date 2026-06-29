@@ -1196,7 +1196,7 @@ class BotCombatManagerTest {
 
         try (MockedStatic<BotCombatManager> combat =
                      Mockito.mockStatic(BotCombatManager.class, Mockito.CALLS_REAL_METHODS)) {
-            combat.when(() -> BotCombatManager.isMobTouchingBot(any(BotEntry.class), any(Character.class),
+            combat.when(() -> BotCombatManager.isMobTouchingBot(any(Rectangle.class),
                     any(Monster.class))).thenReturn(true);
             runWithStubbedBotAfter(() -> BotCombatManager.tickMobDamage(entry, bot));
         }
@@ -1215,7 +1215,7 @@ class BotCombatManagerTest {
 
         try (MockedStatic<BotCombatManager> combat =
                      Mockito.mockStatic(BotCombatManager.class, Mockito.CALLS_REAL_METHODS)) {
-            combat.when(() -> BotCombatManager.isMobTouchingBot(any(BotEntry.class), any(Character.class),
+            combat.when(() -> BotCombatManager.isMobTouchingBot(any(Rectangle.class),
                     any(Monster.class))).thenReturn(true);
             runWithStubbedBotAfter(() -> BotCombatManager.tickMobDamage(entry, bot));
         }

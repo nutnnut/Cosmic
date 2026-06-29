@@ -5329,8 +5329,15 @@ public class BotManager {
         // ~5Hz gate for latency-insensitive opportunity scans (loot pickup, quest turn-in), staggered
         // across bots by id so their cost spreads over ticks instead of spiking one. A ground drop or a
         // quest turn-in tolerates a 200ms cadence; combat/potions/physics stay at the full tick rate.
-        boolean runSlowScans = ((entry.commonTickCounter++ & 3) == (bot.getId() & 3));
-        BotCombatManager.tickMobDamage(entry, bot);
+        int tickN = entry.commonTickCounter++;
+        boolean runSlowScans = ((tickN & 3) == (bot.getId() & 3));
+        // Contact-damage sweep is the hot per-tick cost (O(monsters) bbox scan). The 1500ms invuln
+        // window after every hit makes it latency-tolerant, so cadence it 1-in-2 (staggered by id so
+        // bots don't all sweep on the same tick). The cooldown tick-down inside tickMobDamage still
+        // runs every call, so the invuln window length is unaffected.
+        // ponytail: 1-in-2 halves the sweep; widen to (& 3) if a later capture shows it still hot.
+        boolean runMobTouchSweep = ((tickN & 1) == (bot.getId() & 1));
+        BotCombatManager.tickMobDamage(entry, bot, runMobTouchSweep);
         if (perf) BotPerformanceMonitor.record("common-mob-damage", System.nanoTime() - t);
         if (bot.getHp() <= 0) {
             if (entry.deadUntil == 0) {
