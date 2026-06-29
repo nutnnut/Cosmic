@@ -1233,13 +1233,6 @@ class BotMovementManager {
         entry.lastBroadcastFh = fhId;
     }
 
-    static Map<Integer, Foothold> buildFhIndex(MapleMap map) {
-        Map<Integer, Foothold> index = new HashMap<>();
-        for (Foothold foothold : map.getFootholds().getAllFootholds()) {
-            index.put(foothold.getId(), foothold);
-        }
-        return index;
-    }
 
     private static JumpLanding wrapLanding(BotPhysicsEngine.JumpLanding landing) {
         if (landing == null) {

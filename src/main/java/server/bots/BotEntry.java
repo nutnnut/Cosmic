@@ -4,7 +4,6 @@ import client.Character;
 import client.inventory.Item;
 import server.Trade;
 import server.life.Monster;
-import server.maps.Foothold;
 import server.maps.MapItem;
 import server.maps.Rope;
 
@@ -655,9 +654,7 @@ public class BotEntry {
     boolean ownerReturnedToTown = false;
     boolean ownerAwaySafeMode = false;
 
-    // Foothold index, rebuilt on map change
     int lastMapId = -1;
-    Map<Integer, Foothold> fhIndex = new HashMap<>();
 
     // Human-like spacing and stagger — assigned at registration based on bot index
     int followOffsetX = 0;

@@ -850,7 +850,6 @@ public class BotManager {
         entry.deadUntil = 0;
         entry.lastMapId = spawnMap != null ? spawnMap.getId() : botChar.getMapId();
         if (spawnMap != null && spawnMap.getFootholds() != null) {
-            entry.fhIndex = BotMovementManager.buildFhIndex(spawnMap);
             BotNavigationGraphProvider.warmGraphAsync(spawnMap, entry.movementProfile);
         }
         entry.skipDelayMs = 0;
@@ -932,7 +931,6 @@ public class BotManager {
         BotMovementManager.resetEntryStateAfterTeleport(entry);
         entry.deadUntil = 0;
         entry.lastMapId = bot.getMapId();
-        entry.fhIndex = BotMovementManager.buildFhIndex(bot.getMap());
         entry.skipDelayMs = 0;
         entry.aiTickAccumulatorMs = 0;
         entry.moveDir = 0;
@@ -3511,7 +3509,6 @@ public class BotManager {
         // decision runs — none of those may act on stale footholds or a half-landed position.
         if (entry.lastMapId != bot.getMapId()) {
             if (!perf) {
-                entry.fhIndex  = BotMovementManager.buildFhIndex(bot.getMap());
                 entry.lastMapId = bot.getMapId();
                 BotPhysicsEngine.spawnIntoMap(entry, bot); // snap, or fall-by-gravity if dropped above the floor
                 BotMovementManager.resetEntryStateAfterTeleport(entry);
@@ -3526,7 +3523,6 @@ public class BotManager {
             } else {
                 long tMapChange = System.nanoTime();
                 try {
-                    entry.fhIndex  = BotMovementManager.buildFhIndex(bot.getMap());
                     entry.lastMapId = bot.getMapId();
                     BotPhysicsEngine.spawnIntoMap(entry, bot); // snap, or fall-by-gravity if dropped above the floor
                     BotMovementManager.resetEntryStateAfterTeleport(entry);
@@ -5274,7 +5270,6 @@ public class BotManager {
             return false;
         }
 
-        entry.fhIndex = BotMovementManager.buildFhIndex(bot.getMap());
         entry.lastMapId = bot.getMapId();
         Point cur = bot.getPosition();
         Point ground = BotPhysicsEngine.findGroundPoint(bot.getMap(), new Point(cur.x, cur.y - 1));
@@ -5678,7 +5673,6 @@ public class BotManager {
 
         // Rebuild physics on map change BEFORE follow/warp/recovery decisions (see tickEntry).
         if (entry.lastMapId != bot.getMapId()) {
-            entry.fhIndex  = BotMovementManager.buildFhIndex(bot.getMap());
             entry.lastMapId = bot.getMapId();
             Point cur = bot.getPosition();
             Point ground = BotPhysicsEngine.findGroundPoint(bot.getMap(), new Point(cur.x, cur.y - 1));
