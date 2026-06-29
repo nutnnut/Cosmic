@@ -144,6 +144,29 @@ edges only when the current resolved region is that edge's source. A bot on `r30
 `JUMP r7->r4`, replans, and can take the fresh `CLIMB r30->r7`. Regression:
 `BotNavigationManagerTest.shouldDropStaleGroundJumpWhileClimbingOnDifferentRopeRegion`.
 
+## 7. Loot detour pulls a bot off a climb to a vertically-stacked mob (combat, not nav)
+Symptom (`pathlog-porprism345-2026-06-29T081014.txt`, map 103000101): bot oscillates `x≈1493↔1507`
+on flat region 24, never climbs, never attacks (last hit 58s ago). Goal alternates every ~200ms
+between `grind-target (1431,71)` (the mob, 4 climbs up region 11, `dy=252`, out of range) and
+`nav-input (1604,323)` (flat ground, to the RIGHT). `cmb=ATK` on BOTH phases ⇒ the bot keeps its
+grind target the whole time (not wander/null); the 1604 goal is the **loot-detour override**
+(`tickGrindMode` line ~4029), not a nav-graph decision.
+
+Root cause: `convenientLootTarget` (BotManager.java) gates the detour with
+`lootDistSq < mobDistSq * GRIND_LOOT_CONVENIENCE_RATIO`, where `mobDistSq` is the mob's
+**straight-line** `distanceSq` (≈263²). That ignores the mob being ~1200 graph-cost (4 ropes) away,
+so flat loot always "wins". Each tick the bot lurches toward a drop; once within `LOOT_RADIUS=100`
+(`activeGrindLootPosition`) the drop is marked arrived + suppressed *without a real pickup*, the bot
+turns back toward the climb, the next nearby drop re-acquires, repeat → a tight foot-of-rope
+oscillation. `findGrindTarget` already scores by graph cost; the loot-convenience check did not — an
+SSOT/like-for-like-distance violation (the Euclidean-vs-travel mismatch is the same bug class as #4).
+
+Fix (rule #9): `convenientLootTarget` resolves bot vs mob nav regions (`peekGraph` +
+`resolveCurrentRegionId`/`resolveTargetRegionId`, same pattern as `selectCrossRegionRetreatTarget`)
+and returns `null` (no detour) when they differ. The convenience comparison only runs for a
+same-region flat fight; cross-region (climb/drop-away) loot is collected when the bot travels there
+naturally. Graph-unavailable falls back to prior behavior (detour allowed).
+
 ## Not-a-bug
 `pathlog-fictionxD` "jumping back-forth" = a single clean walk-off DROP mid-descent (`Stuck:no`,
 `r=-1` is the normal airborne reading). No oscillation.

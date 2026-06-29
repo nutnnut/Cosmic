@@ -3222,6 +3222,25 @@ public class BotManager {
         if (lootPos == null) {
             return null;
         }
+        // The convenience test below compares loot travel-distance against the mob's STRAIGHT-LINE
+        // distance, which is only comparable on shared flat terrain. When the mob sits in another
+        // nav region (up a rope / across a drop) its Euclidean distance badly understates the real
+        // travel cost, so flat loot always "wins" and the bot lurches toward drops at the foot of
+        // the climb forever instead of ascending to fight (oscillation, never attacks). Restrict the
+        // detour to a same-region (flat) fight; cross-region loot is collected when the bot travels
+        // there naturally.
+        Character bot = entry != null ? entry.bot : null;
+        MapleMap map = bot != null ? bot.getMap() : null;
+        if (map != null) {
+            BotNavigationGraph graph = BotNavigationGraphProvider.peekGraph(map, entry.movementProfile);
+            if (graph != null) {
+                int botRegionId = BotNavigationManager.resolveCurrentRegionId(graph, entry, map, botPos);
+                int mobRegionId = BotNavigationManager.resolveTargetRegionId(graph, entry, map, mobPos);
+                if (botRegionId >= 0 && mobRegionId >= 0 && botRegionId != mobRegionId) {
+                    return null;
+                }
+            }
+        }
         double lootDistSq = activeLootTravelDistSq(botPos, lootPos);
         double mobDistSq = mobPos.distanceSq(botPos);
         return lootDistSq < mobDistSq * cfg.GRIND_LOOT_CONVENIENCE_RATIO ? lootPos : null;
