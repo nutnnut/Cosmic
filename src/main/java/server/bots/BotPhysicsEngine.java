@@ -566,6 +566,14 @@ final class BotPhysicsEngine {
         return lookup.regionIdByFootholdId().getOrDefault(foothold.getId(), -1) >= 0;
     }
 
+    /** True when {@code candidateFootholdId} is the standing foothold or its direct prev/next link —
+     *  i.e. a foothold you reach by continuing to walk along the chain (not by dropping onto a fork arm). */
+    private static boolean isChainStep(Foothold foothold, int candidateFootholdId) {
+        return candidateFootholdId == foothold.getId()
+                || candidateFootholdId == foothold.getNext()
+                || candidateFootholdId == foothold.getPrev();
+    }
+
     private static GroundRegionSample findWalkRegionGroundSample(MapleMap map, Foothold foothold, int x, int referenceY) {
         if (map == null || foothold == null) {
             return null;
@@ -584,6 +592,7 @@ final class BotPhysicsEngine {
         BotNavigationGraph.Segment bestSegment = null;
         Point bestPoint = null;
         int bestScore = Integer.MAX_VALUE;
+        boolean bestChainStep = false;
         boolean foundContainingSegment = false;
         for (BotNavigationGraph.Segment segment : region.segments) {
             if (segment.containsX(x)) {
@@ -605,13 +614,24 @@ final class BotPhysicsEngine {
                 continue;
             }
 
+            // Follow the standing foothold's prev/next chain across a fork, like the real client
+            // (which tracks the SN foothold). At a joined fork two arms overlap in x; the lower arm
+            // wins the raw dx/dy score and the walk snaps DOWN onto it, but you can only get onto a
+            // non-chain arm by an explicit down-jump, not by walking. So a chain-step (this foothold
+            // or its prev/next) always beats a non-chain segment; the dx/dy score only breaks ties
+            // within the same chain class. Crossing footholds that share no chain link keep the old
+            // behaviour, so a ramp crossing flat ground can still be walked down.
+            boolean chainStep = isChainStep(foothold, segment.footholdId);
             int score = dx * 1000 + Math.abs(dy);
-            if (bestPoint == null
-                    || score < bestScore
-                    || (score == bestScore && candidate.y > bestPoint.y)) {
+            boolean better = bestSegment == null
+                    || (chainStep && !bestChainStep)
+                    || (chainStep == bestChainStep
+                    && (score < bestScore || (score == bestScore && candidate.y > bestPoint.y)));
+            if (better) {
                 bestSegment = segment;
                 bestPoint = candidate;
                 bestScore = score;
+                bestChainStep = chainStep;
             }
         }
 

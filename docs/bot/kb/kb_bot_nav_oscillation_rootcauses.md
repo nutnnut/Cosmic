@@ -103,6 +103,30 @@ Fix: store the active foothold detour on `BotEntry` and keep returning that wayp
 reaches/crosses it; active detours use zero stop distance so they do not park one pixel short.
 Regression: `BotNavStuckAnalysisTest.footholdDetourDoesNotFightLegalClimbApproachInMemoryCovert`.
 
+### 5b. The real root cause behind #5 — ground-walk snaps DOWN at a joined fork (graph v66)
+The #5 detour was a **bandaid**; #5's regression only checked x=892/887 (both RIGHT of the fork at
+883) so it stayed green while the bug lived. Reproduced exactly (`pathlog-MinusSent-2026-06-29T032740`,
+same map/spot) in `BotRegion11ForkOscillationTest`, which rebuilds ONLY region 11 from the WZ foothold
+layer (ids+prev+next): region 11 forks at vertex (883,294) into **ridge A** (the next-chain
+`fh173.next=178->...->188`, climbs to the rope launch at 1037,233) and a **dead-end spur B**
+(`fh177->174->175->176`, ends 964,300). A and B overlap in x with A rising ~8px above B.
+
+Root cause (physics, NOT nav): `BotPhysicsEngine.findWalkRegionGroundSample` picked the **lowest**
+foothold in the region by raw dx/|dy| score. Walking UP across the fork, the bot's y lags at B's
+level, so every step right snapped it DOWN onto spur B — it then either walked off B's dead-end and
+**fell off the map** (clean moveTarget) or **oscillated** (when #5's detour yanked it back). Probe
+truth from the user's real client: walking always takes the UPPER leg; you can only reach the lower
+spur by an explicit down-jump. The client tracks the standing foothold (SN) and walks its prev/next
+chain — the bot physics diverged by re-snapping to lowest-ground each tick.
+
+Fix (rule #9, the physics): `findWalkRegionGroundSample` now prefers the **chain step** (the standing
+foothold or its direct `prev`/`next`) over any non-chain overlapping segment; dx/|dy| only breaks ties
+within the same chain class. This matches the client and is naturally directional — walking down still
+follows the chain, and a *crossing* ramp (footholds that share no chain link) is unaffected, so it can
+still be walked down. Region stays merged (B→A via the fork is a real walk path; A→B is a drop). The
+builder uses the same walk sim, so authored edges change → **GRAPH_VERSION 65→66**. Regressions:
+`BotRegion11ForkOscillationTest` (spur, main-ridge, and merge cases).
+
 ## 6. Rope climb keeps stale ground jump from another region
 Symptom (`pathlog-d1vcreek-2026-06-29T033330`, map 103000101): bot oscillates vertically on a rope
 near a mob. The fresh current path starts with `CLIMB r30->r7`, but the active reused edge is still
@@ -130,7 +154,10 @@ edges only when the current resolved region is that edge's source. A bot on `r30
   `computeCommittedRoute` / `nextCommittedRouteEdge` / `skillAwareRoutePath` (#3);
   capped best-effort `rawDistance` frontier selection (#4)
 - `BotEntry.java`, `BotMovementManager.clearNavigationState` — committed-route state (#3)
-- Tests in `BotNavigationGraphProviderTest` (fast synthetic + Henesys WZ graph).
+- `BotPhysicsEngine.findWalkRegionGroundSample` + `isChainStep` — chain-step preference at joined
+  forks (#5b); `BotNavigationGraphProvider.GRAPH_VERSION` 65→66
+- Tests in `BotNavigationGraphProviderTest` (fast synthetic + Henesys WZ graph),
+  `BotRegion11ForkOscillationTest` (synthetic region-11 fork, #5/#5b).
 
 Related: [[kb_bot_nav_costs_and_anchors]], [[kb_bot_downjump_eligibility]],
 [[kb_bot_town_nav_airborne_target]], [[kb_bot_navigation_architecture]].
