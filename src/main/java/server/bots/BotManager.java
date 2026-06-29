@@ -5512,8 +5512,32 @@ public class BotManager {
         }
         entry.autopilotNextDecisionAtMs = now + randMs(30_000, 60_000); // backoff; start() resets on success
         long t0 = BotPerformanceMonitor.start();
-        BotAutopilotManager.start(entry, bot); // schedules decide() off-thread; this only times the fire rate
+        // Recover crew members back INTO their party cohort, not as soloists: the solo start() clears
+        // autopilotParty, so a per-bot solo recovery would silently dissolve the crew (each member then
+        // re-decides its own best map and they scatter). Leader-only triggers the group recovery; the
+        // rest wait and get re-engaged by the leader's startParty.
+        List<BotEntry> cohort = partyAutopilotCohort(entry);
+        if (cohort.size() >= 2) {
+            // When the whole crew goes inert together, only the leader fires (non-leaders see an inert
+            // leader and defer to its tick) so decideParty doesn't run N times. But if the leader is
+            // ACTIVE it will never self-recover the group, so an orphaned inert member must trigger it.
+            BotEntry leader = cohort.get(0);
+            if (shouldTriggerCrewRecovery(leader == entry, BotAutopilotManager.isActive(leader))) {
+                BotAutopilotManager.startParty(bot, cohort);
+            }
+        } else {
+            BotAutopilotManager.start(entry, bot); // schedules decide() off-thread; this only times the fire rate
+        }
         BotPerformanceMonitor.recordSince("autopilot-recover", t0);
+    }
+
+    /**
+     * Which inert crew member fires the group's party recovery. The leader fires; a non-leader fires only
+     * when the leader is ACTIVE (it will never self-recover the group, so an orphaned inert member must),
+     * and otherwise defers so an all-inert crew runs decideParty once (via the leader) instead of N times.
+     */
+    static boolean shouldTriggerCrewRecovery(boolean isLeader, boolean leaderActive) {
+        return isLeader || leaderActive;
     }
 
     private boolean syncFollowMap(BotEntry entry, Character bot, Character followAnchor, boolean runAiTick) {
