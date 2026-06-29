@@ -803,12 +803,16 @@ final class BotAutopilotManager {
         // grind map an empty target is just "mobs cleared", which the normal grind-wander
         // handles. No usable portal here -> fall through and grind whatever is around.
         //
-        // NOT during the give-up window: a hop that just failed (route exists, portal hard to
-        // reach) re-arms a 45s cooldown; wandering through it re-rolls a different random portal
-        // every tick (tickTravel's clear() wipes the wander's committed portal), so the bot
-        // thrashes between portals and never converges. While cooling down, grind/wait in place
-        // and let tickTravel retry the real hop once the window passes.
-        if (System.currentTimeMillis() >= entry.followTravelGiveUpUntilMs
+        // A `deadline` give-up means the route EXISTS but the committed portal is hard to physically
+        // reach (e.g. a cross portal gated behind an in-map warp portal — iArroWLanE at Crystal Gorge).
+        // Freezing for the full 45s window and re-failing the identical hop strands the bot in place;
+        // instead let it wander to a DIFFERENT cross portal and re-plan from there — real movement + an
+        // escape, not a 45s stop. tickTravel below skips its per-tick clear() during a deadline window so
+        // the wander's committed portal survives and it converges instead of thrashing between portals.
+        // Other give-up reasons (portal-closed, script/warp-no-land, ferry-board-fail) keep the cooldown
+        // park and only resume wandering once the window passes.
+        boolean deadlineHop = "deadline".equals(entry.followTravelGiveUpReason);
+        if ((deadlineHop || System.currentTimeMillis() >= entry.followTravelGiveUpUntilMs)
                 && BotTravelManager.tickWanderToRandomPortal(entry, bot, runAiTick)) {
             return true;
         }

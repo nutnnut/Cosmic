@@ -234,7 +234,13 @@ final class BotTravelManager {
         // A different consumer traveling somewhere else (e.g. autopilot to a grind map while a quest
         // errand's NPC map is doomed) must not inherit that cooldown — it was poisoning legit travel.
         if (now < entry.followTravelGiveUpUntilMs && targetMapId == entry.followTravelGiveUpTargetMapId) {
-            clear(entry);
+            // ponytail: a `deadline` give-up keeps the bot moving via the wander-escape (BotAutopilotManager),
+            // which commits a different cross portal into the followTravel* fields during the window. Clearing
+            // here every tick would wipe that and thrash it between portals — giveUp() already cleared the
+            // failed hop when the window was armed, so the re-clear is only needed for the parked reasons.
+            if (!"deadline".equals(entry.followTravelGiveUpReason)) {
+                clear(entry);
+            }
             return false;
         }
 
