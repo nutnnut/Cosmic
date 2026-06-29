@@ -2224,6 +2224,11 @@ class BotInventoryManager {
                 return ceiling <= 0 ? sellback
                         : Math.max(sellback, Math.min(ammoObtainCost.value(bot, id), ceiling));
             }
+            // 0-attack basic arrows (Arrow for Bow/Crossbow) are near-worthless filler — value them at
+            // 0 so they rank first and shed before anything else under bag pressure.
+            if (projectileWatk.applyAsInt(id) <= 0) {
+                return 0;
+            }
             return Math.max((double) ammoMarketValue.applyAsInt(id) * it.getQuantity(),
                     sellPrice.price(id, it.getQuantity()));
         }

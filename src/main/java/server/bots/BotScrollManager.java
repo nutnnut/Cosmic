@@ -1331,6 +1331,12 @@ final class BotScrollManager {
     /** Meso price of a scroll = MIN over sources: cheapest NPC-shop price, else its drop-farm cost
      *  (rarity→meso). Falls back to a flat default only when it is neither shop-sold nor dropped. */
     private static double scrollPriceMeso(ProducerCombat pc, int scrollId) {
+        // ponytail: hardcoded floor until the value model prices these properly. Chaos/White scrolls
+        // are high-demand trade goods the shop/farm heuristic values far too low, so bots dumped them
+        // for buffer early. Flat 10M keep-floor; drop this once scrollMarketValueMeso estimates them.
+        if (ItemConstants.isChaosScroll(scrollId) || scrollId == ItemId.WHITE_SCROLL) {
+            return 10_000_000;
+        }
         Integer price = shopPrices().get(scrollId);
         if (price != null) {
             return price;
