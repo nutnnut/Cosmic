@@ -252,7 +252,7 @@ class BotShopManagerTest {
         Method runSellTrashStep = BotShopManager.class.getDeclaredMethod(
                 "runSellTrashStep",
                 BotEntry.class, Character.class, Point.class, int.class, List.class, Set.class,
-                List.class, List.class, Class.forName("server.bots.BotShopManager$BuyReport"));
+                List.class, Set.class, List.class, Class.forName("server.bots.BotShopManager$BuyReport"));
         runSellTrashStep.setAccessible(true);
 
         try (MockedStatic<ShopFactory> shops = mockStatic(ShopFactory.class);
@@ -264,7 +264,7 @@ class BotShopManagerTest {
             managers.when(() -> BotManager.after(anyLong(), any(Runnable.class))).thenReturn(null);
 
             runSellTrashStep.invoke(null, entry, bot, npcPos, 0, new ArrayList<String>(), new HashSet<Item>(),
-                    List.of(arrows), List.of(), null);
+                    List.of(arrows), new HashSet<Item>(), List.of(), null);
         }
 
         verify(shop).sell(any(), eq(InventoryType.USE), eq(slot), eq((short) 7_000));

@@ -14,10 +14,10 @@ import static org.mockito.Mockito.when;
 class BotOfferManagerTest {
 
     @Test
-    void crossbowmanRejectsBowOffers() {
+    void crossbowmanCanAcceptBowOffersAsFallback() {
         Character recipient = mock(Character.class);
         when(recipient.getJob()).thenReturn(Job.CROSSBOWMAN);
-        assertFalse(BotOfferManager.isWeaponOfferCompatible(recipient, WeaponType.BOW));
+        assertTrue(BotOfferManager.isWeaponOfferCompatible(recipient, WeaponType.BOW));
     }
 
     @Test
@@ -38,8 +38,8 @@ class BotOfferManagerTest {
         when(umbrella.getMatk()).thenReturn((short) 92);
 
         assertTrue(BotOfferManager.isWeaponOfferCompatible(mage, WeaponType.SWORD1H, umbrella));
-        // The type-only check (no item in hand) still rejects swords for mages.
-        assertFalse(BotOfferManager.isWeaponOfferCompatible(mage, WeaponType.SWORD1H));
+        // The type-only check now allows fallback weapons; item scoring decides whether to request it.
+        assertTrue(BotOfferManager.isWeaponOfferCompatible(mage, WeaponType.SWORD1H));
     }
 
     @Test
@@ -51,13 +51,13 @@ class BotOfferManagerTest {
     }
 
     @Test
-    void physicalRecipientStillRejectsOffTypeMatkWeaponOffers() {
+    void physicalRecipientCanAcceptOffTypeWeaponOffersAsFallback() {
         Character recipient = mock(Character.class);
         when(recipient.getJob()).thenReturn(Job.CROSSBOWMAN);
 
         Equip umbrella = mock(Equip.class);
         when(umbrella.getMatk()).thenReturn((short) 92);
 
-        assertFalse(BotOfferManager.isWeaponOfferCompatible(recipient, WeaponType.SWORD1H, umbrella));
+        assertTrue(BotOfferManager.isWeaponOfferCompatible(recipient, WeaponType.SWORD1H, umbrella));
     }
 }

@@ -337,14 +337,14 @@ class BotBuildManager {
         }
         // Thief safety: the trained 1st-job attack skill commits the weapon line, so never advance a
         // Double-Stab (dagger) Rogue into Assassin or a Lucky-Seven (claw) Rogue into Bandit even if
-        // the stored plan was lost. Mirrors the weapon gate in BotEquipManager.isWeaponCompatible.
+        // the stored plan was lost. Mirrors the preferred-weapon line in BotEquipManager.
         if (currentJob == Job.THIEF && entry != null && entry.bot != null) {
             if (entry.bot.getSkillLevel(Rogue.DOUBLE_STAB) > 0) return Job.BANDIT;
             if (entry.bot.getSkillLevel(Rogue.LUCKY_SEVEN) > 0) return Job.ASSASSIN;
         }
         // Same safety for pirates: the trained 1st-job attack commits the weapon line, so a Double-Shot
         // (gun) Pirate must advance into Gunslinger and a Flash-Fist/Somersault (knuckle) Pirate into
-        // Brawler. Mirrors the weapon gate in BotEquipManager.isWeaponCompatible.
+        // Brawler. Mirrors the preferred-weapon line in BotEquipManager.
         if (currentJob == Job.PIRATE && entry != null && entry.bot != null) {
             if (entry.bot.getSkillLevel(Pirate.DOUBLE_SHOT) > 0) return Job.GUNSLINGER;
             if (entry.bot.getSkillLevel(Pirate.FLASH_FIST) > 0
@@ -369,7 +369,7 @@ class BotBuildManager {
      * 2nd+-job class is authoritative (mid-career spawned bot); otherwise a fresh Rogue derives it
      * from its planned 2nd job, and an unplanned Rogue rolls one and FORCES its planned 2nd job to
      * match so build, eventual class, and procedural name stay aligned. The trained skill is the SSOT
-     * the weapon gate reads, so the variant must commit before any SP lands.
+     * preferred-weapon selection reads, so the variant must commit before any SP lands.
      */
     private static void resolveThiefVariantIfNeeded(BotEntry entry, Character bot) {
         if (entry.spVariant != null) return;
@@ -416,7 +416,7 @@ class BotBuildManager {
 
     /**
      * Whether this pirate is on the gun (DEX-primary) line, read off the UPGRADED 1st-job attack
-     * skill — the SSOT the weapon gate ({@code BotEquipManager.isWeaponCompatible}) uses: Double Shot
+     * skill — the SSOT preferred-weapon selection uses: Double Shot
      * => gun, Flash Fist/Somersault Kick => knuckle. A 2nd+ gun job is authoritative. Falls back to the
      * planned {@code entry.spVariant} only before any 1st-job attack is trained. This is what makes the
      * AP build robust to a stale/absent in-memory variant (relog, mid-career spawn). Shared SSOT for
@@ -443,8 +443,8 @@ class BotBuildManager {
      * the first time SP is spent on a pirate-tree bot, reusing the shared {@code entry.spVariant}
      * ("knuckle"/"gun"). An already-trained 1st-job attack skill or a 2nd+-job class is authoritative;
      * otherwise a fresh Pirate derives it from its planned 2nd job, and an unplanned Pirate rolls one and
-     * FORCES its planned 2nd job to match. The trained skill is the SSOT the weapon gate
-     * ({@code BotEquipManager.isWeaponCompatible}) reads, so the variant must commit before any SP lands.
+     * FORCES its planned 2nd job to match. The trained skill is the SSOT preferred-weapon selection
+     * reads, so the variant must commit before any SP lands.
      */
     private static void resolvePirateVariantIfNeeded(BotEntry entry, Character bot) {
         if (entry.spVariant != null) return;
@@ -481,7 +481,7 @@ class BotBuildManager {
     }
 
     /** Persist the rolled 2nd job onto the personality so lv30 advancement ({@link #plannedOrPicked})
-     *  and the weapon gate agree with the variant chosen here. Best-effort save; the in-memory plan is
+     *  and preferred-weapon selection agree with the variant chosen here. Best-effort save; the in-memory plan is
      *  authoritative this session even if the blob write fails. */
     private static void tiePlannedSecondJob(BotEntry entry, Character bot, Job second) {
         BotPersonality p = entry.personality;
@@ -947,7 +947,9 @@ class BotBuildManager {
             return null; // non-explorer numbering (Cygnus/Aran/Evan): leave alone
         }
         if (id % 100 == 0) {
-            return lvl >= 30 ? plannedOrPicked(entry, job) : null;            // 1st -> 2nd (a choice)
+            if (lvl < 30) return null;
+            Job target = plannedOrPicked(entry, job);                         // 1st -> 2nd (a choice)
+            return target;
         }
         int tier = id % 10;
         if (tier == 0) {

@@ -762,8 +762,9 @@ final class BotAutopilotManager {
         // re-arm it. A truly-broke bot with nothing to sell keeps grinding (degenerate close-range
         // swing) to earn the meso first rather than bouncing to town forever.
         boolean ammoStranded = BotShopManager.isOutOfUsableAmmo(bot) && BotShopManager.canRecoverAmmo(entry, bot);
+        boolean needsPreferredWeapon = BotShopManager.needsPreferredWeaponForCurrentJob(bot);
         if (!operatorPinned && entry.autopilotErrandMapId == -1 && !entry.autopilotReturningFromErrand
-                && (lowAndCanBuy || ammoStranded || bagFull.bagFull(entry, bot))) {
+                && (lowAndCanBuy || ammoStranded || needsPreferredWeapon || bagFull.bagFull(entry, bot))) {
             requestResupplyErrand(entry, bot);
             if (entry.autopilotErrandMapId != -1) {
                 destination = entry.autopilotErrandMapId; // head to town this tick, not the grind map
@@ -862,7 +863,7 @@ final class BotAutopilotManager {
         if (bot.getMap() == null) {
             return -1;
         }
-        Integer shopMap = BotShopManager.findNearestShopMap(bot, !BotShopManager.needsToBuySupplies(bot));
+        Integer shopMap = BotShopManager.findNearestShopMap(entry, bot, !BotShopManager.needsToBuySupplies(entry, bot));
         int town = shopMap != null && shopMap != bot.getMapId()
                 ? shopMap
                 : (bot.getMap().getReturnMap() != null ? bot.getMap().getReturnMap().getId() : -1);
@@ -901,10 +902,16 @@ final class BotAutopilotManager {
         // the only need that requires a specific (potion-stocking) shop; a full bag or low ammo is fine
         // at any shop. Falls back to the old return-map town when no shop is reachable in range.
         int targetMapId;
-        Integer shopMapId = BotShopManager.findNearestShopMap(bot, !BotShopManager.needsToBuySupplies(bot));
+        boolean needsPreferredWeapon = BotShopManager.needsPreferredWeaponForCurrentJob(bot);
+        Integer shopMapId = BotShopManager.findNearestShopMap(entry, bot, !BotShopManager.needsToBuySupplies(entry, bot));
         if (shopMapId != null && shopMapId != bot.getMapId()) {
             targetMapId = shopMapId;
         } else {
+            if (needsPreferredWeapon) {
+                entry.autopilotNextErrandAtMs = now + ERRAND_COOLDOWN_MS;
+                logErrandBlock(entry, bot, "no-reachable-shop-with-preferred-weapon");
+                return false;
+            }
             var returnMap = bot.getMap().getReturnMap();
             if (returnMap == null || returnMap.getId() == bot.getMapId()) {
                 // No errand to run, but ARM the cooldown anyway: findNearestShopMap above does an
@@ -953,6 +960,14 @@ final class BotAutopilotManager {
 
     private static List<String> resupplyErrandReasons(BotEntry entry, Character bot) {
         List<String> reasons = new ArrayList<>();
+        try {
+            if (BotShopManager.needsPreferredWeaponForCurrentJob(bot)) {
+                reasons.add("need a " + BotShopManager.preferredWeaponName(bot));
+            }
+        } catch (RuntimeException ignored) {
+            // Gear-readiness text is diagnostic only; keep the errand alive.
+        }
+
         try {
             int[] pots = BotPotionManager.countPotions(bot);
             if (pots[0] < BotManager.cfg.POT_STOP) {
