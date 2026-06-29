@@ -128,6 +128,25 @@ class BotCombatManagerTest {
     }
 
     @Test
+    void shouldNotFireAtTargetKilledBeforeSendGate() {
+        // Repro for "bot shoots but hits no mob": a target validated alive at selection time gets killed
+        // (cross-thread, or via a cadenced plan reused after death) before attackMonster builds the packet.
+        Character bot = mockBot(new Point(0, 0), mock(MapleMap.class), 20_000, null);
+        BotEntry entry = new BotEntry(bot, null, null);
+        Monster dead = mockMob(new Point(10, 0), 1110101);
+        when(dead.isAlive()).thenReturn(false);
+        when(dead.getHp()).thenReturn(-1);
+        BotCombatManager.AttackPlan plan = new BotCombatManager.AttackPlan(
+                0, 0, 1, new Rectangle(-100, -100, 200, 200), List.of(dead),
+                BotCombatManager.AttackRoute.CLOSE, 0, 0, 0, 0, 0, 0, 600, WeaponType.GUN);
+
+        BotCombatManager.attackMonster(entry, bot, plan);
+
+        assertEquals("blocked:dead-target", entry.dbgAttackExecResult);
+        assertEquals(0, entry.attackCooldownMs, "no cooldown/packet committed when target already dead");
+    }
+
+    @Test
     void shouldPreferPowerStrikeOverBeginnerAttackForSingleTargetSlot() {
         Character bot = mockBot(new Point(100, 200), mock(MapleMap.class), 20_000, null);
         when(bot.getJob()).thenReturn(Job.WARRIOR);

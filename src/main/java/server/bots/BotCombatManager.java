@@ -1443,6 +1443,16 @@ class BotCombatManager {
             return;
         }
         Monster primary = attackPlan != null && !attackPlan.targets.isEmpty() ? attackPlan.targets.get(0) : null;
+        // Cross-thread kill guard. Callers validate isAlive() before planning, but another player/bot can
+        // kill the target between selection and this send gate (the plan can also be a cadenced reuse from a
+        // tick ago). Firing at a corpse rolls damage, burns MP/ammo + cooldown, and broadcasts a hit that
+        // lands on nothing — the "bot shoots but hits no mob" symptom. This is the last race-free read before
+        // we commit, so re-check here and skip; the next tick replans against live mobs.
+        if (primary != null && !primary.isAlive()) {
+            recordAttackExec(entry, attackPlan, primary, "blocked:dead-target", 0,
+                    primaryHp(primary), primaryHp(primary), botMp(bot), botMp(bot));
+            return;
+        }
         if (entry.attackCooldownMs > 0) {
             recordAttackExec(entry, attackPlan, primary, "blocked:action-lock", 0, primaryHp(primary), primaryHp(primary),
                     botMp(bot), botMp(bot));
