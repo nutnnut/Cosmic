@@ -728,6 +728,11 @@ public class BotEntry {
     // launching at the identical spot when an arc is borderline.
     int navJumpLaunchDelaySteps = Integer.MIN_VALUE;
     int navTargetRegionId = -1;
+    // Last region the bot resolved to, for chain continuity across SHARED ground (two overlapping
+    // foothold chains at the same coordinate). A coordinate-only lookup can flip between them every
+    // tick; the client stays on the chain it walked in on, so resolveCurrentRegionId keeps this id
+    // when the current point is shared with it. Reset on graph/map swap (region ids are per-graph).
+    int lastRegionId = -1;
     BotNavigationGraph.Edge navFootholdDetourEdge = null;
     Point navFootholdDetourTarget = null;
     // Committed route: the full planned hop sequence to the current goal region. The bot follows it

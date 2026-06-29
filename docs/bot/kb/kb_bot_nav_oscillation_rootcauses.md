@@ -167,13 +167,43 @@ and returns `null` (no detour) when they differ. The convenience comparison only
 same-region flat fight; cross-region (climb/drop-away) loot is collected when the bot travels there
 naturally. Graph-unavailable falls back to prior behavior (detour allowed).
 
+## 8. Phantom cross-region JUMP onto SHARED ground (overlapping foothold chains)
+Symptom (`pathlog-SuseRug-2026-06-29T141220`, map 600020100): bot frozen/oscillating at (-1318,156)
+on r97, committed `JUMP r97->r73` with `blocked: jump-pos`, give-up→replan-same-edge forever. The
+goal (541,155) is on the SAME flat r97 platform (`x[-1475..865] y156`, contiguous — a plain walk
+right reaches it), yet A* returned a 9-hop portal tour entered by that jump.
+
+Root cause (TWO defects, verified live via `/api/mapgraph` + Angel.idb): r73 is a ramp rising to
+y-144 whose **flat foot overlaps r97 exactly at y156** (`x[-1315..-1260]`) — two distinct foothold
+chains on the same ground. (1) **Builder** authored `JUMP r97->r73` whose landing `(-1314,156)` is on
+ground r97 itself covers; the client tracks the standing foothold's prev/next chain (`CVecCtrl::CalcWalk`
+/ `GetCrossCandidate`, and direct observation: walking onto the shared foot from r97 keeps you on r97,
+from the ramp keeps you on r73 — there is **no way to switch chains on shared ground**), so the jump
+can never change region — A* commits it, the bot can't perform it. (2) **Region resolution** was
+chain-blind: `resolveCurrentRegionId -> findRegionId -> findGroundFoothold` is a coordinate `findBelow`,
+so on shared ground it could flip between r97/r73. The 0-cost portal chain made the phantom-entered tour
+(cost 4228) beat the direct walk (~10645), so A* preferred it.
+
+Fix (rule #9, two parts): (a) **builder** — `addJumpEdges`/`addFlashJumpEdges` skip an edge whose
+authored window endpoint lies on the SOURCE region's own surface (`Region.surfaceCoversPoint`, exact
+tolerance `SHARED_GROUND_Y_PX=0` — 1px off = a real platform on top = a legitimate edge); guard the
+WINDOW endpoint, not the raw per-anchor sim (they differ after window expansion). `GRAPH_VERSION 66→67`
+(regenerates serialized routes; needs a live graph rebuild/restart to take effect). (b) **region
+continuity** — `BotEntry.lastRegionId`; `resolveCurrentRegionId` keeps the last region when the current
+point is shared with it (the chain we walked in on), reset on graph swap. Regressions:
+`BotSharedGroundPhantomJumpTest` (synthetic ramp-foot-over-flat; reproduces the phantom with the guard
+disabled, and asserts a genuine same-height gap jump is NOT over-pruned).
+
 ## Not-a-bug
 `pathlog-fictionxD` "jumping back-forth" = a single clean walk-off DROP mid-descent (`Stuck:no`,
 `r=-1` is the normal airborne reading). No oscillation.
 
 ## Files
-- `BotNavigationGraphProvider.java` — `addDropEdges` + `downKeyGrabsRope` (#1)
-- `BotNavigationManager.java` — `resolveCurrentRegionId` inAir gate (#2); `resolveTarget` +
+- `BotNavigationGraph.java` — `Region.surfaceCoversPoint` + `SHARED_GROUND_Y_PX` (#8)
+- `BotNavigationGraphProvider.java` — `addJumpEdges`/`addFlashJumpEdges` shared-ground guard,
+  `GRAPH_VERSION` 66→67 (#8); `addDropEdges` + `downKeyGrabsRope` (#1)
+- `BotNavigationManager.java` — `resolveCurrentRegionId` inAir gate (#2) + lastRegionId chain
+  continuity (#8); `BotEntry.lastRegionId` (#8); `resolveTarget` +
   `computeCommittedRoute` / `nextCommittedRouteEdge` / `skillAwareRoutePath` (#3);
   capped best-effort `rawDistance` frontier selection (#4)
 - `BotEntry.java`, `BotMovementManager.clearNavigationState` — committed-route state (#3)
