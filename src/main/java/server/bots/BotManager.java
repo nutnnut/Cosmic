@@ -5326,6 +5326,10 @@ public class BotManager {
         // allocates timing state, while the enabled path keeps every per-subsystem label.
         boolean perf = BotPerformanceMonitor.enabled();
         long t = perf ? System.nanoTime() : 0L;
+        // ~5Hz gate for latency-insensitive opportunity scans (loot pickup, quest turn-in), staggered
+        // across bots by id so their cost spreads over ticks instead of spiking one. A ground drop or a
+        // quest turn-in tolerates a 200ms cadence; combat/potions/physics stay at the full tick rate.
+        boolean runSlowScans = ((entry.commonTickCounter++ & 3) == (bot.getId() & 3));
         BotCombatManager.tickMobDamage(entry, bot);
         if (perf) BotPerformanceMonitor.record("common-mob-damage", System.nanoTime() - t);
         if (bot.getHp() <= 0) {
@@ -5342,7 +5346,7 @@ public class BotManager {
         // thread: fitsInInventory() can pass, then this fills the last slot before addFromDrop
         // runs, and the silently-ignored false return loses the partner's item.
         // See memory/kb_bot_trade_dupe_loss_audit.md.
-        if (bot.getTrade() == null) {
+        if (bot.getTrade() == null && runSlowScans) {
             if (perf) t = System.nanoTime();
             BotInventoryManager.tickPassiveLoot(entry, bot);
             if (perf) BotPerformanceMonitor.record("common-passive-loot", System.nanoTime() - t);
@@ -5369,9 +5373,11 @@ public class BotManager {
             BotChatManager.tickAfkCheck(entry, owner);
         }
         if (perf) BotPerformanceMonitor.record("common-afk-check", System.nanoTime() - t);
-        if (perf) t = System.nanoTime();
-        BotQuestManager.tickScan(entry, bot);
-        if (perf) BotPerformanceMonitor.record("common-quest-scan", System.nanoTime() - t);
+        if (runSlowScans) {
+            if (perf) t = System.nanoTime();
+            BotQuestManager.tickScan(entry, bot);
+            if (perf) BotPerformanceMonitor.record("common-quest-scan", System.nanoTime() - t);
+        }
         if (perf) t = System.nanoTime();
         // Collision/pit portals (WZ pt=3) the client would auto-fire: warp if the bot is sitting on one
         // (climbed/walked onto it, or got knocked into a pit) - runs in every mode, intent-independent.

@@ -663,6 +663,8 @@ public class BotEntry {
     // One-shot — ticked to 0 in tickCore, never reset by map-change teleports, so it fires once.
     int spawnWarmupMs = 2_000 + ThreadLocalRandom.current().nextInt(0, 5_001);
     int aiTickAccumulatorMs = 0;
+    // Counts common-tick passes; gates latency-insensitive opportunity scans down to ~5Hz (see runCommonTickSystems).
+    int commonTickCounter = 0;
 
     // "Move here" target — bot navigates to this fixed point, then idles until cleared
     Point moveTarget = null;
