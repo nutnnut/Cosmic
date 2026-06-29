@@ -81,6 +81,9 @@ final class BotNavigationGraphProvider {
     private static final Map<GraphCacheKey, GraphBuildReport> LAST_BUILD_REPORTS = new ConcurrentHashMap<>();
     private static final Map<Integer, Set<Integer>> COLLIDABLE_WALL_IDS_BY_MAP_ID = new ConcurrentHashMap<>();
     private static final Map<Integer, Set<Integer>> COLLIDABLE_FROM_BELOW_IDS_BY_MAP_ID = new ConcurrentHashMap<>();
+    /** Last time any bot was present in / committed to a map, refreshed each eviction sweep. Drives
+     *  {@link #evictIdleGraphs}: a map idle past the grace window has its in-memory graph dropped. */
+    private static final Map<Integer, Long> MAP_LAST_ACTIVE_MS = new ConcurrentHashMap<>();
     private static final ThreadLocal<BuildProfileBuilder> ACTIVE_BUILD_PROFILE = new ThreadLocal<>();
     private static final ExecutorService GRAPH_WARMUP_EXECUTOR = Executors.newSingleThreadExecutor(r -> {
         Thread thread = new Thread(r, "bot-nav-graph-warmup");
@@ -439,6 +442,49 @@ final class BotNavigationGraphProvider {
     static BotNavigationGraph peekBestGraph(MapleMap map, BotMovementProfile movementProfile) {
         BotNavigationGraph exact = peekGraph(map, movementProfile);
         return exact != null ? exact : peekClosestGraph(map, movementProfile);
+    }
+
+    /** Coarse RAM-attribution readout for the perf log: how many per-(map,profile) graphs are retained
+     *  and their total region count. The graph cache is the prime suspect for bot heap growth — it is
+     *  never evicted, so this only grows as bots visit more maps. */
+    public static String cacheStats() {
+        int regions = 0;
+        for (BotNavigationGraph g : GRAPHS.values()) {
+            if (g != null && g.regions != null) {
+                regions += g.regions.size();
+            }
+        }
+        return "graphs=" + GRAPHS.size() + " regions=" + regions
+                + " pending=" + PENDING_GRAPHS.size() + " reports=" + LAST_BUILD_REPORTS.size();
+    }
+
+    /** Drop in-memory graphs (+ build reports + collidable sets) for maps with no bot present/committed
+     *  for longer than {@code graceMs}. The graph cache is otherwise never evicted, so it grows
+     *  unbounded as bots roam — this caps heap. An evicted graph reloads from the on-disk cache (or
+     *  rebuilds) on the next visit, so eviction is cheap to undo. A live bot still holding its
+     *  {@code entry.navGraph} reference keeps that object alive until it drops it. Returns the number of
+     *  (map,profile) graphs evicted. */
+    static int evictIdleGraphs(Set<Integer> activeMapIds, long graceMs) {
+        long now = System.currentTimeMillis();
+        for (Integer mapId : activeMapIds) {
+            MAP_LAST_ACTIVE_MS.put(mapId, now);
+        }
+        int evicted = 0;
+        for (GraphCacheKey key : new ArrayList<>(GRAPHS.keySet())) {
+            if (now - MAP_LAST_ACTIVE_MS.getOrDefault(key.mapId(), 0L) < graceMs) {
+                continue; // a bot is here or was recently — keep it warm
+            }
+            if (PENDING_GRAPHS.containsKey(key)) {
+                continue; // a build is in flight — don't yank it
+            }
+            GRAPHS.remove(key);
+            LAST_BUILD_REPORTS.remove(key);
+            COLLIDABLE_WALL_IDS_BY_MAP_ID.remove(key.mapId());
+            COLLIDABLE_FROM_BELOW_IDS_BY_MAP_ID.remove(key.mapId());
+            MAP_LAST_ACTIVE_MS.remove(key.mapId());
+            evicted++;
+        }
+        return evicted;
     }
 
     static void warmGraphAsync(MapleMap map, BotMovementProfile movementProfile) {

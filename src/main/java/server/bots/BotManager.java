@@ -289,6 +289,12 @@ public class BotManager {
     // charId currently mid-spawn: stops two concurrent spawnManagedBot calls for the same id from both
     // loading the character (double PlayerStorage add) and registering before either is visible.
     private final java.util.Set<Integer> spawningBotIds = ConcurrentHashMap.newKeySet();
+    // Periodic nav-graph cache eviction: started once on the first bot registration (so TimerManager is
+    // up) and capped to one sweep regardless of bot count.
+    private final java.util.concurrent.atomic.AtomicBoolean graphEvictionStarted =
+            new java.util.concurrent.atomic.AtomicBoolean();
+    private static final long GRAPH_EVICT_SWEEP_MS = 60_000L;
+    private static final long GRAPH_EVICT_GRACE_MS = 300_000L; // map idle this long -> its graph is dropped
     // ownerCharId → current formation (in-memory only, defaults to stagger)
     private final Map<Integer, FormationState> ownerFormations = new ConcurrentHashMap<>();
     // ownerCharId → cluster-anchor town position. First bot to warp picks a random
@@ -882,6 +888,7 @@ public class BotManager {
         entry.selfScrollEnabled = BotPrefsStore.loadSelfScroll(bot.getId());
         entry.personality = BotPersonality.loadOrCreate(botCharId);
         BotNavigationGraphProvider.warmGraphAsync(bot.getMap(), entry.movementProfile);
+        maybeStartGraphEvictionSweep();
         // Global dedup + atomic publish: a bot character has exactly one runtime owner. Remove any prior
         // entry for this bot under ANY owner key (relog, takeover, party re-register), not just
         // ownerCharId, then add ours — all under the lock so a concurrent register of the SAME id can't
@@ -932,6 +939,31 @@ public class BotManager {
         entry.movementBroadcastValid = false;
         if (entry.owner != null) {
             joinBotToOwnerParty(entry.owner, bot);
+        }
+    }
+
+    /** Start the single periodic nav-graph eviction sweep (idempotent). Called on bot registration so
+     *  TimerManager is guaranteed up; the AtomicBoolean caps it to one task for the server's lifetime. */
+    private void maybeStartGraphEvictionSweep() {
+        if (graphEvictionStarted.compareAndSet(false, true)) {
+            TimerManager.getInstance().register(this::sweepIdleGraphs, GRAPH_EVICT_SWEEP_MS);
+        }
+    }
+
+    /** Evict in-memory nav graphs for maps no bot is in or traveling to, capping bot heap growth. */
+    private void sweepIdleGraphs() {
+        java.util.Set<Integer> activeMapIds = new java.util.HashSet<>();
+        for (BotEntry e : botsByCharId.values()) {
+            if (e.bot != null) {
+                activeMapIds.add(e.bot.getMapId());
+            }
+            if (e.autopilotMapId != -1) {
+                activeMapIds.add(e.autopilotMapId);
+            }
+        }
+        int evicted = BotNavigationGraphProvider.evictIdleGraphs(activeMapIds, GRAPH_EVICT_GRACE_MS);
+        if (evicted > 0) {
+            log.debug("Evicted {} idle bot nav graph(s); {}", evicted, BotNavigationGraphProvider.cacheStats());
         }
     }
 

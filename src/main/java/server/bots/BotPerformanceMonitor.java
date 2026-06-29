@@ -586,10 +586,23 @@ public final class BotPerformanceMonitor {
 
         if (!first) {
             log.info(line.toString());
+            log.info(memoryLine());
         }
         statsBySection.clear();
         lastLogAtMs = now;
         nextLogAtMs = now + cfg.LOG_INTERVAL_MS;
+    }
+
+    /** Heap trend + nav-graph cache size, logged alongside each periodic report. Total heap shows the
+     *  trend; {@link BotNavigationGraphProvider#cacheStats()} attributes the prime suspect. For true
+     *  per-class attribution take a heap dump (jmap -dump) and open it in Eclipse MAT. */
+    private static String memoryLine() {
+        Runtime rt = Runtime.getRuntime();
+        long usedMb = (rt.totalMemory() - rt.freeMemory()) / (1024 * 1024);
+        long committedMb = rt.totalMemory() / (1024 * 1024);
+        long maxMb = rt.maxMemory() / (1024 * 1024);
+        return "bot-perf mem> heap used=" + usedMb + "MB committed=" + committedMb + "MB max=" + maxMb
+                + "MB | navgraph " + BotNavigationGraphProvider.cacheStats();
     }
 
     private static String noteFor(String section) {
