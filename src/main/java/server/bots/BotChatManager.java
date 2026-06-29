@@ -132,11 +132,9 @@ public class BotChatManager {
     // longer chat like "hi how are you today" falls through to the LLM instead
     // of being short-circuited by a canned greeting.
     private static final Pattern GREETING_PATTERN = Pattern.compile(
-            "^\\s*(hi+|hey+|hello+|sup|yo+|howdy|hiya|heya|hai|ello|"
-            + "whats?\\s*up|waz+up|wassup|hows?\\s+it\\s+going|"
+            "^\\s*(hi+|hey+|hello+|yo+|howdy|hiya|heya|hai|ello|"
             + "(good\\s+)?(morning|evening|afternoon)|"
-            + "how\\s+(are|r)\\s+(you|u|ya)(\\s+doing)?|"
-            + "what.?s\\s+(good|up|new|poppin.?))\\s*[?!.,]*\\s*$",
+            + "how\\s+(are|r)\\s+(you|u|ya)(\\s+doing)?)\\s*[?!.,]*\\s*$",
             Pattern.CASE_INSENSITIVE);
     private static final Pattern FIDGET_PATTERN = Pattern.compile(
             "^\\s*fidget\\s*[?!.,]*\\s*$",
@@ -166,6 +164,9 @@ public class BotChatManager {
             + "|(?:what|which)\\s+map\\s+(?:are|r)\\s+(?:you|u|ya)\\s+(?:in|on|at)"
             + "|(?:what|which)\\s+map\\s+(?:are|r)\\s+(?:you|u|ya)"
             + "|(?:what\\s+are\\s+you|what\\s+r\\s+u|what\\s+you)\\s+doing"
+            // "sup" / "wassup" / "whats up" / "hows it going" / "whats good/new/poppin": casual
+            // "what's going on" — routed to the status report (going to X to Y), not a canned greeting.
+            + "|sup|wa[sz]+up|what.?s?\\s*up|hows?\\s+it\\s+going|what.?s\\s+(?:good|new|poppin.?)"
             + "|(?:location|loc|where)\\s*\\??"
             + ")\\s*[?!.,]*\\s*$",
             Pattern.CASE_INSENSITIVE);
@@ -1183,7 +1184,7 @@ public class BotChatManager {
                 entry.bot.changeFaceExpression(randomFidgetExpression());
                 BotFidgetManager.maybeStartSocialFidget(entry);
             });
-        } else if (GREETING_PATTERN.matcher(message).matches()) {
+        } else if (isGreeting(message)) {
             BotManager.after(BotManager.randMs(900, 1100), () -> {
                 entry.bot.changeFaceExpression(Emote.HAPPY.getValue());
                 BotFidgetManager.maybeStartGreetingFidget(entry, ThreadLocalRandom.current().nextInt(100));
@@ -1824,6 +1825,10 @@ public class BotChatManager {
 
     static boolean isLocationStatusQuery(String message) {
         return message != null && LOCATION_STATUS_PATTERN.matcher(message).matches();
+    }
+
+    static boolean isGreeting(String message) {
+        return message != null && GREETING_PATTERN.matcher(message).matches();
     }
 
     static List<String> buildMovementStatsReport(Character bot) {

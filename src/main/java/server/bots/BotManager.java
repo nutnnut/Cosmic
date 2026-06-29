@@ -1702,6 +1702,38 @@ public class BotManager {
         return constants.id.NpcId.MAPLE_ADMINISTRATOR;
     }
 
+    /** lt/rb half-extent (px) of the box around a speaker that an open-world "hi"/"sup" reaches. */
+    private static final int PROXIMITY_CHAT_RADIUS = 300;
+
+    /**
+     * Open-world social: a greeting ("hi") or status query ("sup"/"where are you") spoken in map chat by
+     * ANY player reaches every self-owned MANAGED bot inside a {@value #PROXIMITY_CHAT_RADIUS}px box around
+     * the speaker — a greeting waves back, a "sup" reports what it's doing. Reuses
+     * {@link BotChatManager#handleChat} so the greeting/status reply logic stays SSOT. Companions
+     * (owner != bot) are skipped here: they answer their own owner via the broadcast path, not strangers.
+     */
+    private void maybeHandleProximityChat(Character speaker, String message, ReplyChannel channel) {
+        if (channel != ReplyChannel.MAP || speaker == null || speaker.getMap() == null
+                || speaker.getClient() instanceof BotClient
+                || (!BotChatManager.isGreeting(message) && !BotChatManager.isLocationStatusQuery(message))) {
+            return;
+        }
+        Point sp = speaker.getPosition();
+        Rectangle box = new Rectangle(sp.x - PROXIMITY_CHAT_RADIUS, sp.y - PROXIMITY_CHAT_RADIUS,
+                2 * PROXIMITY_CHAT_RADIUS, 2 * PROXIMITY_CHAT_RADIUS);
+        for (Character c : speaker.getMap().getAllPlayers()) {
+            if (c == speaker || !(c.getClient() instanceof BotClient) || !box.contains(c.getPosition())) {
+                continue;
+            }
+            BotEntry e = getEntryByBotCharId(c.getId());
+            if (e == null || !(e.owner == null || e.owner == c)) {
+                continue; // managed/self-owned only; companions answer their owner, not passers-by
+            }
+            e.replyChannel = ReplyChannel.MAP;
+            BotChatManager.handleChat(e, message);
+        }
+    }
+
     public void handleChat(Character owner, String message, ReplyChannel channel) {
         if (handlePendingLootOfferResponse(owner, message)) {
             return;
@@ -1832,6 +1864,11 @@ public class BotManager {
         if (BotSocialManager.maybeHandlePartyChat(owner, message)) {
             return;
         }
+
+        // OPEN-WORLD SOCIAL: a "hi" or "sup" from ANY player reaches every nearby self-owned managed
+        // bot, not just the speaker's companions. Non-consuming — the speaker's OWN companions still
+        // answer through the owner broadcast below.
+        maybeHandleProximityChat(owner, message, channel);
 
         List<BotEntry> entries = bots.get(owner.getId());
         if (entries == null || entries.isEmpty()) return;
