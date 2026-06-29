@@ -92,11 +92,13 @@ final class BotNavigationGraphProvider {
     private static final ExecutorService GRAPH_WARMUP_EXECUTOR = Executors.newSingleThreadExecutor(r -> {
         Thread thread = new Thread(r, "bot-nav-graph-warmup");
         thread.setDaemon(true);
+        thread.setPriority(Thread.MIN_PRIORITY); // yield to game loop; warmup is background work
         return thread;
     });
     private static final ExecutorService FAST_GRAPH_WARMUP_EXECUTOR = Executors.newSingleThreadExecutor(r -> {
         Thread thread = new Thread(r, "bot-nav-graph-warmup-fast");
         thread.setDaemon(true);
+        thread.setPriority(Thread.MIN_PRIORITY); // yield to game loop; warmup is background work
         return thread;
     });
 
