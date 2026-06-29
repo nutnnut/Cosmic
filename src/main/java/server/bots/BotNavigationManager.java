@@ -599,10 +599,16 @@ final class BotNavigationManager {
             }
             return edge;
         }
-        // While climbing, always keep the edge — findGroundFoothold gives false positives
-        // (returns the platform below/behind the rope as the "current" region), which would
-        // otherwise drop the exit edge the moment the bot enters the destination region's Y range.
+        // While climbing, keep rope exits through false-positive ground-region readings
+        // (findGroundFoothold can return the platform below/behind the rope). Non-CLIMB edges
+        // are only valid while climbing when the bot is still in that edge's source rope region;
+        // otherwise a stale ground jump can steer a different rope forever.
         if (entry.climbing && (startRegionId < 0 || startRegionId != edge.toRegionId)) {
+            if (edge.type != BotNavigationGraph.EdgeType.CLIMB
+                    && startRegionId >= 0
+                    && startRegionId != edge.fromRegionId) {
+                return null;
+            }
             return edge;
         }
         // DROP/JUMP arcs may enter the destination region before the bot touches down.

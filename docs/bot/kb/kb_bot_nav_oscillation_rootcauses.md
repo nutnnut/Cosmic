@@ -103,6 +103,23 @@ Fix: store the active foothold detour on `BotEntry` and keep returning that wayp
 reaches/crosses it; active detours use zero stop distance so they do not park one pixel short.
 Regression: `BotNavStuckAnalysisTest.footholdDetourDoesNotFightLegalClimbApproachInMemoryCovert`.
 
+## 6. Rope climb keeps stale ground jump from another region
+Symptom (`pathlog-d1vcreek-2026-06-29T033330`, map 103000101): bot oscillates vertically on a rope
+near a mob. The fresh current path starts with `CLIMB r30->r7`, but the active reused edge is still
+`JUMP r7->r4` with `reuse[jump-pos]`. Combat is not blocked (`SHOULD FIRE`); movement is frozen
+downstream because the stale ground jump steers to an off-rope waypoint while the bot is climbing on
+rope region `r30`.
+
+Root cause: `reuseCommittedEdge` had a broad climbing retention rule: while climbing and not already
+at the edge destination, keep the committed edge. That rule exists for rope-exit false positives, but
+it also retained non-CLIMB ground edges whose source region did not match the current rope region.
+The stale `JUMP r7->r4` therefore survived even though the live A* route wanted the rope exit.
+
+Fix: while climbing, retain CLIMB edges through false-positive region readings, and retain non-CLIMB
+edges only when the current resolved region is that edge's source. A bot on `r30` now drops the stale
+`JUMP r7->r4`, replans, and can take the fresh `CLIMB r30->r7`. Regression:
+`BotNavigationManagerTest.shouldDropStaleGroundJumpWhileClimbingOnDifferentRopeRegion`.
+
 ## Not-a-bug
 `pathlog-fictionxD` "jumping back-forth" = a single clean walk-off DROP mid-descent (`Stuck:no`,
 `r=-1` is the normal airborne reading). No oscillation.

@@ -695,6 +695,37 @@ class BotNavigationManagerTest {
     }
 
     @Test
+    void shouldDropStaleGroundJumpWhileClimbingOnDifferentRopeRegion() {
+        MapleMap map = mock(MapleMap.class);
+        BotNavigationGraph.Region ropeRegion = new BotNavigationGraph.Region(30, 1896, -165, 54, false);
+        BotNavigationGraph.Region groundRegion = new BotNavigationGraph.Region(
+                7, List.of(new BotNavigationGraph.Segment(new Foothold(new Point(1750, -47), new Point(1900, -47), 7))));
+        BotNavigationGraph.Region oldJumpDest = new BotNavigationGraph.Region(
+                4, List.of(new BotNavigationGraph.Segment(new Foothold(new Point(1450, -107), new Point(1550, -107), 4))));
+        BotNavigationGraph.Edge staleJump = new BotNavigationGraph.Edge(
+                7, 4, BotNavigationGraph.EdgeType.JUMP,
+                new Point(1544, -47), new Point(1495, -107),
+                1530, 1559, -6, 0, 0, 0, 0, 450);
+        BotNavigationGraph graph = new BotNavigationGraph(
+                103000101, 1, BotMovementProfile.base(),
+                List.of(ropeRegion, groundRegion, oldJumpDest),
+                Map.of(30, ropeRegion, 7, groundRegion, 4, oldJumpDest),
+                Map.of(30, 30, 7, 7, 4, 4),
+                Map.of(7, List.of(staleJump)),
+                Set.of());
+
+        Character bot = mockBot(new Point(1896, -51), map);
+        BotEntry entry = new BotEntry(bot, null, null);
+        entry.climbing = true;
+        entry.climbRope = new Rope(1896, -165, 54, false);
+        entry.navEdge = staleJump;
+        entry.navTargetRegionId = 4;
+
+        assertNull(BotNavigationManager.reuseCommittedEdge(graph, entry, 30, 7),
+                "a ground jump from another region must not steer a bot that is already climbing a rope");
+    }
+
+    @Test
     void shouldRetainCommittedGroundEdgeWhenAlternativeLeadsToSameDestinationRegion() {
         BotNavigationGraph.Edge committedDrop = new BotNavigationGraph.Edge(
                 80, 83, BotNavigationGraph.EdgeType.DROP,
