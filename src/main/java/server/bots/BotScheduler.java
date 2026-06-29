@@ -55,11 +55,19 @@ public final class BotScheduler {
     }
 
     void sweep() {
+        sweep(false);
+    }
+
+    /** {@code stableTarget}=true reconciles to the deterministic median target (the value
+     *  {@link #statusLines()} displays) instead of rolling fresh noise — used by manual admin sweeps so
+     *  repeated clicks converge to the shown target rather than chasing a random, multiplier-amplified
+     *  noise band (and ratcheting up, since spawns are immediate but logouts linger). */
+    void sweep(boolean stableTarget) {
         if (!BotManager.cfg.POPULATION_SCHED_ENABLED) {
             return;
         }
         try {
-            reconcile();
+            reconcile(stableTarget);
         } catch (RuntimeException e) {
             log.warn("bot population sweep failed", e);
         }
@@ -88,9 +96,11 @@ public final class BotScheduler {
         }
     }
 
-    /** Force a reconcile now (no-op if disabled). */
+    /** Force a reconcile now (no-op if disabled). Reconciles to the deterministic median target the
+     *  status line shows, so an admin "Sweep now" converges to that count instead of overshooting a
+     *  fresh random noise roll each click. */
     public void sweepNow() {
-        sweep();
+        sweep(true);
     }
 
     /** Hourly online target, scaled by POPULATION_MULTIPLIER so the whole population is adjustable
@@ -145,11 +155,13 @@ public final class BotScheduler {
 
     private record Candidate(int charId, double desire) {}
 
-    private void reconcile() {
+    private void reconcile(boolean stableTarget) {
         long now = System.currentTimeMillis();
         int hour = LocalTime.now().getHour();
         long epochDay = LocalDate.now().toEpochDay();
-        int target = scaledTarget(hour, BotManager.cfg.POPULATION_NOISE, ThreadLocalRandom.current().nextDouble());
+        int target = stableTarget
+                ? scaledTarget(hour, 0, 0.5)
+                : scaledTarget(hour, BotManager.cfg.POPULATION_NOISE, ThreadLocalRandom.current().nextDouble());
 
         BotManager bm = BotManager.getInstance();
         List<ManagedBot> managed = ManagedBotService.getInstance().loadAll();
