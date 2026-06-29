@@ -1831,6 +1831,48 @@ public class BotChatManager {
         return message != null && GREETING_PATTERN.matcher(message).matches();
     }
 
+    /**
+     * Whole-message read-only info queries — the {@code report*} branches of {@link #handleChat} that
+     * only describe the bot (stats, gear, supplies, exp, mesos, quests, …) and never mutate state or move
+     * items. SSOT for the open-world proximity gate: a GM may pull these from any nearby managed bot; a
+     * non-GM stranger gets refused ({@link #refuseInfoQuery}).
+     */
+    static boolean isReadOnlyInfoQuery(String message) {
+        if (message == null) {
+            return false;
+        }
+        return matchesWholeCommand(STATS_PATTERN, message)
+                || matchesWholeCommand(RANGE_PATTERN, message)
+                || isMovementStatsQuery(message)
+                || matchesWholeCommand(BUILD_PATTERN, message)
+                || matchesWholeCommand(SKILLS_PATTERN, message)
+                || matchesWholeCommand(INVENTORY_PATTERN, message)
+                || matchesWholeCommand(INV_SLOTS_PATTERN, message)
+                || matchesWholeCommand(SCROLLS_PATTERN, message)
+                || matchesWholeCommand(POTIONS_PATTERN, message)
+                || matchesWholeCommand(EXP_PATTERN, message)
+                || isMesoQuery(message)
+                || matchesWholeCommand(DEBUG_STATS_PATTERN, message)
+                || matchesWholeCommand(CRIT_DEBUG_PATTERN, message)
+                || matchesWholeCommand(POT_DEBUG_PATTERN, message)
+                || matchesWholeCommand(RECOMMENDED_GEAR_PATTERN, message)
+                || matchesWholeCommand(BUFF_LIST_PATTERN, message)
+                || matchesWholeCommand(CREW_PATTERN, message)
+                || QUESTS_PATTERN.matcher(message).matches()
+                || ITEM_QUERY_PATTERN.matcher(message).matches();
+    }
+
+    private static final List<String> INFO_REFUSAL_REPLIES = List.of(
+            "no", "nope", "nah", "lol no", "not telling ya", "not gonna tell you that",
+            "thats my business", "mind ya business", "why would i tell you that",
+            "do i know you?", "who are you again?", "ask my owner", "not for strangers", "hard pass");
+
+    /** A non-GM stranger asked a managed bot for its private info — brush them off (US-ASCII). */
+    static void refuseInfoQuery(BotEntry entry) {
+        BotManager.after(BotManager.randMs(500, 800),
+                () -> queueBotReply(entry, BotManager.randomReply(INFO_REFUSAL_REPLIES)));
+    }
+
     static List<String> buildMovementStatsReport(Character bot) {
         if (bot == null) {
             return List.of("cant read my movement stats rn");

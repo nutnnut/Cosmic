@@ -1706,18 +1706,27 @@ public class BotManager {
     private static final int PROXIMITY_CHAT_RADIUS = 300;
 
     /**
-     * Open-world social: a greeting ("hi") or status query ("sup"/"where are you") spoken in map chat by
-     * ANY player reaches every self-owned MANAGED bot inside a {@value #PROXIMITY_CHAT_RADIUS}px box around
-     * the speaker — a greeting waves back, a "sup" reports what it's doing. Reuses
-     * {@link BotChatManager#handleChat} so the greeting/status reply logic stays SSOT. Companions
-     * (owner != bot) are skipped here: they answer their own owner via the broadcast path, not strangers.
+     * Open-world social: a greeting/status query spoken in map chat by ANY player reaches every self-owned
+     * MANAGED bot inside a {@value #PROXIMITY_CHAT_RADIUS}px box around the speaker. Whitelist:
+     * <ul>
+     *   <li><b>greeting ("hi") / status ("sup"/"where are you")</b> — answered for everyone;</li>
+     *   <li><b>read-only info (pots/inventory/ammo/stats/...)</b> — answered only for a GM; a non-GM
+     *       stranger gets brushed off ({@link BotChatManager#refuseInfoQuery}).</li>
+     * </ul>
+     * Reuses {@link BotChatManager#handleChat} so the reply logic stays SSOT. Companions (owner != bot)
+     * are skipped: they answer their own owner via the broadcast path, not strangers.
      */
     private void maybeHandleProximityChat(Character speaker, String message, ReplyChannel channel) {
         if (channel != ReplyChannel.MAP || speaker == null || speaker.getMap() == null
-                || speaker.getClient() instanceof BotClient
-                || (!BotChatManager.isGreeting(message) && !BotChatManager.isLocationStatusQuery(message))) {
+                || speaker.getClient() instanceof BotClient) {
             return;
         }
+        boolean basic = BotChatManager.isGreeting(message) || BotChatManager.isLocationStatusQuery(message);
+        boolean info = !basic && BotChatManager.isReadOnlyInfoQuery(message);
+        if (!basic && !info) {
+            return;
+        }
+        boolean answer = basic || speaker.isGM(); // info queries: GM only, else refuse
         Point sp = speaker.getPosition();
         Rectangle box = new Rectangle(sp.x - PROXIMITY_CHAT_RADIUS, sp.y - PROXIMITY_CHAT_RADIUS,
                 2 * PROXIMITY_CHAT_RADIUS, 2 * PROXIMITY_CHAT_RADIUS);
@@ -1730,7 +1739,11 @@ public class BotManager {
                 continue; // managed/self-owned only; companions answer their owner, not passers-by
             }
             e.replyChannel = ReplyChannel.MAP;
-            BotChatManager.handleChat(e, message);
+            if (answer) {
+                BotChatManager.handleChat(e, message);
+            } else {
+                BotChatManager.refuseInfoQuery(e);
+            }
         }
     }
 
