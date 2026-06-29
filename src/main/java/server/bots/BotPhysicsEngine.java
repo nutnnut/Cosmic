@@ -1387,6 +1387,11 @@ final class BotPhysicsEngine {
             } else if (collision.type() == AirCollisionType.WALL) {
                 nextX = collision.point().x;
                 vx = 0.0;
+                // Wall hit while actively steering: flag it so the next computeSwimIntents rises to
+                // clear the obstacle instead of greedily pressing into it (swim "jump over the wall").
+                entry.swimWallBlocked = entry.swimMoveDir != 0;
+            } else {
+                entry.swimWallBlocked = false;
             }
         }
 

@@ -540,6 +540,14 @@ class BotMovementManager {
             // and now drifted past LEVEL, switch to free sink so we catch up.
             entry.swimVerticalHold = prevVerticalHold > 0 ? 1 : 0;
         }
+
+        // Wall-escape: physics flagged a wall hit last tick while we were steering toward the target.
+        // The greedy dy-based vertical above would pin us against the wall when the target sits at or
+        // below our level behind it — so rise instead, the swim analog of jumping over an obstacle.
+        if (entry.swimWallBlocked && entry.swimMoveDir != 0) {
+            entry.swimVerticalHold = -1;
+            entry.swimJumpRequested = false;
+        }
     }
 
     /**
@@ -670,6 +678,12 @@ class BotMovementManager {
         boolean canWalkStep = BotPhysicsEngine.canWalkGroundStep(entry.bot.getMap(), botPos, stepX);
         if (!canWalkStep) {
             boolean blockedByWall = BotPhysicsEngine.isGroundStepBlockedByWall(entry.bot.getMap(), botPos, stepX);
+            // Swim maps bypass the nav graph (no JUMP/DROP edges), so a grounded bot blocked by a wall
+            // toward its target has no authored way off the platform — it would idle forever. Launch into
+            // the water ourselves; once airborne, tickSwimming steers it over the obstacle.
+            if (blockedByWall && entry.bot.getMap().isSwim()) {
+                return MoveAction.jump(stepX);
+            }
             if (!blockedByWall
                     && ((directionalDrop && Integer.signum(stepX) == Integer.signum(entry.navEdge.launchStepX))
                     || BotFallbackMovementManager.shouldWalkOffLedge(entry, botPos, targetPos, stepX))) {

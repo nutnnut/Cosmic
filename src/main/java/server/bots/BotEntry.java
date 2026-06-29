@@ -69,6 +69,7 @@ public class BotEntry {
     int swimVerticalHold = 0;            // -1 = UP held (slow sink), 0 = none, +1 = DOWN held (fast sink)
     boolean swimJumpRequested = false;   // one-shot upward burst
     long swimNextJumpAtMs = 0L;          // cooldown gate
+    boolean swimWallBlocked = false;     // physics hit a wall while steering; rise to clear it next tick
 
     // Movement intent — set by movement/fidget layer, consumed by physics engine.
     // Maps to the same left/right key hold used by the real client for both
