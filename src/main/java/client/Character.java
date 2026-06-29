@@ -11300,6 +11300,9 @@ public class Character extends AbstractCharacterObject {
     private Fitness fitness;
     private Ola ola;
     private long snowballattack;
+    // Wall-clock ms of this player's most recent attack. Lets bots tell an active grinder from an idle
+    // observer when scoring map crowding (server.bots.BotOccupancy) — set in applyAttack, humans only.
+    private volatile long lastAttackTime;
 
     public byte getTeam() {
         return team;
@@ -11331,6 +11334,14 @@ public class Character extends AbstractCharacterObject {
 
     public void setLastSnowballAttack(long time) {
         this.snowballattack = time;
+    }
+
+    public long getLastAttackTime() {
+        return lastAttackTime;
+    }
+
+    public void markAttacked() {
+        this.lastAttackTime = System.currentTimeMillis();
     }
 
     // MCPQ

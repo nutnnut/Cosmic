@@ -218,6 +218,10 @@ public class BotManager {
         // this many extra spawn-competitors, so crowded maps yield fewer kills/h and bots spread out
         // instead of stacking / kill-stealing. 0 disables. See BotOccupancy + BotGrindPlanner spawn-share.
         public double CROWD_PENALTY_FACTOR = 2.0;
+        // Only count a character as crowd competition if it's actually contesting spawns: a bot in an
+        // active combat mode, or a human who attacked within this window. A standing/socializing player
+        // (or a following/idle bot) is ignored, so bots don't visibly avoid maps people are watching on.
+        public long ACTIVE_GRIND_WINDOW_MS = 60_000;
 
         // Travel-time penalty floor: the minimum score multiplier a far map keeps (BotTravelCost). At
         // 0.5 even the far side of the world stays half-valued, so a genuinely better distant map can
