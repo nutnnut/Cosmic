@@ -1039,6 +1039,14 @@ class BotMovementManager {
     private static void doBroadcastMovement(BotEntry entry) {
         entry.broadcastedThisTick = true; // movement state reconciled this tick (even if deduped below)
         Character bot = entry.bot;
+        // No human/GM in the map -> nobody renders this move. Skip BEFORE building the packet so we
+        // also avoid the per-tick allocation, not just the send. Invalidate the dedup cache so the
+        // first tick after a player enters re-broadcasts a fresh state (spawn covers the static pose).
+        // ponytail: O(chars) scan per tick per bot; make MapleMap track a non-bot count if it ever shows up hot.
+        if (!bot.getMap().isObservedByPlayer()) {
+            entry.movementBroadcastValid = false;
+            return;
+        }
         int x = bot.getPosition().x;
         int y = bot.getPosition().y;
         BotPhysicsEngine.MovementSnapshot snapshot = BotPhysicsEngine.movementSnapshot(entry);

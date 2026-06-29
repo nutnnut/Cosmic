@@ -6044,7 +6044,9 @@ public class BotManager {
 
     void botSay(Character bot, String text) {
         String s = sanitizeChat(text);
-        bot.getMap().broadcastMessage(PacketCreator.getChatText(bot.getId(), s, false, 0));
+        if (bot.getMap().isObservedByPlayer()) {
+            bot.getMap().broadcastMessage(PacketCreator.getChatText(bot.getId(), s, false, 0));
+        }
         BotWorldGraphWebServer.recordChat(bot.getMapId(), bot.getName(), s);
     }
 

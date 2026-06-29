@@ -2731,6 +2731,13 @@ public class MapleMap {
     }
 
     private void broadcastMessage(Character source, Packet packet, double rangeSq, Point rangedFrom) {
+        // Bots broadcast movement/attack/stance/damage every tick. If only bots populate the map
+        // (no human or hidden GM to render them), nobody observes these packets — skip the send.
+        // Humans always observe their own broadcasts, so this never changes player-visible behavior;
+        // a bot's server-side state (position/stance/HP) is re-sent via spawn when a player enters.
+        if (source != null && source.getClient() instanceof BotClient && !isObservedByPlayer()) {
+            return;
+        }
         net.packet.logging.MonitoredChrLogger.logBroadcastIfMonitored(source, packet.getBytes());
         chrRLock.lock();
         try {
@@ -3111,6 +3118,22 @@ public class MapleMap {
             }
 
             return mapChars;
+        } finally {
+            chrRLock.unlock();
+        }
+    }
+
+    /** True if any real client (human, including a hidden GM) is in the map to observe broadcasts.
+     *  Bots run on a no-op {@link BotClient}, so a map of only bots returns false. */
+    public boolean isObservedByPlayer() {
+        chrRLock.lock();
+        try {
+            for (Character chr : characters) {
+                if (!(chr.getClient() instanceof BotClient)) {
+                    return true;
+                }
+            }
+            return false;
         } finally {
             chrRLock.unlock();
         }

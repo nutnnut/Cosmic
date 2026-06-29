@@ -396,7 +396,9 @@ final class BotScrollManager {
             mods.add(new ModifyInventory(0, scrolled));
         }
         c.sendPacket(PacketCreator.modifyInventory(true, mods));
-        chr.getMap().broadcastMessage(PacketCreator.getScrollEffect(chr.getId(), result, false, false));
+        if (chr.getMap().isObservedByPlayer()) {
+            chr.getMap().broadcastMessage(PacketCreator.getScrollEffect(chr.getId(), result, false, false));
+        }
         if (equipped && (result == ScrollResult.SUCCESS || result == ScrollResult.CURSE)) {
             chr.equipChanged();
         }
