@@ -324,7 +324,7 @@ final class BotAutopilotManager {
         IntToDoubleFunction crowd = members.isEmpty() ? mapId -> 0.0
                 : BotOccupancy.extraCompetitors(members.get(0).bot, BotManager.cfg.CROWD_PENALTY_FACTOR);
         return BotGrindPlanner.planPartyBest(in.perMember(), in.weights(), crowd,
-                currentPartyMap(members), ThreadLocalRandom.current());
+                currentPartyMap(members), grinderMask(members), ThreadLocalRandom.current());
     };
 
     /** The map the cohort is already grinding (most common autopilotMapId among members still in
@@ -1454,6 +1454,39 @@ final class BotAutopilotManager {
             return gap > release;        // stay idling until the gap closes to <= release
         }
         return gap >= trigger;           // start idling once the gap reaches the trigger
+    }
+
+    /**
+     * Planning-time view of {@link #decideIdleLeech}: which members will actually deal damage on the
+     * shared grind map, so only they drive the party's map pick (an idle-leecher must not pull the
+     * cohort onto a map tuned to its higher level that the lower members can barely hit). Mirrors the
+     * live gate — current leech state for hysteresis, cohort-wide minimum level (the planner assumes
+     * they converge on one map). Returns {@code null} ("everyone grinds") when leeching is off, the
+     * party is too small, or nobody would leech, so the planner keeps its all-members path.
+     */
+    static boolean[] grinderMask(List<BotEntry> members) {
+        if (!BotManager.cfg.PARTY_LEECH_ENABLED || members.size() < 2) {
+            return null;
+        }
+        int minLevel = Integer.MAX_VALUE;
+        for (BotEntry m : members) {
+            if (m.bot != null) {
+                minLevel = Math.min(minLevel, m.bot.getLevel());
+            }
+        }
+        if (minLevel == Integer.MAX_VALUE) {
+            return null;
+        }
+        boolean[] grind = new boolean[members.size()];
+        boolean anyLeech = false;
+        for (int i = 0; i < members.size(); i++) {
+            BotEntry m = members.get(i);
+            boolean leech = m.bot != null && decideIdleLeech(m.idleLeech, m.bot.getLevel(), minLevel,
+                    BotManager.cfg.PARTY_LEECH_GAP_TRIGGER, BotManager.cfg.PARTY_LEECH_GAP_RELEASE);
+            grind[i] = !leech;
+            anyLeech |= leech;
+        }
+        return anyLeech ? grind : null;
     }
 
     /**

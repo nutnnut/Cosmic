@@ -73,7 +73,8 @@ final class BotAutopilotDebug {
         PartyInputs in = BotAutopilotManager.partyInputs(members);
         // Same call the live decider makes, but keep the full intermediate for the dump.
         PartyScoring scoring = BotGrindPlanner.scorePartyBest(
-                in.perMember(), in.weights(), ThreadLocalRandom.current());
+                in.perMember(), in.weights(), mapId -> 0.0, -1,
+                BotAutopilotManager.grinderMask(members), ThreadLocalRandom.current());
         return renderReport(ItemInformationProvider.getInstance(), bot, members, in, scoring);
     }
 

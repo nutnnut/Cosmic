@@ -240,8 +240,14 @@ final class BotGrindPlanner {
      *  meaningful gear existed — so the two trade off continuously: needGear=0 -> pure exp,
      *  needGear=1 -> pure gear, between -> weighted sum. SSOT for both solo and party picks. */
     private static double[] unifiedScores(Lenses lenses) {
-        double bestExp = max(lenses.weightedExp());
-        double bestGear = max(lenses.weightedGear());
+        return unifiedScores(lenses, max(lenses.weightedExp()), max(lenses.weightedGear()));
+    }
+
+    /** As {@link #unifiedScores(Lenses)} but normalized against externally-supplied exp/gear bests
+     *  (the party-global maxima across grinders) so several members' scores share ONE scale and can
+     *  be summed — a weak member's low absolute throughput then stays low instead of self-normalizing
+     *  to ~1 against its own meager options. Solo/per-list callers pass this list's own maxima. */
+    private static double[] unifiedScores(Lenses lenses, double bestExp, double bestGear) {
         double need = lenses.needGear();
         double[] out = new double[lenses.weightedExp().length];
         for (int i = 0; i < out.length; i++) {
@@ -275,7 +281,7 @@ final class BotGrindPlanner {
     /**
      * Pick ONE map for the whole group: each member's candidates are competition-adjusted
      * (N members share the spawns), scored with the same gear-first model as solo planning
-     * (gear primary, exp the tiebreaker — see {@link #partyScores}), and each member's best
+     * (gear primary, exp the tiebreaker — see {@link #unifiedScores}), and each member's best
      * score per map is summed — so a map where several members gain (one farms its gear drop,
      * others take good exp) beats a map that's optimal for only one. The near-best weighted
      * draw keeps multiple parties from clogging the same spot. {@code mapScoreWeights} is the
@@ -299,7 +305,17 @@ final class BotGrindPlanner {
     static PartyPlan planPartyBest(List<List<MobCandidate>> perMember,
                                    List<IntToDoubleFunction> mapScoreWeights,
                                    IntToDoubleFunction extraCompetitors, int stickyMapId, Random rng) {
-        PartyScoring scoring = scorePartyBest(perMember, mapScoreWeights, extraCompetitors, stickyMapId, rng);
+        return planPartyBest(perMember, mapScoreWeights, extraCompetitors, stickyMapId, null, rng);
+    }
+
+    /** {@link #planPartyBest} restricted to the damage-dealing {@code grinders} (idle-leechers excluded
+     *  from the pick); see {@link #scorePartyBest(List, List, IntToDoubleFunction, int, boolean[], Random)}. */
+    static PartyPlan planPartyBest(List<List<MobCandidate>> perMember,
+                                   List<IntToDoubleFunction> mapScoreWeights,
+                                   IntToDoubleFunction extraCompetitors, int stickyMapId,
+                                   boolean[] grinders, Random rng) {
+        PartyScoring scoring = scorePartyBest(perMember, mapScoreWeights, extraCompetitors,
+                stickyMapId, grinders, rng);
         return scoring == null ? null : scoring.plan();
     }
 
@@ -320,7 +336,7 @@ final class BotGrindPlanner {
         return scorePartyBest(perMember, mapScoreWeights, mapId -> 0.0, rng);
     }
 
-    /** {@link #scorePartyBest} with crowd dispersion: spawn-share divisor = party size + per-map surcharge. */
+    /** {@link #scorePartyBest} with crowd dispersion: spawn-share divisor = grinder count + per-map surcharge. */
     static PartyScoring scorePartyBest(List<List<MobCandidate>> perMember,
                                        List<IntToDoubleFunction> mapScoreWeights,
                                        IntToDoubleFunction extraCompetitors, Random rng) {
@@ -330,26 +346,78 @@ final class BotGrindPlanner {
     static PartyScoring scorePartyBest(List<List<MobCandidate>> perMember,
                                        List<IntToDoubleFunction> mapScoreWeights,
                                        IntToDoubleFunction extraCompetitors, int stickyMapId, Random rng) {
+        return scorePartyBest(perMember, mapScoreWeights, extraCompetitors, stickyMapId, null, rng);
+    }
+
+    /**
+     * {@code grinders}: which members will actually deal damage on the shared map (a member whose
+     * level has out-paced the cohort idle-leeches for shared exp and lands no hits). Only grinders
+     * drive the map pick AND set the spawn-share divisor — so a strong member that will idle can't
+     * drag the party onto a map tuned to its power that the remaining low member can barely scratch.
+     * Idlers still get a recommendation (they travel to the chosen map to leech), they just don't vote.
+     * {@code null} keeps the every-member path. Scores normalize to a party-GLOBAL exp/gear best across
+     * grinders so a weak grinder's low absolute throughput stays low in the sum (power-aware).
+     */
+    static PartyScoring scorePartyBest(List<List<MobCandidate>> perMember,
+                                       List<IntToDoubleFunction> mapScoreWeights,
+                                       IntToDoubleFunction extraCompetitors, int stickyMapId,
+                                       boolean[] grinders, Random rng) {
         if (perMember == null || perMember.isEmpty()) {
             return null;
         }
         int partySize = perMember.size();
-        List<List<MobCandidate>> adjusted = new ArrayList<>(partySize);
-        for (List<MobCandidate> candidates : perMember) {
-            adjusted.add(shareForCrowd(candidates, partySize, extraCompetitors));
+        // Grinder count is the spawn-share divisor: idlers consume no mobs, so the supply the grinders
+        // share is split among grinders only — summing each grinder's throughput then conserves the
+        // map's supply instead of N-counting it (the "don't double-count member multiplier" rule).
+        int grinderCount = 0;
+        if (grinders == null) {
+            grinderCount = partySize;
+        } else {
+            for (boolean g : grinders) {
+                if (g) {
+                    grinderCount++;
+                }
+            }
+            if (grinderCount == 0) {
+                grinderCount = partySize;   // defensive: never divide by zero / score nobody
+                grinders = null;
+            }
         }
 
-        // Sum each member's best score per map.
+        List<List<MobCandidate>> adjusted = new ArrayList<>(partySize);
+        for (List<MobCandidate> candidates : perMember) {
+            adjusted.add(shareForCrowd(candidates, grinderCount, extraCompetitors));
+        }
+
+        // Party-global exp/gear best across grinders only, so member scores share one absolute scale.
+        double gBestExp = 0.0;
+        double gBestGear = 0.0;
+        List<Lenses> lensByMember = new ArrayList<>(partySize);
+        for (int m = 0; m < partySize; m++) {
+            boolean grinds = grinders == null || grinders[m];
+            List<MobCandidate> candidates = adjusted.get(m);
+            if (!grinds || candidates.isEmpty()) {
+                lensByMember.add(null);
+                continue;
+            }
+            Lenses lens = computeLenses(candidates, mapScoreWeights.get(m));
+            lensByMember.add(lens);
+            gBestExp = Math.max(gBestExp, max(lens.weightedExp()));
+            gBestGear = Math.max(gBestGear, max(lens.weightedGear()));
+        }
+
+        // Sum each GRINDER's best score per map (idlers contribute nothing — empty score row).
         List<double[]> memberScores = new ArrayList<>(partySize);
         Map<Integer, Double> scoreByMap = new HashMap<>();
-        for (int m = 0; m < adjusted.size(); m++) {
-            List<MobCandidate> candidates = adjusted.get(m);
-            if (candidates.isEmpty()) {
+        for (int m = 0; m < partySize; m++) {
+            Lenses lens = lensByMember.get(m);
+            if (lens == null) {
                 memberScores.add(new double[0]);
                 continue;
             }
-            double[] score = partyScores(candidates, mapScoreWeights.get(m));
+            double[] score = unifiedScores(lens, gBestExp, gBestGear);
             memberScores.add(score);
+            List<MobCandidate> candidates = adjusted.get(m);
             Map<Integer, Double> bestByMap = new HashMap<>();
             for (int i = 0; i < candidates.size(); i++) {
                 bestByMap.merge(candidates.get(i).mapId(), score[i], Math::max);
@@ -392,12 +460,6 @@ final class BotGrindPlanner {
         }
         return new PartyScoring(adjusted, memberScores, scoreByMap, pickedMapId,
                 new PartyPlan(pickedMapId, recs));
-    }
-
-    /** One comparable number per candidate for the party sum: the same unified exp+gear blend the
-     *  solo pick uses ({@link #unifiedScores}), so members rank maps identically before summing. */
-    private static double[] partyScores(List<MobCandidate> candidates, IntToDoubleFunction mapScoreWeight) {
-        return unifiedScores(computeLenses(candidates, mapScoreWeight));
     }
 
     /**
