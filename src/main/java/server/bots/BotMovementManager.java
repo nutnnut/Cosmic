@@ -543,10 +543,15 @@ class BotMovementManager {
 
         // Wall-escape: physics flagged a wall hit last tick while we were steering toward the target.
         // The greedy dy-based vertical above would pin us against the wall when the target sits at or
-        // below our level behind it — so rise instead, the swim analog of jumping over an obstacle.
+        // below our level behind it. UP-hold alone can't rise (SWIM_UP_THRUST < SWIM_GRAVITY), so fire
+        // a cooldown-gated JUMP burst — the only source of real upward momentum — to clear the obstacle,
+        // holding UP between bursts to soften the sink.
         if (entry.swimWallBlocked && entry.swimMoveDir != 0) {
+            if (now >= entry.swimNextJumpAtMs) {
+                entry.swimJumpRequested = true;
+                entry.swimNextJumpAtMs = now + BotPhysicsEngine.cfg.SWIM_JUMP_COOLDOWN_MS;
+            }
             entry.swimVerticalHold = -1;
-            entry.swimJumpRequested = false;
         }
     }
 
