@@ -75,7 +75,11 @@ final class BotNavigationGraphProvider {
     static final int TELEPORT_RANGE_PX = 150;
     static final int TELEPORT_Y_SNAP_PX = 75;  // horizontal teleport: vertical snap band to a platform (eyeball; client-verify if precision matters)
     private static final int TELEPORT_COST_MS = 150;   // near-instant cast+recovery (tunable)
-    private static final Path CACHE_DIR = Path.of("cache", "bot-nav", "v" + GRAPH_VERSION);
+    // Base dir is overridable so tests never persist their (often trimmed) graphs into the live
+    // production cache — a trimmed map at base profile would otherwise overwrite the real graph and
+    // strand bots with region=-1. Tests point -Dbot.nav.cacheDir at cache/bot-nav-test; prod uses the default.
+    private static final Path CACHE_DIR =
+            Path.of(System.getProperty("bot.nav.cacheDir", "cache/bot-nav"), "v" + GRAPH_VERSION);
     private static final Map<GraphCacheKey, BotNavigationGraph> GRAPHS = new ConcurrentHashMap<>();
     private static final Map<GraphCacheKey, CompletableFuture<BotNavigationGraph>> PENDING_GRAPHS = new ConcurrentHashMap<>();
     private static final Map<GraphCacheKey, GraphBuildReport> LAST_BUILD_REPORTS = new ConcurrentHashMap<>();
