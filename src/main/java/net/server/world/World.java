@@ -203,6 +203,7 @@ public class World {
     private ScheduledFuture<?> partySearchSchedule;
     private ScheduledFuture<?> timeoutSchedule;
     private ScheduledFuture<?> hpDecSchedule;
+    private volatile boolean shuttingDown;
 
     public World(int world, int flag, String eventmsg, int exprate, int droprate, int bossdroprate, int mesorate,
                  int questrate, int travelrate, int fishingrate, float mobrate, int mobperspawnpoint,
@@ -360,6 +361,10 @@ public class World {
 
     public int getFlag() {
         return flag;
+    }
+
+    public boolean isShuttingDown() {
+        return shuttingDown;
     }
 
     public String getEventMessage() {
@@ -2178,6 +2183,12 @@ public class World {
     }
 
     public final void shutdown() {
+        shuttingDown = true;
+        if (charactersSchedule != null) {
+            charactersSchedule.cancel(false);
+            charactersSchedule = null;
+        }
+
         for (Channel ch : getChannels()) {
             ch.shutdown();
         }
@@ -2205,11 +2216,6 @@ public class World {
         if (timedMapObjectsSchedule != null) {
             timedMapObjectsSchedule.cancel(false);
             timedMapObjectsSchedule = null;
-        }
-
-        if (charactersSchedule != null) {
-            charactersSchedule.cancel(false);
-            charactersSchedule = null;
         }
 
         if (marriagesSchedule != null) {

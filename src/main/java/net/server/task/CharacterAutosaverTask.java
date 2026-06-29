@@ -34,9 +34,15 @@ public class CharacterAutosaverTask extends BaseTask implements Runnable {  // t
         if (!YamlConfig.config.server.USE_AUTOSAVE) {
             return;
         }
+        if (wserv.isShuttingDown()) {
+            return;
+        }
 
         PlayerStorage ps = wserv.getPlayerStorage();
         for (Character chr : ps.getAllCharacters()) {
+            if (wserv.isShuttingDown()) {
+                return;
+            }
             if (chr != null && chr.isLoggedin()) {
                 chr.saveCharToDB(false);
             }
