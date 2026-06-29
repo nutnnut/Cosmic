@@ -1123,7 +1123,7 @@ final class BotTravelManager {
                 continue;
             }
             if (startRegionId == targetRegionId
-                    || !BotNavigationManager.findPath(graph, map, botPos,
+                    || !BotNavigationManager.findPathForApproachProbe(graph, map, botPos,
                             startRegionId, targetRegionId, candidate).isEmpty()) {
                 reachable.add(candidate);
             }

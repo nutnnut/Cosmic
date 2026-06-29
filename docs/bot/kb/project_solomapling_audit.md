@@ -28,3 +28,20 @@ but price everything from our SSOT, NOT their fragmented YAML/WZ/sine-wave prici
 **Minor borrows:** in-game operator console (MMC messenger window), maybe `EquipMetadataCache` (only
 if WZ-read hotspot), event bus (absent here, low payoff for 1 companion). **Skip:** movement replay
 (whole-path replay ≠ our sub-tick micro-position exception — wrong granularity).
+
+## 2026-06-29 follow-up: `bf11f387`
+
+Sibling commit `bf11f387b913a0e06439cd2ade50197bc77aeb80` adds a newer-looking GC movement bundle, but
+its nav core is still older than Cosmic's current stack: SoloMapling is at graph v60, while Cosmic is at
+v65 with teleport/FJ launch-window compaction, directed skill-filtered reachability, per-skill-mask
+goal-distance caches, committed routes, bounded A*, and bucketed route-cache instrumentation.
+
+Worth considering later, not ported wholesale: `ObserverTracker` + `TierDwell` + `MovementPlan` +
+`CoarseExecutor` for unobserved-map LOD. That is valuable for SoloMapling's ambient world-population
+model, but it is a scheduler/behavior tradeoff in Cosmic, not a direct A* improvement. It would need a
+design pass around companion legality, owner-offline behavior, autopilot errands, and map-observation
+semantics before implementation.
+
+Small Cosmic-side takeaway applied instead: use Cosmic's own goal-distance heuristic for remaining
+retreat/approach probe path searches and label those probes, leaving committed movement and combat
+target-score search unchanged.

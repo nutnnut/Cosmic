@@ -2809,7 +2809,7 @@ public class BotManager {
                 continue;
             }
 
-            List<BotNavigationGraph.Edge> path = BotNavigationManager.findPath(
+            List<BotNavigationGraph.Edge> path = BotNavigationManager.findPathForRetreatProbe(
                     graph, map, botPos, botRegionId, region.id, candidate);
             if (path.isEmpty() || pathUsesPortal(path)) {
                 continue;

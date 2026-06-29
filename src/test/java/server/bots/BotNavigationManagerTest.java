@@ -478,6 +478,47 @@ class BotNavigationManagerTest {
     }
 
     @Test
+    void retreatProbePathUsesGoalHeuristicWithoutChangingRouteCost() {
+        MapleMap map = new MapleMap(910000027, 0, 0, 910000027, 1.0f);
+        BotNavigationGraph.Region r1 = new BotNavigationGraph.Region(
+                1, List.of(new BotNavigationGraph.Segment(new Foothold(new Point(0, 100), new Point(100, 100), 1))));
+        BotNavigationGraph.Region r2 = new BotNavigationGraph.Region(
+                2, List.of(new BotNavigationGraph.Segment(new Foothold(new Point(0, 200), new Point(100, 200), 2))));
+        BotNavigationGraph.Region r3 = new BotNavigationGraph.Region(
+                3, List.of(new BotNavigationGraph.Segment(new Foothold(new Point(0, 300), new Point(100, 300), 3))));
+        Map<Integer, BotNavigationGraph.Region> regionsById = new HashMap<>();
+        regionsById.put(1, r1);
+        regionsById.put(2, r2);
+        regionsById.put(3, r3);
+        BotNavigationGraph.Edge e12 = new BotNavigationGraph.Edge(
+                1, 2, BotNavigationGraph.EdgeType.WALK, new Point(50, 100), new Point(50, 200),
+                0, 0, 0, 0, 0, 100);
+        BotNavigationGraph.Edge e23 = new BotNavigationGraph.Edge(
+                2, 3, BotNavigationGraph.EdgeType.WALK, new Point(50, 200), new Point(50, 300),
+                0, 0, 0, 0, 0, 100);
+        BotNavigationGraph.Edge e13 = new BotNavigationGraph.Edge(
+                1, 3, BotNavigationGraph.EdgeType.JUMP, new Point(50, 100), new Point(50, 300),
+                0, 0, 0, 0, 0, 250);
+        BotNavigationGraph graph = new BotNavigationGraph(
+                map.getId(), 1,
+                List.of(r1, r2, r3), regionsById,
+                Map.of(1, 1, 2, 2, 3, 3),
+                Map.of(1, List.of(e13, e12), 2, List.of(e23)),
+                Set.of());
+
+        Point start = new Point(50, 100);
+        Point target = new Point(50, 300);
+        BotNavigationManager.SearchOutcome optimal = BotNavigationManager.runSearch(
+                graph, map, start, 1, 3, target, "measure", true, false, 0L);
+        List<BotNavigationGraph.Edge> retreatProbe = BotNavigationManager.findPathForRetreatProbe(
+                graph, map, start, 1, 3, target);
+
+        assertEquals(200, optimal.cost());
+        assertEquals(List.of(e12, e23), retreatProbe);
+        assertEquals(optimal.cost(), retreatProbe.stream().mapToInt(e -> e.cost).sum());
+    }
+
+    @Test
     void graphBakesNextHopsFromAllRegionsToPortalRegions() {
         MapleMap map = new MapleMap(910000027, 0, 0, 910000027, 1.0f);
         BotNavigationGraph.Region r1 = new BotNavigationGraph.Region(

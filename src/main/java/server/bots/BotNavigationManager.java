@@ -1924,6 +1924,26 @@ final class BotNavigationManager {
         return findPath(graph, map, startPos, startRegionId, targetRegionId, targetPos, "target-score");
     }
 
+    static List<BotNavigationGraph.Edge> findPathForRetreatProbe(BotNavigationGraph graph,
+                                                                 MapleMap map,
+                                                                 Point startPos,
+                                                                 int startRegionId,
+                                                                 int targetRegionId,
+                                                                 Point targetPos) {
+        return findPathWithGoalHeuristic(graph, map, startPos, startRegionId, targetRegionId, targetPos,
+                "retreat-probe");
+    }
+
+    static List<BotNavigationGraph.Edge> findPathForApproachProbe(BotNavigationGraph graph,
+                                                                  MapleMap map,
+                                                                  Point startPos,
+                                                                  int startRegionId,
+                                                                  int targetRegionId,
+                                                                  Point targetPos) {
+        return findPathWithGoalHeuristic(graph, map, startPos, startRegionId, targetRegionId, targetPos,
+                "approach-probe");
+    }
+
     /**
      * Production pathfinding heuristic toggle. When {@code true} (default) the search runs the
      * admissible h=0 (Dijkstra) variant: optimal-cost paths, no portal-skipping. Flip to
@@ -1953,6 +1973,17 @@ final class BotNavigationManager {
                                                           Point targetPos,
                                                           String pathfindCaller) {
         return findPath(graph, map, startPos, startRegionId, targetRegionId, targetPos, pathfindCaller, 0L);
+    }
+
+    private static List<BotNavigationGraph.Edge> findPathWithGoalHeuristic(BotNavigationGraph graph,
+                                                                           MapleMap map,
+                                                                           Point startPos,
+                                                                           int startRegionId,
+                                                                           int targetRegionId,
+                                                                           Point targetPos,
+                                                                           String pathfindCaller) {
+        return runSearch(graph, map, startPos, startRegionId, targetRegionId, targetPos,
+                pathfindCaller, false, true, 0L, false, null).path();
     }
 
     private static List<BotNavigationGraph.Edge> findPath(BotNavigationGraph graph,
