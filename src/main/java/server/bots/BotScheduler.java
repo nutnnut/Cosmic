@@ -578,7 +578,7 @@ public final class BotScheduler {
             return;
         }
         BotPersonality p = e.personality != null ? e.personality : BotPersonality.defaults();
-        if (BotBreakManager.rollChill(p, ThreadLocalRandom.current().nextDouble())) {
+        if (BotBreakManager.rollChill(p, e.bot.getLevel(), ThreadLocalRandom.current().nextDouble())) {
             e.chillSession = true;
             BotBreakManager.startTownBreak(e, e.bot, now);
         }
@@ -588,8 +588,12 @@ public final class BotScheduler {
      *  personality + the global chance config); if so flag every live member and route them to town to
      *  linger together. Mirrors {@link #beginSoloSession} for crews — the leader speaks for the unit. */
     private void markCrewSession(BotManager bm, List<ManagedBot> members, long now) {
+        BotEntry leaderEntry = bm.getEntryByBotCharId(crewLeader(members));
+        if (leaderEntry == null || leaderEntry.bot == null) {
+            return;
+        }
         BotPersonality leaderP = BotPersonality.parse(BotConfigService.getInstance().load(crewLeader(members)));
-        if (!BotBreakManager.rollChill(leaderP, ThreadLocalRandom.current().nextDouble())) {
+        if (!BotBreakManager.rollChill(leaderP, leaderEntry.bot.getLevel(), ThreadLocalRandom.current().nextDouble())) {
             return;
         }
         for (ManagedBot m : members) {

@@ -52,10 +52,13 @@ final class BotBreakManager {
         return Math.round(meanMin * 60_000L * factor);
     }
 
-    /** Whether a session (solo bot or crew leader) logs in to CHILL: config-gated, then the personality
-     *  chance scaled by the global multiplier. {@code rollUnit} is a uniform [0,1) sample. */
-    static boolean rollChill(BotPersonality p, double rollUnit) {
-        if (!BotManager.cfg.CHILL_SESSION_ENABLED || p == null) {
+    /** Min level before a bot may take a chill session — fresh bots grind to find their feet first. */
+    private static final int CHILL_MIN_LEVEL = 5;
+
+    /** Whether a session (solo bot or crew leader) logs in to CHILL: config-gated and level-gated, then
+     *  the personality chance scaled by the global multiplier. {@code rollUnit} is a uniform [0,1) sample. */
+    static boolean rollChill(BotPersonality p, int level, double rollUnit) {
+        if (!BotManager.cfg.CHILL_SESSION_ENABLED || p == null || level < CHILL_MIN_LEVEL) {
             return false;
         }
         return rollUnit < p.chillSessionChance() * BotManager.cfg.CHILL_SESSION_MULTIPLIER;
