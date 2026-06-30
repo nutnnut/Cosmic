@@ -46,6 +46,7 @@ class BotGachaponManagerTest {
     private final BotGachaponManager.SpaceCheck prevSpace = BotGachaponManager.spaceCheck;
     private final BotGachaponManager.TravelSeconds prevTravel = BotGachaponManager.travelSeconds;
     private final BotGachaponManager.HopReach prevHop = BotGachaponManager.hopReach;
+    private final java.util.function.Function<Character, BotWorldGraph.RouteOptions> prevTravelOptions = BotGachaponManager.travelOptions;
     private final java.util.function.BiConsumer<BotEntry, String> prevReply = BotGachaponManager.reply;
     private final java.util.function.IntFunction<String> prevName = BotGachaponManager.itemNameLookup;
     private final BotGachaponManager.GachaLog prevLog = BotGachaponManager.gachaLog;
@@ -65,7 +66,9 @@ class BotGachaponManagerTest {
         BotGachaponManager.isEquip = id -> false;
         BotGachaponManager.nxBalance = b -> 1_000_000;
         // No live BotWorldGraph in tests: every town is hop-reachable so the EV math alone ranks them.
-        BotGachaponManager.hopReach = (from, to, hops) -> true;
+        BotGachaponManager.hopReach = (from, to, hops, opts) -> true;
+        // Bare bot mocks don't stub job/meso/level; the seams ignore options, so use a fixed one.
+        BotGachaponManager.travelOptions = b -> BotWorldGraph.RouteOptions.PORTALS_ONLY;
         // Fresh, deterministic config so test values don't depend on production defaults shifting.
         BotManager.cfg = new BotManager.Config();
         BotManager.cfg.GACHAPON_ENABLED = true;
@@ -88,6 +91,7 @@ class BotGachaponManagerTest {
         BotGachaponManager.spaceCheck = prevSpace;
         BotGachaponManager.travelSeconds = prevTravel;
         BotGachaponManager.hopReach = prevHop;
+        BotGachaponManager.travelOptions = prevTravelOptions;
         BotGachaponManager.reply = prevReply;
         BotGachaponManager.itemNameLookup = prevName;
         BotGachaponManager.gachaLog = prevLog;
@@ -241,7 +245,7 @@ class BotGachaponManagerTest {
                 tier == 0 ? new int[]{npcId == constants.id.NpcId.GACHAPON_HENESYS ? 1 : 2} : new int[0];
         BotGachaponManager.itemValue = (b, id) -> id == 1 ? 5_000.0 : 100.0;
         // All towns equally close (no travel discrimination) so EV decides.
-        BotGachaponManager.travelSeconds = (from, to) -> 10.0;
+        BotGachaponManager.travelSeconds = (from, to, opts) -> 10.0;
 
         List<BotGachaponManager.TownEv> ranked = BotGachaponManager.rankTowns(bot, 100000000);
         assertFalse(ranked.isEmpty());
@@ -259,7 +263,7 @@ class BotGachaponManagerTest {
         BotGachaponManager.pool = (npcId, tier) -> tier == 0 ? new int[]{1} : new int[0];
         BotGachaponManager.itemValue = (b, id) -> 5_000.0;
         // Only Henesys is reachable; everything else is at the unreachable sentinel.
-        BotGachaponManager.travelSeconds = (from, to) ->
+        BotGachaponManager.travelSeconds = (from, to, opts) ->
                 to == BotGachaponManager.gachaponTownMap(constants.id.NpcId.GACHAPON_HENESYS) ? 10.0 : 99_999.0;
 
         List<BotGachaponManager.TownEv> ranked = BotGachaponManager.rankTowns(bot, 100000000);
@@ -274,7 +278,7 @@ class BotGachaponManagerTest {
         BotGachaponManager.pool = (npcId, tier) -> tier == 0 ? new int[]{1} : new int[0];
         BotGachaponManager.itemValue = (b, id) -> 5_000.0;
         // Identical pools; Ellinia is far, Henesys near -> the travel penalty breaks the tie.
-        BotGachaponManager.travelSeconds = (from, to) ->
+        BotGachaponManager.travelSeconds = (from, to, opts) ->
                 to == BotGachaponManager.gachaponTownMap(constants.id.NpcId.GACHAPON_HENESYS) ? 5.0 : 600.0;
 
         List<BotGachaponManager.TownEv> ranked = BotGachaponManager.rankTowns(bot, 100000000);
@@ -296,7 +300,7 @@ class BotGachaponManagerTest {
         BotGachaponManager.nxBalance = b -> 1_000_000; // plenty of spare NX
         BotGachaponManager.pool = (npcId, tier) -> tier == 0 ? new int[]{1} : new int[0];
         BotGachaponManager.itemValue = (b, id) -> 5_000.0;
-        BotGachaponManager.travelSeconds = (from, to) -> 10.0;
+        BotGachaponManager.travelSeconds = (from, to, opts) -> 10.0;
 
         e.nextGachaScanAtMs = 0L; // force the scan to run this tick
         BotGachaponManager.tickScan(e, bot);
@@ -323,7 +327,7 @@ class BotGachaponManagerTest {
         BotGachaponManager.pool = (npcId, tier) ->
                 tier == 0 ? new int[]{npcId == constants.id.NpcId.GACHAPON_HENESYS ? 1 : 2} : new int[0];
         BotGachaponManager.itemValue = (b, id) -> id == 1 ? 5_000.0 : 100.0;
-        BotGachaponManager.travelSeconds = (from, to) -> 10.0;
+        BotGachaponManager.travelSeconds = (from, to, opts) -> 10.0;
 
         e.nextGachaScanAtMs = 0L;
         BotGachaponManager.tickScan(e, bot);
@@ -348,7 +352,7 @@ class BotGachaponManagerTest {
                 tier == 0 ? new int[]{npcId == constants.id.NpcId.GACHAPON_HENESYS ? 1 : 2} : new int[0];
         BotGachaponManager.itemValue = (b, id) -> id == 1 ? 1_000.0 : 1_500.0;
         // Only the near (Henesys) and far (Ellinia) towns are reachable; near=5s, far=1000s.
-        BotGachaponManager.travelSeconds = (from, to) -> {
+        BotGachaponManager.travelSeconds = (from, to, opts) -> {
             if (to == BotGachaponManager.gachaponTownMap(constants.id.NpcId.GACHAPON_HENESYS)) return 5.0;
             if (to == constants.id.MapId.ELLINIA) return 1_000.0;
             return 99_999.0;

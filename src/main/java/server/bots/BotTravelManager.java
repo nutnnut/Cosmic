@@ -330,13 +330,16 @@ final class BotTravelManager {
                 // Partition routing is needed when the current platform is constrained, and also when a
                 // fully-connected current map would enter a downstream split map on the wrong arrival
                 // platform. It honors the SAME danger gate as the map-level route.
-                if (useGroundReachability) {
+                // Resolve the channel MapFactory once and guard it: a real bot always carries a client
+                // (BotManager sets it at creation), but a mid-logout/despawned bot or an offline sim mock
+                // may not — skip partition routing and fall back to the map-level route rather than NPE.
+                client.Client botClient = bot.getClient();
+                MapManager mapFactory = botClient != null && botClient.getChannelServer() != null
+                        ? botClient.getChannelServer().getMapFactory() : null;
+                if (useGroundReachability && mapFactory != null) {
                     List<BotMapPartition.PortalRef> reachableExits = reachableCrossMapExits(map, navGraph, botRegion);
                     List<BotWorldPartitionRouter.Node> proute = partitionRouteLookup.route(
-                            id -> {
-                                MapManager mf = bot.getClient().getChannelServer().getMapFactory();
-                                return BotMapPartitionProvider.forMapId(mf, id);
-                            }, bot.getMapId(), reachableExits,
+                            id -> BotMapPartitionProvider.forMapId(mapFactory, id), bot.getMapId(), reachableExits,
                             targetMapId, maxHops, blocked);
                     if (proute != null && !proute.isEmpty()) {
                         route = proute.stream().map(BotWorldPartitionRouter.Node::mapId).collect(Collectors.toList());

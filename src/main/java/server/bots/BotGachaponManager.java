@@ -215,28 +215,36 @@ final class BotGachaponManager {
      *  fallback when unreachable so the EV sort de-prioritizes it instead of NaN/Infinity. */
     @FunctionalInterface
     interface TravelSeconds {
-        double seconds(int fromMapId, int toMapId);
+        double seconds(int fromMapId, int toMapId, BotWorldGraph.RouteOptions options);
     }
-    static TravelSeconds travelSeconds = (from, to) -> {
+    static TravelSeconds travelSeconds = (from, to, options) -> {
         if (from == to) {
             return 0.0;
         }
         // floodSeconds always computes ferrySeconds(transportationTime) up front, so a non-null
-        // transportationTime is required even with PORTALS_ONLY (no ferry hop is taken). Mirrors
-        // BotQuestManager's errand seam; passing null,null NPE'd on the bot tick (Bowgurl@200010000).
+        // transportationTime is required. Mirrors BotQuestManager's errand seam; passing null,null
+        // NPE'd on the bot tick (Bowgurl@200010000). Options carry the bot's real travel means
+        // (return scroll + taxis) so a scroll-reachable far town isn't over-charged as a long walk.
         java.util.Map<Integer, Double> flood = BotTravelCost.floodSeconds(from,
-                BotAutopilotManager.MAX_TRAVEL_HOPS, BotWorldGraph.RouteOptions.PORTALS_ONLY, ms -> ms);
+                BotAutopilotManager.MAX_TRAVEL_HOPS, options, ms -> ms);
         Double one = flood.get(to);
         return one == null ? 99_999.0 : 2.0 * one;
     };
 
-    /** Hop-reachability gate: is {@code toMapId} within {@code maxHops} portal hops of {@code fromMapId}
-     *  on the live {@link BotWorldGraph}? Seamed (graph-backed) so tests rank towns without live topology. */
+    /** Hop-reachability gate: is {@code toMapId} within {@code maxHops} hops of {@code fromMapId} on the
+     *  live {@link BotWorldGraph}, under the bot's real travel {@code options} (return scroll + taxis)?
+     *  Seamed (graph-backed) so tests rank towns without live topology. */
     @FunctionalInterface
     interface HopReach {
-        boolean within(int fromMapId, int toMapId, int maxHops);
+        boolean within(int fromMapId, int toMapId, int maxHops, BotWorldGraph.RouteOptions options);
     }
-    static HopReach hopReach = (from, to, hops) -> BotWorldGraph.route(from, to, hops) != null;
+    static HopReach hopReach = (from, to, hops, options) -> BotWorldGraph.route(from, to, hops, options) != null;
+
+    /** The bot's real travel means for ranking — return scroll + meso taxis, no ferry. Seamed so tests
+     *  rank towns without stubbing the bot's job/meso/level that {@link BotAutopilotManager#travelOptions}
+     *  reads to build the options. */
+    static java.util.function.Function<Character, BotWorldGraph.RouteOptions> travelOptions =
+            bot -> BotAutopilotManager.travelOptions(bot, false);
 
     /** Bot chat output, behind a seam so tests capture replies without the BotManager singleton. */
     static java.util.function.BiConsumer<BotEntry, String> reply =
@@ -319,6 +327,10 @@ final class BotGachaponManager {
     static List<TownEv> rankTowns(Character bot, int fromMapId) {
         int price = ticketPrice.nx();
         int rolls = plannedRolls(bot, price);
+        // The bot's real travel means (return scroll + meso taxis), so reachability and cost match how
+        // the bot would actually get there — a rich town a free scroll away isn't excluded as a long
+        // walk. No ferry: the bot won't ferry out just for gacha. SSOT with BotTravelManager routing.
+        BotWorldGraph.RouteOptions options = travelOptions.apply(bot);
         // Owned-bars (per slot) and per-item upgrade gains are bot-global, not town-specific, so one
         // cache each spans the whole pass: the shared GLOBAL pool is scored once, not per town.
         Map<Short, Double> barCache = new HashMap<>();
@@ -329,12 +341,12 @@ final class BotGachaponManager {
             if (mapId < 0) {
                 continue;
             }
-            double travel = travelSeconds.seconds(fromMapId, mapId);
+            double travel = travelSeconds.seconds(fromMapId, mapId, options);
             if (travel >= 99_999.0) {
                 continue; // unreachable within the hop cap
             }
-            if (!hopReach.within(fromMapId, mapId, GACHA_MAX_HOPS)) {
-                continue; // farther than GACHA_MAX_HOPS from the break spot — too far to wander for gacha
+            if (!hopReach.within(fromMapId, mapId, GACHA_MAX_HOPS, options)) {
+                continue; // farther than GACHA_MAX_HOPS even with scroll/taxi — too far to wander for gacha
             }
             // Whichever motive is stronger drives the roll - gear upgrades for THIS bot OR raw
             // resale/uniques - both already in NX, so no scale mixing. The need-aware term is the

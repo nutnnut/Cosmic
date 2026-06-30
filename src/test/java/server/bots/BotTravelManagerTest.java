@@ -55,6 +55,13 @@ class BotTravelManagerTest {
         when(bot.getMapId()).thenReturn(botMapId);
         when(bot.getPosition()).thenReturn(botPos);
         when(bot.getJob()).thenReturn(Job.BEGINNER);
+        // Real bots always carry a client; the partition-route loader resolves the channel MapFactory
+        // through it. The stub router never invokes the loader, but the guard needs a non-null chain.
+        client.Client botClient = mock(client.Client.class);
+        net.server.channel.Channel botChannel = mock(net.server.channel.Channel.class);
+        when(bot.getClient()).thenReturn(botClient);
+        when(botClient.getChannelServer()).thenReturn(botChannel);
+        when(botChannel.getMapFactory()).thenReturn(mock(server.maps.MapManager.class));
         when(anchor.getMapId()).thenReturn(anchorMapId);
         when(map.getId()).thenReturn(botMapId);
         when(map.getPortals()).thenReturn(portals);
