@@ -1110,7 +1110,11 @@ public class BotManager {
     /**
      * Logout-linger tick branch (runs while {@code loggingOut}, before the normal grind flow): retreat to
      * a safe town and stand at a random spot until the linger deadline, then hand off to
-     * {@link #finishLoggingOut}. Never fights (loiter with {@code runAiTick=false}).
+     * {@link #finishLoggingOut}. Loiters with the live {@code runAiTick} (like every other loiter caller)
+     * so the bot can actually navigate to its chosen town anchor — even one a portal/jump away. The
+     * loiter's opportunity-attack is a no-op here because this branch only runs once the bot is in a safe
+     * (monster-free) town; a forced {@code runAiTick=false} would block all edge execution and leave a bot
+     * with a cross-region anchor stuck in place until the linger deadline.
      */
     private void tickLogout(BotEntry entry, Character bot, Point botPos, boolean runAiTick) {
         if (System.currentTimeMillis() >= entry.logoutLingerUntilMs) {
@@ -1136,7 +1140,7 @@ public class BotManager {
             entry.logoutAnchor = pickTownLoiterAnchor(entry, bot, botPos);
             BotMovementManager.resetEntryState(entry);
         }
-        loiterAtAnchor(entry, bot, botPos, entry.logoutAnchor, false);
+        loiterAtAnchor(entry, bot, botPos, entry.logoutAnchor, runAiTick);
     }
 
     /**
