@@ -139,6 +139,16 @@ class BotCombatManagerTest {
     }
 
     @Test
+    void shouldRespectSkillBuffToggleWhenTryingMagicGuard() {
+        Character bot = mockBot(new Point(100, 200), mock(MapleMap.class), 20_000, null);
+        BotEntry entry = new BotEntry(bot, null, null);
+        entry.skillBuffsEnabled = false;
+        entry.buffSkillIds.add(Magician.MAGIC_GUARD);
+
+        assertFalse(BotCombatManager.tryCastMagicGuard(entry, bot));
+    }
+
+    @Test
     void shouldNotFireAtTargetKilledBeforeSendGate() {
         // Repro for "bot shoots but hits no mob": a target validated alive at selection time gets killed
         // (cross-thread, or via a cadenced plan reused after death) before attackMonster builds the packet.
@@ -1296,6 +1306,28 @@ class BotCombatManagerTest {
         }
 
         assertTrue(bot.getHp() < 20_000, "hostile contact should reduce bot HP");
+    }
+
+    @Test
+    void shouldSplitBotDamageThroughMagicGuardAndOverflowMissingMpToHp() {
+        MapleMap map = mock(MapleMap.class);
+        Character bot = mockBot(new Point(100, 200), map, 20_000, null);
+        when(bot.getBuffedValue(BuffStat.MAGIC_GUARD)).thenReturn(80);
+        when(bot.getMp()).thenReturn(10);
+        BotEntry entry = new BotEntry(bot, null, null);
+
+        float fallDistance = 1200.0f;
+        int damage = BotCombatManager.fallDamageFromDistance(fallDistance);
+        int expectedMpLoss = (int) (damage * 0.8);
+        int expectedHpLoss = damage - expectedMpLoss;
+        if (expectedMpLoss > 10) {
+            expectedHpLoss += expectedMpLoss - 10;
+            expectedMpLoss = 10;
+        }
+
+        runWithStubbedBotAfter(() -> BotCombatManager.applyFallDamage(entry, bot, fallDistance));
+
+        verify(bot).addMPHPAndTriggerAutopot(-expectedHpLoss, -expectedMpLoss);
     }
 
     @Test

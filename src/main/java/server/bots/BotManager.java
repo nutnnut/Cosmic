@@ -5443,6 +5443,9 @@ public class BotManager {
         BotPotionManager.tickPassiveRecovery(entry, bot);
         if (perf) BotPerformanceMonitor.record("common-passive-recovery", System.nanoTime() - t);
         if (perf) t = System.nanoTime();
+        BotCombatManager.tryCastMagicGuard(entry, bot);
+        if (perf) BotPerformanceMonitor.record("common-magic-guard", System.nanoTime() - t);
+        if (perf) t = System.nanoTime();
         // Top-priority pot-saver: a low-HP-pool bot keeps Beginner Recovery up to bleed the HP gap with
         // spare MP. Runs in the common section (in OR out of combat); self-gates so it never interrupts
         // an attack and never blocks the autopot from still potting at its threshold.

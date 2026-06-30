@@ -13,6 +13,7 @@ import constants.inventory.ItemConstants;
 import constants.skills.Archer;
 import constants.skills.Assassin;
 import constants.skills.Bandit;
+import constants.skills.BlazeWizard;
 import constants.skills.Bowmaster;
 import constants.skills.Buccaneer;
 import constants.skills.Cleric;
@@ -22,10 +23,12 @@ import constants.skills.Beginner;
 import constants.skills.Crusader;
 import constants.skills.DawnWarrior;
 import constants.skills.DragonKnight;
+import constants.skills.Evan;
 import constants.skills.Fighter;
 import constants.skills.GM;
 import constants.skills.Hermit;
 import constants.skills.Hunter;
+import constants.skills.Magician;
 import constants.skills.Marksman;
 import constants.skills.NightWalker;
 import constants.skills.Priest;
@@ -89,6 +92,11 @@ class BotCombatManager {
             Crusader.ARMOR_CRASH,
             WhiteKnight.MAGIC_CRASH,
             DragonKnight.POWER_CRASH
+    );
+    static final Set<Integer> CRITICAL_SURVIVAL_BUFFS = Set.of(
+            Magician.MAGIC_GUARD,
+            BlazeWizard.MAGIC_GUARD,
+            Evan.MAGIC_GUARD
     );
     private static final int DRAGON_ROAR_MIN_TARGETS_WITHOUT_HEALER = 10;
 
@@ -477,7 +485,19 @@ class BotCombatManager {
             return;
         }
 
-        bot.addMPHPAndTriggerAutopot(-dmg, 0);
+        Integer magicGuard = bot.getBuffedValue(BuffStat.MAGIC_GUARD);
+        if (magicGuard != null) {
+            int mploss = (int) (dmg * (magicGuard.doubleValue() / 100.0));
+            int hploss = dmg - mploss;
+            int curmp = bot.getMp();
+            if (mploss > curmp) {
+                hploss += mploss - curmp;
+                mploss = curmp;
+            }
+            bot.addMPHPAndTriggerAutopot(-hploss, -mploss);
+        } else {
+            bot.addMPHPAndTriggerAutopot(-dmg, 0);
+        }
 
         bot.getMap().broadcastMessage(bot,
                 PacketCreator.damagePlayer(damageFrom, monsterId, bot.getId(), dmg, 0,
@@ -667,7 +687,26 @@ class BotCombatManager {
             return;
         }
 
+        for (int skillId : CRITICAL_SURVIVAL_BUFFS) {
+            if (!entry.buffSkillIds.contains(skillId)) continue;
+            if (now < entry.nextBuffAt.getOrDefault(skillId, 0L)) continue;
+            if (bot.skillIsCooling(skillId)) continue;
+
+            Skill skill = SkillFactory.getSkill(skillId);
+            int lvl = bot.getSkillLevel(skill);
+            if (lvl <= 0) continue;
+
+            StatEffect fx = skill.getEffect(lvl);
+            if (!isActiveSupportSkill(skill, fx) || BUFF_BLACKLIST.contains(skill.getId())) {
+                continue;
+            }
+            if (castSupportSkill(entry, bot, skill, fx, now)) {
+                return;
+            }
+        }
+
         for (int skillId : entry.buffSkillIds) {
+            if (CRITICAL_SURVIVAL_BUFFS.contains(skillId)) continue;
             if (now < entry.nextBuffAt.getOrDefault(skillId, 0L)) continue;
             if (bot.skillIsCooling(skillId)) continue;
 
@@ -3079,6 +3118,28 @@ class BotCombatManager {
         StatEffect fx = recovery.getEffect(lvl);
         if (fx == null) return false;                                 // canPaySkillCost (MP) is checked inside castSupportSkill
         return castSupportSkill(entry, bot, recovery, fx, System.currentTimeMillis());
+    }
+
+    static boolean tryCastMagicGuard(BotEntry entry, Character bot) {
+        if (entry.attackCooldownMs > 0) return false;
+        if (entry.inAir || entry.climbing) return false;
+        if (!entry.skillBuffsEnabled) return false;
+        if (bot == null || !bot.isAlive()) return false;
+        if (bot.getBuffedValue(BuffStat.MAGIC_GUARD) != null) return false;
+
+        for (int skillId : CRITICAL_SURVIVAL_BUFFS) {
+            if (!entry.buffSkillIds.contains(skillId)) continue;
+            if (bot.skillIsCooling(skillId)) return false;
+
+            Skill skill = SkillFactory.getSkill(skillId);
+            int lvl = bot.getSkillLevel(skill);
+            if (lvl <= 0) continue;
+
+            StatEffect fx = skill.getEffect(lvl);
+            if (!isActiveSupportSkill(skill, fx)) return false;
+            return castSupportSkill(entry, bot, skill, fx, System.currentTimeMillis());
+        }
+        return false;
     }
 
     private static boolean castSupportSkill(BotEntry entry, Character bot, Skill skill, StatEffect fx, long now) {
