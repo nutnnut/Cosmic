@@ -84,3 +84,27 @@ swing extents (mob 8500003 attack1 = 130×100 weapon arc, not body).
 
 Selection over-picks vertical/distant mobs intentionally; the reach gate is
 expected to drop them. Strike-point bug bypassed the reach gate — now fixed.
+
+## Negligible damage plans can starve movement
+
+Live case `pathlog-vortexgig950-2026-06-30T124828`: mage on map 800020101
+stood at `(64,52)` under Crow `(39,-4)`. Magic Claw was geometrically out
+of reach, but the basic WAND close hitbox clipped the mob bounds, so
+`planAttack` returned `skill=0 route=CLOSE`. The physical wand swing had only
+negligible expected damage (accuracy floor / minimum normalized damage), kept
+rolling `plannedDmg=0`, and refreshed the attack lock every ~800 ms. Nav still
+had a valid jump path, but movement/replan was starved by combat.
+
+Fix: `selectBestAttackPlan` ignores candidates with expected raw damage below
+1 HP per attack. That lets grind movement continue toward the target instead
+of freezing on chip swings that are mathematically nonzero but not useful.
+Exception: basic CLOSE attacks from degenerate-capable ranged weapons (bow,
+crossbow, claw, gun) bypass this gate so no-ammo / point-blank fallback still
+works.
+
+Packet detail: real staff and wand melee samples
+`monitored-packets-staff-melee-swing.log` and
+`monitored-packets-wand-melee-swing.log` both broadcast `0xBA` with
+`display=0`, body-action byte `6` (`swingO2`), facing byte `0/0x80`, and
+speed `6`. Do not use the later wand/staff magic-only `swingO` action ids
+for basic melee swings.

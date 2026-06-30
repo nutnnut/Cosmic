@@ -1,5 +1,6 @@
 package server.bots;
 
+import client.inventory.WeaponType;
 import org.junit.jupiter.api.Test;
 import server.bots.combat.BotAttackDataProvider;
 import server.bots.combat.BotAttackTiming;
@@ -131,5 +132,15 @@ class BotAttackDataProviderTest {
                 List.of("swingOF", "stabO1", "proneStab", "swingO3", "stabOF"));
 
         assertEquals(List.of("stabO1", "swingO3"), actions);
+    }
+
+    @Test
+    void shouldMatchCapturedWandStaffMeleePacketAction() {
+        BotAttackDataProvider provider = BotAttackDataProvider.getInstance();
+
+        assertEquals("swingO2", provider.getBasicAttackSpec(WeaponType.STAFF).primaryAction());
+        assertEquals("swingO2", provider.getBasicAttackSpec(WeaponType.WAND).primaryAction());
+        assertEquals(6, provider.getBodyActionId("swingO2", WeaponType.STAFF));
+        assertEquals(6, provider.getBodyActionId("swingO2", WeaponType.WAND));
     }
 }

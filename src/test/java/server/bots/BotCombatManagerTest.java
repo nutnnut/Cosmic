@@ -742,6 +742,51 @@ class BotCombatManagerTest {
     }
 
     @Test
+    void shouldNotPlanNegligibleDamageBasicAttack() {
+        MapleMap map = mock(MapleMap.class);
+        Character bot = mockBot(new Point(100, 200), map, 20_000, null);
+        when(bot.calculateMaxBaseDamage(anyInt())).thenReturn(0);
+        when(bot.calculateMinBaseDamage(anyInt(), Mockito.anyDouble())).thenReturn(0);
+        Monster target = mockMob(new Point(140, 200), 9300102);
+        when(target.getAvoidability()).thenReturn(9_999);
+        when(map.getAllMonsters()).thenReturn(List.of(target));
+        BotEntry entry = new BotEntry(bot, null, null);
+
+        BotCombatManager.AttackPlan plan = BotCombatManager.planAttack(entry, bot, target);
+
+        assertNull(plan, "negligible basic swings must not attack-lock movement");
+    }
+
+    @Test
+    void shouldKeepNegligibleDegenerateRangedBasicAttackPlan() {
+        MapleMap map = mock(MapleMap.class);
+        Character bot = mockBot(new Point(100, 200), map, 20_000, null);
+        when(bot.calculateMaxBaseDamage(anyInt())).thenReturn(0);
+        when(bot.calculateMinBaseDamage(anyInt(), Mockito.anyDouble())).thenReturn(0);
+        Monster target = mockMob(new Point(140, 200), 9300103);
+        when(target.getAvoidability()).thenReturn(9_999);
+        when(map.getAllMonsters()).thenReturn(List.of(target));
+        BotEntry entry = new BotEntry(bot, null, null);
+        BotCombatManager.AttackPlan plan;
+        BotAttackExecutionProvider.BasicAttackData degenerateClose =
+                new BotAttackExecutionProvider.BasicAttackData(
+                        new Rectangle(100, 150, 80, 70), 0, 30, 0, "swingT1",
+                        0, 4, 100, 600, BotCombatManager.AttackRoute.CLOSE);
+
+        try (MockedStatic<BotAttackExecutionProvider> attacks =
+                     Mockito.mockStatic(BotAttackExecutionProvider.class, Mockito.CALLS_REAL_METHODS)) {
+            attacks.when(() -> BotAttackExecutionProvider.buildBasicAttackData(eq(bot), any(Point.class)))
+                    .thenReturn(degenerateClose);
+            attacks.when(() -> BotAttackExecutionProvider.getEquippedWeaponType(bot)).thenReturn(WeaponType.BOW);
+
+            plan = BotCombatManager.planAttack(entry, bot, target);
+        }
+
+        assertNotNull(plan, "degenerate bow/claw/gun fallback must survive the chip-damage gate");
+        assertEquals(BotCombatManager.AttackRoute.CLOSE, plan.route);
+    }
+
+    @Test
     void shouldNotUseWeakAoeOnlyBecauseCurrentHpIsLow() {
         MapleMap map = mock(MapleMap.class);
         Character bot = mockBot(new Point(100, 200), map, 20_000, null);

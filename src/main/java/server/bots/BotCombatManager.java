@@ -74,6 +74,7 @@ import java.util.concurrent.ThreadLocalRandom;
 class BotCombatManager {
     private static final Logger log = LoggerFactory.getLogger(BotCombatManager.class);
     private static final long UNREACHABLE_GRAPH_COST = Long.MAX_VALUE / 4;
+    private static final double MIN_EXPECTED_DAMAGE_PER_ATTACK = 1.0d;
 
     // Skills that bots must never cast — stealth makes them untargetable by monsters,
     // breaking combat entirely.
@@ -1272,6 +1273,10 @@ class BotCombatManager {
         PlanScore best = null;
         double bestScore = Double.NEGATIVE_INFINITY;
         for (PlanScore score : scores) {
+            if (score.rawDamage < MIN_EXPECTED_DAMAGE_PER_ATTACK
+                    && !isDegenerateBasicCloseAttack(bot, score.plan)) {
+                continue;
+            }
             if (hasGuaranteedFullHpKill && !score.minimumKillsFullHpTargets) {
                 continue;
             }
@@ -1284,6 +1289,14 @@ class BotCombatManager {
             }
         }
         return best != null ? best.plan : null;
+    }
+
+    private static boolean isDegenerateBasicCloseAttack(Character bot, AttackPlan plan) {
+        return plan != null
+                && plan.skillId == 0
+                && plan.route == AttackRoute.CLOSE
+                && BotAttackExecutionProvider.isDegenerateCapableRangedWeapon(
+                BotAttackExecutionProvider.getEquippedWeaponType(bot));
     }
 
     private record PlanScore(AttackPlan plan, double usefulDamage, double rawDamage, double usefulDps, double rawDps,
