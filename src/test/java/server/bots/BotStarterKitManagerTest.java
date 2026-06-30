@@ -13,6 +13,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.mockStatic;
 import static org.mockito.Mockito.verify;
@@ -198,6 +199,67 @@ class BotStarterKitManagerTest {
             travel.verify(() -> BotTravelManager.tickApproachNpc(entry, bot, 102020300, 1072000,
                     BotStarterKitManager.JOB_ERRAND_MAX_TRAVEL_HOPS, true, true,
                     BotStarterKitManager.NPC_TRIGGER_RADIUS_PX));
+        }
+    }
+
+    @Test
+    void jobErrandDoesNotWarnWhileWaitingForFerryGate() {
+        Character bot = mock(Character.class);
+        Character owner = mock(Character.class);
+        BotEntry entry = new BotEntry(bot, owner, mock(ScheduledFuture.class));
+        entry.jobErrandTarget = Job.BANDIT;
+        entry.jobErrandNpcId = 1072003;
+        entry.jobErrandMapId = 102040000;
+        entry.jobErrandProgress.begin(System.currentTimeMillis());
+
+        try (MockedStatic<BotTravelManager> travel = mockStatic(BotTravelManager.class);
+             MockedStatic<BotFerryManager> ferry = mockStatic(BotFerryManager.class)) {
+            travel.when(() -> BotTravelManager.tickApproachNpc(entry, bot, 102040000, 1072003,
+                            BotStarterKitManager.JOB_ERRAND_MAX_TRAVEL_HOPS, true, true,
+                            BotStarterKitManager.NPC_TRIGGER_RADIUS_PX))
+                    .thenReturn(BotTravelManager.ApproachStatus.TRAVEL_YIELDED);
+            ferry.when(() -> BotFerryManager.isWaitingOrRiding(entry, bot)).thenReturn(true);
+
+            assertTrue(BotStarterKitManager.tickJobErrand(entry, bot, true));
+            assertEquals(0L, entry.jobErrandLastWarnMs);
+
+            ferry.verify(() -> BotFerryManager.isWaitingOrRiding(entry, bot));
+        }
+    }
+
+    @Test
+    void jobErrandWarnsWhenTravelYieldedAndNotInFerryWait() {
+        Character bot = mock(Character.class);
+        Character owner = mock(Character.class);
+        BotEntry entry = new BotEntry(bot, owner, mock(ScheduledFuture.class));
+        entry.jobErrandTarget = Job.BANDIT;
+        entry.jobErrandNpcId = 1072003;
+        entry.jobErrandMapId = 102040000;
+        entry.autopilotMapId = 260020620;
+        entry.jobErrandProgress.begin(System.currentTimeMillis());
+
+        when(bot.getMapId()).thenReturn(260000000);
+        when(bot.getMeso()).thenReturn(1_047_392);
+        when(bot.getJob()).thenReturn(Job.THIEF);
+        when(bot.getLevel()).thenReturn(30);
+        when(bot.getName()).thenReturn("oOoDivoOo99");
+
+        try (MockedStatic<BotTravelManager> travel = mockStatic(BotTravelManager.class);
+             MockedStatic<BotFerryManager> ferry = mockStatic(BotFerryManager.class);
+             MockedStatic<BotAutopilotManager> autopilot = mockStatic(BotAutopilotManager.class)) {
+            travel.when(() -> BotTravelManager.tickApproachNpc(entry, bot, 102040000, 1072003,
+                            BotStarterKitManager.JOB_ERRAND_MAX_TRAVEL_HOPS, true, true,
+                            BotStarterKitManager.NPC_TRIGGER_RADIUS_PX))
+                    .thenReturn(BotTravelManager.ApproachStatus.TRAVEL_YIELDED);
+            ferry.when(() -> BotFerryManager.isWaitingOrRiding(entry, bot)).thenReturn(false);
+            autopilot.when(() -> BotAutopilotManager.worldTourReturn(bot)).thenReturn(-1);
+            autopilot.when(() -> BotAutopilotManager.routeForBot(bot, 260000000, 102040000,
+                            BotStarterKitManager.JOB_ERRAND_MAX_TRAVEL_HOPS,
+                            new BotWorldGraph.RouteOptions(false, 1_047_392, true, false, 30, -1)))
+                    .thenReturn(List.of(260000100, 200000100, 101000300, 101000000, 103000000, 102050000, 102040000));
+
+            assertTrue(BotStarterKitManager.tickJobErrand(entry, bot, true));
+            assertTrue(entry.jobErrandLastWarnMs > 0L);
         }
     }
 

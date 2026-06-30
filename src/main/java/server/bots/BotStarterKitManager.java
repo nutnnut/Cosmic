@@ -271,6 +271,9 @@ final class BotStarterKitManager {
                     }
                     return false; // legacy: release the tick so travel retries / grind fills the gap
                 }
+                if (BotFerryManager.isWaitingOrRiding(entry, bot)) {
+                    return true; // legitimate ferry wait/ride: stay committed without a stuck log
+                }
                 warnJobErrandStuck(entry, bot, "travel gave up reaching instructor");
                 return true; // keep retrying, stuck here until it gets through — never grind
             }

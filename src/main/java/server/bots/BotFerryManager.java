@@ -358,6 +358,22 @@ final class BotFerryManager {
         return null;
     }
 
+    /** True when the bot is in a legitimate ferry wait/ride state, not a stranded travel failure:
+     *  already on a transit map, or standing at a closed boarding gate for the currently planned hop. */
+    static boolean isWaitingOrRiding(BotEntry entry, Character bot) {
+        if (bot == null) {
+            return false;
+        }
+        if (TRANSIT_MAP_TO_ROUTE.containsKey(bot.getMapId())) {
+            return true;
+        }
+        FerryRoute route = findFerryEdge(bot.getMapId(), entry.followTravelNextHopMapId);
+        return route != null
+                && bot.getMapId() == route.usherNpcMapId()
+                && !route.eventName().isEmpty()
+                && !gateCheck.entryOpen(bot, route.eventName());
+    }
+
     // Test seams: ticket/meso/board/guide touch inventory and the live map factory; gate and
     // threat state live in the Boats EventManager.
     @FunctionalInterface
