@@ -226,13 +226,17 @@ final class BotAutopilotManager {
                 || !entry.owner.isLoggedinWorld();
     }
 
-    /** The bot's Spinel return target (saved WORLDTOUR origin) ONLY while it is standing in the
-     *  Mushroom Shrine, else -1. Tying it to actual presence means the world-tour return is just the
-     *  first hop back out — a stale saved location (left the shrine by death/relog) can never reopen
-     *  the shrine as a through-shortcut to Lith Harbor. Mirrored by BotWorldGraph.expand/findTaxiEdge
-     *  and BotTravelCost.floodSeconds. */
+    /** The bot's Spinel return target (saved WORLDTOUR origin) ONLY while it is anywhere in Zipangu
+     *  (continent 8 — Mushroom Shrine 800000000, Showa, the fields), else -1. Continent 8 is an island:
+     *  its sole entry is the Spinel ride (which saves WORLDTOUR) and death/relog keeps the bot in-continent,
+     *  so any bot inside has a valid origin and route planning from the interior can include the Spinel exit
+     *  (walk to shrine → ride out). Showa town death-returns to itself (not the shrine), so the gate is the
+     *  CONTINENT, not the return-map. Off-continent (mainland) a stale save still gets -1, so it can't reopen
+     *  the shrine as a through-shortcut to Lith Harbor. Mirrored by BotWorldGraph.expand/findTaxiEdge and
+     *  BotTravelCost.floodSeconds. */
     static int worldTourReturn(Character bot) {
-        return bot.getMapId() == BotWorldGraph.MUSHROOM_SHRINE ? bot.peekSavedLocation("WORLDTOUR") : -1;
+        boolean inZipangu = bot.getMapId() / 100000000 == BotWorldGraph.MUSHROOM_SHRINE / 100000000;
+        return inZipangu ? bot.peekSavedLocation("WORLDTOUR") : -1;
     }
 
     /** What the bot can spend on travel right now: scrolls if carried, taxis per meso,
