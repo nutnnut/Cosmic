@@ -440,21 +440,26 @@ public final class CombatFormulaProvider {
         return (normalizedMin + normalizedMax) / 2.0d;
     }
 
+    // Shadow Partner damage ratio. WZ skill 4111002 `x` = 50 across all 30 levels → shadow lines
+    // deal 50% of their origin line. Client truth: the shadow REPLAYS each original hit, it does not
+    // re-roll — partner line i = floor(mainLine i * 0.5), inheriting that line's crit flag and its
+    // miss (0 → 0). Independent re-rolls would desync crit flags and hit/miss from the original.
+    private static final double SHADOW_PARTNER_RATIO = 0.5d;
+
     private AbstractDealDamageHandler.AttackTarget rollWithShadowPartnerPhysical(
             int hits, int[] adjustedDamage, double hitChance, CritProfile crit, int normalizedHitDelay) {
         int mainHits = hits / 2;
         int partnerHits = hits - mainHits;
-        int partnerMax = Math.max(1, adjustedDamage[1] / 2);
-        int partnerMin = Math.max(1, Math.min(partnerMax, adjustedDamage[0] / 2));
         CritDamageResult main = rollDamageLinesWithCrit(mainHits, adjustedDamage[0], adjustedDamage[1],
                 hitChance, crit.critChance(), crit.critMultiplier());
-        CritDamageResult partner = rollDamageLinesWithCrit(partnerHits, partnerMin, partnerMax,
-                hitChance, crit.critChance(), crit.critMultiplier());
         List<Integer> lines = new ArrayList<>(main.lines());
-        lines.addAll(partner.lines());
         Set<Integer> critIndices = new HashSet<>(main.critIndices());
-        for (int idx : partner.critIndices()) {
-            critIndices.add(mainHits + idx);
+        for (int i = 0; i < partnerHits; i++) {
+            int mainLine = i < main.lines().size() ? main.lines().get(i) : 0;
+            lines.add((int) Math.floor(mainLine * SHADOW_PARTNER_RATIO));
+            if (main.critIndices().contains(i)) {
+                critIndices.add(mainHits + i);
+            }
         }
         return new AbstractDealDamageHandler.AttackTarget((short) normalizedHitDelay, lines, critIndices);
     }
@@ -463,10 +468,12 @@ public final class CombatFormulaProvider {
             Character bot, Monster monster, int hits, int[] adjustedDamage, int normalizedHitDelay) {
         int mainHits = hits / 2;
         int partnerHits = hits - mainHits;
-        int partnerMax = Math.max(1, adjustedDamage[1] / 2);
-        int partnerMin = Math.max(1, Math.min(partnerMax, adjustedDamage[0] / 2));
-        List<Integer> lines = new ArrayList<>(rollDamageLines(bot, monster, mainHits, adjustedDamage[0], adjustedDamage[1], true));
-        lines.addAll(rollDamageLines(bot, monster, partnerHits, partnerMin, partnerMax, true));
+        List<Integer> main = rollDamageLines(bot, monster, mainHits, adjustedDamage[0], adjustedDamage[1], true);
+        List<Integer> lines = new ArrayList<>(main);
+        for (int i = 0; i < partnerHits; i++) {
+            int mainLine = i < main.size() ? main.get(i) : 0;
+            lines.add((int) Math.floor(mainLine * SHADOW_PARTNER_RATIO));
+        }
         return new AbstractDealDamageHandler.AttackTarget((short) normalizedHitDelay, lines);
     }
 
