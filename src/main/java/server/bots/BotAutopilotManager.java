@@ -723,6 +723,14 @@ final class BotAutopilotManager {
                     if (nowRest < entry.breakUntilMs) {
                         return false; // resting in town: grind-tick break-idle + self-scroll run this tick
                     }
+                    if (entry.chillSession) {
+                        // Logged in to chill: re-arm the rest window instead of resuming grind, so the bot
+                        // lingers in town the whole (half-length) session. Scheduler logs it out at session end.
+                        BotPersonality p = entry.personality != null ? entry.personality : BotPersonality.defaults();
+                        entry.breakUntilMs = nowRest + BotBreakManager.townBreakDurationMs(p.laziness());
+                        entry.breakIdleAnchor = null;
+                        return false;
+                    }
                     entry.restErrand = false; // rest over -> head back to the grind map
                     entry.autopilotErrandMapId = -1;
                     entry.autopilotReturningFromErrand = true;
@@ -1043,7 +1051,9 @@ final class BotAutopilotManager {
         // Transient sub-states sit on top of grind mode (entry.grinding stays true), so report them
         // first — otherwise a town break or level-gap idle-leech misreads as "grinding here".
         if (System.currentTimeMillis() < entry.breakUntilMs) {
-            return "im at " + currentMap + ", taking a break";
+            return entry.chillSession
+                    ? "im at " + currentMap + ", just chilling in town today, not really grinding"
+                    : "im at " + currentMap + ", taking a break";
         }
         if (entry.idleLeech) {
             return "im at " + currentMap + ", idling while my party catches up";

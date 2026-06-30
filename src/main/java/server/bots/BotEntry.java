@@ -396,6 +396,9 @@ public class BotEntry {
     long breakUntilMs = 0L;
     long nextBreakRollAtMs = 0L;
     java.awt.Point breakIdleAnchor = null;
+    // "Logged in to chill": rolled once at session start (BotScheduler). The bot heads to town and
+    // lingers there the whole (half-length) session instead of grinding — near-zero tick cost.
+    boolean chillSession = false;
     // Ad-hoc party-up (BotSocialManager): throttles how often a solo bot considers offering to party,
     // and stops a bot just offered-to from immediately re-offering.
     long nextSocialAtMs = 0L;

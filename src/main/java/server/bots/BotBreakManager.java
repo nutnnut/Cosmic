@@ -52,6 +52,15 @@ final class BotBreakManager {
         return Math.round(meanMin * 60_000L * factor);
     }
 
+    /** Whether a session (solo bot or crew leader) logs in to CHILL: config-gated, then the personality
+     *  chance scaled by the global multiplier. {@code rollUnit} is a uniform [0,1) sample. */
+    static boolean rollChill(BotPersonality p, double rollUnit) {
+        if (!BotManager.cfg.CHILL_SESSION_ENABLED || p == null) {
+            return false;
+        }
+        return rollUnit < p.chillSessionChance() * BotManager.cfg.CHILL_SESSION_MULTIPLIER;
+    }
+
     /** A town-break lingers in town (sell/resupply + self-scroll), longer than an in-place break. Scales
      *  with laziness: a diligent bot rests 10-30 min, a maximally lazy one 20-60 min. */
     static long townBreakDurationMs(double laziness) {

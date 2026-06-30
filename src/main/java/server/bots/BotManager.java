@@ -185,8 +185,11 @@ public class BotManager {
                 19, 20, 21, 21, 20, 18, 16, 15, 13, 10, 10, 10 // 12-23
         };
         public int POPULATION_NOISE = 2;                   // +/- jitter on the hourly target
-        public double POPULATION_MULTIPLIER = 3.0;         // scales the whole online target up/down, so bot
+        public double POPULATION_MULTIPLIER = 10.0;        // scales the whole online target up/down, so bot
                                                            // count is adjustable without editing the curve/noise
+        public boolean CHILL_SESSION_ENABLED = true;       // bots can "log in to chill": spend a half-length
+                                                           // session lingering in town instead of grinding
+        public double CHILL_SESSION_MULTIPLIER = 1.0;      // scales the per-login chill chance (0 = never chill)
         public int MANAGED_POOL_MAX = 1000;                 // backstop cap on the non-retired bot roster. NOT
                                                            // the online count (that's the curve x multiplier);
                                                            // autogen only fires under deficit, so the pool
