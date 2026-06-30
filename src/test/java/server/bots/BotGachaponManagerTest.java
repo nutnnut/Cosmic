@@ -45,6 +45,7 @@ class BotGachaponManagerTest {
     private final BotGachaponManager.ItemGrant prevGrant = BotGachaponManager.grantItem;
     private final BotGachaponManager.SpaceCheck prevSpace = BotGachaponManager.spaceCheck;
     private final BotGachaponManager.TravelSeconds prevTravel = BotGachaponManager.travelSeconds;
+    private final BotGachaponManager.HopReach prevHop = BotGachaponManager.hopReach;
     private final java.util.function.BiConsumer<BotEntry, String> prevReply = BotGachaponManager.reply;
     private final java.util.function.IntFunction<String> prevName = BotGachaponManager.itemNameLookup;
     private final BotGachaponManager.GachaLog prevLog = BotGachaponManager.gachaLog;
@@ -63,6 +64,8 @@ class BotGachaponManagerTest {
         BotGachaponManager.upgradeValue = (b, id, barCache) -> 0.0;
         BotGachaponManager.isEquip = id -> false;
         BotGachaponManager.nxBalance = b -> 1_000_000;
+        // No live BotWorldGraph in tests: every town is hop-reachable so the EV math alone ranks them.
+        BotGachaponManager.hopReach = (from, to, hops) -> true;
         // Fresh, deterministic config so test values don't depend on production defaults shifting.
         BotManager.cfg = new BotManager.Config();
         BotManager.cfg.GACHAPON_ENABLED = true;
@@ -84,6 +87,7 @@ class BotGachaponManagerTest {
         BotGachaponManager.grantItem = prevGrant;
         BotGachaponManager.spaceCheck = prevSpace;
         BotGachaponManager.travelSeconds = prevTravel;
+        BotGachaponManager.hopReach = prevHop;
         BotGachaponManager.reply = prevReply;
         BotGachaponManager.itemNameLookup = prevName;
         BotGachaponManager.gachaLog = prevLog;
@@ -308,6 +312,11 @@ class BotGachaponManagerTest {
         org.mockito.Mockito.when(bot.getMapId()).thenReturn(180000000); // some grind map
         BotEntry e = entry(bot);
         e.autopilotMapId = 180000000; // autopiloting
+        // Gacha only fires during a rest break (tickScan's onRestBreak gate). Park the bot mid-break on a
+        // rest errand so the gate passes without a town map / live graph: onBreak (now < breakUntilMs) &&
+        // restErrand. Grind-map id is irrelevant now that hopReach is stubbed true.
+        e.breakUntilMs = System.currentTimeMillis() + 600_000L;
+        e.restErrand = true;
 
         BotGachaponManager.ticketPrice = () -> 800;
         BotGachaponManager.nxBalance = b -> 1_000_000;

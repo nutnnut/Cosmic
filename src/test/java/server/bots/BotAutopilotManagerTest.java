@@ -85,6 +85,7 @@ class BotAutopilotManagerTest {
         private final BotAutopilotManager.SupplyLevel previousSupplyLevel = BotAutopilotManager.supplyLevel;
         private final BotAutopilotManager.BagFull previousBagFull = BotAutopilotManager.bagFull;
         private final java.util.function.IntPredicate previousEquipStatsExist = BotAutopilotManager.equipStatsExist;
+        private final java.util.function.Predicate<Character> previousNeedsPreferredWeapon = BotShopManager.needsPreferredWeaponForCurrentJobSeam;
 
         Seams(Recommendation recommendation) {
             this(recommendation, recommendation);
@@ -108,6 +109,9 @@ class BotAutopilotManagerTest {
             // Default: any wanted-gear id is a real equip, so installPlan records it without
             // loading ItemInformationProvider / a DB pool in the unit-test JVM.
             BotAutopilotManager.equipStatsExist = itemId -> true;
+            // Default: no preferred-weapon need, so neither the pre-travel gate nor needsToBuySupplies
+            // calls needsPreferredWeaponForCurrentJob -> ItemInformationProvider in tests.
+            BotShopManager.needsPreferredWeaponForCurrentJobSeam = bot -> false;
         }
 
         @Override
@@ -122,6 +126,7 @@ class BotAutopilotManagerTest {
             BotAutopilotManager.supplyLevel = previousSupplyLevel;
             BotAutopilotManager.bagFull = previousBagFull;
             BotAutopilotManager.equipStatsExist = previousEquipStatsExist;
+            BotShopManager.needsPreferredWeaponForCurrentJobSeam = previousNeedsPreferredWeapon;
         }
     }
 

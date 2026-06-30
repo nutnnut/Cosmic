@@ -230,6 +230,14 @@ final class BotGachaponManager {
         return one == null ? 99_999.0 : 2.0 * one;
     };
 
+    /** Hop-reachability gate: is {@code toMapId} within {@code maxHops} portal hops of {@code fromMapId}
+     *  on the live {@link BotWorldGraph}? Seamed (graph-backed) so tests rank towns without live topology. */
+    @FunctionalInterface
+    interface HopReach {
+        boolean within(int fromMapId, int toMapId, int maxHops);
+    }
+    static HopReach hopReach = (from, to, hops) -> BotWorldGraph.route(from, to, hops) != null;
+
     /** Bot chat output, behind a seam so tests capture replies without the BotManager singleton. */
     static java.util.function.BiConsumer<BotEntry, String> reply =
             (entry, text) -> BotManager.getInstance().botReply(entry, text);
@@ -325,7 +333,7 @@ final class BotGachaponManager {
             if (travel >= 99_999.0) {
                 continue; // unreachable within the hop cap
             }
-            if (BotWorldGraph.route(fromMapId, mapId, GACHA_MAX_HOPS) == null) {
+            if (!hopReach.within(fromMapId, mapId, GACHA_MAX_HOPS)) {
                 continue; // farther than GACHA_MAX_HOPS from the break spot — too far to wander for gacha
             }
             // Whichever motive is stronger drives the roll - gear upgrades for THIS bot OR raw

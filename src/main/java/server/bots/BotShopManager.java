@@ -1202,7 +1202,18 @@ final class BotShopManager {
         return sequence.withFirstShortfall(new BuyReport(needed.shopItem.getItemId(), 0, 1, ShortfallReason.NO_MESO));
     }
 
+    /** Seam over the preferred-weapon gate so unit tests need neither ItemInformationProvider nor a
+     *  DB pool (its &lt;clinit&gt; loads card data over JDBC). Seamed here at the SSOT rather than per
+     *  call site, since {@link #needsToBuySupplies(BotEntry, Character)} also calls it internally.
+     *  Default delegates to the real computation; tests swap it for a fixed predicate. */
+    static java.util.function.Predicate<Character> needsPreferredWeaponForCurrentJobSeam =
+            BotShopManager::computeNeedsPreferredWeaponForCurrentJob;
+
     static boolean needsPreferredWeaponForCurrentJob(Character bot) {
+        return needsPreferredWeaponForCurrentJobSeam.test(bot);
+    }
+
+    private static boolean computeNeedsPreferredWeaponForCurrentJob(Character bot) {
         if (bot == null || preferredWeaponBudget(bot) <= 0) {
             return false;
         }
