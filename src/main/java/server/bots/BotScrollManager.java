@@ -766,7 +766,10 @@ final class BotScrollManager {
         int id = e.getItemId();
         Short slot = primarySlot(ii, id);
         if (slot != null && slot == (short) -11
-                && !BotEquipManager.isWeaponCompatible(bot, ii.getWeaponType(id), e)) {
+                && !BotEquipManager.isPreferredWeapon(bot, ii.getWeaponType(id), e)) {
+            // Gate farm/scroll on the job's PREFERRED weapon, not mere equip-ability: a
+            // fallback weapon the optimizer might equip in a pinch (isWeaponCompatible) is
+            // never worth farming or scrolling for - the bot would drop it for its real weapon.
             return -1;
         }
         if (slot != null && slot == (short) -10) {
