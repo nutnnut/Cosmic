@@ -108,3 +108,12 @@ Packet detail: real staff and wand melee samples
 `display=0`, body-action byte `6` (`swingO2`), facing byte `0/0x80`, and
 speed `6`. Do not use the later wand/staff magic-only `swingO` action ids
 for basic melee swings.
+
+Magic fallback detail: magic skills without an explicit Skill.wz action use
+wand/staff cast body-action ids, not the basic melee action. Bot Magic Claw
+capture `monitored-packets-bot-magic-claw.log` broadcasts `0xBC` with
+direction byte `0x1C/0x1D` (`wand1`/`wand2` = 28/29), facing byte `0/0x80`,
+speed `8`, and projectile `0`. Keep this separate from the broke/no-MP basic
+wand/staff melee fallback above. Big Bang is also a no-action magic skill, but
+its trailing charge is keydown-duration dependent; do not hard-code a full
+charge without modeling the hold/cast timing.

@@ -28,6 +28,8 @@ class BotAttackDataProviderTest {
         assertEquals(7, provider.getBodyActionId("swingO3"));
         assertEquals(16, provider.getBodyActionId("stabO1"));
         assertEquals(17, provider.getBodyActionId("stabO2"));
+        assertEquals(28, provider.getBodyActionId("wand1"));
+        assertEquals(29, provider.getBodyActionId("wand2"));
         assertEquals(32, provider.getBodyActionId("proneStab"));
         assertEquals(56, provider.getBodyActionId("avenger"));
         assertEquals(69, provider.getBodyActionId("genesis"));

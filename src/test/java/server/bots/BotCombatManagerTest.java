@@ -109,6 +109,17 @@ class BotCombatManagerTest {
     }
 
     @Test
+    void shouldUseWandCastFallbackForMagicSkillWithoutExplicitAction() {
+        Skill skill = new Skill(Magician.MAGIC_CLAW);
+
+        String action = BotAttackExecutionProvider.resolveSkillAttackAction(null, skill, 20, WeaponType.STAFF);
+        int bodyActionId = BotAttackExecutionProvider.bodyActionId(action, "wand1", WeaponType.STAFF);
+
+        assertTrue(Set.of("wand1", "wand2").contains(action));
+        assertTrue(Set.of(28, 29).contains(bodyActionId));
+    }
+
+    @Test
     void shouldMatchRealMagicGuardSpecialMovePacketLayout() {
         Character bot = mockBot(new Point(100, 200), mock(MapleMap.class), 20_000, null);
 

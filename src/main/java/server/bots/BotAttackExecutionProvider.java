@@ -23,6 +23,8 @@ import java.util.Set;
 import java.util.concurrent.ThreadLocalRandom;
 
 final class BotAttackExecutionProvider {
+    private static final List<String> WAND_MAGIC_CAST_ACTIONS = List.of("wand1", "wand2");
+
     // This server's close-range packet path uses:
     // byte 2 = body action id from Character/00002000.img
     // byte 3 = facing mask (0 / 0x80)
@@ -221,7 +223,14 @@ final class BotAttackExecutionProvider {
         if (skill != null && FORCED_CLOSE_RANGE_SKILL_IDS.contains(skill.getId())) {
             return sampleDegenerateCloseRangeAction(bot, weaponType);
         }
+        if (skill != null && isMagicAttackSkill(skill.getId()) && isWandMagicWeapon(weaponType)) {
+            return sampleAttackAction(WAND_MAGIC_CAST_ACTIONS, WAND_MAGIC_CAST_ACTIONS.get(0));
+        }
         return sampleWeaponAttackAction(bot, weaponType);
+    }
+
+    private static boolean isWandMagicWeapon(WeaponType weaponType) {
+        return weaponType == WeaponType.WAND || weaponType == WeaponType.STAFF;
     }
 
     private static String sampleDegenerateCloseRangeAction(Character bot, WeaponType weaponType) {

@@ -198,6 +198,8 @@ public final class BotAttackDataProvider {
         overrides.put("shoot1", 22);
         overrides.put("shoot2", 23);
         overrides.put("shootF", 27);
+        overrides.put("wand1", 28);
+        overrides.put("wand2", 29);
         overrides.put("heal", 31);
         overrides.put("proneStab", 32);
         overrides.put("prone", 33);
