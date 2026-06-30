@@ -1017,6 +1017,25 @@ final class BotAutopilotManager {
         return reasons;
     }
 
+    /** Coarse activity bucket for the roster summary: {@code "chill"} for a whole-session chill login;
+     *  {@code "break"} when otherwise resting and not working (in-session break, gachapon trip,
+     *  idle/idle-leech, or winding down to log off); else {@code "grind"} for everything productive
+     *  (grinding, traveling there, resupplying, quest/job errands). Mirrors {@link #statusReport}. */
+    static String activityCategory(BotEntry entry, Character bot) {
+        if (entry == null || bot == null) {
+            return "grind";
+        }
+        if (entry.chillSession) {
+            return "chill";
+        }
+        if (entry.loggingOut || entry.gachaErrandMapId != -1
+                || System.currentTimeMillis() < entry.breakUntilMs
+                || entry.idleLeech || !isActive(entry)) {
+            return "break";
+        }
+        return "grind";
+    }
+
     static String statusReport(BotEntry entry, Character bot) {
         String currentMap = currentMapName(bot);
         if (entry == null || bot == null) {

@@ -581,6 +581,11 @@ public final class BotScheduler {
         if (BotBreakManager.rollChill(p, e.bot.getLevel(), ThreadLocalRandom.current().nextDouble())) {
             e.chillSession = true;
             BotBreakManager.startTownBreak(e, e.bot, now);
+        } else if (ThreadLocalRandom.current().nextDouble()
+                < BotBreakManager.loginBreakChance(p.breakFreqPerHour(), p.breakLenMeanMin())) {
+            // Seed the resting fraction at login so the population hits its break/grind equilibrium
+            // immediately, instead of every bot grinding at spawn and only settling over many minutes.
+            BotBreakManager.startLoginBreak(e, e.bot, now);
         }
     }
 
@@ -593,11 +598,19 @@ public final class BotScheduler {
             return;
         }
         BotPersonality leaderP = BotPersonality.parse(BotConfigService.getInstance().load(crewLeader(members)));
-        if (!BotBreakManager.rollChill(leaderP, leaderEntry.bot.getLevel(), ThreadLocalRandom.current().nextDouble())) {
-            return;
-        }
-        for (ManagedBot m : members) {
-            applyCrewChill(bm, m.botCharId(), now);
+        if (BotBreakManager.rollChill(leaderP, leaderEntry.bot.getLevel(), ThreadLocalRandom.current().nextDouble())) {
+            for (ManagedBot m : members) {
+                applyCrewChill(bm, m.botCharId(), now);
+            }
+        } else if (ThreadLocalRandom.current().nextDouble()
+                < BotBreakManager.loginBreakChance(leaderP.breakFreqPerHour(), leaderP.breakLenMeanMin())) {
+            // Seed the crew's resting fraction at login too, so crews hit equilibrium from spawn.
+            for (ManagedBot m : members) {
+                BotEntry e = bm.getEntryByBotCharId(m.botCharId());
+                if (e != null) {
+                    BotBreakManager.startLoginBreak(e, e.bot, now);
+                }
+            }
         }
     }
 
