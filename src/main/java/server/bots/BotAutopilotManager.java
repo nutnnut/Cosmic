@@ -628,6 +628,10 @@ final class BotAutopilotManager {
         boolean active(BotEntry entry);
         /** One tick of the errand; true when it consumed the tick (the caller then returns true). */
         boolean tick(BotEntry entry, Character bot, boolean runAiTick);
+        /** True to skip this errand's tick this cycle and fall through to the resupply flow below
+         *  (still active — just not driving this tick). Lets a cramped bag preempt a detour that
+         *  might need to buy something (a ferry/taxi fare item) it has no room for. */
+        default boolean yieldForResupply(BotEntry entry, Character bot) { return false; }
     }
 
     // Detour errands in precedence order. Job advance first (must not over-level en route), then the
@@ -643,6 +647,13 @@ final class BotAutopilotManager {
                 @Override public boolean active(BotEntry entry) { return entry.jobErrandMapId != -1; }
                 @Override public boolean tick(BotEntry entry, Character bot, boolean runAiTick) {
                     return BotStarterKitManager.tickJobErrand(entry, bot, runAiTick);
+                }
+                // A cross-continent leg (taxi/ferry) buys a fare item; a full bag fails that buy and
+                // the job errand retries it forever (JOB_CHANGE_FALLBACK_ANYWHERE is off — it never
+                // releases the tick to let a resupply trip run and free space). Yield so the resupply
+                // flow below can sell trash first; job errand resumes once space frees up.
+                @Override public boolean yieldForResupply(BotEntry entry, Character bot) {
+                    return bagFull.bagFull(entry, bot);
                 }
             },
             new DetourErrand() { // quest piggyback: detour to a quest NPC to start/turn in, then resume
@@ -693,7 +704,8 @@ final class BotAutopilotManager {
         if (!operatorPinned) {
             for (DetourErrand errand : DETOUR_ERRANDS) {
                 errand.maybeStart(entry, bot);
-                if (errand.active(entry) && errand.tick(entry, bot, runAiTick)) {
+                if (errand.active(entry) && !errand.yieldForResupply(entry, bot)
+                        && errand.tick(entry, bot, runAiTick)) {
                     return true;
                 }
             }
