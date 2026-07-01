@@ -307,7 +307,75 @@ class BotEquipOptimizerTest {
                 + "Got itemId=" + pick.getItemId());
     }
 
+    @Test
+    void mageOneHandedMatkWeaponWinsWhenFreedShieldSlotCarriesTheEnsemble() {
+        // Black Umbrella scenario: a 1H any-job MAD sword (92) vs a slightly stronger 2H
+        // staff (95). The staff branch blocks the shield slot (2H<->shield exclusivity);
+        // the umbrella branch keeps it, and the INT shield tips the ensemble. Mage scoring
+        // is magicScore (INT*1.1 + magic) — weapon type/cycle is irrelevant for casting.
+        Character mage = mock(Character.class);
+        when(mage.getJob()).thenReturn(Job.CLERIC);
+        when(mage.getLevel()).thenReturn(70);
+        when(mage.getFame()).thenReturn(0);
+
+        int staffId = 1382005, umbrellaId = 1302026, shieldId = 1092010;
+        Equip staff = matkWeapon(staffId, 95, 1);
+        Equip umbrella = matkWeapon(umbrellaId, 92, 2);
+        Equip shield = mock(Equip.class);
+        when(shield.getItemId()).thenReturn(shieldId);
+        when(shield.getInt()).thenReturn((short) 10);
+        when(shield.getPosition()).thenReturn((short) 3);
+
+        BotEquipManager.OptimizerHooks hooks = new BotEquipManager.OptimizerHooks() {
+            @Override public boolean isTwoHanded(int itemId) { return itemId == staffId; }
+            @Override public WeaponType getWeaponType(int itemId) {
+                if (itemId == staffId) return WeaponType.STAFF;
+                if (itemId == umbrellaId) return WeaponType.SWORD1H;
+                return null;
+            }
+            @Override public boolean isOverall(int itemId) { return false; }
+            @Override public boolean meetsReqs(Equip e, Job job, int lvl, int s, int d, int i, int l, int f) {
+                return true;
+            }
+        };
+
+        Map<Short, List<Equip>> bySlot = new LinkedHashMap<>();
+        bySlot.put((short) -10, List.of(shield));
+        List<Short> dpSlots = List.of((short) -10);
+        Map<Short, Equip> currentBySlot = new HashMap<>();
+
+        BotEquipManager.StatSnapshot naked = new BotEquipManager.StatSnapshot(
+                /*str*/ 6, /*dex*/ 6, /*int_*/ 80, /*luk*/ 30,
+                /*watk*/ 0, /*magic*/ 100, /*flatAcc*/ 0,
+                /*level*/ 70, /*fame*/ 0, Job.CLERIC);
+        BotEquipManager.MapDamageProfile mob =
+                new BotEquipManager.MapDamageProfile(50, 30, 55);
+
+        BotEquipManager.DpResult staffResult = BotEquipManager.solveForWeapon(
+                mage, hooks, naked, staff, dpSlots, currentBySlot, bySlot, mob);
+        BotEquipManager.DpResult umbrellaResult = BotEquipManager.solveForWeapon(
+                mage, hooks, naked, umbrella, dpSlots, currentBySlot, bySlot, mob);
+
+        assertNotNull(staffResult);
+        assertNotNull(umbrellaResult);
+        assertEquals(null, staffResult.picks().get((short) -10),
+                "2H staff branch must not pick a shield");
+        assertNotNull(umbrellaResult.picks().get((short) -10),
+                "1H umbrella branch must pick the INT shield");
+        assertTrue(umbrellaResult.score().damage() > staffResult.score().damage(),
+                "umbrella + shield ensemble must outscore the bare 2H staff — got umbrella="
+                        + umbrellaResult.score().damage() + " staff=" + staffResult.score().damage());
+    }
+
     // ------------------------------------------------------------------ helpers
+
+    private static Equip matkWeapon(int id, int matk, int pos) {
+        Equip e = mock(Equip.class);
+        when(e.getItemId()).thenReturn(id);
+        when(e.getMatk()).thenReturn((short) matk);
+        when(e.getPosition()).thenReturn((short) pos);
+        return e;
+    }
 
     private static List<Short> asList(short[] arr) {
         List<Short> out = new ArrayList<>(arr.length);

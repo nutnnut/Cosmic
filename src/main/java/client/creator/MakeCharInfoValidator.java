@@ -32,6 +32,15 @@ public class MakeCharInfoValidator {
         };
     }
 
+    /**
+     * Legal-appearance source for a standard Explorer Beginner (the CharMale/CharFemale pools),
+     * exposed so server-side creation (bots) can draw random valid faces/hairs/skins from the same
+     * WZ-loaded sets the validator checks against.
+     */
+    public static MakeCharInfo beginnerInfo(boolean male) {
+        return male ? charMale : charFemale;
+    }
+
     public static boolean isNewCharacterValid(Character character) {
         MakeCharInfo makeCharInfo = getMakeCharInfo(character);
         if (makeCharInfo == null) return false;

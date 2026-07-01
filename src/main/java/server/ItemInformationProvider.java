@@ -96,12 +96,17 @@ public class ItemInformationProvider {
     protected Data petStringData;
     protected Map<Integer, Short> slotMaxCache = new HashMap<>();
     protected Map<Integer, StatEffect> itemEffects = new HashMap<>();
-    protected Map<Integer, Map<String, Integer>> equipStatsCache = new HashMap<>();
-    protected Map<Integer, Equip> equipCache = new HashMap<>();
+    // Concurrent: written by parallel startup loaders (DressingRoom + cash/quest futures) and
+    // read/populated from game threads and the bot decide pool at runtime.
+    protected Map<Integer, Map<String, Integer>> equipStatsCache = new java.util.concurrent.ConcurrentHashMap<>();
+    // Concurrent: warmed off-thread by BotGrindAdvisor.warmGrindData() (getEquipById/getEquipStats
+    // over the equip catalog) while game threads read/populate the same caches. Drop-in CHM:
+    // none of these ever store a null value (Equip / int / List / "" / boolean).
+    protected Map<Integer, Equip> equipCache = new java.util.concurrent.ConcurrentHashMap<>();
     protected Map<Integer, Data> equipLevelInfoCache = new HashMap<>();
-    protected Map<Integer, Integer> equipLevelReqCache = new HashMap<>();
+    protected Map<Integer, Integer> equipLevelReqCache = new java.util.concurrent.ConcurrentHashMap<>();
     protected Map<Integer, Integer> equipMaxLevelCache = new HashMap<>();
-    protected Map<Integer, List<Integer>> scrollReqsCache = new HashMap<>();
+    protected Map<Integer, List<Integer>> scrollReqsCache = new java.util.concurrent.ConcurrentHashMap<>();
     protected Map<Integer, Integer> wholePriceCache = new HashMap<>();
     protected Map<Integer, Double> unitPriceCache = new HashMap<>();
     protected Map<Integer, Integer> projectileWatkCache = new HashMap<>();
@@ -114,7 +119,9 @@ public class ItemInformationProvider {
     protected Map<Integer, Boolean> pickupRestrictionCache = new HashMap<>();
     protected Map<Integer, Integer> getMesoCache = new HashMap<>();
     protected Map<Integer, Integer> monsterBookID = new HashMap<>();
-    protected Map<Integer, Boolean> untradeableCache = new HashMap<>();
+    // Concurrent: getEquipById's stat loop reaches isUntradeableRestricted for nearly every equip,
+    // so the boot warm hammers this. Stores a primitive boolean -> CHM-safe.
+    protected Map<Integer, Boolean> untradeableCache = new java.util.concurrent.ConcurrentHashMap<>();
     protected Map<Integer, Boolean> onEquipUntradeableCache = new HashMap<>();
     protected Map<Integer, ScriptedItem> scriptedItemCache = new HashMap<>();
     protected Map<Integer, Boolean> karmaCache = new HashMap<>();
@@ -131,7 +138,9 @@ public class ItemInformationProvider {
     protected Map<Integer, Boolean> isQuestItemCache = new HashMap<>();
     protected Map<Integer, Boolean> isPartyQuestItemCache = new HashMap<>();
     protected Map<Integer, Pair<Integer, String>> replaceOnExpireCache = new HashMap<>();
-    protected Map<Integer, String> equipmentSlotCache = new HashMap<>();
+    // Concurrent: warmed via primarySlot(getEquipmentSlot) during the boot equip-catalog warm.
+    // Only ever stores the WZ islot string (or ""), never null -> CHM-safe.
+    protected Map<Integer, String> equipmentSlotCache = new java.util.concurrent.ConcurrentHashMap<>();
     protected Map<Integer, Boolean> noCancelMouseCache = new HashMap<>();
     protected Map<Integer, Integer> mobCrystalMakerCache = new HashMap<>();
     protected Map<Integer, Pair<String, Integer>> statUpgradeMakerCache = new HashMap<>();
@@ -572,10 +581,19 @@ public class ItemInformationProvider {
         ret.put("cash", DataTool.getInt("cash", info, 0));
         ret.put("tuc", DataTool.getInt("tuc", info, 0));
         ret.put("cursed", DataTool.getInt("cursed", info, 0));
+        ret.put("fs", DataTool.getInt("fs", info, 0)); // snowshoes: cancels field slipperiness
         ret.put("success", DataTool.getInt("success", info, 0));
-        ret.put("fs", DataTool.getInt("fs", info, 0));
         equipStatsCache.put(itemId, ret);
         return ret;
+    }
+
+    /** Boot-time priming from {@link EquipStatsDiskCache} — skips re-parsing ~10k equip WZ imgs. */
+    public void primeEquipStatsCache(Map<Integer, Map<String, Integer>> entries) {
+        equipStatsCache.putAll(entries);
+    }
+
+    public Map<Integer, Map<String, Integer>> equipStatsCacheSnapshot() {
+        return new HashMap<>(equipStatsCache);
     }
 
     public Integer getEquipLevelReq(int itemId) {

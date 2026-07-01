@@ -55,11 +55,6 @@ public class MakerProcessor {
             try {
                 int type = p.readInt();
                 int toCreate = p.readInt();
-                boolean makerSucceeded = true;
-
-                MakerItemCreateEntry recipe;
-                Map<Integer, Short> reagentids = new LinkedHashMap<>();
-                int stimulantid = -1;
 
                 if (type == 3) {    // building monster crystal
                     makeLeftoverCrystal(c, toCreate);
@@ -68,108 +63,120 @@ public class MakerProcessor {
                     p.readInt(); // 1... probably inventory type
                     disassembleEquip(c, (short) p.readInt());
                     return;
-                } else {
-                    if (ItemConstants.isEquipment(toCreate)) {   // only equips uses stimulant and reagents
-                        if (p.readByte() != 0) {  // stimulant
-                            stimulantid = ii.getMakerStimulant(toCreate);
-                            if (!c.getAbstractPlayerInteraction().haveItem(stimulantid)) {
-                                stimulantid = -1;
-                            }
-                        }
-
-                        int reagents = Math.min(p.readInt(), getMakerReagentSlots(toCreate));
-                        for (int i = 0; i < reagents; i++) {  // crystals
-                            int reagentid = p.readInt();
-                            if (ItemConstants.isMakerReagent(reagentid)) {
-                                Short rs = reagentids.get(reagentid);
-                                if (rs == null) {
-                                    reagentids.put(reagentid, (short) 1);
-                                } else {
-                                    reagentids.put(reagentid, (short) (rs + 1));
-                                }
-                            }
-                        }
-
-                        List<Pair<Integer, Short>> toUpdate = new LinkedList<>();
-                        for (Map.Entry<Integer, Short> r : reagentids.entrySet()) {
-                            int qty = c.getAbstractPlayerInteraction().getItemQuantity(r.getKey());
-
-                            if (qty < r.getValue()) {
-                                toUpdate.add(new Pair<>(r.getKey(), (short) qty));
-                            }
-                        }
-
-                        // remove those not present on player inventory
-                        if (!toUpdate.isEmpty()) {
-                            for (Pair<Integer, Short> rp : toUpdate) {
-                                if (rp.getRight() > 0) {
-                                    reagentids.put(rp.getLeft(), rp.getRight());
-                                } else {
-                                    reagentids.remove(rp.getLeft());
-                                }
-                            }
-                        }
-
-                        if (!reagentids.isEmpty()) {
-                            if (!removeOddMakerReagents(toCreate, reagentids)) {
-                                c.sendPacket(PacketCreator.serverNotice(1, "You can only use WATK and MATK Strengthening Gems on weapon items."));
-                                c.sendPacket(PacketCreator.makerEnableActions());
-                                return;
-                            }
-                        }
-                    }
-
-                    recipe = MakerItemFactory.getItemCreateEntry(toCreate, stimulantid, reagentids);
                 }
 
-                short createStatus = getCreateStatus(c, recipe);
-                if (createStatus != 0) {
-                    sendMakerCreateFailure(c, createStatus, recipe, toCreate);
-                    return;
+                // Equip create: read the stimulant flag + chosen reagent ids off the packet, then run
+                // the shared create path (also used by bots via makeItem).
+                boolean useStimulant = false;
+                List<Integer> reagentItemIds = new LinkedList<>();
+                if (ItemConstants.isEquipment(toCreate)) {
+                    useStimulant = p.readByte() != 0;
+                    int reagents = Math.min(p.readInt(), getMakerReagentSlots(toCreate));
+                    for (int i = 0; i < reagents; i++) {  // crystals
+                        reagentItemIds.add(p.readInt());
+                    }
                 }
-
-                for (Pair<Integer, Integer> pair : recipe.getReqItems()) {
-                    c.getAbstractPlayerInteraction().gainItem(pair.getLeft(), (short) -pair.getRight(), false);
-                }
-
-                int cost = recipe.getCost();
-                if (stimulantid == -1 && reagentids.isEmpty()) {
-                    if (cost > 0) {
-                        c.getPlayer().gainMeso(-cost, false);
-                    }
-
-                    for (Pair<Integer, Integer> pair : recipe.getGainItems()) {
-                        c.getPlayer().setCS(true);
-                        c.getAbstractPlayerInteraction().gainItem(pair.getLeft(), pair.getRight().shortValue(), false);
-                        c.getPlayer().setCS(false);
-                    }
-                } else {
-                    toCreate = recipe.getGainItems().get(0).getLeft();
-
-                    if (stimulantid != -1) {
-                        c.getAbstractPlayerInteraction().gainItem(stimulantid, (short) -1, false);
-                    }
-                    if (!reagentids.isEmpty()) {
-                        for (Map.Entry<Integer, Short> r : reagentids.entrySet()) {
-                            c.getAbstractPlayerInteraction().gainItem(r.getKey(), (short) (-1 * r.getValue()), false);
-                        }
-                    }
-
-                    if (cost > 0) {
-                        c.getPlayer().gainMeso(-cost, false);
-                    }
-                    makerSucceeded = addBoostedMakerItem(c, toCreate, stimulantid, reagentids);
-                }
-
-                // thanks inhyuk for noticing missing MAKER_RESULT packets
-                c.sendPacket(PacketCreator.makerResult(makerSucceeded, recipe.getGainItems().get(0).getLeft(), recipe.getGainItems().get(0).getRight(), recipe.getCost(), recipe.getReqItems(), stimulantid, new LinkedList<>(reagentids.keySet())));
-
-                c.sendPacket(PacketCreator.showMakerEffect(makerSucceeded));
-                c.getPlayer().getMap().broadcastMessage(c.getPlayer(), PacketCreator.showForeignMakerEffect(c.getPlayer().getId(), makerSucceeded), false);
+                makeItem(c, toCreate, useStimulant, reagentItemIds);
             } finally {
                 c.releaseClient();
             }
         }
+    }
+
+    /**
+     * Shared equip-create path (reagents + optional stimulant), used by the Maker UI handler and by
+     * bots. The caller supplies the stimulant flag and chosen reagent item ids (the handler reads them
+     * off the packet; a bot picks them by EV). Validates materials/meso/level/skill, consumes inputs,
+     * rolls + adds the item, and sends the result packets. Assumes the caller already holds the client
+     * lock. Returns 0 on success, otherwise the create-status code ({@code -2} = an att/matt gem on a
+     * non-weapon was rejected).
+     */
+    public static short makeItem(Client c, int toCreate, boolean useStimulant, List<Integer> reagentItemIds) {
+        Map<Integer, Short> reagentids = new LinkedHashMap<>();
+        int stimulantid = -1;
+        if (ItemConstants.isEquipment(toCreate)) {   // only equips use stimulant and reagents
+            if (useStimulant) {
+                stimulantid = ii.getMakerStimulant(toCreate);
+                if (!c.getAbstractPlayerInteraction().haveItem(stimulantid)) {
+                    stimulantid = -1;
+                }
+            }
+            int slots = getMakerReagentSlots(toCreate);
+            for (int reagentid : reagentItemIds) {
+                if (reagentids.size() >= slots && !reagentids.containsKey(reagentid)) {
+                    continue;
+                }
+                if (ItemConstants.isMakerReagent(reagentid)) {
+                    Short rs = reagentids.get(reagentid);
+                    reagentids.put(reagentid, rs == null ? (short) 1 : (short) (rs + 1));
+                }
+            }
+
+            List<Pair<Integer, Short>> toUpdate = new LinkedList<>();
+            for (Map.Entry<Integer, Short> r : reagentids.entrySet()) {
+                int qty = c.getAbstractPlayerInteraction().getItemQuantity(r.getKey());
+                if (qty < r.getValue()) {
+                    toUpdate.add(new Pair<>(r.getKey(), (short) qty));
+                }
+            }
+            for (Pair<Integer, Short> rp : toUpdate) {   // drop reagents not actually in inventory
+                if (rp.getRight() > 0) {
+                    reagentids.put(rp.getLeft(), rp.getRight());
+                } else {
+                    reagentids.remove(rp.getLeft());
+                }
+            }
+
+            if (!reagentids.isEmpty() && !removeOddMakerReagents(toCreate, reagentids)) {
+                c.sendPacket(PacketCreator.serverNotice(1, "You can only use WATK and MATK Strengthening Gems on weapon items."));
+                c.sendPacket(PacketCreator.makerEnableActions());
+                return -2;
+            }
+        }
+
+        MakerItemCreateEntry recipe = MakerItemFactory.getItemCreateEntry(toCreate, stimulantid, reagentids);
+        short createStatus = getCreateStatus(c, recipe);
+        if (createStatus != 0) {
+            sendMakerCreateFailure(c, createStatus, recipe, toCreate);
+            return createStatus;
+        }
+
+        for (Pair<Integer, Integer> pair : recipe.getReqItems()) {
+            c.getAbstractPlayerInteraction().gainItem(pair.getLeft(), (short) -pair.getRight(), false);
+        }
+
+        boolean makerSucceeded = true;
+        int cost = recipe.getCost();
+        if (stimulantid == -1 && reagentids.isEmpty()) {
+            if (cost > 0) {
+                c.getPlayer().gainMeso(-cost, false);
+            }
+            for (Pair<Integer, Integer> pair : recipe.getGainItems()) {
+                c.getPlayer().setCS(true);
+                c.getAbstractPlayerInteraction().gainItem(pair.getLeft(), pair.getRight().shortValue(), false);
+                c.getPlayer().setCS(false);
+            }
+        } else {
+            int created = recipe.getGainItems().get(0).getLeft();
+            if (stimulantid != -1) {
+                c.getAbstractPlayerInteraction().gainItem(stimulantid, (short) -1, false);
+            }
+            if (!reagentids.isEmpty()) {
+                for (Map.Entry<Integer, Short> r : reagentids.entrySet()) {
+                    c.getAbstractPlayerInteraction().gainItem(r.getKey(), (short) (-1 * r.getValue()), false);
+                }
+            }
+            if (cost > 0) {
+                c.getPlayer().gainMeso(-cost, false);
+            }
+            makerSucceeded = addBoostedMakerItem(c, created, stimulantid, reagentids);
+        }
+
+        // thanks inhyuk for noticing missing MAKER_RESULT packets
+        c.sendPacket(PacketCreator.makerResult(makerSucceeded, recipe.getGainItems().get(0).getLeft(), recipe.getGainItems().get(0).getRight(), recipe.getCost(), recipe.getReqItems(), stimulantid, new LinkedList<>(reagentids.keySet())));
+        c.sendPacket(PacketCreator.showMakerEffect(makerSucceeded));
+        c.getPlayer().getMap().broadcastMessage(c.getPlayer(), PacketCreator.showForeignMakerEffect(c.getPlayer().getId(), makerSucceeded), false);
+        return makerSucceeded ? (short) 0 : (short) 1;
     }
 
     /**

@@ -27,6 +27,37 @@ import static org.mockito.Mockito.when;
 
 class BotMovementManagerTest {
     @Test
+    void shouldBuildTeleportPacketWithImmediateLandingFragment() {
+        byte[] data = BotMovementManager.buildTeleportMovementData(
+                new Point(100, 200),
+                new Point(250, 200),
+                new BotPhysicsEngine.MovementSnapshot(0, 0, CharacterStance.STAND_RIGHT_STANCE),
+                321);
+
+        assertEquals(35, data.length);
+        assertEquals(3, u8(data[0]));
+
+        assertEquals(4, u8(data[1]));
+        assertEquals(100, i16(data, 2));
+        assertEquals(200, i16(data, 4));
+        assertEquals(CharacterStance.STAND_RIGHT_STANCE, u8(data[10]));
+
+        assertEquals(3, u8(data[11]));
+        assertEquals(250, i16(data, 12));
+        assertEquals(200, i16(data, 14));
+        assertEquals(CharacterStance.STAND_RIGHT_STANCE, u8(data[20]));
+
+        assertEquals(0, u8(data[21]));
+        assertEquals(250, i16(data, 22));
+        assertEquals(200, i16(data, 24));
+        assertEquals(0, i16(data, 26));
+        assertEquals(0, i16(data, 28));
+        assertEquals(321, i16(data, 30));
+        assertEquals(CharacterStance.STAND_RIGHT_STANCE, u8(data[32]));
+        assertEquals(BotPhysicsEngine.cfg.TICK_MS, i16(data, 33));
+    }
+
+    @Test
     void shouldClampGrindingTargetAwayFromCurrentFootholdEdgeForSameFootholdCombat() {
         MapleMap map = new MapleMap(910000007, 0, 0, 910000007, 1.0f);
         server.maps.FootholdTree footholds = new server.maps.FootholdTree(new Point(-2000, -2000), new Point(2000, 2000));
@@ -369,16 +400,23 @@ class BotMovementManagerTest {
 
     @Test
     void shouldJumpForwardWhenMobBlocksWalkLaneAndLandingStaysInCurrentRegion() {
-        MapleMap map = spy(new MapleMap(910009048, 0, 0, 910009048, 1.0f));
+        MapleMap realMap = new MapleMap(910009048, 0, 0, 910009048, 1.0f);
         server.maps.FootholdTree footholds = new server.maps.FootholdTree(new Point(-2000, -2000), new Point(2000, 2000));
         footholds.insert(new Foothold(new Point(0, 100), new Point(300, 100), 1));
-        map.setFootholds(footholds);
-        BotNavigationGraphProvider.rebuildGraph(map);
+        realMap.setFootholds(footholds);
+        // Build the graph on the bare map FIRST. rebuildGraph runs flash-jump edge simulation that probes
+        // map.getFootholds() millions of times; doing that through a Mockito spy records every invocation,
+        // ballooning the heap to OOM (multi-GB, 20+ min hang). The spy only exists to stub getAllMonsters()
+        // for the movement tick, so wrap the map AFTER the graph is cached (cache + collision index are
+        // keyed by map id / foothold tree, both shared with the spy).
+        BotNavigationGraphProvider.rebuildGraph(realMap);
+        MapleMap map = spy(realMap);
         doReturn(List.of(mockMob(new Point(130, 100), 100100))).when(map).getAllMonsters();
 
         Character bot = mockBot(new Point(100, 100), map);
         BotEntry entry = new BotEntry(bot, null, null);
         entry.following = true;
+        BotMovementManager.cfg.MOB_AVOID_REACTION_CHANCE = 1.0; // deterministic: test the dodge logic, not the humanlike RNG roll
 
         BotMovementManager.tickGrounded(entry, new Point(250, 100));
 
@@ -393,16 +431,20 @@ class BotMovementManagerTest {
 
     @Test
     void shouldNotJumpOverBlockingMobWhenSimulatedLandingLeavesCurrentRegion() {
-        MapleMap map = spy(new MapleMap(910009049, 0, 0, 910009049, 1.0f));
+        // Build on the bare map before spying — see shouldJumpForwardWhenMobBlocksWalkLaneAndLandingStaysInCurrentRegion
+        // for why rebuildGraph through a spy OOMs.
+        MapleMap realMap = new MapleMap(910009049, 0, 0, 910009049, 1.0f);
         server.maps.FootholdTree footholds = new server.maps.FootholdTree(new Point(-2000, -2000), new Point(2000, 2000));
         footholds.insert(new Foothold(new Point(0, 100), new Point(140, 100), 1));
-        map.setFootholds(footholds);
-        BotNavigationGraphProvider.rebuildGraph(map);
+        realMap.setFootholds(footholds);
+        BotNavigationGraphProvider.rebuildGraph(realMap);
+        MapleMap map = spy(realMap);
         doReturn(List.of(mockMob(new Point(120, 100), 100100))).when(map).getAllMonsters();
 
         Character bot = mockBot(new Point(100, 100), map);
         BotEntry entry = new BotEntry(bot, null, null);
         entry.following = true;
+        BotMovementManager.cfg.MOB_AVOID_REACTION_CHANCE = 1.0; // deterministic: the "no jump" must come from the region check, not a failed RNG roll
 
         BotMovementManager.tickGrounded(entry, new Point(190, 100));
 
@@ -811,12 +853,19 @@ class BotMovementManagerTest {
         entry.nextFidgetActionAtMs = 0L;
 
         assertTrue(BotFidgetManager.tryHandleTick(entry, new Point(110, 100), true));
-        assertEquals(0.0, entry.airSteerVelX,
+        // No key held on a non-spam fidget hop: the only allowed airSteerVelX change is the
+        // CalcFloat no-input drag (1 x fs px/s^2 = 0.0025 px/tick per tick) — a random
+        // steering press would move it by ~0.5 px/tick.
+        assertEquals(0.0, entry.airSteerVelX, 0.005,
                 "non-spam jump fidgets should not reroll random air steering every airborne tick");
 
         entry.fidgetSpamAirSteer = true;
         entry.fidgetActionBaseDelayMs = 100;
         entry.airSteerVelX = 0.0;
+        // Zero the launch momentum: under the packet-true air model a side press in the SAME
+        // direction as a full-speed launch is pinned at the walk-speed cap (no velocity
+        // change), which would make this assertion depend on the random roll's direction.
+        entry.airVelX = 0;
         entry.nextFidgetActionAtMs = 0L;
         long before = System.currentTimeMillis();
 
@@ -992,7 +1041,7 @@ class BotMovementManagerTest {
         entry.movementProfile = BotMovementProfile.base();
 
         BotMovementProfile targetProfile = BotMovementProfile.fromCharacter(bot);
-        assertEquals(new BotMovementProfile(105, 105), targetProfile);
+        assertEquals(new BotMovementProfile(110, 105), targetProfile);
         entry.navEdge = new BotNavigationGraph.Edge(
                 1, 2, BotNavigationGraph.EdgeType.JUMP,
                 new Point(20, 100), new Point(80, 40),
@@ -1009,6 +1058,43 @@ class BotMovementManagerTest {
         assertNull(entry.navTargetPos);
         assertEquals(-1, entry.navTargetRegionId);
         assertFalse(entry.navPreciseTarget);
+    }
+
+    private static BotNavigationGraph.Edge edge(BotNavigationGraph.EdgeType type) {
+        return new BotNavigationGraph.Edge(0, 1, type, new Point(0, 0), new Point(100, 0),
+                1, 0, 0, 0, 0, 0);
+    }
+
+    @Test
+    void dodgeModeAllowedOnlyDuringGroundLocomotionOffLaunchEdges() {
+        // Idle (not following/grinding/traveling): never dodge.
+        assertFalse(BotMovementManager.dodgeModeAllowed(false, false, false, null, false));
+
+        // Following with free walking (no committed edge): dodge allowed.
+        assertTrue(BotMovementManager.dodgeModeAllowed(true, false, false, null, false));
+
+        // Grinding: allowed.
+        assertTrue(BotMovementManager.dodgeModeAllowed(false, true, false, null, false));
+
+        // Traveling (map-to-map autopilot, grinding not yet set): now allowed on plain ground too.
+        assertTrue(BotMovementManager.dodgeModeAllowed(false, false, true, null, false));
+        assertTrue(BotMovementManager.dodgeModeAllowed(false, false, true, edge(BotNavigationGraph.EdgeType.WALK), false));
+
+        // THE GAP: a committed WALK edge is still plain ground walking, so dodge must be allowed across it.
+        assertTrue(BotMovementManager.dodgeModeAllowed(false, true, false, edge(BotNavigationGraph.EdgeType.WALK), false));
+
+        // Non-WALK edges have launch windows a dodge would wreck: never dodge mid JUMP/DROP/CLIMB/PORTAL
+        // (true even while traveling).
+        assertFalse(BotMovementManager.dodgeModeAllowed(false, true, false, edge(BotNavigationGraph.EdgeType.JUMP), false));
+        assertFalse(BotMovementManager.dodgeModeAllowed(false, true, false, edge(BotNavigationGraph.EdgeType.DROP), false));
+        assertFalse(BotMovementManager.dodgeModeAllowed(false, true, false, edge(BotNavigationGraph.EdgeType.CLIMB), false));
+        assertFalse(BotMovementManager.dodgeModeAllowed(false, true, false, edge(BotNavigationGraph.EdgeType.PORTAL), false));
+        assertFalse(BotMovementManager.dodgeModeAllowed(false, false, true, edge(BotNavigationGraph.EdgeType.JUMP), false));
+
+        // Precise nav target steering: never dodge even on a WALK edge (incl. while traveling near the portal).
+        assertFalse(BotMovementManager.dodgeModeAllowed(false, true, false, edge(BotNavigationGraph.EdgeType.WALK), true));
+        assertFalse(BotMovementManager.dodgeModeAllowed(true, false, false, null, true));
+        assertFalse(BotMovementManager.dodgeModeAllowed(false, false, true, edge(BotNavigationGraph.EdgeType.WALK), true));
     }
 
     private static Character mockBot(Point startPosition, MapleMap map) {
@@ -1040,5 +1126,14 @@ class BotMovementManagerTest {
         when(mob.isAlive()).thenReturn(true);
         when(mob.isFacingLeft()).thenReturn(false);
         return mob;
+    }
+
+    private static int u8(byte b) {
+        return b & 0xFF;
+    }
+
+    private static int i16(byte[] data, int offset) {
+        int value = u8(data[offset]) | (u8(data[offset + 1]) << 8);
+        return value >= 32768 ? value - 65536 : value;
     }
 }

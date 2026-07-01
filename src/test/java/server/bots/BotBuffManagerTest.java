@@ -4,7 +4,10 @@ import client.BuffStat;
 import client.Character;
 import client.Job;
 import org.junit.jupiter.api.Test;
+import org.mockito.MockedStatic;
 import server.StatEffect;
+import server.life.Monster;
+import server.maps.MapleMap;
 import tools.Pair;
 
 import java.util.List;
@@ -12,6 +15,7 @@ import java.util.List;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.mockStatic;
 import static org.mockito.Mockito.when;
 
 class BotBuffManagerTest {
@@ -52,6 +56,45 @@ class BotBuffManagerTest {
         assertFalse(BotBuffManager.exceedsCheapAtkCap(warrior, fxWith(BuffStat.MATK, 99)));
         // Non-atk stats are never capped.
         assertFalse(BotBuffManager.exceedsCheapAtkCap(warrior, fxWith(BuffStat.ACC, 99)));
+    }
+
+    @Test
+    void autoBuffEngagesOnToughMapDisengagesOnEasyAndRespectsManual() {
+        Character bot = mock(Character.class);
+        BotEntry entry = new BotEntry(bot, null, null);
+        MapleMap map = mock(MapleMap.class);
+        Monster mob = mock(Monster.class);
+        when(bot.getMap()).thenReturn(map);
+        when(map.getAllMonsters()).thenReturn(List.of(mob));
+        when(mob.isAlive()).thenReturn(true);
+        when(mob.getMaxHp()).thenReturn(300);
+
+        try (MockedStatic<BotAutopilotManager> autopilot = mockStatic(BotAutopilotManager.class);
+             MockedStatic<BotCombatManager> combat = mockStatic(BotCombatManager.class)) {
+            autopilot.when(() -> BotAutopilotManager.isActive(entry)).thenReturn(true);
+
+            // Tough map: 300 / 50 = 6 shots/kill >= 3 -> autopilot turns cheap buffs on.
+            combat.when(() -> BotCombatManager.estimateBestSkillHitDamage(entry, bot, mob)).thenReturn(50.0);
+            entry.lastAutoBuffEvalMs = 0;
+            BotBuffManager.autoEngageForToughMobs(entry, bot);
+            assertTrue(entry.buffConsumablesEnabled);
+            assertTrue(entry.buffCheapMode);
+            assertTrue(entry.autoBuffEngaged);
+
+            // Easy map: 300 / 200 = 1.5 < 2.5 -> autopilot undoes its own enable.
+            combat.when(() -> BotCombatManager.estimateBestSkillHitDamage(entry, bot, mob)).thenReturn(200.0);
+            entry.lastAutoBuffEvalMs = 0;
+            BotBuffManager.autoEngageForToughMobs(entry, bot);
+            assertFalse(entry.buffConsumablesEnabled);
+            assertFalse(entry.autoBuffEngaged);
+
+            // Owner manually enabled (not auto-engaged): an easy map must NOT auto-disable it.
+            entry.buffConsumablesEnabled = true;
+            entry.autoBuffEngaged = false;
+            entry.lastAutoBuffEvalMs = 0;
+            BotBuffManager.autoEngageForToughMobs(entry, bot);
+            assertTrue(entry.buffConsumablesEnabled);
+        }
     }
 
     private static StatEffect fxWith(BuffStat stat, int value) {

@@ -41,7 +41,7 @@ public class RatesCommand extends Command {
 
         // travel rates not applicable since it's intrinsically a server/environment rate rather than a character rate
         String showMsg_ = "#eCHARACTER RATES#n" + "\r\n\r\n";
-        showMsg_ += "EXP Rate: #e#b" + String.format(Locale.US, "%.2f", player.getEffectiveExpRate()) + "x#k#n" + (player.hasNoviceExpRate() || player.hasFirstJobExpRate() ? " - novice rate" : "") + "\r\n";
+        showMsg_ += "EXP Rate: #e#b" + String.format(Locale.US, "%.2f", player.getEffectiveExpRate()) + "x#k#n" + (player.hasNoviceExpRate() ? " - novice rate" : "") + "\r\n";
         showMsg_ += "Level EXP Multiplier: #e#b" + String.format(Locale.US, "%.2f", player.getDynamicExpRateMultiplier()) + "x#k#n" + "\r\n";
         showMsg_ += "MESO Rate: #e#b" + player.getMesoRate() + "x#k#n" + "\r\n";
         showMsg_ += "DROP Rate: #e#b" + player.getDropRate() + "x#k#n" + "\r\n";

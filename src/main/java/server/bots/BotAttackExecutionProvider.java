@@ -23,6 +23,8 @@ import java.util.Set;
 import java.util.concurrent.ThreadLocalRandom;
 
 final class BotAttackExecutionProvider {
+    private static final List<String> WAND_MAGIC_CAST_ACTIONS = List.of("wand1", "wand2");
+
     // This server's close-range packet path uses:
     // byte 2 = body action id from Character/00002000.img
     // byte 3 = facing mask (0 / 0x80)
@@ -221,7 +223,14 @@ final class BotAttackExecutionProvider {
         if (skill != null && FORCED_CLOSE_RANGE_SKILL_IDS.contains(skill.getId())) {
             return sampleDegenerateCloseRangeAction(bot, weaponType);
         }
+        if (skill != null && isMagicAttackSkill(skill.getId()) && isWandMagicWeapon(weaponType)) {
+            return sampleAttackAction(WAND_MAGIC_CAST_ACTIONS, WAND_MAGIC_CAST_ACTIONS.get(0));
+        }
         return sampleWeaponAttackAction(bot, weaponType);
+    }
+
+    private static boolean isWandMagicWeapon(WeaponType weaponType) {
+        return weaponType == WeaponType.WAND || weaponType == WeaponType.STAFF;
     }
 
     private static String sampleDegenerateCloseRangeAction(Character bot, WeaponType weaponType) {
@@ -331,6 +340,28 @@ final class BotAttackExecutionProvider {
         int dy = Math.abs(targetPos.y - botPos.y);
         return dx <= BotCombatManager.cfg.RANGED_RETREAT_THRESHOLD_X
                 && dy <= BotCombatManager.cfg.RANGED_DEGENERATE_RANGE_Y;
+    }
+
+    /**
+     * Hysteretic spacing-band check: enter the retreat at {@code RANGED_RETREAT_THRESHOLD_X} (80px), but
+     * once retreating keep retreating until the mob is {@code + RANGED_RETREAT_HYSTERESIS_X} (140px) away.
+     * The single-threshold {@link #shouldRetreatFromNearbyTarget} chatters left-right when a mob hovers on
+     * the 80px edge; this gap stops that. {@code currentlyRetreating} is the caller's prior-tick state
+     * (see {@link BotEntry#spacingRetreatActive}); the caller writes back the returned value. The vertical
+     * gate is unchanged (a mob more than DEGENERATE_RANGE_Y off the bot's row isn't a spacing concern).
+     */
+    static boolean isInSpacingRetreatBand(boolean currentlyRetreating, WeaponType weaponType, Point botPos, Point targetPos) {
+        if (!isDegenerateCapableRangedWeapon(weaponType) || botPos == null || targetPos == null) {
+            return false;
+        }
+        int dx = Math.abs(targetPos.x - botPos.x);
+        int dy = Math.abs(targetPos.y - botPos.y);
+        if (dy > BotCombatManager.cfg.RANGED_DEGENERATE_RANGE_Y) {
+            return false;
+        }
+        int threshold = BotCombatManager.cfg.RANGED_RETREAT_THRESHOLD_X
+                + (currentlyRetreating ? BotCombatManager.cfg.RANGED_RETREAT_HYSTERESIS_X : 0);
+        return dx <= threshold;
     }
 
     static boolean isAnyMobNearerThanTarget(Character bot, Point botPos, Point targetPos) {
@@ -609,7 +640,7 @@ final class BotAttackExecutionProvider {
         };
     }
 
-    private static boolean isDegenerateCapableRangedWeapon(WeaponType weaponType) {
+    static boolean isDegenerateCapableRangedWeapon(WeaponType weaponType) {
         return weaponType == WeaponType.BOW
                 || weaponType == WeaponType.CROSSBOW
                 || weaponType == WeaponType.CLAW

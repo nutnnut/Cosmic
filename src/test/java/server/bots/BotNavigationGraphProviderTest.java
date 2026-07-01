@@ -9,9 +9,14 @@ import server.maps.MapleMap;
 import server.maps.Rope;
 
 import java.awt.*;
+import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+import java.util.stream.Stream;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
@@ -41,6 +46,10 @@ class BotNavigationGraphProviderTest {
     private static final Supplier<MapleMap> mushroomShrineS = lazyMap(800000000);
     private static final Supplier<MapleMap> swamp1S = lazyMap(107000000);
     private static final Supplier<BotNavigationGraph> swamp1GraphS = lazyGraph(swamp1S);
+    private static final Supplier<MapleMap> elNathS = lazyMap(211000000);
+    private static final Supplier<BotNavigationGraph> elNathGraphS = lazyGraph(elNathS);
+    private static final Supplier<MapleMap> cursedSanctuaryS = lazyMap(105030000);
+    private static final Supplier<BotNavigationGraph> cursedSanctuaryGraphS = lazyGraph(cursedSanctuaryS);
 
     private static MapleMap henesys() { return henesysS.get(); }
     private static BotNavigationGraph henesysGraph() { return henesysGraphS.get(); }
@@ -54,6 +63,10 @@ class BotNavigationGraphProviderTest {
     private static MapleMap mushroomShrine() { return mushroomShrineS.get(); }
     private static MapleMap swamp1() { return swamp1S.get(); }
     private static BotNavigationGraph swamp1Graph() { return swamp1GraphS.get(); }
+    private static MapleMap elNath() { return elNathS.get(); }
+    private static BotNavigationGraph elNathGraph() { return elNathGraphS.get(); }
+    private static MapleMap cursedSanctuary() { return cursedSanctuaryS.get(); }
+    private static BotNavigationGraph cursedSanctuaryGraph() { return cursedSanctuaryGraphS.get(); }
 
     private static Supplier<MapleMap> lazyMap(int mapId) {
         return memoize(() -> BotNavigationMapLoader.loadMapGeometry(mapId));
@@ -82,6 +95,167 @@ class BotNavigationGraphProviderTest {
         System.setProperty("wz-path", Path.of("wz").toAbsolutePath().toString());
     }
 
+    private static List<BotNavigationGraph.Edge> edgesOfType(BotNavigationGraph graph, BotNavigationGraph.EdgeType type) {
+        List<BotNavigationGraph.Edge> out = new ArrayList<>();
+        for (BotNavigationGraph.Region region : graph.regions) {
+            for (BotNavigationGraph.Edge edge : graph.getOutgoing(region.id)) {
+                if (edge.type == type) {
+                    out.add(edge);
+                }
+            }
+        }
+        return out;
+    }
+
+    @Test
+    void shouldGenerateWellFormedTeleportEdges() {
+        List<BotNavigationGraph.Edge> teleports = new ArrayList<>();
+        teleports.addAll(edgesOfType(henesysGraph(), BotNavigationGraph.EdgeType.TELEPORT));
+        teleports.addAll(edgesOfType(perionGraph(), BotNavigationGraph.EdgeType.TELEPORT));
+        teleports.addAll(edgesOfType(kerningGraph(), BotNavigationGraph.EdgeType.TELEPORT));
+
+        assertFalse(teleports.isEmpty(), "expected teleport edges to generate");
+        int maxReach = BotNavigationGraphProvider.TELEPORT_RANGE_PX + BotNavigationGraphProvider.TELEPORT_Y_SNAP_PX;
+        boolean sawVertical = false;
+        boolean sawWindow = false;
+        for (BotNavigationGraph.Edge edge : teleports) {
+            assertNotEquals(edge.fromRegionId, edge.toRegionId, "teleport edges are cross-region");
+            int dxAbs = Math.abs(edge.endPoint.x - edge.startPoint.x);
+            int dyAbs = Math.abs(edge.endPoint.y - edge.startPoint.y);
+            assertTrue(Math.max(dxAbs, dyAbs) <= maxReach, "teleport hop within reach, was " + Math.max(dxAbs, dyAbs));
+            // Teleport now carries an X launch window like JUMP/FLASH_JUMP — every edge well-formed,
+            // representative start inside its own window, and at least one with real (>0) width.
+            assertTrue(edge.launchMaxX >= edge.launchMinX, "teleport launch window must be well-formed");
+            assertTrue(edge.containsLaunchX(edge.startPoint.x), "representative start must sit inside its own window");
+            if (edge.launchMaxX > edge.launchMinX) {
+                sawWindow = true;
+            }
+            if (dyAbs > dxAbs) {
+                sawVertical = true;
+            }
+        }
+        assertTrue(sawVertical, "expected at least one vertical (up/down) teleport edge");
+        assertTrue(sawWindow, "expected at least one teleport edge to carry a non-degenerate launch window");
+    }
+
+    @Test
+    void shouldGenerateFlashJumpEdges() {
+        List<BotNavigationGraph.Edge> fjEdges = new ArrayList<>();
+        fjEdges.addAll(edgesOfType(henesysGraph(), BotNavigationGraph.EdgeType.FLASH_JUMP));
+        fjEdges.addAll(edgesOfType(perionGraph(), BotNavigationGraph.EdgeType.FLASH_JUMP));
+        fjEdges.addAll(edgesOfType(kerningGraph(), BotNavigationGraph.EdgeType.FLASH_JUMP));
+        assertFalse(fjEdges.isEmpty(), "expected flash-jump edges to generate across test maps");
+
+        // FJ now carries an X launch window like JUMP — every edge must be well-formed, and at least one
+        // must span a real (>0) width (the dedup payoff: per-anchor point-edges collapsed into windows).
+        boolean sawWindow = false;
+        for (BotNavigationGraph.Edge edge : fjEdges) {
+            assertTrue(edge.launchMaxX >= edge.launchMinX, "flash-jump launch window must be well-formed");
+            assertTrue(edge.containsLaunchX(edge.startPoint.x), "representative start must sit inside its own window");
+            if (edge.launchMaxX > edge.launchMinX) {
+                sawWindow = true;
+            }
+        }
+        assertTrue(sawWindow, "expected at least one flash-jump edge to carry a non-degenerate launch window");
+    }
+
+    @Test
+    void walkOnlyPathExcludesSkillEdges() {
+        // The default findPath runs the walk-only search (skillsEnabled=false): even though teleport/
+        // flash-jump edges exist in the graph, a non-skill search must never route through them.
+        List<BotNavigationGraph.Edge> path = findPath(henesysGraph(), henesys(),
+                new Point(990, 334), new Point(1275, 275));
+        for (BotNavigationGraph.Edge edge : path) {
+            assertNotEquals(BotNavigationGraph.EdgeType.TELEPORT, edge.type);
+            assertNotEquals(BotNavigationGraph.EdgeType.FLASH_JUMP, edge.type);
+        }
+    }
+
+    @Test
+    void committedRouteIsFollowedForwardToGoalWithoutFlipFlop() {
+        // GearArrow root cause: the best first hop out of a region is position-dependent, but the
+        // per-region next-hop cache is position-blind and never invalidated, so adjacent regions served
+        // mutually-inconsistent cached hops (r45->r42 but r42->r45), trapping the bot ping-ponging. The
+        // fix commits ONE route (planned from the bot's own position) and follows it. This verifies the
+        // follow logic: from each region on the route the bot advances to a NEW region and reaches the
+        // goal, never reversing into a region it already left.
+        BotNavigationGraph g = henesysGraph();
+        MapleMap map = henesys();
+        Point start = new Point(1018, 334);   // r45, GearArrow's stuck platform
+        Point goal = new Point(-922, 272);    // r41, the travel-pin portal
+        Character bot = mockBot(start, map);
+        int startRegion = g.findRegionId(map, bot.getPosition());
+        int goalRegion = g.findRegionId(map, goal);
+
+        var route = BotNavigationManager.computeCommittedRoute(g, bot, startRegion, goalRegion, goal);
+        assertNotNull(route, "expected a committable route (no intra-region portal detour)");
+        assertFalse(route.isEmpty(), "expected a multi-region route from r45 to r41");
+
+        BotEntry entry = new BotEntry(bot, null, null);
+        entry.committedRoute = route;
+        entry.committedRouteTargetRegionId = goalRegion;
+
+        java.util.Set<Integer> visited = new java.util.HashSet<>();
+        int region = startRegion;
+        visited.add(region);
+        for (int step = 0; step < 64 && region != goalRegion; step++) {
+            BotNavigationGraph.Edge hop = BotNavigationManager.nextCommittedRouteEdge(g, entry, region, goalRegion);
+            assertNotNull(hop, "committed route stalls at region " + region);
+            assertEquals(region, hop.fromRegionId, "hop must leave the bot's current region");
+            region = hop.toRegionId;
+            assertTrue(visited.add(region), "committed route revisits region " + region + " — flip-flop");
+        }
+        assertEquals(goalRegion, region, "committed route reaches the goal region");
+    }
+
+    @Test
+    void committedBestEffortRouteDoesNotCycleWhenPortalRegionSearchCaps() {
+        // pathlog-DecembeR-2026-06-26T034055: target portal region r1 is far above the bot in
+        // 105030000, and the full search caps before finding a complete route. The committed
+        // best-effort route must still make monotone progress instead of cycling
+        // r83 -> r89 -> r102 -> r83 and recomputing forever.
+        BotNavigationGraph g = cursedSanctuaryGraph();
+        MapleMap map = cursedSanctuary();
+        Point start = new Point(63, -73);
+        Point goal = new Point(58, -2586);
+        int startRegion = g.findRegionId(map, start);
+        int goalRegion = g.findRegionId(map, goal);
+        assertEquals(83, startRegion, "fixture start region drifted");
+        assertEquals(1, goalRegion, "fixture target region drifted");
+
+        for (int botId : new int[]{1246}) {
+            Character bot = mockBot(start, map, botId);
+            assertBestEffortRouteAcyclic(g, bot, startRegion, goalRegion, goal, botId);
+        }
+    }
+
+    private static void assertBestEffortRouteAcyclic(BotNavigationGraph g,
+                                                     Character bot,
+                                                     int startRegion,
+                                                     int goalRegion,
+                                                     Point goal,
+                                                     int botId) {
+        var route = BotNavigationManager.computeCommittedRoute(g, bot, startRegion, goalRegion, goal);
+        assertNotNull(route, "best-effort committed route should be represented as an empty or partial route");
+
+        java.util.Set<Integer> visited = new java.util.HashSet<>();
+        int region = startRegion;
+        visited.add(region);
+        BotEntry entry = new BotEntry(bot, null, null);
+        entry.committedRoute = route;
+        entry.committedRouteTargetRegionId = goalRegion;
+
+        for (int step = 0; step < 16; step++) {
+            BotNavigationGraph.Edge hop = BotNavigationManager.nextCommittedRouteEdge(g, entry, region, goalRegion);
+            if (hop == null) {
+                break;
+            }
+            assertEquals(region, hop.fromRegionId, "hop must leave the bot's current region");
+            region = hop.toRegionId;
+            assertTrue(visited.add(region), "botId " + botId + " best-effort route revisits region " + region + ": " + route);
+        }
+    }
+
     @Test
     void shouldKeepHenesysLowerTownStreetInOneMergedRegion() {
         int firstRegionId = henesysGraph().findRegionId(henesys(), new Point(990, 334));
@@ -103,6 +277,44 @@ class BotNavigationGraphProviderTest {
         assertTrue(edge.containsLaunchX(start.x));
         assertEquals(targetRegionId, edge.toRegionId);
         assertJumpEdgeLandsInRegion(henesysGraph(), henesys(), edge, targetRegionId);
+    }
+
+    /**
+     * Benchmark from real-client packet captures (user-performed trick jumps at speed100/
+     * jump100, no snowshoes — logs/monitored-packets-elnath-tricky-jumps-spd100v2.log):
+     * the El Nath icy foothold chain 171 > 262 > 264 > 267 > 277 > 278 > 279 is traversable
+     * with consecutive JUMP edges. The three leftward icy hops only become stable with the
+     * packet-true landing rule (touchdown halves carried momentum, so the post-landing brake
+     * stops on the narrow ledges) and need no runway: a directional jump launch snaps to
+     * ±walkSpeed regardless of ground speed.
+     */
+    @Test
+    void shouldChainElNathTrickyJumpFootholdsWithConsecutiveJumpEdges() {
+        int[] chain = {171, 262, 264, 267, 277, 278, 279};
+        for (int i = 0; i + 1 < chain.length; i++) {
+            int fromRegionId = elNathGraph().regionIdByFootholdId.getOrDefault(chain[i], -1);
+            int toRegionId = elNathGraph().regionIdByFootholdId.getOrDefault(chain[i + 1], -1);
+            assertTrue(fromRegionId >= 0 && toRegionId >= 0,
+                    "chain footholds must be in the graph: " + chain[i] + " -> " + chain[i + 1]);
+            boolean hasJump = elNathGraph().getOutgoing(fromRegionId).stream()
+                    .anyMatch(e -> e.toRegionId == toRegionId
+                            && e.type == BotNavigationGraph.EdgeType.JUMP);
+            assertTrue(hasJump, "missing JUMP edge for icy hop fh" + chain[i] + " -> fh" + chain[i + 1]);
+        }
+    }
+
+    /** Same capture session: foothold 258 (x 351..366, y -28) is reachable from BELOW by
+     *  jumping (user-verified in the real client at speed100/jump100, no snowshoes). */
+    @Test
+    void shouldReachElNathFoothold258FromBelowByJumping() {
+        int targetRegionId = elNathGraph().regionIdByFootholdId.getOrDefault(258, -1);
+        assertTrue(targetRegionId >= 0, "foothold 258 must be in the graph");
+        boolean reachableFromBelow = elNathGraph().regionsById.values().stream()
+                .flatMap(region -> elNathGraph().getOutgoing(region.id).stream())
+                .anyMatch(e -> e.toRegionId == targetRegionId
+                        && e.type == BotNavigationGraph.EdgeType.JUMP
+                        && e.startPoint.y > -28);
+        assertTrue(reachableFromBelow, "foothold 258 must have a JUMP edge launched from below it");
     }
 
     @Test
@@ -370,7 +582,11 @@ class BotNavigationGraphProviderTest {
     }
 
     @Test
-    void shouldCapStraightDownJumpLaunchWindowAroundSeedAnchor() {
+    void shouldExpandStraightDownJumpWindowAcrossFullDroppableSpan() {
+        // A straight down-jump has no horizontal launch precision, so its window must span the
+        // whole contiguous part of the source region that drops into the same target - not a
+        // +/-20px cap that fragmented one droppable platform into many partial edges
+        // (El Nath r54->r56, pathlog-Leroy-2026-06-12T141517).
         MapleMap map = createEmptyTestMap(910000212);
         server.maps.FootholdTree footholds = new server.maps.FootholdTree(new Point(-2000, -2000), new Point(2000, 2000));
         footholds.insert(new Foothold(new Point(0, 0), new Point(300, 0), 1));
@@ -381,8 +597,13 @@ class BotNavigationGraphProviderTest {
         BotNavigationGraph.Edge dropEdge = findFirstStraightDropEdge(graph);
 
         assertNotNull(dropEdge, "fixture should produce a straight down-jump edge");
-        assertTrue(dropEdge.launchMaxX - dropEdge.launchMinX <= 40,
-                "straight down-jump launch windows should be capped to the graphgen prelaunch span (2 * DOWN_JUMP_PRELAUNCH_WINDOW_PX)");
+        assertTrue(dropEdge.launchMaxX - dropEdge.launchMinX > 40,
+                "straight down-jump window must cover the full droppable span, not the old +/-20 cap; got "
+                        + (dropEdge.launchMaxX - dropEdge.launchMinX));
+        // The 300px platform drops entirely onto the platform below: window should span most of it.
+        assertTrue(dropEdge.launchMaxX - dropEdge.launchMinX >= 200,
+                "window should cover nearly the whole 300px droppable platform; got [" + dropEdge.launchMinX
+                        + ".." + dropEdge.launchMaxX + "]");
     }
 
     @Test
@@ -450,6 +671,27 @@ class BotNavigationGraphProviderTest {
     }
 
     @Test
+    void shouldResolveRopeBottomDeadZoneToGroundInsteadOfMinusOne() {
+        // A bot that grabbed a rope and descended to its bottom hovers (airborne, velY~0) in the
+        // 1-2px gap under the rope region but over the ground platform. Without the fix the airborne
+        // branch returns -1, A* finds no path, and the bot loops grab/exit (pathlog-rApIdScUrVy / live
+        // bot 1416). It must resolve to the ground region so it can plan to walk/jump off the rope.
+        MapleMap map = ropeBottomDeadZoneMap(910000302);
+        BotNavigationGraph graph = BotNavigationGraphProvider.rebuildGraph(map);
+
+        Point deadZone = new Point(50, 198); // rope column, 2px above the ground at y=200 (within a snap)
+        int groundRegion = graph.findRegionId(map, deadZone);
+        assertTrue(groundRegion >= 0, "ground region should exist directly below the rope bottom");
+
+        BotEntry entry = new BotEntry(mockBot(deadZone, map), null, null);
+        entry.inAir = true; // the airborne-hover state captured at the rope bottom
+
+        assertEquals(groundRegion,
+                BotNavigationManager.resolveCurrentRegionId(graph, entry, map, deadZone),
+                "rope-bottom dead zone must resolve to the ground region, not -1");
+    }
+
+    @Test
     void shouldResolveFollowTargetFromOwnerRopeRegionWhileOwnerIsHanging() {
         MapleMap map = topRopeEntryMap(910000211);
         BotNavigationGraph graph = BotNavigationGraphProvider.rebuildGraph(map);
@@ -466,6 +708,43 @@ class BotNavigationGraphProviderTest {
 
         assertEquals(reuseCase.edge().toRegionId,
                 BotNavigationManager.resolveTargetRegionId(graph, entry, map, owner.getPosition()));
+    }
+
+    @Test
+    void shouldNotAuthorStraightDownDropThatWouldGrabRopeInstead() {
+        // Upper + lower platform with a rope hanging between them. A straight-down (down-jump) drop
+        // launched at the rope's column presses DOWN, which physics resolves as a rope grab — so such
+        // a DROP edge is a phantom A* would prefer but execution can never satisfy (grab/regrab loop
+        // at the rope top, pathlog-LeSsOn-2026-06-24). It must not be authored; descent stays via the
+        // rope CLIMB edge. Drops at columns clear of the rope are unaffected.
+        MapleMap map = phantomDropOverRopeMap(910000301);
+        BotNavigationGraph graph = BotNavigationGraphProvider.rebuildGraph(map);
+
+        int ropeX = 50;
+        int grabX = BotPhysicsEngine.cfg.ROPE_GRAB_X;
+
+        boolean anyStraightDropClearOfRope = false;
+        boolean ropeEntryExists = false;
+        for (BotNavigationGraph.Region region : graph.regions) {
+            for (BotNavigationGraph.Edge edge : graph.getOutgoing(region.id)) {
+                if (edge.type == BotNavigationGraph.EdgeType.DROP && edge.launchStepX == 0) {
+                    assertTrue(Math.abs(edge.startPoint.x - ropeX) > grabX,
+                            "straight-down DROP at x=" + edge.startPoint.x
+                                    + " is within rope-grab range of the rope at x=" + ropeX
+                                    + " — pressing DOWN would grab the rope, not drop");
+                    anyStraightDropClearOfRope = true;
+                }
+                BotNavigationGraph.Region to = graph.getRegion(edge.toRegionId);
+                if (edge.type == BotNavigationGraph.EdgeType.CLIMB && to != null && to.isRopeRegion) {
+                    ropeEntryExists = true;
+                }
+            }
+        }
+
+        assertTrue(anyStraightDropClearOfRope,
+                "expected a straight-down DROP at a column clear of the rope (guard must be selective, not blanket)");
+        assertTrue(ropeEntryExists,
+                "expected a CLIMB entry onto the rope so the bot can still descend without the phantom DROP");
     }
 
     @Test
@@ -700,6 +979,56 @@ class BotNavigationGraphProviderTest {
                         + directRegionId + " must be discovered");
     }
 
+    // Regression: a stuck-follower report (pathlog-Leroy/Preston, Orbis station 200000000) showed
+    // bots stranded on lower ledges with "no path found" up to the party on the main platform.
+    // Those regions must stay connected; this pins the route both ways.
+    @Test
+    void shouldConnectOrbisStationLowerLedgesToUpperPlatform() {
+        MapleMap map = BotNavigationMapLoader.loadMapGeometry(200000000);
+        BotNavigationGraph graph = BotNavigationGraphProvider.rebuildGraph(map);
+        Point upper = new Point(3280, -397);   // leader on the main platform
+        Point leroy = new Point(3443, 143);    // stranded follower (live region 80)
+        Point preston = new Point(2657, -145); // stranded follower (live region 56)
+
+        int upperR = graph.findRegionId(map, upper);
+        int leroyR = graph.findRegionId(map, leroy);
+        int prestonR = graph.findRegionId(map, preston);
+        assertTrue(upperR > 0 && leroyR > 0 && prestonR > 0,
+                "regions must resolve: upper=" + upperR + " leroy=" + leroyR + " preston=" + prestonR);
+
+        assertTrue(leroyR == upperR || !findPath(graph, map, leroy, upper).isEmpty(),
+                "Leroy's lower ledge must have a route up to the leader platform");
+        assertTrue(prestonR == upperR || !findPath(graph, map, preston, upper).isEmpty(),
+                "Preston's lower ledge must have a route up to the leader platform");
+    }
+
+    // Regression (long-standing, not from the graphgen rewrite): the x=2739 ladder in Orbis station
+    // hangs from y=-334 down to y=18, so the ledge at y=-145 next to it (r56, where a follower stood
+    // beside the ladder) must get a jump-grab CLIMB edge onto it. The grab was missing because the
+    // reach model only counted the jump arc back to launch height; a rope that extends below the
+    // ledge lets the bot drift through the descent and catch it ~96px out (vs the 81px gap here).
+    @Test
+    void shouldJumpGrabOrbisLadderMidwayFromAdjacentLedge() {
+        MapleMap map = BotNavigationMapLoader.loadMapGeometry(200000000);
+        BotNavigationGraph graph = BotNavigationGraphProvider.rebuildGraph(map);
+        int ledge = graph.findRegionId(map, new Point(2657, -145)); // platform beside the x=2739 ladder
+        assertTrue(ledge > 0, "ledge region must resolve");
+
+        int ropeRegion = -1;
+        for (BotNavigationGraph.Region region : graph.regionsById.values()) {
+            if (region.isRopeRegion && region.minX == 2739) {
+                ropeRegion = region.id;
+                break;
+            }
+        }
+        assertTrue(ropeRegion > 0, "x=2739 ladder region must exist");
+
+        int target = ropeRegion;
+        boolean grab = graph.getOutgoing(ledge).stream()
+                .anyMatch(e -> e.toRegionId == target && e.type == BotNavigationGraph.EdgeType.CLIMB);
+        assertTrue(grab, "the ledge beside the x=2739 ladder must have a jump-grab CLIMB edge onto it");
+    }
+
     private static List<BotNavigationGraph.Edge> findPath(BotNavigationGraph graph,
                                                           MapleMap map,
                                                           Point start,
@@ -830,6 +1159,25 @@ class BotNavigationGraphProviderTest {
         MapleMap map = createEmptyTestMap(mapId);
         map.getFootholds().insert(new Foothold(new Point(80, 100), new Point(120, 100), 1));
         map.addRope(new Rope(100, 100, 200, false));
+        return map;
+    }
+
+    private static MapleMap phantomDropOverRopeMap(int mapId) {
+        MapleMap map = createEmptyTestMap(mapId);
+        // Wide upper + lower platforms (so straight drops exist at columns far from the rope) with a
+        // rope hanging between them at x=50. The rope's x is a feature anchor, so the builder DOES try
+        // a straight-down drop there — the guard is what removes it.
+        map.getFootholds().insert(new Foothold(new Point(0, 0), new Point(300, 0), 1));
+        map.getFootholds().insert(new Foothold(new Point(0, 150), new Point(300, 150), 2));
+        map.addRope(new Rope(50, 0, 150, false));
+        return map;
+    }
+
+    private static MapleMap ropeBottomDeadZoneMap(int mapId) {
+        MapleMap map = createEmptyTestMap(mapId);
+        map.getFootholds().insert(new Foothold(new Point(0, 0), new Point(120, 0), 1));     // upper platform / rope top
+        map.getFootholds().insert(new Foothold(new Point(0, 200), new Point(300, 200), 2)); // ground at the rope bottom
+        map.addRope(new Rope(50, 0, 200, false));
         return map;
     }
 
@@ -986,6 +1334,10 @@ class BotNavigationGraphProviderTest {
     }
 
     private static Character mockBot(Point startPosition, MapleMap map) {
+        return mockBot(startPosition, map, 1);
+    }
+
+    private static Character mockBot(Point startPosition, MapleMap map, int botId) {
         Character bot = mock(Character.class);
         AtomicReference<Point> position = new AtomicReference<>(new Point(startPosition));
         AtomicInteger stance = new AtomicInteger(CharacterStance.STAND_RIGHT_STANCE);
@@ -996,6 +1348,7 @@ class BotNavigationGraphProviderTest {
             return null;
         }).when(bot).setPosition(any(Point.class));
         when(bot.getMap()).thenReturn(map);
+        when(bot.getId()).thenReturn(botId);
         when(bot.getHp()).thenReturn(100);
         when(bot.getTotalMoveSpeedStat()).thenReturn(100);
         when(bot.getTotalJumpStat()).thenReturn(100);
@@ -1027,5 +1380,43 @@ class BotNavigationGraphProviderTest {
     }
 
     private record RopeEntryReuseCase(BotNavigationGraph.Edge edge, Rope rope, Point botPosition, Point rawTarget) {
+    }
+
+    // Hygiene guard: building a nav graph via rebuildGraph(spy(map)) OOMs the box — buildGraph
+    // hammers map methods in tight loops and Mockito records every invocation on a spy. A runtime
+    // guard can't catch it (Mockito's inline mock maker makes a spy report the REAL MapleMap class),
+    // so scan the bot test sources instead: build on the real map FIRST, then spy(realMap). Fails
+    // fast at `mvn test` for everyone (CI + local) instead of melting the machine.
+    @Test
+    void noBotTestBuildsNavGraphThroughAMockitoSpy() throws IOException {
+        Pattern spyAssign = Pattern.compile("(\\w+)\\s*=\\s*spy\\(");
+        List<String> offenders = new ArrayList<>();
+        try (Stream<Path> paths = Files.walk(Path.of("src/test/java/server/bots"))) {
+            for (Path p : (Iterable<Path>) paths.filter(f -> f.toString().endsWith(".java"))::iterator) {
+                String src = Files.readString(p);
+                Matcher m = spyAssign.matcher(src);
+                while (m.find()) {
+                    String var = m.group(1);
+                    // Method-local: only flag rebuildGraph(var) within ~12 lines AFTER `var = spy(...)`,
+                    // before var is reassigned. `map` is reused across methods (some spy it, others use
+                    // a real map of the same name), so a file-wide search false-positives. The correct
+                    // pattern (rebuildGraph(realMap) BEFORE map = spy(realMap)) has no match in-window.
+                    int from = m.end();
+                    String window = src.substring(from, Math.min(src.length(), from + 600));
+                    int reassign = window.indexOf(var + " =");
+                    if (reassign >= 0) {
+                        window = window.substring(0, reassign);
+                    }
+                    if (Pattern.compile("\\brebuildGraph\\(\\s*" + Pattern.quote(var) + "\\s*[,)]")
+                            .matcher(window).find()) {
+                        offenders.add(p.getFileName() + ": rebuildGraph(" + var + ") right after "
+                                + var + " = spy(...)");
+                    }
+                }
+            }
+        }
+        assertTrue(offenders.isEmpty(),
+                "Build the nav graph on the REAL map before spying (spy + rebuildGraph OOMs):\n"
+                        + String.join("\n", offenders));
     }
 }

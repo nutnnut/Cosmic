@@ -1,9 +1,13 @@
 package server.bots;
 
 import client.Character;
+import client.Job;
+import client.inventory.Equip;
 import client.inventory.InventoryType;
 import client.inventory.Item;
 import client.inventory.WeaponType;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import constants.game.GameConstants;
 import constants.inventory.ItemConstants;
 import server.ItemInformationProvider;
@@ -12,21 +16,25 @@ import server.ShopFactory;
 import server.ShopItem;
 import server.StatEffect;
 import server.life.NPC;
-import server.maps.Foothold;
 import server.maps.MapObject;
 import server.maps.MapObjectType;
+import server.maps.MapleMap;
 
 import java.awt.*;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.IdentityHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.IntUnaryOperator;
+import java.util.function.Predicate;
 
 final class BotShopManager {
+    private static final Logger log = LoggerFactory.getLogger(BotShopManager.class);
 
     // Test seam: ItemInformationProvider's WZ/DB static initializer can't run in unit tests,
     // so projectile attack / slot-max lookups go through overridable hooks (see BotShopManagerTest).
@@ -42,20 +50,43 @@ final class BotShopManager {
 
     private static final int SHOP_MANHATTAN_RADIUS = 200;
     private static final int SHOP_ARRIVE_DIST = 100;
+    // Close-enough fallback when the walk can't land next to the keeper (fenced booths):
+    // matches the cab-NPC interaction radius in BotTravelManager.
+    private static final int SHOP_FALLBACK_DIST = 500;
     private static final int SHOP_NPC_SEARCH_DIST = 601;
     private static final int SHOP_APPROACH_DELAY_MAX_MS = 5001;
     private static final int SHOP_STEP_DELAY_MIN_MS = 2000;
     private static final int SHOP_STEP_DELAY_MAX_MS = 4001;
     private static final int SELL_TRASH_STEP_DELAY_MS = 500;
     private static final long SHOP_VISIT_TIMEOUT_MS = 30_000L;
-    private static final long SHOP_SEQUENCE_TIMEOUT_MS = 45_000L;
-    private static final long SHOP_STUCK_FALLBACK_MS = 1000L;
-    private static final int SHOP_STUCK_MOVE_TOLERANCE_PX = 2;
+    // Idle gate, not a total cap: every executed shop step refreshes shopSequenceStartedAtMs,
+    // so long multi-item hauls keep going — only a sequence whose next step never fires aborts.
+    private static final long SHOP_SEQUENCE_IDLE_TIMEOUT_MS = 45_000L;
     private static final int POT_TRIGGER_THRESHOLD = 4; // 80% of target (5) for early trigger
     private static final int POT_TARGET_THRESHOLD = 5; // full target when buying at shop
     private static final int AMMO_TRIGGER_THRESHOLD = 8;
     private static final int AMMO_TARGET_THRESHOLD = 10; // full target when buying at shop
+    private static final int RETURN_SCROLL_NEAREST_TOWN = 2030000;
+    private static final int RETURN_SCROLL_TARGET_QTY = 10;
     private static final int RECHARGE_MAX_SETS = 10; // cap recharge to the best N own-type stacks
+    private static final int AUTO_SELL_FREE_SLOT_THRESHOLD = 2; // bag tab "cramped" when this few slots left
+    private static final int USE_HEALTHY_FREE_SLOTS = 16; // cramped USE escalation sells down to this many free slots (farming runway)
+
+    static class Config {
+        // Debug/verify aid: after a sell-trash visit, list the USE/ETC items that were sold so
+        // the owner can spot a valuable being misclassified. Equips are excluded (well tested).
+        public boolean REPORT_SOLD_USE_ETC = true;
+        // Per-item sold audit log (bot-sell:), split by why the item left the bag:
+        //  - whitelisted: routine junk the bot wants to sell anyway. Spammy with many bots — off.
+        //  - forced-by-value: an item the bot would otherwise keep, liquidated under bag/value
+        //    pressure (above-base equip shelf overflow, cramped USE shelf sales). The concerning
+        //    case (a good roll liquidated) — on.
+        public boolean LOG_SOLD_WHITELIST = false;
+        public boolean LOG_SOLD_FORCED_BY_VALUE = true;
+        // Cramped-bag "why isn't it selling" diagnostic (bot-sellblock:). Noisy; off by default.
+        public boolean LOG_SELLBLOCK_CRAMPED = false;
+    }
+    static Config cfg = new Config();
 
     private BotShopManager() {}
 
@@ -102,7 +133,8 @@ final class BotShopManager {
     static void onMapChange(BotEntry entry, Character bot) {
         clearShopState(entry);
 
-        NpcShopMatch match = findBestShop(bot, false);
+        boolean wantsSellTrash = shouldAutoSellTrash(entry, bot);
+        NpcShopMatch match = findBestShop(entry, bot, wantsSellTrash);
         if (match == null) {
             return;
         }
@@ -114,8 +146,14 @@ final class BotShopManager {
         int potTrigger = BotManager.cfg.POT_LOW_WARN * POT_TRIGGER_THRESHOLD;
         boolean needsHpPots = pots[0] < potTrigger && findPotionItem(match.shop, bot, true) != null;
         boolean needsMpPots = pots[1] < potTrigger && findPotionItem(match.shop, bot, false) != null;
-        if (!needsRecharge && !needsAmmoForShop && !needsHpPots && !needsMpPots) {
+        boolean needsPreferredWeapon = findNeededPreferredWeaponItem(bot, match.shop) != null;
+        if (!needsRecharge && !needsAmmoForShop && !needsHpPots && !needsMpPots
+                && !needsPreferredWeapon && !wantsSellTrash) {
             return;
+        }
+
+        if (wantsSellTrash) {
+            entry.shopSellTrashPending = true;
         }
 
         long distSq = (long) bot.getPosition().distanceSq(match.npcPos);
@@ -126,12 +164,82 @@ final class BotShopManager {
         startShopVisit(entry, bot, match);
     }
 
+    /** Bags filling up while farming: unload junk at a shop without being told — but only when a
+     *  cramped tab actually holds sellable trash (selling can't free slots otherwise). */
+    static boolean shouldAutoSellTrash(BotEntry entry, Character bot) {
+        boolean equipCramped = isCramped(bot, InventoryType.EQUIP);
+        boolean useCramped = isCramped(bot, InventoryType.USE);
+        boolean etcCramped = isCramped(bot, InventoryType.ETC);
+        if (!equipCramped && !useCramped && !etcCramped) {
+            return false;
+        }
+        if (equipCramped && !BotInventoryManager.collectSellTrashEquips(entry, bot).isEmpty()) {
+            return true;
+        }
+        if (useCramped && (!BotInventoryManager.collectSellTrashUseItems(bot).isEmpty()
+                || BotInventoryManager.crampedUseSalesAvailable(bot))) {
+            return true;
+        }
+        return etcCramped && !BotInventoryManager.collectSellTrashEtcItems(bot).isEmpty();
+    }
+
+    static boolean isCramped(Character bot, InventoryType type) {
+        var inv = bot.getInventory(type);
+        return inv != null && inv.getNumFreeSlot() <= AUTO_SELL_FREE_SLOT_THRESHOLD;
+    }
+
+    private static final long SELL_BLOCK_LOG_THROTTLE_MS = 60_000L;
+
+    /**
+     * Diagnostic for "the bag is full but the bot never sells". Emitted (throttled per bot) whenever
+     * a tab is cramped, dumping every input the auto-sell decision depends on so a single live log
+     * line is conclusive instead of leaving us to guess at unobservable runtime state. Unlike the
+     * {@code bot-errand:} log (which only fires once the trigger branch is reached), this fires even
+     * when the bot is {@code !grinding} or {@code shouldAutoSellTrash} is false — the exact cases that
+     * would otherwise be silent. Grep {@code bot-sellblock}.
+     */
+    static void logSellBlockIfCramped(BotEntry entry, Character bot) {
+        if (!cfg.LOG_SELLBLOCK_CRAMPED || entry == null || bot == null) {
+            return;
+        }
+        boolean equipCramped = isCramped(bot, InventoryType.EQUIP);
+        boolean useCramped = isCramped(bot, InventoryType.USE);
+        boolean etcCramped = isCramped(bot, InventoryType.ETC);
+        if (!equipCramped && !useCramped && !etcCramped) {
+            return; // nothing cramped — no stuck bag to explain
+        }
+        long now = System.currentTimeMillis();
+        if (now < entry.sellBlockLogAtMs + SELL_BLOCK_LOG_THROTTLE_MS) {
+            return;
+        }
+        entry.sellBlockLogAtMs = now;
+        int eqTrash = -1;
+        int useTrash = -1;
+        int etcTrash = -1;
+        boolean shouldSell = false;
+        try {
+            eqTrash = BotInventoryManager.collectSellTrashEquips(entry, bot).size();
+            useTrash = BotInventoryManager.collectSellTrashUseItems(bot).size();
+            etcTrash = BotInventoryManager.collectSellTrashEtcItems(bot).size();
+            shouldSell = shouldAutoSellTrash(entry, bot);
+        } catch (RuntimeException ignored) {
+            // diagnostic must never throw into the grind tick
+        }
+        log.info("bot-sellblock: {} cramped[eq={} use={} etc={}] sellableTrash[eq={} use={} etc={}] "
+                        + "shouldSell={} grinding={} following={} autopilot={} shopPending={} errandMap={}",
+                bot.getName(), equipCramped, useCramped, etcCramped, eqTrash, useTrash, etcTrash,
+                shouldSell, entry.grinding, entry.following, BotAutopilotManager.isActive(entry),
+                entry.shopVisitPending, entry.autopilotErrandMapId);
+    }
+
     static void requestSellTrashVisit(BotEntry entry, Character bot) {
         if (entry == null || bot == null || bot.getMap() == null) {
             return;
         }
-        if (BotInventoryManager.collectSellTrashEquips(entry, bot).isEmpty()) {
-            BotManager.getInstance().botReply(entry, "no trash equips worth selling");
+        boolean nothingToSell = BotInventoryManager.collectSellTrashItems(entry, bot).isEmpty()
+                && !(isCramped(bot, InventoryType.USE) && BotInventoryManager.crampedUseSalesAvailable(bot));
+        if (nothingToSell) {
+            BotManager.getInstance().botReply(entry, "no junk worth selling");
             return;
         }
 
@@ -140,7 +248,7 @@ final class BotShopManager {
             return;
         }
 
-        NpcShopMatch match = findBestShop(bot, true);
+        NpcShopMatch match = findBestShop(entry, bot, true);
         if (match == null) {
             entry.shopSellTrashPending = false;
             BotManager.getInstance().botReply(entry, "can't find a shop here");
@@ -154,10 +262,17 @@ final class BotShopManager {
     private static void startShopVisit(BotEntry entry, Character bot, NpcShopMatch match) {
         entry.shopVisitPending = true;
         entry.shopNpcPos = match.npcPos;
-        entry.shopTargetPos = pickShopApproachPoint(match.npcPos, entry, bot);
+        entry.shopTargetPos = BotTravelManager.pickReachableApproachPoint(entry, bot, match.npcPos, SHOP_MANHATTAN_RADIUS);
+        entry.shopTargetGraphChecked = approachGraphReady(entry, bot);
         entry.shopApproachDelayMs = (int) BotManager.randMs(0, SHOP_APPROACH_DELAY_MAX_MS);
         entry.shopVisitStartedAtMs = System.currentTimeMillis();
         entry.shopSequenceStartedAtMs = 0L;
+    }
+
+    private static boolean approachGraphReady(BotEntry entry, Character bot) {
+        BotMovementProfile profile = entry.movementProfile != null
+                ? entry.movementProfile : BotMovementProfile.fromCharacter(bot);
+        return BotNavigationGraphProvider.peekBestGraph(bot.getMap(), profile) != null;
     }
 
     static boolean tickShopVisit(BotEntry entry, Character bot) {
@@ -172,19 +287,32 @@ final class BotShopManager {
         if (entry.shopVisitStartedAtMs > 0
                 && !entry.shopSequenceActive
                 && now - entry.shopVisitStartedAtMs > SHOP_VISIT_TIMEOUT_MS) {
+            // Some shopkeepers sit in fenced booths the approach walk can't enter (e.g. the
+            // Ellinia grocer) — if the bot got close, shop from where it stands instead of
+            // giving up within sight of the counter.
+            if (manhattan(bot.getPosition(), entry.shopNpcPos) <= SHOP_FALLBACK_DIST) {
+                startShopSequence(entry, bot);
+                return true;
+            }
             BotManager.getInstance().botSay(bot, "couldn't reach shop in time");
             clearShopState(entry);
             return false;
         }
         if (entry.shopSequenceActive
                 && entry.shopSequenceStartedAtMs > 0
-                && now - entry.shopSequenceStartedAtMs > SHOP_SEQUENCE_TIMEOUT_MS) {
+                && now - entry.shopSequenceStartedAtMs > SHOP_SEQUENCE_IDLE_TIMEOUT_MS) {
             abortShop(entry, bot, "took too long at the shop, giving up");
             return false;
         }
         if (entry.shopApproachDelayMs > 0) {
             entry.shopApproachDelayMs = BotMovementManager.tickDown(entry.shopApproachDelayMs);
             return false;
+        }
+        if (!entry.shopSequenceActive && !entry.shopTargetGraphChecked && approachGraphReady(entry, bot)) {
+            // The original pick raced the map-change graph warmup and couldn't filter for
+            // reachability — re-pick now that pathability is known.
+            entry.shopTargetPos = BotTravelManager.pickReachableApproachPoint(entry, bot, entry.shopNpcPos, SHOP_MANHATTAN_RADIUS);
+            entry.shopTargetGraphChecked = true;
         }
 
         Point botPos = bot.getPosition();
@@ -195,11 +323,7 @@ final class BotShopManager {
                 && isStuckNearNpc(entry, botPos, now);
         if (reachedApproach || stuckAtNpc) {
             if (!entry.shopSequenceActive) {
-                entry.shopSequenceActive = true;
-                entry.shopSequenceStartedAtMs = System.currentTimeMillis();
-                BotManager.getInstance().botSay(bot, BotManager.randomReply(SHOPPING_MSGS));
-                Point npcPos = entry.shopNpcPos;
-                scheduleShopStep(entry, () -> executePurchases(entry, bot, npcPos));
+                startShopSequence(entry, bot);
             }
             return true;
         }
@@ -207,33 +331,39 @@ final class BotShopManager {
         return true;
     }
 
+    private static void startShopSequence(BotEntry entry, Character bot) {
+        entry.shopSequenceActive = true;
+        entry.shopSequenceStartedAtMs = System.currentTimeMillis();
+        BotManager.getInstance().botSay(bot, BotManager.randomReply(SHOPPING_MSGS));
+        Point npcPos = entry.shopNpcPos;
+        scheduleShopStep(entry, () -> executePurchases(entry, bot, npcPos));
+    }
+
     private static boolean isStuckNearNpc(BotEntry entry, Point botPos, long now) {
-        if (entry.shopNpcPos == null) {
-            return false;
-        }
-        if (entry.shopStuckCheckPos == null) {
-            entry.shopStuckCheckPos = new Point(botPos);
-            entry.shopStuckCheckAtMs = now;
-            return false;
-        }
-        if (botPos.distanceSq(entry.shopStuckCheckPos)
-                > (long) SHOP_STUCK_MOVE_TOLERANCE_PX * SHOP_STUCK_MOVE_TOLERANCE_PX) {
-            entry.shopStuckCheckPos.setLocation(botPos);
-            entry.shopStuckCheckAtMs = now;
-            return false;
-        }
-        if (now - entry.shopStuckCheckAtMs < SHOP_STUCK_FALLBACK_MS) {
-            return false;
-        }
-        return manhattan(botPos, entry.shopNpcPos) <= SHOP_ARRIVE_DIST;
+        // SSOT: shared with the taxi/ferry/instructor approaches (same 2px/1s/within-fallback rule).
+        return BotTravelManager.stuckNear(entry.shopApproachStuck, botPos, entry.shopNpcPos, now, SHOP_FALLBACK_DIST);
     }
 
     private static int manhattan(Point a, Point b) {
         return Math.abs(a.x - b.x) + Math.abs(a.y - b.y);
     }
 
-    private static NpcShopMatch findBestShop(Character bot, boolean allowAnyShop) {
-        List<MapObject> objects = bot.getMap().getMapObjectsInRange(
+    /** On-arrival visit decision: is the shop in front of the bot worth stopping at? Sell-trash =>
+     *  any shop; otherwise it must stock something the bot actually needs right now (pots OR ammo) —
+     *  this is the granular, bag-state-aware check, distinct from the looser potion-only filter the
+     *  cross-map errand destination search uses. */
+    private static NpcShopMatch findBestShop(BotEntry entry, Character bot, boolean allowAnyShop) {
+        return findBestShop(bot.getMap(), allowAnyShop ? shop -> true : shop -> shopHasAnythingNeeded(entry, bot, shop));
+    }
+
+    /** First shop NPC on {@code map} whose shop the {@code accept} predicate matches. Generalized
+     *  over an arbitrary map and criterion so both the on-arrival visit decision and the cross-map
+     *  nearest-shop search share one NPC scan. */
+    private static NpcShopMatch findBestShop(MapleMap map, Predicate<Shop> accept) {
+        if (map == null) {
+            return null;
+        }
+        List<MapObject> objects = map.getMapObjectsInRange(
                 new Point(0, 0), Double.POSITIVE_INFINITY,
                 Arrays.asList(MapObjectType.NPC));
 
@@ -246,19 +376,207 @@ final class BotShopManager {
             if (shop == null) {
                 continue;
             }
-            if (allowAnyShop || shopHasAnythingNeeded(bot, shop)) {
+            if (accept.test(shop)) {
                 return new NpcShopMatch(npc, shop, npc.getPosition());
             }
         }
         return null;
     }
 
-    private static boolean shopHasAnythingNeeded(Character bot, Shop shop) {
+    // How far (portal hops) the bot will look for a shop when its own map has none. Towns and their
+    // shop sub-maps (e.g. Orbis 200000000 -> department store 200000002) are 1-2 hops apart, so a
+    // modest cap finds them while bounding the map-load cost of the search.
+    private static final int SHOP_SEARCH_MAX_HOPS = 6;
+    private static final int NO_SHOP_MAP = Integer.MIN_VALUE;
+    // Cache of "nearest reachable map with a matching shop" per source map, one map per criterion.
+    // Both the world graph and shop catalogs are static, and neither criterion depends on live bag
+    // state (any shop for a sell trip; a potion-stocking shop for a supply run), so these answers
+    // never change — compute each (map-loading) flood once per (source map, criterion).
+    private static final Map<Integer, Integer> nearestAnyShopMapCache = new ConcurrentHashMap<>();
+    private static final Map<Integer, Integer> nearestPotionShopMapCache = new ConcurrentHashMap<>();
+
+    /**
+     * The nearest reachable map (current map first, then by portal-hop distance) that has a shop the
+     * bot needs, or {@code null} if none within {@link #SHOP_SEARCH_MAX_HOPS}. This is the fix for a
+     * bot stranded in a town hub whose own map has no shop NPC (the shop sits one portal away): rather
+     * than only ever heading to {@code getReturnMap()} ("nearest town"), the bot seeks the nearest
+     * actual shop that fits the criteria. Both criteria — any shop (sell trip) and potion-stocking
+     * (supply run) — are bag-state-independent, so each is cached per source map.
+     */
+    static Integer findNearestShopMap(Character bot, boolean allowAnyShop) {
+        return findNearestShopMap(null, bot, allowAnyShop);
+    }
+
+    static Integer findNearestShopMap(BotEntry entry, Character bot, boolean allowAnyShop) {
+        if (bot == null || bot.getMap() == null || bot.getClient() == null) {
+            return null;
+        }
+        int from = bot.getMapId();
+        boolean needsPreferredWeapon = needsPreferredWeaponForCurrentJob(bot);
+        if (needsPreferredWeapon) {
+            return findNearestUncachedShopMap(bot, shop -> shopHasAnythingNeeded(entry, bot, shop));
+        }
+        // Sell-trash trip => any shop; supply run => a potion-stocking shop (also carries ammo).
+        Map<Integer, Integer> cache = allowAnyShop ? nearestAnyShopMapCache : nearestPotionShopMapCache;
+        Integer cached = cache.get(from);
+        if (cached != null) {
+            return cached == NO_SHOP_MAP ? null : cached;
+        }
+        Predicate<Shop> accept = allowAnyShop ? shop -> true : BotShopManager::shopSellsAnyPotion;
+        Integer found = null;
+        try {
+            var factory = bot.getClient().getChannelServer().getMapFactory();
+            Set<Integer> seen = new HashSet<>();
+            // Nearest-first: widen the reachable radius one hop at a time and only probe maps that newly
+            // entered range, so the first shop hit is the closest. Early-return keeps map loading minimal.
+            outer:
+            for (int hops = 0; hops <= SHOP_SEARCH_MAX_HOPS; hops++) {
+                for (int mapId : BotAutopilotManager.reachableForBot(bot, from, hops, BotWorldGraph.RouteOptions.PORTALS_ONLY)) {
+                    if (!seen.add(mapId)) {
+                        continue;
+                    }
+                    if (findBestShop(factory.getMap(mapId), accept) != null) {
+                        found = mapId;
+                        break outer;
+                    }
+                }
+            }
+        } catch (RuntimeException ex) {
+            return null; // best-effort: world graph / map load unavailable -> caller falls back to return map
+        }
+        cache.put(from, found == null ? NO_SHOP_MAP : found);
+        return found;
+    }
+
+    private static Integer findNearestUncachedShopMap(Character bot, Predicate<Shop> accept) {
+        int from = bot.getMapId();
+        try {
+            var factory = bot.getClient().getChannelServer().getMapFactory();
+            Set<Integer> seen = new HashSet<>();
+            for (int hops = 0; hops <= SHOP_SEARCH_MAX_HOPS; hops++) {
+                for (int mapId : BotAutopilotManager.reachableForBot(bot, from, hops, BotWorldGraph.RouteOptions.PORTALS_ONLY)) {
+                    if (!seen.add(mapId)) {
+                        continue;
+                    }
+                    if (findBestShop(factory.getMap(mapId), accept) != null) {
+                        return mapId;
+                    }
+                }
+            }
+        } catch (RuntimeException ex) {
+            return null;
+        }
+        return null;
+    }
+
+    /** Pots low enough to need restocking. Per the errand policy this is the ONLY need that requires a
+     *  specific shop (one that stocks potions); a full bag or low ammo can be handled at any shop. */
+    static boolean potsLow(Character bot) {
+        try {
+            int[] pots = BotPotionManager.countPotions(bot);
+            int potTrigger = BotManager.cfg.POT_LOW_WARN * 5;
+            return pots[0] < potTrigger || pots[1] < potTrigger;
+        } catch (RuntimeException ex) {
+            return false; // best-effort: can't read pots -> treat as "not pot-low" (any shop is fine)
+        }
+    }
+
+    /** SSOT affordability gate for a BUY-pots resupply errand: skip the town trip when the bot can't
+     *  afford a useful restock, so a broke bot doesn't walk to a shop, buy nothing on NOT_ENOUGH_MESO,
+     *  and bounce back forever. Used by BOTH errand triggers (reactive grind-stop in BotPotionManager
+     *  and pre-travel in BotAutopilotManager). Selling is never gated by this — it earns the meso. */
+    static boolean canAffordPotResupply(Character bot) {
+        return bot.getMeso() >= BotManager.cfg.POT_SPEND_MIN_MESO;
+    }
+
+    /** True when the equipped weapon REQUIRES ammo but has none usable (no stars/bullets and no
+     *  infinite-ammo buff like Soul Arrow / Shadow Stars) - the bot literally cannot attack until it
+     *  restocks. Used to force a town resupply trip even when broke, since the visit sells trash to
+     *  fund the refill. ponytail: a fully-broke bot recovers over two visits (a visit sells trash at
+     *  its tail, the next recharges) - acceptable for this rare corner; the dagger thief build avoids
+     *  the ammo economy entirely. Best-effort: unreadable weapon/ammo reads as "not stranded". */
+    static boolean isOutOfUsableAmmo(Character bot) {
+        try {
+            WeaponType wt = BotAttackExecutionProvider.getEquippedWeaponType(bot);
+            return BotCombatManager.isRangedAmmoWeapon(wt) && BotCombatManager.countAmmo(bot, wt) <= 0;
+        } catch (RuntimeException ex) {
+            return false;
+        }
+    }
+
+    /** Could a town trip actually re-arm an out-of-ammo bot RIGHT NOW — does it have enough meso to
+     *  buy the cheapest ammo set, or sellable trash to fund one? When false (truly broke, sold its
+     *  spare weapon, nothing left to sell), the resupply errand is pointless: the bot would just walk
+     *  to a shop, buy nothing, and bounce back forever. The callers instead let it keep grinding with
+     *  the degenerate close-range swing (no ammo) to earn the meso first — the final no-deadlock
+     *  guardrail. ponytail: bag-cramp is the sell signal we already have; an uncramped bot with junk
+     *  keeps farming and the cramp/meso threshold trips the errand soon enough. Bad reads -> recoverable
+     *  (keep the existing errand behavior rather than newly suppress it). */
+    static boolean canRecoverAmmo(BotEntry entry, Character bot) {
+        try {
+            return bot.getMeso() >= BotManager.cfg.AMMO_BUY_FLOOR_MESO || shouldAutoSellTrash(entry, bot);
+        } catch (RuntimeException ex) {
+            return true;
+        }
+    }
+
+    /** True when the bot needs to BUY a consumable (HP/MP potions or ammo) — i.e. the errand is a
+     *  supply run, not a pure sell-trash / bag-dump. Drives the errand-destination shop filter: a
+     *  supply run must reach a potion-stocking shop (which also carries ammo), while a sell-only trip
+     *  uses any shop. Reuses the same low-supply predicates the shopping flow uses (SSOT); the ammo
+     *  checks are shop-independent (recharge takes no shop; fixed-ammo treats a null shop as "any").
+     *  Best-effort: a partial character mock that breaks a count reads as "doesn't need to buy", so
+     *  the bot falls back to any shop rather than stranding the errand. */
+    static boolean needsToBuySupplies(Character bot) {
+        return needsToBuySupplies(null, bot);
+    }
+
+    static boolean needsToBuySupplies(BotEntry entry, Character bot) {
+        try {
+            if (needsPreferredWeaponForCurrentJob(bot)) {
+                return true;
+            }
+            if (potsLow(bot)) {
+                return true;
+            }
+            WeaponType wt = BotAttackExecutionProvider.getEquippedWeaponType(bot);
+            int ammoThreshold = ammoTriggerThreshold();
+            return needsRechargeForShop(bot, wt, ammoThreshold)
+                    || needsFixedAmmoForShop(bot, null, wt, ammoThreshold)
+                    || shouldBuyStarterAmmoSet(bot, wt);
+        } catch (RuntimeException ex) {
+            return false;
+        }
+    }
+
+    /** True if the shop sells at least one recovery potion (HP or MP) at a real price. The cross-map
+     *  errand-destination filter for a supply trip — a potion-stocking shop reliably also stocks the
+     *  other consumables, so it's a sufficient, bag-state-independent proxy for "can resupply here".
+     *  {@link BotInventoryManager#isRecoveryPotion} is the recovery-potion SSOT. */
+    static boolean shopSellsAnyPotion(Shop shop) {
+        for (ShopItem si : shop.getItems()) {
+            if (si.getPrice() > 0 && BotInventoryManager.isRecoveryPotion(si.getItemId())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** On-arrival visit criterion: does this shop stock something the bot needs RIGHT NOW (ammo to
+     *  recharge/buy, or a potion type it's low on that the shop sells)? Bag-state-aware, unlike the
+     *  potion-only errand-destination filter. */
+    private static boolean shopHasAnythingNeeded(BotEntry entry, Character bot, Shop shop) {
+        if (findNeededPreferredWeaponItem(bot, shop) != null) {
+            return true;
+        }
         WeaponType wt = BotAttackExecutionProvider.getEquippedWeaponType(bot);
         if (needsFixedAmmoForShop(bot, shop, wt, ammoTriggerThreshold())) {
             return true;
         }
         if (needsRechargeForShop(bot, wt, ammoTriggerThreshold())) {
+            return true;
+        }
+        if (shouldBuyStarterAmmoSet(bot, wt) && findAmmoItem(shop, wt) != null) {
             return true;
         }
         int[] pots = BotPotionManager.countPotions(bot);
@@ -280,6 +598,12 @@ final class BotShopManager {
         WeaponType wt = BotAttackExecutionProvider.getEquippedWeaponType(bot);
         List<PurchaseAction> actions = new ArrayList<>();
 
+        // Buy a fresh set FIRST if the bot owns none (recharge can only refill an existing stack); the
+        // recharge step below then tops the new set up to slot-max in the same visit.
+        if (shouldBuyStarterAmmoSet(bot, wt)) {
+            actions.add((sequence, shop) -> appendBuyReport(sequence, buyStarterAmmoSet(bot, shop, wt),
+                    wt == WeaponType.GUN ? "bullets" : "throwing stars"));
+        }
         if (shouldRechargeWhileShopping(bot, wt)) {
             actions.add((sequence, shop) -> {
                 BuyReport recharge = doRecharge(bot, shop, wt);
@@ -295,20 +619,20 @@ final class BotShopManager {
         if (shouldBuyFixedAmmoWhileShopping(bot, wt)) {
             actions.add((sequence, shop) -> appendBuyReport(sequence, buyAmmo(bot, shop, wt), "ammo"));
         }
-        actions.add((sequence, shop) -> {
-            int[] pots = BotPotionManager.countPotions(bot);
-            if (pots[0] < BotManager.cfg.POT_LOW_WARN * 5) {
-                return appendBuyReport(sequence, buyPotions(bot, shop, true), "HP pots");
-            }
-            return sequence;
-        });
-        actions.add((sequence, shop) -> {
-            int[] pots = BotPotionManager.countPotions(bot);
-            if (pots[1] < BotManager.cfg.POT_LOW_WARN * 5) {
-                return appendBuyReport(sequence, buyPotions(bot, shop, false), "MP pots");
-            }
-            return sequence;
-        });
+        if (shouldBuyReturnScrollWhileShopping(bot)) {
+            actions.add((sequence, shop) -> appendBuyReport(sequence, buyReturnScrolls(bot, shop), "Return Scroll - Nearest Town"));
+        }
+        // Class-weighted pot budget: buy the PRIMARY pot type first (mage -> MP, everyone else -> HP)
+        // but cap its spend so the SECONDARY keeps a reserve share of the meso, then the secondary
+        // takes the rest. Without this the first type (HP) drained the whole wallet to its target and
+        // starved the second (MP) - backwards for a mage. Ammo was bought above (essential to attack).
+        boolean mage = bot.getJobStyle() == Job.MAGICIAN;
+        actions.add((sequence, shop) -> buyPotsCapped(sequence, bot, shop,
+                !mage, POT_SECONDARY_RESERVE_FRAC, mage ? "MP pots" : "HP pots"));
+        actions.add((sequence, shop) -> buyPotsCapped(sequence, bot, shop,
+                mage, 0.0, mage ? "HP pots" : "MP pots"));
+        // Last: spend any surplus on a worthwhile gear upgrade (after consumables are covered).
+        actions.add(BotShopManager::evaluateAndBuyEquip);
 
         runPurchaseStep(new PurchaseSequence(entry, bot, npcPos, actions, new ArrayList<>(), null), 0);
     }
@@ -319,11 +643,10 @@ final class BotShopManager {
             return;
         }
         if (index >= sequence.actions().size()) {
-            if (sequence.entry().shopSellTrashPending) {
-                startSellTrashSequence(sequence);
-            } else {
-                finishPurchaseSequence(sequence, true);
-            }
+            // SSOT: every shop visit ends by unloading trash, no matter what brought the bot here
+            // (resupply pots/ammo, manual sell command, cramped auto-sell). startSellTrashSequence
+            // no-ops cleanly and keeps the existing buy-report messaging when nothing is sellable.
+            startSellTrashSequence(sequence);
             return;
         }
 
@@ -366,6 +689,7 @@ final class BotShopManager {
             BotManager.getInstance().botSay(sequence.bot(), "bought " + String.join(", ", sequence.bought()));
             BotPotionManager.setupAutopotForBot(sequence.bot());
             BotCombatManager.tickAmmoCheck(sequence.entry(), sequence.bot());
+            BotInventoryManager.sortOwnAmmoSlots(sequence.bot());
             scheduleShopStep(sequence.entry(), finish);
             return;
         }
@@ -374,11 +698,47 @@ final class BotShopManager {
     }
 
     private static void startSellTrashSequence(PurchaseSequence sequence) {
-        List<Item> items = BotInventoryManager.collectSellTrashEquips(sequence.entry(), sequence.bot());
+        // Selling is now the tail of EVERY visit, so distinguish an explicit sell goal (cramped
+        // auto-sell or a "sell trash" command set shopSellTrashPending) from an incidental resupply
+        // visit. Only the explicit goal announces "no junk worth selling"; an incidental visit with
+        // nothing to sell just finishes its normal buy report (identical to the old non-sell path).
+        boolean explicitSell = sequence.entry().shopSellTrashPending;
+        List<Item> items = new ArrayList<>(
+                BotInventoryManager.collectSellTrashItems(sequence.entry(), sequence.bot()));
+        // USE shelf stacks sold only under bag pressure (not routine junk) — tagged so the sell
+        // audit log can tell a forced liquidation from a whitelisted-junk sale. Equips re-derive
+        // this per-item via shouldKeepForSellTrash; ETC has no pressure-sale path.
+        Set<Item> forcedByValue = Collections.newSetFromMap(new IdentityHashMap<>());
+        // Pressure-driven escalation: when the USE tab is cramped, sell the lowest value-per-slot
+        // shelf stacks (worst first) on top of the always-junk, down to a healthy free-slot margin.
+        // Junk already in the plan frees slots too, so it counts toward the margin and is excluded.
+        if (isCramped(sequence.bot(), InventoryType.USE)) {
+            var useInv = sequence.bot().getInventory(InventoryType.USE);
+            int freeNow = useInv != null ? useInv.getNumFreeSlot() : 0;
+            long junkUseSlots = items.stream()
+                    .filter(it -> it.getInventoryType() == InventoryType.USE).count();
+            int slotsToFree = USE_HEALTHY_FREE_SLOTS - (freeNow + (int) junkUseSlots);
+            if (slotsToFree > 0) {
+                Set<Item> already = Collections.newSetFromMap(new IdentityHashMap<>());
+                already.addAll(items);
+                List<Item> crampedSales = BotInventoryManager.collectCrampedUseSales(
+                        sequence.bot(), slotsToFree, already);
+                int farmItemId = sequence.entry().autopilotFarmItemId;
+                if (farmItemId != 0) {
+                    crampedSales.removeIf(it -> it.getItemId() == farmItemId);
+                }
+                items.addAll(crampedSales);
+                forcedByValue.addAll(crampedSales);
+            }
+        }
         if (items.isEmpty()) {
             sequence.entry().shopSellTrashPending = false;
-            BotManager.getInstance().botSay(sequence.bot(), "no trash equips worth selling");
-            finishPurchaseSequence(sequence, false);
+            if (explicitSell) {
+                BotManager.getInstance().botSay(sequence.bot(), "no junk worth selling");
+                finishPurchaseSequence(sequence, false);
+            } else {
+                finishPurchaseSequence(sequence, true);
+            }
             return;
         }
 
@@ -389,13 +749,16 @@ final class BotShopManager {
                         sequence.bot(),
                         sequence.npcPos(),
                         0,
+                        new ArrayList<>(),
                         Collections.newSetFromMap(new IdentityHashMap<>()),
                         plan,
+                        forcedByValue,
                         sequence.bought(),
                         sequence.firstShortfall()));
     }
 
-    private static void runSellTrashStep(BotEntry entry, Character bot, Point npcPos, int soldCount, Set<Item> failedItems, List<Item> plan,
+    private static void runSellTrashStep(BotEntry entry, Character bot, Point npcPos, int soldCount, List<String> soldUseEtc,
+                                         Set<Item> failedItems, List<Item> plan, Set<Item> forcedByValue,
                                          List<String> bought, BuyReport firstShortfall) {
         if (!isShopSequenceValid(entry, bot, npcPos)) {
             abortShop(entry, bot, "couldn't stay at the shop to sell, never mind");
@@ -405,16 +768,22 @@ final class BotShopManager {
         List<Item> items = plan.stream()
                 .filter(item -> BotInventoryManager.hasItem(bot, item))
                 .filter(item -> !failedItems.contains(item))
+                .filter(item -> BotInventoryManager.sellTrashQuantity(item) > 0)
                 .toList();
         if (items.isEmpty()) {
             entry.shopSellTrashPending = false;
             if (soldCount > 0) {
-                BotManager.getInstance().botSay(bot, "sold " + soldCount + " trash equip" + (soldCount != 1 ? "s" : ""));
+                BotManager.getInstance().botSay(bot, "sold " + soldCount + " junk item" + (soldCount != 1 ? "s" : ""));
+                if (cfg.REPORT_SOLD_USE_ETC) {
+                    for (String line : buildSoldDetailLines(soldUseEtc)) {
+                        BotManager.getInstance().botSay(bot, line);
+                    }
+                }
             }
             if (!failedItems.isEmpty()) {
                 BotManager.getInstance().botSay(bot, buildSellTrashFailureMessage(failedItems.size()));
             } else if (soldCount == 0) {
-                BotManager.getInstance().botSay(bot, "no trash equips worth selling");
+                BotManager.getInstance().botSay(bot, "no junk worth selling");
             }
             finishPurchaseSequence(new PurchaseSequence(entry, bot, npcPos, List.of(), bought, firstShortfall), false);
             return;
@@ -423,7 +792,7 @@ final class BotShopManager {
         Item item = items.get(0);
         if (!BotInventoryManager.hasItem(bot, item)) {
             scheduleShopStep(entry, SELL_TRASH_STEP_DELAY_MS,
-                    () -> runSellTrashStep(entry, bot, npcPos, soldCount, failedItems, plan, bought, firstShortfall));
+                    () -> runSellTrashStep(entry, bot, npcPos, soldCount, soldUseEtc, failedItems, plan, forcedByValue, bought, firstShortfall));
             return;
         }
 
@@ -438,17 +807,78 @@ final class BotShopManager {
             return;
         }
 
-        shop.sell(bot.getClient(), InventoryType.EQUIP, item.getPosition(), (short) 1);
-        if (BotInventoryManager.hasItem(bot, item)) {
+        // Quantity is read at sell time so stacks that grew since planning still sell correctly.
+        short beforeQuantity = item.getQuantity();
+        short soldQuantity = BotInventoryManager.sellTrashQuantity(item);
+        shop.sell(bot.getClient(), item.getInventoryType(), item.getPosition(), soldQuantity);
+        if (BotInventoryManager.hasItem(bot, item)
+                && item.getQuantity() > beforeQuantity - soldQuantity) {
             failedItems.add(item);
             scheduleShopStep(entry, SELL_TRASH_STEP_DELAY_MS,
-                    () -> runSellTrashStep(entry, bot, npcPos, soldCount, failedItems, plan, bought, firstShortfall));
+                    () -> runSellTrashStep(entry, bot, npcPos, soldCount, soldUseEtc, failedItems, plan, forcedByValue, bought, firstShortfall));
             return;
         }
 
+        if (item.getInventoryType() != InventoryType.EQUIP) {
+            soldUseEtc.add(soldQuantity + " " + resolveItemName(item.getItemId(), "item"));
+        }
+        logSoldItem(bot, item, soldQuantity, forcedByValue);
         int nextSoldCount = soldCount + 1;
         scheduleShopStep(entry, SELL_TRASH_STEP_DELAY_MS,
-                () -> runSellTrashStep(entry, bot, npcPos, nextSoldCount, failedItems, plan, bought, firstShortfall));
+                () -> runSellTrashStep(entry, bot, npcPos, nextSoldCount, soldUseEtc, failedItems, plan, forcedByValue, bought, firstShortfall));
+    }
+
+    /** Audit trail for every NPC sale a bot makes — equips include their above-base trade
+     *  score so a concerning sale (a good roll liquidated) is findable in the server log. */
+    private static void logSoldItem(Character bot, Item item, short quantity, Set<Item> forcedByValue) {
+        String name = resolveItemName(item.getItemId(), "item");
+        if (item instanceof Equip equip) {
+            double score;
+            boolean forced;
+            try {
+                ItemInformationProvider ii = ItemInformationProvider.getInstance();
+                score = BotInventoryManager.tradeValueScore(ii, equip);
+                // Kept-valuable equips reach the sell list ONLY as shelf overflow — i.e. forced by
+                // value; whitelisted trash equips fail this keep gate.
+                forced = BotInventoryManager.shouldKeepForSellTrash(ii, equip);
+            } catch (Throwable t) {
+                score = -1; // unit tests / WZ unavailable
+                forced = false;
+            }
+            if (!sellLogEnabled(forced)) {
+                return;
+            }
+            log.debug("bot-sell: {} sold {} equip {} (id {}, tradeScore {})",
+                    bot.getName(), forced ? "forced" : "whitelist", name, item.getItemId(), String.format("%.1f", score));
+        } else {
+            boolean forced = forcedByValue.contains(item);
+            if (!sellLogEnabled(forced)) {
+                return;
+            }
+            log.debug("bot-sell: {} sold {} {}x {} (id {})",
+                    bot.getName(), forced ? "forced" : "whitelist", quantity, name, item.getItemId());
+        }
+    }
+
+    private static boolean sellLogEnabled(boolean forcedByValue) {
+        return forcedByValue ? cfg.LOG_SOLD_FORCED_BY_VALUE : cfg.LOG_SOLD_WHITELIST;
+    }
+
+    // One or more ASCII chat lines listing the USE/ETC items sold, e.g. "unloaded: 12 Squid Ink, 3 Blue Potion".
+    private static List<String> buildSoldDetailLines(List<String> soldUseEtc) {
+        List<String> lines = new ArrayList<>();
+        StringBuilder line = new StringBuilder();
+        for (String soldEntry : soldUseEtc) {
+            if (!line.isEmpty() && line.length() + soldEntry.length() + 2 > 90) {
+                lines.add(line.toString());
+                line = new StringBuilder();
+            }
+            line.append(line.isEmpty() ? (lines.isEmpty() ? "unloaded: " : "") : ", ").append(soldEntry);
+        }
+        if (!line.isEmpty()) {
+            lines.add(line.toString());
+        }
+        return lines;
     }
 
     private static String buildSellTrashFailureMessage(int failedCount) {
@@ -476,6 +906,18 @@ final class BotShopManager {
 
     private static int ammoTargetThreshold() {
         return BotCombatManager.cfg.AMMO_LOW_WARN * AMMO_TARGET_THRESHOLD;
+    }
+
+    /** Quantity resupply tops the bot up to, per HP/MP potion type. The USE runway protects at
+     *  least this much so a cramped sell trip never sheds pots the bot would immediately rebuy. */
+    static int potResupplyTarget() {
+        return BotManager.cfg.POT_LOW_WARN * POT_TARGET_THRESHOLD;
+    }
+
+    /** Quantity resupply tops (non-rechargeable) ammo up to; the USE runway protects at least this
+     *  much so the bot never auto-sells arrows/bolts it would immediately rebuy. */
+    static int ammoResupplyTarget() {
+        return ammoTargetThreshold();
     }
 
     private static boolean needsFixedAmmoForShop(Character bot, Shop shop, WeaponType wt, int threshold) {
@@ -520,6 +962,29 @@ final class BotShopManager {
         return needsAmmo(bot, wt) && BotCombatManager.countAmmo(bot, wt) < ammoTargetThreshold();
     }
 
+    /** True when a rechargeable-ammo bot (claw/gun) owns NO set at all to recharge - it sold/used the
+     *  whole stack and must BUY a fresh set (recharge can only refill an existing stack). Without this a
+     *  thief that lost its stars could never re-arm. Ammo is top spend priority, so this is ungated by
+     *  the meso tiers; the cheapest star set is ~500 meso. */
+    static boolean shouldBuyStarterAmmoSet(Character bot, WeaponType wt) {
+        return isRechargeWeaponType(wt) && bestRechargeAmmoId(bot, wt) < 0
+                && BotCombatManager.countAmmo(bot, wt) < ammoTargetThreshold();
+    }
+
+    /** Buy one fresh set of the cheapest matching rechargeable ammo (a star/bullet stack). The
+     *  subsequent recharge step tops it up to slot-max within the same visit. */
+    private static BuyReport buyStarterAmmoSet(Character bot, Shop shop, WeaponType wt) {
+        ShopSlotItem ammo = findAmmoItem(shop, wt);
+        if (ammo == null) {
+            return new BuyReport(0, 0, 0, ShortfallReason.NONE);
+        }
+        return buyFixedCostItem(bot, shop, ammo, 1, 1);
+    }
+
+    static boolean shouldBuyReturnScrollWhileShopping(Character bot) {
+        return countReturnScrolls(bot) < RETURN_SCROLL_TARGET_QTY;
+    }
+
     private static boolean isRechargeWeaponType(WeaponType wt) {
         return wt == WeaponType.CLAW || wt == WeaponType.GUN;
     }
@@ -536,6 +1001,8 @@ final class BotShopManager {
             boolean matches = switch (wt) {
                 case BOW -> ItemConstants.isArrowForBow(id);
                 case CROSSBOW -> ItemConstants.isArrowForCrossBow(id);
+                case CLAW -> ItemConstants.isThrowingStar(id);
+                case GUN -> ItemConstants.isBullet(id);
                 default -> false;
             };
             if (matches && (best == null || si.getPrice() < best.shopItem.getPrice())) {
@@ -554,6 +1021,40 @@ final class BotShopManager {
         int target = ammoTargetThreshold();
         int current = BotCombatManager.countAmmo(bot, wt);
         return buyFixedCostItem(bot, shop, ammo, Math.max(0, target - current), 1000);
+    }
+
+    private static BuyReport buyReturnScrolls(Character bot, Shop shop) {
+        ShopSlotItem scroll = findReturnScrollItem(shop);
+        if (scroll == null) {
+            return new BuyReport(0, 0, 0, ShortfallReason.NONE);
+        }
+        int current = countReturnScrolls(bot);
+        return buyFixedCostItem(bot, shop, scroll, Math.max(0, RETURN_SCROLL_TARGET_QTY - current), 10);
+    }
+
+    private static ShopSlotItem findReturnScrollItem(Shop shop) {
+        List<ShopItem> items = shop.getItems();
+        for (int i = 0; i < items.size(); i++) {
+            ShopItem si = items.get(i);
+            if (si.getItemId() == RETURN_SCROLL_NEAREST_TOWN && si.getPrice() > 0) {
+                return new ShopSlotItem((short) i, si);
+            }
+        }
+        return null;
+    }
+
+    static int countReturnScrolls(Character bot) {
+        var use = bot.getInventory(InventoryType.USE);
+        if (use == null) {
+            return 0;
+        }
+        int count = 0;
+        for (Item item : use.list()) {
+            if (item.getItemId() == RETURN_SCROLL_NEAREST_TOWN && item.getQuantity() > 0) {
+                count += item.getQuantity();
+            }
+        }
+        return count;
     }
 
     private static int bestRechargeAmmoId(Character bot, WeaponType wt) {
@@ -625,6 +1126,163 @@ final class BotShopManager {
         return new BuyReport(shortfallItemId, recharged, attempted, reason);
     }
 
+    /** Cap on meso spent buying gear per shop visit, so one purchase can't drain the bot. */
+    private static final int EQUIP_BUY_MAX_MESO = 50_000;
+    /** Preferred weapons recover major DPS/skill routing, so allow more surplus than cosmetic upgrades. */
+    private static final int PREFERRED_WEAPON_BUY_MAX_MESO = 500_000;
+
+    /**
+     * Buy at most ONE worthwhile equipment upgrade from the shop catalog. Shop equips have FIXED
+     * stats, so they're scored on their base stats with the SAME offense valuation the grind planner
+     * uses for gear ({@link BotScrollManager#potentialValue}) and compared to what's worn in the slot
+     * - one SSOT, no parallel scorer. Only buys a strict upgrade the bot can wear right now, and only
+     * from surplus meso above the resupply floor (capped), so consumable money is never touched. The
+     * bought item is equipped by the regular autoEquip tick (it valued it an upgrade too).
+     */
+    private static PurchaseSequence evaluateAndBuyEquip(PurchaseSequence sequence, Shop shop) {
+        Character bot = sequence.bot();
+        PurchaseSequence afterPreferredWeapon = evaluateAndBuyNeededPreferredWeapon(sequence, shop);
+        if (afterPreferredWeapon != sequence) {
+            return afterPreferredWeapon;
+        }
+        // Surplus only: reserve the pot/ammo resupply floor, then cap the gear spend.
+        long budget = Math.min((long) EQUIP_BUY_MAX_MESO, (long) bot.getMeso() - BotManager.cfg.AMMO_RESERVE_MESO);
+        if (budget <= 0) {
+            return sequence;
+        }
+        ItemInformationProvider ii = ItemInformationProvider.getInstance();
+        List<ShopItem> items = shop.getItems();
+        short bestShopSlot = -1;
+        int bestItemId = -1;
+        double bestGain = 0.0; // strictly positive gain required -> only a real upgrade is bought
+        for (int i = 0; i < items.size(); i++) {
+            ShopItem si = items.get(i);
+            int id = si.getItemId();
+            int price = si.getPrice();
+            if (price <= 0 || price > budget) {
+                continue;
+            }
+            if (!ItemConstants.isEquipment(id) || ii.isCash(id)) {
+                continue;
+            }
+            Short slot = BotScrollManager.primarySlot(ii, id);
+            if (slot == null) {
+                continue;
+            }
+            if (!(ii.getEquipById(id) instanceof Equip cand) || !ii.canWearEquipment(bot, cand, slot)) {
+                continue; // fixed stats -> must be wearable right now (no future/stat-blocked projection)
+            }
+            Equip worn = BotScrollManager.wornInSlot(bot, ii, slot);
+            double wornValue = worn == null ? 0.0 : BotScrollManager.potentialValue(bot, ii, worn);
+            double gain = BotScrollManager.potentialValue(bot, ii, cand) - wornValue;
+            if (gain > bestGain) {
+                bestGain = gain;
+                bestShopSlot = (short) i;
+                bestItemId = id;
+            }
+        }
+        if (bestItemId != -1
+                && shop.buyDirect(bot, bestShopSlot, bestItemId, (short) 1) == Shop.TransactionResult.SUCCESS) {
+            sequence.bought().add(resolveItemName(bestItemId, "gear"));
+        }
+        return sequence;
+    }
+
+    private static PurchaseSequence evaluateAndBuyNeededPreferredWeapon(PurchaseSequence sequence, Shop shop) {
+        Character bot = sequence.bot();
+        ShopSlotItem needed = findNeededPreferredWeaponItem(bot, shop);
+        if (needed == null) {
+            return sequence;
+        }
+        if (shop.buyDirect(bot, needed.slot(), needed.shopItem.getItemId(), (short) 1) == Shop.TransactionResult.SUCCESS) {
+            sequence.bought().add(resolveItemName(needed.shopItem.getItemId(), "weapon"));
+            BotEquipManager.autoEquip(bot, sequence.entry().owner, null, true);
+            return sequence;
+        }
+        return sequence.withFirstShortfall(new BuyReport(needed.shopItem.getItemId(), 0, 1, ShortfallReason.NO_MESO));
+    }
+
+    /** Seam over the preferred-weapon gate so unit tests need neither ItemInformationProvider nor a
+     *  DB pool (its &lt;clinit&gt; loads card data over JDBC). Seamed here at the SSOT rather than per
+     *  call site, since {@link #needsToBuySupplies(BotEntry, Character)} also calls it internally.
+     *  Default delegates to the real computation; tests swap it for a fixed predicate. */
+    static java.util.function.Predicate<Character> needsPreferredWeaponForCurrentJobSeam =
+            BotShopManager::computeNeedsPreferredWeaponForCurrentJob;
+
+    static boolean needsPreferredWeaponForCurrentJob(Character bot) {
+        return needsPreferredWeaponForCurrentJobSeam.test(bot);
+    }
+
+    private static boolean computeNeedsPreferredWeaponForCurrentJob(Character bot) {
+        if (bot == null || preferredWeaponBudget(bot) <= 0) {
+            return false;
+        }
+        ItemInformationProvider ii = ItemInformationProvider.getInstance();
+        Item worn = bot.getInventory(InventoryType.EQUIPPED).getItem((short) -11);
+        if (!(worn instanceof Equip weapon)) {
+            return true;
+        }
+        return !BotEquipManager.isPreferredWeapon(bot, ii.getWeaponType(weapon.getItemId()), weapon);
+    }
+
+    static String preferredWeaponName(Character bot) {
+        if (bot == null || bot.getJob() == null) {
+            return "weapon";
+        }
+        return switch (bot.getJob()) {
+            case HUNTER, RANGER, BOWMASTER -> "bow";
+            case CROSSBOWMAN, SNIPER, MARKSMAN -> "crossbow";
+            case ASSASSIN, HERMIT, NIGHTLORD -> "claw";
+            case BANDIT, CHIEFBANDIT, SHADOWER -> "dagger";
+            case BRAWLER, MARAUDER, BUCCANEER -> "knuckle";
+            case GUNSLINGER, OUTLAW, CORSAIR -> "gun";
+            case FP_WIZARD, FP_MAGE, FP_ARCHMAGE, IL_WIZARD, IL_MAGE, IL_ARCHMAGE,
+                    CLERIC, PRIEST, BISHOP, MAGICIAN -> "wand/staff";
+            default -> "preferred weapon";
+        };
+    }
+
+    private static long preferredWeaponBudget(Character bot) {
+        return Math.min((long) PREFERRED_WEAPON_BUY_MAX_MESO, (long) bot.getMeso() - BotManager.cfg.AMMO_RESERVE_MESO);
+    }
+
+    private static ShopSlotItem findNeededPreferredWeaponItem(Character bot, Shop shop) {
+        if (bot == null || shop == null || !needsPreferredWeaponForCurrentJob(bot)) {
+            return null;
+        }
+        long budget = preferredWeaponBudget(bot);
+        if (budget <= 0) {
+            return null;
+        }
+        ItemInformationProvider ii = ItemInformationProvider.getInstance();
+        ShopSlotItem best = null;
+        double bestValue = Double.NEGATIVE_INFINITY;
+        List<ShopItem> items = shop.getItems();
+        for (int i = 0; i < items.size(); i++) {
+            ShopItem si = items.get(i);
+            int id = si.getItemId();
+            int price = si.getPrice();
+            if (price <= 0 || price > budget || !ItemConstants.isEquipment(id) || ii.isCash(id)) {
+                continue;
+            }
+            Short slot = BotScrollManager.primarySlot(ii, id);
+            if (slot == null || slot != (short) -11) {
+                continue;
+            }
+            if (!(ii.getEquipById(id) instanceof Equip cand)
+                    || !BotEquipManager.isPreferredWeapon(bot, ii.getWeaponType(id), cand)
+                    || !ii.canWearEquipment(bot, cand, slot)) {
+                continue;
+            }
+            double value = BotScrollManager.potentialValue(bot, ii, cand);
+            if (best == null || value > bestValue || (value == bestValue && price < best.shopItem.getPrice())) {
+                best = new ShopSlotItem((short) i, si);
+                bestValue = value;
+            }
+        }
+        return best;
+    }
+
     private static ShopSlotItem findPotionItem(Shop shop, Character bot, boolean forHp) {
         List<ShopItem> items = shop.getItems();
         int maxStat = forHp ? bot.getCurrentMaxHp() : bot.getCurrentMaxMp();
@@ -684,16 +1342,40 @@ final class BotShopManager {
         return bestTooLow != null ? bestTooLow : bestTooHigh;
     }
 
-    private static BuyReport buyPotions(Character bot, Shop shop, boolean forHp) {
+    /** Reserve share of the meso the SECONDARY pot type is guaranteed when the primary buys first,
+     *  so a tight budget can't be fully spent on one pot type while starving the other. */
+    private static final double POT_SECONDARY_RESERVE_FRAC = 0.35;
+
+    /** Buy one pot type, but only if low, and spend at most {@code (1 - reserveForOtherFrac)} of the
+     *  bot's current meso so the other pot type keeps its share. Skips quietly if already stocked. */
+    private static PurchaseSequence buyPotsCapped(PurchaseSequence sequence, Character bot, Shop shop,
+                                                  boolean forHp, double reserveForOtherFrac, String label) {
+        int[] pots = BotPotionManager.countPotions(bot);
+        int current = forHp ? pots[0] : pots[1];
+        if (current >= BotManager.cfg.POT_LOW_WARN * 5) {
+            return sequence;
+        }
+        long mesoCap = (long) Math.floor(bot.getMeso() * (1.0 - reserveForOtherFrac));
+        return appendBuyReport(sequence, buyPotions(bot, shop, forHp, mesoCap), label);
+    }
+
+    private static BuyReport buyPotions(Character bot, Shop shop, boolean forHp, long mesoCap) {
         ShopSlotItem pot = findPotionItem(shop, bot, forHp);
         if (pot == null) {
             return new BuyReport(0, 0, 0, ShortfallReason.NONE);
         }
 
-        int target = BotManager.cfg.POT_LOW_WARN * POT_TARGET_THRESHOLD;
+        int target = potResupplyTarget();
         int[] pots = BotPotionManager.countPotions(bot);
         int current = forHp ? pots[0] : pots[1];
-        return buyFixedCostItem(bot, shop, pot, Math.max(0, target - current), 100);
+        int want = Math.max(0, target - current);
+        int price = pot.shopItem.getPrice();
+        if (price > 0) {
+            // Cap the quantity to what this type's meso share can afford (buyFixedCostItem's
+            // NOT_ENOUGH_MESO handling is the backstop); leaves the rest for the other pot type.
+            want = (int) Math.min((long) want, mesoCap / price);
+        }
+        return buyFixedCostItem(bot, shop, pot, want, 100);
     }
 
     private static BuyReport buyFixedCostItem(Character bot, Shop shop, ShopSlotItem item, int desiredQuantity, int batchSize) {
@@ -760,11 +1442,12 @@ final class BotShopManager {
             return false;
         }
         // Accept proximity to the approach point OR the NPC itself: the sequence can start
-        // via the stuck-at-NPC fallback, where the bot is near the NPC but not the approach point.
+        // via the stuck-at-NPC / timeout fallbacks, where the bot is near the keeper but
+        // can't physically reach the approach point (fenced booths) — hence the wide radius.
         Point pos = bot.getPosition();
         Point approach = entry.shopTargetPos != null ? entry.shopTargetPos : npcPos;
-        boolean atShop = manhattan(pos, approach) <= SHOP_ARRIVE_DIST
-                || manhattan(pos, npcPos) <= SHOP_ARRIVE_DIST;
+        boolean atShop = manhattan(pos, approach) <= SHOP_FALLBACK_DIST
+                || manhattan(pos, npcPos) <= SHOP_FALLBACK_DIST;
         return atShop && findNpcNear(bot, npcPos) != null;
     }
 
@@ -791,8 +1474,8 @@ final class BotShopManager {
         entry.shopVisitStartedAtMs = 0L;
         entry.shopSequenceStartedAtMs = 0L;
         entry.shopSellTrashPending = false;
-        entry.shopStuckCheckPos = null;
-        entry.shopStuckCheckAtMs = 0L;
+        entry.shopTargetGraphChecked = false;
+        entry.shopApproachStuck.reset();
     }
 
     private static long stepDelayMs() {
@@ -808,6 +1491,9 @@ final class BotShopManager {
             if (!entry.shopVisitPending) {
                 return;
             }
+            if (entry.shopSequenceActive) {
+                entry.shopSequenceStartedAtMs = System.currentTimeMillis();
+            }
             try {
                 step.run();
             } catch (RuntimeException exception) {
@@ -817,57 +1503,6 @@ final class BotShopManager {
         });
     }
 
-    private static Point pickShopApproachPoint(Point npcPos, BotEntry entry, Character bot) {
-        var footholds = bot.getMap().getFootholds();
-        if (footholds == null) {
-            return npcPos;
-        }
-        List<Point> candidates = new ArrayList<>();
-        for (Foothold fh : footholds.getAllFootholds()) {
-            int fx1 = fh.getX1(), fy1 = fh.getY1();
-            int fx2 = fh.getX2(), fy2 = fh.getY2();
-            if (fx1 == fx2) {
-                continue; // wall foothold
-            }
-            int xMin = Math.min(fx1, fx2);
-            int xMax = Math.max(fx1, fx2);
-            int step = Math.max(1, (xMax - xMin) / 20);
-            for (int x = xMin; x <= xMax; x += step) {
-                double t = (double) (x - fx1) / (fx2 - fx1);
-                int y = (int) (fy1 + t * (fy2 - fy1));
-                if (Math.abs(x - npcPos.x) + Math.abs(y - npcPos.y) <= SHOP_MANHATTAN_RADIUS) {
-                    candidates.add(new Point(x, y));
-                }
-            }
-        }
-        if (candidates.isEmpty()) {
-            return npcPos;
-        }
-        BotMovementProfile profile = entry.movementProfile != null
-                ? entry.movementProfile : BotMovementProfile.fromCharacter(bot);
-        BotNavigationGraph graph = BotNavigationGraphProvider.peekBestGraph(bot.getMap(), profile);
-        if (graph != null) {
-            Point botPos = bot.getPosition();
-            int startRegionId = BotNavigationManager.resolveCurrentRegionId(graph, entry, bot.getMap(), botPos);
-            if (startRegionId >= 0) {
-                List<Point> reachable = new ArrayList<>();
-                for (Point candidate : candidates) {
-                    int targetRegionId = BotNavigationManager.resolveTargetRegionId(
-                            graph, entry, bot.getMap(), candidate);
-                    if (targetRegionId < 0) continue;
-                    if (startRegionId == targetRegionId
-                            || !BotNavigationManager.findPath(graph, bot.getMap(), botPos,
-                                    startRegionId, targetRegionId, candidate).isEmpty()) {
-                        reachable.add(candidate);
-                    }
-                }
-                if (!reachable.isEmpty()) {
-                    candidates = reachable;
-                }
-            }
-        }
-        return candidates.get(ThreadLocalRandom.current().nextInt(candidates.size()));
-    }
 
     private static NPC findNpcNear(Character bot, Point pos) {
         for (MapObject obj : bot.getMap().getMapObjectsInRange(

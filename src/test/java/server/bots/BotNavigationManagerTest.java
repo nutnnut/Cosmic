@@ -52,6 +52,24 @@ class BotNavigationManagerTest {
     }
 
     @Test
+    void emptyCommittedRouteCoversNearbySameRegionTargetOnly() {
+        Character bot = mock(Character.class);
+        BotEntry entry = new BotEntry(bot, null, null);
+        entry.committedRoute = List.of();
+        entry.committedRouteTargetRegionId = 7;
+        entry.committedRouteTargetPos = new Point(100, 100);
+
+        assertTrue(BotNavigationManager.committedRouteStillCoversTarget(
+                entry, 7, 7, new Point(180, 100)));
+        assertFalse(BotNavigationManager.committedRouteStillCoversTarget(
+                entry, 7, 7, new Point(260, 100)));
+        assertFalse(BotNavigationManager.committedRouteStillCoversTarget(
+                entry, 4, 7, new Point(100, 100)));
+        assertFalse(BotNavigationManager.committedRouteStillCoversTarget(
+                entry, 7, 8, new Point(100, 100)));
+    }
+
+    @Test
     void shouldPromoteFirstActionableEdgePastLeadingZeroDistanceWalks() {
         BotNavigationGraph.Edge collapsed = BotNavigationManager.collapseLeadingWalkEdges(List.of(
                 new BotNavigationGraph.Edge(1, 2, BotNavigationGraph.EdgeType.WALK,
@@ -308,6 +326,267 @@ class BotNavigationManagerTest {
     }
 
     @Test
+    void reachabilityIndexIsDirectedAndSkillFiltered() {
+        // One-way walk 1->2; region 3 reachable from 2 only via a TELEPORT (skill) edge.
+        BotNavigationGraph.Region r1 = new BotNavigationGraph.Region(
+                1, List.of(new BotNavigationGraph.Segment(new Foothold(new Point(0, 100), new Point(100, 100), 1))));
+        BotNavigationGraph.Region r2 = new BotNavigationGraph.Region(
+                2, List.of(new BotNavigationGraph.Segment(new Foothold(new Point(0, 200), new Point(100, 200), 2))));
+        BotNavigationGraph.Region r3 = new BotNavigationGraph.Region(
+                3, List.of(new BotNavigationGraph.Segment(new Foothold(new Point(500, 300), new Point(600, 300), 3))));
+        Map<Integer, BotNavigationGraph.Region> regionsById = new HashMap<>();
+        regionsById.put(1, r1);
+        regionsById.put(2, r2);
+        regionsById.put(3, r3);
+        BotNavigationGraph.Edge walk12 = new BotNavigationGraph.Edge(
+                1, 2, BotNavigationGraph.EdgeType.WALK,
+                new Point(50, 100), new Point(50, 200), 0, 0, 0, 0, 0, 100);
+        BotNavigationGraph.Edge teleport23 = new BotNavigationGraph.Edge(
+                2, 3, BotNavigationGraph.EdgeType.TELEPORT,
+                new Point(50, 200), new Point(550, 300), 0, 0, 0, 0, 0, 100);
+        BotNavigationGraph graph = new BotNavigationGraph(
+                910000026, 1,
+                List.of(r1, r2, r3), regionsById,
+                Map.of(1, 1, 2, 2, 3, 3),
+                Map.of(1, List.of(walk12), 2, List.of(teleport23)),
+                Set.of());
+
+        assertEquals(List.of(walk12), graph.getOutgoing(1, 0),
+                "walk-only outgoing should keep non-skill edges");
+        assertEquals(List.of(), graph.getOutgoing(2, 0),
+                "walk-only outgoing should skip baked TELEPORT edges before A* scans them");
+        assertEquals(List.of(teleport23), graph.getOutgoing(2, BotNavigationGraph.SKILL_TELEPORT),
+                "TELEPORT mask should restore teleport outgoing edges");
+        assertNull(graph.costToGoal(3, 0).get(2),
+                "walk-only cost-to-goal should not route through TELEPORT edges");
+        assertEquals(100, graph.costToGoal(3, BotNavigationGraph.SKILL_TELEPORT).get(2),
+                "TELEPORT mask should include teleport edges in the reverse cost index");
+
+        // Walk-only (skillMask 0): 1 reaches 2; the skill-only region 3 is unreachable.
+        assertTrue(graph.canReach(1, 2, 0), "walk edge 1->2 is reachable walk-only");
+        assertFalse(graph.canReach(1, 3, 0), "skill-only region 3 is NOT walk-reachable from 1");
+        assertFalse(graph.canReach(2, 3, 0), "skill-only region 3 is NOT walk-reachable from 2");
+        // Directed: the edge is one-way 1->2, so 2 cannot reach 1 (the old undirected index missed this).
+        assertFalse(graph.canReach(2, 1, 0), "reachability is directed: no edge 2->1");
+        // With TELEPORT usable, 1 and 2 reach 3 through the skill bridge.
+        assertTrue(graph.canReach(1, 3, BotNavigationGraph.SKILL_TELEPORT), "TELEPORT bridges 1->2->3");
+        assertTrue(graph.canReach(2, 3, BotNavigationGraph.SKILL_TELEPORT), "TELEPORT bridges 2->3");
+        // A FLASH_JUMP-only mask must not enable a TELEPORT edge.
+        assertFalse(graph.canReach(2, 3, BotNavigationGraph.SKILL_FLASH_JUMP),
+                "FLASH_JUMP mask must not enable a TELEPORT edge");
+
+        // Best-effort redirect: target sits near the unreachable skill-only region 3 (550,300). Walk-only
+        // from region 1, region 2 (y=200) is reachable and closer to the target than the start (y=100), so
+        // it's the "walk as close as possible" pick.
+        Point nearR3 = new Point(550, 300);
+        assertEquals(2, graph.nearestReachableRegion(1, 0, nearR3),
+                "redirect to the reachable region closest to the unreachable target");
+        // From region 2 walk-only, nothing reachable is closer than region 2 itself -> -1 (already closest).
+        assertEquals(-1, graph.nearestReachableRegion(2, 0, nearR3),
+                "no redirect when the start is already the closest reachable region");
+    }
+
+    @Test
+    void teleportCooldownSteersHorizontallyInsideLaunchWindow() {
+        MapleMap map = new MapleMap(910000102, 0, 0, 910000102, 1.0f);
+        Character bot = mockBot(new Point(100, 100), map);
+        BotEntry entry = new BotEntry(bot, null, null);
+        entry.movementProfile = BotMovementProfile.base();
+        entry.lastEdgeBlockReason = "tele-cd";
+
+        BotNavigationGraph.Edge rightTeleport = new BotNavigationGraph.Edge(
+                1, 2, BotNavigationGraph.EdgeType.TELEPORT,
+                new Point(100, 100), new Point(250, 100),
+                80, 200, 0, 0, 0, 0, 0, 100);
+
+        Point waypoint = BotNavigationManager.selectTeleportCooldownWaypoint(
+                entry, new Point(100, 100), rightTeleport);
+
+        assertEquals(new Point(100 + BotPhysicsEngine.walkStep(map, entry.movementProfile), 100), waypoint);
+
+        BotNavigationGraph.Edge upTeleport = new BotNavigationGraph.Edge(
+                1, 2, BotNavigationGraph.EdgeType.TELEPORT,
+                new Point(100, 100), new Point(100, -50),
+                80, 200, 0, 0, 0, 0, 0, 100);
+
+        assertNull(BotNavigationManager.selectTeleportCooldownWaypoint(
+                entry, new Point(100, 100), upTeleport));
+    }
+
+    @Test
+    void ropeExitEdgeCarriesYLaunchWindowAndSteersWithinIt() {
+        // Rope-exit CLIMB: fixed x (ropeX=100), launches from any climb height in the Y window [150,260].
+        BotNavigationGraph.Edge e = new BotNavigationGraph.Edge(
+                5, 6, BotNavigationGraph.EdgeType.CLIMB, new Point(100, 200), new Point(140, 260),
+                100, 100,   // degenerate X window (fixed rope x)
+                150, 260,   // Y launch window
+                3, 0, 100, 140, 280, 50);
+        assertTrue(e.containsLaunchY(150));
+        assertTrue(e.containsLaunchY(260));
+        assertFalse(e.containsLaunchY(149));
+        assertTrue(e.containsLaunchY(145, 10), "tolerance widens the window");
+        // nearest in-window launch point keeps the rope x
+        assertEquals(new Point(100, 150), e.pointAtNearestLaunchY(120));
+        assertEquals(new Point(100, 260), e.pointAtNearestLaunchY(300));
+        // steer clamps to the window with a 4px inset (LAUNCH_WINDOW_STEER_INSET_PX)
+        assertEquals(154, BotNavigationManager.steerYWithinLaunchWindow(e, 100));
+        assertEquals(256, BotNavigationManager.steerYWithinLaunchWindow(e, 999));
+        assertEquals(200, BotNavigationManager.steerYWithinLaunchWindow(e, 200));
+        // a non-rope edge has a degenerate Y window (= startPoint.y), so containsLaunchY is an exact check
+        BotNavigationGraph.Edge ground = new BotNavigationGraph.Edge(
+                1, 2, BotNavigationGraph.EdgeType.WALK, new Point(0, 0), new Point(10, 0), 0, -1, 0, 0, 0, 0);
+        assertTrue(ground.containsLaunchY(0));
+        assertFalse(ground.containsLaunchY(1));
+    }
+
+    @Test
+    void costToGoalIsMinReverseDijkstraAndOmitsRegionsThatCannotReachGoal() {
+        // 1 --walk(100)--> 2 --walk(100)--> 3(goal); 1 --jump(150)--> 3 direct; 3 --drop(50)--> 4 (dead end vs goal).
+        BotNavigationGraph.Region r1 = new BotNavigationGraph.Region(
+                1, List.of(new BotNavigationGraph.Segment(new Foothold(new Point(0, 100), new Point(100, 100), 1))));
+        BotNavigationGraph.Region r2 = new BotNavigationGraph.Region(
+                2, List.of(new BotNavigationGraph.Segment(new Foothold(new Point(0, 200), new Point(100, 200), 2))));
+        BotNavigationGraph.Region r3 = new BotNavigationGraph.Region(
+                3, List.of(new BotNavigationGraph.Segment(new Foothold(new Point(0, 300), new Point(100, 300), 3))));
+        BotNavigationGraph.Region r4 = new BotNavigationGraph.Region(
+                4, List.of(new BotNavigationGraph.Segment(new Foothold(new Point(0, 400), new Point(100, 400), 4))));
+        Map<Integer, BotNavigationGraph.Region> regionsById = new HashMap<>();
+        regionsById.put(1, r1);
+        regionsById.put(2, r2);
+        regionsById.put(3, r3);
+        regionsById.put(4, r4);
+        BotNavigationGraph.Edge e12 = new BotNavigationGraph.Edge(
+                1, 2, BotNavigationGraph.EdgeType.WALK, new Point(50, 100), new Point(50, 200), 0, 0, 0, 0, 0, 100);
+        BotNavigationGraph.Edge e23 = new BotNavigationGraph.Edge(
+                2, 3, BotNavigationGraph.EdgeType.WALK, new Point(50, 200), new Point(50, 300), 0, 0, 0, 0, 0, 100);
+        BotNavigationGraph.Edge e13 = new BotNavigationGraph.Edge(
+                1, 3, BotNavigationGraph.EdgeType.JUMP, new Point(50, 100), new Point(50, 300), 0, 0, 0, 0, 0, 150);
+        BotNavigationGraph.Edge e34 = new BotNavigationGraph.Edge(
+                3, 4, BotNavigationGraph.EdgeType.DROP, new Point(50, 300), new Point(50, 400), 0, 0, 0, 0, 0, 50);
+        BotNavigationGraph graph = new BotNavigationGraph(
+                910000026, 1,
+                List.of(r1, r2, r3, r4), regionsById,
+                Map.of(1, 1, 2, 2, 3, 3, 4, 4),
+                Map.of(1, List.of(e12, e13), 2, List.of(e23), 3, List.of(e34)),
+                Set.of());
+
+        Map<Integer, Integer> dist = graph.costToGoal(3);
+        assertEquals(0, dist.get(3), "goal region cost is 0");
+        assertEquals(100, dist.get(2), "2 -> 3 is one 100-cost walk");
+        assertEquals(150, dist.get(1), "1 prefers the direct 150 jump over the 200 two-hop walk");
+        assertNull(dist.get(4), "region 4 cannot reach the goal -> absent from the index");
+    }
+
+    @Test
+    void retreatProbePathUsesGoalHeuristicWithoutChangingRouteCost() {
+        MapleMap map = new MapleMap(910000027, 0, 0, 910000027, 1.0f);
+        BotNavigationGraph.Region r1 = new BotNavigationGraph.Region(
+                1, List.of(new BotNavigationGraph.Segment(new Foothold(new Point(0, 100), new Point(100, 100), 1))));
+        BotNavigationGraph.Region r2 = new BotNavigationGraph.Region(
+                2, List.of(new BotNavigationGraph.Segment(new Foothold(new Point(0, 200), new Point(100, 200), 2))));
+        BotNavigationGraph.Region r3 = new BotNavigationGraph.Region(
+                3, List.of(new BotNavigationGraph.Segment(new Foothold(new Point(0, 300), new Point(100, 300), 3))));
+        Map<Integer, BotNavigationGraph.Region> regionsById = new HashMap<>();
+        regionsById.put(1, r1);
+        regionsById.put(2, r2);
+        regionsById.put(3, r3);
+        BotNavigationGraph.Edge e12 = new BotNavigationGraph.Edge(
+                1, 2, BotNavigationGraph.EdgeType.WALK, new Point(50, 100), new Point(50, 200),
+                0, 0, 0, 0, 0, 100);
+        BotNavigationGraph.Edge e23 = new BotNavigationGraph.Edge(
+                2, 3, BotNavigationGraph.EdgeType.WALK, new Point(50, 200), new Point(50, 300),
+                0, 0, 0, 0, 0, 100);
+        BotNavigationGraph.Edge e13 = new BotNavigationGraph.Edge(
+                1, 3, BotNavigationGraph.EdgeType.JUMP, new Point(50, 100), new Point(50, 300),
+                0, 0, 0, 0, 0, 250);
+        BotNavigationGraph graph = new BotNavigationGraph(
+                map.getId(), 1,
+                List.of(r1, r2, r3), regionsById,
+                Map.of(1, 1, 2, 2, 3, 3),
+                Map.of(1, List.of(e13, e12), 2, List.of(e23)),
+                Set.of());
+
+        Point start = new Point(50, 100);
+        Point target = new Point(50, 300);
+        BotNavigationManager.SearchOutcome optimal = BotNavigationManager.runSearch(
+                graph, map, start, 1, 3, target, "measure", true, false, 0L);
+        List<BotNavigationGraph.Edge> retreatProbe = BotNavigationManager.findPathForRetreatProbe(
+                graph, map, start, 1, 3, target);
+
+        assertEquals(200, optimal.cost());
+        assertEquals(List.of(e12, e23), retreatProbe);
+        assertEquals(optimal.cost(), retreatProbe.stream().mapToInt(e -> e.cost).sum());
+    }
+
+    @Test
+    void graphBakesNextHopsFromAllRegionsToPortalRegions() {
+        MapleMap map = new MapleMap(910000027, 0, 0, 910000027, 1.0f);
+        BotNavigationGraph.Region r1 = new BotNavigationGraph.Region(
+                1, List.of(new BotNavigationGraph.Segment(new Foothold(new Point(0, 100), new Point(100, 100), 1))));
+        BotNavigationGraph.Region r2 = new BotNavigationGraph.Region(
+                2, List.of(new BotNavigationGraph.Segment(new Foothold(new Point(0, 200), new Point(100, 200), 2))));
+        BotNavigationGraph.Region portalRegion = new BotNavigationGraph.Region(
+                3, List.of(new BotNavigationGraph.Segment(new Foothold(new Point(0, 300), new Point(100, 300), 3))));
+        Map<Integer, BotNavigationGraph.Region> regionsById = new HashMap<>();
+        regionsById.put(1, r1);
+        regionsById.put(2, r2);
+        regionsById.put(3, portalRegion);
+        BotNavigationGraph.Edge e12 = new BotNavigationGraph.Edge(
+                1, 2, BotNavigationGraph.EdgeType.WALK, new Point(50, 100), new Point(50, 200),
+                0, 0, 0, 0, 0, 100);
+        BotNavigationGraph.Edge e23 = new BotNavigationGraph.Edge(
+                2, 3, BotNavigationGraph.EdgeType.WALK, new Point(50, 200), new Point(50, 300),
+                0, 0, 0, 0, 0, 100);
+        BotNavigationGraph.Edge portalMarker = new BotNavigationGraph.Edge(
+                3, 3, BotNavigationGraph.EdgeType.PORTAL, new Point(50, 300), new Point(50, 300),
+                0, 77, 0, 0, 0, 0);
+        BotNavigationGraph graph = new BotNavigationGraph(
+                map.getId(), 1,
+                List.of(r1, r2, portalRegion), regionsById,
+                Map.of(1, 1, 2, 2, 3, 3),
+                Map.of(1, List.of(e12), 2, List.of(e23), 3, List.of(portalMarker)),
+                Set.of());
+
+        assertTrue(graph.hasPortalRouteTarget(3));
+        assertEquals(e12, graph.portalNextHop(1, 3, r1.centerPoint()),
+                "baked portal index should store the first hop from non-portal regions too");
+        assertEquals(e23, graph.portalNextHop(2, 3, r2.centerPoint()),
+                "baked portal index should store the next hop into the portal region");
+    }
+
+    @Test
+    void routeCacheSeparatesStartAndTargetPointBuckets() {
+        BotNavigationGraph.Region r1 = new BotNavigationGraph.Region(
+                1, List.of(new BotNavigationGraph.Segment(new Foothold(new Point(0, 100), new Point(200, 100), 1))));
+        BotNavigationGraph.Region r2 = new BotNavigationGraph.Region(
+                2, List.of(new BotNavigationGraph.Segment(new Foothold(new Point(0, 200), new Point(200, 200), 2))));
+        Map<Integer, BotNavigationGraph.Region> regionsById = new HashMap<>();
+        regionsById.put(1, r1);
+        regionsById.put(2, r2);
+        BotNavigationGraph.Edge leftExit = new BotNavigationGraph.Edge(
+                1, 2, BotNavigationGraph.EdgeType.JUMP, new Point(10, 100), new Point(10, 200),
+                0, 0, 0, 0, 0, 100);
+        BotNavigationGraph.Edge rightExit = new BotNavigationGraph.Edge(
+                1, 2, BotNavigationGraph.EdgeType.JUMP, new Point(190, 100), new Point(190, 200),
+                0, 0, 0, 0, 0, 100);
+        BotNavigationGraph graph = new BotNavigationGraph(
+                910000028, 1,
+                List.of(r1, r2), regionsById,
+                Map.of(1, 1, 2, 2),
+                Map.of(1, List.of(leftExit, rightExit)),
+                Set.of());
+
+        int leftStartBucket = BotNavigationManager.routePointBucket(graph, 1, new Point(10, 100));
+        int rightStartBucket = BotNavigationManager.routePointBucket(graph, 1, new Point(190, 100));
+        int targetBucket = BotNavigationManager.routePointBucket(graph, 2, new Point(100, 200));
+        graph.putNextHop(1, 2, leftStartBucket, targetBucket, 0, BotNavigationManager.ROUTE_BUCKETS, leftExit);
+        graph.putNextHop(1, 2, rightStartBucket, targetBucket, 0, BotNavigationManager.ROUTE_BUCKETS, rightExit);
+
+        assertEquals(leftExit, graph.cachedNextHop(1, 2, leftStartBucket, targetBucket, 0));
+        assertEquals(rightExit, graph.cachedNextHop(1, 2, rightStartBucket, targetBucket, 0));
+    }
+
+    @Test
     void shouldRefreshStaleCommittedGroundDropWhenBestFirstEdgeChanges() {
         MapleMap map = new MapleMap(910000032, 0, 0, 910000032, 1.0f);
         FootholdTree footholds = new FootholdTree(new Point(-2000, -2000), new Point(2000, 2000));
@@ -356,6 +635,61 @@ class BotNavigationManagerTest {
     }
 
     @Test
+    void shouldGiveUpEdgeBlockedByPositionGateAndReplanFromLivePosition() {
+        // pathlog-Leroy-2026-06-12T141517: a committed DROP edge whose stale window ended
+        // 2px short of the bot was reused (blocked: *-pos) for 21s while every fresh A*
+        // plan's window contained the bot. The position-gate give-up must drop the edge
+        // after a few hundred ms and let the replan execute from where the bot stands.
+        MapleMap map = new MapleMap(910000033, 0, 0, 910000033, 1.0f);
+        FootholdTree footholds = new FootholdTree(new Point(-2000, -2000), new Point(2000, 2000));
+        footholds.insert(new Foothold(new Point(0, 0), new Point(300, 0), 1));
+        footholds.insert(new Foothold(new Point(0, 120), new Point(300, 120), 2));
+        map.setFootholds(footholds);
+        BotNavigationGraph graph = BotNavigationGraphProvider.rebuildGraph(map);
+
+        Point botPos = new Point(250, 0);
+        Point target = new Point(250, 120);
+        int startRegionId = graph.findRegionId(map, botPos);
+        int targetRegionId = graph.findRegionId(map, target);
+        assertNotEquals(startRegionId, targetRegionId, "fixture needs distinct upper/lower regions");
+
+        // Stale committed edge: same region pair as the live plan (so the per-tick ground
+        // refresh retains it) but a launch window the bot is 2px OUTSIDE of.
+        BotNavigationGraph.Edge staleEdge = new BotNavigationGraph.Edge(
+                startRegionId, targetRegionId, BotNavigationGraph.EdgeType.DROP,
+                new Point(200, 0), new Point(200, 120),
+                150, 248, 0, 0, 0, 0, 0, 400);
+
+        Character bot = mockBot(botPos, map);
+        BotEntry entry = new BotEntry(bot, null, null);
+        entry.movementProfile = BotMovementProfile.base();
+        entry.following = true;
+        entry.navEdge = staleEdge;
+        entry.navTargetRegionId = targetRegionId;
+
+        // The retention window: for the first few AI ticks the stale edge must be kept
+        // (anti-thrash), only blocked: the bot never moves, so the give-up counter runs.
+        for (int tick = 0; tick < 6; tick++) {
+            BotNavigationManager.resolveTarget(entry, target, true);
+            assertEquals("reuse", entry.lastNavDecision, "tick " + tick + " should still reuse the committed edge");
+            assertEquals(staleEdge.startPoint, entry.navEdge.startPoint,
+                    "tick " + tick + " should not yet give up the committed edge");
+            assertEquals("drop-pos", entry.lastEdgeBlockReason);
+        }
+
+        // Within the jittered give-up budget (6-10 blocked ticks) the edge is dropped, the
+        // fresh plan's window contains the bot, and the drop executes immediately.
+        int extraTicks = 0;
+        while (!"exec".equals(entry.lastNavDecision) && extraTicks < 8) {
+            BotNavigationManager.resolveTarget(entry, target, true);
+            extraTicks++;
+        }
+        assertEquals("exec", entry.lastNavDecision,
+                "blocked-position reuse must give up and replan within the jittered tick budget");
+        assertTrue(entry.downJumpPending, "replanned drop edge should execute from the bot's live position");
+    }
+
+    @Test
     void shouldDropStaleCommittedGroundEdgeWhenLiveTargetRegionDiffersFromEdgeDestination() {
         MapleMap map = mock(MapleMap.class);
         BotNavigationGraph.Region source = new BotNavigationGraph.Region(
@@ -399,6 +733,37 @@ class BotNavigationManagerTest {
 
         assertNull(BotNavigationManager.reuseCommittedEdge(graph, entry, 1, 3),
                 "non-AI reuse must drop stale grounded edges whose destination no longer matches the live target");
+    }
+
+    @Test
+    void shouldDropStaleGroundJumpWhileClimbingOnDifferentRopeRegion() {
+        MapleMap map = mock(MapleMap.class);
+        BotNavigationGraph.Region ropeRegion = new BotNavigationGraph.Region(30, 1896, -165, 54, false);
+        BotNavigationGraph.Region groundRegion = new BotNavigationGraph.Region(
+                7, List.of(new BotNavigationGraph.Segment(new Foothold(new Point(1750, -47), new Point(1900, -47), 7))));
+        BotNavigationGraph.Region oldJumpDest = new BotNavigationGraph.Region(
+                4, List.of(new BotNavigationGraph.Segment(new Foothold(new Point(1450, -107), new Point(1550, -107), 4))));
+        BotNavigationGraph.Edge staleJump = new BotNavigationGraph.Edge(
+                7, 4, BotNavigationGraph.EdgeType.JUMP,
+                new Point(1544, -47), new Point(1495, -107),
+                1530, 1559, -6, 0, 0, 0, 0, 450);
+        BotNavigationGraph graph = new BotNavigationGraph(
+                103000101, 1, BotMovementProfile.base(),
+                List.of(ropeRegion, groundRegion, oldJumpDest),
+                Map.of(30, ropeRegion, 7, groundRegion, 4, oldJumpDest),
+                Map.of(30, 30, 7, 7, 4, 4),
+                Map.of(7, List.of(staleJump)),
+                Set.of());
+
+        Character bot = mockBot(new Point(1896, -51), map);
+        BotEntry entry = new BotEntry(bot, null, null);
+        entry.climbing = true;
+        entry.climbRope = new Rope(1896, -165, 54, false);
+        entry.navEdge = staleJump;
+        entry.navTargetRegionId = 4;
+
+        assertNull(BotNavigationManager.reuseCommittedEdge(graph, entry, 30, 7),
+                "a ground jump from another region must not steer a bot that is already climbing a rope");
     }
 
     @Test
@@ -606,7 +971,11 @@ class BotNavigationManagerTest {
         BotNavigationGraph.Edge ropeExit = path.getFirst();
         assertEquals(BotNavigationGraph.EdgeType.CLIMB, ropeExit.type);
         assertTrue(ropeExit.launchStepX > 0);
-        assertEquals(new Point(1265, 290), ropeExit.startPoint);
+        // Rope-exit now carries a Y launch window (not a single authored pixel). It fires at the rope x and
+        // its window reaches up to the bot's near-top climb height, so the bot can jump off before physics
+        // auto-dismounts upward.
+        assertEquals(1265, ropeExit.startPoint.x);
+        assertTrue(ropeExit.containsLaunchY(botPos.y), "Y window includes the bot's top-rope climb height");
 
         Character bot = mockBot(botPos, lithHarbor);
         BotEntry entry = new BotEntry(bot, null, null);
@@ -620,7 +989,10 @@ class BotNavigationManagerTest {
         assertTrue(directive.consumedTick);
         assertTrue(entry.inAir);
         assertFalse(entry.climbing);
-        assertEquals(new Point(1265, 290), bot.getPosition());
+        // Launched from within the verified window at the rope x (no longer snapped to one fixed pixel).
+        assertEquals(1265, bot.getPosition().x);
+        assertTrue(ropeExit.containsLaunchY(bot.getPosition().y),
+                "bot launched from within the rope-exit Y window");
     }
 
     @Test
@@ -854,5 +1226,53 @@ class BotNavigationManagerTest {
         map.setFootholds(footholds);
         map.addRope(new Rope(100, 100, 200, false));
         return map;
+    }
+
+    private static boolean hasSelfLoopPortal(List<BotNavigationGraph.Edge> path) {
+        for (BotNavigationGraph.Edge e : path) {
+            if (e.type == BotNavigationGraph.EdgeType.PORTAL && e.fromRegionId == e.toRegionId) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Kerning City regression (nav-graph backed — run explicitly:
+     * mvn test -Dtest=BotNavigationManagerTest#excludeSelfLoopPortalsStillReachesViaWalk).
+     *
+     * A bot on the far-west platform routing to the east00 portal platform: the cheapest route teleports
+     * through Kerning's intra-region shortcut portal (a PORTAL self-loop, fromRegion==toRegion). The
+     * committed-route follower can't traverse one, so it used to bail and freeze (live: RougHWealtH stuck
+     * job-advancing to BANDIT, nav=no-path). The target IS reachable by plain walk/jump/climb, so a search
+     * that excludes self-loop portals must still reach it — and its path must contain no self-loop portal.
+     */
+    @Test
+    void excludeSelfLoopPortalsStillReachesViaWalk() {
+        MapleMap map = kerning();
+        BotNavigationGraph graph = BotNavigationGraphProvider.getGraph(map);
+
+        Point west = new Point(-1180, 6);     // far-west platform (live stuck position)
+        Point east00 = new Point(2512, -204); // east00 portal -> map 102050000
+        int fromReg = graph.findRegionId(map, west);
+        int toReg = BotNavigationManager.resolvePointTargetRegionId(graph, map, east00);
+        assertNotEquals(fromReg, toReg, "scenario assumes a cross-region route");
+
+        // Premise: the optimal route uses the in-map shortcut portal (self-loop).
+        BotNavigationManager.SearchOutcome optimal = BotNavigationManager.runSearch(
+                graph, map, west, fromReg, toReg, east00, "committed",
+                true, false, 0L, false, null, BotNavigationManager.MAX_EDGE_CHECKS, null, 0, false);
+        assertTrue(optimal.reached(), "optimal route should reach the portal platform");
+        assertTrue(hasSelfLoopPortal(optimal.path()),
+                "premise: cheapest route teleports through the intra-region shortcut portal");
+
+        // Fix: excluding self-loop portals (with the committed-route re-search budget) still reaches the
+        // target by walking, with no self-loop in the path.
+        BotNavigationManager.SearchOutcome portalFree = BotNavigationManager.runSearch(
+                graph, map, west, fromReg, toReg, east00, "committed",
+                true, false, 0L, false, null, BotNavigationManager.PORTAL_FREE_EDGE_CHECKS, null, 0, true);
+        assertTrue(portalFree.reached(), "target must be reachable without the shortcut portal");
+        assertFalse(hasSelfLoopPortal(portalFree.path()),
+                "excluded route must not contain a self-loop portal the follower can't traverse");
     }
 }

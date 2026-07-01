@@ -45,7 +45,7 @@ public class ShowRatesCommand extends Command {
             showMsg += "Coupon EXP Rate: #k" + player.getCouponExpRate() + "x#k" + "\r\n";
         }
         showMsg += "Level EXP Multiplier: #k" + String.format(Locale.US, "%.2f", player.getDynamicExpRateMultiplier()) + "x#k" + "\r\n";
-        showMsg += "EXP Rate: #e#b" + String.format(Locale.US, "%.2f", player.getEffectiveExpRate()) + "x#k#n" + (player.hasNoviceExpRate() || player.hasFirstJobExpRate() ? " - novice rate" : "") + "\r\n";
+        showMsg += "EXP Rate: #e#b" + String.format(Locale.US, "%.2f", player.getEffectiveExpRate()) + "x#k#n" + (player.hasNoviceExpRate() ? " - novice rate" : "") + "\r\n";
 
         showMsg += "\r\n" + "#eMESO RATE#n" + "\r\n";
         showMsg += "World MESO Rate: #k" + c.getWorldServer().getMesoRate() + "x#k" + "\r\n";

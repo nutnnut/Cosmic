@@ -188,6 +188,9 @@ public final class BotAirshowManager {
     }
 
     private static void maybeChemTrail(BotEntry entry, MapleMap map, Point position) {
+        if (!map.isObservedByPlayer()) {
+            return; // purely cosmetic trail — no audience, no point spawning/killing trail mobs
+        }
         long now = System.currentTimeMillis();
         if (now - entry.airshowLastTrailAtMs < TRAIL_INTERVAL_MS) {
             return;

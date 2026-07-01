@@ -13,18 +13,22 @@ import constants.inventory.ItemConstants;
 import constants.skills.Archer;
 import constants.skills.Assassin;
 import constants.skills.Bandit;
+import constants.skills.BlazeWizard;
 import constants.skills.Bowmaster;
 import constants.skills.Buccaneer;
 import constants.skills.Cleric;
 import constants.skills.Corsair;
 import constants.skills.Crossbowman;
+import constants.skills.Beginner;
 import constants.skills.Crusader;
 import constants.skills.DawnWarrior;
 import constants.skills.DragonKnight;
+import constants.skills.Evan;
 import constants.skills.Fighter;
 import constants.skills.GM;
 import constants.skills.Hermit;
 import constants.skills.Hunter;
+import constants.skills.Magician;
 import constants.skills.Marksman;
 import constants.skills.NightWalker;
 import constants.skills.Priest;
@@ -73,17 +77,26 @@ import java.util.concurrent.ThreadLocalRandom;
 class BotCombatManager {
     private static final Logger log = LoggerFactory.getLogger(BotCombatManager.class);
     private static final long UNREACHABLE_GRAPH_COST = Long.MAX_VALUE / 4;
+    private static final double MIN_EXPECTED_DAMAGE_PER_ATTACK = 1.0d;
 
     // Skills that bots must never cast — stealth makes them untargetable by monsters,
     // breaking combat entirely.
     static final Set<Integer> BUFF_BLACKLIST = Set.of(
             Rogue.DARK_SIGHT,
-            NightWalker.DARK_SIGHT
+            NightWalker.DARK_SIGHT,
+            // Recovery is driven by tryCastRecovery (HP-gated, runs in and out of combat), not the
+            // combat buff loop, so it isn't rebuffed blindly while at full HP.
+            Beginner.RECOVERY
     );
     static final Set<Integer> NON_DAMAGE_ACTIVE_SKILL_IDS = Set.of(
             Crusader.ARMOR_CRASH,
             WhiteKnight.MAGIC_CRASH,
             DragonKnight.POWER_CRASH
+    );
+    static final Set<Integer> CRITICAL_SURVIVAL_BUFFS = Set.of(
+            Magician.MAGIC_GUARD,
+            BlazeWizard.MAGIC_GUARD,
+            Evan.MAGIC_GUARD
     );
     private static final int DRAGON_ROAR_MIN_TARGETS_WITHOUT_HEALER = 10;
 
@@ -156,15 +169,39 @@ class BotCombatManager {
         public int   RANGED_DEGENERATE_RANGE_X = 50;
         public int   RANGED_DEGENERATE_RANGE_Y = 50;
         public int   RANGED_RETREAT_THRESHOLD_X = 80;
+        // Enter/exit hysteresis on the spacing-retreat band: once retreating, keep retreating until the
+        // mob is THRESHOLD_X + this (80+60=140) away before re-engaging. Without the gap a mob hovering
+        // near the 80px edge flips retreat on/off every tick -> left-right jitter.
+        public int   RANGED_RETREAT_HYSTERESIS_X = 60;
         public int   RANGED_RETREAT_DISTANCE_X = 100;
         public int   BREAKOUT_MAX_MS = 3000; // cap on a committed surround-breakout run before re-deciding
+
+        // Attack planning is rebuilt on every physics tick (~20Hz), but the bot only attacks ~1-2/s and
+        // its decisions (which skill, reach, spacing) barely move in 50ms. Default: replan only on the
+        // heavier AI tick (~10Hz, AI_TICK_MS), reusing the last plan on the interleaved physics tick.
+        // Halves combat-plan CPU (was ~21% of the bot tick). Set true to restore per-physics-tick planning
+        // if a combat regression appears (the cadence reuse trades up to one physics tick of plan staleness).
+        public boolean COMBAT_PLAN_EVERY_TICK = false;
 
         // Ammo
         public int   AMMO_LOW_WARN = 500;
 
+        // Rock-consuming buffs (Shadow Partner etc., StatEffect.itemCon) + rock resupply.
+        public int   ROCK_LOW_WARN = 100;          // request rocks (like potions) below this count
+        // A short low-level buff isn't worth a rock on a trash mob: only fire when the current fight
+        // is long enough. Threshold = attacks-to-kill (best single-target skill), scaled by skill
+        // level: lvl 1 needs a long fight (4+ attacks), max level only needs the mob to survive one
+        // hit (>=2 attacks, i.e. not 1-shottable). Interpolated linearly between.
+        public int   ROCK_TTK_ATTACKS_LVL1 = 4;
+        public int   ROCK_TTK_ATTACKS_MAX  = 2;
+
         // Grind / AoE
         public int   GRIND_SEEK_RANGE  = 800;
         public int   GRIND_RETARGET_INTERVAL_MS = 400;
+        // Once a grind target is picked, stay committed to it for at least this long even while still
+        // approaching it (out of attack range), so the bot doesn't flip between far mobs every retarget
+        // tick as re-scoring shifts the "best" pick. Broken early only if the target dies/vanishes.
+        public int   GRIND_TARGET_COMMIT_MS = 3000;
         public int   AOE_MOB_THRESHOLD = 2;
         // AoE repositioning: when the best fire-now plan is single-target but stepping into the
         // cluster centroid would let the AoE skill beat it by this DPS factor, defer the shot and
@@ -175,13 +212,46 @@ class BotCombatManager {
         public int   AOE_REPOSITION_MAX_DISTANCE_X = 150;
         public int   AOE_REPOSITION_ARRIVAL_X = 20;
         public long  AOE_REPOSITION_MAX_MS = 800L;
+        // Step-closer-for-a-stronger-skill: the inverse of AoE reposition. When the in-range fire-now
+        // plan is a weak long-reach skill (e.g. a Hermit firing Avenger from afar) but a stronger
+        // skill is just out of reach (shorter hitbox), walk in so the stronger skill lands — only when
+        // it beats the fire-now plan's single-target DPS by this factor, and the step is bounded
+        // (opportunity cost: time spent walking isn't firing). Reuses the AoE reposition anchor/timer.
+        public boolean BETTER_REACH_REPOSITION_ENABLED = true;
+        public double BETTER_REACH_REPOSITION_DPS_FACTOR = 1.5d;
+        public int   BETTER_REACH_REPOSITION_MAX_DISTANCE_X = 120;
         public int   GRIND_REGION_OCCUPANCY_PENALTY = 1200;
         public int   GRIND_REGION_OCCUPANCY_PENALTY_CAP = 3600;
 
         // Mob damage
         public int   MOB_TOUCH_SWEEP_HEIGHT = 50;
         public int   MOB_HIT_COOLDOWN_MS = 1500;
-        public long  BOT_DEAD_MS      = 30_000L;
+
+        // Self-preservation (combat-side). A mob is "touch-dangerous" if its worst-case contact hit
+        // would kill the bot in TOUCH_HITS_TO_KILL or fewer hits (BotDangerAssessment, SSOT touch-dmg
+        // roll). Two consumers, kept non-redundant:
+        //  - target selection: a fragile bot (low HP pool / out of HP pots) adds TOUCH_DANGER_PENALTY
+        //    to a dangerous mob's score so it prefers safer mobs, but still fights if nothing safer.
+        //  - proactive retreat: a healthy bot disengages a touch-dangerous mob before it ever drops
+        //    to the reactive heal threshold (BotManager).
+        public int   TOUCH_HITS_TO_KILL = 3;     // lower = more cautious; !botcfg-tunable
+        // En-route opportunity attacks (passing a mob while travelling) only fire when the bot can
+        // finish it in <= this many expected hits. Expected damage already folds in hit chance, so a
+        // strong mob (high HP) OR a mob the bot keeps missing (low expected dmg) both push hits-to-kill
+        // over the cap and the bot walks past instead of wasting travel time on it. !botcfg-tunable.
+        public double OPPORTUNITY_MAX_HITS_TO_KILL = 5.0d;
+        // Other end: also walk past a mob that's both harmless AND worthless. Harmless = expected
+        // touch damage per attempt (folds in the mob's miss chance) <= this many HP. Worthless = its
+        // exp/kill is below OPPORTUNITY_MIN_EXP_FRACTION of the bot's aspirational grind mob. Low risk
+        // + low reward = not worth interrupting travel for. Either knob at 0 disables this gate.
+        public double OPPORTUNITY_TRIVIAL_TOUCH_DAMAGE = 1.0d;
+        public double OPPORTUNITY_MIN_EXP_FRACTION = 0.05d;
+        public long  TOUCH_DANGER_PENALTY = 1500L; // soft scorer penalty (~ the cross-foothold penalty)
+        public int   TOUCH_FRAGILE_MAXHP = 600;  // below this max-HP a bot counts as fragile for targeting
+        public boolean PROACTIVE_RETREAT_ENABLED = true;
+        // Time between dying and clicking "OK" on the revive dialog, like a player would.
+        // The walk back from town replaces the old long respawn-in-place wait.
+        public long  BOT_DEAD_MS      = 5_000L;
 
         // Support
         public int   SUPPORT_RANGE = 400;
@@ -196,86 +266,27 @@ class BotCombatManager {
         // kick a diagonal jump toward them just before the heal cast so the bot keeps closing
         // distance instead of stopping to plant the heal animation. 0 disables.
         public int   JUMP_HEAL_LEADER_AHEAD_PX = 80;
+        // Beginner Recovery (spend MP -> HP regen): cast proactively to save pots, but only worth the
+        // cast time on low-HP-pool bots. Above this max-HP the slow regen isn't worth interrupting for.
+        public int   RECOVERY_MAXHP_CAP = 500;
     }
 
     static Config cfg = new Config();
 
+    /** The live combat config instance — for {@link BotConfigReflect}-backed admin surfaces (web /api/settings). */
+    public static Config config() { return cfg; }
+
     /** Admin/debug (!botcfg): "FIELD = value" for every public combat config field, sorted. */
-    public static List<String> configFieldLines() {
-        List<String> out = new ArrayList<>();
-        for (java.lang.reflect.Field f : Config.class.getDeclaredFields()) {
-            if (!java.lang.reflect.Modifier.isPublic(f.getModifiers())) {
-                continue;
-            }
-            try {
-                out.add(f.getName() + " = " + f.get(cfg));
-            } catch (IllegalAccessException ignored) {
-            }
-        }
-        out.sort(String::compareTo);
-        return out;
-    }
+    public static List<String> configFieldLines() { return BotConfigReflect.fieldLines(cfg); }
 
     /** Admin/debug (!botcfg): "FIELD = value" for one field (case-insensitive), or null if unknown. */
-    public static String configFieldLine(String name) {
-        for (java.lang.reflect.Field f : Config.class.getDeclaredFields()) {
-            if (java.lang.reflect.Modifier.isPublic(f.getModifiers()) && f.getName().equalsIgnoreCase(name)) {
-                try {
-                    return f.getName() + " = " + f.get(cfg);
-                } catch (IllegalAccessException e) {
-                    return null;
-                }
-            }
-        }
-        return null;
-    }
+    public static String configFieldLine(String name) { return BotConfigReflect.fieldLine(cfg, name); }
 
     /**
      * Admin/debug (!botcfg): set a combat config field by name (case-insensitive) on the live cfg.
      * Returns a human-readable result; success messages start with "OK".
      */
-    public static String setConfigField(String name, String rawValue) {
-        for (java.lang.reflect.Field f : Config.class.getDeclaredFields()) {
-            if (!java.lang.reflect.Modifier.isPublic(f.getModifiers()) || !f.getName().equalsIgnoreCase(name)) {
-                continue;
-            }
-            try {
-                Object parsed = parseConfigValue(f.getType(), rawValue.trim());
-                f.set(cfg, parsed);
-                return "OK: " + f.getName() + " = " + parsed;
-            } catch (NumberFormatException e) {
-                return "bad value '" + rawValue + "' for " + f.getName() + " (" + f.getType().getSimpleName() + ")";
-            } catch (IllegalAccessException e) {
-                return "cannot set " + f.getName();
-            }
-        }
-        return "unknown field: " + name;
-    }
-
-    private static Object parseConfigValue(Class<?> type, String v) {
-        if (type == boolean.class || type == Boolean.class) {
-            if (v.equalsIgnoreCase("true") || v.equals("1") || v.equalsIgnoreCase("on")) {
-                return Boolean.TRUE;
-            }
-            if (v.equalsIgnoreCase("false") || v.equals("0") || v.equalsIgnoreCase("off")) {
-                return Boolean.FALSE;
-            }
-            throw new NumberFormatException(v);
-        }
-        if (type == int.class || type == Integer.class) {
-            return Integer.parseInt(v);
-        }
-        if (type == long.class || type == Long.class) {
-            return Long.parseLong(v);
-        }
-        if (type == double.class || type == Double.class) {
-            return Double.parseDouble(v);
-        }
-        if (type == float.class || type == Float.class) {
-            return Float.parseFloat(v);
-        }
-        throw new NumberFormatException(v);
-    }
+    public static String setConfigField(String name, String rawValue) { return BotConfigReflect.setField(cfg, name, rawValue); }
 
     // Journey client CharStats::get_range() returns Rectangle(-projectilerange, -5, -50, 50).
     static final int CLIENT_PROJECTILE_BASE_RANGE = 400;
@@ -357,17 +368,31 @@ class BotCombatManager {
 
     /** Check every alive monster on the map; if bot is inside its bounding box, apply a hit. */
     static void tickMobDamage(BotEntry entry, Character bot) {
+        tickMobDamage(entry, bot, true);
+    }
+
+    /**
+     * @param runSweep when false, only the invuln-cooldown tick-down and the dead check run; the
+     *   expensive O(monsters) contact sweep is skipped. The cooldown still decrements on every call
+     *   ({@link BotMovementManager#tickDown} subtracts a fixed {@code TICK_MS} per call), so cadencing
+     *   the sweep does NOT stretch the invulnerability window. The swept touch rectangle naturally
+     *   spans movement since the last sweep, so cadencing also can't miss a mob walked through between
+     *   checks.
+     */
+    static void tickMobDamage(BotEntry entry, Character bot, boolean runSweep) {
+        if (entry.mobHitCooldownMs > 0) {
+            entry.mobHitCooldownMs = BotMovementManager.tickDown(entry.mobHitCooldownMs);
+            return;
+        }
+        if (bot.getHp() <= 0) return;
+        if (!runSweep) return;
+
         Point botPos = bot.getPosition();
         try {
-            if (entry.mobHitCooldownMs > 0) {
-                entry.mobHitCooldownMs = BotMovementManager.tickDown(entry.mobHitCooldownMs);
-                return;
-            }
-            if (bot.getHp() <= 0) return;
-
+            Rectangle botBounds = getBotTouchBounds(entry, bot); // computed once per sweep, not per mob
             for (Monster mob : bot.getMap().getAllMonsters()) {
                 if (!isHostileLivingMonster(mob)) continue;
-                if (isMobTouchingBot(entry, bot, mob)) {
+                if (isMobTouchingBot(botBounds, mob)) {
                     applyMobHit(entry, bot, mob);
                     return;
                 }
@@ -460,7 +485,19 @@ class BotCombatManager {
             return;
         }
 
-        bot.addMPHPAndTriggerAutopot(-dmg, 0);
+        Integer magicGuard = bot.getBuffedValue(BuffStat.MAGIC_GUARD);
+        if (magicGuard != null) {
+            int mploss = (int) (dmg * (magicGuard.doubleValue() / 100.0));
+            int hploss = dmg - mploss;
+            int curmp = bot.getMp();
+            if (mploss > curmp) {
+                hploss += mploss - curmp;
+                mploss = curmp;
+            }
+            bot.addMPHPAndTriggerAutopot(-hploss, -mploss);
+        } else {
+            bot.addMPHPAndTriggerAutopot(-dmg, 0);
+        }
 
         bot.getMap().broadcastMessage(bot,
                 PacketCreator.damagePlayer(damageFrom, monsterId, bot.getId(), dmg, 0,
@@ -635,14 +672,23 @@ class BotCombatManager {
             noteSkillBuffDecision(entry, "no buff skills in cache");
             return;
         }
+
+        // Throttle the (re)buff evaluation. Casting is already gated by the per-skill nextBuffAt /
+        // nextSupportBuffAt timers, so the monster-liveness scan + party-support scan below only need
+        // to run a few times a second, not every tick. Mirrors BotBuffManager.tick's TICK_MS throttle;
+        // without it this scan was ~33% of all bot CPU. A sub-second delay to a rebuff is invisible.
+        long now = System.currentTimeMillis();
+        if (now - entry.lastSkillBuffScanMs < SKILL_BUFF_SCAN_MS) return;
+        entry.lastSkillBuffScanMs = now;
+
         if (bot.getMap().getAllMonsters().stream().noneMatch(Monster::isAlive)) return;
 
-        long now = System.currentTimeMillis();
         if (trySupportBuff(entry, bot, now)) {
             return;
         }
 
-        for (int skillId : entry.buffSkillIds) {
+        for (int skillId : CRITICAL_SURVIVAL_BUFFS) {
+            if (!entry.buffSkillIds.contains(skillId)) continue;
             if (now < entry.nextBuffAt.getOrDefault(skillId, 0L)) continue;
             if (bot.skillIsCooling(skillId)) continue;
 
@@ -658,7 +704,77 @@ class BotCombatManager {
                 return;
             }
         }
+
+        for (int skillId : entry.buffSkillIds) {
+            if (CRITICAL_SURVIVAL_BUFFS.contains(skillId)) continue;
+            if (now < entry.nextBuffAt.getOrDefault(skillId, 0L)) continue;
+            if (bot.skillIsCooling(skillId)) continue;
+
+            Skill skill = SkillFactory.getSkill(skillId);
+            int lvl = bot.getSkillLevel(skill);
+            if (lvl <= 0) continue;
+
+            StatEffect fx = skill.getEffect(lvl);
+            if (!isActiveSupportSkill(skill, fx) || BUFF_BLACKLIST.contains(skill.getId())) {
+                continue;
+            }
+            if (!rockBuffWorthCasting(entry, bot, skill, fx, lvl)) {
+                continue;
+            }
+            if (castSupportSkill(entry, bot, skill, fx, now)) {
+                return;
+            }
+        }
         noteSkillBuffDecision(entry, "all skill buffs active or on cooldown");
+    }
+
+    /**
+     * Gate for buffs that consume a rock per cast (Shadow Partner etc. — {@link StatEffect#getItemConNo()} &gt; 0,
+     * rock id {@link StatEffect#getItemCon()}). Skip the cast unless (a) the bot actually holds the rock, and
+     * (b) the current fight is long enough to be worth a charge. Non-rock buffs are never gated.
+     */
+    private static boolean rockBuffWorthCasting(BotEntry entry, Character bot, Skill skill, StatEffect fx, int skillLevel) {
+        int per = fx.getItemConNo();
+        if (per <= 0) {
+            return true;                                       // not a rock buff: no gate
+        }
+        int rockId = fx.getItemCon();
+        if (BotRockManager.countRocks(bot, rockId) < per) {
+            noteSkillBuffDecision(entry, "no rock for " + skillLabel(skill.getId()));
+            return false;                                      // can't pay the rock anyway (StatEffect would reject)
+        }
+        Monster target = entry.grindTarget;
+        if (target == null || !target.isAlive()) {
+            target = nearestMonster(bot.getMap().getAllMonsters().stream()
+                    .filter(Monster::isAlive).toList(), bot.getPosition().x, bot.getPosition().y);
+        }
+        if (target == null) {
+            return false;                                      // nothing to fight: don't burn a charge
+        }
+        double perHit = estimateBestSkillHitDamage(entry, bot, target);
+        if (perHit <= 0) {
+            return true;                                       // no damage estimate (offline/no WZ): allow
+        }
+        int hp = target.getMaxHp() > 0 ? target.getMaxHp() : target.getHp();
+        int attacks = (int) Math.ceil(hp / perHit);
+        int threshold = rockTtkThreshold(skillLevel, Math.max(1, skill.getMaxLevel()));
+        boolean worth = attacks >= threshold;
+        if (!worth) {
+            noteSkillBuffDecision(entry, "rock buff " + skillLabel(skill.getId())
+                    + " skipped: TTK " + attacks + " < " + threshold);
+        }
+        return worth;
+    }
+
+    /** TTK-attacks threshold for a rock buff, interpolated by skill level (lvl1 -> LVL1 knob, max -> MAX knob). */
+    static int rockTtkThreshold(int skillLevel, int maxLevel) {
+        int lo = cfg.ROCK_TTK_ATTACKS_MAX;
+        int hi = cfg.ROCK_TTK_ATTACKS_LVL1;
+        if (maxLevel <= 1) {
+            return lo;
+        }
+        double t = hi + (lo - hi) * (skillLevel - 1.0) / (maxLevel - 1.0);
+        return Math.max(lo, (int) Math.round(t));
     }
 
     private static boolean shouldUseAsBestSingleTargetSkill(Character bot, Skill skill, StatEffect effect,
@@ -1011,10 +1127,122 @@ class BotCombatManager {
             if (basicAttack != null) {
                 candidates.add(basicAttack);
             }
-            return selectBestAttackPlan(bot, candidates);
+            return selectBestAttackPlan(entry, bot, candidates);
         } finally {
             BotPerformanceMonitor.record("combat-plan", System.nanoTime() - startedAt);
         }
+    }
+
+    // Cadenced wrapper over planAttack: replan on AI ticks (or whenever the target changed / no cached
+    // plan exists), and on the interleaved physics tick reuse the last plan. The plan's hitbox is anchored
+    // at plan-time positions, but reach/spacing tolerate one physics tick (~50ms, a few px of drift) of
+    // staleness — far inside the spacing hysteresis band — and the attack itself fires at most one tick
+    // late. COMBAT_PLAN_EVERY_TICK=true disables the reuse and restores per-tick planning.
+    static AttackPlan planAttackCadenced(BotEntry entry, Character bot, Monster target, boolean runAiTick) {
+        if (target == null) {
+            entry.cadencedPlan = null;
+            entry.cadencedPlanTarget = null;
+            return null;
+        }
+        boolean reuse = !cfg.COMBAT_PLAN_EVERY_TICK
+                && !runAiTick
+                && entry.cadencedPlan != null
+                && entry.cadencedPlanTarget == target;
+        if (reuse) {
+            return entry.cadencedPlan;
+        }
+        AttackPlan plan = planAttack(entry, bot, target);
+        entry.cadencedPlan = plan;
+        entry.cadencedPlanTarget = target;
+        return plan;
+    }
+
+    /**
+     * Best expected per-attack damage the bot would deal to {@code mob} using one of its attack skills,
+     * computed with the SAME damage model the live planner uses ({@link CombatFormulaProvider}) — so
+     * magic vs physical, skill %, line count and the mob's defense are all handled identically. Spatial
+     * targeting (hitbox/facing/reach) is intentionally ignored; this is the bot's raw damage capability
+     * against that mob, for farming-cost / valuation. Returns 0 when the bot has no usable attack skill
+     * (the caller falls back to a basic-attack estimate). This is the SSOT for "how hard the bot hits".
+     */
+    public static double estimateBestSkillHitDamage(BotEntry entry, Character bot, Monster mob) {
+        if (entry == null || bot == null || mob == null) {
+            return 0.0;
+        }
+        WeaponType weaponType = BotAttackExecutionProvider.getEquippedWeaponType(bot);
+        double best = 0.0;
+        for (int skillId : cachedAttackSkillIds(entry)) {
+            Skill skill = SkillFactory.getSkill(skillId);
+            if (skill == null) {
+                continue;
+            }
+            int skillLevel = bot.getSkillLevel(skill);
+            if (skillLevel <= 0) {
+                continue;
+            }
+            StatEffect effect = skill.getEffect(skillLevel);
+            if (effect == null) {
+                continue;
+            }
+            AttackRoute route = BotAttackExecutionProvider.determineSkillRoute(bot, skillId);
+            int lines = Math.max(1, effectiveHitCount(effect) * shadowPartnerHitMultiplier(bot, route));
+            CombatFormulaProvider.DamageProfile profile =
+                    resolveAttackDamageProfile(bot, skillId, skillLevel, route, weaponType);
+            double dmg = CombatFormulaProvider.getInstance().estimateExpectedDamage(bot, mob, lines, skillId, profile);
+            if (dmg > best) {
+                best = dmg;
+            }
+        }
+        return best;
+    }
+
+    /**
+     * Worth taking this en-route shot? True when the bot can finish {@code target} in
+     * {@link Config#OPPORTUNITY_MAX_HITS_TO_KILL} expected hits or fewer. Uses the same
+     * hit-chance-folded expected damage as {@link #scoreAttackPlan}, against current HP — so a tanky
+     * mob and a mob the bot keeps whiffing on are both rejected, and a near-dead mob still gets the tap.
+     */
+    static boolean isEnRouteAttackWorthwhile(BotEntry entry, Character bot, AttackPlan attackPlan, Monster target) {
+        if (attackPlan == null || target == null) {
+            return false;
+        }
+        int hp = target.getHp();
+        if (hp <= 0) {
+            return true; // already dead/unknown HP — let the normal range/plan checks decide
+        }
+        if (isTrivialAndNotWorthExp(entry, bot, target)) {
+            return false; // harmless + negligible exp — not worth interrupting travel for
+        }
+        CombatFormulaProvider.DamageProfile profile = resolveAttackDamageProfile(
+                entry, bot, attackPlan.skillId, attackPlan.skillLevel, attackPlan.route, attackPlan.damageWeaponType);
+        double expectedDamage = CombatFormulaProvider.getInstance().estimateExpectedDamage(
+                bot, target, attackPlan.numDamage, attackPlan.skillId, profile);
+        if (expectedDamage <= 0.0d) {
+            return false; // can't meaningfully hurt it (no usable attack / hopeless accuracy) — walk on
+        }
+        return hp / expectedDamage <= cfg.OPPORTUNITY_MAX_HITS_TO_KILL;
+    }
+
+    /** A mob the bot can safely ignore en route: it can barely scratch the bot (expected per-attempt
+     *  touch damage <= {@link Config#OPPORTUNITY_TRIVIAL_TOUCH_DAMAGE}) AND its exp is below
+     *  {@link Config#OPPORTUNITY_MIN_EXP_FRACTION} of the bot's aspirational grind mob. Returns false
+     *  (i.e. "do engage") until a grind pass has cached an aspirational exp baseline. */
+    private static boolean isTrivialAndNotWorthExp(BotEntry entry, Character bot, Monster target) {
+        if (entry == null || entry.aspirationalMobExp <= 0.0d
+                || cfg.OPPORTUNITY_TRIVIAL_TOUCH_DAMAGE <= 0.0d || cfg.OPPORTUNITY_MIN_EXP_FRACTION <= 0.0d) {
+            return false;
+        }
+        double expectedTouch = server.bots.combat.BotDefenseDataProvider.getInstance()
+                .expectedTouchHpLossFraction(bot, target) * bot.getCurrentMaxHp();
+        if (expectedTouch > cfg.OPPORTUNITY_TRIVIAL_TOUCH_DAMAGE) {
+            return false; // can actually hurt the bot — worth clearing regardless of exp
+        }
+        var stats = target.getStats();
+        if (stats == null) {
+            return false;
+        }
+        double targetExp = stats.getExp() * bot.getExpRate();
+        return targetExp < cfg.OPPORTUNITY_MIN_EXP_FRACTION * entry.aspirationalMobExp;
     }
 
     private static List<Integer> cachedAttackSkillIds(BotEntry entry) {
@@ -1074,16 +1302,20 @@ class BotCombatManager {
         return mirrored != originalTarget ? mirrored : null;
     }
 
-    private static AttackPlan selectBestAttackPlan(Character bot, List<AttackPlan> candidates) {
+    private static AttackPlan selectBestAttackPlan(BotEntry entry, Character bot, List<AttackPlan> candidates) {
         List<PlanScore> scores = new ArrayList<>(candidates.size());
         for (AttackPlan candidate : candidates) {
-            scores.add(scoreAttackPlan(bot, candidate));
+            scores.add(scoreAttackPlan(entry, bot, candidate));
         }
 
         boolean hasGuaranteedFullHpKill = scores.stream().anyMatch(score -> score.minimumKillsFullHpTargets);
         PlanScore best = null;
         double bestScore = Double.NEGATIVE_INFINITY;
         for (PlanScore score : scores) {
+            if (score.rawDamage < MIN_EXPECTED_DAMAGE_PER_ATTACK
+                    && !isDegenerateBasicCloseAttack(bot, score.plan)) {
+                continue;
+            }
             if (hasGuaranteedFullHpKill && !score.minimumKillsFullHpTargets) {
                 continue;
             }
@@ -1098,14 +1330,83 @@ class BotCombatManager {
         return best != null ? best.plan : null;
     }
 
+    private static boolean isDegenerateBasicCloseAttack(Character bot, AttackPlan plan) {
+        return plan != null
+                && plan.skillId == 0
+                && plan.route == AttackRoute.CLOSE
+                && BotAttackExecutionProvider.isDegenerateCapableRangedWeapon(
+                BotAttackExecutionProvider.getEquippedWeaponType(bot));
+    }
+
     private record PlanScore(AttackPlan plan, double usefulDamage, double rawDamage, double usefulDps, double rawDps,
                              boolean minimumKillsFullHpTargets) {
     }
 
-    private static PlanScore scoreAttackPlan(Character bot, AttackPlan attackPlan) {
-        CombatFormulaProvider.DamageProfile damageProfile = CombatFormulaProvider.getInstance().resolveDamageProfile(
-                bot, attackPlan.skillId, attackPlan.skillLevel,
-                attackPlan.route == AttackRoute.MAGIC, attackPlan.damageWeaponType);
+    // Close-range attacks with a ranged weapon equipped — bow/crossbow swing (including Power
+    // Knockback, forced CLOSE), claw punch, gun bash — are "degenerate" on the client and use
+    // the weak mismatched-weapon formula: fixed 10% mastery, no crit passives. Everything else
+    // keeps the normal weapon/skill formula.
+    static CombatFormulaProvider.DamageProfile resolveAttackDamageProfile(
+            Character bot, int skillId, int skillLevel, AttackRoute route, WeaponType damageWeaponType) {
+        WeaponType equippedWeaponType = BotAttackExecutionProvider.getEquippedWeaponType(bot);
+        if (route == AttackRoute.CLOSE
+                && BotAttackExecutionProvider.isDegenerateCapableRangedWeapon(equippedWeaponType)) {
+            Skill skill = skillId != 0 ? SkillFactory.getSkill(skillId) : null;
+            StatEffect effect = skill != null && skillLevel > 0 ? skill.getEffect(skillLevel) : null;
+            return CombatFormulaProvider.getInstance().resolveDegenerateDamageProfile(bot, equippedWeaponType, effect);
+        }
+        return CombatFormulaProvider.getInstance().resolveDamageProfile(
+                bot, skillId, skillLevel, route == AttackRoute.MAGIC, damageWeaponType);
+    }
+
+    // Entry-cached variant of resolveAttackDamageProfile: the profile is a pure function of the bot's
+    // stats (watk/magic/str/dex/luk) and the skill, so it repeats identically across the ~1.75 plans/tick
+    // an engaged bot runs. We key the cache by (skillId,skillLevel,route,weapon) and gate the whole map on
+    // a cheap stat fingerprint — any equip/level/buff change runs recalcLocalStats, the fingerprint moves,
+    // and the map is flushed. This is the SSOT for cache validity: staleness is derived from the live stat
+    // values rather than hooked at each mutation site.
+    static CombatFormulaProvider.DamageProfile resolveAttackDamageProfile(
+            BotEntry entry, Character bot, int skillId, int skillLevel, AttackRoute route, WeaponType damageWeaponType) {
+        if (entry == null) {
+            return resolveAttackDamageProfile(bot, skillId, skillLevel, route, damageWeaponType);
+        }
+        int sig = damageStatSignature(bot);
+        if (sig != entry.dmgProfileStatSig) {
+            entry.dmgProfileCache.clear();
+            entry.dmgProfileStatSig = sig;
+        }
+        long key = damageProfileKey(skillId, skillLevel, route, damageWeaponType);
+        CombatFormulaProvider.DamageProfile cached = entry.dmgProfileCache.get(key);
+        if (cached != null) {
+            return cached;
+        }
+        CombatFormulaProvider.DamageProfile profile =
+                resolveAttackDamageProfile(bot, skillId, skillLevel, route, damageWeaponType);
+        entry.dmgProfileCache.put(key, profile);
+        return profile;
+    }
+
+    // Cheap fingerprint over every stat the damage profile reads, plus level (covers mastery-passive
+    // gains that level-ups bring). All are stored local-stat field reads, recomputed only on stat change.
+    private static int damageStatSignature(Character bot) {
+        int sig = bot.getTotalWatk();
+        sig = sig * 31 + bot.getTotalMagic();
+        sig = sig * 31 + bot.getTotalStr();
+        sig = sig * 31 + bot.getTotalDex();
+        sig = sig * 31 + bot.getTotalLuk();
+        sig = sig * 31 + bot.getLevel();
+        return sig;
+    }
+
+    static long damageProfileKey(int skillId, int skillLevel, AttackRoute route, WeaponType weaponType) {
+        long routeBits = route == null ? 3 : route.ordinal();
+        long weaponBits = weaponType == null ? 31 : weaponType.ordinal();
+        return ((long) skillId << 12) | ((long) (skillLevel & 0x1F) << 7) | (routeBits << 5) | weaponBits;
+    }
+
+    private static PlanScore scoreAttackPlan(BotEntry entry, Character bot, AttackPlan attackPlan) {
+        CombatFormulaProvider.DamageProfile damageProfile = resolveAttackDamageProfile(
+                entry, bot, attackPlan.skillId, attackPlan.skillLevel, attackPlan.route, attackPlan.damageWeaponType);
         double usefulDamage = 0.0d;
         double rawDamage = 0.0d;
         boolean minimumKillsFullHpTargets = !attackPlan.targets.isEmpty();
@@ -1189,20 +1490,52 @@ class BotCombatManager {
     }
 
     static void attackMonster(BotEntry entry, Character bot, AttackPlan attackPlan) {
-        if (entry.attackCooldownMs > 0) {
+        if (attackPlan == null) {
+            recordAttackExec(entry, null, null, "blocked:no-plan", 0, -1, -1, botMp(bot), botMp(bot));
             return;
         }
-        if (entry.noAmmo) {
+        Monster primary = attackPlan != null && !attackPlan.targets.isEmpty() ? attackPlan.targets.get(0) : null;
+        // Cross-thread kill guard. Callers validate isAlive() before planning, but another player/bot can
+        // kill the target between selection and this send gate (the plan can also be a cadenced reuse from a
+        // tick ago). Firing at a corpse rolls damage, burns MP/ammo + cooldown, and broadcasts a hit that
+        // lands on nothing — the "bot shoots but hits no mob" symptom. This is the last race-free read before
+        // we commit, so re-check here and skip; the next tick replans against live mobs.
+        if (primary != null && !primary.isAlive()) {
+            recordAttackExec(entry, attackPlan, primary, "blocked:dead-target", 0,
+                    primaryHp(primary), primaryHp(primary), botMp(bot), botMp(bot));
+            return;
+        }
+        if (entry.attackCooldownMs > 0) {
+            recordAttackExec(entry, attackPlan, primary, "blocked:action-lock", 0, primaryHp(primary), primaryHp(primary),
+                    botMp(bot), botMp(bot));
+            return;
+        }
+        // No ammo blocks RANGED attacks (would consume stars/bullets we don't have), but NOT the
+        // degenerate close-range swing the basic attack falls back to (claw punch / point-blank shot,
+        // CLOSE route, consumes no ammo). Letting CLOSE through is the last-resort guardrail so a
+        // truly-broke bot can still farm its way back to affording ammo instead of standing inert.
+        if (entry.noAmmo && attackPlan.route != AttackRoute.CLOSE) {
+            recordAttackExec(entry, attackPlan, primary, "blocked:no-ammo", 0, primaryHp(primary), primaryHp(primary),
+                    botMp(bot), botMp(bot));
             return;
         }
         if (attackPlan.skillId != 0 && !canUseSkill(bot, attackPlan.skillId, attackPlan.skillLevel)) {
+            recordAttackExec(entry, attackPlan, primary, "blocked:skill-cost", 0, primaryHp(primary), primaryHp(primary),
+                    botMp(bot), botMp(bot));
             return;
         }
         if (!canUseAttackPlanNow(entry, BotAttackExecutionProvider.getEquippedWeaponType(bot), attackPlan)) {
+            recordAttackExec(entry, attackPlan, primary, "blocked:airborne-route", 0, primaryHp(primary), primaryHp(primary),
+                    botMp(bot), botMp(bot));
             return;
         }
 
         int numAttacked = attackPlan.targets.size();
+        if (numAttacked <= 0) {
+            recordAttackExec(entry, attackPlan, primary, "blocked:no-targets", 0, primaryHp(primary), primaryHp(primary),
+                    botMp(bot), botMp(bot));
+            return;
+        }
         AbstractDealDamageHandler.AttackInfo attack = new AbstractDealDamageHandler.AttackInfo();
         attack.skill = attackPlan.skillId;
         attack.skilllevel = attackPlan.skillLevel;
@@ -1215,9 +1548,8 @@ class BotCombatManager {
         attack.direction = attackPlan.direction; // Historical server name: packet byte 2.
         attack.rangedirection = attackPlan.rangedDirection; // Extra ranged byte after speed.
         attack.ranged = attackPlan.route == AttackRoute.RANGED;
-        CombatFormulaProvider.DamageProfile damageProfile = CombatFormulaProvider.getInstance().resolveDamageProfile(
-                bot, attackPlan.skillId, attackPlan.skillLevel,
-                attackPlan.route == AttackRoute.MAGIC, attackPlan.damageWeaponType);
+        CombatFormulaProvider.DamageProfile damageProfile = resolveAttackDamageProfile(
+                bot, attackPlan.skillId, attackPlan.skillLevel, attackPlan.route, attackPlan.damageWeaponType);
         attack.magic = damageProfile.magicAttack();
         attack.targets = new HashMap<>();
 
@@ -1227,10 +1559,71 @@ class BotCombatManager {
                             attackPlan.skillId, damageProfile, attackPlan.hitDelayMs));
         }
 
+        int hpBefore = primaryHp(primary);
+        int mpBefore = botMp(bot);
+        int plannedDamage = plannedAttackDamage(attack.targets);
         BotAttackExecutionProvider.applyAttackRoute(attackPlan.route, attack, bot);
+        int hpAfter = primaryHp(primary);
+        int mpAfter = botMp(bot);
         entry.attackCooldownMs = Math.max(entry.attackCooldownMs, attackPlan.cooldownMs);
+        String result = hpBefore >= 0 && hpAfter == hpBefore && plannedDamage > 0 ? "sent:no-hp-change" : "sent";
+        recordAttackExec(entry, attackPlan, primary, result, plannedDamage, hpBefore, hpAfter, mpBefore, mpAfter);
         rememberAttackFacing(entry, attackPlan.stance);
         markAlerted(entry);
+    }
+
+    private static int primaryHp(Monster primary) {
+        return primary != null ? primary.getHp() : -1;
+    }
+
+    private static int botMp(Character bot) {
+        return bot != null ? bot.getMp() : -1;
+    }
+
+    private static int plannedAttackDamage(Map<Integer, AbstractDealDamageHandler.AttackTarget> targets) {
+        int total = 0;
+        for (AbstractDealDamageHandler.AttackTarget target : targets.values()) {
+            for (Integer line : target.damageLines()) {
+                if (line == null) {
+                    continue;
+                }
+                int damage = line;
+                if (damage < 0) {
+                    damage += Integer.MAX_VALUE;
+                }
+                total += Math.max(0, damage);
+            }
+        }
+        return total;
+    }
+
+    private static void recordAttackExec(BotEntry entry, AttackPlan attackPlan, Monster primary, String result,
+                                         int plannedDamage, int hpBefore, int hpAfter, int mpBefore, int mpAfter) {
+        entry.dbgAttackExecAtMs = System.currentTimeMillis();
+        entry.dbgAttackExecResult = result;
+        entry.dbgAttackExecSkillId = attackPlan != null ? attackPlan.skillId : 0;
+        entry.dbgAttackExecRoute = attackPlan != null && attackPlan.route != null ? attackPlan.route.name() : "";
+        entry.dbgAttackExecTargetId = primary != null ? primary.getId() : 0;
+        entry.dbgAttackExecTargetOid = primary != null ? primary.getObjectId() : 0;
+        entry.dbgAttackExecTargetHpBefore = hpBefore;
+        entry.dbgAttackExecTargetHpAfter = hpAfter;
+        entry.dbgAttackExecDamage = plannedDamage;
+        entry.dbgAttackExecCooldownMs = attackPlan != null ? attackPlan.cooldownMs : 0;
+        entry.dbgAttackExecMpBefore = mpBefore;
+        entry.dbgAttackExecMpAfter = mpAfter;
+        if (result != null && result.startsWith("sent")) {
+            entry.dbgAttackSentAtMs = entry.dbgAttackExecAtMs;
+            entry.dbgAttackSentResult = result;
+            entry.dbgAttackSentSkillId = entry.dbgAttackExecSkillId;
+            entry.dbgAttackSentRoute = entry.dbgAttackExecRoute;
+            entry.dbgAttackSentTargetId = entry.dbgAttackExecTargetId;
+            entry.dbgAttackSentTargetOid = entry.dbgAttackExecTargetOid;
+            entry.dbgAttackSentTargetHpBefore = hpBefore;
+            entry.dbgAttackSentTargetHpAfter = hpAfter;
+            entry.dbgAttackSentDamage = plannedDamage;
+            entry.dbgAttackSentMpBefore = mpBefore;
+            entry.dbgAttackSentMpAfter = mpAfter;
+        }
     }
 
     static void rememberAttackFacing(BotEntry entry, int attackPacketStance) {
@@ -1250,6 +1643,15 @@ class BotCombatManager {
     // Matches maplestory-wasm CharLook::set_alerted(5000): called on attack, skill cast, and
     // damage taken. Always an absolute reset to now+5s (never additive), mirroring TimedBool::set_for.
     private static final long ALERT_DURATION_MS = 5000L;
+
+    // How often tickBuffs re-evaluates rebuff/support state. Buffs last seconds-to-minutes and casting
+    // is gated by per-skill nextBuffAt timers, so a ~1s cadence is plenty; running it every tick made
+    // the monster + party scans the single biggest bot CPU cost.
+    private static final long SKILL_BUFF_SCAN_MS = 1000L;
+
+    // Rebuff threshold: refresh a buff once <10% of its duration remains. Matches the self-rebuff
+    // schedule (castSupportSkill sets nextBuffAt to 90% of duration), applied to party members too.
+    private static final double REBUFF_FRACTION = 0.10;
 
     static void markAlerted(BotEntry entry) {
         entry.alertedUntilMs = System.currentTimeMillis() + ALERT_DURATION_MS;
@@ -1702,6 +2104,57 @@ class BotCombatManager {
         return isImmediateProjectileSkillTarget(entry, bot, target);
     }
 
+    static boolean mayHaveNonDegenerateRangedReach(BotEntry entry, Character bot, Point botPos,
+                                                   WeaponType weaponType, Monster target) {
+        if (entry == null || entry.noAmmo || bot == null || botPos == null
+                || target == null || !target.isAlive()) {
+            return false;
+        }
+        Point targetPos = target.getPosition();
+        if (targetPos == null
+                || BotAttackExecutionProvider.shouldDegenerateRangedAttack(weaponType, botPos, targetPos)
+                || (entry.inAir && isAirborneRangedAttackBlockedWeapon(weaponType))) {
+            return false;
+        }
+
+        if (BotAttackExecutionProvider.determineBasicWeaponRoute(weaponType) == AttackRoute.RANGED) {
+            Rectangle hitBox = clientProjectileHitBox(bot, targetPos.x < botPos.x, 1.0f);
+            if (doesHitBoxIntersectMonster(hitBox, target)) {
+                return true;
+            }
+        }
+
+        for (int skillId : cachedAttackSkillIds(entry)) {
+            if (skillId == 0 || bot.skillIsCooling(skillId)) {
+                continue;
+            }
+            Skill skill = SkillFactory.getSkill(skillId);
+            int skillLevel = skill == null ? 0 : bot.getSkillLevel(skill);
+            if (skillLevel <= 0) {
+                continue;
+            }
+            StatEffect effect = skill.getEffect(skillLevel);
+            if (effect == null || !effect.canPaySkillCost(bot)
+                    || !canUseAttackSkillWithWeapon(skillId, weaponType)) {
+                continue;
+            }
+            AttackRoute route = BotAttackExecutionProvider.determineSkillRoute(bot, skillId);
+            if (route != AttackRoute.RANGED) {
+                continue;
+            }
+            Rectangle hitBox = calculateSkillHitBox(effect, bot, target, route, skillId, null);
+            if (hitBox == null || !doesHitBoxIntersectMonster(hitBox, target)) {
+                continue;
+            }
+            if (!isStrikePointAnchoredAoeSkill(skillId)
+                    || isPrimaryReachableByBasicWeapon(bot, target, route)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private static boolean isImmediateProjectileSkillTarget(BotEntry entry, Character bot, Monster target) {
         if (entry.attackSkillId == 0 || bot.skillIsCooling(entry.attackSkillId)) {
             return false;
@@ -1739,10 +2192,15 @@ class BotCombatManager {
                                                              Point botPos,
                                                              Foothold botFoothold,
                                                              List<Monster> candidates) {
+        boolean fragile = isFragile(bot); // compute ONCE per scoring pass, not per candidate (USE-bag scan)
+        AccuracyContext acc = accuracyContext(bot); // bot accuracy is per-pass, not per-candidate
         List<ScoredGrindTarget> scoredTargets = new ArrayList<>(candidates.size());
         for (Monster candidate : candidates) {
             long localScore = grindTargetScore(bot, botPos, botFoothold, candidate)
-                    - aoeClusterBonus(entry, candidate, candidates);
+                    - aoeClusterBonus(entry, candidate, candidates)
+                    - questTargetBonus(entry, candidate)
+                    + touchDangerPenalty(fragile, bot, candidate)
+                    + lowAccuracyPenalty(acc, candidate);
             scoredTargets.add(new ScoredGrindTarget(candidate, localScore, localScore,
                     candidate.getPosition().distanceSq(botPos)));
         }
@@ -1755,6 +2213,8 @@ class BotCombatManager {
                                                               Point botPos,
                                                               Foothold botFoothold,
                                                               List<Monster> candidates) {
+        boolean fragile = isFragile(bot); // compute ONCE per scoring pass, not per candidate (USE-bag scan)
+        AccuracyContext acc = accuracyContext(bot); // bot accuracy is per-pass, not per-candidate
         Map<Integer, GrindTargetGroup> groupsByRegionId = new HashMap<>();
         for (Monster candidate : candidates) {
             Point targetPos = candidate.getPosition();
@@ -1765,7 +2225,10 @@ class BotCombatManager {
             }
 
             long localScore = grindTargetScore(bot, botPos, botFoothold, candidate)
-                    - aoeClusterBonus(entry, candidate, candidates);
+                    - aoeClusterBonus(entry, candidate, candidates)
+                    - questTargetBonus(entry, candidate)
+                    + touchDangerPenalty(fragile, bot, candidate)
+                    + lowAccuracyPenalty(acc, candidate);
             GrindTargetGroup group = groupsByRegionId.computeIfAbsent(targetRegionId, GrindTargetGroup::new);
             group.add(candidate, localScore, targetPos.distanceSq(botPos));
         }
@@ -1873,6 +2336,101 @@ class BotCombatManager {
     // pile of 10 mobs doesn't crater scores past the natural distance/foothold penalties.
     static final int AOE_CLUSTER_RADIUS_PX = 150;
     static final long AOE_CLUSTER_BONUS_PER_MOB = 200L;
+
+    // Quest commitment: prefer mobs the bot still needs for a started quest (set cached on BotEntry,
+    // refreshed by BotQuestManager). Subtracted from localScore like the AoE bonus (lower wins). Sized
+    // to out-rank the same-level penalty but not the foothold penalty, so the bot favors quest mobs
+    // within easy reach without leaping across footholds for them.
+    static final long QUEST_TARGET_BONUS = 600L;
+
+    private static long questTargetBonus(BotEntry entry, Monster target) {
+        if (entry == null || target == null) {
+            return 0L;
+        }
+        java.util.Set<Integer> needed = entry.activeQuestMobIds;
+        return (needed != null && !needed.isEmpty() && needed.contains(target.getId()))
+                ? QUEST_TARGET_BONUS : 0L;
+    }
+
+    // Touch-danger penalty (self-preservation, combat-side). ADDED to localScore (raise = worse,
+    // lower wins) — mirrors how aoeClusterBonus / questTargetBonus are SUBTRACTED, composing cleanly
+    // with them. Only a *fragile* bot pays it, and only on a touch-dangerous mob, so a geared bot's
+    // selection is unchanged. Kept SOFT (a single foothold-sized bump, not a hard skip) so a fragile
+    // bot still picks the least-bad mob when everything nearby is dangerous — the travel layer and
+    // death-loop breaker are the backstops against being stranded somewhere lethal.
+    static long touchDangerPenalty(boolean fragile, Character bot, Monster target) {
+        if (!fragile || target == null || bot == null || !cfg.PROACTIVE_RETREAT_ENABLED) {
+            return 0L;
+        }
+        return server.bots.combat.BotDangerAssessment.isTouchDangerous(bot, target, cfg.TOUCH_HITS_TO_KILL)
+                ? cfg.TOUCH_DANGER_PENALTY : 0L;
+    }
+
+    // Low-accuracy targeting penalty: de-prioritize mobs the bot can barely hit (on a mixed-mob map)
+    // so it spends swings on hittable targets instead of whiffing on a high-avoid mob. Soft and
+    // proportional to the miss rate (still fights them if nothing better is in reach). The bot's
+    // accuracy is per scoring-pass, not per-candidate, so it is hoisted into AccuracyContext.
+    static final double ACCURACY_OK_HIT = 0.5;          // at/above this hit chance, no penalty
+    static final long ACCURACY_TARGET_PENALTY = 1200L;  // max penalty as hit chance -> 0
+
+    record AccuracyContext(int accuracy, int botLevel, boolean magic) {}
+
+    static AccuracyContext accuracyContext(Character bot) {
+        boolean magic = bot.getJobStyle() == client.Job.MAGICIAN;
+        server.combat.CombatFormulaProvider f = server.combat.CombatFormulaProvider.getInstance();
+        int acc = magic ? f.getTotalMagicAccuracy(bot) : f.getTotalAccuracy(bot);
+        return new AccuracyContext(acc, bot.getLevel(), magic);
+    }
+
+    static long lowAccuracyPenalty(AccuracyContext ctx, Monster target) {
+        if (ctx == null || target == null) {
+            return 0L;
+        }
+        int avoid = target.getAvoidability();
+        if (avoid <= 0) {
+            return 0L; // mob can't dodge -> always hittable
+        }
+        server.combat.CombatFormulaProvider f = server.combat.CombatFormulaProvider.getInstance();
+        double hit = ctx.magic()
+                ? f.calculateMagicMobHitChance(ctx.accuracy(), ctx.botLevel(), target.getLevel(), avoid)
+                : f.calculatePhysicalMobHitChance(ctx.accuracy(), ctx.botLevel(), target.getLevel(), avoid);
+        if (hit >= ACCURACY_OK_HIT) {
+            return 0L;
+        }
+        return (long) ((ACCURACY_OK_HIT - hit) / ACCURACY_OK_HIT * ACCURACY_TARGET_PENALTY);
+    }
+
+    /**
+     * Proactive-retreat verdict (self-preservation, combat-side): disengage a touch-dangerous mob
+     * while HP is still HEALTHY — earlier and danger-driven, distinct from the reactive low-HP
+     * potion/heal path (HP &lt; AUTOPOT_HP_THRESH). When HP has already dropped to/below the reactive
+     * threshold we defer to that path (heal, don't add a competing retreat). The caller wires this
+     * into the existing retreat/re-spacing machinery; this only decides whether to retreat.
+     */
+    static boolean shouldProactivelyRetreat(Character bot, Monster mob) {
+        if (!cfg.PROACTIVE_RETREAT_ENABLED || bot == null || mob == null) {
+            return false;
+        }
+        // Healthy = above the reactive heal threshold. Below it, the reactive layer owns the response.
+        if (bot.getHp() < bot.getMaxHp() * BotManager.cfg.AUTOPOT_HP_THRESH) {
+            return false;
+        }
+        // Only a fragile bot (small HP pool / out of pots) flees — a stocked/tanky bot trades hits and
+        // grinds. Matches the targeting-penalty gate, and stops well-supplied bots fleeing normal mobs.
+        if (!isFragile(bot)) {
+            return false;
+        }
+        return server.bots.combat.BotDangerAssessment.isTouchDangerous(bot, mob, cfg.TOUCH_HITS_TO_KILL);
+    }
+
+    /** A bot is fragile (and should weigh touch danger in targeting) when its HP pool is small or it
+     *  is out of HP potions — i.e. it can't trade hits. Geared/stocked bots ignore the penalty. */
+    private static boolean isFragile(Character bot) {
+        if (bot.getMaxHp() <= cfg.TOUCH_FRAGILE_MAXHP) {
+            return true;
+        }
+        return BotPotionManager.countPotions(bot)[0] < BotManager.cfg.POT_STOP;
+    }
 
     private static long aoeClusterBonus(BotEntry entry, Monster target, List<Monster> candidates) {
         if (entry == null || entry.aoeSkillId == 0 || entry.aoeSkillMobs <= 1
@@ -1985,7 +2543,7 @@ class BotCombatManager {
         }
         // Geometry is promising — now pay for scoring. scoreAttackPlan is position-independent
         // (target HP + damage profile), so the translated plan scores validly.
-        PlanScore fireNowScore = scoreAttackPlan(bot, fireNowBest);
+        PlanScore fireNowScore = scoreAttackPlan(entry, bot, fireNowBest);
         // Preserve kill priority: if the fire-now plan already one-shots a full-HP target, just fire.
         if (fireNowScore.minimumKillsFullHpTargets) {
             return null;
@@ -1993,7 +2551,7 @@ class BotCombatManager {
         AttackPlan sweetPlan = new AttackPlan(aoeNow.skillId, aoeNow.skillLevel, aoeNow.numDamage, shifted,
                 sweetTargets, aoeNow.route, aoeNow.display, aoeNow.direction, aoeNow.rangedDirection,
                 aoeNow.stance, aoeNow.speed, aoeNow.hitDelayMs, aoeNow.cooldownMs, aoeNow.damageWeaponType);
-        PlanScore sweetScore = scoreAttackPlan(bot, sweetPlan);
+        PlanScore sweetScore = scoreAttackPlan(entry, bot, sweetPlan);
         if (sweetScore.rawDps >= fireNowScore.rawDps * cfg.AOE_REPOSITION_DPS_FACTOR) {
             if (cfg.AOE_REPOSITION_DEBUG) {
                 double pct = fireNowScore.rawDps > 0 ? sweetScore.rawDps / fireNowScore.rawDps * 100.0d : 0.0d;
@@ -2005,6 +2563,92 @@ class BotCombatManager {
             return new Point(botPos.x + shift, botPos.y);
         }
         return null;
+    }
+
+    /**
+     * Inverse of {@link #aoeRepositionTarget}: when the in-range fire-now plan is a weak long-reach
+     * skill but a STRONGER skill is just out of reach (shorter hitbox), return a step-closer Point so
+     * the stronger skill lands instead. Generic — fixes any "fires the weaker far-reach skill rather
+     * than stepping in for the stronger one" case (e.g. a Hermit defaulting to Avenger). Gated on the
+     * stronger skill beating the fire-now single-target DPS by {@link Config#BETTER_REACH_REPOSITION_DPS_FACTOR}
+     * and a bounded step (the walk time is the opportunity cost). Returns null when nothing closer wins.
+     */
+    static Point betterReachRepositionTarget(BotEntry entry, Character bot, Monster primaryTarget, AttackPlan fireNowBest) {
+        if (!cfg.BETTER_REACH_REPOSITION_ENABLED || entry == null || bot == null
+                || primaryTarget == null || fireNowBest == null) {
+            return null;
+        }
+        Point botPos = bot.getPosition();
+        Point tp = primaryTarget.getPosition();
+        if (botPos == null || tp == null) {
+            return null;
+        }
+        PlanScore fireNowScore = scoreAttackPlan(entry, bot, fireNowBest);
+        // Kill priority: if the fire-now plan already one-shots a full-HP target, don't walk — fire.
+        if (fireNowScore.minimumKillsFullHpTargets || fireNowScore.rawDps <= 0) {
+            return null;
+        }
+        WeaponType weaponType = BotAttackExecutionProvider.getEquippedWeaponType(bot);
+        int dist = Math.abs(tp.x - botPos.x);
+        int dir = tp.x >= botPos.x ? 1 : -1;
+
+        Point best = null;
+        double bestDps = fireNowScore.rawDps * cfg.BETTER_REACH_REPOSITION_DPS_FACTOR;
+        for (int skillId : cachedAttackSkillIds(entry)) {
+            if (skillId == fireNowBest.skillId || bot.skillIsCooling(skillId)) {
+                continue;
+            }
+            Skill skill = SkillFactory.getSkill(skillId);
+            if (skill == null) {
+                continue;
+            }
+            int lvl = bot.getSkillLevel(skill);
+            if (lvl <= 0) {
+                continue;
+            }
+            StatEffect effect = skill.getEffect(lvl);
+            if (effect == null || !effect.canPaySkillCost(bot)
+                    || !canUseAttackSkillWithWeapon(skillId, weaponType)) {
+                continue;
+            }
+            AttackRoute route = BotAttackExecutionProvider.determineSkillRoute(bot, skillId);
+            int ammoCost = Math.max(effect.getBulletCount(), effect.getBulletConsume())
+                    * shadowPartnerHitMultiplier(bot, route);
+            if (ammoCost > 0 && route == AttackRoute.RANGED && countAmmo(bot, weaponType) < ammoCost) {
+                continue;
+            }
+            String action = BotAttackExecutionProvider.resolveSkillAttackAction(bot, skill, lvl, weaponType);
+            Rectangle hb = calculateSkillHitBox(effect, bot, primaryTarget, route, skillId, action);
+            if (hb == null || doesHitBoxIntersectMonster(hb, primaryTarget)) {
+                continue; // null, or already in reach (planAttack already considered it)
+            }
+            int reach = dir > 0 ? (int) Math.round(hb.getMaxX()) - botPos.x
+                                : botPos.x - (int) Math.round(hb.getMinX());
+            if (reach <= 0) {
+                continue;
+            }
+            int step = dist - reach + cfg.AOE_REPOSITION_ARRIVAL_X; // end just inside reach
+            if (step <= cfg.AOE_REPOSITION_ARRIVAL_X || step > cfg.BETTER_REACH_REPOSITION_MAX_DISTANCE_X) {
+                continue; // already in horizontal reach (failure is vertical), or too far to be worth it
+            }
+            Rectangle shifted = new Rectangle(hb);
+            shifted.translate(dir * step, 0);
+            if (!doesHitBoxIntersectMonster(shifted, primaryTarget)) {
+                continue; // stepping horizontally won't bring it into reach (vertical mismatch)
+            }
+            int lines = Math.max(1, effectiveHitCount(effect) * shadowPartnerHitMultiplier(bot, route));
+            CombatFormulaProvider.DamageProfile profile = resolveAttackDamageProfile(
+                    bot, skillId, lvl, route, damageWeaponTypeForAction(skillId, weaponType, action));
+            double dmg = CombatFormulaProvider.getInstance().estimateExpectedDamage(bot, primaryTarget, lines, skillId, profile);
+            BotAttackExecutionProvider.SkillAttackTiming timing =
+                    BotAttackExecutionProvider.resolveSkillAttackTiming(skill, action, bot, buildBasicAttackData(bot, primaryTarget));
+            double dps = dmg / Math.max(0.001, timing.cooldownMs() / 1000.0);
+            if (dps > bestDps) {
+                bestDps = dps;
+                best = new Point(botPos.x + dir * step, botPos.y);
+            }
+        }
+        return best;
     }
 
     private static List<Monster> clusterMonsters(Character bot, Monster primaryTarget) {
@@ -2045,27 +2689,28 @@ class BotCombatManager {
     }
 
     private static long grindRegionOccupancyPenalty(GrindGraphContext context, Character bot, int targetRegionId) {
-        if (!context.available() || context.entry().owner == null || bot == null || targetRegionId < 0) {
+        if (!context.available() || bot == null || targetRegionId < 0 || context.map() == null) {
             return 0L;
         }
 
-        int occupiedCount = 0;
-        for (BotEntry sibling : BotManager.getInstance().getBotEntries(context.entry().owner.getId())) {
-            if (sibling == context.entry() || sibling == null || !sibling.grinding || sibling.bot == null) {
+        // Weighted region crowding over EVERY live character in the target region, regardless of
+        // source: same-party occupants (owner, owned/managed/crew/dynamic-party bots all share a
+        // real game Party) cost weight 1 so teammates lightly spread out; everyone else (other
+        // players, foreign bots) costs weight 2 so the bot steers clear and doesn't kill-steal.
+        int myPartyId = bot.getPartyId();
+        long weighted = 0L;
+        for (Character other : context.map().getAllPlayers()) {
+            if (other == null || other == bot || other.getHp() <= 0 || other.getPosition() == null) {
                 continue;
             }
-            if (sibling.bot.getMap() != context.map() || sibling.bot.getHp() <= 0 || sibling.bot.getPosition() == null) {
+            if (context.graph().findRegionId(context.map(), other.getPosition()) != targetRegionId) {
                 continue;
             }
-
-            int occupiedRegionId = BotNavigationManager.resolveCurrentRegionId(
-                    context.graph(), sibling, context.map(), sibling.bot.getPosition());
-            if (occupiedRegionId == targetRegionId) {
-                occupiedCount++;
-            }
+            boolean sameParty = myPartyId > 0 && other.getPartyId() == myPartyId;
+            weighted += sameParty ? 1L : 2L;
         }
 
-        long penalty = (long) Math.max(0, occupiedCount) * Math.max(0, cfg.GRIND_REGION_OCCUPANCY_PENALTY);
+        long penalty = Math.max(0L, weighted) * Math.max(0, cfg.GRIND_REGION_OCCUPANCY_PENALTY);
         return Math.min(Math.max(0, cfg.GRIND_REGION_OCCUPANCY_PENALTY_CAP), penalty);
     }
 
@@ -2164,7 +2809,10 @@ class BotCombatManager {
     }
 
     static boolean isMobTouchingBot(BotEntry entry, Character bot, Monster mob) {
-        Rectangle botBounds = getBotTouchBounds(entry, bot);
+        return isMobTouchingBot(getBotTouchBounds(entry, bot), mob);
+    }
+
+    static boolean isMobTouchingBot(Rectangle botBounds, Monster mob) {
         Rectangle mobBounds = BotMobHitboxProvider.getInstance().getMobBounds(mob);
         if (mobBounds == null) {
             return false;
@@ -2448,6 +3096,52 @@ class BotCombatManager {
         return false;
     }
 
+    /**
+     * Beginner Recovery as a top-priority, pot-saving self-heal: cast proactively whenever the bot is
+     * below full HP so the slow MP->HP regen runs in the background, in OR out of combat. It does not
+     * replace potions — the client autopot still fires at its HP threshold (Recovery is too slow to
+     * hold the line alone), this just bleeds the gap with MP the low-level bot isn't otherwise using.
+     * Gated to {@code RECOVERY_MAXHP_CAP}: above that HP pool the cast time isn't worth it. Reuses the
+     * {@link #castSupportSkill} cast SSOT (MP cost, visible SPECIAL_MOVE packet, animation lock).
+     */
+    static boolean tryCastRecovery(BotEntry entry, Character bot) {
+        if (entry.attackCooldownMs > 0) return false;                 // mid-animation: don't interrupt an attack/heal
+        if (entry.inAir || entry.climbing) return false;              // cast planted on the ground, like a player
+        if (bot == null || !bot.isAlive()) return false;
+        if (bot.getMaxHp() >= cfg.RECOVERY_MAXHP_CAP) return false;   // big HP pool: slow regen not worth the cast
+        if (bot.getHp() >= bot.getCurrentMaxHp()) return false;       // already topped off
+        if (bot.getBuffedValue(BuffStat.RECOVERY) != null) return false; // already regenerating
+        Skill recovery = SkillFactory.getSkill(Beginner.RECOVERY);
+        if (recovery == null) return false;
+        int lvl = bot.getSkillLevel(recovery);
+        if (lvl <= 0) return false;
+        StatEffect fx = recovery.getEffect(lvl);
+        if (fx == null) return false;                                 // canPaySkillCost (MP) is checked inside castSupportSkill
+        return castSupportSkill(entry, bot, recovery, fx, System.currentTimeMillis());
+    }
+
+    static boolean tryCastMagicGuard(BotEntry entry, Character bot) {
+        if (entry.attackCooldownMs > 0) return false;
+        if (entry.inAir || entry.climbing) return false;
+        if (!entry.skillBuffsEnabled) return false;
+        if (bot == null || !bot.isAlive()) return false;
+        if (bot.getBuffedValue(BuffStat.MAGIC_GUARD) != null) return false;
+
+        for (int skillId : CRITICAL_SURVIVAL_BUFFS) {
+            if (!entry.buffSkillIds.contains(skillId)) continue;
+            if (bot.skillIsCooling(skillId)) return false;
+
+            Skill skill = SkillFactory.getSkill(skillId);
+            int lvl = bot.getSkillLevel(skill);
+            if (lvl <= 0) continue;
+
+            StatEffect fx = skill.getEffect(lvl);
+            if (!isActiveSupportSkill(skill, fx)) return false;
+            return castSupportSkill(entry, bot, skill, fx, System.currentTimeMillis());
+        }
+        return false;
+    }
+
     private static boolean castSupportSkill(BotEntry entry, Character bot, Skill skill, StatEffect fx, long now) {
         int skillLevel = bot.getSkillLevel(skill);
         if (skillLevel <= 0) {
@@ -2583,10 +3277,25 @@ class BotCombatManager {
                 entry.ammoWarnSent = false;
                 return;
             }
+            // Out of MP pots: a mage with no MP can't cast and stands frozen in attack range, so MP
+            // pots ARE the mage's ammo. Mirror the ranged-ammo recovery below: run a resupply errand
+            // while dry (the errand self-throttles), gated by canRecoverAmmo so the same meso floor
+            // reserved for ammo also funds MP pots. Truly broke -> fall through and keep farming.
+            if (entry.noAmmo && entry.grinding && BotAutopilotManager.isActive(entry)
+                    && BotShopManager.canRecoverAmmo(entry, bot)) {
+                BotAutopilotManager.requestResupplyErrand(entry, bot);
+                return;
+            }
             if (!entry.noAmmo) {
                 entry.noAmmo = true;
                 if (entry.grinding) {
-                    BotManager.getInstance().issueFollowOwner(entry);
+                    if (BotShopManager.canRecoverAmmo(entry, bot)
+                            && BotAutopilotManager.requestResupplyErrand(entry, bot)) {
+                        return;
+                    }
+                    if (BotManager.canWalkToOwner(entry)) {
+                        BotManager.getInstance().issueFollowOwner(entry);
+                    }
                     BotManager.getInstance().botSay(bot, BotManager.randomReply(MP_POTS_OUT_MSGS));
                 }
             }
@@ -2606,10 +3315,25 @@ class BotCombatManager {
             return;
         }
 
+        if (ammo <= 0 && entry.noAmmo && entry.grinding && BotAutopilotManager.isActive(entry)
+                && BotShopManager.canRecoverAmmo(entry, bot)) {
+            BotAutopilotManager.requestResupplyErrand(entry, bot);
+            return;
+        }
+
         if (ammo <= 0 && !entry.noAmmo) {
             entry.noAmmo = true;
             if (entry.grinding) {
-                BotManager.getInstance().issueFollowOwner(entry);
+                BotAmmoManager.requestLowAmmoShare(entry, bot, false);
+                // Only run the resupply errand if a town trip can re-arm us; otherwise fall through
+                // and keep grinding with the degenerate close-range swing to earn the meso first.
+                if (BotShopManager.canRecoverAmmo(entry, bot)
+                        && BotAutopilotManager.requestResupplyErrand(entry, bot)) {
+                    return;
+                }
+                if (BotManager.canWalkToOwner(entry)) {
+                    BotManager.getInstance().issueFollowOwner(entry);
+                }
                 BotManager.getInstance().botSay(bot, BotManager.randomReply(AMMO_OUT_MSGS));
             }
         }
@@ -2649,13 +3373,38 @@ class BotCombatManager {
 
         for (Character target : getNearbyPartyMembers(bot)) {
             for (var statup : fx.getStatups()) {
-                if (target.getBuffedValue(statup.getLeft()) == null) {
-                    return true;
+                BuffStat stat = statup.getLeft();
+                if (target.getBuffedValue(stat) == null) {
+                    return true;                                    // missing entirely
+                }
+                if (buffRemainingFraction(target, stat) < REBUFF_FRACTION) {
+                    return true;                                    // <10% left: refresh before it drops
                 }
             }
         }
 
         return false;
+    }
+
+    /** Remaining fraction (0..1) of the timed buff granting {@code stat} on {@code target}; 1 if the
+     *  stat is untimed or its source can't be found (never triggers a rebuff on its own). */
+    private static double buffRemainingFraction(Character target, BuffStat stat) {
+        for (PlayerBuffValueHolder holder : target.getAllBuffs()) {
+            StatEffect fx = holder.effect;
+            if (fx == null) {
+                continue;
+            }
+            long dur = fx.getDuration();
+            if (dur <= 0) {
+                continue;
+            }
+            for (var statup : fx.getStatups()) {
+                if (statup.getLeft() == stat) {
+                    return Math.max(0d, (dur - holder.usedTime) / (double) dur);
+                }
+            }
+        }
+        return 1d;
     }
 
     /**

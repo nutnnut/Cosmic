@@ -5,12 +5,15 @@ import client.Job;
 import org.junit.jupiter.api.Test;
 import org.mockito.MockedStatic;
 
+import java.awt.Point;
 import java.util.List;
 import java.util.concurrent.ScheduledFuture;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.mockStatic;
 import static org.mockito.Mockito.verify;
@@ -40,11 +43,224 @@ class BotStarterKitManagerTest {
     }
 
     @Test
+    void thirdJobOfMapsEveryExplorerSecondJobToItsLoneThirdJob() {
+        assertEquals(Job.CRUSADER, BotStarterKitManager.thirdJobOf(Job.FIGHTER));
+        assertEquals(Job.WHITEKNIGHT, BotStarterKitManager.thirdJobOf(Job.PAGE));
+        assertEquals(Job.DRAGONKNIGHT, BotStarterKitManager.thirdJobOf(Job.SPEARMAN));
+        assertEquals(Job.FP_MAGE, BotStarterKitManager.thirdJobOf(Job.FP_WIZARD));
+        assertEquals(Job.IL_MAGE, BotStarterKitManager.thirdJobOf(Job.IL_WIZARD));
+        assertEquals(Job.PRIEST, BotStarterKitManager.thirdJobOf(Job.CLERIC));
+        assertEquals(Job.RANGER, BotStarterKitManager.thirdJobOf(Job.HUNTER));
+        assertEquals(Job.SNIPER, BotStarterKitManager.thirdJobOf(Job.CROSSBOWMAN));
+        assertEquals(Job.HERMIT, BotStarterKitManager.thirdJobOf(Job.ASSASSIN));
+        assertEquals(Job.CHIEFBANDIT, BotStarterKitManager.thirdJobOf(Job.BANDIT));
+        assertEquals(Job.MARAUDER, BotStarterKitManager.thirdJobOf(Job.BRAWLER));
+        assertEquals(Job.OUTLAW, BotStarterKitManager.thirdJobOf(Job.GUNSLINGER));
+        // Not a 2nd job -> no deterministic successor (beginner, 1st, 3rd, 4th, null).
+        assertNull(BotStarterKitManager.thirdJobOf(Job.BEGINNER));
+        assertNull(BotStarterKitManager.thirdJobOf(Job.WARRIOR));
+        assertNull(BotStarterKitManager.thirdJobOf(Job.CRUSADER));
+        assertNull(BotStarterKitManager.thirdJobOf(Job.HERO));
+        assertNull(BotStarterKitManager.thirdJobOf(null));
+    }
+
+    @Test
+    void fourthJobOfMapsEveryExplorerThirdJobToItsLoneFourthJob() {
+        assertEquals(Job.HERO, BotStarterKitManager.fourthJobOf(Job.CRUSADER));
+        assertEquals(Job.PALADIN, BotStarterKitManager.fourthJobOf(Job.WHITEKNIGHT));
+        assertEquals(Job.DARKKNIGHT, BotStarterKitManager.fourthJobOf(Job.DRAGONKNIGHT));
+        assertEquals(Job.FP_ARCHMAGE, BotStarterKitManager.fourthJobOf(Job.FP_MAGE));
+        assertEquals(Job.IL_ARCHMAGE, BotStarterKitManager.fourthJobOf(Job.IL_MAGE));
+        assertEquals(Job.BISHOP, BotStarterKitManager.fourthJobOf(Job.PRIEST));
+        assertEquals(Job.BOWMASTER, BotStarterKitManager.fourthJobOf(Job.RANGER));
+        assertEquals(Job.MARKSMAN, BotStarterKitManager.fourthJobOf(Job.SNIPER));
+        assertEquals(Job.NIGHTLORD, BotStarterKitManager.fourthJobOf(Job.HERMIT));
+        assertEquals(Job.SHADOWER, BotStarterKitManager.fourthJobOf(Job.CHIEFBANDIT));
+        assertEquals(Job.BUCCANEER, BotStarterKitManager.fourthJobOf(Job.MARAUDER));
+        assertEquals(Job.CORSAIR, BotStarterKitManager.fourthJobOf(Job.OUTLAW));
+        // Not a 3rd job -> null (2nd job, 4th job, beginner, null).
+        assertNull(BotStarterKitManager.fourthJobOf(Job.FIGHTER));
+        assertNull(BotStarterKitManager.fourthJobOf(Job.HERO));
+        assertNull(BotStarterKitManager.fourthJobOf(Job.BEGINNER));
+        assertNull(BotStarterKitManager.fourthJobOf(null));
+    }
+
+    @Test
+    void firstJobChoicesAreTheFiveExplorerClasses() {
+        assertEquals(List.of(Job.WARRIOR, Job.MAGICIAN, Job.BOWMAN, Job.THIEF, Job.PIRATE),
+                BotStarterKitManager.firstJobChoices());
+    }
+
+    @Test
+    void secondJobChoicesMirrorEachBranchOptionSet() {
+        assertEquals(List.of(Job.FIGHTER, Job.PAGE, Job.SPEARMAN),
+                BotStarterKitManager.secondJobChoices(Job.WARRIOR));
+        assertEquals(List.of(Job.FP_WIZARD, Job.IL_WIZARD, Job.CLERIC),
+                BotStarterKitManager.secondJobChoices(Job.MAGICIAN));
+        assertEquals(List.of(Job.HUNTER, Job.CROSSBOWMAN),
+                BotStarterKitManager.secondJobChoices(Job.BOWMAN));
+        assertEquals(List.of(Job.ASSASSIN, Job.BANDIT),
+                BotStarterKitManager.secondJobChoices(Job.THIEF));
+        assertEquals(List.of(Job.BRAWLER, Job.GUNSLINGER),
+                BotStarterKitManager.secondJobChoices(Job.PIRATE));
+        // No 2nd-job topology for a non-1st-job (or null) -> empty, so the picker falls back.
+        assertTrue(BotStarterKitManager.secondJobChoices(Job.BEGINNER).isEmpty());
+        assertTrue(BotStarterKitManager.secondJobChoices(Job.FIGHTER).isEmpty());
+        assertTrue(BotStarterKitManager.secondJobChoices(null).isEmpty());
+    }
+
+    @Test
+    void jobChangeNpcForRoutesEachBranchTo_ItsVerifiedTownInstructor() {
+        // Branch = job id / 100. Each 1st-job (X00) and a 2nd-job (X10/X20/X30) maps to the same
+        // town instructor (npc, map). Verified vs Map.wz + handbook/NPC.txt.
+        // 1st job -> town instructor; 2nd job -> the distinct field Job Instructor (1072xxx).
+        assertJobNpc(Job.WARRIOR, 1022000, 102000003);   // 1st
+        assertJobNpc(Job.FIGHTER, 1072000, 102020300);   // 2nd: Warrior Job Instructor @ West Rocky Mountain IV
+        assertJobNpc(Job.MAGICIAN, 1032001, 101000003);
+        assertJobNpc(Job.CLERIC, 1072001, 101020000);    // 2nd: Magician Job Instructor
+        assertJobNpc(Job.BOWMAN, 1012100, 100000201);
+        assertJobNpc(Job.HUNTER, 1072002, 106010000);    // 2nd: Bowman Job Instructor
+        assertJobNpc(Job.THIEF, 1052001, 103000003);
+        assertJobNpc(Job.ASSASSIN, 1072003, 102040000);  // 2nd: Thief Job Instructor
+        assertJobNpc(Job.PIRATE, 1090000, 120000101);
+        assertJobNpc(Job.BRAWLER, 1090000, 120000101);   // 2nd Pirate reuses Kyrin
+    }
+
+    private static void assertJobNpc(Job target, int npcId, int mapId) {
+        BotStarterKitManager.JobChangeNpc npc = BotStarterKitManager.jobChangeNpcFor(target);
+        assertEquals(npcId, npc.npcId(), target + " npc");
+        assertEquals(mapId, npc.mapId(), target + " map");
+    }
+
+    @Test
+    void thirdAndFourthJobRouteToTheirVerifiedInstructor() {
+        // 3rd job: Door of Dimension (1061009) in each branch's hidden dungeon map.
+        assertJobNpc(Job.CRUSADER, 1061009, 105070001);    // Warrior  - Ant Tunnel Park
+        assertJobNpc(Job.FP_MAGE, 1061009, 100040106);     // Magician - Forest of Evil II
+        assertJobNpc(Job.RANGER, 1061009, 105040305);      // Bowman   - Sleepy Dungeon V
+        assertJobNpc(Job.HERMIT, 1061009, 107000402);      // Thief    - Monkey Swamp II
+        assertJobNpc(Job.MARAUDER, 1061009, 105070200);    // Pirate   - Cave of Evil Eye II
+        // 4th job: per-branch master in Leafre - Forest of the Priest (240010501).
+        assertJobNpc(Job.HERO, 2081100, 240010501);        // Harmonia
+        assertJobNpc(Job.BISHOP, 2081200, 240010501);      // Gritto
+        assertJobNpc(Job.BOWMASTER, 2081300, 240010501);   // Legor
+        assertJobNpc(Job.NIGHTLORD, 2081400, 240010501);   // Hellin
+        assertJobNpc(Job.BUCCANEER, 2081500, 240010501);   // Samuel
+    }
+
+    @Test
+    void beginnerAndNullDoNotRouteThroughAnInstructor() {
+        assertNull(BotStarterKitManager.jobChangeNpcFor(Job.BEGINNER), "Beginner should not route");
+        assertFalse(BotStarterKitManager.routesThroughNpc(Job.BEGINNER));
+        assertNull(BotStarterKitManager.jobChangeNpcFor(null));
+        assertFalse(BotStarterKitManager.routesThroughNpc(null));
+    }
+
+    @Test
+    void routesThroughNpcAcceptsEveryFirstAndSecondJob() {
+        for (Job j : List.of(Job.WARRIOR, Job.MAGICIAN, Job.BOWMAN, Job.THIEF, Job.PIRATE,
+                Job.FIGHTER, Job.PAGE, Job.SPEARMAN, Job.FP_WIZARD, Job.IL_WIZARD, Job.CLERIC,
+                Job.HUNTER, Job.CROSSBOWMAN, Job.ASSASSIN, Job.BANDIT, Job.BRAWLER, Job.GUNSLINGER)) {
+            assertTrue(BotStarterKitManager.routesThroughNpc(j), j + " (1st/2nd job) should route");
+            assertEquals(j.getId() / 100,
+                    BotStarterKitManager.jobChangeNpcFor(j) == null ? -1 : (j.getId() / 100),
+                    j + " maps to a non-null instructor");
+        }
+    }
+
+    @Test
     void shouldOnlyGrantKitsForBeginnerToFirstJobAdvancements() {
         assertTrue(BotStarterKitManager.isFirstJobAdvancement(Job.BEGINNER, Job.WARRIOR));
         assertTrue(BotStarterKitManager.isFirstJobAdvancement(Job.BEGINNER, Job.MAGICIAN));
         assertFalse(BotStarterKitManager.isFirstJobAdvancement(Job.WARRIOR, Job.FIGHTER));
         assertFalse(BotStarterKitManager.isFirstJobAdvancement(Job.BEGINNER, Job.FIGHTER));
+    }
+
+    @Test
+    void jobErrandUsesDedicatedLongDistanceTravelBudget() {
+        Character bot = mock(Character.class);
+        Character owner = mock(Character.class);
+        BotEntry entry = new BotEntry(bot, owner, mock(ScheduledFuture.class));
+        entry.jobErrandTarget = Job.FIGHTER;
+        entry.jobErrandNpcId = 1072000;
+        entry.jobErrandMapId = 102020300;
+        entry.jobErrandProgress.begin(System.currentTimeMillis());
+
+        when(bot.getMapId()).thenReturn(221020200);
+
+        try (MockedStatic<BotTravelManager> travel = mockStatic(BotTravelManager.class)) {
+            travel.when(() -> BotTravelManager.tickApproachNpc(entry, bot, 102020300, 1072000,
+                            BotStarterKitManager.JOB_ERRAND_MAX_TRAVEL_HOPS, true, true,
+                            BotStarterKitManager.NPC_TRIGGER_RADIUS_PX))
+                    .thenReturn(BotTravelManager.ApproachStatus.TRAVELING);
+
+            assertTrue(BotStarterKitManager.tickJobErrand(entry, bot, true));
+
+            travel.verify(() -> BotTravelManager.tickApproachNpc(entry, bot, 102020300, 1072000,
+                    BotStarterKitManager.JOB_ERRAND_MAX_TRAVEL_HOPS, true, true,
+                    BotStarterKitManager.NPC_TRIGGER_RADIUS_PX));
+        }
+    }
+
+    @Test
+    void jobErrandDoesNotWarnWhileWaitingForFerryGate() {
+        Character bot = mock(Character.class);
+        Character owner = mock(Character.class);
+        BotEntry entry = new BotEntry(bot, owner, mock(ScheduledFuture.class));
+        entry.jobErrandTarget = Job.BANDIT;
+        entry.jobErrandNpcId = 1072003;
+        entry.jobErrandMapId = 102040000;
+        entry.jobErrandProgress.begin(System.currentTimeMillis());
+
+        try (MockedStatic<BotTravelManager> travel = mockStatic(BotTravelManager.class);
+             MockedStatic<BotFerryManager> ferry = mockStatic(BotFerryManager.class)) {
+            travel.when(() -> BotTravelManager.tickApproachNpc(entry, bot, 102040000, 1072003,
+                            BotStarterKitManager.JOB_ERRAND_MAX_TRAVEL_HOPS, true, true,
+                            BotStarterKitManager.NPC_TRIGGER_RADIUS_PX))
+                    .thenReturn(BotTravelManager.ApproachStatus.TRAVEL_YIELDED);
+            ferry.when(() -> BotFerryManager.isWaitingOrRiding(entry, bot)).thenReturn(true);
+
+            assertTrue(BotStarterKitManager.tickJobErrand(entry, bot, true));
+            assertEquals(0L, entry.jobErrandLastWarnMs);
+
+            ferry.verify(() -> BotFerryManager.isWaitingOrRiding(entry, bot));
+        }
+    }
+
+    @Test
+    void jobErrandWarnsWhenTravelYieldedAndNotInFerryWait() {
+        Character bot = mock(Character.class);
+        Character owner = mock(Character.class);
+        BotEntry entry = new BotEntry(bot, owner, mock(ScheduledFuture.class));
+        entry.jobErrandTarget = Job.BANDIT;
+        entry.jobErrandNpcId = 1072003;
+        entry.jobErrandMapId = 102040000;
+        entry.autopilotMapId = 260020620;
+        entry.jobErrandProgress.begin(System.currentTimeMillis());
+
+        when(bot.getMapId()).thenReturn(260000000);
+        when(bot.getMeso()).thenReturn(1_047_392);
+        when(bot.getJob()).thenReturn(Job.THIEF);
+        when(bot.getLevel()).thenReturn(30);
+        when(bot.getName()).thenReturn("oOoDivoOo99");
+
+        try (MockedStatic<BotTravelManager> travel = mockStatic(BotTravelManager.class);
+             MockedStatic<BotFerryManager> ferry = mockStatic(BotFerryManager.class);
+             MockedStatic<BotAutopilotManager> autopilot = mockStatic(BotAutopilotManager.class)) {
+            travel.when(() -> BotTravelManager.tickApproachNpc(entry, bot, 102040000, 1072003,
+                            BotStarterKitManager.JOB_ERRAND_MAX_TRAVEL_HOPS, true, true,
+                            BotStarterKitManager.NPC_TRIGGER_RADIUS_PX))
+                    .thenReturn(BotTravelManager.ApproachStatus.TRAVEL_YIELDED);
+            ferry.when(() -> BotFerryManager.isWaitingOrRiding(entry, bot)).thenReturn(false);
+            autopilot.when(() -> BotAutopilotManager.worldTourReturn(bot)).thenReturn(-1);
+            autopilot.when(() -> BotAutopilotManager.routeForBot(bot, 260000000, 102040000,
+                            BotStarterKitManager.JOB_ERRAND_MAX_TRAVEL_HOPS,
+                            new BotWorldGraph.RouteOptions(false, 1_047_392, true, false, 30, -1)))
+                    .thenReturn(List.of(260000100, 200000100, 101000300, 101000000, 103000000, 102050000, 102040000));
+
+            assertTrue(BotStarterKitManager.tickJobErrand(entry, bot, true));
+            assertTrue(entry.jobErrandLastWarnMs > 0L);
+        }
     }
 
     @Test
@@ -54,16 +270,50 @@ class BotStarterKitManagerTest {
         BotEntry entry = new BotEntry(bot, owner, mock(ScheduledFuture.class));
 
         when(bot.getJob()).thenReturn(Job.BOWMAN);
+        when(bot.getPosition()).thenReturn(new Point(100, 100));
 
+        var savedReply = BotStarterKitManager.reply;
+        BotStarterKitManager.reply = (e, t) -> { }; // avoid the BotManager singleton in the unit test
         try (MockedStatic<BotBuildManager> buildManager = mockStatic(BotBuildManager.class);
              MockedStatic<BotChatManager> chatManager = mockStatic(BotChatManager.class);
              MockedStatic<BotEquipManager> equipManager = mockStatic(BotEquipManager.class)) {
             BotStarterKitManager.advanceJob(entry, Job.HUNTER);
 
             verify(bot).changeJob(Job.HUNTER);
+            verify(bot).changeFaceExpression(Emote.HAPPY.getValue());
             buildManager.verify(() -> BotBuildManager.handleJobAdvance(entry, bot, Job.BOWMAN, Job.HUNTER));
             equipManager.verify(() -> BotEquipManager.autoEquip(bot, owner, null));
             chatManager.verify(() -> BotChatManager.checkBotStatus(entry, bot));
+            assertTrue(entry.fidgetMode != BotFidgetMode.NONE);
+            assertEquals(BotFidgetTrigger.SOCIAL, entry.fidgetTrigger);
+        } finally {
+            BotStarterKitManager.reply = savedReply;
+        }
+    }
+
+    @Test
+    void advanceJobDoesNotOverrideActiveFidget() {
+        Character bot = mock(Character.class);
+        Character owner = mock(Character.class);
+        BotEntry entry = new BotEntry(bot, owner, mock(ScheduledFuture.class));
+        entry.fidgetMode = BotFidgetMode.PRONE;
+        entry.fidgetTrigger = BotFidgetTrigger.IDLE;
+
+        when(bot.getJob()).thenReturn(Job.BOWMAN);
+
+        var savedReply = BotStarterKitManager.reply;
+        BotStarterKitManager.reply = (e, t) -> { };
+        try (MockedStatic<BotBuildManager> buildManager = mockStatic(BotBuildManager.class);
+             MockedStatic<BotChatManager> chatManager = mockStatic(BotChatManager.class);
+             MockedStatic<BotEquipManager> equipManager = mockStatic(BotEquipManager.class)) {
+            BotStarterKitManager.advanceJob(entry, Job.HUNTER);
+
+            verify(bot).changeJob(Job.HUNTER);
+            verify(bot, org.mockito.Mockito.never()).changeFaceExpression(org.mockito.Mockito.anyInt());
+            assertEquals(BotFidgetMode.PRONE, entry.fidgetMode);
+            assertEquals(BotFidgetTrigger.IDLE, entry.fidgetTrigger);
+        } finally {
+            BotStarterKitManager.reply = savedReply;
         }
     }
 }

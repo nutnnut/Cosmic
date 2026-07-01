@@ -1,0 +1,768 @@
+package server.bots;
+
+import client.Character;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Test;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
+
+/**
+ * Loop logic over the {@link BotQuestManager} seams (no WZ/DB): auto-quest start/complete gating,
+ * the rough worthwhile math, mob-overlap turn-in readiness, and the inventory-space precheck.
+ */
+class BotQuestManagerTest {
+
+    private final BotQuestManager.QuestGate prevGate = BotQuestManager.gate;
+    private final BotQuestManager.HopCount prevHops = BotQuestManager.hopCount;
+    private final BotQuestManager.MapMobsLookup prevMobs = BotQuestManager.mapMobs;
+    private final BotQuestManager.GrindExpBaseline prevBaseline = BotQuestManager.grindExpBaseline;
+    private final BotQuestManager.GrindExpBaseline prevBestBaseline = BotQuestManager.bestGrindExpBaseline;
+    private final BotQuestScorer.MobExp prevMobExp = BotQuestManager.mobExp;
+    private final BotQuestManager.TravelSeconds prevTravel = BotQuestManager.travelSeconds;
+    private final java.util.function.BiFunction<Character, BotQuestIndex.QuestMeta, BotQuestManager.RewardGain>
+            prevRewardGain = BotQuestManager.rewardGain;
+    private final BotQuestManager.NameLookup prevNpcName = BotQuestManager.npcName;
+    private final BotQuestManager.NameLookup prevMapName = BotQuestManager.mapName;
+    private final BotQuestManager.NameLookup prevMobName = BotQuestManager.mobName;
+    private final BotQuestManager.NameLookup prevItemName = BotQuestManager.itemNameLookup;
+    private final java.util.function.BiConsumer<BotEntry, String> prevReply = BotQuestManager.reply;
+    private final java.util.function.ObjIntConsumer<Character> prevGrant = BotQuestManager.grantItem;
+    private final BotQuestManager.ItemQuantity prevItemQty = BotQuestManager.itemQuantity;
+    private final BotQuestManager.ItemDroppers prevDroppers = BotQuestManager.itemDroppers;
+    private final BotQuestManager.ExpRateRatio prevExpRatio = BotQuestManager.expRateRatio;
+    private final List<String> replies = new ArrayList<>();
+
+    {
+        // Name seams hit WZ providers; stub them globally so describeRecommendation is WZ-free.
+        BotQuestManager.npcName = id -> "NPC" + id;
+        BotQuestManager.mapName = id -> "Map" + id;
+        BotQuestManager.mobName = id -> "Mob" + id;
+        BotQuestManager.itemNameLookup = id -> "Item" + id;
+        // Fetch-quest seams default to DB-free no-ops so index-wide scans (pickStartable over the real
+        // WZ index, which now holds fetch quests) don't reach MonsterInformationProvider's DB. Tests
+        // that exercise fetch behavior override these.
+        BotQuestManager.itemDroppers = id -> List.of();
+        BotQuestManager.itemQuantity = (bot, itemId) -> 0;
+        // Default quest/mob exp-rate ratio to 1 (mock bots have no world) so scoring tests are rate-free.
+        BotQuestManager.expRateRatio = bot -> 1.0;
+        // Fire NPC actions on the in-range tick instead of waiting out the humanlike dwell pause.
+        BotManager.dwellInstant = true;
+    }
+
+    @AfterEach
+    void restore() {
+        BotManager.dwellInstant = false;
+        BotQuestManager.gate = prevGate;
+        BotQuestManager.hopCount = prevHops;
+        BotQuestManager.mapMobs = prevMobs;
+        BotQuestManager.grindExpBaseline = prevBaseline;
+        BotQuestManager.bestGrindExpBaseline = prevBestBaseline;
+        BotQuestManager.mobExp = prevMobExp;
+        BotQuestManager.travelSeconds = prevTravel;
+        BotQuestManager.rewardGain = prevRewardGain;
+        BotQuestManager.npcName = prevNpcName;
+        BotQuestManager.mapName = prevMapName;
+        BotQuestManager.mobName = prevMobName;
+        BotQuestManager.itemNameLookup = prevItemName;
+        BotQuestManager.reply = prevReply;
+        BotQuestManager.grantItem = prevGrant;
+        BotQuestManager.itemQuantity = prevItemQty;
+        BotQuestManager.itemDroppers = prevDroppers;
+        BotQuestManager.expRateRatio = prevExpRatio;
+    }
+
+    /** Stub the scorer's WZ-backed seams to deterministic values so worthwhile/score is pure. */
+    private void stubScoringSeams(double baselineExpPerMin, int perMobExp, double travelSeconds) {
+        BotQuestManager.grindExpBaseline = (e, b) -> baselineExpPerMin;
+        BotQuestManager.mobExp = mobId -> perMobExp;
+        BotQuestManager.travelSeconds = (from, to) -> travelSeconds;
+        BotQuestManager.rewardGain = (b, q) -> new BotQuestManager.RewardGain(0.0, 0.0);
+    }
+
+    /** Recording gate: tracks which (questId) had start/complete called, gated by canStart/canComplete. */
+    private static final class RecordingGate implements BotQuestManager.QuestGate {
+        boolean canStart, canComplete, started, completed;
+        boolean completeRegisters = true; // a working quest flips isCompleted on complete(); false models a bugged one
+        Map<Integer, Integer> progress = Map.of();
+        final List<Integer> startsCalled = new ArrayList<>();
+        final List<Integer> completesCalled = new ArrayList<>();
+
+        @Override public boolean canStart(Character bot, int questId, int npc) { return canStart; }
+        @Override public boolean canComplete(Character bot, int questId, int npc) { return canComplete; }
+        @Override public void start(Character bot, int questId, int npc) { startsCalled.add(questId); }
+        @Override public void complete(Character bot, int questId, int npc) { completesCalled.add(questId); if (completeRegisters) completed = true; }
+        @Override public boolean isStarted(Character bot, int questId) { return started; }
+        @Override public boolean isCompleted(Character bot, int questId) { return completed; }
+        @Override public Map<Integer, Integer> currentProgress(Character bot, int questId) { return progress; }
+    }
+
+    /** Gate that only lets ONE quest id pass canStart (others are not startable) - isolates
+     *  index-wide auto-suggest/recommend tests to a single deterministic candidate. */
+    private static final class SingleStartableGate implements BotQuestManager.QuestGate {
+        private final int allowedId;
+        java.util.Set<Integer> completedIds = java.util.Set.of();
+        SingleStartableGate(int allowedId) { this.allowedId = allowedId; }
+        @Override public boolean canStart(Character bot, int questId, int npc) { return questId == allowedId; }
+        @Override public boolean canComplete(Character bot, int questId, int npc) { return false; }
+        @Override public void start(Character bot, int questId, int npc) {}
+        @Override public void complete(Character bot, int questId, int npc) {}
+        @Override public boolean isStarted(Character bot, int questId) { return false; }
+        @Override public boolean isCompleted(Character bot, int questId) { return completedIds.contains(questId); }
+        @Override public Map<Integer, Integer> currentProgress(Character bot, int questId) { return Map.of(); }
+    }
+
+    private BotEntry entry() {
+        Character bot = mock(Character.class);
+        BotQuestManager.reply = (e, s) -> replies.add(s);
+        return new BotEntry(bot, null, null);
+    }
+
+    private static BotQuestIndex.QuestMeta mobQuest(int id, int startNpc, int endNpc, int rewardExp,
+                                                    Map<Integer, Integer> mobs, List<Integer> rewardItems) {
+        return new BotQuestIndex.QuestMeta(id, startNpc, endNpc, 0, mobs, rewardExp, rewardItems,
+                false, false, false, List.of("npc", "mob"));
+    }
+
+    private static BotQuestIndex.QuestMeta talkQuest(int id, int startNpc, int endNpc, int rewardExp,
+                                                     boolean scripted) {
+        return new BotQuestIndex.QuestMeta(id, startNpc, endNpc, 0, Map.of(), rewardExp, List.of(),
+                false, false, scripted, List.of("npc"), true /*talk*/);
+    }
+
+    // ---- quest commitment: map-score bias toward maps with still-needed quest mobs ----
+
+    @Test
+    void questMapBiasNeutralWhenNoActiveQuestMobs() {
+        BotQuestManager.mapMobs = mapId -> Map.of(100, 5);
+        assertEquals(1.0, BotQuestManager.questMapScoreBias(200000, java.util.Set.of()), 1e-9,
+                "no active quest mobs -> no bias");
+    }
+
+    @Test
+    void questMapBiasBoostsMapThatSpawnsANeededMob() {
+        // map 111 spawns mob 100 (which the bot still needs) -> boosted; map 222 does not -> neutral.
+        BotQuestManager.mapMobs = mapId -> mapId == 111 ? Map.of(100, 8, 101, 2) : Map.of(999, 3);
+        java.util.Set<Integer> needed = java.util.Set.of(100);
+
+        assertEquals(BotQuestManager.QUEST_GRIND_MAP_BIAS,
+                BotQuestManager.questMapScoreBias(111, needed), 1e-9,
+                "map with a needed quest mob is boosted");
+        assertEquals(1.0, BotQuestManager.questMapScoreBias(222, needed), 1e-9,
+                "map without any needed quest mob stays neutral");
+    }
+
+    // ---- fetch quests: ready when delivery items collected; targets = item droppers ----
+
+    private static BotQuestIndex.QuestMeta fetchQuest(int id, int startNpc, int endNpc, int rewardExp,
+                                                      Map<Integer, Integer> items) {
+        return new BotQuestIndex.QuestMeta(id, startNpc, endNpc, 0, Map.of(), rewardExp, List.of(),
+                false, false, false, List.of("npc", "item"), false /*talk*/, items);
+    }
+
+    @Test
+    void fetchQuestReadyOnlyWhenDeliveryItemsCollected() {
+        RecordingGate g = new RecordingGate();
+        g.progress = Map.of(); // no mob kills involved
+        BotQuestManager.gate = g;
+        var q = fetchQuest(5000, 100, 200, 50, Map.of(4000000, 30));
+
+        BotQuestManager.itemQuantity = (bot, itemId) -> 10; // short of 30
+        assertFalse(BotQuestManager.countsMet(mock(Character.class), q),
+                "not ready until the delivery item count is met");
+
+        BotQuestManager.itemQuantity = (bot, itemId) -> 30; // collected enough
+        assertTrue(BotQuestManager.countsMet(mock(Character.class), q),
+                "ready once the bag holds the required items");
+    }
+
+    @Test
+    void fetchQuestTargetsAreTheItemDroppers() {
+        // The bot grinds toward whatever drops the fetch item (active routing, same as kill quests).
+        BotQuestManager.itemDroppers = itemId -> itemId == 4000000 ? List.of(111, 222) : List.of();
+        var q = fetchQuest(5000, 100, 200, 50, Map.of(4000000, 30));
+        assertEquals(java.util.Set.of(111, 222), BotQuestManager.effectiveTargetMobs(q));
+    }
+
+    @Test
+    void fetchQuestWithNoDropperHasNoTargets() {
+        // Mob-droppable scope: a bought/crafted item resolves to no droppers -> empty target set,
+        // so the overlap gate filters the quest out (bot won't take what it can't grind for).
+        BotQuestManager.itemDroppers = itemId -> List.of();
+        var q = fetchQuest(5000, 100, 200, 50, Map.of(4000000, 30));
+        assertTrue(BotQuestManager.effectiveTargetMobs(q).isEmpty());
+    }
+
+    // ---- server exp-rate ratio: quest exp reward scales, equip reward does not ----
+
+    @Test
+    void questExpRewardScalesWithRateRatioButEquipRewardDoesNot() {
+        BotEntry e = entry();
+        BotQuestManager.mapMobs = mapId -> Map.of();          // no overlap -> pure reward-exp value
+        BotQuestManager.travelSeconds = (from, to) -> 60.0;   // fixed opportunity cost
+        BotQuestManager.grindExpBaseline = (en, b) -> 1000.0; // un-rated grind baseline
+        BotQuestManager.rewardGain = (b, q) -> new BotQuestManager.RewardGain(0.0, 0.0); // exp-only quest
+
+        var expQuest = mobQuest(7000, 100, 200, 5000, Map.of(), List.of());
+        BotQuestManager.expRateRatio = b -> 1.0;
+        double base = BotQuestManager.scoreQuest(e, e.bot, 50000, 60000, expQuest);
+        BotQuestManager.expRateRatio = b -> 2.0;
+        double boosted = BotQuestManager.scoreQuest(e, e.bot, 50000, 60000, expQuest);
+        assertTrue(boosted > base * 1.99,
+                "doubling the quest/mob exp-rate ratio ~doubles an exp-reward quest's score");
+
+        // An equip-reward quest (no reward exp, value only from the gear reward) is ratio-invariant.
+        var gearQuest = mobQuest(7001, 100, 200, 0, Map.of(), List.of(1102053));
+        BotQuestManager.rewardGain = (b, q) -> new BotQuestManager.RewardGain(0.1, 0.0);
+        BotQuestManager.expRateRatio = b -> 1.0;
+        double g1 = BotQuestManager.scoreQuest(e, e.bot, 50000, 60000, gearQuest);
+        BotQuestManager.expRateRatio = b -> 5.0;
+        double g5 = BotQuestManager.scoreQuest(e, e.bot, 50000, 60000, gearQuest);
+        assertEquals(g1, g5, 1e-9, "equip reward value does not scale with the exp-rate ratio");
+    }
+
+    @Test
+    void gearRewardValueScalesWithBaselineAndHorizonButScoreIsBaselineInvariant() {
+        BotEntry e = entry();
+        BotQuestManager.mapMobs = mapId -> Map.of();          // no overlap
+        BotQuestManager.travelSeconds = (from, to) -> 60.0;   // fixed travel
+        BotQuestManager.expRateRatio = b -> 1.0;
+        // Pure gear-reward quest (no exp): value = dpsGainFraction * baseline * horizon.
+        BotQuestManager.rewardGain = (b, q) -> new BotQuestManager.RewardGain(0.1, 0.0);
+        var gearQuest = mobQuest(7002, 100, 200, 0, Map.of(), List.of(1102053));
+
+        BotQuestManager.grindExpBaseline = (en, b) -> 1000.0;
+        double lowBase = BotQuestManager.scoreQuest(e, e.bot, 50000, 60000, gearQuest);
+        BotQuestManager.grindExpBaseline = (en, b) -> 4000.0;
+        double highBase = BotQuestManager.scoreQuest(e, e.bot, 50000, 60000, gearQuest);
+        // Both value and cost scale with baseline, so the gear-quest SCORE is baseline-invariant.
+        assertEquals(lowBase, highBase, 1e-9,
+                "a pure gear reward's score is grind-rate invariant (baseline cancels)");
+        assertTrue(lowBase > 0, "a meaningful gear reward produces a positive score");
+    }
+
+    // ---- auto quests: drive start/complete only when the gates pass ----
+
+    @Test
+    void autoQuestStartsOnlyWhenCanStart() {
+        BotEntry e = entry();
+        RecordingGate g = new RecordingGate();
+        g.canStart = false;
+        g.canComplete = false;
+        BotQuestManager.gate = g;
+
+        BotQuestManager.runAutoQuest(e, e.bot, 9800);
+
+        assertTrue(g.startsCalled.isEmpty(), "must not start when canStart is false");
+        assertTrue(g.completesCalled.isEmpty(), "must not complete when canComplete is false");
+    }
+
+    @Test
+    void autoQuestStartsAndCompletesWhenGatesPass() {
+        BotEntry e = entry();
+        RecordingGate g = new RecordingGate();
+        g.canStart = true;
+        g.canComplete = true;
+        BotQuestManager.gate = g;
+
+        BotQuestManager.runAutoQuest(e, e.bot, 9800);
+
+        assertEquals(List.of(9800), g.startsCalled);
+        assertEquals(List.of(9800), g.completesCalled);
+        assertTrue(replies.stream().anyMatch(s -> s.contains("quest done")), "should announce completion");
+    }
+
+    @Test
+    void buggedAutoQuestIsSuppressedNotLoopedAndReannounced() {
+        // complete() is callable but never registers (canComplete stays true) - the 29400 loop. The bot
+        // must complete once, see it didn't take, suppress the quest, and never re-complete/re-announce.
+        BotEntry e = entry();
+        RecordingGate g = new RecordingGate();
+        g.canStart = true;
+        g.canComplete = true;
+        g.completeRegisters = false; // bugged: isCompleted never flips
+        BotQuestManager.gate = g;
+
+        BotQuestManager.runAutoQuest(e, e.bot, 29400);
+        BotQuestManager.runAutoQuest(e, e.bot, 29400); // a later scan must be a no-op now
+
+        assertEquals(List.of(29400), g.completesCalled, "must stop after the first failed complete, not loop");
+        assertTrue(replies.stream().noneMatch(s -> s.contains("quest done")), "must not announce a quest that never registered");
+        assertTrue(e.buggedQuestIds.contains(29400), "the un-completable quest must be suppressed");
+    }
+
+    @Test
+    void readyToTurnInSkipsQuestTheBotCannotLegallyComplete() {
+        // A started quest whose counts are met (true for any no-mob/item talk quest, e.g. 2232 "Find a
+        // Junior!", whose completion is gated ONLY by an NPC end-script) must NOT be queued for turn-in
+        // when gate.canComplete refuses it - else the bot travels to the NPC, hears "can't turn that in
+        // yet", and re-queues the same quest every scan forever. readyToTurnIn must defer to the gate.
+        RecordingGate g = new RecordingGate();
+        g.started = true;                                       // treat every indexed quest as started
+        g.progress = Map.of();                                  // no mob kills -> only talk quests pass countsMet
+        BotQuestManager.itemQuantity = (bot, id) -> 0;          // no fetch items held -> fetch quests fail countsMet
+        BotQuestManager.gate = g;
+
+        g.canComplete = false;                                  // server-side completion refused (script-gated)
+        assertNull(BotQuestManager.readyToTurnIn(mock(Character.class)),
+                "nothing is turn-in-ready while the bot can't legally complete it");
+
+        g.canComplete = true;                                   // a genuinely completable started talk quest
+        assertNotNull(BotQuestManager.readyToTurnIn(mock(Character.class)),
+                "a started, counts-met, completable quest IS ready to turn in");
+    }
+
+    // ---- worthwhile bar (slice-2 scorer: value vs grind-exp cost) ----
+
+    @Test
+    void worthwhileRejectsTooManyHops() {
+        // Even a rich reward is rejected when the NPC is beyond the errand hop cap.
+        BotQuestManager.hopCount = (from, to) -> BotQuestManager.MAX_ERRAND_HOPS + 1;
+        BotQuestManager.mapMobs = mapId -> Map.of(100100, 10);
+        stubScoringSeams(50.0, 100, 30.0);
+        var q = mobQuest(1019, 2005, 12100, 100000, Map.of(100100, 10), List.of());
+        assertFalse(BotQuestManager.worthwhile(entry(), 100040000, 100000000, q, mock(Character.class)));
+    }
+
+    @Test
+    void worthwhileRejectsWhenGrindBeatsTheQuest() {
+        // High grind baseline, far travel, tiny reward, NO mob overlap -> cost dwarfs value.
+        BotQuestManager.hopCount = (from, to) -> 1;
+        BotQuestManager.mapMobs = mapId -> Map.of(999999, 1); // bot grinds a different mob
+        stubScoringSeams(10000.0 /*exp/min*/, 5, 300.0 /*5 min round trip*/);
+        var q = mobQuest(1019, 2005, 12100, 30, Map.of(100100, 10), List.of());
+        BotEntry e = entry();
+        assertFalse(BotQuestManager.worthwhile(e, 100040000, 100000000, q, e.bot));
+    }
+
+    @Test
+    void worthwhileAcceptsCloseRewardingWithOverlap() {
+        // Cheap travel, the bot already kills the required mob (overlap = free exp), decent reward.
+        BotQuestManager.hopCount = (from, to) -> 1;
+        BotQuestManager.mapMobs = mapId -> Map.of(100100, 10); // overlaps the quest mob
+        stubScoringSeams(50.0 /*exp/min*/, 30 /*per-mob exp*/, 20.0 /*short trip*/);
+        var q = mobQuest(1019, 2005, 12100, 700, Map.of(100100, 10), List.of());
+        BotEntry e = entry();
+        // value = 700 + 10*30 (overlap) = 1000; cost = (20/60)*50 ~= 16.7 exp; score ~60 >> 1.
+        assertTrue(BotQuestManager.worthwhile(e, 100040000, 100000000, q, e.bot));
+    }
+
+    // ---- auto-suggest (supervised only, high bar, no-repeat) ----
+
+    /** A supervised entry: owner online, bot following, not autopiloting. */
+    private BotEntry supervisedEntry(Character bot, int mapId) {
+        Character owner = mock(Character.class);
+        when(owner.isLoggedinWorld()).thenReturn(true);
+        when(bot.getMapId()).thenReturn(mapId);
+        BotEntry e = new BotEntry(bot, owner, null);
+        e.following = true;
+        e.autopilotMapId = -1; // not autopiloting => supervised
+        BotQuestManager.reply = (en, s) -> replies.add(s);
+        return e;
+    }
+
+    @Test
+    void autoSuggestFiresForStandoutNearbyQuestWhenSupervised() {
+        BotQuestIndex.QuestMeta q1019 = BotQuestIndex.get().byId().get(1019);
+        org.junit.jupiter.api.Assertions.assertNotNull(q1019);
+        Character bot = mock(Character.class);
+        server.maps.MapleMap map = mock(server.maps.MapleMap.class);
+        server.life.NPC npc = mock(server.life.NPC.class);
+        when(bot.getMap()).thenReturn(map);
+        when(map.getNPCById(2005)).thenReturn(npc);
+        BotEntry e = supervisedEntry(bot, 104040000);
+
+        BotQuestManager.mapMobs = mapId -> Map.of(100100, 10);  // overlap (free exp)
+        BotQuestManager.hopCount = (from, to) -> 1;              // within 2-hop cap
+        stubScoringSeams(20.0, 50, 10.0);                        // strong score (>> 3x baseline)
+        BotQuestManager.gate = new SingleStartableGate(1019);    // only 1019 is startable
+
+        BotQuestManager.maybeAutoSuggest(e, bot);
+
+        assertTrue(replies.stream().anyMatch(s -> s.contains("good quest")),
+                "a standout nearby quest should be suggested to a supervised bot");
+        assertTrue(e.suggestedQuestExpiry.containsKey(1019), "suggested id must be tracked");
+    }
+
+    @Test
+    void autoSuggestSilentForAutopilotBot() {
+        Character bot = mock(Character.class);
+        BotEntry e = supervisedEntry(bot, 104040000);
+        e.autopilotMapId = 104040000; // autopiloting => NOT supervised, does quests itself
+        BotQuestManager.mapMobs = mapId -> Map.of(100100, 10);
+        BotQuestManager.hopCount = (from, to) -> 1;
+        stubScoringSeams(20.0, 50, 10.0);
+        BotQuestManager.gate = new SingleStartableGate(1019);
+
+        BotQuestManager.maybeAutoSuggest(e, bot);
+
+        assertTrue(replies.isEmpty(), "an autopilot bot must not auto-suggest (it errands itself)");
+    }
+
+    @Test
+    void autoSuggestSilentWhenScoreBelowHighBar() {
+        Character bot = mock(Character.class);
+        server.maps.MapleMap map = mock(server.maps.MapleMap.class);
+        server.life.NPC npc = mock(server.life.NPC.class);
+        when(bot.getMap()).thenReturn(map);
+        when(map.getNPCById(2005)).thenReturn(npc);
+        BotEntry e = supervisedEntry(bot, 104040000);
+        BotQuestManager.mapMobs = mapId -> Map.of(999999, 1); // no overlap
+        BotQuestManager.hopCount = (from, to) -> 1;
+        // High baseline + far travel + tiny reward => score below the 3x auto-suggest bar.
+        stubScoringSeams(100000.0, 5, 200.0);
+        BotQuestManager.gate = new SingleStartableGate(1019);
+
+        BotQuestManager.maybeAutoSuggest(e, bot);
+
+        assertTrue(replies.isEmpty(), "a merely-ok quest must not clear the auto-suggest bar");
+    }
+
+    @Test
+    void autoSuggestSilentWhenNotGrinding() {
+        // Baseline 0 (standing in town with the owner, not killing anything) => no suggestion,
+        // even if a quest would otherwise score well.
+        Character bot = mock(Character.class);
+        server.maps.MapleMap map = mock(server.maps.MapleMap.class);
+        server.life.NPC npc = mock(server.life.NPC.class);
+        when(bot.getMap()).thenReturn(map);
+        when(map.getNPCById(2005)).thenReturn(npc);
+        BotEntry e = supervisedEntry(bot, 104040000);
+        BotQuestManager.mapMobs = mapId -> Map.of(100100, 10);
+        BotQuestManager.hopCount = (from, to) -> 1;
+        stubScoringSeams(0.0 /*not grinding*/, 50, 10.0);
+        BotQuestManager.gate = new SingleStartableGate(1019);
+
+        BotQuestManager.maybeAutoSuggest(e, bot);
+
+        assertTrue(replies.isEmpty(), "a non-grinding (town) bot must not auto-suggest");
+    }
+
+    @Test
+    void autoSuggestDoesNotRepeatTrackedId() {
+        BotQuestIndex.QuestMeta q1019 = BotQuestIndex.get().byId().get(1019);
+        org.junit.jupiter.api.Assertions.assertNotNull(q1019);
+        Character bot = mock(Character.class);
+        server.maps.MapleMap map = mock(server.maps.MapleMap.class);
+        server.life.NPC npc = mock(server.life.NPC.class);
+        when(bot.getMap()).thenReturn(map);
+        when(map.getNPCById(2005)).thenReturn(npc);
+        BotEntry e = supervisedEntry(bot, 104040000);
+        // 1019 already suggested and still suppressed.
+        e.suggestedQuestExpiry.put(1019, System.currentTimeMillis() + BotQuestManager.SUGGESTED_QUEST_TTL_MS);
+        BotQuestManager.mapMobs = mapId -> Map.of(100100, 10);
+        BotQuestManager.hopCount = (from, to) -> 1;
+        stubScoringSeams(20.0, 50, 10.0);
+        BotQuestManager.gate = new SingleStartableGate(1019);
+
+        BotQuestManager.maybeAutoSuggest(e, bot);
+
+        assertTrue(replies.stream().noneMatch(s -> s.contains("good quest")),
+                "a suppressed (already-suggested) quest id must not be re-suggested");
+    }
+
+    // ---- recommend command (low bar, ranked) ----
+
+    @Test
+    void recommendReturnsRankedStartableQuests() {
+        Character bot = mock(Character.class);
+        server.maps.MapleMap map = mock(server.maps.MapleMap.class);
+        server.life.NPC npc = mock(server.life.NPC.class);
+        when(bot.getMap()).thenReturn(map);
+        when(bot.getMapId()).thenReturn(104040000);
+        when(map.getNPCById(2005)).thenReturn(npc);
+
+        BotQuestManager.mapMobs = mapId -> Map.of(100100, 10);
+        BotQuestManager.hopCount = (from, to) -> 1;
+        stubScoringSeams(50.0, 30, 10.0); // net-positive => clears the low recommend bar
+        BotQuestManager.gate = new SingleStartableGate(1019);
+
+        BotEntry e = new BotEntry(bot, null, null);
+        List<BotQuestManager.Recommendation> recs = BotQuestManager.recommendQuests(e, bot, 3);
+
+        assertFalse(recs.isEmpty(), "a net-positive startable quest should be recommended");
+        assertEquals(1019, recs.get(0).quest().id());
+        // ranked descending by score
+        for (int i = 1; i < recs.size(); i++) {
+            assertTrue(recs.get(i - 1).score() >= recs.get(i).score(), "must be ranked by score");
+        }
+    }
+
+    @Test
+    void recommendUsesBestGrindFallbackWhenAskedOffGrindMap() {
+        // Asked in town: current-map rate is 0, so the opportunity cost would floor to ~nothing and
+        // a trivial quest (1019: 10 snails -> 30 exp) would score huge and be recommended. The
+        // best-achievable-grind fallback supplies a realistic lv64 baseline, so it is rejected.
+        Character bot = mock(Character.class);
+        server.maps.MapleMap map = mock(server.maps.MapleMap.class);
+        server.life.NPC npc = mock(server.life.NPC.class);
+        when(bot.getMap()).thenReturn(map);
+        when(bot.getMapId()).thenReturn(104000000); // a town: no grind rate
+        when(map.getNPCById(2005)).thenReturn(npc);
+
+        BotQuestManager.mapMobs = mapId -> Map.of();   // in town, nothing overlaps
+        BotQuestManager.hopCount = (from, to) -> 1;
+        stubScoringSeams(0.0, 30, 60.0);               // current baseline 0, 60s trip
+        BotQuestManager.bestGrindExpBaseline = (e, b) -> 40_000.0; // realistic lv64 grind exp/min
+        BotQuestManager.gate = new SingleStartableGate(1019);
+
+        BotEntry e = new BotEntry(bot, null, null);
+        List<BotQuestManager.Recommendation> recs = BotQuestManager.recommendQuests(e, bot, 3);
+
+        assertTrue(recs.isEmpty(),
+                "a 30-exp quest must not be recommended against a real grind baseline; got " + recs);
+    }
+
+    @Test
+    void recommendSkipsCompletedQuests() {
+        Character bot = mock(Character.class);
+        server.maps.MapleMap map = mock(server.maps.MapleMap.class);
+        server.life.NPC npc = mock(server.life.NPC.class);
+        when(bot.getMap()).thenReturn(map);
+        when(bot.getMapId()).thenReturn(104040000);
+        when(map.getNPCById(2005)).thenReturn(npc);
+        BotQuestManager.mapMobs = mapId -> Map.of(100100, 10);
+        BotQuestManager.hopCount = (from, to) -> 1;
+        stubScoringSeams(50.0, 30, 10.0);
+        SingleStartableGate g = new SingleStartableGate(1019);
+        g.completedIds = java.util.Set.of(1019); // already done
+        BotQuestManager.gate = g;
+
+        BotEntry e = new BotEntry(bot, null, null);
+        List<BotQuestManager.Recommendation> recs = BotQuestManager.recommendQuests(e, bot, 3);
+        assertTrue(recs.stream().noneMatch(r -> r.quest().id() == 1019),
+                "a completed quest must not be recommended");
+    }
+
+    // ---- turn-in readiness (counts met) ----
+
+    @Test
+    void countsMetTrueWhenAllMobKillsReached() {
+        BotEntry e = entry();
+        RecordingGate g = new RecordingGate();
+        g.progress = Map.of(100100, 10, 100101, 5);
+        BotQuestManager.gate = g;
+        var q = mobQuest(1016, 12100, 12100, 70, Map.of(100100, 5, 100101, 5), List.of());
+        assertTrue(BotQuestManager.countsMet(e.bot, q));
+    }
+
+    @Test
+    void countsMetFalseWhenAnyMobShort() {
+        BotEntry e = entry();
+        RecordingGate g = new RecordingGate();
+        g.progress = Map.of(100100, 3, 100101, 5);
+        BotQuestManager.gate = g;
+        var q = mobQuest(1016, 12100, 12100, 70, Map.of(100100, 5, 100101, 5), List.of());
+        assertFalse(BotQuestManager.countsMet(e.bot, q));
+    }
+
+    // ---- supervised bots don't errand: piggyback only runs under active autopilot ----
+
+    @Test
+    void scanDoesNotErrandWhenNotAutopiloting() {
+        boolean prevAuto = BotManager.cfg.AUTO_QUESTS;
+        boolean prevPiggy = BotManager.cfg.QUEST_PIGGYBACK;
+        BotManager.cfg.AUTO_QUESTS = false;      // skip the WZ-loading auto path
+        BotManager.cfg.QUEST_PIGGYBACK = true;
+        try {
+            BotEntry e = entry();
+            e.autopilotMapId = -1;               // not autopiloting => supervised
+            e.nextQuestScanAtMs = 0L;            // due now
+            BotQuestManager.tickScan(e, e.bot);
+            assertEquals(-1, e.questErrandMapId, "a supervised bot must not queue a quest errand");
+        } finally {
+            BotManager.cfg.AUTO_QUESTS = prevAuto;
+            BotManager.cfg.QUEST_PIGGYBACK = prevPiggy;
+        }
+    }
+
+    // ---- piggyback trigger: mob overlap under active autopilot queues a START errand ----
+
+    @Test
+    void piggybackQueuesStartErrandWhenMobsOverlap() {
+        boolean prevAuto = BotManager.cfg.AUTO_QUESTS;
+        boolean prevPiggy = BotManager.cfg.QUEST_PIGGYBACK;
+        BotManager.cfg.AUTO_QUESTS = false; // isolate the piggyback path (skip WZ auto loop)
+        BotManager.cfg.QUEST_PIGGYBACK = true;
+        try {
+            // A real indexed quest to target: 1019 needs Green Snail (100100) and starts at NPC 2005.
+            BotQuestIndex.QuestMeta q1019 = BotQuestIndex.get().byId().get(1019);
+            org.junit.jupiter.api.Assertions.assertNotNull(q1019, "index must contain 1019");
+
+            Character bot = mock(Character.class);
+            server.maps.MapleMap map = mock(server.maps.MapleMap.class);
+            server.life.NPC npc = mock(server.life.NPC.class);
+            when(bot.getMap()).thenReturn(map);
+            when(bot.getMapId()).thenReturn(104040000); // Henesys Hunting Ground (Green Snail spawns)
+            when(bot.getLevel()).thenReturn(5);
+            when(map.getNPCById(2005)).thenReturn(npc);  // start NPC is on this map
+            BotQuestManager.reply = (e, s) -> replies.add(s);
+
+            BotQuestManager.mapMobs = mapId -> Map.of(100100, 10); // bot is killing Green Snail here
+            // 0 hops only to the grind map (where NPC 2005 is stubbed present); everything else is far.
+            // Mirrors production's MAX_ERRAND_HOPS gate so a far talk quest (whose NPC resolves to its
+            // canonical map via the spawn index) can't out-rank 1019 by being falsely "0 hops" away.
+            BotQuestManager.hopCount = (from, to) -> to == 104040000 ? 0 : 99;
+            stubScoringSeams(50.0, 30, 10.0); // cheap trip + overlap => clearly worthwhile
+            RecordingGate g = new RecordingGate();
+            g.canStart = true;
+            g.started = false;
+            BotQuestManager.gate = g;
+
+            BotEntry e = new BotEntry(bot, null, null);
+            e.autopilotMapId = 104040000; // active autopilot => independent, may errand
+            e.nextQuestScanAtMs = 0L;
+
+            BotQuestManager.tickScan(e, bot);
+
+            assertEquals(104040000, e.questErrandMapId, "overlap + worthwhile must queue a START errand");
+            assertEquals(BotQuestManager.Phase.START, e.questErrandPhase);
+            assertEquals(2005, e.questErrandNpcId);
+        } finally {
+            BotManager.cfg.AUTO_QUESTS = prevAuto;
+            BotManager.cfg.QUEST_PIGGYBACK = prevPiggy;
+            BotQuestManager.mapMobs = prevMobs;
+        }
+    }
+
+    // ---- errand arrival: within radius of the NPC, start is called and the errand clears ----
+
+    @Test
+    void errandArrivalStartsQuestAndClears() {
+        Character bot = mock(Character.class);
+        server.maps.MapleMap map = mock(server.maps.MapleMap.class);
+        server.life.NPC npc = mock(server.life.NPC.class);
+        when(bot.getMap()).thenReturn(map);
+        when(bot.getMapId()).thenReturn(104040000);
+        when(bot.getPosition()).thenReturn(new java.awt.Point(100, 200));
+        when(npc.getPosition()).thenReturn(new java.awt.Point(120, 200)); // within 500px
+        when(map.getNPCById(2005)).thenReturn(npc);
+        BotQuestManager.reply = (e, s) -> replies.add(s);
+
+        RecordingGate g = new RecordingGate();
+        g.canStart = true;
+        BotQuestManager.gate = g;
+
+        BotEntry e = new BotEntry(bot, null, null);
+        e.questErrandMapId = 104040000;
+        e.questErrandNpcId = 2005;
+        e.questErrandQuestId = 1019;
+        e.questErrandPhase = BotQuestManager.Phase.START;
+        e.questErrandProgress.begin(System.currentTimeMillis());
+
+        boolean consumed = BotQuestManager.tickErrand(e, bot, false);
+
+        assertFalse(consumed, "arrival tick is not consumed - grind resumes");
+        assertEquals(List.of(1019), g.startsCalled, "start must be called at the NPC");
+        assertEquals(-1, e.questErrandMapId, "errand clears after starting");
+    }
+
+    @Test
+    void errandTimesOutAndClears() {
+        Character bot = mock(Character.class);
+        BotQuestManager.reply = (e, s) -> replies.add(s);
+        BotEntry e = new BotEntry(bot, null, null);
+        e.questErrandMapId = 999999999; // unreachable
+        e.questErrandNpcId = 2005;
+        e.questErrandPhase = BotQuestManager.Phase.START;
+        e.questErrandProgress.begin(System.currentTimeMillis() - BotQuestManager.ERRAND_TIMEOUT_MS - 1);
+
+        boolean consumed = BotQuestManager.tickErrand(e, bot, false);
+
+        assertFalse(consumed);
+        assertEquals(-1, e.questErrandMapId, "a stale errand must clear so future piggyback isn't wedged");
+    }
+
+    // ---- inventory-space precheck for item rewards ----
+
+    @Test
+    void roomForRewardsTrueWhenNoItems() {
+        Character bot = mock(Character.class);
+        var q = mobQuest(1019, 2005, 12100, 30, Map.of(100100, 10), List.of());
+        assertTrue(BotQuestManager.hasRoomForRewards(bot, q));
+    }
+
+    @Test
+    void roomForRewardsFalseWhenBagFull() {
+        Character bot = mock(Character.class);
+        when(bot.canHold(anyInt(), anyInt())).thenReturn(false);
+        var q = mobQuest(1018, 2004, 2002, 30, Map.of(9300018, 1), List.of(4000142));
+        assertFalse(BotQuestManager.hasRoomForRewards(bot, q));
+    }
+
+    @Test
+    void roomForRewardsTrueWhenBagHasSpace() {
+        Character bot = mock(Character.class);
+        when(bot.canHold(anyInt(), anyInt())).thenReturn(true);
+        var q = mobQuest(1018, 2004, 2002, 30, Map.of(9300018, 1), List.of(4000142));
+        assertTrue(BotQuestManager.hasRoomForRewards(bot, q));
+    }
+
+    // ---- talk quests: worth scoring + scripted-item grant on start ----
+
+    @Test
+    void talkQuestScoresWorthDoingForFreshBot() {
+        // q1031 Heena/Sera: 5 exp talk quest. Fresh bot grinds ~8 exp/min; short NPC trip.
+        BotQuestManager.travelSeconds = (from, to) -> 30.0;
+        BotQuestManager.rewardGain = (b, q) -> new BotQuestManager.RewardGain(0.0, 0.0);
+        var q = talkQuest(1031, 2101, 2100, 5, false);
+        BotEntry e = entry();
+        double score = BotQuestManager.scoreQuest(e, e.bot, 10000, 10000, q, 8.0 /*fresh baseline*/);
+        assertTrue(score >= BotQuestScorer.RECOMMEND_MIN_SCORE,
+                "a fresh bot should find the tutorial talk quest worth doing; got " + score);
+    }
+
+    @Test
+    void talkQuestStartDoesNotGrantRogersAppleSoItCanComplete() {
+        // q1021's COMPLETE req is "item 2010007, countNeeded 0" -> ItemRequirement fails if you HOLD
+        // the apple (player eats it, turns in with zero). So the bot must NOT self-grant it on start,
+        // or it could never turn the quest in. Assert the start grants nothing.
+        Character bot = mock(Character.class);
+        server.maps.MapleMap map = mock(server.maps.MapleMap.class);
+        server.life.NPC npc = mock(server.life.NPC.class);
+        when(bot.getMap()).thenReturn(map);
+        when(bot.getMapId()).thenReturn(60000);
+        when(bot.getPosition()).thenReturn(new java.awt.Point(100, 200));
+        when(npc.getPosition()).thenReturn(new java.awt.Point(120, 200)); // within 500px
+        when(map.getNPCById(2000)).thenReturn(npc);
+        BotQuestManager.reply = (en, s) -> replies.add(s);
+
+        RecordingGate g = new RecordingGate();
+        g.canStart = true;
+        BotQuestManager.gate = g;
+        List<Integer> granted = new ArrayList<>();
+        BotQuestManager.grantItem = (b, itemId) -> granted.add(itemId);
+
+        BotEntry e = new BotEntry(bot, null, null);
+        e.questErrandMapId = 60000;
+        e.questErrandNpcId = 2000;
+        e.questErrandQuestId = 1021;
+        e.questErrandPhase = BotQuestManager.Phase.START;
+        e.questErrandProgress.begin(System.currentTimeMillis());
+
+        BotQuestManager.tickErrand(e, bot, false);
+
+        assertEquals(List.of(1021), g.startsCalled, "start must be called at the NPC");
+        assertTrue(granted.isEmpty(), "Roger's Apple must NOT be granted - holding it blocks turn-in");
+    }
+
+    @Test
+    void startGrantsNoItemForOrdinaryTalkQuest() {
+        // A talk quest with no scripted gift (e.g. 1031) grants nothing on start.
+        Character bot = mock(Character.class);
+        List<Integer> granted = new ArrayList<>();
+        BotQuestManager.grantItem = (b, itemId) -> granted.add(itemId);
+        BotQuestManager.grantScriptedStartItem(bot, 1031);
+        assertTrue(granted.isEmpty(), "no scripted item gift for an ordinary talk quest");
+    }
+}

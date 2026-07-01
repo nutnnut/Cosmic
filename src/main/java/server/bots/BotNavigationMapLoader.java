@@ -55,6 +55,40 @@ final class BotNavigationMapLoader {
         return map;
     }
 
+    /**
+     * The grounded standing position (x, cy) of an NPC on a map, read straight from the WZ {@code life}
+     * node — the same coordinate the live server places the NPC at. Lets offline harnesses anchor a
+     * travel target (cab / ferry usher / instructor) on real geometry instead of a guessed pixel.
+     * Returns null when the map has no such NPC.
+     */
+    static Point npcGroundedPosition(int mapId, int npcId) {
+        DataProvider mapSource = DataProviderFactory.getDataProvider(WZFiles.MAP);
+        Data mapData = mapSource.getData(getMapName(mapId));
+        if (mapData == null) {
+            return null;
+        }
+        String link = DataTool.getString(mapData.getChildByPath("info/link"), "");
+        if (!link.isEmpty()) {
+            mapData = mapSource.getData(getMapName(Integer.parseInt(link)));
+        }
+        Data life = mapData.getChildByPath("life");
+        if (life == null) {
+            return null;
+        }
+        for (Data entry : life) {
+            if (!"n".equals(DataTool.getString(entry.getChildByPath("type"), ""))) {
+                continue;
+            }
+            if (Integer.parseInt(DataTool.getString(entry.getChildByPath("id"), "-1")) != npcId) {
+                continue;
+            }
+            int x = DataTool.getInt(entry.getChildByPath("x"), 0);
+            int cy = DataTool.getInt(entry.getChildByPath("cy"), 0);
+            return new Point(x, cy);
+        }
+        return null;
+    }
+
     private static void loadBounds(MapleMap map, Data mapData, Data infoData) {
         int top = DataTool.getInt(infoData.getChildByPath("VRTop"));
         int bottom = DataTool.getInt(infoData.getChildByPath("VRBottom"));

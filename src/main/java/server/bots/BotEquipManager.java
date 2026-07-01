@@ -2,6 +2,7 @@ package server.bots;
 
 import client.Character;
 import client.Job;
+import client.Stat;
 import client.inventory.Equip;
 import client.inventory.Inventory;
 import client.inventory.InventoryType;
@@ -21,6 +22,7 @@ import constants.skills.Spearman;
 import constants.skills.WhiteKnight;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import client.processor.stat.AssignAPProcessor;
 import server.ItemInformationProvider;
 import server.bots.combat.BotAttackDataProvider;
 import server.combat.CombatFormulaProvider;
@@ -33,6 +35,7 @@ import server.maps.MapleMap;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -47,10 +50,11 @@ import java.util.function.ToIntFunction;
 class BotEquipManager {
 
     private static final Logger log = LoggerFactory.getLogger(BotEquipManager.class);
-    private static final java.nio.file.Path EQUIP_LOG_DIR = java.nio.file.Path.of("logs", "bot-equip");
-    private static final java.time.format.DateTimeFormatter EQUIP_LOG_FILE_FMT =
+    // Shared with BotInventoryManager's invlog dump (same directory + filename idiom).
+    static final java.nio.file.Path EQUIP_LOG_DIR = java.nio.file.Path.of("logs", "bot-equip");
+    static final java.time.format.DateTimeFormatter EQUIP_LOG_FILE_FMT =
             java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HHmmss");
-    private static final java.time.format.DateTimeFormatter EQUIP_LOG_HEADER_FMT =
+    static final java.time.format.DateTimeFormatter EQUIP_LOG_HEADER_FMT =
             java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
     private static final short[] RING_SLOTS = {-12, -13, -15, -16};
     /** Hard cap on Pareto-frontier size per DP step to bound worst-case runtime. */
@@ -82,7 +86,7 @@ class BotEquipManager {
         }
     }
 
-    record EquipScore(int damage, int statSum) {}
+    record EquipScore(int weaponRank, int damage, int statSum) {}
     record WeaponScoreBreakdown(int rawMax, int preCycleDamage, int cycleMs, int normalizedDamage) {}
 
     /**
@@ -100,13 +104,14 @@ class BotEquipManager {
      * ring stat contribution rarely unlocks armor). Cash and {@code pendingOffer} excluded.
      * Called on mode change (follow / stop / grind).
      */
-    static void autoEquip(Character bot, Character owner, Item pendingOffer) {
-        autoEquip(bot, owner, pendingOffer, false);
+    static boolean autoEquip(Character bot, Character owner, Item pendingOffer) {
+        return autoEquip(bot, owner, pendingOffer, false);
     }
 
-    static void autoEquip(Character bot, Character owner, Item pendingOffer, boolean force) {
+    /** Returns true when the pass actually moved gear (an upgrade got equipped). */
+    static boolean autoEquip(Character bot, Character owner, Item pendingOffer, boolean force) {
         if (!shouldRunAutoEquip(bot, System.currentTimeMillis(), force)) {
-            return;
+            return false;
         }
 
         ItemInformationProvider ii = ItemInformationProvider.getInstance();
@@ -136,6 +141,7 @@ class BotEquipManager {
         Map<Short, Equip> bestPicks = null;
         EquipScore bestScore = null;
         Equip bestWeapon = currentWeapon;
+        boolean bestCapHit = false;
         boolean anyCapHit = false;
         for (Equip w : weaponPool) {
             DpResult r = solveForWeapon(bot, ii, naked, w, dpSlots, currentBySlot, bySlot, mob, reqRel);
@@ -145,6 +151,7 @@ class BotEquipManager {
                 bestScore = r.score();
                 bestPicks = r.picks();
                 bestWeapon = w;
+                bestCapHit = r.paretoCapHit();
             }
         }
         // Every weapon failed reqs — fall back to a no-weapon plan so the armor pass still runs.
@@ -154,12 +161,16 @@ class BotEquipManager {
                 bestScore = r.score();
                 bestPicks = r.picks();
                 bestWeapon = null;
+                bestCapHit = r.paretoCapHit();
                 if (r.paretoCapHit()) anyCapHit = true;
             }
         }
 
+        boolean changed = false;
         if (bestPicks != null) {
-            applyEquipPlan(bot, ii, eqdInv, currentBySlot, bestPicks, bestWeapon, dpSlots);
+//            log.info("Bot {} autoequip: {}", bot.getName(),
+//                    describeEquipPlan(ii, bestWeapon, bestScore, bestPicks, bestCapHit));
+            changed = applyEquipPlan(bot, ii, eqdInv, currentBySlot, bestPicks, bestWeapon, dpSlots);
             // Sweep currently-equipped items whose reqs aren't met against the bot's now-final
             // stats. This catches gear left equipped via prior trade-debug or stat changes that
             // would otherwise stick because applyEquipPlan only emits moves into occupied slots.
@@ -177,6 +188,7 @@ class BotEquipManager {
                 // Don't let a chat error block the equip pass.
             }
         }
+        return changed;
     }
 
     static boolean shouldRunAutoEquip(Character bot, long nowMs, boolean force) {
@@ -375,15 +387,20 @@ class BotEquipManager {
         sb.append("\n--- equipped ---\n");
         sb.append(itemHeader(false));
         for (Item it : eqdInv.list()) {
-            if (it instanceof Equip e) appendItemRow(sb, ii, e, e.getPosition(), null);
+            if (it instanceof Equip e) appendItemRow(sb, ii, bot, e, e.getPosition(), null);
         }
 
         sb.append("\n--- inventory (equip bag) ---\n");
         sb.append(itemHeader(true));
+        // STATUS mirrors the real sell pipeline (see BotInventoryManager.classifyBagEquips).
+        BotEntry dumpEntry = bot != null
+                ? BotManager.getInstance().getEntryByBotCharId(bot.getId()) : null;
+        Map<Item, BotInventoryManager.BagEquipClass> statuses = bot != null
+                ? BotInventoryManager.classifyBagEquips(dumpEntry, bot) : Map.of();
         for (Item it : eqpInv.list()) {
             if (it instanceof Equip e) {
-                boolean reserveSelf = shouldReserveOwnedItem(bot, ii, e);
-                appendItemRow(sb, ii, e, e.getPosition(), reserveSelf);
+                BotInventoryManager.BagEquipClass c = statuses.get(it);
+                appendItemRow(sb, ii, bot, e, e.getPosition(), c == null ? "-" : c.label());
             }
         }
 
@@ -462,24 +479,29 @@ class BotEquipManager {
         }
     }
 
-    private static String itemHeader(boolean includeSelfReserve) {
-        return String.format("%-3s %-30s %-7s %4s %4s %4s %4s %4s %4s %4s %4s %4s %4s %5s %5s%s   reqs%n",
+    private static String itemHeader(boolean includeStatus) {
+        return String.format("%-3s %-30s %-7s %4s %4s %4s %4s %4s %4s %4s %4s %4s %4s %5s %5s %4s %6s%s   reqs%n",
                 "pos", "name", "slot", "STR", "DEX", "INT", "LUK", "WAK", "MAK", "WDF", "MDF", "ACC", "AVD", "HP", "MP",
-                includeSelfReserve ? "  SELF" : "");
+                "ups", "ofns",
+                includeStatus ? "  STATUS    " : "");
     }
 
-    private static void appendItemRow(StringBuilder sb, ItemInformationProvider ii, Equip e, short pos,
-                                      Boolean selfReserve) {
+    private static void appendItemRow(StringBuilder sb, ItemInformationProvider ii, Character bot, Equip e, short pos,
+                                      String status) {
         String name = ii.getName(e.getItemId());
         if (name == null) name = "id=" + e.getItemId();
         if (name.length() > 30) name = name.substring(0, 30);
         String textSlot = ii.getEquipmentSlot(e.getItemId());
-        sb.append(String.format("%-3d %-30s %-7s %4d %4d %4d %4d %4d %4d %4d %4d %4d %4d %5d %5d%s   ",
+        // ups = free upgrade slots remaining; ofns = job-weighted offense score (the scroll planner's
+        // currentStatScore SSOT) so scroll decisions are inspectable alongside the equip dump.
+        double ofns = bot != null ? BotScrollManager.offenseValue(bot, e) : 0.0;
+        sb.append(String.format("%-3d %-30s %-7s %4d %4d %4d %4d %4d %4d %4d %4d %4d %4d %5d %5d %4d %6.0f%s   ",
                 pos, name, textSlot == null ? "?" : textSlot,
                 e.getStr(), e.getDex(), e.getInt(), e.getLuk(),
                 e.getWatk(), e.getMatk(), e.getWdef(), e.getMdef(),
                 e.getAcc(), e.getAvoid(), e.getHp(), e.getMp(),
-                selfReserve == null ? "" : String.format("  %-4s", selfReserve ? "Y" : "N")));
+                e.getUpgradeSlots(), ofns,
+                status == null ? "" : String.format("  %-10s", status)));
         // Reqs from WZ stat map.
         Map<String, Integer> stats = ii.getEquipStats(e.getItemId());
         if (stats != null) {
@@ -525,7 +547,7 @@ class BotEquipManager {
             short primary = (short) eslot.getPrimarySlot();
             if (primary == 0) continue;
             if (primary == (short) -11
-                    && !isWeaponCompatible(bot, ii.getWeaponType(equip.getItemId()))) continue;
+                    && !isWeaponCompatible(bot, ii.getWeaponType(equip.getItemId()), equip)) continue;
             if (ii.canWearEquipment(bot, equip, primary) || statOnlyBlocked(bot, ii, equip)) {
                 bySlot.computeIfAbsent(primary, k -> new ArrayList<>()).add(equip);
             }
@@ -535,7 +557,7 @@ class BotEquipManager {
             if (!(it instanceof Equip e) || ii.isCash(e.getItemId())) continue;
             short pos = e.getPosition();
             if (pos == (short) -11
-                    && !isWeaponCompatible(bot, ii.getWeaponType(e.getItemId()))) continue;
+                    && !isWeaponCompatible(bot, ii.getWeaponType(e.getItemId()), e)) continue;
             short key = isRingSlot(pos) ? (short) -12 : pos;
             List<Equip> pool = bySlot.computeIfAbsent(key, k -> new ArrayList<>());
             if (!pool.contains(e)) pool.add(e);
@@ -590,7 +612,7 @@ class BotEquipManager {
             short pslot = (short) eslot.getPrimarySlot();
             if (pslot == 0) continue;
             if (pslot == (short) -11
-                    && !isWeaponCompatible(bot, ii.getWeaponType(ex.getItemId()))) continue;
+                    && !isWeaponCompatible(bot, ii.getWeaponType(ex.getItemId()), ex)) continue;
             if (!isRecommendationCandidate(bot, ii, ex, pslot, scope)) continue;
             // Rings live in the shared -12 pool regardless of which equipped position they came from.
             short key = isRingSlot(pslot) ? (short) -12 : pslot;
@@ -688,6 +710,7 @@ class BotEquipManager {
         boolean isCash(int itemId);
         String getEquipmentSlot(int itemId);
         WeaponType getWeaponType(int itemId);
+        boolean isTwoHanded(int itemId);
         boolean meetsReqs(Equip equip, Job job, int level, int str, int dex, int int_, int luk, int fame);
 
         static EquipUsefulnessHooks from(ItemInformationProvider ii) {
@@ -695,6 +718,7 @@ class BotEquipManager {
                 @Override public boolean isCash(int itemId) { return ii.isCash(itemId); }
                 @Override public String getEquipmentSlot(int itemId) { return ii.getEquipmentSlot(itemId); }
                 @Override public WeaponType getWeaponType(int itemId) { return ii.getWeaponType(itemId); }
+                @Override public boolean isTwoHanded(int itemId) { return ii.isTwoHanded(itemId); }
                 @Override public boolean meetsReqs(Equip equip, Job job, int level, int str, int dex,
                                                    int int_, int luk, int fame) {
                     return ii.meetsEquipRequirements(equip, job, level, str, dex, int_, luk, fame);
@@ -706,18 +730,23 @@ class BotEquipManager {
     interface SelfReserveHooks extends EquipUsefulnessHooks {
         int getEquipLevelReq(int itemId);
         Map<String, Integer> getEquipStats(int itemId);
+        double maxScrollOffenseGainPerSlot(Character bot, int itemId);
 
         static SelfReserveHooks from(ItemInformationProvider ii) {
             return new SelfReserveHooks() {
                 @Override public boolean isCash(int itemId) { return ii.isCash(itemId); }
                 @Override public String getEquipmentSlot(int itemId) { return ii.getEquipmentSlot(itemId); }
                 @Override public WeaponType getWeaponType(int itemId) { return ii.getWeaponType(itemId); }
+                @Override public boolean isTwoHanded(int itemId) { return ii.isTwoHanded(itemId); }
                 @Override public boolean meetsReqs(Equip equip, Job job, int level, int str, int dex,
                                                    int int_, int luk, int fame) {
                     return ii.meetsEquipRequirements(equip, job, level, str, dex, int_, luk, fame);
                 }
                 @Override public int getEquipLevelReq(int itemId) { return ii.getEquipLevelReq(itemId); }
                 @Override public Map<String, Integer> getEquipStats(int itemId) { return ii.getEquipStats(itemId); }
+                @Override public double maxScrollOffenseGainPerSlot(Character bot, int itemId) {
+                    return BotScrollManager.maxScrollOffenseGainPerSlot(bot, ii, itemId);
+                }
             };
         }
     }
@@ -822,7 +851,7 @@ class BotEquipManager {
         EquipScore bestScore = null;
         for (DpNode node : frontier) {
             if (!validateReqs(hooks, node, dpSlots, weapon)) continue;
-            EquipScore s = scoreNode(node, weapon, wt, mob);
+            EquipScore s = scoreNode(bot, node, weapon, wt, mob);
             if (bestScore == null || compareScores(s, bestScore) > 0) {
                 bestScore = s;
                 best = node;
@@ -838,7 +867,7 @@ class BotEquipManager {
             for (DpNode node : frontier) {
                 DpNode relaxed = relaxToFeasible(hooks, node, dpSlots, weapon);
                 if (relaxed == null) continue;
-                EquipScore s = scoreNode(relaxed, weapon, wt, mob);
+                EquipScore s = scoreNode(bot, relaxed, weapon, wt, mob);
                 if (bestScore == null || compareScores(s, bestScore) > 0) {
                     bestScore = s;
                     best = relaxed;
@@ -1083,15 +1112,16 @@ class BotEquipManager {
         return new DpNode(s, hp, mp, statSum, picks);
     }
 
-    private static EquipScore scoreNode(DpNode node, Equip weapon, WeaponType wt, MapDamageProfile mob) {
+    private static EquipScore scoreNode(Character bot, DpNode node, Equip weapon, WeaponType wt, MapDamageProfile mob) {
+        int weaponRank = weaponPreferenceRank(bot, weapon, wt);
         if (isMageJob(node.snap.job())) {
-            return new EquipScore(magicScore(node.snap), node.statSum);
+            return new EquipScore(weaponRank, magicScore(node.snap), node.statSum);
         }
-        if (wt == null) return new EquipScore(0, node.statSum);
+        if (wt == null) return new EquipScore(weaponRank, 0, node.statSum);
         int dmg = damageWith(node.snap, null, wt, mob);
         int cycleMs = weapon != null ? weaponCycleMs(weapon.getItemId()) : 0;
         if (cycleMs > 0) dmg = (int) (dmg * 1000.0 / cycleMs);
-        return new EquipScore(dmg, node.statSum);
+        return new EquipScore(weaponRank, dmg, node.statSum);
     }
 
     private static StatSnapshot snapshotForBranch(StatSnapshot naked, Equip weapon, Map<Short, Equip> picks) {
@@ -1135,7 +1165,8 @@ class BotEquipManager {
      * item (and 2H↔shield / overall↔pants auto-unequips). Does NOT proactively unequip
      * gear when target is empty — that would downgrade without a replacement.
      */
-    private static void applyEquipPlan(Character bot, ItemInformationProvider ii, Inventory eqdInv,
+    /** Returns true when any move was issued (the worn set actually changed). */
+    private static boolean applyEquipPlan(Character bot, ItemInformationProvider ii, Inventory eqdInv,
                                         Map<Short, Equip> currentBySlot, Map<Short, Equip> picks,
                                         Equip targetWeapon, List<Short> dpSlots) {
         // Order: weapon first (handles 2H↔1H eviction), overall before pants, then others.
@@ -1148,6 +1179,7 @@ class BotEquipManager {
         }
         Map<Short, Equip> full = new HashMap<>(picks);
         full.put((short) -11, targetWeapon);
+        boolean moved = false;
         for (Short slot : order) {
             Equip target = full.get(slot);
             Equip current = currentBySlot.get(slot);
@@ -1157,7 +1189,9 @@ class BotEquipManager {
             if (pos <= 0) continue; // already in an EQUIPPED slot — skip to avoid swap loops
             InventoryManipulator.handleItemMove(bot.getClient(), InventoryType.EQUIP,
                     pos, slot, (short) 1);
+            moved = true;
         }
+        return moved;
     }
 
     /**
@@ -1210,7 +1244,7 @@ class BotEquipManager {
             short primary = (short) eslot.getPrimarySlot();
             if (primary == 0) continue;
             if (primary == (short) -11
-                    && !isWeaponCompatible(bot, ii.getWeaponType(equip.getItemId()))) continue;
+                    && !isWeaponCompatible(bot, ii.getWeaponType(equip.getItemId()), equip)) continue;
             if (!futureOnlyBlocked(bot, ii, equip)) continue;
             short key = isRingSlot(primary) ? (short) -12 : primary;
             bySlot.computeIfAbsent(key, k -> new ArrayList<>()).add(equip);
@@ -1219,7 +1253,7 @@ class BotEquipManager {
             if (!(it instanceof Equip e) || ii.isCash(e.getItemId())) continue;
             short pos = e.getPosition();
             if (pos == (short) -11
-                    && !isWeaponCompatible(bot, ii.getWeaponType(e.getItemId()))) continue;
+                    && !isWeaponCompatible(bot, ii.getWeaponType(e.getItemId()), e)) continue;
             if (!futureOnlyBlocked(bot, ii, e)) continue;
             short key = isRingSlot(pos) ? (short) -12 : pos;
             List<Equip> pool = bySlot.computeIfAbsent(key, k -> new ArrayList<>());
@@ -1267,7 +1301,7 @@ class BotEquipManager {
             if (eslot.getPrimarySlot() == 0) continue;
             short primarySlot = (short) eslot.getPrimarySlot();
             if (primarySlot == (short) -11
-                    && !isWeaponCompatible(receiver, ii.getWeaponType(equip.getItemId()))) continue;
+                    && !isWeaponCompatible(receiver, ii.getWeaponType(equip.getItemId()), equip)) continue;
             if (!isRecommendationCandidate(receiver, ii, equip, primarySlot, scope)) continue;
             holderItems.add(equip);
         }
@@ -1322,7 +1356,7 @@ class BotEquipManager {
         short primarySlot = (short) slot.getPrimarySlot();
         if (primarySlot == 0) return null;
         if (primarySlot == (short) -11
-                && !isWeaponCompatible(receiver, ii.getWeaponType(candidate.getItemId()))) return null;
+                && !isWeaponCompatible(receiver, ii.getWeaponType(candidate.getItemId()), candidate)) return null;
         if (!isRecommendationCandidate(receiver, ii, candidate, primarySlot, scope)) return null;
 
         // Cheap dominance pre-filter for IMMEDIATE scope: if the candidate is Pareto-dominated
@@ -1493,7 +1527,7 @@ class BotEquipManager {
         if (slot == null) return false;
         String weaponTrack = null;
         if (isWeaponSlot(slot)) {
-            weaponTrack = weaponUsefulnessTrackKey(recipient, hooks.getWeaponType(item.getItemId()));
+            weaponTrack = weaponUsefulnessTrackKey(recipient, hooks, item);
             if (weaponTrack == null) return false;
         }
         EnumSet<RelevantStat> relevant = relevantStatsFor(recipient.getJob());
@@ -1504,7 +1538,7 @@ class BotEquipManager {
             if (!(it instanceof Equip e) || hooks.isCash(e.getItemId())) continue;
             if (!slot.equals(textSlotKey(hooks, e))) continue;
             if (weaponTrack != null) {
-                String equippedTrack = weaponUsefulnessTrackKey(recipient, hooks.getWeaponType(e.getItemId()));
+                String equippedTrack = weaponUsefulnessTrackKey(recipient, hooks, e);
                 if (!weaponTrack.equals(equippedTrack)) continue;
             }
             baseline.add(e);
@@ -1533,11 +1567,17 @@ class BotEquipManager {
     static Set<Equip> selectOwnedItemsForSelfReserve(Character bot, SelfReserveHooks hooks,
                                                      Collection<Equip> ownedItems) {
         EnumSet<RelevantStat> relevant = relevantStatsFor(bot.getJob());
+        boolean ownsPreferredWeapon = ownsPreferredWeapon(bot, hooks, ownedItems);
         Map<String, List<Equip>> byTrack = new LinkedHashMap<>();
         for (Equip equip : ownedItems) {
             if (equip == null || hooks.isCash(equip.getItemId())) continue;
             if (!isFutureOwnClassEquip(bot, hooks, equip)) continue;
-            if (!hasPositiveRelevant(relevant, equip)) continue;
+            if (!hasPositiveRelevant(relevant, equip) && maxScrollReserveUpside(hooks, bot, equip) <= 0.0) continue;
+            String slot = textSlotKey(hooks, equip);
+            if (isWeaponSlot(slot) && ownsPreferredWeapon
+                    && !isPreferredWeapon(bot, hooks.getWeaponType(equip.getItemId()), equip)) {
+                continue;
+            }
             String track = selfReserveTrackKey(bot, hooks, equip);
             if (track == null) continue;
             byTrack.computeIfAbsent(track, ignored -> new ArrayList<>()).add(equip);
@@ -1545,6 +1585,7 @@ class BotEquipManager {
 
         Set<Equip> keep = Collections.newSetFromMap(new IdentityHashMap<>());
         for (List<Equip> trackItems : byTrack.values()) {
+            List<Equip> survivors = new ArrayList<>();
             for (Equip candidate : trackItems) {
                 boolean dominated = false;
                 for (Equip other : trackItems) {
@@ -1554,10 +1595,46 @@ class BotEquipManager {
                         break;
                     }
                 }
-                if (!dominated) keep.add(candidate);
+                if (!dominated) survivors.add(candidate);
             }
+            keep.addAll(capSelfReserveTrack(hooks, bot, survivors));
         }
         return keep;
+    }
+
+    private static boolean ownsPreferredWeapon(Character bot, SelfReserveHooks hooks, Collection<Equip> ownedItems) {
+        for (Equip equip : ownedItems) {
+            if (equip == null || hooks.isCash(equip.getItemId())) {
+                continue;
+            }
+            String slot = textSlotKey(hooks, equip);
+            if (isWeaponSlot(slot)
+                    && isFutureOwnClassEquip(bot, hooks, equip)
+                    && isPreferredWeapon(bot, hooks.getWeaponType(equip.getItemId()), equip)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Pareto width per track is unbounded (incomparable stat mixes and the ceiling gate keep
+     * almost everything), so after dominance filtering keep only the top few survivors ranked
+     * by self-reserve ceiling. The ceiling already counts scroll upside from open upgrade
+     * slots, so high-slot scroll projects still survive. Demoted items are NOT lost: they flow
+     * into the sell-trash pipeline where good rolls are still kept on the bounded valuables
+     * shelf in BotInventoryManager.
+     */
+    static final int SELF_RESERVE_TRACK_CAP = 3;
+
+    private static List<Equip> capSelfReserveTrack(SelfReserveHooks hooks, Character bot, List<Equip> survivors) {
+        if (survivors.size() <= SELF_RESERVE_TRACK_CAP) return survivors;
+        List<Equip> ranked = new ArrayList<>(survivors);
+        ranked.sort(Comparator
+                .comparingDouble((Equip e) -> -selfReserveCeiling(hooks, bot, e))
+                .thenComparingInt(e -> -usefulStatSum(e, bot.getJob()))
+                .thenComparingInt(e -> -e.getUpgradeSlots()));
+        return ranked.subList(0, SELF_RESERVE_TRACK_CAP);
     }
 
     private static List<Equip> collectOwnedEquips(Character bot, ItemInformationProvider ii) {
@@ -1583,12 +1660,26 @@ class BotEquipManager {
         String slot = textSlotKey(hooks, equip);
         if (slot == null) return null;
         if (!isWeaponSlot(slot)) return slot;
-        String weaponTrack = weaponUsefulnessTrackKey(bot, hooks.getWeaponType(equip.getItemId()));
+        String weaponTrack = weaponUsefulnessTrackKey(bot, hooks, equip);
         return weaponTrack != null ? slot + ":" + weaponTrack : null;
     }
 
-    private static String weaponUsefulnessTrackKey(Character bot, WeaponType weaponType) {
-        if (!isWeaponCompatible(bot, weaponType)) return null;
+    private static String weaponUsefulnessTrackKey(Character bot, EquipUsefulnessHooks hooks, Equip equip) {
+        WeaponType weaponType = hooks.getWeaponType(equip.getItemId());
+        if (isOffTypeMageMatkWeapon(bot, equip)
+                && weaponType != WeaponType.WAND && weaponType != WeaponType.STAFF) {
+            // Off-type MATK weapon on a mage: compete in the mage track matching its
+            // handedness so the 2H<->shield ensemble math stays correct - a 1H sword
+            // umbrella rivals wands (frees the shield slot), a 2H rivals staves.
+            return hooks.isTwoHanded(equip.getItemId()) ? "staff" : "wand";
+        }
+        if (!isWeaponCompatible(bot, weaponType)) {
+            if (!isOffTypeMageMatkWeapon(bot, equip)) return null;
+            // Off-type MATK weapon on a mage: compete in the mage track matching its
+            // handedness so the 2H<->shield ensemble math stays correct — a 1H sword
+            // umbrella rivals wands (frees the shield slot), a 2H rivals staves.
+            return hooks.isTwoHanded(equip.getItemId()) ? "staff" : "wand";
+        }
         if (weaponType == null || weaponType == WeaponType.NOT_A_WEAPON) return "non-weapon";
         if (isSword(weaponType)) return "sword";
         if (isGeneralWeapon(weaponType)) return "general";
@@ -1610,15 +1701,40 @@ class BotEquipManager {
     private static boolean dominatesForSelfReserve(SelfReserveHooks hooks, EnumSet<RelevantStat> relevant,
                                                    Character bot, Equip better, Equip worse) {
         boolean relevantDominates = paretoDominates(relevant, better, worse);
-        boolean duplicateTieBreakDominates = sameRequirementSignature(hooks, better, worse)
-                && better.getItemId() == worse.getItemId()
-                && relevantStatsEqual(relevant, better, worse)
-                && usefulStatSum(better, bot.getJob()) > usefulStatSum(worse, bot.getJob());
-        if (!relevantDominates && !duplicateTieBreakDominates) return false;
-        if (!reqsAtLeastAsEasy(hooks, better, worse)
-                && !hooks.meetsReqs(better, bot.getJob(), bot.getLevel(),
-                                    bot.getStr(), bot.getDex(), bot.getInt(), bot.getLuk(), bot.getFame())) return false;
+        boolean tieBreakDominates = relevantStatsEqual(relevant, better, worse)
+                && selfReserveTieBreak(hooks, bot, better, worse) > 0;
+        if (!relevantDominates && !tieBreakDominates) return false;
+        if (!reqsAtLeastAsEasy(hooks, better, worse) && !currentlyWearable(bot, hooks, better)) return false;
+        if (selfReserveCeiling(hooks, bot, better) < selfReserveCeiling(hooks, bot, worse)) return false;
         return true;
+    }
+
+    private static int selfReserveTieBreak(SelfReserveHooks hooks, Character bot, Equip better, Equip worse) {
+        if (!sameRequirementSignature(hooks, better, worse)) return 0;
+        int betterScore = usefulStatSum(better, bot.getJob());
+        int worseScore = usefulStatSum(worse, bot.getJob());
+        if (betterScore != worseScore) return Integer.compare(betterScore, worseScore);
+        if (better.getUpgradeSlots() != worse.getUpgradeSlots()) {
+            return Integer.compare(better.getUpgradeSlots(), worse.getUpgradeSlots());
+        }
+        int betterPos = better.getPosition();
+        int worsePos = worse.getPosition();
+        if (betterPos != worsePos && betterPos > 0 && worsePos > 0) return Integer.compare(worsePos, betterPos);
+        return Integer.compare(System.identityHashCode(worse), System.identityHashCode(better));
+    }
+
+    private static double selfReserveCeiling(SelfReserveHooks hooks, Character bot, Equip equip) {
+        return BotScrollManager.offenseValue(bot, equip) + maxScrollReserveUpside(hooks, bot, equip);
+    }
+
+    private static double maxScrollReserveUpside(SelfReserveHooks hooks, Character bot, Equip equip) {
+        return Math.max(0, equip.getUpgradeSlots())
+                * Math.max(0.0, hooks.maxScrollOffenseGainPerSlot(bot, equip.getItemId()));
+    }
+
+    private static boolean currentlyWearable(Character bot, EquipUsefulnessHooks hooks, Equip equip) {
+        return hooks.meetsReqs(equip, bot.getJob(), bot.getLevel(),
+                bot.getTotalStr(), bot.getTotalDex(), bot.getTotalInt(), bot.getTotalLuk(), bot.getFame());
     }
 
     private static boolean relevantStatsEqual(EnumSet<RelevantStat> relevant, Equip a, Equip b) {
@@ -1806,6 +1922,8 @@ class BotEquipManager {
     }
 
     private static int compareScores(EquipScore left, EquipScore right) {
+        int rankCmp = Integer.compare(left.weaponRank(), right.weaponRank());
+        if (rankCmp != 0) return rankCmp;
         int cmp = Integer.compare(left.damage(), right.damage());
         if (cmp != 0) return cmp;
         return Integer.compare(left.statSum(), right.statSum());
@@ -1890,7 +2008,7 @@ class BotEquipManager {
      * so two weapons with the same speed tier but different base animations have different DPS.
      * Returns 0 if no WZ profile is available — caller skips DPS scaling.
      */
-    private static int weaponCycleMs(int itemId) {
+    static int weaponCycleMs(int itemId) {
         try {
             BotAttackDataProvider provider = BotAttackDataProvider.getInstance();
             BotAttackDataProvider.NormalAttackProfile profile = provider.getNormalAttackProfile(itemId);
@@ -1908,6 +2026,140 @@ class BotEquipManager {
             // WZ data may not be initialized in unit-test contexts; fall back to no DPS scaling.
             return 0;
         }
+    }
+
+    // ===== Autonomous AP build: secondary-stat target ============================================
+    //
+    // Picks the base secondary-stat target for an ownerless bot's AP build (BotBuildManager).
+    // rawPhysicalMax weights the primary stat by the weapon multiplier (~3.5-4.6x) and the secondary
+    // by 1x, so a secondary AP point is mostly wasted damage. We therefore raise the secondary stat
+    // ONLY to clear a weapon's equip requirement, and only when the weapon it unlocks out-DPSes
+    // staying on a cheaper weapon with that AP back in the primary. Reactive over owned + equipped
+    // weapons (no aspirational/unowned stretch - that would fight BotScrollManager.levelsUntilWearable's
+    // deliberate "never project secondary" SSOT). As gear supplies the secondary stat the target
+    // collapses to the job floor (near-pure), matching the godly-gear meta.
+
+    /** A candidate weapon's resolved scoring inputs. WZ-free so {@link #chooseSecondaryTarget} is
+     *  unit-testable: {@code totalWatk} already folds in this weapon's WATK in place of the worn one. */
+    record WeaponCand(int reqSecondary, int totalWatk, WeaponType type, int cycleMs) {}
+
+    /**
+     * Returns the base secondary-stat target for the bot's AP build, or {@code floorSecondary} when
+     * there is no usable weapon / no WZ context. {@code primaryCode}/{@code secondaryCode} are the
+     * BotScrollManager stat codes ('s','d','i','l'). Reactive over owned + currently-equipped weapons.
+     */
+    static int recommendSecondaryTarget(Character bot, char primaryCode, char secondaryCode, int floorSecondary) {
+        try {
+            ItemInformationProvider ii = ItemInformationProvider.getInstance();
+            Inventory eqpInv = bot.getInventory(InventoryType.EQUIP);
+            Inventory eqdInv = bot.getInventory(InventoryType.EQUIPPED);
+
+            Map<Short, List<Equip>> bySlot = collectAutoEquipCandidates(bot, ii, eqpInv, eqdInv, null);
+            List<Equip> pool = new ArrayList<>(bySlot.getOrDefault((short) -11, List.of()));
+            Equip equipped = compatibleWeaponOrNull(bot, ii, (Equip) eqdInv.getItem((short) -11));
+            if (equipped != null && !pool.contains(equipped)) pool.add(equipped);
+            if (pool.isEmpty()) return floorSecondary;
+
+            int watkNoWeapon = bot.getTotalWatk() - (equipped != null ? equipped.getWatk() : 0);
+            List<WeaponCand> cands = new ArrayList<>();
+            for (Equip w : pool) {
+                if (w == null) continue;
+                cands.add(new WeaponCand(reqStat(ii, w.getItemId(), secondaryCode),
+                        watkNoWeapon + w.getWatk(), ii.getWeaponType(w.getItemId()),
+                        weaponCycleMs(w.getItemId())));
+            }
+            int equippedReqSec = equipped != null ? reqStat(ii, equipped.getItemId(), secondaryCode) : 0;
+
+            Job job = bot.getJob();
+            int[] floors = {floorOf(job, 's'), floorOf(job, 'd'), floorOf(job, 'i'), floorOf(job, 'l')};
+            int[] base = {bot.getStr(), bot.getDex(), bot.getInt(), bot.getLuk()};
+            int[] gear = {bot.getTotalStr() - bot.getStr(), bot.getTotalDex() - bot.getDex(),
+                    bot.getTotalInt() - bot.getInt(), bot.getTotalLuk() - bot.getLuk()};
+            return chooseSecondaryTarget(job, primaryCode, secondaryCode, floorSecondary,
+                    floors, base, gear, bot.getRemainingAp(), cands, equippedReqSec);
+        } catch (Throwable t) {
+            return floorSecondary; // WZ/inventory unavailable (e.g. unit-test contexts) -> safe default
+        }
+    }
+
+    /**
+     * Pure chooser: the AP freely movable between primary and secondary (the two off-stats stay
+     * pinned at their floors) is, for each candidate weapon, spent to clear that weapon's secondary
+     * requirement first and the remainder into primary; DPS is scored with the SSOT
+     * {@link #rawPhysicalMax} normalized by attack cycle. Returns the secondary BASE target of the
+     * max-DPS wieldable weapon, never below {@code floorSecondary} nor below what keeps the
+     * currently-equipped weapon wearable (anti-strand). {@code floors}/{@code base}/{@code gear} are
+     * int[4] indexed [STR,DEX,INT,LUK].
+     */
+    static int chooseSecondaryTarget(Job job, char primaryCode, char secondaryCode, int floorSecondary,
+                                     int[] floors, int[] base, int[] gear, int remainingAp,
+                                     List<WeaponCand> cands, int equippedReqSecondary) {
+        int pi = statIndex(primaryCode), si = statIndex(secondaryCode);
+        if (pi < 0 || si < 0) return floorSecondary;
+
+        int freeAp = remainingAp;
+        for (int k = 0; k < 4; k++) freeAp += Math.max(0, base[k] - floors[k]);
+        int gearSecondary = gear[si];
+        int floorPrimary = floors[pi];
+
+        int bestNeed = floorSecondary;
+        double bestDps = -1;
+        for (WeaponCand w : cands) {
+            if (w == null || w.type() == null) continue;
+            int need = Math.max(floorSecondary, w.reqSecondary() - gearSecondary);
+            int secCost = need - floorSecondary;
+            if (secCost > freeAp) continue; // can't fund this weapon's secondary even maxing it out
+            int primaryBase = floorPrimary + (freeAp - secCost);
+            int[] total = new int[4];
+            for (int k = 0; k < 4; k++) {
+                int b = (k == pi) ? primaryBase : (k == si) ? need : floors[k];
+                total[k] = b + gear[k];
+            }
+            StatSnapshot snap = new StatSnapshot(total[0], total[1], total[2], total[3],
+                    w.totalWatk(), 0, 0, 0, 0, job);
+            int raw = rawPhysicalMax(snap, w.type());
+            double dps = w.cycleMs() > 0 ? raw * 1000.0 / w.cycleMs() : raw;
+            if (dps > bestDps) {
+                bestDps = dps;
+                bestNeed = need;
+            }
+        }
+        int antiStrand = Math.max(floorSecondary, equippedReqSecondary - gearSecondary);
+        return Math.max(bestNeed, antiStrand);
+    }
+
+    private static int statIndex(char code) {
+        return switch (code) {
+            case 's' -> 0;
+            case 'd' -> 1;
+            case 'i' -> 2;
+            case 'l' -> 3;
+            default -> -1;
+        };
+    }
+
+    private static int floorOf(Job job, char code) {
+        Stat stat = switch (code) {
+            case 's' -> Stat.STR;
+            case 'd' -> Stat.DEX;
+            case 'i' -> Stat.INT;
+            case 'l' -> Stat.LUK;
+            default -> null;
+        };
+        return stat == null ? 0 : AssignAPProcessor.getMinStatFloor(job, stat);
+    }
+
+    private static int reqStat(ItemInformationProvider ii, int itemId, char code) {
+        Map<String, Integer> stats = ii.getEquipStats(itemId);
+        if (stats == null) return 0;
+        String key = switch (code) {
+            case 's' -> "reqSTR";
+            case 'd' -> "reqDEX";
+            case 'i' -> "reqINT";
+            case 'l' -> "reqLUK";
+            default -> null;
+        };
+        return key == null ? 0 : stats.getOrDefault(key, 0);
     }
 
     private static int defScore(Equip e)  { return e != null ? e.getWdef() + e.getMdef() : 0; }
@@ -1947,6 +2199,28 @@ class BotEquipManager {
         return false;
     }
 
+    /** One-line, human-readable summary of a chosen equip plan, for the autoequip log. */
+    private static String describeEquipPlan(ItemInformationProvider ii, Equip weapon,
+                                            EquipScore score, Map<Short, Equip> picks, boolean capHit) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("weapon ").append(weapon == null ? "(none)" : ii.getName(weapon.getItemId()));
+        sb.append(" -> score ").append(score.statSum()).append(", damage ").append(score.damage());
+        if (capHit) {
+            sb.append(" (frontier cap hit)");
+        }
+        if (!picks.isEmpty()) {
+            sb.append(" [");
+            boolean first = true;
+            for (Map.Entry<Short, Equip> e : picks.entrySet()) {
+                if (!first) sb.append(", ");
+                first = false;
+                sb.append(slotLabel(e.getKey())).append(": ").append(ii.getName(e.getValue().getItemId()));
+            }
+            sb.append("]");
+        }
+        return sb.toString();
+    }
+
     private static String slotLabel(short slot) {
         return switch (slot) {
             case -11 -> "weapon";
@@ -1971,10 +2245,17 @@ class BotEquipManager {
     }
 
     static boolean isWeaponCompatible(Character bot, WeaponType weaponType) {
+        return weaponType == null || weaponType != WeaponType.NOT_A_WEAPON;
+    }
+
+    static boolean isPreferredWeapon(Character bot, WeaponType weaponType) {
         if (weaponType == null || weaponType == WeaponType.NOT_A_WEAPON) {
             return true;
         }
 
+        if (bot == null || bot.getJob() == null) {
+            return true;
+        }
         Job job = bot.getJob();
         if (job == Job.THIEF) {
             if (bot.getSkillLevel(Rogue.LUCKY_SEVEN) > 0) {
@@ -2047,11 +2328,38 @@ class BotEquipManager {
         };
     }
 
+    /**
+     * Item-aware weapon gate. v83 magic damage reads total MATK only — spell casting ignores
+     * weapon type — so for mage jobs ANY weapon carrying MATK on its roll is a real weapon
+     * candidate (job/level/stat legality stays with meetsReqs at every call site). Physical
+     * classes keep the strict type tables above: attack skills and the bot combat pipeline
+     * (AttackRoute, ammo) need the right weapon type, so an off-type WATK weapon is trade
+     * stock for them, never equipment.
+     */
+    static boolean isPreferredWeapon(Character bot, WeaponType weaponType, Equip equip) {
+        return isPreferredWeapon(bot, weaponType) || isOffTypeMageMatkWeapon(bot, equip);
+    }
+
+    static boolean isWeaponCompatible(Character bot, WeaponType weaponType, Equip equip) {
+        return isWeaponCompatible(bot, weaponType);
+    }
+
+    private static boolean isOffTypeMageMatkWeapon(Character bot, Equip equip) {
+        return bot != null && equip != null && isMageJob(bot.getJob()) && equip.getMatk() > 0;
+    }
+
+    private static int weaponPreferenceRank(Character bot, Equip weapon, WeaponType weaponType) {
+        if (weapon == null || weaponType == null || weaponType == WeaponType.NOT_A_WEAPON) {
+            return 0;
+        }
+        return isPreferredWeapon(bot, weaponType, weapon) ? 2 : 1;
+    }
+
     private static Equip compatibleWeaponOrNull(Character bot, ItemInformationProvider ii, Equip equip) {
         if (equip == null) {
             return null;
         }
-        return isWeaponCompatible(bot, ii.getWeaponType(equip.getItemId())) ? equip : null;
+        return isWeaponCompatible(bot, ii.getWeaponType(equip.getItemId()), equip) ? equip : null;
     }
 
     private static boolean matchesWarriorWeaponFamily(Character bot,

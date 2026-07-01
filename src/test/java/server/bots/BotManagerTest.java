@@ -43,11 +43,23 @@ import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.mockStatic;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class BotManagerTest {
+    @Test
+    void crewCohortEmptyForUnregisteredBot() {
+        // Isolation invariant: a bot that isn't in a crew (here, not even registered) has an EMPTY crew
+        // cohort, so solo / dynamic-party bots never trade gear/ammo/supplies with strangers.
+        Character bot = mock(Character.class);
+        when(bot.getId()).thenReturn(987654321);
+        assertTrue(BotManager.getInstance().crewMatesOnMap(bot).isEmpty());
+        // shareCandidateEntries with no crew falls back to just the owner's stable (here, empty).
+        assertTrue(BotManager.getInstance().shareCandidateEntries(987654321, null).isEmpty());
+    }
+
     @Test
     void shouldParseTransferBotCommands() {
         BotCommandParser.BotTransferCommand command = BotCommandParser.matchBotTransferCommand("transfer Jason to Bob");
@@ -91,6 +103,8 @@ class BotManagerTest {
 
         Map<Integer, List<BotEntry>> bots = (Map<Integer, List<BotEntry>>) field(BotManager.class, "bots").get(manager);
         bots.put(owner.getId(), List.of(sourceEntry, observerEntry));
+        Map<Integer, BotEntry> byCharId = (Map<Integer, BotEntry>) field(BotManager.class, "botsByCharId").get(manager);
+        byCharId.put(10, sourceEntry);
 
         try (MockedStatic<BotOfferManager> offers = mockStatic(BotOfferManager.class)) {
             manager.notifyOwnerGainedTradeItem(owner, tradedEquip, sourceBot);
@@ -98,6 +112,7 @@ class BotManagerTest {
             offers.verifyNoInteractions();
         } finally {
             bots.remove(owner.getId());
+            byCharId.remove(10);
         }
     }
 
@@ -307,12 +322,32 @@ class BotManagerTest {
         Character bot = mockMovingBot(new Point(100, 1700), map);
         BotEntry entry = new BotEntry(bot, owner, null);
         entry.grinding = true;
+        // Mid-map recovery, not a fresh map change: the map-change tick (which now runs before
+        // the recovery checks) must not consume the tick.
+        entry.lastMapId = map.getId();
 
         BotManager.getInstance().stepMovementOnly(entry, bot.getPosition(), owner.getPosition(), true);
 
         assertEquals(new Point(100, 100), bot.getPosition());
         assertFalse(entry.inAir);
         assertFalse(entry.climbing);
+    }
+
+    @Test
+    void shouldRespawnDeadBotEvenWhenOwnerIsUnavailable() throws Exception {
+        MapleMap map = createEmptyTestMap(910000053);
+        Character bot = mockMovingBot(new Point(100, 100), map);
+        BotEntry entry = new BotEntry(bot, null, null);
+        entry.lastMapId = map.getId();
+        entry.deadUntil = System.currentTimeMillis() - 1;
+
+        Method handleDeadTick = BotManager.class.getDeclaredMethod(
+                "handleDeadTick", BotEntry.class, Character.class, Character.class);
+        handleDeadTick.setAccessible(true);
+
+        assertTrue((Boolean) handleDeadTick.invoke(BotManager.getInstance(), entry, bot, null));
+        assertEquals(0L, entry.deadUntil);
+        verify(bot).respawn(map.getReturnMapId());
     }
 
     @Test
@@ -379,6 +414,7 @@ class BotManagerTest {
                 0, 11, 11, 11, 4, 300, 600, null);
 
         when(bot.getMap()).thenReturn(map);
+        when(bot.getPosition()).thenReturn(new Point(botPos));
         when(map.getAllMonsters()).thenReturn(List.of(closeMob, rangedMob));
 
         try (MockedStatic<BotAttackExecutionProvider> attacks =
@@ -390,6 +426,30 @@ class BotManagerTest {
             combat.when(() -> BotCombatManager.isTargetInAttackRange(rangedPlan, bot, rangedMob)).thenReturn(true);
 
             assertEquals(rangedMob, BotManager.selectPriorityRangedAttackTarget(entry, bot, botPos, closeMob));
+        }
+    }
+
+    @Test
+    void shouldSkipFullPlanForFarRangedPriorityCandidate() {
+        MapleMap map = mock(MapleMap.class);
+        Character bot = mock(Character.class);
+        BotEntry entry = new BotEntry(bot, null, null);
+        Point botPos = new Point(100, 100);
+        Monster closeMob = mockMob(new Point(150, 100), 9300400);
+        Monster farMob = mockMob(new Point(2000, 100), 9300402);
+
+        when(bot.getMap()).thenReturn(map);
+        when(bot.getPosition()).thenReturn(new Point(botPos));
+        when(map.getAllMonsters()).thenReturn(List.of(closeMob, farMob));
+
+        try (MockedStatic<BotAttackExecutionProvider> attacks =
+                     mockStatic(BotAttackExecutionProvider.class, org.mockito.Mockito.CALLS_REAL_METHODS);
+             MockedStatic<BotCombatManager> combat =
+                     mockStatic(BotCombatManager.class, org.mockito.Mockito.CALLS_REAL_METHODS)) {
+            attacks.when(() -> BotAttackExecutionProvider.getEquippedWeaponType(bot)).thenReturn(WeaponType.BOW);
+
+            assertNull(BotManager.selectPriorityRangedAttackTarget(entry, bot, botPos, closeMob));
+            combat.verify(() -> BotCombatManager.planAttack(entry, bot, farMob), never());
         }
     }
 
@@ -428,9 +488,10 @@ class BotManagerTest {
 
     @Test
     void shouldCommitToBreakoutDirectionWhenSurroundedDespiteTargetSwap() {
-        MapleMap map = spy(createEmptyTestMap(910000063));
-        map.getFootholds().insert(new Foothold(new Point(-500, 100), new Point(500, 100), 1));
-        BotNavigationGraphProvider.rebuildGraph(map);
+        MapleMap realMap = createEmptyTestMap(910000063);
+        realMap.getFootholds().insert(new Foothold(new Point(-500, 100), new Point(500, 100), 1));
+        BotNavigationGraphProvider.rebuildGraph(realMap);   // build on the bare map; rebuildGraph through a spy OOMs
+        MapleMap map = spy(realMap);
         Character bot = mock(Character.class);
         Point botPos = new Point(100, 100);
         when(bot.getMap()).thenReturn(map);
@@ -462,9 +523,10 @@ class BotManagerTest {
 
     @Test
     void shouldClearBreakoutOnceNoLongerSurrounded() {
-        MapleMap map = spy(createEmptyTestMap(910000064));
-        map.getFootholds().insert(new Foothold(new Point(-500, 100), new Point(500, 100), 1));
-        BotNavigationGraphProvider.rebuildGraph(map);
+        MapleMap realMap = createEmptyTestMap(910000064);
+        realMap.getFootholds().insert(new Foothold(new Point(-500, 100), new Point(500, 100), 1));
+        BotNavigationGraphProvider.rebuildGraph(realMap);   // build on the bare map; rebuildGraph through a spy OOMs
+        MapleMap map = spy(realMap);
         Character bot = mock(Character.class);
         Point botPos = new Point(100, 100);
         when(bot.getMap()).thenReturn(map);
@@ -488,9 +550,10 @@ class BotManagerTest {
 
     @Test
     void shouldNotEngageBreakoutForSingleMobKiting() {
-        MapleMap map = spy(createEmptyTestMap(910000065));
-        map.getFootholds().insert(new Foothold(new Point(-500, 100), new Point(500, 100), 1));
-        BotNavigationGraphProvider.rebuildGraph(map);
+        MapleMap realMap = createEmptyTestMap(910000065);
+        realMap.getFootholds().insert(new Foothold(new Point(-500, 100), new Point(500, 100), 1));
+        BotNavigationGraphProvider.rebuildGraph(realMap);   // build on the bare map; rebuildGraph through a spy OOMs
+        MapleMap map = spy(realMap);
         Character bot = mock(Character.class);
         Point botPos = new Point(100, 100);
         when(bot.getMap()).thenReturn(map);
@@ -512,7 +575,7 @@ class BotManagerTest {
     }
 
     @Test
-    void shouldResetPhysicsWhenOnlineBotIsSpawnedAtOwnerPosition() {
+    void shouldResetPhysicsWhenOnlineBotIsReactivatedAtCurrentPosition() {
         MapleMap map = createEmptyTestMap(910000023);
         map.getFootholds().insert(new Foothold(new Point(0, 100), new Point(200, 100), 1));
         Character bot = mockMovingBot(new Point(20, 100), map);
@@ -524,11 +587,11 @@ class BotManagerTest {
         entry.airVelX = 6;
         entry.navTargetPos = new Point(120, 100);
 
-        BotManager.placeSpawnedOnlineBot(entry, bot, map, new Point(80, 100));
+        BotManager.placeSpawnedOnlineBot(entry, bot);
 
-        assertEquals(new Point(80, 100), bot.getPosition());
+        assertEquals(new Point(20, 100), bot.getPosition());
         assertFalse(entry.inAir);
-        assertEquals(80.0, entry.physX);
+        assertEquals(20.0, entry.physX);
         assertEquals(100.0, entry.physY);
         assertEquals(0, entry.airVelX);
         assertNull(entry.navTargetPos);
@@ -723,6 +786,15 @@ class BotManagerTest {
     }
 
     @Test
+    void pickFarthestFromMobsPicksMaxClearanceSpot() {
+        java.util.List<Point> candidates = java.util.List.of(
+                new Point(100, 100), new Point(500, 100), new Point(900, 100));
+        java.util.List<Point> mobs = java.util.List.of(new Point(120, 100), new Point(150, 100));
+        // x=900 is farthest from the mob cluster near x=120-150.
+        assertEquals(new Point(900, 100), BotManager.pickFarthestFromMobs(candidates, mobs));
+    }
+
+    @Test
     void shouldReuseWanderDirectionWhenGrindHasNoTarget() {
         Character bot = mockMovingBot(new Point(100, 100), createEmptyTestMap(910000030));
         BotEntry entry = new BotEntry(bot, mock(Character.class), null);
@@ -734,6 +806,108 @@ class BotManagerTest {
         assertTrue(direction == -1 || direction == 1);
         assertEquals(new Point(100 + direction * 200, 100), first);
         assertEquals(first, second);
+    }
+
+    @Test
+    void shouldUseWanderTargetForGrindingSnapshotWithoutMobTarget() {
+        Character bot = mockMovingBot(new Point(100, 100), createEmptyTestMap(910000133));
+        Character owner = mockMovingBot(new Point(50, 100), bot.getMap());
+        BotEntry entry = new BotEntry(bot, owner, null);
+        entry.grinding = true;
+
+        BotManager.TargetSnapshot snapshot = BotManager.getInstance().captureTargetSnapshot(entry);
+
+        assertEquals("grind-wander", snapshot.primaryTargetSource());
+        assertEquals(100, snapshot.primaryTargetPos().y);
+        assertTrue(snapshot.primaryTargetPos().x == -100 || snapshot.primaryTargetPos().x == 300);
+    }
+
+    @Test
+    void shouldHoldPositionNotAnchorToOwnerWhenAutopilotActiveWithNoTarget() {
+        Character bot = mockMovingBot(new Point(100, 100), createEmptyTestMap(910000134));
+        Character owner = mockMovingBot(new Point(900, 100), bot.getMap());
+        BotEntry entry = new BotEntry(bot, owner, null);
+        entry.grinding = false;
+        entry.following = false;
+        entry.autopilotMapId = 910000134; // autopilot active
+
+        BotManager.TargetSnapshot snapshot = BotManager.getInstance().captureTargetSnapshot(entry);
+
+        // Must NOT fall through to the owner (x=900); holds at its own spot instead.
+        assertEquals("autopilot-hold", snapshot.primaryTargetSource());
+        assertEquals(new Point(100, 100), snapshot.primaryTargetPos());
+    }
+
+    @Test
+    void shouldHoldPositionForSelfOwnedBotWithNoTarget() {
+        Character bot = mockMovingBot(new Point(100, 100), createEmptyTestMap(910000135));
+        BotEntry entry = new BotEntry(bot, bot, null); // self-owned (@botme): owner == bot
+        entry.grinding = false;
+        entry.following = false;
+
+        BotManager.TargetSnapshot snapshot = BotManager.getInstance().captureTargetSnapshot(entry);
+
+        assertEquals("autopilot-hold", snapshot.primaryTargetSource());
+        assertEquals(new Point(100, 100), snapshot.primaryTargetPos());
+    }
+
+    @Test
+    void canWalkToOwnerOnlyWhenNotIndependentAndOwnerOnlineAndDistinct() {
+        Character bot = mock(Character.class);
+        Character owner = mock(Character.class);
+        when(owner.isLoggedinWorld()).thenReturn(true);
+
+        // Normal follow bot with an online distinct owner: may walk to owner.
+        BotEntry follow = new BotEntry(bot, owner, null);
+        assertTrue(BotManager.canWalkToOwner(follow));
+        assertFalse(BotManager.isAutopilotActive(follow));
+
+        // Autopilot active: never.
+        BotEntry autopilot = new BotEntry(bot, owner, null);
+        autopilot.autopilotMapId = 100000000;
+        assertTrue(BotManager.isAutopilotActive(autopilot));
+        assertFalse(BotManager.canWalkToOwner(autopilot));
+
+        // Offline owner (stale position): never.
+        Character offlineOwner = mock(Character.class);
+        when(offlineOwner.isLoggedinWorld()).thenReturn(false);
+        assertFalse(BotManager.canWalkToOwner(new BotEntry(bot, offlineOwner, null)));
+
+        // Self-owned (owner == bot): independent, never walks to "owner".
+        BotEntry self = new BotEntry(bot, bot, null);
+        assertTrue(BotManager.isAutopilotActive(self));
+        assertFalse(BotManager.canWalkToOwner(self));
+
+        // No owner: never.
+        assertFalse(BotManager.canWalkToOwner(new BotEntry(bot, null, null)));
+    }
+
+    @Test
+    void selfOwnedBotResolvesNoFollowAnchor() {
+        MapleMap map = spy(createEmptyTestMap(910000301));
+        Character bot = mock(Character.class);
+        when(bot.getMap()).thenReturn(map);
+        when(bot.getId()).thenReturn(88);
+        BotEntry entry = new BotEntry(bot, bot, null); // owner == bot
+
+        // Commander check still wins first when bound; otherwise self-owned => no anchor.
+        assertNull(BotManager.getInstance().resolveFollowAnchor(entry, bot));
+
+        Character admin = mock(Character.class);
+        when(admin.getId()).thenReturn(506);
+        doReturn(admin).when(map).getCharacterById(506);
+        net.server.world.World ws = mock(net.server.world.World.class);
+        net.server.PlayerStorage ps = mock(net.server.PlayerStorage.class);
+        when(bot.getWorldServer()).thenReturn(ws);
+        when(ws.getPlayerStorage()).thenReturn(ps);
+        when(ps.getCharacterById(506)).thenReturn(admin);
+        // A debug binding alone still leaves a self-owned bot anchorless (no follow hijack).
+        BotManager.bindDebugCommander(entry, admin);
+        assertNull(BotManager.getInstance().resolveFollowAnchor(entry, bot));
+
+        // Only an explicit admin follow command anchors it to the admin.
+        entry.debugCommanderFollow = true;
+        assertEquals(admin, BotManager.getInstance().resolveFollowAnchor(entry, bot));
     }
 
     @Test
@@ -1294,6 +1468,42 @@ class BotManagerTest {
     }
 
     @Test
+    void shouldShareThrowingStarsBeforeAssassinNeedsTownErrand() throws Exception {
+        BotManager manager = BotManager.getInstance();
+        Character owner = mock(Character.class);
+        Character needy = projectileBot(10, 1000, 2070000, 0);
+        Character donor = projectileBot(11, 1000, 2070000, 1500);
+
+        when(owner.getId()).thenReturn(84);
+
+        BotEntry needyEntry = new BotEntry(needy, owner, null);
+        BotEntry donorEntry = new BotEntry(donor, owner, null);
+        needyEntry.autopilotMapId = 1000;
+
+        @SuppressWarnings("unchecked")
+        Map<Integer, List<BotEntry>> bots = (Map<Integer, List<BotEntry>>) field(BotManager.class, "bots").get(manager);
+        bots.put(owner.getId(), List.of(needyEntry, donorEntry));
+
+        try (MockedStatic<BotAttackExecutionProvider> attacks = mockStatic(BotAttackExecutionProvider.class,
+                     invocation -> WeaponType.CLAW);
+             MockedStatic<BotManager> managers =
+                     mockStatic(BotManager.class, org.mockito.Mockito.CALLS_REAL_METHODS)) {
+            managers.when(() -> BotManager.after(anyLong(), any(Runnable.class))).thenReturn(null);
+
+            assertTrue(BotAmmoManager.requestLowAmmoShare(needyEntry, needy, true));
+            BotAmmoManager.AmmoDonorPlan plan = BotAmmoManager.selectAmmoDonor(needyEntry, needy, WeaponType.CLAW);
+
+            assertNotNull(plan);
+            assertEquals(donorEntry, plan.entry());
+            assertTrue(needyEntry.ammoShareRequested);
+            assertTrue(needyEntry.autopilotOwnerSupplyGraceUntilMs > System.currentTimeMillis(),
+                    "ammo share request should give autopilot time before town errand");
+        } finally {
+            bots.remove(owner.getId());
+        }
+    }
+
+    @Test
     void shouldSplitSingleAmmoStackByShareBudget() {
         BotEntry entry = new BotEntry(mock(Character.class), mock(Character.class), null);
         entry.pendingPotShareBudget = 2250;
@@ -1418,6 +1628,179 @@ class BotManagerTest {
                 ordered.stream().map(Item::getItemId).toList());
     }
 
+    // ─── Admin-debug commander binding (gm6 can command foreign/independent bots) ──────────
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void gm6NameTargetingForeignBotRoutesAndBinds() throws Exception {
+        BotManager manager = BotManager.getInstance();
+        Character admin = mock(Character.class);
+        when(admin.getId()).thenReturn(500);
+        when(admin.gmLevel()).thenReturn(6);
+
+        MapleMap map = spy(createEmptyTestMap(910000301));
+        doReturn(admin).when(map).getCharacterById(500);
+        Character realOwner = mock(Character.class);
+        when(realOwner.getId()).thenReturn(77);
+        Character foreignBot = mock(Character.class);
+        when(foreignBot.getName()).thenReturn("Leroy");
+        when(foreignBot.getMap()).thenReturn(map);
+        net.server.world.World ws = mock(net.server.world.World.class);
+        net.server.PlayerStorage ps = mock(net.server.PlayerStorage.class);
+        when(foreignBot.getWorldServer()).thenReturn(ws);
+        when(ws.getPlayerStorage()).thenReturn(ps);
+        when(ps.getCharacterById(500)).thenReturn(admin);
+        BotEntry foreignEntry = new BotEntry(foreignBot, realOwner, null);
+
+        Map<Integer, List<BotEntry>> bots = (Map<Integer, List<BotEntry>>) field(BotManager.class, "bots").get(manager);
+        bots.put(realOwner.getId(), List.of(foreignEntry));
+        try {
+            BotCommandParser.TargetedBotMatch resolved = manager.resolveForeignAdminTarget(admin, "Leroy follow");
+            assertEquals(foreignEntry, resolved.entry());
+            assertEquals("follow", resolved.commandText());
+            // Numeric slot targets are own-bot-list positions - never cross-owner.
+            assertNull(manager.resolveForeignAdminTarget(admin, "1 follow").entry());
+
+            BotManager.bindDebugCommander(foreignEntry, admin);
+            assertEquals(admin, manager.resolveDebugCommander(foreignEntry));
+            assertEquals(admin, manager.commanderOrOwner(foreignEntry));
+        } finally {
+            bots.remove(realOwner.getId());
+        }
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void nonGmNameTargetingForeignBotDoesNotRoute() throws Exception {
+        // The gm6 gate lives in handleChat; resolveForeignAdminTarget itself still finds the
+        // foreign bot, so the routing block must only be entered for gm6. Assert a non-gm speaker
+        // never reaches it: a foreign bot is found but with gmLevel < 6 handleChat skips the block.
+        BotManager manager = BotManager.getInstance();
+        Character nonGm = mock(Character.class);
+        when(nonGm.getId()).thenReturn(501);
+        when(nonGm.gmLevel()).thenReturn(0);
+
+        Character realOwner = mock(Character.class);
+        when(realOwner.getId()).thenReturn(78);
+        Character foreignBot = mock(Character.class);
+        when(foreignBot.getName()).thenReturn("Leroy");
+        BotEntry foreignEntry = new BotEntry(foreignBot, realOwner, null);
+
+        Map<Integer, List<BotEntry>> bots = (Map<Integer, List<BotEntry>>) field(BotManager.class, "bots").get(manager);
+        bots.put(realOwner.getId(), List.of(foreignEntry));
+        try {
+            // gmLevel gate (the actual cross-boundary guard) blocks non-gm speakers.
+            assertFalse(nonGm.gmLevel() >= 6);
+            // No binding is ever set for a non-gm speaker.
+            assertNull(manager.resolveDebugCommander(foreignEntry));
+        } finally {
+            bots.remove(realOwner.getId());
+        }
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void bareCommandFromGm6DoesNotTouchForeignBots() throws Exception {
+        BotManager manager = BotManager.getInstance();
+        Character admin = mock(Character.class);
+        when(admin.getId()).thenReturn(502);
+
+        Character realOwner = mock(Character.class);
+        when(realOwner.getId()).thenReturn(79);
+        Character foreignBot = mock(Character.class);
+        when(foreignBot.getName()).thenReturn("Leroy");
+        BotEntry foreignEntry = new BotEntry(foreignBot, realOwner, null);
+
+        Map<Integer, List<BotEntry>> bots = (Map<Integer, List<BotEntry>>) field(BotManager.class, "bots").get(manager);
+        bots.put(realOwner.getId(), List.of(foreignEntry));
+        try {
+            // Bare un-targeted broadcast: no name token -> no foreign match -> stays owner-scoped.
+            assertNull(manager.resolveForeignAdminTarget(admin, "follow").entry());
+            assertNull(manager.resolveForeignAdminTarget(admin, "autoequip").entry());
+        } finally {
+            bots.remove(realOwner.getId());
+        }
+    }
+
+    @Test
+    void adminCommandingOwnBotIsExcludedFromForeignSet() throws Exception {
+        BotManager manager = BotManager.getInstance();
+        Character admin = mock(Character.class);
+        when(admin.getId()).thenReturn(503);
+
+        Character ownBot = mock(Character.class);
+        when(ownBot.getName()).thenReturn("Leroy");
+        BotEntry ownEntry = new BotEntry(ownBot, admin, null);
+
+        @SuppressWarnings("unchecked")
+        Map<Integer, List<BotEntry>> bots = (Map<Integer, List<BotEntry>>) field(BotManager.class, "bots").get(manager);
+        bots.put(admin.getId(), List.of(ownEntry));
+        try {
+            // The admin's OWN bot is excluded -> foreign routing returns null -> existing owner path runs.
+            assertNull(manager.resolveForeignAdminTarget(admin, "Leroy follow").entry());
+        } finally {
+            bots.remove(admin.getId());
+        }
+    }
+
+    @Test
+    void debugBindingExpiresAndOwnerOverrideClearsIt() {
+        Character admin = mock(Character.class);
+        when(admin.getId()).thenReturn(504);
+        Character owner = mock(Character.class);
+        Character bot = mock(Character.class);
+        BotEntry entry = new BotEntry(bot, owner, null);
+
+        BotManager.bindDebugCommander(entry, admin);
+        assertEquals(504, entry.debugCommanderId);
+        assertTrue(entry.debugCommanderUntilMs > System.currentTimeMillis());
+
+        // Stale binding behaves as absent.
+        entry.debugCommanderUntilMs = System.currentTimeMillis() - 1;
+        assertNull(BotManager.getInstance().resolveDebugCommander(entry));
+        assertEquals(owner, BotManager.getInstance().commanderOrOwner(entry));
+
+        // Owner-override clears it immediately.
+        BotManager.bindDebugCommander(entry, admin);
+        BotManager.clearDebugCommander(entry);
+        assertEquals(0, entry.debugCommanderId);
+        assertEquals(0L, entry.debugCommanderUntilMs);
+    }
+
+    @Test
+    void followAnchorResolvesToCommanderWhileBound() {
+        MapleMap map = spy(createEmptyTestMap(910000300));
+        Character admin = mock(Character.class);
+        when(admin.getId()).thenReturn(505);
+        doReturn(admin).when(map).getCharacterById(505);
+        Character owner = mock(Character.class);
+        when(owner.getId()).thenReturn(80);
+        Character bot = mock(Character.class);
+        when(bot.getMap()).thenReturn(map);
+        net.server.world.World ws = mock(net.server.world.World.class);
+        net.server.PlayerStorage ps = mock(net.server.PlayerStorage.class);
+        when(bot.getWorldServer()).thenReturn(ws);
+        when(ws.getPlayerStorage()).thenReturn(ps);
+        when(ps.getCharacterById(505)).thenReturn(admin);
+        BotEntry entry = new BotEntry(bot, owner, null);
+
+        // Unbound: anchor is the owner.
+        assertEquals(owner, BotManager.getInstance().resolveFollowAnchor(entry, owner));
+
+        // Bound by a non-follow interaction (e.g. a status question): the bot still anchors to its
+        // owner/leader, NOT the admin - a debug binding alone must not transfer follow dependency.
+        BotManager.bindDebugCommander(entry, admin);
+        assertEquals(owner, BotManager.getInstance().resolveFollowAnchor(entry, owner));
+
+        // Only an explicit admin follow command (debugCommanderFollow) redirects the anchor.
+        entry.debugCommanderFollow = true;
+        assertEquals(admin, BotManager.getInstance().resolveFollowAnchor(entry, owner));
+
+        // Expired binding falls back to the owner (stale id can't null the anchor).
+        entry.debugCommanderUntilMs = System.currentTimeMillis() - 1;
+        assertEquals(owner, BotManager.getInstance().resolveFollowAnchor(entry, owner));
+    }
+
     private static BotCombatManager.AttackPlan basicClosePlan(Monster target) {
         return new BotCombatManager.AttackPlan(
                 0, 0, 1, null, List.of(target), BotCombatManager.AttackRoute.CLOSE,
@@ -1488,15 +1871,75 @@ class BotManagerTest {
     }
 
     private static Character ammoBot(int id, int mapId, int arrowCount) {
+        return projectileBot(id, mapId, 2060000, arrowCount);
+    }
+
+    private static Character projectileBot(int id, int mapId, int itemId, int count) {
         Character bot = mock(Character.class);
+        MapleMap map = mock(MapleMap.class);
         Inventory use = new Inventory(bot, InventoryType.USE, (byte) 24);
-        use.addItem(Items.itemWithQuantity(2060000, arrowCount));
+        use.addItem(Items.itemWithQuantity(itemId, count));
         when(bot.getId()).thenReturn(id);
+        when(bot.getMap()).thenReturn(map);
         when(bot.getMapId()).thenReturn(mapId);
         when(bot.getInventory(InventoryType.USE)).thenReturn(use);
         when(bot.getBuffedValue(any(BuffStat.class))).thenReturn(null);
         return bot;
     }
+
+    @Test
+    void dangerRetreatGivesUpAfterLoopingSoTheBotIsNeverFrozen() {
+        BotEntry e = new BotEntry(org.mockito.Mockito.mock(Character.class), null, null);
+        long t = 1_000_000L;
+        // Persistent danger (every reachable mob dangerous): retreats at first...
+        assertTrue(BotManager.applyDangerRetreatGiveUp(e, true, t), "retreats while danger persists");
+        assertTrue(BotManager.applyDangerRetreatGiveUp(e, true, t + 1000), "still retreating before the cap");
+        // ...but once the unbroken streak exceeds the cap it GIVES UP (must not loop forever).
+        assertFalse(BotManager.applyDangerRetreatGiveUp(e, true, t + MAX_DANGER_RETREAT_MS_TEST + 1),
+                "gives up after the streak cap so the bot fights instead of freezing");
+        // During the suppression window it keeps fighting even though the mob is still dangerous.
+        assertFalse(BotManager.applyDangerRetreatGiveUp(e, true, t + MAX_DANGER_RETREAT_MS_TEST + 50),
+                "suppressed -> fights through the danger window");
+    }
+
+    @Test
+    void dangerRetreatStreakResetsWhenSafeReached() {
+        BotEntry e = new BotEntry(org.mockito.Mockito.mock(Character.class), null, null);
+        long t = 2_000_000L;
+        assertTrue(BotManager.applyDangerRetreatGiveUp(e, true, t), "retreats on danger");
+        // Reaching a non-dangerous spot clears the streak; a fresh later danger doesn't inherit it.
+        assertFalse(BotManager.applyDangerRetreatGiveUp(e, false, t + 5000),
+                "no danger -> no retreat once the hold lapses");
+        assertTrue(BotManager.applyDangerRetreatGiveUp(e, true, t + 10_000),
+                "new danger after safety retreats fresh (streak was reset)");
+    }
+
+    @Test
+    void retreatGiveUpForcesFightWhenConditionNeverClears() {
+        RetreatGiveUp g = new RetreatGiveUp();
+        long t = 5_000_000L;
+        int max = 1500, fight = 2500;
+        assertFalse(g.forcedFight(true, t, max, fight), "retreats while the streak is under the cap");
+        assertFalse(g.forcedFight(true, t + 1000, max, fight), "still under the cap");
+        assertTrue(g.forcedFight(true, t + max + 1, max, fight), "gives up after the cap -> fight");
+        assertTrue(g.forcedFight(true, t + max + 100, max, fight), "stays fighting inside the window");
+        assertFalse(g.forcedFight(true, t + max + 1 + fight + 1, max, fight),
+                "window lapsed -> retreats again (fresh streak)");
+    }
+
+    @Test
+    void retreatGiveUpStreakResetsTheInstantTheConditionClears() {
+        RetreatGiveUp g = new RetreatGiveUp();
+        long t = 6_000_000L;
+        int max = 1500, fight = 2500;
+        assertFalse(g.forcedFight(true, t, max, fight));
+        assertFalse(g.forcedFight(false, t + 1000, max, fight), "opened distance -> streak reset");
+        // A long-later re-trigger must not inherit the old streak (else it'd give up instantly).
+        assertFalse(g.forcedFight(true, t + 10_000, max, fight), "fresh streak after escaping");
+    }
+
+    // Mirror of BotManager.MAX_DANGER_RETREAT_MS for the test (private constant).
+    private static final int MAX_DANGER_RETREAT_MS_TEST = 3500;
 
     private static Field field(Class<?> type, String name) throws Exception {
         Field field = type.getDeclaredField(name);
@@ -1508,5 +1951,47 @@ class BotManagerTest {
         Method method = type.getDeclaredMethod(name, parameterTypes);
         method.setAccessible(true);
         return method;
+    }
+
+    /**
+     * A self-owned bot whose autopilot leaked to OFF (autopilotMapId == -1: a null decision or the
+     * death-loop escape) must self-recover: the inert-idle tick re-runs the decision, throttled, and
+     * only for self-owned bots. Without this the bot stands idle in town forever (the >90%-in-town bug).
+     */
+    @Test
+    void recoversInertSelfOwnedAutopilotThrottledAndScoped() throws Exception {
+        MapleMap map = createEmptyTestMap(910000200);
+        Character bot = mockMovingBot(new Point(100, 100), map);
+        BotEntry entry = new BotEntry(bot, bot, null); // self-owned (@botme), autopilotMapId = -1 (inert)
+
+        AtomicInteger runs = new AtomicInteger();
+        BotAutopilotManager.DecisionRunner prev = BotAutopilotManager.decisionRunner;
+        BotAutopilotManager.decisionRunner = (compute, apply) -> runs.incrementAndGet();
+        try {
+            Method recover = method(BotManager.class, "maybeRecoverInertAutopilot",
+                    BotEntry.class, Character.class);
+
+            // inert + self-owned + past the (default 0) throttle -> fires once and arms the backoff.
+            recover.invoke(BotManager.getInstance(), entry, bot);
+            assertEquals(1, runs.get());
+            assertTrue(entry.autopilotNextDecisionAtMs > System.currentTimeMillis());
+
+            // re-call within the backoff window -> no second fire (no per-tick decision spin).
+            recover.invoke(BotManager.getInstance(), entry, bot);
+            assertEquals(1, runs.get());
+
+            // active autopilot (a destination is set) -> never fires, even past the throttle.
+            entry.autopilotNextDecisionAtMs = 0L;
+            entry.autopilotMapId = 100000000;
+            recover.invoke(BotManager.getInstance(), entry, bot);
+            assertEquals(1, runs.get());
+
+            // owned companion (a real, distinct owner) -> never fires; its idle may be owner-intended.
+            BotEntry owned = new BotEntry(bot, mock(Character.class), null);
+            recover.invoke(BotManager.getInstance(), owned, bot);
+            assertEquals(1, runs.get());
+        } finally {
+            BotAutopilotManager.decisionRunner = prev;
+        }
     }
 }

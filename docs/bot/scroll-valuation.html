@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Scroll Valuation — proposed vs SoloMapling (v2)</title>
+<style>
+  body{font:14px/1.5 system-ui,Segoe UI,Arial;margin:24px;color:#1a1a1a;max-width:1100px}
+  h1{font-size:22px} h2{font-size:17px;margin-top:28px;border-bottom:1px solid #ddd;padding-bottom:4px}
+  code{background:#f3f3f3;padding:1px 5px;border-radius:3px;font-size:13px}
+  pre{background:#f3f3f3;padding:10px;border-radius:4px;overflow:auto}
+  table{border-collapse:collapse;width:100%;margin-top:10px;font-size:13px}
+  th,td{border:1px solid #ddd;padding:6px 8px;text-align:right}
+  th{background:#2b3a55;color:#fff;text-align:right}
+  td.l,th.l{text-align:left}
+  tr:nth-child(even){background:#fafafa}
+  .att{color:#b00;font-weight:600}
+  .muted{color:#999}
+  .num{font-variant-numeric:tabular-nums}
+  .hi{background:#ffe0e0}     /* overshoot >2x */
+  .ok{background:#e3f6e3}     /* within ~1.3x */
+  .lo{background:#fff3d6}     /* undershoot <0.7x */
+  .note{background:#fff8e1;border-left:4px solid #f0ad4e;padding:8px 12px;margin:8px 0}
+</style>
+</head>
+<body>
+<h1>Scroll valuation v2 — proposed vs SoloMapling</h1>
+<div class="note"><b>STATUS: shipped.</b> v2 implemented in <code>BotScrollManager.scrollCombatCeilingMeso</code> /
+<code>marketStatValue</code> and the scroll branch of <code>BotInventoryManager.useShelfKeepValue</code>
+(<code>max(sellback, min(obtainCost, combatCeiling))</code>). This page is the calibration record.</div>
+<p>Updated per: <b>our shops don't sell these</b> (same Cosmic base — the <code>shopitems</code> rows are
+inaccessible/GM, so obtain cost = drop-farm, not a cheap shop price) and <b>PER_EV tripled 250k → 750k</b>
+to float toward SoloMapling.</p>
+
+<h2>Formula (unchanged shape, one knob retuned)</h2>
+<pre><code>combatCeiling = 750,000 × (successRate) × Σ(statBonus × bestBuyerWeight)
+our_propose   = max(npcSellBack, min(farmCost, combatCeiling))</code></pre>
+<p>bestBuyerWeight (SSOT offense weights, job-agnostic): <b>PAD=5</b>, STR/DEX/INT/LUK=1, MAD=1, jump≈0.1.
+ev = (sr/100) × statBonus × weight. With shops gone, <code>farmCost</code> is the only supply cap and it's
+high for these rare scrolls, so for most rows <b>combatCeiling is what binds</b> → our_propose ≈ ceiling
+(noted where farm would still cap).</p>
+
+<h2>Comparison</h2>
+<table>
+<thead><tr>
+  <th class="l">Scroll</th><th class="l">stat</th><th>sr%</th><th>+stat</th><th>wt</th><th>ev</th>
+  <th>our_propose<br>(×3)</th><th>SoloMapling</th><th>ratio</th>
+</tr></thead>
+<tbody>
+<tr><td class="l att">Claw Att 10%</td><td class="l">PAD</td><td>10</td><td>5</td><td>5</td><td>2.5</td><td class="num">1,875,000</td><td class="num">500,000</td><td class="num hi">3.8×</td></tr>
+<tr><td class="l att">Claw Att 60%</td><td class="l">PAD</td><td>60</td><td>2</td><td>5</td><td>6.0</td><td class="num">4,500,000</td><td class="num">1,500,000</td><td class="num hi">3.0×</td></tr>
+<tr><td class="l att">Dagger Att 10%</td><td class="l">PAD</td><td>10</td><td>5</td><td>5</td><td>2.5</td><td class="num">1,875,000</td><td class="num">550,000</td><td class="num hi">3.4×</td></tr>
+<tr><td class="l att">Dagger Att 60%</td><td class="l">PAD</td><td>60</td><td>2</td><td>5</td><td>6.0</td><td class="num">4,500,000</td><td class="num">1,600,000</td><td class="num hi">2.8×</td></tr>
+<tr><td class="l att">Gloves Att 10%</td><td class="l">PAD</td><td>10</td><td>3</td><td>5</td><td>1.5</td><td class="num">1,125,000</td><td class="num">1,200,000</td><td class="num ok">0.9×</td></tr>
+<tr><td class="l att">Gloves Att 60%</td><td class="l">PAD</td><td>60</td><td>2</td><td>5</td><td>6.0</td><td class="num">4,500,000</td><td class="num">3,000,000</td><td class="num hi">1.5×</td></tr>
+<tr><td class="l">Earring INT 10%</td><td class="l">MAD</td><td>10</td><td>5</td><td>1</td><td>0.5</td><td class="num">375,000</td><td class="num">1,300,000</td><td class="num lo">0.3×</td></tr>
+<tr><td class="l">Earring INT 60%</td><td class="l">MAD</td><td>60</td><td>2</td><td>1</td><td>1.2</td><td class="num">900,000</td><td class="num">2,500,000</td><td class="num lo">0.4×</td></tr>
+<tr><td class="l">Overall INT 10%</td><td class="l">INT</td><td>10</td><td>5</td><td>1</td><td>0.5</td><td class="num">375,000</td><td class="num">1,000,000</td><td class="num lo">0.4×</td></tr>
+<tr><td class="l">Overall INT 60%</td><td class="l">INT</td><td>60</td><td>2</td><td>1</td><td>1.2</td><td class="num">900,000</td><td class="num">3,000,000</td><td class="num lo">0.3×</td></tr>
+<tr><td class="l">Overall DEX 10%</td><td class="l">DEX</td><td>10</td><td>5</td><td>1</td><td>0.5</td><td class="num">375,000</td><td class="num">350,000</td><td class="num ok">1.1×</td></tr>
+<tr><td class="l">Overall DEX 60%</td><td class="l">DEX</td><td>60</td><td>2</td><td>1</td><td>1.2</td><td class="num">900,000</td><td class="num">900,000</td><td class="num ok">1.0×</td></tr>
+<tr><td class="l">Cape STR 10%</td><td class="l">STR</td><td>10</td><td>3</td><td>1</td><td>0.3</td><td class="num">225,000</td><td class="num">200,000</td><td class="num ok">1.1×</td></tr>
+<tr><td class="l">Cape STR 60%</td><td class="l">STR</td><td>60</td><td>2</td><td>1</td><td>1.2</td><td class="num">900,000</td><td class="num">1,500,000</td><td class="num lo">0.6×</td></tr>
+<tr><td class="l">Cape DEX 10%</td><td class="l">DEX</td><td>10</td><td>3</td><td>1</td><td>0.3</td><td class="num">225,000</td><td class="num">300,000</td><td class="num ok">0.8×</td></tr>
+<tr><td class="l">Cape DEX 60%</td><td class="l">DEX</td><td>60</td><td>2</td><td>1</td><td>1.2</td><td class="num">900,000</td><td class="num">1,600,000</td><td class="num lo">0.6×</td></tr>
+<tr><td class="l">Cape INT 10%</td><td class="l">INT</td><td>10</td><td>3</td><td>1</td><td>0.3</td><td class="num">225,000</td><td class="num">330,000</td><td class="num ok">0.7×</td></tr>
+<tr><td class="l">Cape INT 60%</td><td class="l">INT</td><td>60</td><td>2</td><td>1</td><td>1.2</td><td class="num">900,000</td><td class="num">1,600,000</td><td class="num lo">0.6×</td></tr>
+<tr><td class="l">Cape LUK 10%</td><td class="l">LUK</td><td>10</td><td>3</td><td>1</td><td>0.3</td><td class="num">225,000</td><td class="num">350,000</td><td class="num lo">0.6×</td></tr>
+<tr><td class="l">Cape LUK 60%</td><td class="l">LUK</td><td>60</td><td>2</td><td>1</td><td>1.2</td><td class="num">900,000</td><td class="num">1,650,000</td><td class="num lo">0.5×</td></tr>
+<tr><td class="l muted">Shoes Jump 10%</td><td class="l">JUMP</td><td>10</td><td>3</td><td>0.1</td><td>0.03</td><td class="num">22,500</td><td class="num">500,000</td><td class="num lo">0.05×</td></tr>
+<tr><td class="l muted">Shoes Jump 60%</td><td class="l">JUMP</td><td>60</td><td>1</td><td>0.1</td><td>0.06</td><td class="num">45,000</td><td class="num">1,000,000</td><td class="num lo">0.05×</td></tr>
+</tbody>
+</table>
+
+<h2>Read on the tripled fit</h2>
+<ol>
+  <li><b>Primary-stat scrolls now nail it</b> — Overall DEX 60% 1.0×, DEX 10% 1.1×, Cape STR 10% 1.1×, the
+      Cape 10%s all 0.6–0.8×. Tripling lined the bulk of the table up with SoloMapling.</li>
+  <li><b>Physical attack scrolls overshoot 3–4×.</b> Pure consequence of <code>ATT_WEIGHT=5</code>: SoloMapling's
+      real attack premium over a stat point is only ~2–3×, ours is 5×. You can match attack <em>or</em> stat at a
+      single PER_EV, not both — at 250k attack matched and stat undershot; at 750k stat matches and attack
+      overshoots.</li>
+  <li><b>INT/MAD undershoot 0.3–0.4×.</b> Two stacked causes: <code>MATK_WEIGHT=1</code> (mage attack treated as a
+      plain stat) plus SoloMapling's class-balance INT premium. Both are weight/curation, not fixable by PER_EV.</li>
+  <li><b>Jump stays ~0.05×</b> — near-zero combat weight. SoloMapling's 0.5–1M for a jump scroll is mobility
+      curation we don't model; arguably <em>they're</em> the outlier here.</li>
+</ol>
+
+<div class="note"><b>The real lever is the attack weight, not PER_EV.</b> If you want attack scrolls to land near
+SoloMapling too, the scroll ceiling needs a <em>compressed</em> attack weight (~2–3) rather than the full
+DPS-model 5. That's a market-pricing choice distinct from the SSOT combat weight — I can add a scroll-local
+<code>ATT_MARKET_WEIGHT</code> without touching <code>offenseValueFromStats</code>. Say the word and I'll show a
+v3 with attack compressed; otherwise I implement v2 as shown (attack runs rich, which for a bot economy isn't
+wrong — attack scrolls <em>should</em> be the prize).</div>
+
+<div class="note"><b>farmCost caveat.</b> our_propose assumes farm cost doesn't bind below the ceiling. At
+implementation each scroll's real <code>farmCost</code> (rarity model) caps it; for the 3–4× attack overshoots
+farm may pull them down on its own. I'll verify per-scroll when wiring.</div>
+</body>
+</html>

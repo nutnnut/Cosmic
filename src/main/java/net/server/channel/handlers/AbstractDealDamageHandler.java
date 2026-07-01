@@ -163,6 +163,7 @@ public abstract class AbstractDealDamageHandler extends AbstractPacketHandler {
         if (map.isOwnershipRestricted(player)) {
             return;
         }
+        player.markAttacked(); // recency signal for bot grind-map crowd scoring (BotOccupancy)
 
         Skill theSkill = null;
         StatEffect attackEffect = null;

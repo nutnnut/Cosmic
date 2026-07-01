@@ -65,6 +65,19 @@ class BotChatManagerTest {
     }
 
     @Test
+    void shouldMatchRecommendQuestPhrasings() {
+        assertTrue(BotChatManager.isRecommendQuestCommand("recommend quest"));
+        assertTrue(BotChatManager.isRecommendQuestCommand("can you recommend a quest?"));
+        assertTrue(BotChatManager.isRecommendQuestCommand("quest rec"));
+        assertTrue(BotChatManager.isRecommendQuestCommand("best quest"));
+        assertTrue(BotChatManager.isRecommendQuestCommand("suggest quest"));
+        assertTrue(BotChatManager.isRecommendQuestCommand("which quest should i do"));
+        // plain "quests" status must NOT be read as a recommend
+        assertFalse(BotChatManager.isRecommendQuestCommand("quests"));
+        assertFalse(BotChatManager.isRecommendQuestCommand("what quests"));
+    }
+
+    @Test
     void shouldOnlyMatchMovementModeCommandsAsWholeCommands() {
         assertTrue(BotChatManager.isMoveHereCommand("here"));
         assertTrue(BotChatManager.isMoveHereCommand("move here!"));
@@ -73,6 +86,32 @@ class BotChatManagerTest {
         assertTrue(BotChatManager.isGrindCommand("farm"));
         assertTrue(BotChatManager.isGrindCommand("go grind"));
         assertFalse(BotChatManager.isGrindCommand("Im going to the farm today"));
+
+        assertTrue(BotChatManager.isAutopilotCommand("go grind somewhere"));
+        assertTrue(BotChatManager.isAutopilotCommand("autopilot"));
+        assertTrue(BotChatManager.isAutopilotCommand("go solo"));
+        assertFalse(BotChatManager.isAutopilotCommand("go grind"));
+        assertFalse(BotChatManager.isAutopilotCommand("go grind together"));
+
+        assertTrue(BotChatManager.isPartyAutopilotCommand("go grind together"));
+        assertTrue(BotChatManager.isPartyAutopilotCommand("party grind"));
+        assertTrue(BotChatManager.isPartyAutopilotCommand("go together"));
+        assertFalse(BotChatManager.isPartyAutopilotCommand("go grind somewhere"));
+        assertFalse(BotChatManager.isPartyAutopilotCommand("go grind"));
+
+        assertTrue(BotChatManager.isSailAwayCommand("sail away"));
+        assertTrue(BotChatManager.isSailAwayCommand("Sail away!"));
+        assertTrue(BotChatManager.isSailAwayCommand("take the boat"));
+        assertTrue(BotChatManager.isSailAwayCommand("go sail"));
+        assertFalse(BotChatManager.isSailAwayCommand("sail"));
+        assertFalse(BotChatManager.isSailAwayCommand("we could sail away someday"));
+
+        assertEquals("scroll for gloves 60%", BotChatManager.matchFarmItemArgs("farm scroll for gloves 60%"));
+        assertEquals("2040705", BotChatManager.matchFarmItemArgs("farm 2040705"));
+        assertNull(BotChatManager.matchFarmItemArgs("farm here"));
+        assertNull(BotChatManager.matchFarmItemArgs("farm somewhere"));
+        assertNull(BotChatManager.matchFarmItemArgs("farm together"));
+        assertNull(BotChatManager.matchFarmItemArgs("farm"));
 
         assertTrue(BotChatManager.isFarmHereCommand("farm here"));
         assertTrue(BotChatManager.isFarmHereCommand("grind here please"));
@@ -93,6 +132,20 @@ class BotChatManagerTest {
         assertTrue(BotChatManager.isFarmHereCommand("anchor"));
         assertFalse(BotChatManager.isFarmHereCommand("Im going to camp today"));
         assertFalse(BotChatManager.isFarmHereCommand("setting up camp"));
+    }
+
+    @Test
+    void shouldMatchAutopilotDebugPhrasings() {
+        assertTrue(BotChatManager.isAutopilotDebugCommand("autopilot debug"));
+        assertTrue(BotChatManager.isAutopilotDebugCommand("ap debug"));
+        assertTrue(BotChatManager.isAutopilotDebugCommand("party debug"));
+        assertTrue(BotChatManager.isAutopilotDebugCommand("autopilot why"));
+        assertTrue(BotChatManager.isAutopilotDebugCommand("debug party"));
+        assertTrue(BotChatManager.isAutopilotDebugCommand("AUTOPILOT DEBUG?"));
+        // must not collide with the action commands or plain grind debug
+        assertFalse(BotChatManager.isAutopilotDebugCommand("autopilot"));
+        assertFalse(BotChatManager.isAutopilotDebugCommand("go grind together"));
+        assertFalse(BotChatManager.isAutopilotDebugCommand("grind debug"));
     }
 
     @Test
@@ -159,6 +212,21 @@ class BotChatManagerTest {
         assertTrue(BotChatManager.isMovementStatsQuery("movement stats"));
         assertTrue(BotChatManager.isMovementStatsQuery("how fast are you"));
         assertFalse(BotChatManager.isMovementStatsQuery("trade mesos"));
+    }
+
+    @Test
+    void shouldMatchLocationStatusQueriesNaturally() {
+        assertTrue(BotChatManager.isLocationStatusQuery("where are you"));
+        assertTrue(BotChatManager.isLocationStatusQuery("where ru?"));
+        assertTrue(BotChatManager.isLocationStatusQuery("where r u"));
+        assertTrue(BotChatManager.isLocationStatusQuery("where u at"));
+        assertTrue(BotChatManager.isLocationStatusQuery("what map are you in?"));
+        assertTrue(BotChatManager.isLocationStatusQuery("what are you doing"));
+        assertTrue(BotChatManager.isLocationStatusQuery("loc?"));
+
+        assertFalse(BotChatManager.isLocationStatusQuery("where were you lol"));
+        assertFalse(BotChatManager.isLocationStatusQuery("how are you"));
+        assertFalse(BotChatManager.isLocationStatusQuery("go grind somewhere"));
     }
 
     @Test

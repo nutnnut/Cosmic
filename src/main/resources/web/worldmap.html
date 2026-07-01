@@ -1,0 +1,998 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Bot World Map</title>
+<script src="https://unpkg.com/konva@9/konva.min.js"></script>
+<style>
+  html,body{margin:0;height:100%;font:13px system-ui,sans-serif;background:#10141c;color:#cdd6e4;overflow:hidden}
+  #c{position:absolute;top:0;left:280px;right:300px;bottom:0;touch-action:none}
+  #left{position:absolute;top:0;left:0;bottom:0;width:280px;box-sizing:border-box;padding:12px;
+        background:#171c26;border-right:1px solid #283143;overflow:auto}
+  #side{position:absolute;top:0;right:0;bottom:0;width:300px;box-sizing:border-box;padding:12px;
+        background:#171c26;border-left:1px solid #283143;overflow:auto}
+  #roster{margin-top:8px}
+  .rosterItem{padding:4px 6px;border-radius:4px;cursor:pointer}
+  .rosterItem:hover{background:#222a38}
+  .rosterItem.off{opacity:.5}   /* off-map party/crew member shown greyed in the right panel */
+  .meta{color:#67748c;font-size:0.85em}
+  #fontRow{font-size:11px;color:#8a99b3;margin-bottom:8px}
+  #fontRow input{width:130px;margin:0 0 0 6px;padding:0;vertical-align:middle}
+  #tip{position:absolute;display:none;pointer-events:none;background:#0d1017;border:1px solid #3a4761;
+       border-radius:4px;padding:6px 8px;font-size:11px;line-height:1.45;z-index:10;max-width:240px;
+       box-shadow:0 2px 8px rgba(0,0,0,.5)}
+  h1{font-size:15px;margin:0 0 2px}
+  .sub{color:#67748c;font-size:11px;margin:0 0 10px}
+  button{background:#2a3346;color:#cdd6e4;border:1px solid #3a4761;border-radius:4px;padding:5px 9px;cursor:pointer;margin:2px 0}
+  button:hover{background:#34405a}
+  .ggBtn{font-size:10px;padding:1px 6px;margin:0 0 0 4px}
+  a{color:#6cc6ff}
+  input{width:100%;box-sizing:border-box;background:#0d1017;color:#cdd6e4;border:1px solid #283143;border-radius:4px;padding:5px 7px;margin:4px 0}
+  #status{margin-top:8px;color:#9fb0c8}
+  #detail{margin-top:10px;line-height:1.5;border-top:1px solid #283143;padding-top:8px;min-height:40px}
+  #detail .occ{color:#9fb0c8}
+  #detail summary{cursor:pointer;list-style-position:outside}
+  #detail > details > summary{font-weight:bold}
+  #detail .body details summary{font-weight:normal;color:#9fb0c8;font-size:0.9em}
+  .legend{margin-top:10px;font-size:11px;color:#8a99b3}
+  .legend span{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:4px;vertical-align:middle}
+  textarea{width:100%;height:240px;margin-top:8px;background:#0d1017;color:#cdd6e4;border:1px solid #283143;font:11px monospace}
+  #rtsToggle{width:100%;margin:6px 0}
+  #rtsToggle.on{background:#3a3320;border-color:#ffd54a;color:#ffe7a0}
+  #lockBtn.on{background:#26333f;border-color:#6cc6ff;color:#bfe4ff}
+  #rts{border-top:1px solid #283143;border-bottom:1px solid #283143;padding:6px 0;margin:4px 0}
+  #rts button{margin:2px 3px 2px 0;font-size:11px;padding:4px 7px}
+  #rtsHead{margin:0 0 4px}
+  #moveBtn.armed{background:#3a3320;border-color:#ffd54a;color:#ffe7a0}
+  .rosterItem.sel{background:#3a3320;outline:1px solid #ffd54a}
+  #selbox{position:fixed;display:none;border:1px solid #ffd54a;background:rgba(255,213,74,.12);z-index:9;pointer-events:none}
+  #followBtn.armed{background:#26333f;border-color:#6cc6ff;color:#bfe4ff}
+  #picker{position:fixed;display:none;z-index:30;background:#0d1017;border:1px solid #3a4761;border-radius:6px;
+          padding:4px;font-size:12px;box-shadow:0 4px 14px rgba(0,0,0,.6);max-width:260px}
+  #picker .pickHead{color:#8a99b3;font-size:11px;padding:2px 6px 4px}
+  #picker .pickRow{padding:5px 8px;border-radius:4px;cursor:pointer;white-space:nowrap}
+  #picker .pickRow:hover{background:#222a38}
+  .grp{border:1px solid #2a3346;border-radius:6px;padding:3px 4px;margin:5px 0}
+  .grp.party{border-color:#46577a}
+  .grp.crew{border-color:#3a5a4a;margin:4px 0 4px 8px}
+  .grpHead{font-size:11px;font-weight:600;color:#9fb0c8;cursor:pointer;padding:2px 4px;border-radius:4px}
+  .grpHead:hover{background:#222a38}
+  /* mobile panel toggles (hidden on desktop) */
+  #tLeft,#tRight{position:fixed;top:8px;z-index:21;display:none;width:40px;height:36px;padding:0;
+                 font-size:18px;line-height:36px;text-align:center;opacity:.92}
+  #tLeft{left:8px} #tRight{right:8px}
+  @media (max-width: 820px){
+    #c{left:0;right:0}                                  /* map is full-width; panels overlay it */
+    #left,#side{width:84%;max-width:330px;z-index:20;box-shadow:0 0 18px rgba(0,0,0,.6);transition:transform .2s ease}
+    #left{transform:translateX(-100%)} #left.open{transform:translateX(0)}
+    #side{transform:translateX(100%)}  #side.open{transform:translateX(0)}
+    #tLeft,#tRight{display:block}
+  }
+</style>
+</head>
+<body>
+<div id="c"></div>
+<div id="left">
+  <button id="backBtn" onclick="location.href='/'" title="back to main page">&#8592; Main</button>
+  <h1>Online</h1>
+  <p class="sub" id="rosterHead">loading...</p>
+  <input id="search" placeholder="filter name (contains)">
+  <button id="searchBtn">Search</button>
+  <button id="centerBtn">Center</button>
+  <button id="rtsToggle">RTS mode: off</button>
+  <div id="rts" style="display:none">
+    <p class="sub" id="rtsHead">0 selected &middot; box-select maps or click roster</p>
+    <button data-cmd="idle">Idle</button>
+    <button data-cmd="fidget">Fidget</button>
+    <button id="moveBtn">Move</button>
+    <button id="moveAtkBtn">Move+atk</button>
+    <span id="movePos" title="walk selected bot(s) to an exact x,y on their current map (physics debug)"><input id="moveX" type="number" placeholder="x" style="width:54px"><input id="moveY" type="number" placeholder="y" style="width:54px"><button id="movePosBtn">Go xy</button></span>
+    <button id="followBtn">Follow</button>
+    <button data-cmd="resume">Resume</button>
+    <button data-cmd="dance">Dance</button>
+    <button data-cmd="jump">Jump</button>
+    <button data-cmd="cheer">Cheer</button>
+    <button id="clearSel">Clear</button>
+    <div id="rtsDbg" style="margin-top:4px;border-top:1px solid #333;padding-top:4px">
+      <span class="sub">debug:</span>
+      <input id="spawnIds" placeholder="charId,charId" style="width:110px"><button id="spawnBtn" title="bring offline bot char(s) online via /api/spawnbot">Spawn</button>
+      <button id="pathlogBtn" title="toggle nav+combat+firePath trace for the ONE selected bot; click again to dump">Pathlog</button>
+      <button id="inspectBtn" title="live skills/stats/combat-readiness for the ONE selected bot (/api/botdebug?id=)">Inspect</button>
+      <button id="perfBtn" title="toggle BotPerformanceMonitor + show top sections">Perf</button>
+    </div>
+  </div>
+  <pre id="dbgOut" style="display:none;max-height:260px;overflow:auto;font-size:11px;line-height:1.35;white-space:pre-wrap;background:#111;border:1px solid #333;padding:6px;margin:4px 0"></pre>
+  <div id="status"></div>
+  <button id="sortBtn">Sort: name</button>
+  <div id="roster"></div>
+</div>
+<div id="side">
+  <div id="fontRow">font size<input id="fontSlider" type="range" min="10" max="22" value="13"></div>
+  <h1>Bot World Map</h1>
+  <p class="sub">drag map to move &middot; click map to resize &middot; scroll to zoom<br>
+     click node: detail &middot; middle-click node: map graph &middot; right-click node: custom anchor (relative/absolute)</p>
+  <button id="lockBtn">&#128274; Locked</button>
+  <button id="export">Export positions</button>
+  <button id="fit">Reset view</button>
+  <div class="legend">
+    <div><span style="background:#39d353"></span>player here
+         <span style="background:#ff9d4d;margin-left:8px"></span>bots only
+         <span style="background:#3a4658;margin-left:8px"></span>empty</div>
+    <div style="margin-top:3px"><span style="background:#6b7a99;border:2px solid #c08bff"></span>hub (town others return to)
+         <span style="background:#3a4658;border:2px solid #ff5555;margin-left:8px"></span>unreturnable &#9888;</div>
+    <div style="margin-top:3px"><span style="background:#23262e;border:2px dashed #7a8290"></span>unreachable by bot &#8856;</div>
+  </div>
+  <div id="detail"></div>
+</div>
+<div id="tip"></div>
+<div id="picker"></div>
+<div id="selbox"></div>
+<button id="tLeft" title="roster">&#9776;</button>
+<button id="tRight" title="detail">&#9432;</button>
+<script>
+const host = document.getElementById('c');
+// Cap the render resolution. A 3x-DPR phone otherwise draws every layer at 9x the pixels of a 1x
+// screen over a full-screen canvas with ~thousands of shapes -> ~1fps. 1 on touch/small screens,
+// mildly crisp (<=2) on desktop. This is the single biggest mobile win.
+const SMALL = matchMedia('(max-width: 820px)').matches || 'ontouchstart' in window;
+Konva.pixelRatio = SMALL ? 1 : Math.min(window.devicePixelRatio || 1, 2);
+const stage = new Konva.Stage({container:'c', width:host.clientWidth, height:host.clientHeight, draggable:true});
+const imageLayer = new Konva.Layer();   // worldmap PNGs (draggable, resizable)
+const edgeLayer  = new Konva.Layer({listening:false}); // portal/taxi links, over the maps, under the dots
+const dotLayer   = new Konva.Layer();   // map nodes, constant screen size
+stage.add(imageLayer); stage.add(edgeLayer); stage.add(dotLayer);
+const tr = new Konva.Transformer({keepRatio:true, rotateEnabled:false, anchorStroke:'#c08bff', borderStroke:'#c08bff'});
+imageLayer.add(tr);
+function fitStage(){ stage.size({width:host.clientWidth, height:host.clientHeight}); stage.batchDraw(); }
+window.addEventListener('resize', fitStage);
+window.addEventListener('orientationchange', () => setTimeout(fitStage, 200));
+
+// pan = drag background; deselect + clear detail on empty click
+stage.on('click tap', e => { hidePicker(); if(e.target===stage){ tr.nodes([]); imageLayer.batchDraw(); } });
+stage.on('wheel', e => {
+  e.evt.preventDefault();
+  const old = stage.scaleX(), p = stage.getPointerPosition();
+  const to = {x:(p.x-stage.x())/old, y:(p.y-stage.y())/old};
+  const ns = e.evt.deltaY > 0 ? old/1.1 : old*1.1;
+  stage.scale({x:ns,y:ns});
+  stage.position({x:p.x-to.x*ns, y:p.y-to.y*ns});
+});
+
+const wmImg = {};       // wmId -> Konva.Image
+const nodes = {};       // mapId / nodeId -> [instance,...]  (registered under id + every constituent map)
+const allInst = [];     // every node instance once (iterate this; nodes{} is multi-keyed for lookups)
+const instByWm = {};    // wmId -> [instance,...]  (fast per-worldmap recompute on drag/resize)
+const edgesByWm = {};   // wmId -> [edgeLine,...]
+let edgeLines = [];     // {ia, ib, line}  — one drawn line per connected instance pair
+let live = {};          // mapId -> {players:[{id,n,l,j,c}], bots:[...]}  (c=1 -> managed/commandable)
+let query = '';
+let rtsMode = false, moveArmed = false, moveCmd = 'move';   // RTS mode + "click a destination" arming (quiet vs attack)
+let followArm = false;    // "pick a follow target" mode: next node/roster click chooses whom to follow
+let sortMode = 'name';    // roster sort within each type: 'name' (A-Z) or 'level' (high->low)
+let locked = true;        // maps/nodes frozen by default (panning/zoom still work); toggle to edit layout
+const selected = new Set();               // selected commandable (managed) bot char ids
+let boxStart = null;                       // box-select drag origin (stage coords)
+const status = t => { document.getElementById('status').textContent = t; };
+
+const wmAbs = (img, lx, ly) => { const s = img.scaleX(); return {x: img.x()+s*lx, y: img.y()+s*ly}; };
+
+// occupancy aggregates over a node's constituent maps (a merged node can cover several)
+function instOccupants(inst){
+  const out = [];
+  for(const m of inst.maps){ const o = live[m]; if(!o) continue;
+    for(const c of o.players) out.push(['P',c]); for(const c of o.bots) out.push(['B',c]); }
+  return out;
+}
+// ring priority: unreachable(grey) > danger(red) > custom(cyan) > hub(purple) > spot(light) > plain
+function styleNode(inst){
+  inst.circle.dash([]); inst.circle.opacity(1);
+  if(inst.unreachable){ // worldmap location no bot can reach — exists in WZ, not in the bot graph
+    inst.circle.fill('#23262e'); inst.circle.stroke('#7a8290'); inst.circle.strokeWidth(1.6);
+    inst.circle.dash([2,2]); inst.circle.opacity(0.55); return;
+  }
+  let hasP=false, hasB=false;
+  for(const m of inst.maps){ const o=live[m]; if(o){ if(o.players.length)hasP=true; if(o.bots.length)hasB=true; } }
+  inst.circle.fill(hasP ? '#39d353' : hasB ? '#ff9d4d' : inst.anchor ? '#6b7a99' : '#3a4658');
+  if(inst.danger){ inst.circle.stroke('#ff5555'); inst.circle.strokeWidth(2.2); }
+  else if(inst.custom){ inst.circle.stroke('#22d3ee'); inst.circle.strokeWidth(2.6); inst.circle.dash(inst.absolute?[4,3]:[]); }
+  else if(inst.hub){ inst.circle.stroke('#c08bff'); inst.circle.strokeWidth(2.4); }
+  else if(inst.anchor){ inst.circle.stroke('#46577a'); inst.circle.strokeWidth(1.4); }
+  else { inst.circle.stroke('#0d1017'); inst.circle.strokeWidth(1); }
+  if(nodeHasSelected(inst)){ inst.circle.stroke('#ffd54a'); inst.circle.strokeWidth(3); inst.circle.dash([]); }
+}
+// a node is "selected" if any commandable bot on its maps is in the selection set
+function nodeHasSelected(inst){
+  if(!selected.size) return false;
+  for(const m of inst.maps){ const o = live[m]; if(!o) continue;
+    for(const b of o.bots) if(selected.has(b.id)) return true; }
+  return false;
+}
+function matches(inst){
+  if(!query) return false;
+  return instOccupants(inst).some(([k,c]) => c.n.toLowerCase().includes(query));
+}
+// center label: occupant count when anyone is here, else the danger/unreachable marker (or nothing)
+function updateCenter(inst){
+  if(!inst.center) return;
+  const n = instOccupants(inst).length;
+  let txt = '', fill = '#0d1017';
+  if(n > 0){ txt = String(n); }
+  else if(inst.danger){ txt = '⚠'; fill = '#ff5555'; }
+  else if(inst.unreachable){ txt = '⊘'; fill = '#9aa3b0'; }
+  inst.center.text(txt);
+  inst.center.fill(fill);
+  inst.center.offset({x:inst.center.width()/2, y:inst.center.height()/2}); // re-center on text change
+  inst.center.position(inst.circle.position());
+}
+function applyStyle(){
+  for(const inst of allInst){
+    styleNode(inst);
+    updateCenter(inst);
+    const hit = matches(inst);
+    inst.circle.shadowColor('#ffe14d');
+    inst.circle.shadowBlur(hit ? 22 : 0);
+    inst.circle.shadowOpacity(hit ? 1 : 0);
+  }
+  dotLayer.batchDraw();
+}
+
+function searchMatches(){
+  return allInst.filter(matches);
+}
+// radar ping on the current matches for 3s — attention only, never moves the screen
+let pingAnim = null, pingRings = [], pingTargets = [];
+function stopPing(){
+  if(pingAnim){ pingAnim.stop(); pingAnim = null; }
+  pingRings.forEach(r => r.destroy()); pingRings = []; pingTargets = [];
+  dotLayer.batchDraw();
+}
+function pingInstances(targets){
+  stopPing();
+  if(!targets || !targets.length) return;
+  pingTargets = targets;
+  pingRings = targets.map(inst => {
+    const ring = new Konva.Circle({x:inst.circle.x(), y:inst.circle.y(), radius:6,
+      stroke:'#ffe14d', strokeWidth:2.5, listening:false});
+    dotLayer.add(ring); return ring;
+  });
+  pingAnim = new Konva.Animation(frame => {
+    if(frame.time > 3000){ stopPing(); return; }
+    const phase = (frame.time % 1000) / 1000;   // expand + fade once per second
+    const rad = 6 + phase * 24, op = 1 - phase;
+    pingRings.forEach((ring, i) => {
+      ring.position(pingTargets[i].circle.position()); ring.radius(rad); ring.opacity(op);
+    });
+  }, dotLayer);
+  pingAnim.start();
+}
+function startPing(){
+  if(!query){ document.getElementById('status').textContent = 'type a name first'; return; }
+  const m = searchMatches();
+  if(!m.length){ document.getElementById('status').textContent = 'no match for "'+query+'"'; return; }
+  document.getElementById('status').textContent = m.length + ' match(es) for "'+query+'"';
+  pingInstances(m);
+}
+// for a map with duplicates, prefer the unmerged (single-map) node, then a non-dup one, else the first
+function pickInstance(mapId){
+  const arr = nodes[mapId]; if(!arr || !arr.length) return null;
+  return arr.find(i => i.maps.length===1 && !i.dup) || arr.find(i => i.maps.length===1)
+      || arr.find(i => !i.dup) || arr[0];
+}
+function centerOnMap(mapId){    // global: roster items call this from inline onclick
+  const inst = pickInstance(mapId);
+  if(!inst){ document.getElementById('status').textContent = 'map '+mapId+' not on screen'; return; }
+  const p = inst.circle.position(), s = stage.scaleX();
+  stage.position({x: host.clientWidth/2 - p.x*s, y: host.clientHeight/2 - p.y*s});
+  stage.batchDraw();
+  pingInstances([inst]);
+}
+function centerOnMatch(){
+  const m = searchMatches();
+  if(!m.length){ document.getElementById('status').textContent = 'no match to center'; return; }
+  centerOnMap(m[0].id);
+}
+// right-click cycles a node: none -> relative (rides its worldmap) -> absolute (independent) -> none
+function cycleCustom(inst){
+  if(locked || rtsMode) return;                      // layout locked: ignore custom-anchor edits
+  if(!inst.custom){ inst.custom = true; inst.absolute = false; }
+  else if(!inst.absolute){ inst.absolute = true; const p = inst.circle.position(); inst.absX = p.x; inst.absY = p.y; }
+  else { inst.custom = false; inst.absolute = false; inst.lx = inst.lx0; inst.ly = inst.ly0;
+         const im = wmImg[inst.wm]; if(im) inst.circle.position(wmAbs(im, inst.lx, inst.ly)); }
+  inst.circle.draggable(inst.custom && !locked && !rtsMode);
+  document.getElementById('status').textContent = inst.name + ': '
+    + (inst.custom ? (inst.absolute ? 'absolute custom anchor (independent)' : 'relative custom anchor (rides worldmap)') : 'normal');
+  styleNode(inst); drawEdges(inst.wm); dotLayer.batchDraw();
+}
+
+// apply lock + RTS state to what can be dragged: maps + custom nodes editable only when unlocked and
+// not in RTS mode. Stage panning/zoom is unaffected (handled by stage.draggable / pinch).
+function updateDraggable(){
+  const editable = !locked && !rtsMode;
+  imageLayer.find('Image').forEach(im => im.draggable(editable));
+  if(!editable) tr.nodes([]);
+  for(const inst of allInst) inst.circle.draggable(inst.custom && editable);
+  imageLayer.batchDraw();
+}
+
+// reposition one worldmap's nodes (constant radius — they are not children of the scaled image)
+function recomputeWm(wmId){
+  const img = wmImg[wmId]; if(!img) return;
+  for(const inst of (instByWm[wmId]||[])){
+    if(inst.absolute) continue;   // absolute custom anchors stay put
+    const a = wmAbs(img, inst.lx, inst.ly);
+    inst.circle.position(a);
+    if(inst.center) inst.center.position(a);
+  }
+  drawEdges(wmId);
+  dotLayer.batchDraw();
+}
+
+function drawOne(el){
+  el.line.points([el.ia.circle.x(), el.ia.circle.y(), el.ib.circle.x(), el.ib.circle.y()]);
+}
+function drawEdges(wmId){
+  const list = wmId==null ? edgeLines : (edgesByWm[wmId]||[]);
+  list.forEach(drawOne);
+  edgeLayer.batchDraw();
+}
+
+const esc = s => String(s).replace(/[&<>]/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[ch]));
+const occLine = (k,c) => (k==='P'?'&#128100; ':'&#129302; ')+esc(c.n)+'  Lv'+c.l+' '+esc(c.j);
+const occupants = map => { const o = live[map]; return o ? [...o.players.map(c=>['P',c]), ...o.bots.map(c=>['B',c])] : []; };
+
+let selectedMap = null;      // async-fetch guard token (joined selected-node ids)
+let selNodes = [];           // nodes whose detail the right panel shows (RTS multi-select aware)
+function showDetail(inst){ selNodes = [inst]; renderDetails(); }   // non-RTS single click
+// Right panel: one collapsible <details> per map across all selected nodes. A map with characters is
+// open by default; an empty map stays collapsed (just its name/id) and lazy-loads on first expand.
+function renderDetails(){
+  const el = document.getElementById('detail');
+  const seen = new Set(), list = selNodes.filter(n => !seen.has(n.id) && seen.add(n.id));
+  if(!list.length){ selectedMap = null; el.innerHTML = '<span class="meta">click a node</span>'; return; }
+  const token = list.map(n=>n.id).join(',');
+  selectedMap = token;
+  el.innerHTML = list.map(nodeBlock).join('');
+  el.querySelectorAll('details[data-map]').forEach(d => {
+    const m = +d.dataset.map;
+    if(d.open) fetchMapInfo(m, token);                         // visible now -> load now
+    else d.addEventListener('toggle', function once(){         // collapsed -> load on first expand
+      if(d.open){ d.removeEventListener('toggle', once); fetchMapInfo(m, token); }
+    });
+  });
+}
+function nodeBlock(inst){
+  const flags = [inst.hub?'hub':null, inst.anchor?'worldmap spot':null, inst.dup?'on multiple worldmaps':null,
+                 inst.danger?'UNRETURNABLE':null, inst.unreachable?'UNREACHABLE BY BOT':null,
+                 inst.leaf?'dead-end':null].filter(Boolean).join(' &middot; ');
+  const head = '<div class="meta" style="margin-top:6px">WorldMap'+inst.wm+(flags?' &middot; '+flags:'')+'</div>';
+  return head + inst.maps.map((m,i) =>
+    '<details data-map="'+m+'"'+(occupants(m).length ? ' open' : '')+' style="margin-top:4px">'
+    + '<summary>'+esc(inst.names[i])+' ('+m+') '
+    + '<button class="ggBtn" onclick="event.stopPropagation();location.href=\'/mapgraph?id='+m+'\'" title="open map nav-graph preview">map graph</button>'
+    + '</summary>'
+    + '<div class="body" style="margin:4px 0 0 10px">loading…</div></details>').join('');
+}
+function fetchMapInfo(mapId, token){
+  fetch('/api/mapinfo?id='+mapId).then(r=>r.json()).then(d=>{
+    if(selectedMap !== token) return;          // a newer selection happened while this was loading
+    const box = document.querySelector('details[data-map="'+mapId+'"]'); if(!box) return;
+    mobCache[mapId] = d.mobs || [];                 // static WZ data — also feeds the node-hover preview
+    const occHtml = detailBody(mapId);              // grouped like the left roster (status/off-map from /api/live)
+    const mobs = d.mobs.length                                  // collapsed by default
+      ? '<details style="margin-top:6px"><summary>Mobs ('+d.mobs.length+')</summary>'
+        + d.mobs.map(m => esc(m.name)+' Lv'+m.level+(m.spawns>1 ? ' x'+m.spawns : '')).join('<br>') + '</details>'
+      : '';
+    const chat = (d.chat && d.chat.length)                      // collapsed by default
+      ? '<details style="margin-top:6px"><summary>Chat ('+d.chat.length+')</summary>'
+        + d.chat.map(c => '<span class="meta">'+c.t+'</span> '+esc(c.n)+': '+esc(c.m)).join('<br>') + '</details>'
+      : '';
+    box.querySelector('.body').innerHTML = occHtml + mobs + chat;
+  }).catch(()=>{ const box=document.querySelector('details[data-map="'+mapId+'"]'); if(box){ const b=box.querySelector('.body'); if(b) b.textContent='failed to load'; } });
+}
+
+// ---- right-panel grouped detail (party>crew>loose like the left roster, + off-map members) ----------
+function getList(map, k){ if(!map.has(k)) map.set(k, []); return map.get(k); }
+// online members of a party (players+bots) or crew (bots only) on maps OTHER than mapId — shown greyed.
+function offMembers(kind, gid, mapId){
+  const out = [];
+  for(const m in live){ if(+m===mapId) continue; const o = live[m];
+    if(kind==='p'){ for(const c of o.players) if((c.p||0)===gid) out.push({c, map:+m, bot:false});
+                    for(const c of o.bots)    if((c.p||0)===gid) out.push({c, map:+m, bot:true}); }
+    else for(const c of o.bots) if((c.g||0)===gid) out.push({c, map:+m, bot:true});
+  }
+  return out;
+}
+// a party/crew box in the right panel: same look as the left roster, but its header doesn't select
+function detailGroup(type, label, count, innerHtml){
+  const icon = type==='party' ? '&#128101;' : '&#129309;';
+  return '<div class="grp '+type+'"><div class="grpHead" style="cursor:default">'
+    + icon+' '+esc(label)+' &middot; '+count+'</div>' + innerHtml + '</div>';
+}
+// right-panel body for one map: occupants grouped party>crew>loose like the left roster, each party/crew
+// also listing its members on other maps (greyed, click=locate). statusOf: botName -> @status line.
+function detailBody(mapId){
+  const occ = occupants(mapId);
+  if(!occ.length) return 'nobody here';
+  // @botstatus (from /api/live) shows for in-map AND off-map members; an off-map member with no status
+  // falls back to a "@ map" location chip. Either way the row is click-to-locate.
+  const meta = it => (it.bot && it.c.status) ? esc(it.c.status) : '';
+  const inRow  = it => rowHtml(it, {meta: meta(it)});
+  const offRow = it => rowHtml(it, {off:true, meta: meta(it) || '@ '+esc(mapName(it.map)), click:'locateChar('+it.map+')'});
+  const offHtml = arr => sortRows(arr).map(offRow).join('');
+  const items = occ.map(([k,c]) => ({c, map:mapId, bot:k==='B'}));
+  const parties = new Map(), noParty = [];
+  for(const it of items){ const p = it.c.p||0; if(p) getList(parties,p).push(it); else noParty.push(it); }
+  let out = '';
+  for(const [pid, members] of parties){
+    const off = offMembers('p', pid, mapId);
+    if(members.length + off.length >= 2)
+      out += detailGroup('party','Party', members.length+off.length, crewBoxes(members, mapId, inRow, offRow, true) + offHtml(off));
+    else noParty.push(...members);
+  }
+  return out + crewBoxes(noParty, mapId, inRow, offRow, false);
+}
+// crew sub-grouping; partyHasOff suppresses a crew's off-list when the parent party already showed it.
+function crewBoxes(items, mapId, inRow, offRow, partyHasOff){
+  const crews = new Map(), loose = [];
+  for(const it of items){ const g = it.bot ? (it.c.g||0) : 0; if(g) getList(crews,g).push(it); else loose.push(it); }
+  let out = '';
+  for(const [gid, members] of crews){
+    const off = partyHasOff ? [] : offMembers('crew', gid, mapId);
+    if(members.length + off.length >= 2)
+      out += detailGroup('crew','Crew #'+gid, members.length+off.length,
+               sortRows(members).map(inRow).join('') + sortRows(off).map(offRow).join(''));
+    else loose.push(...members);
+  }
+  return out + sortRows(loose).map(inRow).join('');
+}
+
+// ---- shared hover tooltip (map nodes + roster rows) -----------------------------------------------
+const mobCache = {};   // mapId -> [{name,level,spawns}] | 'pending'  (mob spawn data is static WZ -> cache forever)
+function ensureMobs(mapId, cb){
+  const cur = mobCache[mapId];
+  if(Array.isArray(cur)){ if(cb) cb(); return; }
+  if(cur === 'pending') return;
+  mobCache[mapId] = 'pending';
+  fetch('/api/mapinfo?id='+mapId).then(r=>r.json()).then(d=>{ mobCache[mapId] = d.mobs || []; if(cb) cb(); })
+    .catch(()=>{ mobCache[mapId] = []; });
+}
+function tipAt(html, x, y){
+  const tip = document.getElementById('tip');
+  tip.innerHTML = html; tip.style.display = 'block';
+  tip.style.left = (x + 14) + 'px'; tip.style.top = (y + 14) + 'px';
+}
+let tipNode = null, tipXY = {x:0, y:0};
+// merged top-8-by-spawns mob lines for a node's maps — no header (compact), dim. '' while nothing known.
+function mobPreviewHtml(inst){
+  const agg = {}; let pending = false;
+  for(const m of inst.maps){ const c = mobCache[m];
+    if(Array.isArray(c)) for(const mb of c){ const a = agg[mb.name] || (agg[mb.name]={name:mb.name,level:mb.level,spawns:0}); a.spawns += mb.spawns; }
+    else pending = true;
+  }
+  const rows = Object.values(agg).sort((a,b)=> b.spawns-a.spawns || a.level-b.level);
+  if(!rows.length) return pending ? '<span class="meta">mobs…</span>' : '';
+  const top = rows.slice(0,8).map(m => esc(m.name)+' Lv'+m.level+(m.spawns>1?' &times;'+m.spawns:'')).join('<br>');
+  return '<span class="meta">'+top+(rows.length>8 ? '<br>+'+(rows.length-8)+' more' : '')+'</span>';
+}
+function paintTip(inst){
+  const occ = instOccupants(inst);
+  const occHtml = occ.length ? occ.map(([k,c]) => occLine(k,c)).join('<br>') : '(empty)';
+  const mobs = mobPreviewHtml(inst);
+  tipAt('<b>'+esc(inst.name)+'</b><br>' + occHtml + (mobs ? '<br>'+mobs : ''), tipXY.x, tipXY.y);
+}
+function showTip(inst, evt){
+  tipNode = inst; tipXY = {x:evt.clientX, y:evt.clientY};
+  inst.maps.forEach(m => ensureMobs(m, () => { if(tipNode===inst) paintTip(inst); }));
+  paintTip(inst);
+}
+function hideTip(){ tipNode = null; document.getElementById('tip').style.display = 'none'; }
+// roster-row hover: bots show their @botstatus (a player carries nothing the row doesn't -> no tip)
+function findLiveChar(id, map){ const o = live[map]; if(!o) return null;
+  return o.players.find(c=>c.id===id) || o.bots.find(c=>c.id===id) || null; }
+function rosterTip(ev, id, map, bot){
+  if(!bot) return;
+  const c = findLiveChar(id, map); if(!c) return;
+  tipNode = null; tipXY = {x:ev.clientX, y:ev.clientY};
+  tipAt('<b>'+esc(c.n)+'</b> <span class="meta">Lv'+c.l+' '+esc(c.j)+'</span><br>'
+        + (c.status ? esc(c.status) : '<span class="meta">(no status)</span>'), ev.clientX, ev.clientY);
+}
+
+// name of one specific map (a merged node shows its constituents' names aligned to maps)
+function mapName(mapId){
+  const arr = nodes[mapId];
+  if(arr && arr.length){ const i = arr[0].maps.indexOf(mapId); return i>=0 ? arr[0].names[i] : arr[0].name; }
+  return 'map '+mapId;
+}
+// left-panel roster of everyone online; click -> center their map. Rebuild skipped when unchanged
+// (keeps scroll); add windowing if a few thousand rows ever jank.
+let rosterSig = '';
+let rosterGroups = {};   // header key -> [commandable bot ids inside]  (rebuilt each render)
+let _grpSeq = 0;
+function renderRoster(){
+  const items = [];
+  for(const map in live){
+    const o = live[map];
+    for(const c of o.players) items.push({c, map:+map, bot:false});
+    for(const c of o.bots)    items.push({c, map:+map, bot:true});
+  }
+  const filt = query ? items.filter(it => it.c.n.toLowerCase().includes(query)) : items;
+  // managed = self-owned/ownerless bots (commandable, c=1); companion = bots following an online owner
+  let players=0, managed=0, companion=0, grinding=0, onBreak=0, chilling=0;
+  for(const it of items){
+    if(!it.bot){ players++; continue; }
+    if(it.c.c) managed++; else companion++;
+    if(it.c.a==='chill') chilling++; else if(it.c.a==='break') onBreak++; else grinding++;   // tally over all bots
+  }
+  const head = (query ? filt.length+' shown · ' : '') + players + ' online + ' + managed + ' managed + ' + companion + ' companion';
+  const breakdown = (managed+companion)
+    ? grinding+' grinding · '+onBreak+' taking a break · '+chilling+' just chilling' : '';
+  document.getElementById('rosterHead').innerHTML = head + (breakdown ? '<br>'+breakdown : '');
+  const mapHits = query ? getMapNameIndex().filter(m => m.lower.includes(query)) : [];
+  const sig = query+'#'+rtsMode+'#'+sortMode+'#'+[...selected].join(',')+'#'
+    + filt.map(it => it.c.n+'@'+it.map+'/'+it.c.l+'/'+(it.c.p||0)+'/'+(it.c.g||0)).join('|')
+    + '#M'+mapHits.map(m=>m.id).join(',');
+  if(sig === rosterSig) return;               // unchanged -> skip rebuild (keeps scroll position, saves work)
+  rosterSig = sig;
+  const el = document.getElementById('roster'), scroll = el.scrollTop;
+  rosterGroups = {}; _grpSeq = 0;
+  // matches keep their party/crew grouping; map-name matches list below (click to locate)
+  el.innerHTML = renderGrouped(filt) + mapHitsHtml(mapHits);
+  el.scrollTop = scroll;
+}
+// type rank: player(0) -> companion bot(1) -> managed bot(2); then name A-Z, or level high->low
+function rankOf(it){ return it.bot ? (it.c.c ? 2 : 1) : 0; }
+function cmpRows(a,b){
+  const r = rankOf(a) - rankOf(b);
+  if(r) return r;
+  if(sortMode === 'level') return (b.c.l - a.c.l) || a.c.n.localeCompare(b.c.n);
+  return a.c.n.localeCompare(b.c.n);
+}
+function sortRows(arr){ return arr.slice().sort(cmpRows); }
+// one row, shared by the left roster and the right panel. opts.off greys an off-map member; opts.meta
+// overrides the second line (default = the char's map name); opts.click overrides the click handler.
+// Hovering a bot row shows its @botstatus (rosterTip).
+function rowHtml(it, opts){
+  opts = opts || {};
+  const sel = it.bot && selected.has(it.c.id);
+  const click = opts.click || ('rosterClick(event,'+it.c.id+','+it.map+','+(it.bot?1:0)+','+(it.c.c?1:0)+')');
+  const meta = opts.meta != null ? opts.meta : esc(mapName(it.map));   // bot's actual map, not merged
+  return '<div class="rosterItem'+(sel?' sel':'')+(opts.off?' off':'')+'"'+(it.bot?' data-cid="'+it.c.id+'"':'')
+    + ' onmouseenter="rosterTip(event,'+it.c.id+','+it.map+','+(it.bot?1:0)+')" onmouseleave="hideTip()"'
+    + ' onclick="'+click+'">'
+    + (it.bot?'&#129302; ':'&#128100; ') + esc(it.c.n) + ' <span class="meta">Lv'+it.c.l+' '+esc(it.c.j)+'</span>'
+    + (meta!=='' ? '<br><span class="meta">'+meta+'</span>' : '') + '</div>';
+}
+// nesting: party (outer box) > crew (inner box) > loose rows. Boxes only form at >=2 members.
+// A group sorts as a whole by its best member (cmpRows), so a party stays together and ranks by its
+// strongest/first member — never split because one member would sort elsewhere. Groups and loose rows
+// are ordered together by the same key, so a player group > companion group > managed group falls out.
+function bestOf(items){ return sortRows(items)[0]; }
+function renderUnits(units){ return units.sort((a,b)=>cmpRows(a.best,b.best)).map(u=>u.html).join(''); }
+function renderGrouped(items){
+  const parties = new Map(), noParty = [];
+  for(const it of items){ const p = it.c.p||0; if(p){ if(!parties.has(p)) parties.set(p,[]); parties.get(p).push(it); } else noParty.push(it); }
+  const units = [];
+  for(const [, members] of parties){
+    if(members.length >= 2) units.push({best: bestOf(members), html: groupBox('party','Party', members, renderCrewsAndLoose(members))});
+    else noParty.push(...members);
+  }
+  return renderUnits(units.concat(crewUnits(noParty)));
+}
+function renderCrewsAndLoose(items){ return renderUnits(crewUnits(items)); }
+function crewUnits(items){
+  const crews = new Map(), loose = [];
+  for(const it of items){ const g = it.bot ? (it.c.g||0) : 0; if(g){ if(!crews.has(g)) crews.set(g,[]); crews.get(g).push(it); } else loose.push(it); }
+  const units = [];
+  for(const [gid, members] of crews){
+    if(members.length >= 2) units.push({best: bestOf(members), html: groupBox('crew','Crew #'+gid, members, sortRows(members).map(rowHtml).join(''))});
+    else loose.push(...members);
+  }
+  for(const it of loose) units.push({best: it, html: rowHtml(it)});
+  return units;
+}
+function groupBox(type, label, members, innerHtml){
+  const ids = members.filter(it => it.bot && it.c.c).map(it => it.c.id);
+  const key = 'k'+(_grpSeq++); rosterGroups[key] = ids;
+  const icon = type==='party' ? '&#128101;' : '&#129309;';
+  return '<div class="grp '+type+'"><div class="grpHead" onclick="selectGroup(event,\''+key+'\')">'
+    + icon+' '+esc(label)+' &middot; '+members.length+(ids.length?' &middot; '+ids.length+' managed':'')+'</div>'
+    + innerHtml + '</div>';
+}
+function selectGroup(ev, key){ applySel(rosterGroups[key]||[], ev); }   // plain = replace, shift = add/remove
+// roster/detail click on a character: RTS picks/selects managed bots; otherwise locate them — center+ping
+// their map AND select that node so the right panel follows. Same handler on both panels => consistent.
+function rosterClick(ev, id, map, bot, c){
+  if(rtsMode && followArm){ pickFollowTarget(id); return; }   // pick whom the selection follows
+  if(rtsMode && bot && c){ applySel([id], ev); return; }
+  locateChar(map);
+}
+function locateChar(map){ centerOnMap(map); const inst = pickInstance(map); if(inst) showDetail(inst); }
+// map-name search index, built once (node names are static). [{id,name,lower}]
+let _mapIdx = null;
+function getMapNameIndex(){
+  if(_mapIdx) return _mapIdx;
+  const seen = new Set(); _mapIdx = [];
+  for(const inst of allInst) inst.maps.forEach((m,i) => {
+    if(seen.has(m)) return; seen.add(m);
+    const name = inst.names[i] || ('map '+m);
+    _mapIdx.push({id:m, name, lower:name.toLowerCase()});
+  });
+  return _mapIdx;
+}
+// map-name matches, listed under the player matches; click focuses+selects the map (locateChar)
+function mapHitsHtml(hits){
+  if(!hits.length) return '';
+  const cap = 40, shown = hits.slice(0,cap).map(m =>
+    '<div class="rosterItem" onclick="locateChar('+m.id+')">&#128506; '+esc(m.name)+' <span class="meta">('+m.id+')</span></div>').join('');
+  return '<div class="grpHead" style="cursor:default;margin-top:10px">&#128506; Maps &middot; '+hits.length+'</div>'
+    + shown + (hits.length>cap ? '<div class="meta" style="padding:2px 6px">+'+(hits.length-cap)+' more</div>' : '');
+}
+
+(async function init(){
+  let data;
+  try { data = await (await fetch('/api/worldmaps')).json(); }
+  catch(e){ document.getElementById('status').textContent = 'failed to load /api/worldmaps'; return; }
+  const wms = data.worldmaps;
+  let nodeCount = 0;
+
+  wms.forEach((wm, i) => {
+    const imgEl = new Image();
+    const kimg = new Konva.Image({x:wm.x, y:wm.y, scaleX:wm.scale, scaleY:wm.scale, image:imgEl, draggable:true});
+    kimg.setAttr('wmid', wm.id);
+    wmImg[wm.id] = kimg;
+    imageLayer.add(kimg); kimg.moveToBottom();
+    imgEl.onload  = () => imageLayer.batchDraw();
+    imgEl.onerror = () => imageLayer.batchDraw();
+    imgEl.src = '/wm/' + wm.id + '.png';
+
+    kimg.on('click tap', e => { e.cancelBubble = true;
+      if(locked || rtsMode) return;                 // layout locked: no resize-select
+      tr.nodes([kimg]); imageLayer.batchDraw(); });
+    kimg.on('dragmove', () => recomputeWm(wm.id));
+
+    wm.nodes.forEach(nd => {
+      const a = wmAbs(kimg, nd.x, nd.y);
+      const r = nd.hub ? 5.5 : nd.anchor ? 4 : (nd.leaf ? 2.6 : 3.2);
+      const circle = new Konva.Circle({x:a.x, y:a.y, radius:r, perfectDrawEnabled:false, shadowForStrokeEnabled:false});
+      const inst = {id:nd.id, maps:nd.maps, names:nd.names, name:nd.names.join(' / '),
+                    wm:wm.id, lx:nd.x, ly:nd.y, lx0:nd.x, ly0:nd.y,
+                    anchor:nd.anchor, hub:nd.hub, dup:nd.dup, danger:nd.danger, leaf:nd.leaf,
+                    unreachable:nd.unreachable, custom:!!nd.custom, absolute:!!nd.absolute,
+                    absX:nd.absX||0, absY:nd.absY||0,
+                    circle, center:null};
+      circle.on('mouseover', e => { document.body.style.cursor='pointer'; showTip(inst, e.evt); });
+      circle.on('mousemove', e => { tipXY={x:e.evt.clientX,y:e.evt.clientY}; if(tipNode===inst) paintTip(inst); });
+      circle.on('mouseout', () => { document.body.style.cursor='default'; hideTip(); });
+      circle.on('click tap', e => { e.cancelBubble = true;
+        if(rtsMode && followArm){ handleFollowPick(inst, e.evt); return; }                // pick whom to follow
+        if(rtsMode && moveArmed){ sendCmd(moveCmd, inst.maps); armMove(false); return; }  // pick destination node
+        if(rtsMode){ selectNodeRts(inst, e.evt); return; }                               // RTS: select node's bots + show detail
+        showDetail(inst);
+      });
+      circle.on('contextmenu', e => { e.evt.preventDefault(); e.cancelBubble = true; cycleCustom(inst); });
+      circle.on('mousedown', e => { if(e.evt.button === 1){ e.evt.preventDefault(); e.cancelBubble = true;
+        window.open('/mapgraph?id=' + inst.id, '_blank'); } });   // middle-click: map graph in a new tab
+      circle.on('dragmove', () => { const p = inst.circle.position();
+        if(inst.center) inst.center.position(p); drawEdges(inst.wm); });
+      circle.on('dragend', () => {
+        if(!inst.custom) return;
+        const p = inst.circle.position();
+        if(inst.absolute){ inst.absX = p.x; inst.absY = p.y; }
+        else { const im = wmImg[inst.wm], s = im.scaleX(); inst.lx = (p.x-im.x())/s; inst.ly = (p.y-im.y())/s; }
+        drawEdges(inst.wm);
+      });
+      dotLayer.add(circle);
+      inst.center = new Konva.Text({text:'', fontSize:11, fontStyle:'bold', listening:false, perfectDrawEnabled:false});
+      inst.center.position({x:a.x, y:a.y});
+      dotLayer.add(inst.center);
+      updateCenter(inst);
+      allInst.push(inst);
+      (instByWm[wm.id] = instByWm[wm.id] || []).push(inst);
+      new Set([nd.id, ...nd.maps]).forEach(k => (nodes[k] = nodes[k] || []).push(inst));
+      styleNode(inst);
+      nodeCount++;
+    });
+  });
+
+  const addLine = (ia, ib, t) => {
+    const line = new Konva.Line({points:[0,0,0,0], stroke: t==='t' ? '#6cc6ff' : '#3a4761',
+                                 strokeWidth: t==='t' ? 1.2 : 0.7, opacity:0.8,
+                                 listening:false, perfectDrawEnabled:false, shadowForStrokeEnabled:false});
+    edgeLayer.add(line);
+    const el = {ia, ib, line}; edgeLines.push(el);
+    new Set([ia.wm, ib.wm]).forEach(w => (edgesByWm[w] = edgesByWm[w] || []).push(el));
+  };
+  (data.edges || []).forEach(([a,b,t]) => {
+    const A = nodes[a], B = nodes[b]; if(!A || !B) return;
+    const wmsA = new Set(A.map(i => i.wm));
+    const shared = [...new Set(B.map(i => i.wm))].filter(w => wmsA.has(w));
+    if(shared.length){                 // draw inside every worldmap holding both ends -> no bare dup nodes
+      shared.forEach(w => {
+        const ia = A.find(i=>i.wm===w), ib = B.find(i=>i.wm===w);
+        if(ia !== ib) addLine(ia, ib, t);   // same dot here (merged together on this worldmap) -> skip
+      });
+    } else {                           // no shared worldmap: a single closest cross-worldmap link
+      let best=null, bd=Infinity;
+      for(const ia of A) for(const ib of B){
+        const dx=ia.circle.x()-ib.circle.x(), dy=ia.circle.y()-ib.circle.y(), d=dx*dx+dy*dy;
+        if(d<bd){ bd=d; best=[ia,ib]; }
+      }
+      if(best) addLine(best[0], best[1], t);
+    }
+  });
+
+  document.getElementById('status').textContent = wms.length + ' worldmaps, ' + nodeCount + ' nodes, ' + edgeLines.length + ' links';
+  drawEdges(null);
+  imageLayer.batchDraw(); dotLayer.batchDraw();
+
+  // resize: positions scale with the worldmap, dot size stays constant; recompute live during the drag
+  tr.on('transform', () => { const im = tr.nodes()[0]; if(im) recomputeWm(im.getAttr('wmid')); });
+  tr.on('transformend', () => { const im = tr.nodes()[0]; if(im) recomputeWm(im.getAttr('wmid')); });
+
+  updateDraggable();   // maps/nodes start locked
+  poll();
+})();
+
+async function poll(){
+  try {
+    const d = await (await fetch('/api/live')).json();
+    live = {};
+    for(const id in d.maps) live[id] = d.maps[id];
+    applyStyle(); renderRoster();
+  } catch(e){ /* keep last */ }
+  setTimeout(poll, 2000);
+}
+
+document.getElementById('search').addEventListener('input', e => { query = e.target.value.trim().toLowerCase(); applyStyle(); renderRoster(); });
+document.getElementById('search').addEventListener('keydown', e => { if(e.key==='Enter'){ e.preventDefault(); startPing(); } });
+document.getElementById('searchBtn').onclick = startPing;
+document.getElementById('centerBtn').onclick = centerOnMatch;
+document.getElementById('fontSlider').addEventListener('input', e => { document.getElementById('side').style.fontSize = e.target.value + 'px'; });
+document.getElementById('export').onclick = () => {
+  const lines = imageLayer.find('Image').map(im =>
+    '        wm.put("' + im.getAttr('wmid') + '", new double[]{'
+    + Math.round(im.x()) + ', ' + Math.round(im.y()) + ', ' + im.scaleX().toFixed(3) + '});').sort();
+  const customs = [];
+  for(const inst of allInst) if(inst.custom){
+    customs.push(inst.absolute
+      ? '        // custom abs  node ' + inst.id + '  ' + Math.round(inst.absX) + ', ' + Math.round(inst.absY)
+      : '        // custom rel  node ' + inst.id + '  wm' + inst.wm + '  ' + Math.round(inst.lx) + ', ' + Math.round(inst.ly));
+  }
+  const text = lines.join('\n') + (customs.length ? '\n\n        // custom anchors\n' + customs.join('\n') : '');
+  document.getElementById('status').textContent = 'WORLDMAP_LAYOUT (' + lines.length + ') + ' + customs.length + ' custom copied';
+  let ta = document.getElementById('out');
+  if(!ta){ ta = document.createElement('textarea'); ta.id='out'; ta.readOnly=true; document.getElementById('side').appendChild(ta); }
+  ta.value = text; ta.focus(); ta.select();
+  try { navigator.clipboard.writeText(text); } catch(e){}
+};
+document.getElementById('fit').onclick = () => { stage.scale({x:1,y:1}); stage.position({x:0,y:0}); stage.batchDraw(); };
+
+// ---- RTS control mode ----------------------------------------------------------------------------
+function updateSel(){
+  document.getElementById('rtsHead').textContent =
+    selected.size + ' selected'
+    + (followArm ? ' · click a character (node/roster) to follow'
+       : moveArmed ? ' · click destination (' + (moveCmd==='moveattack'?'attack':'quiet') + ')'
+       : ' · click/box = select · shift = add/remove');
+  applyStyle(); renderRoster();
+  document.querySelectorAll('#detail .rosterItem[data-cid]').forEach(el =>
+    el.classList.toggle('sel', selected.has(+el.dataset.cid)));   // keep right-panel rows in sync w/o refetch
+}
+function nodeBotIds(inst){
+  const ids = [];
+  for(const m of inst.maps){ const o = live[m]; if(!o) continue;
+    for(const b of o.bots) if(b.c) ids.push(b.id); }
+  return ids;
+}
+// selection model: plain click/box REPLACES the selection; holding shift toggles (adds/removes)
+function applySel(ids, ev){
+  if(ev && ev.shiftKey){ ids.forEach(id => { if(selected.has(id)) selected.delete(id); else selected.add(id); }); }
+  else { selected.clear(); ids.forEach(id => selected.add(id)); }
+  updateSel();
+}
+// RTS node click: mirror the bot selection AND drive the right panel (same replace/shift-toggle rule)
+function selectNodeRts(inst, ev){
+  if(ev && ev.shiftKey){ const i = selNodes.indexOf(inst); if(i>=0) selNodes.splice(i,1); else selNodes.push(inst); }
+  else selNodes = [inst];
+  applySel(nodeBotIds(inst), ev);
+  renderDetails();
+}
+// move-destination / follow-target arming are mutually exclusive; disarm clears both + the picker
+function disarm(){
+  moveArmed = false; followArm = false; hidePicker();
+  ['moveBtn','moveAtkBtn','followBtn'].forEach(id => document.getElementById(id).classList.remove('armed'));
+}
+function armMove(on, which){
+  disarm();
+  if(on){ moveArmed = true; if(which) moveCmd = which;
+          document.getElementById(moveCmd==='moveattack'?'moveAtkBtn':'moveBtn').classList.add('armed'); }
+  updateSel();
+}
+function armFollow(on){
+  disarm();
+  if(on){ followArm = true; document.getElementById('followBtn').classList.add('armed'); }
+  updateSel();
+}
+// follow target picker: one character -> pick directly; several -> a small chooser (like the hover preview)
+function handleFollowPick(inst, evt){
+  const occ = instOccupants(inst);                       // [['P'|'B', c], ...]
+  if(!occ.length){ status('no one here to follow'); return; }
+  if(occ.length === 1){ pickFollowTarget(occ[0][1].id); return; }
+  showFollowPicker(occ, evt);
+}
+function showFollowPicker(occ, evt){
+  const el = document.getElementById('picker');
+  el.innerHTML = '<div class="pickHead">Follow whom?</div>' + occ.map(([k,c]) =>
+    '<div class="pickRow" onclick="pickFollowTarget('+c.id+')">'
+    + (k==='P'?'&#128100; ':'&#129302; ') + esc(c.n) + ' <span class="meta">Lv'+c.l+' '+esc(c.j)+'</span></div>').join('');
+  el.style.display = 'block';
+  el.style.left = Math.min(evt.clientX + 12, window.innerWidth - 250) + 'px';
+  el.style.top  = Math.min(evt.clientY + 12, window.innerHeight - 30 - occ.length*24) + 'px';
+}
+function hidePicker(){ const el = document.getElementById('picker'); if(el) el.style.display = 'none'; }
+function pickFollowTarget(id){ hidePicker(); sendCmd('follow', null, id); }   // selected bots follow this char
+
+async function sendCmd(cmd, maps, target, extra){
+  const ids = [...selected];
+  if(!ids.length){ status('select bots first'); return; }
+  const body = {cmd, ids}; if(maps) body.maps = maps; if(target) body.target = target;
+  if(extra) Object.assign(body, extra);
+  try {
+    const r = await (await fetch('/api/command',
+      {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)})).json();
+    status(cmd + ': applied ' + r.applied + (r.skipped && r.skipped.length ? ' · skipped ' + r.skipped.length : ''));
+  } catch(e){ status(cmd + ': command failed'); return; }
+  selected.clear(); disarm(); updateSel();
+}
+
+function selboxRect(p){
+  const r = host.getBoundingClientRect();
+  const x = Math.min(p.x, boxStart.x), y = Math.min(p.y, boxStart.y);
+  const b = document.getElementById('selbox');
+  b.style.display='block'; b.style.left=(r.left+x)+'px'; b.style.top=(r.top+y)+'px';
+  b.style.width=Math.abs(p.x-boxStart.x)+'px'; b.style.height=Math.abs(p.y-boxStart.y)+'px';
+}
+function selboxHide(){ document.getElementById('selbox').style.display='none'; }
+
+stage.on('mousedown touchstart', e => {
+  if(!rtsMode) return;
+  if(e.evt.touches && e.evt.touches.length > 1){ boxStart = null; selboxHide(); return; } // 2 fingers = pinch
+  const cn = e.target.getClassName ? e.target.getClassName() : '';
+  if(e.target !== stage && cn !== 'Image') return;   // start a box only on empty space / a worldmap image
+  boxStart = stage.getPointerPosition();
+});
+stage.on('mousemove touchmove', () => { if(rtsMode && boxStart) selboxRect(stage.getPointerPosition()); });
+stage.on('mouseup touchend', e => {
+  if(!rtsMode || !boxStart) return;
+  const p = stage.getPointerPosition(), s = boxStart;
+  boxStart = null; selboxHide();
+  if(!p) return;
+  const x1=Math.min(p.x,s.x), y1=Math.min(p.y,s.y), x2=Math.max(p.x,s.x), y2=Math.max(p.y,s.y);
+  if(x2-x1 < 4 && y2-y1 < 4){                          // tap on empty/map background = clear (unless shift)
+    if(!(e.evt && e.evt.shiftKey)){ selected.clear(); selNodes = []; updateSel(); renderDetails(); }
+    return;
+  }
+  const ids = [], hitNodes = [];
+  for(const inst of allInst){
+    const a = inst.circle.getAbsolutePosition();      // screen-space, matches pointer coords
+    if(a.x>=x1 && a.x<=x2 && a.y>=y1 && a.y<=y2){ ids.push(...nodeBotIds(inst)); hitNodes.push(inst); }
+  }
+  applySel(ids, e.evt);
+  if(e.evt && e.evt.shiftKey){ hitNodes.forEach(n => { if(!selNodes.includes(n)) selNodes.push(n); }); }
+  else selNodes = hitNodes;                            // plain box = replace the panel with boxed maps
+  renderDetails();
+  status('box: ' + ids.length + ' bot(s) ' + (e.evt && e.evt.shiftKey ? 'toggled' : 'selected'));
+});
+
+document.getElementById('rtsToggle').onclick = () => {
+  rtsMode = !rtsMode;
+  const t = document.getElementById('rtsToggle');
+  t.textContent = 'RTS mode: ' + (rtsMode ? 'on' : 'off'); t.classList.toggle('on', rtsMode);
+  document.getElementById('rts').style.display = rtsMode ? 'block' : 'none';
+  stage.draggable(!rtsMode);                                   // free the drag gesture for box-select
+  if(!rtsMode){ selected.clear(); disarm(); selboxHide(); }
+  updateDraggable();                                           // RTS also freezes map/node editing
+  updateSel();
+};
+document.getElementById('lockBtn').onclick = () => {
+  locked = !locked;
+  const b = document.getElementById('lockBtn');
+  b.innerHTML = locked ? '&#128274; Locked' : '&#128275; Edit layout';
+  b.classList.toggle('on', !locked);
+  updateDraggable();
+  status(locked ? 'layout locked' : 'layout unlocked — drag maps/nodes, resize maps');
+};
+document.querySelectorAll('#rts button[data-cmd]').forEach(b => b.onclick = () => sendCmd(b.dataset.cmd));
+function armMoveBtn(which){
+  if(!selected.size){ status('select bots first'); return; }
+  if(moveArmed && moveCmd===which) armMove(false);   // click the armed button again -> disarm
+  else armMove(true, which);
+}
+document.getElementById('moveBtn').onclick = () => armMoveBtn('move');
+document.getElementById('moveAtkBtn').onclick = () => armMoveBtn('moveattack');
+document.getElementById('followBtn').onclick = () => { if(!selected.size){ status('select bots first'); return; } armFollow(!followArm); };
+document.getElementById('clearSel').onclick = () => { selected.clear(); disarm(); updateSel(); };
+document.getElementById('movePosBtn').onclick = () => {
+  const x = parseInt(document.getElementById('moveX').value, 10), y = parseInt(document.getElementById('moveY').value, 10);
+  if(!Number.isFinite(x) || !Number.isFinite(y)){ status('enter x and y'); return; }
+  sendCmd('moveto', null, null, {x, y});   // walk selected bot(s) to exact x,y on their current map
+};
+// ---- debug controls: spawn / pathlog / inspect / perf (mirror the LAN debug endpoints) -------------
+function dbgShow(t){ const o = document.getElementById('dbgOut'); o.style.display = 'block'; o.textContent = t; }
+function singleSel(){ if(selected.size !== 1){ status('select exactly ONE bot for this'); return null; } return [...selected][0]; }
+document.getElementById('spawnBtn').onclick = async () => {
+  const ids = document.getElementById('spawnIds').value.trim();
+  if(!ids){ status('enter charId(s) to spawn'); return; }
+  try { const r = await (await fetch('/api/spawnbot?id=' + encodeURIComponent(ids))).json();
+    dbgShow('spawn: ' + JSON.stringify(r.results)); status('spawn requested'); }
+  catch(e){ status('spawn failed'); }
+};
+document.getElementById('pathlogBtn').onclick = async () => {
+  const id = singleSel(); if(id == null) return;
+  status('pathlog…');
+  try { const r = await (await fetch('/api/bot/pathlog?id=' + id)).json();
+    if(r.recording){ status('pathlog recording ' + r.bot + ' — click Pathlog again to dump'); }
+    else { dbgShow(r.report || JSON.stringify(r)); status('pathlog dumped ' + r.bot); } }
+  catch(e){ status('pathlog failed'); }
+};
+document.getElementById('inspectBtn').onclick = async () => {
+  const id = singleSel(); if(id == null) return;
+  try { const r = await (await fetch('/api/botdebug?id=' + id)).json(); const b = (r.bots || [])[0];
+    if(!b){ status('bot ' + id + ' not online'); return; }
+    const d = b.detail || {};
+    dbgShow(b.n + '  lv' + b.lvl + '  map' + b.map
+      + '\nwt=' + b.wt + '  atk=' + b.atk + '  aoe=' + b.aoe + '  noAmmo=' + b.noAmmo
+      + '\nstatus: ' + b.status
+      + '\nstats: STR' + d.str + ' DEX' + d.dex + ' INT' + d.int + ' LUK' + d.luk + '  watk' + d.watk + ' matk' + d.matk
+      + '\nhp ' + d.hp + '/' + d.maxHp + '  mp ' + d.mp + '/' + d.maxMp + '  exp ' + d.exp + '  meso ' + d.meso
+      + '\natkSkill=' + d.atkSkill + '  aoeSkill=' + d.aoeSkill
+      + '\nskills: ' + JSON.stringify(d.skills)); }
+  catch(e){ status('inspect failed'); }
+};
+let perfOn = false;
+document.getElementById('perfBtn').onclick = async () => {
+  perfOn = !perfOn;
+  try { const r = await (await fetch('/api/perf?on=' + (perfOn ? 1 : 0))).json();
+    const rows = (r.sections || []).slice().sort((a,b)=>b.maxMs-a.maxMs).slice(0,20)
+      .map(s => s.section + ': avg' + s.avgMs + ' max' + s.maxMs + ' n' + s.count + ' slow' + s.slow).join('\n');
+    dbgShow('perf ' + (r.enabled ? 'ON' : 'off') + '\n' + (rows || '(no samples yet)')); status('perf ' + (perfOn?'on':'off')); }
+  catch(e){ status('perf failed'); }
+};
+document.getElementById('sortBtn').onclick = () => {
+  sortMode = sortMode === 'name' ? 'level' : 'name';
+  document.getElementById('sortBtn').textContent = 'Sort: ' + sortMode;
+  renderRoster();
+};
+
+// ---- mobile: panel toggles + pinch-zoom -----------------------------------------------------------
+document.getElementById('tLeft').onclick  = () => document.getElementById('left').classList.toggle('open');
+document.getElementById('tRight').onclick = () => document.getElementById('side').classList.toggle('open');
+
+// Two-finger zoom. Bound to the container with native listeners (not Konva's event layer, which
+// doesn't deliver multitouch reliably while the stage is grabbing the first finger). passive:false
+// is required so preventDefault stops the browser's own gesture. Browser pinch is also off via meta.
+let pinchDist = 0;
+host.addEventListener('touchmove', e => {
+  if(e.touches.length < 2) return;
+  e.preventDefault();
+  if(stage.isDragging()) stage.stopDrag();
+  boxStart = null; selboxHide();                       // abort any in-progress box-select
+  const r = host.getBoundingClientRect();
+  const p1 = {x:e.touches[0].clientX-r.left, y:e.touches[0].clientY-r.top};
+  const p2 = {x:e.touches[1].clientX-r.left, y:e.touches[1].clientY-r.top};
+  const dist = Math.hypot(p2.x-p1.x, p2.y-p1.y);
+  const center = {x:(p1.x+p2.x)/2, y:(p1.y+p2.y)/2};
+  if(!pinchDist){ pinchDist = dist; return; }          // first frame: just record the baseline gap
+  const old = stage.scaleX(), ns = Math.max(0.05, old * (dist/pinchDist));
+  const to = {x:(center.x-stage.x())/old, y:(center.y-stage.y())/old};
+  stage.scale({x:ns,y:ns});
+  stage.position({x:center.x-to.x*ns, y:center.y-to.y*ns});
+  pinchDist = dist;
+  stage.batchDraw();
+}, {passive:false});
+host.addEventListener('touchend', () => { pinchDist = 0; });
+host.addEventListener('touchcancel', () => { pinchDist = 0; });
+</script>
+</body>
+</html>

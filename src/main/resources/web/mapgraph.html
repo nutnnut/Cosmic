@@ -1,0 +1,551 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Map Graph</title>
+<script src="https://unpkg.com/konva@9/konva.min.js"></script>
+<style>
+  html,body{margin:0;height:100%;font:13px system-ui,sans-serif;background:#10141c;color:#cdd6e4;overflow:hidden}
+  /* The bar WRAPS to as many rows as it needs (no clipping); JS keeps the canvas top in sync with its
+     actual height. Controls are grouped into .grp pills so related toggles wrap together, not individually. */
+  #bar{position:absolute;top:0;left:0;right:0;min-height:42px;box-sizing:border-box;display:flex;align-items:center;
+       flex-wrap:wrap;gap:5px 10px;padding:5px 10px;background:#171c26;border-bottom:1px solid #283143;z-index:5}
+  #bar h1{font-size:14px;margin:0;color:#9fb0c8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:28vw}
+  #bar .sub{color:#67748c;font-size:11px}
+  #bar .grp{display:inline-flex;align-items:center;gap:8px;white-space:nowrap;
+       padding-left:10px;border-left:1px solid #283143}
+  button{background:#2a3346;color:#cdd6e4;border:1px solid #3a4761;border-radius:4px;padding:5px 9px;cursor:pointer}
+  button:hover{background:#34405a}
+  #legend{display:flex;gap:10px;flex-wrap:wrap;font-size:11px;color:#8a99b3;margin-left:auto}
+  #legend span{display:inline-flex;align-items:center;gap:4px}
+  #legend i{width:11px;height:9px;display:inline-block}
+  .ov{border-radius:50%}
+  #c{position:absolute;top:42px;left:0;right:0;bottom:0;touch-action:none}
+  #tip{position:absolute;display:none;pointer-events:none;background:#0d1017;border:1px solid #3a4761;
+       border-radius:4px;padding:5px 8px;font-size:11px;line-height:1.4;z-index:10;max-width:240px;
+       box-shadow:0 2px 8px rgba(0,0,0,.5)}
+  #status{position:absolute;left:10px;bottom:8px;font-size:11px;color:#67748c;z-index:6}
+  #navConfirm{position:fixed;display:none;cursor:pointer;z-index:11;background:#3b5bdb;color:#fff;
+       border:1px solid #5b7bf5;border-radius:5px;padding:5px 9px;font-size:11px;font-weight:bold;
+       white-space:nowrap;box-shadow:0 2px 8px rgba(0,0,0,.5)}
+  #navConfirm:hover{background:#4a6af0}
+  #bar select{background:#0d1017;color:#cdd6e4;border:1px solid #3a4761;border-radius:4px;padding:4px 6px;font-size:11px}
+  #info{position:absolute;right:10px;top:52px;width:300px;max-height:calc(100% - 64px);overflow:auto;
+        background:#0d1017;border:1px solid #3a4761;border-radius:6px;padding:8px 10px;font:11px/1.55 monospace;
+        color:#cdd6e4;z-index:8;display:none;white-space:pre-wrap;box-shadow:0 2px 10px rgba(0,0,0,.5)}
+  #info .ihead{font-weight:bold;color:#9fb0c8;margin-bottom:5px;font-family:system-ui,sans-serif}
+  #info .ehead{font-weight:bold;color:#9fb0c8;margin:7px 0 3px;font-family:system-ui,sans-serif;border-top:1px solid #283143;padding-top:6px}
+  #info .edge{cursor:pointer;padding:1px 4px;border-radius:3px}
+  #info .edge:hover{background:#283143;color:#ffe066}
+  #info .x{float:right;cursor:pointer;color:#8a99b3}
+  /* Phone: tighten the bar, drop the verbose reference legend + composition stats, full-width info panel. */
+  @media (max-width:760px){
+    #bar{gap:5px 8px;padding:5px 8px}
+    #bar h1{max-width:46vw;font-size:13px}
+    #bar .grp{padding-left:8px;gap:6px}
+    #legend,#stats{display:none}
+    button{padding:6px 8px}
+    #info{left:8px;right:8px;width:auto}
+  }
+</style>
+</head>
+<body>
+<div id="bar">
+  <button id="back" title="back">&#8592; Back</button>
+  <h1 id="title">Map Graph</h1>
+  <span id="stats" class="sub" style="white-space:nowrap" title="region & edge composition"></span>
+  <button id="fitBtn" title="reset view">Fit</button>
+  <span class="grp">
+    <button id="pfBtn" title="pick a source region then a target region to preview the route">Pathfind</button>
+    <label class="sub" title="Normal = live bot's bounded best-effort search. Exhaustive = uncapped strict search that exhausts the graph to prove unreachability."><input type="checkbox" id="pfExhaustive"> exhaustive</label>
+    <label class="sub" title="Allow teleport (mage) skill edges in the route (default off = walk-only)."><input type="checkbox" id="pfTeleport"> teleport</label>
+    <label class="sub" title="Allow flash-jump (thief) skill edges in the route (default off = walk-only)."><input type="checkbox" id="pfFlashJump"> flash-jump</label>
+  </span>
+  <span id="pfstat" class="sub" style="flex:0 1 340px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></span>
+  <span class="grp"><label class="sub">graph <select id="profile" title="cached movement-profile graph"></select></label></span>
+  <span class="grp" title="layer visibility">show:
+    <label title="Colour regions by reachability component (walk-only, same adjacency as canReach). One colour = fully connected; multiple = a split map (e.g. an upper deck you can't climb back to)."><input type="checkbox" id="tgPartition"> partition</label>
+    <label title="Down-jump / drop-through-platform edges (DROP type). Off by default — they clutter the view."><input type="checkbox" id="tgDownjump"> downjumps</label>
+    <label title="Jump edges that land LOWER than they launch. Off by default."><input type="checkbox" id="tgJumpDown"> jump-downs</label>
+    <label title="Flash-jump edges that land LOWER than they launch. Off by default."><input type="checkbox" id="tgFjDown"> fj-downs</label>
+  </span>
+  <div id="legend">
+    <span><i class="ov" style="background:#39d353"></i>foothold</span>
+    <span><i class="ov" style="background:#6cc6ff"></i>rope</span>
+    <span><i class="ov" style="background:#ff4d4d"></i>char</span>
+    <span><i style="border:1px solid #ffd54a"></i>npc</span>
+    <span><i class="ov" style="background:#ffd54a"></i>in-map portal</span>
+    <span><i class="ov" style="background:#fff"></i>cross portal</span>
+    <span><i style="border:1px solid #fff"></i>collision warp</span>
+    <span><i style="background:#39d353;height:2px"></i>jump</span>
+    <span><i style="background:#6cc6ff;height:2px"></i>portal edge</span>
+    <span><i style="background:#ff9f1c;height:2px"></i>route</span>
+    <span><i style="background:#2dd4bf;height:2px"></i>checked</span>
+  </div>
+</div>
+<div id="c"></div>
+<div id="navConfirm"></div>
+<div id="tip"></div>
+<div id="info"></div>
+<div id="status">loading…</div>
+<script>
+const P = new URLSearchParams(location.search);
+const mapId = P.get('id');
+const host = document.getElementById('c');
+const status = t => { document.getElementById('status').textContent = t; };
+document.getElementById('back').onclick = () => { if(history.length > 1) history.back(); else location.href = '/map'; };
+
+const COL = {
+  fh:'#39d353', rope:'#6cc6ff',
+  eJump:'#39d353', ePortal:'#6cc6ff', eRest:'#6b7689',
+  npc:'#ffd54a', pin:'#ffd54a', pcross:'#ffffff', pcoll:'#ffffff', char:'#ff4d4d'
+};
+
+const stage = new Konva.Stage({container:'c', width:host.clientWidth, height:host.clientHeight, draggable:true});
+const layer = new Konva.Layer();       // regions, edges, npcs, portals (static)
+const pathLayer = new Konva.Layer();   // pathfind route preview (above static, below chars)
+const hlLayer = new Konva.Layer();     // transient edge highlight (hover a region's edge in #info)
+const charLayer = new Konva.Layer();   // live characters (repainted on poll)
+stage.add(layer); stage.add(pathLayer); stage.add(hlLayer); stage.add(charLayer);
+let allEdges = [];     // every drawn edge {t,fromR,toR,fx,fy,tx,ty} — for per-region listing + highlight
+let edgeShapes = [];   // {l:Konva.Line, e} pairs — for the down-edge visibility toggles
+let B = {minX:0,minY:0,maxX:0,maxY:0};
+let markers = [];       // static markers: {resize(scale)}
+let charMarkers = [];   // char markers: {resize(scale)}
+let regionShapes = {};  // regionId -> {report:[str], shapes:[Konva.Line], base:color}
+let selRegion = null;   // currently selected region id (highlighted + shown in #info)
+let prof = null;        // selected movement profile {sp,jmp,snow}; null = server default (base)
+
+// Keep the canvas (and info panel) below the bar's ACTUAL height. The bar wraps to multiple rows on narrow
+// / phone screens, so a fixed 42px offset would tuck content under it. Call on load and every resize.
+const barEl = document.getElementById('bar');
+function syncLayout(){
+  const h = barEl.offsetHeight;
+  host.style.top = h + 'px';
+  const info = document.getElementById('info');
+  if(info){ info.style.top = (h + 8) + 'px'; info.style.maxHeight = 'calc(100vh - ' + (h + 18) + 'px)'; }
+  stage.size({width:host.clientWidth, height:host.clientHeight});
+  stage.batchDraw();
+}
+
+// ---- tooltip ----
+const tip = document.getElementById('tip');
+function showTip(html, ev){ tip.innerHTML = html; tip.style.display='block';
+  tip.style.left=(ev.clientX+14)+'px'; tip.style.top=(ev.clientY+14)+'px'; }
+function hideTip(){ tip.style.display='none'; }
+function bindTip(shape, html){
+  shape.on('mouseover', e => { document.body.style.cursor='pointer'; showTip(html, e.evt); });
+  shape.on('mousemove', e => { if(tip.style.display==='block') showTip(html, e.evt); });
+  shape.on('mouseout', () => { document.body.style.cursor='default'; hideTip(); });
+}
+const esc = s => String(s==null?'':s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+
+// ---- portal click -> "change map" confirm pill ----
+// Click a cross/collision portal -> a pill appears under the cursor; click it (or click the portal again,
+// i.e. a quick double-click) to load the target map's graph; click anywhere else to cancel.
+const navEl = document.getElementById('navConfirm');
+let navTarget = null;
+function bindNav(shape, tm, name){
+  shape.on('click tap', ev => { ev.cancelBubble = true; if(ev.evt) ev.evt.stopPropagation(); showNav(tm, name, ev.evt); });
+}
+function showNav(tm, name, evt){
+  navTarget = tm;
+  navEl.innerHTML = '&rarr; map ' + tm + (name ? ' <span style="opacity:.7">('+esc(name)+')</span>' : '');
+  navEl.style.display = 'block';
+  const x = evt ? evt.clientX : innerWidth/2, y = evt ? evt.clientY : innerHeight/2;  // sit under the cursor
+  navEl.style.left = (x - 16) + 'px';
+  navEl.style.top  = (y - 10) + 'px';
+}
+function hideNav(){ navEl.style.display = 'none'; navTarget = null; }
+navEl.onclick = e => { e.stopPropagation(); if(navTarget != null){ const tm = navTarget; hideNav(); gotoMap(tm); } };
+document.addEventListener('click', () => { if(navEl.style.display === 'block') hideNav(); });  // click elsewhere = cancel
+function gotoMap(tm){
+  let q = 'id=' + tm;
+  if(prof) q += '&sp='+prof.sp+'&jmp='+prof.jmp+'&snow='+(prof.snow?1:0);
+  location.href = '/mapgraph?' + q;
+}
+
+// ---- shape helpers (markers keep a constant screen size via resize(scale)) ----
+// a clickable region line (thin visual, fat hit area) — click shows the region's report in #info
+function regionLine(pts, color, dash){
+  const o = {points:pts, stroke:color, strokeWidth:2, strokeScaleEnabled:false, lineCap:'round', hitStrokeWidth:12};
+  if(dash) o.dash = dash;
+  const l = new Konva.Line(o);
+  l.on('mouseover', () => document.body.style.cursor = 'pointer');
+  l.on('mouseout', () => document.body.style.cursor = 'default');
+  layer.add(l);
+  return l;
+}
+function addOval(x, y, rx, ry, fill, stroke, html, layerRef, bucket){
+  const e = new Konva.Ellipse({x, y, radiusX:rx, radiusY:ry, fill, stroke:stroke||undefined,
+                               strokeWidth:stroke?1.2:0, strokeScaleEnabled:false});
+  if(html) bindTip(e, html);
+  (layerRef||layer).add(e);
+  bucket.push({resize:s => { e.radiusX(rx/s); e.radiusY(ry/s); }});
+  return e;
+}
+function addBox(x, y, sz, stroke, fill, html, layerRef, bucket){
+  const r = new Konva.Rect({x, y, width:sz, height:sz, offsetX:sz/2, offsetY:sz/2,
+                            stroke, fill:fill||undefined, strokeWidth:1.4, strokeScaleEnabled:false});
+  if(html) bindTip(r, html);
+  (layerRef||layer).add(r);
+  bucket.push({resize:s => { const w=sz/s; r.width(w); r.height(w); r.offsetX(w/2); r.offsetY(w/2); }});
+  return r;
+}
+
+// ---- view toggles: partition colouring + down-edge visibility (all default OFF) ----
+const tg = id => { const el = document.getElementById(id); return !!(el && el.checked); };
+// Which edges the visibility toggles hide. DROP = down-jump / drop-through-platform; a JUMP or FLASH_JUMP
+// that lands LOWER than it launches (ty>fy, screen y grows downward) is a "down" variant.
+function edgeHidden(e){
+  if(e.t === 'DROP') return !tg('tgDownjump');
+  if(e.t === 'JUMP' && e.ty > e.fy) return !tg('tgJumpDown');
+  if(e.t === 'FLASH_JUMP' && e.ty > e.fy) return !tg('tgFjDown');
+  return false;
+}
+function applyEdgeToggles(){ for(const {l,e} of edgeShapes) l.visible(!edgeHidden(e)); layer.batchDraw(); }
+
+// Reachability components (SCC) over the walk-only edge graph — the SAME adjacency BotNavigationGraph.canReach
+// uses (skill edges excluded, PORTAL/CLIMB/JUMP/DROP/WALK kept). Display only: colour regions by component so
+// a split map (e.g. an upper deck you can down-jump off but not climb back to) shows as distinct colours.
+// Iterative Kosaraju — no recursion (big maps have thousands of regions).
+function computeComponents(){
+  const adj = {}, radj = {}, nodes = [];
+  const ensure = n => { if(!(n in adj)){ adj[n] = []; radj[n] = []; nodes.push(n); } };
+  for(const id in regionShapes) ensure(+id);
+  for(const e of allEdges){
+    if(e.t === 'TELEPORT' || e.t === 'FLASH_JUMP') continue; // walk-only, like canReach(skillMask 0)
+    ensure(e.fromR); ensure(e.toR);
+    adj[e.fromR].push(e.toR); radj[e.toR].push(e.fromR);
+  }
+  const seen = new Set(), order = [];
+  for(const s of nodes){
+    if(seen.has(s)) continue;
+    const st = [[s,0]]; seen.add(s);
+    while(st.length){ const top = st[st.length-1], ch = adj[top[0]];
+      if(top[1] < ch.length){ const c = ch[top[1]++]; if(!seen.has(c)){ seen.add(c); st.push([c,0]); } }
+      else { order.push(top[0]); st.pop(); } }
+  }
+  const comp = {}; let k = 0;
+  for(let i = order.length-1; i >= 0; i--){ const root = order[i]; if(root in comp) continue;
+    const st = [root]; comp[root] = k;
+    while(st.length){ const n = st.pop(); for(const p of radj[n]){ if(!(p in comp)){ comp[p] = k; st.push(p); } } }
+    k++; }
+  return {comp, k};
+}
+const compColor = idx => 'hsl('+Math.round((idx*137.508) % 360)+',70%,55%)';
+function applyPartition(){
+  const on = tg('tgPartition');
+  const cc = on ? computeComponents() : null;
+  for(const id in regionShapes){
+    const rs = regionShapes[id];
+    const col = on ? compColor(cc.comp[id]) : rs.orig;
+    rs.base = col;
+    if(+id !== selRegion) for(const sh of rs.shapes) sh.stroke(col);
+  }
+  if(on) status('partition: '+cc.k+' reachability component'+(cc.k===1?'':'s')+' (walk-only)');
+  layer.batchDraw();
+}
+
+// ---- render ----
+function edgeStyle(t){ return t==='JUMP' ? COL.eJump : t==='PORTAL' ? COL.ePortal : COL.eRest; }
+function renderStatic(d){
+  layer.destroyChildren(); markers = []; selRegion = null; hideInfo();
+  allEdges = d.edges || []; clearHl(); edgeShapes = [];
+  if(typeof pfReset === 'function') pfReset(false);   // drop any stale route (region set may differ per profile)
+  // edges first (under the structure), JUMP as a lifted arc
+  for(const e of d.edges){
+    const col = edgeStyle(e.t);
+    let l;
+    if(e.t === 'JUMP'){
+      const mx=(e.fx+e.tx)/2, top=Math.min(e.fy,e.ty);
+      const h=Math.min(80, Math.max(14, Math.hypot(e.tx-e.fx, e.ty-e.fy)*0.25));
+      l = clickableEdge([e.fx,e.fy, mx,top-h, e.tx,e.ty], col, e.t==='PORTAL'?1.4:1.1, layer, true, null, e);
+    } else {
+      l = clickableEdge([e.fx,e.fy, e.tx,e.ty], col, e.t==='PORTAL'?1.4:1.1, layer,
+              false, (e.t==='TELEPORT'||e.t==='FLASH_JUMP') ? [5,4] : null, e);
+    }
+    l.visible(!edgeHidden(e));
+    edgeShapes.push({l, e});
+  }
+  // regions: foothold segments (green) + rope spans (light-blue, ladders dashed); clickable -> report
+  regionShapes = {};
+  for(const r of d.regions){
+    const shapes = [];
+    if(r.kind === 'rope'){
+      shapes.push(regionLine([r.x,r.y1, r.x,r.y2], COL.rope, r.ladder ? [5,4] : null));
+    } else {
+      for(const s of r.segs) shapes.push(regionLine([s[0],s[1], s[2],s[3]], COL.fh, null));
+    }
+    const orig = r.kind==='rope'?COL.rope:COL.fh;
+    regionShapes[r.id] = {report:r.report||[], shapes, base:orig, orig};
+    for(const sh of shapes) sh.on('click tap', e => { e.cancelBubble = true; onRegionClick(r.id); });
+  }
+  // npcs (yellow box) + portals (in=yellow oval, cross=white oval, collision=white box)
+  for(const n of d.npcs) addBox(n.x, n.y, 11, COL.npc, null, '<b>NPC</b> '+esc(n.n), layer, markers);
+  for(const p of d.portals){
+    let sh;
+    if(p.k === 'coll') sh = addBox(p.x, p.y, 14, COL.pcoll, null,
+        '<b>collision warp</b><br>'+esc(p.n)+(p.tm>0?' &rarr; '+p.tm:''), layer, markers);
+    else sh = addOval(p.x, p.y, 5.5, 4.2, p.k==='in'?COL.pin:COL.pcross, '#0d1017',
+        '<b>'+(p.k==='in'?'in-map portal':'cross portal')+'</b><br>'+esc(p.n)+(p.tm>0&&p.k!=='in'?' &rarr; '+p.tm:''),
+        layer, markers);
+    // cross / collision portals to ANOTHER map are clickable -> confirm pill -> load that map's graph
+    if(p.tm > 0 && p.tm !== d.map && p.k !== 'in') bindNav(sh, p.tm, p.n);
+  }
+  applyPartition();   // re-apply component colouring (if the toggle is on) to the fresh region shapes
+}
+function renderChars(chars){
+  charLayer.destroyChildren(); charMarkers = [];
+  for(const c of chars)
+    addOval(c.x, c.y, 5, 3.6, COL.char, '#3a0d0d',
+      (c.bot?'&#129302; ':'&#128100; ')+esc(c.n), charLayer, charMarkers);
+  applyScale();
+  charLayer.batchDraw();
+}
+
+function hideInfo(){ const i = document.getElementById('info'); if(i) i.style.display = 'none'; }
+// click any edge (static line, route hop, or explored frontier) -> its details in #info. Normalises the
+// two server shapes: static {t,fx,fy,tx,ty,n}, dynamic {type,from[],to[],fromR,toR}. lsx=launchStepX and
+// n=parallel launch-x variants collapsed into this drawn line (why ropes show "more edges" when explored).
+function edgeInfo(e){
+  const t = e.t || e.type;
+  const fx = e.fx!=null?e.fx:e.from[0], fy = e.fy!=null?e.fy:e.from[1];
+  const tx = e.tx!=null?e.tx:e.to[0],  ty = e.ty!=null?e.ty:e.to[1];
+  const rows = ['r'+e.fromR+' &rarr; r'+e.toR, 'type: <b>'+esc(t)+'</b>',
+    'cost: '+e.cost, 'launchStepX: '+e.lsx, 'from ('+fx+','+fy+') &rarr; ('+tx+','+ty+')'];
+  if(e.n!=null && e.n>1) rows.push('<b>'+e.n+'</b> parallel launch-x edges share this from/to/type (drawn as one)');
+  const info = document.getElementById('info');
+  info.style.display = 'block';
+  info.innerHTML = '<div class="ihead">Edge<span class="x" onclick="hideInfo()">&times;</span></div>' + rows.join('<br>');
+}
+// a clickable edge line/arc on the given layer; click -> edgeInfo
+function clickableEdge(pts, col, width, layerRef, arc, dash, e){
+  const o = {points:pts, stroke:col, strokeWidth:width, strokeScaleEnabled:false,
+             lineCap:'round', lineJoin:'round', hitStrokeWidth:10};
+  if(arc) o.tension = 0.5;
+  if(dash) o.dash = dash;
+  const l = new Konva.Line(o);
+  l.on('click tap', ev => { ev.cancelBubble = true; edgeInfo(e); });
+  l.on('mouseover', () => document.body.style.cursor = 'pointer');
+  l.on('mouseout', () => document.body.style.cursor = 'default');
+  (layerRef||layer).add(l);
+  return l;
+}
+// transient edge highlight (hover an edge row in #info): redraw that one edge bright on hlLayer
+function clearHl(){ hlLayer.destroyChildren(); hlLayer.batchDraw(); }
+function highlightEdge(e){
+  hlLayer.destroyChildren();
+  if(e.t === 'JUMP'){
+    const mx=(e.fx+e.tx)/2, top=Math.min(e.fy,e.ty);
+    const h=Math.min(80, Math.max(14, Math.hypot(e.tx-e.fx, e.ty-e.fy)*0.25));
+    hlLayer.add(new Konva.Line({points:[e.fx,e.fy, mx,top-h, e.tx,e.ty], stroke:'#ffe066', strokeWidth:3.5,
+      tension:0.5, strokeScaleEnabled:false, listening:false, lineCap:'round'}));
+  } else {
+    hlLayer.add(new Konva.Arrow({points:[e.fx,e.fy, e.tx,e.ty], stroke:'#ffe066', fill:'#ffe066',
+      strokeWidth:3.5, strokeScaleEnabled:false, pointerLength:8, pointerWidth:7, listening:false}));
+  }
+  hlLayer.batchDraw();
+}
+// click a region: highlight its lines white + show its report (SSOT with !pos) + its edges (hover to trace)
+function selectRegion(id){
+  if(selRegion != null && regionShapes[selRegion])
+    for(const sh of regionShapes[selRegion].shapes){ sh.stroke(regionShapes[selRegion].base); sh.strokeWidth(2); }
+  selRegion = id;
+  clearHl();
+  if(id == null || !regionShapes[id]){ hideInfo(); layer.batchDraw(); return; }
+  for(const sh of regionShapes[id].shapes){ sh.stroke('#ffffff'); sh.strokeWidth(3); }
+  // edges touching this region: outgoing (→) first, then incoming (←)
+  const out = allEdges.filter(e => e.fromR === id), inc = allEdges.filter(e => e.toR === id);
+  const row = (e,dir) => '<div class="edge">'
+    + (dir==='out' ? '&rarr; r'+e.toR : '&larr; r'+e.fromR) + ' <b>'+esc(e.t)+'</b></div>';
+  let edgesHtml = '<div class="ehead">Edges: '+out.length+' out · '+inc.length+' in</div>';
+  out.forEach(e => edgesHtml += row(e,'out'));
+  inc.forEach(e => edgesHtml += row(e,'inc'));
+  const info = document.getElementById('info');
+  info.style.display = 'block';
+  info.innerHTML = '<div class="ihead">Region '+id+'<span class="x" onclick="selectRegion(null)">&times;</span></div>'
+    + regionShapes[id].report.map(esc).join('<br>') + edgesHtml;
+  // bind hover→highlight: rows are in the same order as out.concat(inc)
+  const rows = info.querySelectorAll('.edge'), list = out.concat(inc);
+  rows.forEach((el,i) => { el.onmouseenter = () => highlightEdge(list[i]); el.onmouseleave = clearHl; });
+  layer.batchDraw();
+}
+// ---- pathfind preview: pick a source region, then a target region; draw + explain the route ----
+// pfMode: 0 off, 1 awaiting source, 2 awaiting target. Routes on the SAME profile graph the page shows.
+let pfMode = 0, pfFrom = null;
+const pfBtn = document.getElementById('pfBtn');
+const pfstat = document.getElementById('pfstat');
+function pfSet(msg){ pfstat.textContent = msg || ''; }
+function pfReset(keepOn){
+  pathLayer.destroyChildren(); pathLayer.batchDraw();
+  pfFrom = null;
+  pfMode = keepOn ? 1 : 0;
+  pfBtn.style.background = keepOn ? '#3b5bdb' : '';
+  pfSet(keepOn ? 'click SOURCE region' : '');
+}
+pfBtn.onclick = () => pfReset(pfMode === 0);
+// region click dispatcher: in pathfind mode it picks source/target, else it shows the region report
+function onRegionClick(id){
+  if(pfMode === 0){ selectRegion(id); return; }
+  if(pfMode === 1){ pfFrom = id; pfMode = 2; pfSet('source r'+id+' → click TARGET region'); return; }
+  if(pfMode === 2){ runPathfind(pfFrom, id); pfMode = 1; }
+}
+async function runPathfind(from, to){
+  pathLayer.destroyChildren();
+  const exhaustive = document.getElementById('pfExhaustive').checked;
+  const teleport = document.getElementById('pfTeleport').checked;
+  const flashJump = document.getElementById('pfFlashJump').checked;
+  const skills = (teleport?' +tp':'') + (flashJump?' +fj':'');
+  pfSet('r'+from+' → r'+to+(exhaustive?' (exhaustive)':'')+skills+' …');
+  let d;
+  try { d = await (await fetch('/api/pathfind?'+curQuery()+'&from='+from+'&to='+to
+        +'&mode='+(exhaustive?'exhaustive':'normal')
+        +(teleport?'&tp=1':'')+(flashJump?'&fj=1':''))).json(); }
+  catch(e){ pfSet('pathfind failed'); return; }
+  if(d.error){ pfSet('pathfind: '+d.error); return; }
+  // explored frontier FIRST (under the chosen route): the edges the best-effort search checked, faint teal.
+  // Clickable — these are the DISTINCT edges checked (parallel launch-x kept separate), so a click reveals
+  // which launch-x variant a rope/jump edge is.
+  for(const e of (d.explored||[])){
+    const l = new Konva.Line({points:[e.from[0],e.from[1], e.to[0],e.to[1]], stroke:'#2dd4bf',
+      strokeWidth:1.4, opacity:0.5, strokeScaleEnabled:false, hitStrokeWidth:8});
+    l.on('click tap', ev => { ev.cancelBubble = true; edgeInfo(e); });
+    l.on('mouseover', () => document.body.style.cursor='pointer');
+    l.on('mouseout', () => document.body.style.cursor='default');
+    pathLayer.add(l);
+  }
+  // route polyline: orange + solid when truly reached; grey + dashed when best-effort/no route. Clickable too.
+  for(const e of (d.path||[])){
+    const col = d.reached ? '#ff9f1c' : '#c2410c';
+    const a = new Konva.Arrow({points:[e.from[0],e.from[1], e.to[0],e.to[1]], stroke:col, fill:col,
+      strokeWidth:3, strokeScaleEnabled:false, pointerLength:7, pointerWidth:6, hitStrokeWidth:10,
+      dash:d.reached?null:[6,5]});
+    a.on('click tap', ev => { ev.cancelBubble = true; edgeInfo(e); });
+    a.on('mouseover', () => document.body.style.cursor='pointer');
+    a.on('mouseout', () => document.body.style.cursor='default');
+    pathLayer.add(a);
+  }
+  // endpoints: source green dot, target blue (reached) / red (not) dot
+  const dot=(p,c)=>{ if(p) pathLayer.add(new Konva.Circle({x:p[0],y:p[1],radius:5,fill:c,stroke:'#0d1017',
+    strokeWidth:1.2,strokeScaleEnabled:false,listening:false})); };
+  const p0=(d.path&&d.path[0])?d.path[0].from:null, pN=(d.path&&d.path.length)?d.path[d.path.length-1].to:null;
+  dot(p0,'#39d353'); dot(pN, d.reached?'#3b82f6':'#ff4d4d');
+  pathLayer.batchDraw();
+  let verdict = d.reached ? 'REACHED ('+d.hops+' hops)'
+    : d.bestEffort ? 'BEST-EFFORT — stops at r'+d.redirect+', '+(d.canReach?'A* capped':'target unreachable')
+                     +' ('+(d.explored?d.explored.length:0)+' edges checked)'
+    : d.canReach ? 'NO PATH — canReach=true but search returned empty'
+    : 'UNREACHABLE — proven graph gap'+(d.redirect>=0?'; bot would orbit r'+d.redirect:'');
+  const sk = (d.teleport?'+tp':'') + (d.flashJump?(d.teleport?'/fj':'+fj'):'');
+  if(Number.isFinite(d.elapsedMs)) verdict += ' - '+d.elapsedMs.toFixed(3)+'ms';
+  pfSet('r'+from+'→r'+to+' ['+d.profile.sp+'/'+d.profile.jmp+'·'+d.mode+(sk?'·'+sk:'')+']: '+verdict);
+}
+
+// top-bar composition stats, computed from the served regions+edges (edges are the deduped drawn set)
+function renderStats(d){
+  const regs = d.regions||[], edges = d.edges||[];
+  const rope = regs.filter(r => r.kind==='rope').length, fh = regs.length - rope;
+  const by = {}; for(const e of edges) by[e.t] = (by[e.t]||0)+1;
+  const order = ['WALK','JUMP','DROP','CLIMB','PORTAL','TELEPORT','FLASH_JUMP'];
+  const parts = order.filter(t => by[t]).map(t => by[t]+' '+t.toLowerCase().replace('_',''));
+  document.getElementById('stats').textContent =
+    regs.length+' regions ('+fh+' fh, '+rope+' rope) · '+edges.length+' edges'
+    + (parts.length ? ' ('+parts.join(', ')+')' : '');
+}
+
+// populate the cached-graph picker; keep `prof` in sync with what the server actually served
+function buildProfileDropdown(profiles, active){
+  const sel = document.getElementById('profile');
+  const key = p => p.sp+'_'+p.jmp+'_'+(p.snow?1:0);
+  const isBase = p => p.sp===100 && p.jmp===100 && !p.snow;
+  sel.innerHTML = (profiles||[]).map(p =>
+    '<option value="'+key(p)+'">sp'+p.sp+' jmp'+p.jmp+(p.snow?' snow':'')+(isBase(p)?' (base)':'')+'</option>').join('');
+  if(active) sel.value = key(active);
+  prof = active || null;
+}
+
+function applyScale(){
+  const s = stage.scaleX();
+  markers.forEach(m => m.resize(s));
+  charMarkers.forEach(m => m.resize(s));
+  layer.batchDraw(); charLayer.batchDraw();
+}
+function fit(){
+  const W=stage.width(), H=stage.height(), pad=46;
+  const bw=Math.max(1, B.maxX-B.minX), bh=Math.max(1, B.maxY-B.minY);
+  const s=Math.min((W-2*pad)/bw, (H-2*pad)/bh);
+  stage.scale({x:s, y:s});
+  stage.position({x:(W-bw*s)/2 - B.minX*s, y:(H-bh*s)/2 - B.minY*s});
+  applyScale();
+}
+document.getElementById('fitBtn').onclick = fit;
+// view toggles: down-edge visibility re-shows/hides existing shapes; partition recolours regions.
+['tgDownjump','tgJumpDown','tgFjDown'].forEach(id =>
+  document.getElementById(id).addEventListener('change', applyEdgeToggles));
+document.getElementById('tgPartition').addEventListener('change', applyPartition);
+
+stage.on('wheel', e => {
+  e.evt.preventDefault();
+  const old=stage.scaleX(), p=stage.getPointerPosition();
+  const to={x:(p.x-stage.x())/old, y:(p.y-stage.y())/old};
+  const ns=e.evt.deltaY>0 ? old/1.1 : old*1.1;
+  stage.scale({x:ns, y:ns});
+  stage.position({x:p.x-to.x*ns, y:p.y-to.y*ns});
+  applyScale();
+});
+window.addEventListener('resize', syncLayout);
+
+function curQuery(){
+  let q = 'id=' + encodeURIComponent(mapId);
+  if(prof) q += '&sp='+prof.sp+'&jmp='+prof.jmp+'&snow='+(prof.snow?1:0);
+  return q;
+}
+async function load(refit){
+  let d;
+  try { d = await (await fetch('/api/mapgraph?'+curQuery())).json(); }
+  catch(e){ status('failed to load /api/mapgraph'); return; }
+  if(d.error){ status('map '+mapId+': '+d.error); return; }
+  B = d.bounds;
+  document.getElementById('title').innerHTML = esc(d.name)+' <span class="sub">('+d.map+')</span>';
+  document.title = d.name+' — Map Graph';
+  buildProfileDropdown(d.profiles, d.active);
+  renderStatic(d);
+  renderStats(d);
+  syncLayout();   // bar height may have changed (title / stats / dropdown widths -> wrap) before we fit
+  renderChars(d.chars||[]);
+  if(refit) fit(); else applyScale();
+  status(d.regions.length+' regions · '+d.edges.length+' edges · '+d.portals.length+' portals · '
+         +d.npcs.length+' npcs · '+(d.chars||[]).length+' chars · click a region for details');
+}
+document.getElementById('profile').onchange = e => {
+  const [sp,jmp,snow] = e.target.value.split('_');
+  prof = {sp:+sp, jmp:+jmp, snow: snow==='1'};
+  load(true);
+};
+async function pollChars(){
+  try { const d = await (await fetch('/api/mapgraph?'+curQuery())).json(); if(!d.error) renderChars(d.chars||[]); }
+  catch(e){ /* keep last */ }
+  setTimeout(pollChars, 2000);
+}
+(async function init(){
+  if(!mapId){ status('no ?id= map given'); return; }
+  // ?sp=&jmp=&snow= pins the graph to the bot's exact movement profile before the first load
+  const aSp = P.get('sp'), aJmp = P.get('jmp');
+  if(aSp !== null && aJmp !== null){ prof = {sp:+aSp, jmp:+aJmp, snow: P.get('snow') === '1'}; }
+  await load(true);
+  // auto-run pathfind when linked with ?from=&to=&run=1 (e.g. from a bot stuck-travel log).
+  // ?tp=1 / ?fj=1 enable the bot's teleport / flash-jump skill edges, matching its eligibility.
+  const aFrom = P.get('from'), aTo = P.get('to');
+  if(P.get('run') === '1' && aFrom !== null && aTo !== null){
+    if(P.get('tp') === '1') document.getElementById('pfTeleport').checked = true;
+    if(P.get('fj') === '1') document.getElementById('pfFlashJump').checked = true;
+    pfReset(true);                 // enter pathfind mode (highlights button, sets status)
+    runPathfind(+aFrom, +aTo);
+  }
+  pollChars();
+})();
+</script>
+</body>
+</html>

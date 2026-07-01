@@ -1700,6 +1700,27 @@ public class StatEffect {
         }
     }
 
+    /** True if this consumable's effect removes at least one status ailment (antidote/eyedrop/
+     *  tonic/holy water/all-cure). Used by bot inventory classification to spot cure items. */
+    public boolean curesAnyDebuff() {
+        return (cureDebuffs != null && !cureDebuffs.isEmpty()) || isCureAllAbnormalStatus();
+    }
+
+    /** True only for a full-spectrum cure (All Cure Potion / White Elixir): either the dedicated
+     *  cure-all source, or a cureDebuffs list covering every curable ailment. Single-ailment cures
+     *  (antidote = poison only, eyedrop = darkness only, ...) return false. */
+    public boolean curesAllAbnormalStatus() {
+        if (isCureAllAbnormalStatus()) {
+            return true;
+        }
+        return cureDebuffs != null
+                && cureDebuffs.contains(Disease.POISON)
+                && cureDebuffs.contains(Disease.SEAL)
+                && cureDebuffs.contains(Disease.DARKNESS)
+                && cureDebuffs.contains(Disease.WEAKEN)
+                && cureDebuffs.contains(Disease.CURSE);
+    }
+
     public static boolean isHerosWill(int skillid) {
         switch (skillid) {
             case Hero.HEROS_WILL:
@@ -1989,6 +2010,13 @@ public class StatEffect {
         return fixdamage;
     }
 
+    /** Warp target of a town-scroll effect: -1 = none, {@link MapId#NONE} = nearest town
+     *  (current map's returnMap), else the fixed town map id. Exposed so bots can pre-check
+     *  a return scroll's destination before consuming it. */
+    public int getMoveTo() {
+        return moveTo;
+    }
+
     public short getBulletCount() {
         return bulletCount;
     }
@@ -1999,6 +2027,14 @@ public class StatEffect {
 
     public int getMoneyCon() {
         return moneyCon;
+    }
+
+    public int getItemCon() {
+        return itemCon;
+    }
+
+    public int getItemConNo() {
+        return itemConNo;
     }
 
     public int getCooldown() {

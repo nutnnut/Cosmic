@@ -30,7 +30,8 @@
       "mcp__mcp_server_mysql__mysql_query",
       "Bash(git -C \"D:/GameServers/Maplestory/Cosmic\" ls-files)",
       "Bash(grep -rn \"wz-path\\\\|System.getProperty\\\\|WZ_PATH\\\\|Path.of\\\\|String WZ\\\\|baseDir\\\\|getPath\" src/main/java/provider/wz/WZFiles.java)",
-      "Bash(sed -n '210,235p' pom.xml)"
+      "Bash(sed -n '210,235p' pom.xml)",
+      "PowerShell(\\(Get-Content src\\\\test\\\\java\\\\server\\\\bots\\\\BotInventoryManagerTest.java | Measure-Object -Line\\).Lines)"
     ]
   }
 }

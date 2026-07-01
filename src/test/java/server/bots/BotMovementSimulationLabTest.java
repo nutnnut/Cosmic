@@ -183,7 +183,11 @@ class BotMovementSimulationLabTest {
         assertTrue(trace.stream().anyMatch(line -> line.contains("nav=exec")
                         && line.contains("edge=JUMP r28->r27")),
                 "seeded jump edge should execute once the bot reaches its launch point");
-        assertTrue(trace.stream().anyMatch(line -> line.contains("nav=new")
+        // The commit is a fresh plan from the new region. Accept any (re)planning decision — "new" or the
+        // committed-route equivalents "replan"/"route" (added after this test) — as long as it commits a
+        // grounded JUMP out of r27; the specific label is an internal distinction, not the behaviour.
+        assertTrue(trace.stream().anyMatch(line -> (line.contains("nav=new")
+                        || line.contains("nav=replan") || line.contains("nav=route"))
                         && line.contains("phys=GND")
                         && line.contains("edge=JUMP r27->r")),
                 "after landing, the next AI tick should commit the next authored jump from the new region");
@@ -244,6 +248,78 @@ class BotMovementSimulationLabTest {
                 "walk-off drops should not require an explicit DROP execution step");
         assertEquals(scenario.edge().toRegionId, graph.findRegionId(map, lab.position("DROPPER")),
                 "bot should land in the destination region after walking off the ledge");
+    }
+
+    @Test
+    void shouldRecoverFromStaleElNathDropEdgeWindowJustOutsideBot() {
+        // pathlog-Leroy-2026-06-12T141517: El Nath ice (fs=0.2). The bot parked 2px OUTSIDE
+        // a stale committed DROP window and reused it (blocked) for 21s, while every fresh
+        // A* plan's window already contained the bot. With window-inset steering plus the
+        // blocked-position give-up, the bot must traverse to the lower region in seconds.
+        MapleMap map = BotNavigationMapLoader.loadMapGeometry(211000000);
+        BotNavigationGraph graph = BotNavigationGraphProvider.rebuildGraph(map);
+        int fromRegionId = graph.findRegionId(map, new Point(1287, 34));
+        int toRegionId = graph.findRegionId(map, new Point(1285, 94));
+        BotNavigationGraph.Edge liveEdge = graph.getOutgoing(fromRegionId).stream()
+                .filter(edge -> edge.type == BotNavigationGraph.EdgeType.DROP)
+                .filter(edge -> edge.toRegionId == toRegionId && edge.launchStepX == 0)
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("expected a straight DROP edge between the log regions"));
+
+        // Bot stands inside the live plan's window (log: x=1287) but 2px outside the stale one.
+        int botX = Math.clamp(1287, liveEdge.launchMinX, liveEdge.launchMaxX);
+        BotNavigationGraph.Edge staleEdge = new BotNavigationGraph.Edge(
+                fromRegionId, toRegionId, BotNavigationGraph.EdgeType.DROP,
+                new Point(botX - 22, liveEdge.startPoint.y), new Point(botX - 22, liveEdge.endPoint.y),
+                botX - 42, botX - 2, 0, 0, 0, 0, 0, liveEdge.cost);
+
+        BotMovementSimulationLab lab = BotMovementSimulationLab.fromMap(map);
+        BotNavigationGraph.Region fromRegion = graph.getRegion(fromRegionId);
+        lab.spawnBot("LEROY", 80, map, fromRegion.pointAt(botX));
+        lab.setMoveTarget("LEROY", new Point(1242, 94), true);
+        lab.setNavState("LEROY", staleEdge, toRegionId, true);
+        lab.setAiAccumulator("LEROY", 50);
+
+        lab.step(60); // 3s budget vs the 21s field freeze
+
+        assertEquals(toRegionId, graph.findRegionId(map, lab.position("LEROY")),
+                "bot must traverse to the lower region instead of parking outside the stale window\n"
+                        + String.join("\n", lab.formatRecentTrace("LEROY", 12)));
+    }
+
+    @Test
+    void shouldCreepIntoTightSlipperyJumpLaunchWindowFromRest() {
+        // pathlog-Leroy-2026-06-12T140609: El Nath ice (fs=0.2), JUMP edge (72,-409)->(192,-97)
+        // with a genuine 2px launch window [72,73]; the bot rested 2-3px short and froze for
+        // 16.7s. Legal pulse-creep (50ms accel pulses + glide-out with fractional ground physX
+        // preserved, window-aware overshoot slack) must enter the window and fire the jump.
+        MapleMap map = BotNavigationMapLoader.loadMapGeometry(211000000);
+        BotNavigationGraph graph = BotNavigationGraphProvider.rebuildGraph(map);
+        int fromRegionId = graph.findRegionId(map, new Point(70, -409));
+        BotNavigationGraph.Edge jumpEdge = graph.getOutgoing(fromRegionId).stream()
+                .filter(edge -> edge.type == BotNavigationGraph.EdgeType.JUMP)
+                .filter(edge -> edge.endPoint.equals(new Point(192, -97)))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("expected the log's JUMP edge to (192,-97)"));
+        assertTrue(jumpEdge.launchMaxX - jumpEdge.launchMinX <= 4,
+                "fixture expects the log's tight launch window (was [72,73], width 2)");
+
+        BotMovementSimulationLab lab = BotMovementSimulationLab.fromMap(map);
+        Point start = graph.getRegion(fromRegionId).pointAt(jumpEdge.launchMinX - 2);
+        BotEntry entry = lab.spawnBot("LEROY", 81, map, start);
+        lab.setMoveTarget("LEROY", new Point(443, -97), true);
+        lab.setNavState("LEROY", jumpEdge, graph.findRegionId(map, new Point(443, -97)), true);
+        lab.setAiAccumulator("LEROY", 50);
+
+        boolean launched = false;
+        for (int tick = 0; tick < 60 && !launched; tick++) { // 3s budget vs 16.7s field freeze
+            lab.step(1);
+            launched = entry.inAir;
+        }
+
+        assertTrue(launched,
+                "bot must creep into the tight launch window and jump instead of parking outside it\n"
+                        + String.join("\n", lab.formatRecentTrace("LEROY", 12)));
     }
 
     private static MapleMap createFlatMap(int mapId, int x1, int x2, int y) {

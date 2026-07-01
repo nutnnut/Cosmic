@@ -115,7 +115,6 @@ public class BotFollowTickPerfHarness {
                 BotEntry entry = new BotEntry(bot, owner, null);
                 entry.following = true;
                 entry.lastMapId = map.getId();
-                entry.fhIndex = BotMovementManager.buildFhIndex(map);
                 entry.movementProfile = BotMovementProfile.fromCharacter(bot);
                 BotPhysicsEngine.teleportTo(entry, bot, bot.getPosition());
                 BotMovementManager.resetEntryStateAfterTeleport(entry);

@@ -57,7 +57,6 @@ final class BotMovementSimulationLab {
         BotEntry entry = new BotEntry(bot, null, null);
         entry.skipDelayMs = 0;
         entry.lastMapId = map.getId();
-        entry.fhIndex = BotMovementManager.buildFhIndex(map);
         entry.movementProfile = BotMovementProfile.fromCharacter(bot);
         bots.put(name, entry);
         return entry;
@@ -117,7 +116,6 @@ final class BotMovementSimulationLab {
     void primeMapState(String botName) {
         BotEntry entry = requireBot(botName);
         entry.lastMapId = entry.bot.getMapId();
-        entry.fhIndex = BotMovementManager.buildFhIndex(entry.bot.getMap());
     }
 
     void attachBotToRope(String botName, Rope rope, int y) {
@@ -387,6 +385,10 @@ final class BotMovementSimulationLab {
                         edge.fromRegionId, edge.toRegionId, formatPoint(edge.startPoint), formatPoint(edge.endPoint), edge.launchStepX);
                 case PORTAL -> String.format("PORTAL r%d->r%d %s->%s",
                         edge.fromRegionId, edge.toRegionId, formatPoint(edge.startPoint), formatPoint(edge.endPoint));
+                case TELEPORT -> String.format("TELEPORT r%d->r%d %s->%s",
+                        edge.fromRegionId, edge.toRegionId, formatPoint(edge.startPoint), formatPoint(edge.endPoint));
+                case FLASH_JUMP -> String.format("FLASH_JUMP r%d->r%d %s->%s stepX=%d",
+                        edge.fromRegionId, edge.toRegionId, formatPoint(edge.startPoint), formatPoint(edge.endPoint), edge.launchStepX);
             };
         }
 

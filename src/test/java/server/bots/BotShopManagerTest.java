@@ -15,7 +15,11 @@ import server.maps.MapleMap;
 import testutil.Items;
 
 import java.awt.*;
+import java.lang.reflect.Method;
+import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.function.IntUnaryOperator;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -23,8 +27,11 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyDouble;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.mockStatic;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class BotShopManagerTest {
@@ -118,6 +125,23 @@ class BotShopManagerTest {
     }
 
     @Test
+    void shouldWantReturnScrollsBelowTenWithoutTriggeringShopVisitByItself() {
+        Character bot = bowBotWithArrows(5000);
+        bot.getInventory(InventoryType.USE).addItem(Items.itemWithQuantity(2030000, 3));
+
+        assertTrue(BotShopManager.shouldBuyReturnScrollWhileShopping(bot));
+        assertFalse(entryWouldTriggerShopVisit(bot, WeaponType.BOW));
+    }
+
+    @Test
+    void shouldNotWantReturnScrollsAtTen() {
+        Character bot = bowBotWithArrows(5000);
+        bot.getInventory(InventoryType.USE).addItem(Items.itemWithQuantity(2030000, 10));
+
+        assertFalse(BotShopManager.shouldBuyReturnScrollWhileShopping(bot));
+    }
+
+    @Test
     void shouldTriggerSellTrashShopVisitEvenWhenNoResupplyIsNeeded() {
         Character bot = mock(Character.class);
         MapleMap map = mock(MapleMap.class);
@@ -142,7 +166,7 @@ class BotShopManagerTest {
             when(factory.getShopForNPC(npc.getId())).thenReturn(shop);
             attacks.when(() -> BotAttackExecutionProvider.getEquippedWeaponType(bot)).thenReturn(WeaponType.CLAW);
             potions.when(() -> BotPotionManager.countPotions(bot)).thenReturn(new int[]{9999, 9999});
-            inventories.when(() -> BotInventoryManager.collectSellTrashEquips(entry, bot))
+            inventories.when(() -> BotInventoryManager.collectSellTrashItems(entry, bot))
                     .thenReturn(List.of(mock(Item.class)));
 
             BotShopManager.requestSellTrashVisit(entry, bot);
@@ -151,6 +175,150 @@ class BotShopManagerTest {
         assertTrue(entry.shopVisitPending);
         assertTrue(entry.shopSellTrashPending);
         assertEquals(new Point(20, 0), entry.shopNpcPos);
+    }
+
+    @Test
+    void shouldAutoTriggerSellTrashVisitWhenEtcTabIsCramped() {
+        Character bot = mock(Character.class);
+        MapleMap map = mock(MapleMap.class);
+        BotEntry entry = new BotEntry(bot, null, null);
+        NPC npc = shopNpc(new Point(20, 0));
+        Shop shop = mock(Shop.class);
+
+        Inventory etc = new Inventory(bot, InventoryType.ETC, (byte) 3); // 2 free slots -> cramped
+        etc.addItem(Items.itemWithQuantity(4000000, 50));
+        when(bot.getMap()).thenReturn(map);
+        when(bot.getPosition()).thenReturn(new Point(0, 0));
+        when(bot.getInventory(InventoryType.USE)).thenReturn(new Inventory(bot, InventoryType.USE, (byte) 24));
+        when(bot.getInventory(InventoryType.ETC)).thenReturn(etc);
+        when(bot.getBuffedValue(any(BuffStat.class))).thenReturn(null);
+        when(map.getMapObjectsInRange(any(Point.class), anyDouble(), any())).thenReturn(List.of(npc));
+        when(shop.getItems()).thenReturn(List.of());
+
+        try (MockedStatic<BotAttackExecutionProvider> attacks =
+                     mockStatic(BotAttackExecutionProvider.class, org.mockito.Mockito.CALLS_REAL_METHODS);
+             MockedStatic<BotPotionManager> potions = mockStatic(BotPotionManager.class);
+             MockedStatic<ShopFactory> shops = mockStatic(ShopFactory.class);
+             MockedStatic<BotInventoryManager> inventories = mockStatic(BotInventoryManager.class)) {
+            ShopFactory factory = mock(ShopFactory.class);
+            shops.when(ShopFactory::getInstance).thenReturn(factory);
+            when(factory.getShopForNPC(npc.getId())).thenReturn(shop);
+            attacks.when(() -> BotAttackExecutionProvider.getEquippedWeaponType(bot)).thenReturn(WeaponType.CLAW);
+            potions.when(() -> BotPotionManager.countPotions(bot)).thenReturn(new int[]{9999, 9999});
+            inventories.when(() -> BotInventoryManager.collectSellTrashEtcItems(bot))
+                    .thenReturn(List.of(mock(Item.class)));
+
+            BotShopManager.onMapChange(entry, bot);
+        }
+
+        assertTrue(entry.shopVisitPending);
+        assertTrue(entry.shopSellTrashPending);
+    }
+
+    @Test
+    void shouldNotAutoTriggerSellTrashVisitWithThreeFreeSlots() {
+        Character bot = mock(Character.class);
+        BotEntry entry = new BotEntry(bot, null, null);
+        Inventory etc = new Inventory(bot, InventoryType.ETC, (byte) 4);
+        etc.addItem(Items.itemWithQuantity(4000000, 50));
+        when(bot.getInventory(InventoryType.EQUIP)).thenReturn(null);
+        when(bot.getInventory(InventoryType.USE)).thenReturn(null);
+        when(bot.getInventory(InventoryType.ETC)).thenReturn(etc);
+
+        assertFalse(BotShopManager.shouldAutoSellTrash(entry, bot));
+    }
+
+    @Test
+    void shouldSellWholePlannedAmmoStackWithNoPartyReserveCarveOut() throws Exception {
+        // Party-arrow reserve removed: a stack the planner put on the sell list is shed whole; ammo
+        // reserves are now decided upstream by the runway/shelf model, not a per-item quantity guard.
+        Character bot = mock(Character.class);
+        MapleMap map = mock(MapleMap.class);
+        BotEntry entry = new BotEntry(bot, null, null);
+        Point npcPos = new Point(20, 0);
+        NPC npc = shopNpc(npcPos);
+        Shop shop = mock(Shop.class);
+        Inventory use = new Inventory(bot, InventoryType.USE, (byte) 24);
+        Item arrows = Items.itemWithQuantity(2061004, 7_000);
+        short slot = use.addItem(arrows);
+
+        entry.shopVisitPending = true;
+        entry.shopSequenceActive = true;
+        when(bot.getMap()).thenReturn(map);
+        when(bot.getPosition()).thenReturn(new Point(20, 0));
+        when(bot.getInventory(InventoryType.USE)).thenReturn(use);
+        when(map.getMapObjectsInRange(any(Point.class), anyDouble(), any())).thenReturn(List.of(npc));
+
+        Method runSellTrashStep = BotShopManager.class.getDeclaredMethod(
+                "runSellTrashStep",
+                BotEntry.class, Character.class, Point.class, int.class, List.class, Set.class,
+                List.class, Set.class, List.class, Class.forName("server.bots.BotShopManager$BuyReport"));
+        runSellTrashStep.setAccessible(true);
+
+        try (MockedStatic<ShopFactory> shops = mockStatic(ShopFactory.class);
+             MockedStatic<BotManager> managers =
+                     mockStatic(BotManager.class, org.mockito.Mockito.CALLS_REAL_METHODS)) {
+            ShopFactory factory = mock(ShopFactory.class);
+            shops.when(ShopFactory::getInstance).thenReturn(factory);
+            when(factory.getShopForNPC(npc.getId())).thenReturn(shop);
+            managers.when(() -> BotManager.after(anyLong(), any(Runnable.class))).thenReturn(null);
+
+            runSellTrashStep.invoke(null, entry, bot, npcPos, 0, new ArrayList<String>(), new HashSet<Item>(),
+                    List.of(arrows), new HashSet<Item>(), List.of(), null);
+        }
+
+        verify(shop).sell(any(), eq(InventoryType.USE), eq(slot), eq((short) 7_000));
+    }
+
+    @Test
+    void shouldSellTrashAtEndOfAnyShopVisitEvenWhenNotFlaggedForSelling() throws Exception {
+        // SSOT: a plain resupply visit (shopSellTrashPending = false) must still unload trash once
+        // the purchase actions are done, as long as there is sellable junk. Drive runPurchaseStep
+        // to its terminal index and verify it schedules the sell step (500ms cadence).
+        Character bot = mock(Character.class);
+        MapleMap map = mock(MapleMap.class);
+        BotEntry entry = new BotEntry(bot, null, null);
+        Point npcPos = new Point(20, 0);
+        NPC npc = shopNpc(npcPos);
+        Shop shop = mock(Shop.class);
+
+        entry.shopVisitPending = true;
+        entry.shopSequenceActive = true;
+        entry.shopSellTrashPending = false; // incidental visit, not an explicit sell request
+        when(bot.getMap()).thenReturn(map);
+        when(bot.getPosition()).thenReturn(new Point(20, 0));
+        when(map.getMapObjectsInRange(any(Point.class), anyDouble(), any())).thenReturn(List.of(npc));
+
+        Class<?> buyReport = Class.forName("server.bots.BotShopManager$BuyReport");
+        Class<?> purchaseSequence = Class.forName("server.bots.BotShopManager$PurchaseSequence");
+        var seqCtor = purchaseSequence.getDeclaredConstructor(
+                BotEntry.class, Character.class, Point.class, List.class, List.class, buyReport);
+        seqCtor.setAccessible(true);
+        Object sequence = seqCtor.newInstance(
+                entry, bot, npcPos, List.of(), new ArrayList<String>(), null);
+
+        Method runPurchaseStep = BotShopManager.class.getDeclaredMethod(
+                "runPurchaseStep", purchaseSequence, int.class);
+        runPurchaseStep.setAccessible(true);
+
+        try (MockedStatic<ShopFactory> shops = mockStatic(ShopFactory.class);
+             MockedStatic<BotInventoryManager> inventories = mockStatic(BotInventoryManager.class);
+             MockedStatic<BotManager> managers =
+                     mockStatic(BotManager.class, org.mockito.Mockito.CALLS_REAL_METHODS)) {
+            ShopFactory factory = mock(ShopFactory.class);
+            shops.when(ShopFactory::getInstance).thenReturn(factory);
+            when(factory.getShopForNPC(npc.getId())).thenReturn(shop);
+            inventories.when(() -> BotInventoryManager.collectSellTrashItems(entry, bot))
+                    .thenReturn(List.of(mock(Item.class)));
+            managers.when(() -> BotManager.after(anyLong(), any(Runnable.class))).thenReturn(null);
+
+            runPurchaseStep.invoke(null, sequence, 0); // index 0 >= 0 actions -> terminal sell tail
+
+            // Scheduling the 500ms sell step (SELL_TRASH_STEP_DELAY_MS) proves the sell tail ran
+            // despite shopSellTrashPending = false. The old gated code would have finished the
+            // purchase here instead, never touching the sell path.
+            managers.verify(() -> BotManager.after(eq(500L), any(Runnable.class)));
+        }
     }
 
     private static Character clawBotWithStars(int... quantities) {

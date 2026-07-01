@@ -2,11 +2,13 @@ package server.bots;
 
 import client.BotClient;
 import client.Character;
+import client.Client;
 import client.Job;
 import client.inventory.Equip;
 import client.inventory.Inventory;
 import client.inventory.InventoryType;
 import client.inventory.Item;
+import client.inventory.ModifyInventory;
 import client.inventory.WeaponType;
 import client.inventory.manipulator.InventoryManipulator;
 import config.YamlConfig;
@@ -26,13 +28,19 @@ import tools.PacketCreator;
 
 import java.awt.*;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ThreadLocalRandom;
+import java.util.function.IntPredicate;
+import java.util.function.IntUnaryOperator;
 import java.util.function.Predicate;
 
 class BotInventoryManager {
@@ -41,8 +49,9 @@ class BotInventoryManager {
     private static final int MANUAL_TRADE_TIMEOUT_MS = 60_000;
     private static final int TRADE_WINDOW_ITEM_LIMIT = 9;
     private static final String RESERVED_EQUIPS_CATEGORY_PREFIX = "equips:reserved:";
+    private static final Map<Integer, Optional<StatEffect>> itemEffectCache = new ConcurrentHashMap<>();
     private record PreparedTradeItems(List<Item> items, String errorMessage) {}
-    private record EquipTradeGroups(List<Item> normal,
+    record EquipTradeGroups(List<Item> normal,
                                     List<Item> reservedForOther,
                                     List<Item> reservedForSelf) {
         List<Item> itemsFor(EquipsGroup group) {
@@ -146,29 +155,29 @@ class BotInventoryManager {
                 if (drop.getMeso() <= 0 && drop.getItemId() > 0) {
                     InventoryType type = ItemConstants.getInventoryType(drop.getItemId());
                     Inventory inventory = bot.getInventory(type);
-                    if (inventory != null && inventory.isFull() && entry.invFullWarnCooldownMs <= 0) {
-                        BotManager.getInstance().botReply(entry, type.name().toLowerCase() + " inventory is full!");
-                        entry.invFullWarnCooldownMs = BotMovementManager.delayAfterCurrentTick(BotManager.cfg.INV_FULL_WARN_CD_MS);
+                    if (inventory != null && inventory.isFull()) {
+                        warnInventoryFull(entry, type);
                     }
                 }
                 continue;
             }
 
-            if (drop.getMeso() <= 0 && drop.getItemId() > 0) {
+            // NX cards consume on pickup (credit account NX, never enter the bag - Character.pickupItem),
+            // so a full ETC inventory must not block them; the player path bypasses the space check
+            // for NX cards too. Without this, a bot with a full ETC bag silently loses NX income.
+            if (drop.getMeso() <= 0 && drop.getItemId() > 0 && !ItemId.isNxCard(drop.getItemId())) {
                 InventoryType type = ItemConstants.getInventoryType(drop.getItemId());
                 Inventory inventory = bot.getInventory(type);
                 if (inventory != null && inventory.isFull()) {
-                    if (entry.invFullWarnCooldownMs <= 0) {
-                        BotManager.getInstance().botReply(entry, type.name().toLowerCase() + " inventory is full!");
-                        entry.invFullWarnCooldownMs = BotMovementManager.delayAfterCurrentTick(BotManager.cfg.INV_FULL_WARN_CD_MS);
-                    }
+                    warnInventoryFull(entry, type);
                     continue;
                 }
             }
 
             Item pickedItem = drop.getItem();
             int pickedItemId = drop.getItemId();
-            if (ItemId.isNxCard(pickedItemId) && entry.owner != null && entry.owner.getMap() == bot.getMap()) {
+            if (BotManager.cfg.REDIRECT_NX_CARDS_TO_OWNER && ItemId.isNxCard(pickedItemId)
+                    && entry.owner != null && entry.owner != bot && entry.owner.getMap() == bot.getMap()) {
                 entry.owner.pickupItem(drop);
             } else {
                 bot.pickupItem(drop);
@@ -177,7 +186,10 @@ class BotInventoryManager {
             if (pickedItem != null && pickedItemId > 0 && hasItem(bot, pickedItem)) {
                 InventoryType pickedType = ItemConstants.getInventoryType(pickedItemId);
                 if (pickedType == InventoryType.EQUIP) {
-                    BotEquipManager.autoEquip(bot, entry.owner, entry.pendingLootOfferItem);
+                    if (BotEquipManager.autoEquip(bot, entry.owner, entry.pendingLootOfferItem)) {
+                        // A looted roll just got worn — re-ask stay-or-leave soon (autopilot).
+                        BotAutopilotManager.noteGearUpgraded(entry);
+                    }
                     if (hasItem(bot, pickedItem)) {
                         BotOfferManager.scheduleLootOfferPrompt(entry, bot, pickedItem, 5_000L);
                     }
@@ -186,6 +198,14 @@ class BotInventoryManager {
                 }
             }
         }
+    }
+
+    private static void warnInventoryFull(BotEntry entry, InventoryType type) {
+        if (entry.invFullWarnCooldownMs > 0) {
+            return;
+        }
+        BotManager.getInstance().botReply(entry, type.name().toLowerCase() + " inventory is full!");
+        entry.invFullWarnCooldownMs = BotMovementManager.delayAfterCurrentTick(BotManager.cfg.INV_FULL_WARN_CD_MS);
     }
 
     /**
@@ -266,11 +286,28 @@ class BotInventoryManager {
         return nearest;
     }
 
+    /** A peer bot may auto-join an incoming trade from another bot it shares a stable with: same human
+     *  owner (owned stable) OR same crew. Crew bots are SELF-owned (owner == self), so the owner check
+     *  fails for them — the crewGroupId is the SSOT relationship. Without the crew arm, crewmate-to-
+     *  crewmate trades stalled: the recipient never joined and the donor timed out. See
+     *  {@link BotManager#crewMatesOnMap} and kb_bot_self_owned_owner_assumptions. */
+    private static boolean isPeerTradePartner(BotEntry entry, Character partnerBot) {
+        if (entry.owner != null
+                && BotOwnershipService.getInstance().isAuthorizedOwner(partnerBot.getId(), entry.owner.getId())) {
+            return true;
+        }
+        if (entry.crewGroupId != null) {
+            BotEntry partnerEntry = BotManager.getInstance().getEntryByBotCharId(partnerBot.getId());
+            return partnerEntry != null && entry.crewGroupId.equals(partnerEntry.crewGroupId);
+        }
+        return false;
+    }
+
     static void tickManualTrade(BotEntry entry, Character bot) {
         if (entry.pendingTradeCategory != null) return;
 
         Trade trade = bot.getTrade();
-        Character owner = entry.owner;
+        Character commander = BotManager.getInstance().commanderOrOwner(entry);
         if (trade == null) {
             clearManualTradeState(entry, bot);
             return;
@@ -290,22 +327,21 @@ class BotInventoryManager {
             }
         }
 
-        if (owner == null) {
+        if (commander == null) {
             return;
         }
 
-        Trade ownerTrade = owner.getTrade();
+        Trade commanderTrade = commander.getTrade();
         Trade partner = trade.getPartner();
-        boolean isOwnerTrade = ownerTrade != null
-                && partner == ownerTrade
-                && ownerTrade.getPartner() == trade
-                && owner.getId() == ownerTrade.getChr().getId();
-        if (!isOwnerTrade) {
-            // Handle peer-bot trade: same-owner bot offering an item to this bot
+        boolean isCommanderTrade = commanderTrade != null
+                && partner == commanderTrade
+                && commanderTrade.getPartner() == trade
+                && commander.getId() == commanderTrade.getChr().getId();
+        if (!isCommanderTrade) {
+            // Handle peer-bot trade: a bot in the same stable offering an item to this bot
             boolean isPeerBotTrade = partner != null
                     && partner.getChr().getClient() instanceof client.BotClient
-                    && owner != null
-                    && BotOwnershipService.getInstance().isAuthorizedOwner(partner.getChr().getId(), owner.getId());
+                    && isPeerTradePartner(entry, partner.getChr());
             if (!isPeerBotTrade) {
                 manualTradeGreetingSent.remove(bot.getId());
                 return;
@@ -324,20 +360,20 @@ class BotInventoryManager {
             // Confirm once the offering bot has confirmed its side
             if (trade.isPartnerConfirmed()) {
                 completeTradeAndThank(entry, bot, trade);
-                BotEquipManager.autoEquip(bot, owner, null);
+                BotEquipManager.autoEquip(bot, commander, null);
             }
             return;
         }
 
         if (!trade.isFullTrade()) {
-            // Only accept on bot's behalf when the owner was the initiator (bot is slot 1).
-            // When bot is slot 0 (bot initiated via "trade me"), wait for owner to accept.
+            // Only accept on bot's behalf when the commander was the initiator (bot is slot 1).
+            // When bot is slot 0 (bot initiated via "trade me"), wait for commander to accept.
             if (trade.getNumber() != 1) return;
             if (entry.manualTradeAcceptDelayMs == 0)
                 entry.manualTradeAcceptDelayMs = 500 + BotMovementManager.cfg.TICK_MS;
             entry.manualTradeAcceptDelayMs = BotMovementManager.tickDown(entry.manualTradeAcceptDelayMs);
             if (entry.manualTradeAcceptDelayMs > 0) return;
-            Trade.visitTrade(bot, owner);
+            Trade.visitTrade(bot, commander);
             trade = bot.getTrade();
             if (trade == null || !trade.isFullTrade()) return;
         }
@@ -348,7 +384,7 @@ class BotInventoryManager {
 
         if (trade.isPartnerConfirmed()) {
             completeTradeAndThank(entry, bot, trade);
-            BotEquipManager.autoEquip(bot, owner, null);
+            BotEquipManager.autoEquip(bot, commander, null);
         }
     }
 
@@ -419,7 +455,9 @@ class BotInventoryManager {
             startTradeMesoTransfer(category, entry, bot);
             return;
         }
-        Character owner = entry.owner;
+        // Trade with the bound admin commander when one issued the command (gm debug-inspecting a bot
+        // it doesn't own), else the real owner. commanderOrOwner is the SSOT for this resolution.
+        Character owner = BotManager.getInstance().commanderOrOwner(entry);
         if (owner == null) {
             BotManager.getInstance().botReply(entry, "can't find you to trade!");
             return;
@@ -488,6 +526,55 @@ class BotInventoryManager {
             return;
         }
         startTradeSequence("loot_offer", recipient, List.of(item), 0, true, entry, bot);
+    }
+
+    /**
+     * "Let me see": put the proposed scroll-target equip + the scroll into a trade with the owner so
+     * they can decide -- decline (items return) or accept (take them and scroll it themself). A worn
+     * target is first moved to the bag with its slot registered in {@code pendingTradeRestoreSlots},
+     * so a declined trade re-equips it via the standard restore net; an accepted trade just consumes
+     * it (restore skips items the bot no longer has).
+     */
+    static void startScrollReviewTrade(BotEntry entry, Character bot, Item equip, Item scroll) {
+        if (entry == null || bot == null || !(equip instanceof Equip) || scroll == null) {
+            return;
+        }
+        // Show it to whoever asked: the admin commander while a debug binding is fresh, else the real
+        // owner (mirrors resolveTradeRecipient). Using entry.owner here sent the "let me see" trade to
+        // the absent owner when an admin requested it, so nothing opened for the admin.
+        Character owner = BotManager.getInstance().commanderOrOwner(entry);
+        if (owner == null || owner == bot) {
+            BotManager.getInstance().botReply(entry, "no one here to show it to");
+            return;
+        }
+        if (bot.getTrade() != null || entry.pendingTradeCategory != null || owner.getTrade() != null) {
+            BotManager.getInstance().botReply(entry, "cant open a trade rn, ask again in a bit");
+            return;
+        }
+        if (!hasItem(bot, equip) || !hasItem(bot, scroll)) {
+            BotManager.getInstance().botReply(entry, "nvm, my inventory changed");
+            return;
+        }
+        Item tradeEquip = equip;
+        if (equip.getPosition() < 0) { // worn -> pull into the bag so it can be traded
+            Inventory equipBag = bot.getInventory(InventoryType.EQUIP);
+            short src = equip.getPosition();
+            short dst = equipBag.getNextFreeSlot();
+            if (dst < 0) {
+                BotManager.getInstance().botReply(entry, "my equip bag's full, cant pull it off to show you");
+                return;
+            }
+            InventoryManipulator.handleItemMove(bot.getClient(), InventoryType.EQUIP, src, dst, (short) 1);
+            Item moved = equipBag.getItem(dst);
+            if (moved == null) {
+                BotManager.getInstance().botReply(entry, "couldnt get it ready, nvm");
+                return;
+            }
+            entry.pendingTradeRestoreSlots.put(moved, src);
+            tradeEquip = moved;
+        }
+        BotManager.getInstance().botReply(entry, "sure, take a look - here's the gear + the scroll");
+        startTradeSequence("scroll_review", owner, List.of(tradeEquip, scroll), 0, true, entry, bot);
     }
 
     static boolean hasTransferableItems(String category, BotEntry entry, Character bot) {
@@ -882,6 +969,7 @@ class BotInventoryManager {
         }
         boolean receivedSomething = trade.getPartner() != null && trade.getPartner().hasAnyOffer();
         Trade.completeTrade(bot);
+        sortOwnAmmoSlots(bot);
         long replyDelay = BotManager.randMs(800, 1300);
         if (receivedSomething) {
             bot.changeFaceExpression(Emote.HAPPY.getValue());
@@ -895,7 +983,8 @@ class BotInventoryManager {
     }
 
     private static void startTradeMesoTransfer(String category, BotEntry entry, Character bot) {
-        Character owner = entry.owner;
+        // Honor the bound admin commander (gm debug) over the real owner, like startTradeTransfer.
+        Character owner = BotManager.getInstance().commanderOrOwner(entry);
         if (owner == null) {
             BotManager.getInstance().botReply(entry, "can't find you to trade!");
             return;
@@ -1223,28 +1312,54 @@ class BotInventoryManager {
     }
 
     static StatEffect itemEffect(int itemId) {
-        try { return ItemInformationProvider.getInstance().getItemEffect(itemId); }
-        catch (Exception e) { return null; }
+        Optional<StatEffect> cached = itemEffectCache.get(itemId);
+        if (cached != null) {
+            return cached.orElse(null);
+        }
+        try {
+            StatEffect effect = ItemInformationProvider.getInstance().getItemEffect(itemId);
+            itemEffectCache.putIfAbsent(itemId, Optional.ofNullable(effect));
+            return effect;
+        } catch (Exception e) {
+            // Cache the failure too: getItemEffect parses WZ before throwing, so a single bad USE
+            // item (re-scanned every potion check, no slot moves) otherwise re-paid that parse
+            // forever - the ~300ms recurring potion-recovery-scan stall (Bowgurl @ Orbis).
+            itemEffectCache.putIfAbsent(itemId, Optional.empty());
+            return null;
+        }
     }
 
     static boolean isRecoveryPotion(int itemId) {
-        StatEffect fx = itemEffect(itemId);
+        StatEffect fx = useEffect.effect(itemId);
         if (fx == null) return false;
         boolean heals = fx.getHp() > 0 || fx.getMp() > 0 || fx.getHpRate() > 0 || fx.getMpRate() > 0;
         return heals && fx.getStatups().isEmpty();
     }
 
     static boolean isBuffConsumable(int itemId) {
-        StatEffect fx = itemEffect(itemId);
+        StatEffect fx = useEffect.effect(itemId);
         return fx != null && !fx.getStatups().isEmpty();
     }
 
     private static void collectFromBag(Character bot, List<Item> result,
                                        InventoryType type, Predicate<Item> filter) {
+        collectFromBag(bot, result, type, filter, false);
+    }
+
+    /** {@code botAwareSafety}: when true, a STALE quest item for this bot passes the safe-to-drop
+     *  gate (Feature B) so it can be sold as clutter; the downstream {@code filter} (rare-drop,
+     *  maker-material, sellPrice>0, ...) still decides. When false, ALL quest items are excluded
+     *  (the strict EQUIP-safe behaviour). */
+    private static void collectFromBag(Character bot, List<Item> result, InventoryType type,
+                                       Predicate<Item> filter, boolean botAwareSafety) {
         Inventory inv = bot.getInventory(type);
         for (short slot = 1; slot <= inv.getSlotLimit(); slot++) {
             Item item = inv.getItem(slot);
-            if (item != null && isSafeToDrop(item) && filter.test(item)) result.add(item);
+            if (item == null) {
+                continue;
+            }
+            boolean safe = botAwareSafety ? isSafeToDrop(bot, item) : isSafeToDrop(item);
+            if (safe && filter.test(item)) result.add(item);
         }
     }
 
@@ -1253,7 +1368,16 @@ class BotInventoryManager {
             return false;
         }
 
-        Inventory inv = bot.getInventory(item.getInventoryType());
+        // A worn equip lives in the EQUIPPED inventory at a negative slot, but getInventoryType()
+        // reports EQUIP (it's derived from the item id, not the slot). Resolve the real inventory by
+        // slot sign so a currently-equipped item isn't falsely reported as gone — that false negative
+        // broke the scroll-confirm re-check ("cant scroll that anymore") once the bot equipped the
+        // proposed gear mid-grind, and the equivalent guard in startScrollReviewTrade.
+        InventoryType type = item.getInventoryType();
+        if (type == InventoryType.EQUIP && item.getPosition() < 0) {
+            type = InventoryType.EQUIPPED;
+        }
+        Inventory inv = bot.getInventory(type);
         if (inv == null) {
             return false;
         }
@@ -1263,12 +1387,14 @@ class BotInventoryManager {
     }
 
     private static Character resolveTradeRecipient(BotEntry entry, Character bot) {
+        // While an admin debug binding is fresh, command-driven trades open with the admin commander
+        // instead of the bot's real owner so the admin can give/take items for debugging.
+        Character owner = BotManager.getInstance().commanderOrOwner(entry);
         int recipientId = entry.pendingTradeRecipientId;
         if (recipientId <= 0) {
-            return entry.owner;
+            return owner;
         }
 
-        Character owner = entry.owner;
         if (owner != null && owner.getId() == recipientId) {
             return owner;
         }
@@ -1623,15 +1749,1240 @@ class BotInventoryManager {
 
         ItemInformationProvider ii = ItemInformationProvider.getInstance();
         List<Item> result = new ArrayList<>(trash.size());
+        List<Equip> keptValuables = new ArrayList<>();
         for (Item item : trash) {
-            if (item instanceof Equip equip && !shouldKeepForSellTrash(ii, equip)) {
+            if (item instanceof Equip equip) {
+                if (shouldKeepForSellTrash(ii, equip)) {
+                    keptValuables.add(equip);
+                } else {
+                    result.add(item);
+                }
+            }
+        }
+        result.addAll(valuableEquipOverflow(ii, keptValuables));
+        return result;
+    }
+
+    // The valuables shelf is bounded: good-roll equips kept for future trading are ranked by
+    // trade value and only the best KEEP_VALUABLE_EQUIP_SLOTS stay; the overflow sells like
+    // any junk. Without the cap every above-base roll accumulates forever.
+    static final int KEEP_VALUABLE_EQUIP_SLOTS = 24;
+
+    // Absolute keep gate ON TOP of the bounded shelf: an equip this far above its clean base
+    // (one good att-scroll pass, or +25 raw stat points) is never auto-sold even when the
+    // shelf overflows — a mule spawned holding a bag of genuine valuables must not liquidate
+    // them just because there are more than the shelf holds. Bag pressure is the lesser evil.
+    static final double NEVER_SELL_TRADE_SCORE = 25.0;
+
+    /** Kept-for-value equips ranked by trade value descending (rank = index + 1). Shared by
+     *  the real sell pipeline ({@link #valuableEquipOverflow}) and the debug classifier
+     *  ({@link #classifyBagEquips}) so both always agree. */
+    static List<Equip> rankKeptValuables(ItemInformationProvider ii, List<Equip> kept) {
+        List<Equip> ranked = new ArrayList<>(kept);
+        ranked.sort(Comparator.comparingDouble((Equip e) -> tradeValueScore(ii, e)).reversed()
+                .thenComparingInt(Item::getItemId));
+        return ranked;
+    }
+
+    /** Kept-for-value equips beyond the shelf cap, weakest trade value first — except equips
+     *  at or above {@link #NEVER_SELL_TRADE_SCORE}, which never sell regardless of overflow. */
+    static List<Item> valuableEquipOverflow(ItemInformationProvider ii, List<Equip> kept) {
+        if (kept.size() <= KEEP_VALUABLE_EQUIP_SLOTS) {
+            return List.of();
+        }
+        List<Equip> ranked = rankKeptValuables(ii, kept);
+        List<Item> overflow = new ArrayList<>();
+        for (Equip e : ranked.subList(KEEP_VALUABLE_EQUIP_SLOTS, ranked.size())) {
+            if (tradeValueScore(ii, e) < NEVER_SELL_TRADE_SCORE) {
+                overflow.add(e);
+            }
+        }
+        return overflow;
+    }
+
+    /**
+     * Bot-agnostic trade value of a kept roll: how far it beats its clean WZ base. Watk weighs
+     * 5 (what buyers pay for); matk is worth a stat point like everywhere else in the offense
+     * SSOT (user-tuned: +1 INT ≈ +1 MATK). Null ii (tests) scores raw values against base 0.
+     */
+    static double tradeValueScore(ItemInformationProvider ii, Equip equip) {
+        Map<String, Integer> stats = ii != null ? ii.getEquipStats(equip.getItemId()) : null;
+        double score = 0.0;
+        score += 5.0 * aboveBase(equip.getWatk(), stats, "PAD");
+        score += aboveBase(equip.getMatk(), stats, "MAD");
+        score += aboveBase(equip.getStr(), stats, "STR");
+        score += aboveBase(equip.getDex(), stats, "DEX");
+        score += aboveBase(equip.getInt(), stats, "INT");
+        score += aboveBase(equip.getLuk(), stats, "LUK");
+        return score;
+    }
+
+    private static int aboveBase(int value, Map<String, Integer> stats, String key) {
+        int base = stats != null ? stats.getOrDefault(key, 0) : 0;
+        return Math.max(0, value - base);
+    }
+
+    // ETC items consumed by skills (itemCon) — never trash, even though NPCs pay for them.
+    private static final Set<Integer> SKILL_CONSUMED_ETC = Set.of(
+            ItemId.MAGIC_ROCK, 4006001 /* Summoning Rock */);
+
+    // "Rare drop" keep gate: an item whose BEST dropper hands it out at most this often (out of
+    // 1,000,000 kills, i.e. <=1%) is worth far more to a future buyer than any NPC pays — a human
+    // wouldn't NPC it. drop_data check: this keeps ~75 of ~870 droppable ETC items; common mob
+    // drops (typically >=10%) all sell. Equips are NOT gated by rarity: most droppable equips are
+    // <=1% yet clean average rolls are NPC fodder — good rolls are already stat-protected
+    // (shouldKeepForSellTrash) and self-useful gear is reserved (collectPotentialSelfUpgradeItems).
+    private static final int RARE_DROP_KEEP_CHANCE = 10_000;
+    private static final int MONSTER_CRYSTAL_LEFTOVER_KEEP_QUANTITY = 100;
+
+    // === USE value model tunables (pressure-driven + value shelf) ===
+    // A USE stack worth at least this much is a trade good and is never auto-sold, even when the
+    // bag is cramped (analog of NEVER_SELL_TRADE_SCORE for equips).
+    static int USE_NEVER_SELL_MESO = 50_000;
+    // All-cure (status insurance) reserve kept in the combat runway.
+    static int ALL_CURE_RESERVE_SLOTS = 1;
+
+    // Test seams: ItemInformationProvider's WZ/DB static initializer can't run in unit tests
+    // (same pattern as BotShopManager) — price/leftover/rarity/maker lookups go through these.
+    @FunctionalInterface
+    interface SellPriceLookup {
+        int price(int itemId, int quantity);
+    }
+    static SellPriceLookup sellPrice =
+            (id, qty) -> ItemInformationProvider.getInstance().getPrice(id, qty);
+    // Rechargeable ammo (throwing stars/bullets) value is quantity-INDEPENDENT: one set is a set
+    // (0 == 9999). Its per-set worth is the base whole price, not getPrice(id, qty). Used so a
+    // duplicate slot of an already-kept star tier scores ~nothing on the value shelf.
+    static IntUnaryOperator ammoSetValue =
+            id -> ItemInformationProvider.getInstance().getWholePrice(id);
+    // Projectile attack, for picking a bot's best ammo tier.
+    static IntUnaryOperator projectileWatk =
+            id -> ItemInformationProvider.getInstance().getWatkForProjectile(id);
+    // Market (acquisition) value of ammo — what it costs to buy back, like scrollMarketValue. 0 if not
+    // sold anywhere legit. The real-meso floor for shelf ammo; see useShelfKeepValue.
+    static IntUnaryOperator ammoMarketValue = BotScrollManager::marketBuyPriceMeso;
+    // Obtain (replacement) cost of any item to this bot: cheapest of NPC shop / drop-farm effort — the
+    // same supply-side number scrolls price with (rarity + dropper difficulty). Seam for tests.
+    static ScrollMarketValueLookup ammoObtainCost = BotScrollManager::scrollMarketValueMeso;
+    // Convex combat-demand ceiling for projectile ammo (throwing stars/bullets), calibrated to the live
+    // star market: ~75k meso at 19 WATK (Mokbi), doubling each +1 WATK to ~77M at 29 WATK (Crystal
+    // Ilbi) — fits all eight star tiers within ~1.6x on a single base. ponytail: one base + one anchor,
+    // retune here if the star market shifts; do not fit per tier.
+    static final double AMMO_CEILING_BASE = 2.0;        // worth ×2 per +1 projectile WATK
+    static final int AMMO_CEILING_ANCHOR_WATK = 19;     // weakest live star tier
+    static final double AMMO_CEILING_ANCHOR_MESO = 75_000.0;
+    // Bullets span WATK 10-20 vs stars' 15-30; same slope, anchor shifted so the weakest bullet (10 WATK)
+    // lands on the weakest star's value (15 WATK). ponytail: one anchor point given, keep the star slope.
+    static final int BULLET_CEILING_ANCHOR_WATK = AMMO_CEILING_ANCHOR_WATK - 5;
+    // A USE item effect, cached, for the recovery/cure/buff category predicates.
+    @FunctionalInterface
+    interface ItemEffectLookup {
+        StatEffect effect(int itemId);
+    }
+    static ItemEffectLookup useEffect = BotInventoryManager::itemEffect;
+    @FunctionalInterface
+    interface ScrollStatsLookup {
+        Map<String, Integer> stats(int itemId);
+    }
+    static ScrollStatsLookup scrollStats =
+            id -> ItemInformationProvider.getInstance().getEquipStats(id);
+    @FunctionalInterface
+    interface ScrollMarketValueLookup {
+        double value(Character bot, int itemId);
+    }
+    static ScrollMarketValueLookup scrollMarketValue =
+            BotScrollManager::scrollMarketValueMeso;
+    // Combat-demand ceiling for a scroll (best-buyer combat value × success), capping its keep-worth the
+    // same way ammoCombatCeiling caps ammo. 0 for stat-less scrolls. Seam for tests.
+    static java.util.function.IntToDoubleFunction scrollCombatCeiling =
+            BotScrollManager::scrollCombatCeilingMeso;
+    static IntUnaryOperator makerCrystalFromLeftover =
+            id -> ItemInformationProvider.getInstance().getMakerCrystalFromLeftover(id);
+    static IntUnaryOperator bestDropChance = BotScrollManager::bestDropChance;
+    // Maker skill level of the bot; seam so the crystal-leftover keep gate (a leftover is only worth
+    // hoarding when the bot can actually convert it) stays testable without WZ/skill data.
+    static java.util.function.ToIntFunction<Character> makerSkillLevel =
+            client.processor.action.MakerProcessor::getMakerSkillLevel;
+
+    private static boolean isRareDrop(int itemId) {
+        int chance = bestDropChance.applyAsInt(itemId);
+        return chance > 0 && chance <= RARE_DROP_KEEP_CHANCE;
+    }
+
+    // Omok pieces (4030000-4030016) and assembled Omok sets (4080000-4080011): minigame clutter the
+    // bot will never use, always sold even when they'd otherwise read as rare drops / crystal
+    // leftovers (this whitelist forces the sale, overriding those keeps).
+    private static boolean isOmokItem(int itemId) {
+        return isInRange(itemId, 4030000, 4030016) || isInRange(itemId, 4080000, 4080011);
+    }
+
+    // A monster-crystal leftover is only worth keeping if the bot can actually convert it: the Maker
+    // leftover->crystal recipe (MakerItemFactory.generateLeftoverCrystalEntry) requires Maker skill
+    // level >= 1. Without Maker, 100-stacks of leftovers are pure clutter and should be sold.
+    private static boolean canMakeMonsterCrystals(Character bot) {
+        return bot != null && makerSkillLevel.applyAsInt(bot) >= 1;
+    }
+
+    // A crystal-leftover stack the bot should keep: convertible to a Maker monster crystal, big
+    // enough for the 100-count recipe, and the bot has the Maker skill to do it.
+    private static boolean keepCrystalLeftover(Character bot, Item item) {
+        return canMakeMonsterCrystals(bot)
+                && makerCrystalFromLeftover.applyAsInt(item.getItemId()) != -1
+                && item.getQuantity() >= MONSTER_CRYSTAL_LEFTOVER_KEEP_QUANTITY;
+    }
+
+    private static boolean isMakerMaterial(int itemId) {
+        return ItemConstants.isMakerReagent(itemId)
+                || isInRange(itemId, 4004000, 4004004) // stat crystal ores
+                || isInRange(itemId, 4005000, 4005004) // stat crystals
+                || isInRange(itemId, 4007000, 4007007) // magic powders
+                || isInRange(itemId, 4010000, 4010007) // ores
+                || isInRange(itemId, 4011000, 4011008) // plates, Moon Rock, Lidium
+                || isInRange(itemId, 4020000, 4020009) // jewel ores, Piece of Time
+                || isInRange(itemId, 4021000, 4021009) // jewels, Star Rock
+                || itemId / 10000 == 413 // stimulators and crafting manuals
+                || itemId / 10000 == 426; // monster crystals
+    }
+
+    private static boolean isInRange(int itemId, int first, int last) {
+        return itemId >= first && itemId <= last;
+    }
+
+    static short sellTrashQuantity(Item item) {
+        if (item == null || item.getQuantity() <= 0) {
+            return 0;
+        }
+        // Whole slot: a selected stack (including a redundant rechargeable ammo set, whose value is
+        // quantity-independent) is shed entirely. Ammo reserves are now decided by the runway/shelf
+        // model, not a hardcoded per-item quantity guard.
+        return item.getQuantity();
+    }
+
+    // === USE consumable value model =========================================================
+    // Pressure-driven + value shelf (mirrors the equip kept-valuables shelf). Every USE stack is:
+    //   RUNWAY - combat necessity, never auto-sold: best ammo set, a recovery runway sized to the
+    //            bot, a small all-cure reserve.
+    //   JUNK   - zero trade value, always sellable: single-ailment cures (antidote/eyedrop/...),
+    //            equip scrolls this job never values, stale quest clutter.
+    //   SHELF  - everything else (extra recovery, other-class & surplus ammo, buffs, misc). Kept
+    //            for trade/use UNLESS the bag is cramped, then the lowest value-per-slot stacks
+    //            sell first. Stacks worth >= USE_NEVER_SELL_MESO are protected even under pressure.
+    // Ammo and rarer consumables carry real trade value, so they are NEVER quantity-capped; only
+    // genuine low-value overflow sells, and only under bag pressure.
+    enum UseTier { RUNWAY, JUNK, SHELF }
+
+    /** keepValue: value-per-slot used to rank the shelf (ascending = sold first). shelfRank is the
+     *  1-based ascending position (1 = sold first). reason is a coarse label for the debug dump. */
+    record UseClass(UseTier tier, double keepValue, int shelfRank, String reason) {}
+
+    private static boolean isAllCurePotion(int itemId) {
+        StatEffect fx = useEffect.effect(itemId);
+        return fx != null && fx.curesAllAbnormalStatus();
+    }
+
+    // Single-ailment cures (antidote=poison, eyedrop=darkness, tonic, holy water): worthless, always
+    // sell. An all-cure potion is reserved instead (status insurance).
+    private static boolean isSingleCurePotion(int itemId) {
+        StatEffect fx = useEffect.effect(itemId);
+        return fx != null && fx.curesAnyDebuff() && !fx.curesAllAbnormalStatus();
+    }
+
+    private static boolean isUseJunk(Character bot, int itemId) {
+        return isSingleCurePotion(itemId)
+                || (ItemConstants.isEquipScroll(itemId) && isIrrelevantEquipScroll(bot, itemId))
+                || isStaleQuestItem(bot, itemId);
+    }
+
+    private static String junkReason(Character bot, int itemId) {
+        if (isSingleCurePotion(itemId)) return "cure-junk";
+        if (ItemConstants.isEquipScroll(itemId)) return "scroll-junk";
+        return "quest-stale";
+    }
+
+    // Recovery potions ranked for the runway: how much they actually restore (flat + a modest
+    // weight on percent-recovery), so the bot keeps its strongest sustain and sheds weak low-tier
+    // pots under pressure.
+    private static double recoveryHealScore(int itemId) {
+        StatEffect fx = useEffect.effect(itemId);
+        if (fx == null) return 0;
+        return fx.getHp() + fx.getMp() + (fx.getHpRate() + fx.getMpRate()) * 10.0;
+    }
+
+    /** SSOT classification of the USE bag into RUNWAY/JUNK/SHELF, with shelf value ranking. Shared
+     *  by the sell collectors and the {@code inv debug} dump so both always agree (no second
+     *  decision tree). */
+    static Map<Item, UseClass> classifyBagUse(Character bot) {
+        WeaponType ownAmmoType = tradeAmmoWeaponType(bot);
+        List<Item> all = new ArrayList<>();
+        // botAwareSafety: stale quest items pass the quest exclusion so they can be classified JUNK.
+        collectFromBag(bot, all, InventoryType.USE, item -> true, true);
+
+        Map<Item, UseClass> out = new IdentityHashMap<>();
+        List<Item> recovery = new ArrayList<>();
+        List<Item> allCure = new ArrayList<>();
+        List<Item> ownAmmo = new ArrayList<>();
+        List<Item> otherAmmo = new ArrayList<>();
+        List<Item> buffs = new ArrayList<>();
+        List<Item> shelf = new ArrayList<>(); // surplus ammo, misc -> kept unless cramped
+
+        for (Item item : all) {
+            int id = item.getItemId();
+            if (isUseJunk(bot, id)) {
+                out.put(item, new UseClass(UseTier.JUNK, 0, 0, junkReason(bot, id)));
+                continue;
+            }
+            WeaponType ammoType = ammoWeaponType(id);
+            if (ammoType != null && ammoType == ownAmmoType) {
+                ownAmmo.add(item);
+            } else if (ammoType != null) {
+                otherAmmo.add(item); // ammo for a class the bot can't fire
+            } else if (isRecoveryPotion(id)) {
+                recovery.add(item);
+            } else if (isAllCurePotion(id)) {
+                allCure.add(item);
+            } else if (isBuffConsumable(id)) {
+                buffs.add(item);
+            } else {
+                shelf.add(item); // uncategorized -> kept unless cramped
+            }
+        }
+
+        classifyRecoveryRunway(recovery, out, shelf);
+        classifyOtherAmmoReserve(otherAmmo, out, shelf);
+
+        // RUNWAY: a little all-cure insurance; surplus to the shelf. (Not resupplied -> no buy loop.)
+        allCure.sort(Comparator.comparingInt(Item::getQuantity).reversed());
+        for (int i = 0; i < allCure.size(); i++) {
+            if (i < ALL_CURE_RESERVE_SLOTS) out.put(allCure.get(i), new UseClass(UseTier.RUNWAY, 0, 0, "allcure-reserve"));
+            else shelf.add(allCure.get(i));
+        }
+
+        classifyOwnAmmoRunway(ownAmmo, out, shelf);
+        classifyBuffRunway(buffs, bot, out, shelf);
+        rankUseShelf(bot, shelf, out);
+        return out;
+    }
+
+    // Recovery runway sized to the RESUPPLY target so a cramped trip never sheds pots the bot would
+    // immediately rebuy (buy/sell loop). Keep strongest-heal stacks first until both the HP and MP
+    // recovery quantities cover BotShopManager.potResupplyTarget(); the rest is surplus -> shelf.
+    private static void classifyRecoveryRunway(List<Item> recovery, Map<Item, UseClass> out, List<Item> shelf) {
+        recovery.sort(Comparator
+                .comparingDouble((Item it) -> recoveryHealScore(it.getItemId())).reversed()
+                .thenComparing(Comparator.comparingInt(Item::getQuantity).reversed()));
+        int target = BotShopManager.potResupplyTarget();
+        int hp = 0;
+        int mp = 0;
+        for (Item it : recovery) {
+            StatEffect fx = useEffect.effect(it.getItemId());
+            boolean keepForHp = hp < target && BotPotionManager.healsHp(fx);
+            boolean keepForMp = mp < target && BotPotionManager.healsMp(fx);
+            if (keepForHp || keepForMp) {
+                out.put(it, new UseClass(UseTier.RUNWAY, 0, 0, "recovery-runway"));
+                if (BotPotionManager.healsHp(fx)) hp += it.getQuantity();
+                if (BotPotionManager.healsMp(fx)) mp += it.getQuantity();
+            } else {
+                shelf.add(it);
+            }
+        }
+    }
+
+    // Own ammo runway: rechargeable (stars/bullets) needs only ONE set of the best tier (it
+    // recharges free at shops, so quantity is irrelevant); consumed ammo (arrows/bolts) keeps the
+    // best tier up to the RESUPPLY target quantity (so it never auto-sells what it would rebuy).
+    // Every other own-ammo slot — lesser tiers and duplicate sets — drops to the shelf.
+    private static void classifyOwnAmmoRunway(List<Item> ownAmmo, Map<Item, UseClass> out, List<Item> shelf) {
+        if (ownAmmo.isEmpty()) {
+            return;
+        }
+        ownAmmo.sort(Comparator
+                .comparingInt((Item it) -> projectileWatk.applyAsInt(it.getItemId())).reversed()
+                .thenComparing(Comparator.comparingInt(Item::getQuantity).reversed()));
+        int bestTier = ownAmmo.get(0).getItemId();
+        boolean rechargeable = ItemConstants.isRechargeable(bestTier);
+        int target = rechargeable ? 1 : BotShopManager.ammoResupplyTarget();
+        int kept = 0;
+        for (Item it : ownAmmo) {
+            if (it.getItemId() == bestTier && kept < target) {
+                out.put(it, new UseClass(UseTier.RUNWAY, 0, 0, "ammo-runway"));
+                kept += rechargeable ? 1 : it.getQuantity();
+            } else {
+                shelf.add(it);
+            }
+        }
+    }
+
+    // Other-class ammo the bot can't fire: among REDUNDANT off-class ammo (a weapon class with >=2
+    // stacks), keep the single best-WATK stack (worth holding to gift a party member who uses it /
+    // the strongest to re-sell) and drop the rest to the shelf. A LONE off-class stack has no "rest"
+    // to protect it from, so it just shelves and is valued normally by useShelfKeepValue — cheap lone
+    // ammo still sheds under bag pressure (a 2M scroll must always beat 500 basic bolts).
+    private static void classifyOtherAmmoReserve(List<Item> otherAmmo, Map<Item, UseClass> out, List<Item> shelf) {
+        Map<WeaponType, List<Item>> byType = new HashMap<>();
+        for (Item it : otherAmmo) {
+            byType.computeIfAbsent(ammoWeaponType(it.getItemId()), k -> new ArrayList<>()).add(it);
+        }
+        for (List<Item> stacks : byType.values()) {
+            if (stacks.size() < 2) {
+                shelf.addAll(stacks); // no redundancy: value decides, like any other shelf stack
+                continue;
+            }
+            Item best = stacks.get(0);
+            for (Item it : stacks) {
+                if (projectileWatk.applyAsInt(it.getItemId()) > projectileWatk.applyAsInt(best.getItemId())) {
+                    best = it;
+                }
+            }
+            for (Item it : stacks) {
+                if (it == best) {
+                    out.put(it, new UseClass(UseTier.RUNWAY, 0, 0, "ammo-other-best-tier"));
+                } else {
+                    shelf.add(it);
+                }
+            }
+        }
+    }
+
+    // Sort own ammo slots strongest-first so RangedAttackHandler's first-slot-wins pick always
+    // uses the best available tier. Rechargeable stacks are left as-is (1 stack = 1 full set).
+    static void sortOwnAmmoSlots(Character bot) {
+        WeaponType ownType = tradeAmmoWeaponType(bot);
+        if (ownType == null) return;
+
+        Inventory use = bot.getInventory(InventoryType.USE);
+        List<Item> ammo = new ArrayList<>();
+
+        use.lockInventory();
+        try {
+            for (short i = 1; i <= use.getSlotLimit(); i++) {
+                Item item = use.getItem(i);
+                if (item != null && ammoWeaponType(item.getItemId()) == ownType) {
+                    ammo.add(item);
+                }
+            }
+            if (ammo.size() <= 1) return;
+            for (Item item : ammo) use.removeSlot(item.getPosition());
+            ammo.sort(Comparator.comparingInt((Item it) -> projectileWatk.applyAsInt(it.getItemId())).reversed());
+            for (Item item : ammo) use.addItem(item);
+        } finally {
+            use.unlockInventory();
+        }
+    }
+
+    // Buff runway: the buff pots this bot actually uses (best per relevant stat-key, WATK/MATK
+    // included) per BotBuffManager's SSOT selection; inferior/duplicate buff stacks shelf.
+    private static void classifyBuffRunway(List<Item> buffs, Character bot,
+                                           Map<Item, UseClass> out, List<Item> shelf) {
+        if (buffs.isEmpty()) {
+            return;
+        }
+        java.util.Set<Item> runway = BotBuffManager.runwayBuffItems(bot);
+        for (Item it : buffs) {
+            if (runway.contains(it)) {
+                out.put(it, new UseClass(UseTier.RUNWAY, 0, 0, "buff-runway"));
+            } else {
+                shelf.add(it);
+            }
+        }
+    }
+
+    /**
+     * Convex combat-demand ceiling (meso) for a projectile tier: what a buyer pays for its raw attack
+     * when supply is constrained. Calibrated to the live star market — see {@link #AMMO_CEILING_BASE}.
+     * The keep value is {@code min(this, obtain cost)}, so this only bites when a tier is scarce; a
+     * flooded/shop-cheap tier falls to its obtain cost instead. 0 for non-projectiles.
+     */
+    static double ammoCombatCeiling(int id) {
+        int watk = projectileWatk.applyAsInt(id);
+        if (watk <= 0) {
+            return 0.0;
+        }
+        int anchor = ItemConstants.isBullet(id) ? BULLET_CEILING_ANCHOR_WATK : AMMO_CEILING_ANCHOR_WATK;
+        return AMMO_CEILING_ANCHOR_MESO * Math.pow(AMMO_CEILING_BASE, watk - anchor);
+    }
+
+    /**
+     * SSOT keep-worth (estimated meso) of one USE shelf stack — the single cross-type axis the sell
+     * shelf ranks on and the never-sell gate ({@link #USE_NEVER_SELL_MESO}) compares against, so ammo,
+     * scrolls and misc stay commensurable (all REAL meso). For rechargeable ammo, combat power IS folded
+     * in via {@link #ammoCombatCeiling} but capped by obtain cost, so a powerful star is worth more only
+     * when it is also scarce — a cheap/flooded one still can't out-value a good scroll. Per-set for
+     * rechargeable ammo. WATK also breaks intra-ammo sort ties in {@link #rankUseShelf}, and powerful
+     * ammo is protected structurally by {@link #classifyOtherAmmoReserve}.
+     * ponytail: obtain cost is shop/farm-rarity today — the seam the population supply/demand model
+     * refines when bot trading lands; callers won't change.
+     */
+    static double useShelfKeepValue(Character bot, Item it) {
+        int id = it.getItemId();
+        if (ammoWeaponType(id) != null) {
+            if (ItemConstants.isRechargeable(id)) {
+                double sellback = Math.max(ammoMarketValue.applyAsInt(id), ammoSetValue.applyAsInt(id)); // per set
+                double ceiling = ammoCombatCeiling(id);
+                // Worth = the convex combat-demand ceiling, capped by what it costs to obtain: a
+                // flooded/cheap tier collapses to its obtain cost, a scarce top tier rides the ceiling.
+                // NPC/market sell-back is the floor under either. Steep toward the best, but real-meso.
+                return ceiling <= 0 ? sellback
+                        : Math.max(sellback, Math.min(ammoObtainCost.value(bot, id), ceiling));
+            }
+            // 0-attack basic arrows (Arrow for Bow/Crossbow) are near-worthless filler — value them at
+            // 0 so they rank first and shed before anything else under bag pressure.
+            if (projectileWatk.applyAsInt(id) <= 0) {
+                return 0;
+            }
+            return Math.max((double) ammoMarketValue.applyAsInt(id) * it.getQuantity(),
+                    sellPrice.price(id, it.getQuantity()));
+        }
+        if (ItemConstants.isEquipScroll(id)) {
+            double obtain = scrollMarketValue.value(bot, id);
+            double ceiling = scrollCombatCeiling.applyAsDouble(id);
+            // Combat-demand cap, same shape as ammo: a stat scroll is worth at most the combat value it
+            // injects, but never above what it costs to obtain. Stat-less scrolls (clean slate, chaos)
+            // have no ceiling -> keep full obtain-cost worth. NPC sell-back is the floor under all.
+            double worth = ceiling > 0 ? Math.min(obtain, ceiling) : obtain;
+            return Math.max(sellPrice.price(id, it.getQuantity()), worth * it.getQuantity());
+        }
+        return sellPrice.price(id, it.getQuantity());
+    }
+
+    // Rank the shelf by keep-worth ascending (sold first). Rechargeable ammo is valued per-set
+    // (quantity-independent): the first slot of each tier carries the set value, every further slot
+    // of that same tier is a redundant duplicate worth ~0 and leads the sale.
+    private static void rankUseShelf(Character bot, List<Item> shelf, Map<Item, UseClass> out) {
+        java.util.Set<Integer> seenRechargeableTier = new java.util.HashSet<>();
+        // A rechargeable tier already kept in the runway is "seen", so its first shelf slot is a
+        // redundant duplicate.
+        for (var e : out.entrySet()) {
+            int id = e.getKey().getItemId();
+            if (e.getValue().tier() == UseTier.RUNWAY
+                    && ammoWeaponType(id) != null && ItemConstants.isRechargeable(id)) {
+                seenRechargeableTier.add(id);
+            }
+        }
+        // Fuller stacks first, so the slot that keeps a tier's set value is the fullest one.
+        List<Item> ordered = new ArrayList<>(shelf);
+        ordered.sort(Comparator.comparingInt(Item::getQuantity).reversed());
+        Map<Item, Double> value = new IdentityHashMap<>();
+        for (Item it : ordered) {
+            int id = it.getItemId();
+            double v = useShelfKeepValue(bot, it);
+            // Rechargeable ammo is per-SET: a duplicate stack of an already-counted tier is worth ~0.
+            if (ammoWeaponType(id) != null && ItemConstants.isRechargeable(id) && !seenRechargeableTier.add(id)) {
+                v = 0;
+            }
+            value.put(it, Math.max(0, v));
+        }
+        List<Item> ranked = new ArrayList<>(shelf);
+        // Worst real-meso worth first (sold first). Among equal-worth AMMO, the weaker tier (lower
+        // projectile WATK) sheds first so the strongest is kept last — a tiebreak ONLY, so it can
+        // never lift ammo above a higher-worth non-ammo stack (the cross-type scale stays meso).
+        ranked.sort(Comparator.<Item>comparingDouble(value::get)
+                .thenComparingInt((Item it) -> ammoWeaponType(it.getItemId()) != null
+                        ? projectileWatk.applyAsInt(it.getItemId()) : 0));
+        for (int i = 0; i < ranked.size(); i++) {
+            Item it = ranked.get(i);
+            out.put(it, new UseClass(UseTier.SHELF, value.get(it), i + 1, shelfReason(it, value.get(it))));
+        }
+    }
+
+    private static String shelfReason(Item item, double value) {
+        int id = item.getItemId();
+        if (ammoWeaponType(id) != null) {
+            return value <= 0 ? "ammo-dup-set" : "ammo-shelf";
+        }
+        if (ItemConstants.isEquipScroll(id)) return "scroll";
+        if (isBuffConsumable(id)) return "buff";
+        if (isRecoveryPotion(id)) return "recovery-extra";
+        if (isAllCurePotion(id)) return "allcure-extra";
+        return "misc";
+    }
+
+    // Always-sellable JUNK only: single cures, irrelevant scrolls, stale quest clutter an NPC pays
+    // for. Trade-worthy stacks (ammo, pots, buffs) are NOT here — they sell only under bag pressure
+    // via collectCrampedUseSales. Keeps a plain "sell trash" trip non-destructive.
+    static List<Item> collectSellTrashUseItems(Character bot) {
+        List<Item> result = new ArrayList<>();
+        for (var e : classifyBagUse(bot).entrySet()) {
+            Item item = e.getKey();
+            if (e.getValue().tier() == UseTier.JUNK
+                    && item.getQuantity() > 0
+                    && sellPrice.price(item.getItemId(), item.getQuantity()) > 0) {
                 result.add(item);
             }
         }
         return result;
     }
 
+    // Under bag pressure: the lowest value-per-slot SHELF stacks (worst slot first), enough to free
+    // `slotsToFree` slots. Excludes the runway, the JUNK already in the sell plan, and anything at
+    // or above USE_NEVER_SELL_MESO (trade goods stay). Small cheap stacks and redundant ammo sets
+    // lead; the user's example holds: a 3x500 (1500) stack sells before a 700x10 (7000) one.
+    static List<Item> collectCrampedUseSales(Character bot, int slotsToFree, java.util.Set<Item> exclude) {
+        if (slotsToFree <= 0) {
+            return List.of();
+        }
+        List<Map.Entry<Item, UseClass>> shelf = new ArrayList<>();
+        for (var e : classifyBagUse(bot).entrySet()) {
+            Item item = e.getKey();
+            if (e.getValue().tier() != UseTier.SHELF) continue;
+            if (exclude != null && exclude.contains(item)) continue;
+            if (e.getValue().keepValue() >= USE_NEVER_SELL_MESO) continue;
+            if (item.getQuantity() <= 0) continue;
+            if (sellPrice.price(item.getItemId(), item.getQuantity()) <= 0) continue;
+            shelf.add(e);
+        }
+        // Worst shelf rank first: shelfRank already folds in keep-worth then the ammo WATK tiebreak
+        // from rankUseShelf, so a cheap/weak stack sheds before a pricier or stronger one.
+        shelf.sort(Comparator.comparingInt(en -> en.getValue().shelfRank()));
+        List<Item> result = new ArrayList<>();
+        for (var en : shelf) {
+            if (result.size() >= slotsToFree) break;
+            result.add(en.getKey());
+        }
+        return result;
+    }
+
+    /** True when the bag holds at least one shelf stack that a cramped sell trip could unload. */
+    static boolean crampedUseSalesAvailable(Character bot) {
+        return !collectCrampedUseSales(bot, 1, null).isEmpty();
+    }
+
+    // An equip scroll is sell-trash only when its effect grants nothing of trade value:
+    // main stats (STR/DEX/INT/LUK), att/matt and speed/jump are kept for EVERY job (user: a
+    // warrior keeps INT scrolls - stat scrolls are prime trade goods); only acc is judged
+    // against the bot's own job. What's left to sell: pure hp/mp/def/avoid (and acc-only for
+    // classes that never value acc). Deliberately NOT gated by isRareDrop: nearly every
+    // scroll is a rare drop, the gate would nullify this. Meta scrolls (clean slate/chaos/
+    // modifier) grant no inc stats but have special effects, so they stay. No collision with
+    // BotScrollManager's planner: it only queues scrolls with positive offense gain.
+    private static final List<String> UNIVERSALLY_KEPT_SCROLL_STAT_KEYS =
+            List.of("STR", "DEX", "INT", "LUK", "PAD", "MAD", "Speed", "Jump");
+
+    private static boolean isIrrelevantEquipScroll(Character bot, int itemId) {
+        if (!ItemConstants.isEquipScroll(itemId)) {
+            return false;
+        }
+        if (ItemConstants.isCleanSlate(itemId) || ItemConstants.isChaosScroll(itemId)
+                || ItemConstants.isModifierScroll(itemId)) {
+            return false;
+        }
+        Map<String, Integer> stats = scrollStats.stats(itemId);
+        if (stats == null) {
+            return false; // unknown effect: keep
+        }
+        for (String key : UNIVERSALLY_KEPT_SCROLL_STAT_KEYS) {
+            if (stats.getOrDefault(key, 0) > 0) {
+                return false;
+            }
+        }
+        for (BotEquipManager.RelevantStat stat : BotEquipManager.relevantStatsFor(bot.getJob())) {
+            if (stats.getOrDefault(scrollStatKey(stat), 0) > 0) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    // Scroll effects come from the same WZ read path as equips (getEquipStats: "inc"-stripped
+    // keys), so WATK/MATK live under PAD/MAD.
+    static String scrollStatKey(BotEquipManager.RelevantStat stat) {
+        return switch (stat) {
+            case STR -> "STR";
+            case DEX -> "DEX";
+            case INT -> "INT";
+            case LUK -> "LUK";
+            case WATK -> "PAD";
+            case MATK -> "MAD";
+            case ACC -> "ACC";
+        };
+    }
+
+    // Trash ETC = anything not on a keep whitelist. Quest items/untradeables are already excluded by
+    // collectFromBag (isSafeToDrop). Kept: omok collectibles, skill-consumed rocks, Maker/crafting
+    // materials, rare drops, and (only if the bot has the Maker skill) crystal leftovers convertible
+    // to monster crystals. Everything else is sold even at 0 NPC price - 0-value clutter (e.g. Pig
+    // Vein) only leaves the bag if it's collected here.
+    static List<Item> collectSellTrashEtcItems(Character bot) {
+        List<Item> result = new ArrayList<>();
+        // botAwareSafety: stale ETC quest items pass the quest-item exclusion; the keeps below still
+        // protect anything with genuine value, so only true clutter is collected.
+        collectFromBag(bot, result, InventoryType.ETC, item -> {
+            int id = item.getItemId();
+            if (isOmokItem(id)) {
+                return true; // omok clutter: always sold, overrides the rare-drop/leftover keeps below
+            }
+            if (SKILL_CONSUMED_ETC.contains(id) || isMakerMaterial(id) || isRareDrop(id)
+                    || keepCrystalLeftover(bot, item)) {
+                return false;
+            }
+            return true;
+        }, true);
+        return result;
+    }
+
+    /** Drop disposable quest items the sell pipeline can't clear - untradeable ones a shop refuses -
+     *  the same way a player ditches dead quest junk: {@link InventoryManipulator#drop}, which makes a
+     *  quest item vanish on the ground (a disappearing drop). "Disposable" = {@link #isStaleQuestItem}
+     *  (every using-quest is completed, severely outleveled, or proven unfinishable). Tradeable
+     *  disposables are left for the shop sell trip, which recovers their NPC value. No-op when the bot
+     *  holds none, so it's cheap to attempt on the autopilot hygiene tick. */
+    static void discardDisposableQuestItems(Character bot) {
+        if (bot == null || bot.getClient() == null) {
+            return;
+        }
+        for (InventoryType type : List.of(InventoryType.EQUIP, InventoryType.USE, InventoryType.ETC)) {
+            Inventory inv = bot.getInventory(type);
+            if (inv == null) {
+                continue;
+            }
+            // Snapshot the slots first: drop() mutates the inventory we'd be iterating.
+            List<Short> slots = new ArrayList<>();
+            for (short slot = 1; slot <= inv.getSlotLimit(); slot++) {
+                Item it = inv.getItem(slot);
+                if (it != null && shouldDiscardQuestItem(bot, it)) {
+                    slots.add(slot);
+                }
+            }
+            for (short slot : slots) {
+                Item it = inv.getItem(slot);
+                if (it != null && shouldDiscardQuestItem(bot, it)) {
+                    InventoryManipulator.drop(bot.getClient(), type, slot, it.getQuantity());
+                }
+            }
+        }
+    }
+
+    /** A disposable quest item the shop can't buy (untradeable under the server config) - dropping is
+     *  the only way to free its slot. {@code !isSafeToDrop} is exactly the unsellable case: a stale
+     *  quest item that the untradeable gate still blocks from the sell pipeline. */
+    private static boolean shouldDiscardQuestItem(Character bot, Item item) {
+        int id = item.getItemId();
+        return questItem.test(id) && isStaleQuestItem(bot, id) && !isSafeToDrop(bot, item);
+    }
+
+    // Everything a "sell trash" shop visit should unload: trash equips + trash USE + trash ETC.
+    static List<Item> collectSellTrashItems(BotEntry entry, Character bot) {
+        List<Item> result = new ArrayList<>(collectSellTrashEquips(entry, bot));
+        result.addAll(collectSellTrashUseItems(bot));
+        result.addAll(collectSellTrashEtcItems(bot));
+        // The "farm <item>" objective is the whole point of the trip — never sell it.
+        // entry == null = @autosell debug preview on a real player's character (no bot state).
+        if (entry != null && entry.autopilotFarmItemId != 0) {
+            result.removeIf(item -> item.getItemId() == entry.autopilotFarmItemId);
+        }
+        return result;
+    }
+
+    // @autosell (admin debug): run the UNCHANGED bot sell-trash pipeline against a real
+    // player's character. Preview lists what would sell, grouped by inventory type; confirm
+    // sells everything instantly at NPC prices — same removeFromSlot + gainMeso effect as
+    // Shop.sell, minus the shop session and humanlike step delays (debug tool, not bot play).
+    static List<String> autoSellPreviewLines(Character chr) {
+        ItemInformationProvider ii = ItemInformationProvider.getInstance();
+        List<Item> items = collectSellTrashItems(null, chr);
+        if (items.isEmpty()) {
+            return List.of("autosell: nothing the bot pipeline would sell");
+        }
+        List<String> lines = new ArrayList<>();
+        for (InventoryType type : List.of(InventoryType.EQUIP, InventoryType.USE, InventoryType.ETC)) {
+            List<String> descs = items.stream()
+                    .filter(item -> item.getInventoryType() == type)
+                    .map(item -> describeAutoSellItem(ii, chr, item))
+                    .toList();
+            if (!descs.isEmpty()) {
+                appendWrappedListLines(lines, autoSellTypeLabel(type) + ": ", descs);
+            }
+        }
+        lines.add("autosell: " + items.size() + " item" + (items.size() != 1 ? "s" : "")
+                + " - @autosell confirm sells them now");
+        return lines;
+    }
+
+    static List<String> autoSellExecute(Client c) {
+        Character chr = c.getPlayer();
+        ItemInformationProvider ii = ItemInformationProvider.getInstance();
+        List<Item> items = collectSellTrashItems(null, chr);
+        int sold = 0;
+        long mesoGained = 0;
+        for (Item item : items) {
+            if (!hasItem(chr, item)) {
+                continue;
+            }
+            short quantity = sellTrashQuantity(item);
+            if (quantity <= 0) {
+                continue;
+            }
+            InventoryManipulator.removeFromSlot(c, item.getInventoryType(), (byte) item.getPosition(),
+                    quantity, false);
+            int price = ii.getPrice(item.getItemId(), quantity);
+            if (price > 0) {
+                chr.gainMeso(price, false);
+                mesoGained += price;
+            }
+            sold++;
+        }
+        return List.of("autosell: sold " + sold + " item" + (sold != 1 ? "s" : "")
+                + " for " + mesoGained + " meso");
+    }
+
+    // !inspectsell (admin debug): rearrange a character's bag so each tab is laid out the way the bot
+    // would shed it under bag pressure — slot 1 the most-disposable trash, the last slot the most
+    // prized keep, working back from there. Ordering is the SSOT pressure-sale score per section
+    // ({@link #inspectSellRank}): equips by RESV/HOARD/HLIM/TRASH bucket + tradeValueScore, USE by
+    // JUNK/SHELF(keepValue)/RUNWAY/quest, ETC by sell-trash vs whitelist. The split point between
+    // "would sell now" ({@link #collectSellTrashItems}) and "would keep" is the divider: keeps are
+    // back-anchored to the tab's tail so every empty slot pools in the MIDDLE, not the end. A packed
+    // tab NPC-sells one already-doomed item (illegal sale allowed, debug only) to open that gap.
+    // A REAL physical slot move: the rebuild is mirrored to the owner's client as remove+add mods
+    // (same wire path as the game's inventory sort), so it's not just an F8-snapshot illusion.
+    // Every tab is always re-sorted, even one with nothing to sell — the pressure layout is itself
+    // a useful sort.
+    static List<String> inspectSellArrange(Character chr) {
+        Client c = chr.getClient();
+        if (c == null) {
+            return List.of("inspectsell: target is offline");
+        }
+        ItemInformationProvider ii = ItemInformationProvider.getInstance();
+        // SSOT classifiers: the exact verdicts/scores the real sell pipeline applies.
+        Map<Item, BagEquipClass> eqClass = classifyBagEquips(null, chr);
+        Map<Item, UseClass> useClass = classifyBagUse(chr);
+        Set<Item> etcSell = Collections.newSetFromMap(new IdentityHashMap<>());
+        etcSell.addAll(collectSellTrashEtcItems(chr));
+        Set<Item> selling = Collections.newSetFromMap(new IdentityHashMap<>());
+        selling.addAll(collectSellTrashItems(null, chr));
+        Comparator<Item> byRank =
+                Comparator.comparingDouble(it -> inspectSellRank(ii, it, eqClass, useClass, etcSell));
+
+        List<String> lines = new ArrayList<>();
+        for (InventoryType type : List.of(InventoryType.EQUIP, InventoryType.USE, InventoryType.ETC)) {
+            Inventory inv = chr.getInventory(type);
+
+            // Packed tab: NPC the most-disposable selling item (going anyway) so a divider can exist.
+            long meso = 0;
+            boolean soldForGap = false;
+            if (inv.getNumFreeSlot() == 0) {
+                Item victim = null;
+                for (short i = 1; i <= inv.getSlotLimit(); i++) {
+                    Item it = inv.getItem(i);
+                    if (it != null && selling.contains(it)
+                            && (victim == null || byRank.compare(it, victim) < 0)) {
+                        victim = it;
+                    }
+                }
+                short qty = victim == null ? 0 : sellTrashQuantity(victim);
+                if (qty > 0) {
+                    int price = ii.getPrice(victim.getItemId(), qty);
+                    InventoryManipulator.removeFromSlot(c, type, (byte) victim.getPosition(), qty, false);
+                    if (price > 0) {
+                        chr.gainMeso(price, false);
+                        meso += price;
+                    }
+                    selling.remove(victim);
+                    soldForGap = true;
+                }
+            }
+
+            inv.lockInventory();
+            try {
+                List<Item> sells = new ArrayList<>();
+                List<Item> keeps = new ArrayList<>();
+                for (short i = 1; i <= inv.getSlotLimit(); i++) {
+                    Item it = inv.getItem(i);
+                    if (it == null) {
+                        continue;
+                    }
+                    (selling.contains(it) ? sells : keeps).add(it);
+                }
+                if (sells.isEmpty() && keeps.isEmpty()) {
+                    continue;   // empty tab: nothing to arrange (saves compute, never skips a sort)
+                }
+                sells.sort(byRank);   // most disposable first
+                keeps.sort(byRank);   // least prized first, most prized last
+
+                // Mirror the rebuild to the owner's client as remove+add mods (same wire path as the
+                // game's inventory sort) so it's a real, visible move. A bot has no client UI
+                // (BotClient.sendPacket no-ops anyway), so skip all packet work for bot targets.
+                boolean notify = !(c instanceof BotClient);
+                List<ModifyInventory> mods = notify ? new ArrayList<>() : null;
+                // Freeze each item's OLD slot in a remove mod (a copy, since setPosition mutates the
+                // live item below), clear the slot, then re-place and emit an add mod with the NEW slot.
+                for (Item it : sells) { if (notify) mods.add(new ModifyInventory(3, it.copy())); inv.removeSlot(it.getPosition()); }
+                for (Item it : keeps) { if (notify) mods.add(new ModifyInventory(3, it.copy())); inv.removeSlot(it.getPosition()); }
+
+                // Sells front-anchored (slot 1 = most trash); keeps back-anchored (last slot = most
+                // prized). Every free slot falls in the middle band between them.
+                short pos = 1;
+                for (Item it : sells) { it.setPosition(pos++); inv.addItemFromDB(it); if (notify) mods.add(new ModifyInventory(0, it.copy())); }
+                short keepStart = (short) (inv.getSlotLimit() - keeps.size() + 1);
+                pos = (short) Math.max(pos, keepStart);   // abut sells if the tab is genuinely full
+                for (Item it : keeps) { it.setPosition(pos++); inv.addItemFromDB(it); if (notify) mods.add(new ModifyInventory(0, it.copy())); }
+
+                if (notify) c.sendPacket(PacketCreator.modifyInventory(true, mods));
+
+                int gapSlots = inv.getSlotLimit() - sells.size() - keeps.size();
+                lines.add(String.format("%s: %d sell | %d-slot gap | %d keep%s",
+                        type.name().toLowerCase(), sells.size(), Math.max(0, gapSlots),
+                        keeps.size(), soldForGap ? " (sold 1 for " + meso + " to open gap)" : ""));
+            } finally {
+                inv.unlockInventory();
+            }
+        }
+        if (lines.isEmpty()) {
+            lines.add("inspectsell: nothing the bot pipeline would sell");
+        }
+        return lines;
+    }
+
+    // Pressure-sale rank for !inspectsell: lower = shed sooner (front slots), higher = more prized
+    // (tail slots). Each section reuses its own SSOT score, offset into a band so the section order
+    // holds regardless of raw magnitudes: sell-now buckets sit below keep buckets, reserved/quest on
+    // top. EQUIP TRASH<HLIM<HOARD<RESV by tradeValueScore; USE JUNK<SHELF(keepValue)<RUNWAY<quest;
+    // ETC sell-trash<whitelist.
+    private static double inspectSellRank(ItemInformationProvider ii, Item it,
+            Map<Item, BagEquipClass> eqClass, Map<Item, UseClass> useClass, Set<Item> etcSell) {
+        final double BAND = 1e12;
+        int id = it.getItemId();
+        switch (it.getInventoryType()) {
+            case EQUIP -> {
+                double score = it instanceof Equip e ? tradeValueScore(ii, e) : 0;
+                BagEquipClass bc = eqClass.get(it);
+                int band = bc == null ? 0 : switch (bc.status()) {
+                    case TRASH -> 0;
+                    case HLIM -> 1;
+                    case HOARD -> 2;
+                    case RESV_OTHER -> 3;
+                    case RESV_SELF -> 4;
+                };
+                return band * BAND + score;
+            }
+            case USE -> {
+                UseClass uc = useClass.get(it);
+                if (uc == null) {
+                    return 3 * BAND + id;   // quest/untradeable: can't be sold, most stuck → tail
+                }
+                // Ammo carries no per-slot sell value (redundant sets rank 0, so equal-value stacks
+                // would order arbitrarily); within a band order it by projectile WATK so the weakest
+                // tier sheds first and the strongest is kept last. Scaled < 1 to break value-ties
+                // only, never reorder across genuinely different keep values.
+                double ammoTie = ammoWeaponType(id) != null ? projectileWatk.applyAsInt(id) / 1000.0 : 0;
+                return switch (uc.tier()) {
+                    case JUNK -> 0 * BAND + sellPrice.price(id, it.getQuantity());
+                    case SHELF -> 1 * BAND + uc.keepValue() + ammoTie;
+                    case RUNWAY -> 2 * BAND + sellPrice.price(id, it.getQuantity()) + ammoTie;
+                };
+            }
+            default -> {   // ETC
+                return (etcSell.contains(it) ? 0 : 1) * BAND + id;
+            }
+        }
+    }
+
+    private static String autoSellTypeLabel(InventoryType type) {
+        return switch (type) {
+            case EQUIP -> "Equip";
+            case USE -> "Use";
+            case ETC -> "Etc";
+            default -> type.name();
+        };
+    }
+
+    /** Equips use the same up-to-2-relevant-stats specifier as the bot loot-offer prompts
+     *  ("+3 str +4 dex White Polyfeather Hat", actual stats), keyed on the ITEM's class
+     *  (reqJob) since the seller is mostly unloading other jobs' gear; common gear (job 0)
+     *  falls back to the seller's own job. Stackables show the quantity that would actually
+     *  sell ("Scroll for Shield for DEF x4"). */
+    static String describeAutoSellItem(ItemInformationProvider ii, Character audience, Item item) {
+        if (item instanceof Equip) {
+            return BotOfferManager.formatItemSpecifier(item, equipPerspectiveJobId(ii, item.getItemId(), audience));
+        }
+        String name = itemName(ii, item.getItemId());
+        short quantity = sellTrashQuantity(item);
+        return quantity > 1 ? name + " x" + quantity : name;
+    }
+
+    private static int equipPerspectiveJobId(ItemInformationProvider ii, int itemId, Character audience) {
+        Map<String, Integer> stats = ii != null ? ii.getEquipStats(itemId) : null;
+        int reqJobMask = stats != null ? stats.getOrDefault("reqJob", 0) : 0;
+        return switch (reqJobMask) {
+            case 1 -> 100;  // warrior
+            case 2 -> 200;  // magician
+            case 4 -> 300;  // bowman
+            case 8 -> 400;  // thief
+            case 16 -> 500; // pirate
+            default -> audience != null && audience.getJob() != null ? audience.getJob().getId() : 0;
+        };
+    }
+
+    private static final int AUTO_SELL_LINE_WIDTH = 110;
+
+    private static void appendWrappedListLines(List<String> lines, String prefix, List<String> descs) {
+        StringBuilder line = new StringBuilder(prefix);
+        boolean first = true;
+        for (String desc : descs) {
+            String piece = first ? desc : ", " + desc;
+            if (!first && line.length() + piece.length() > AUTO_SELL_LINE_WIDTH) {
+                lines.add(line.toString());
+                line = new StringBuilder("  ").append(desc);
+            } else {
+                line.append(piece);
+            }
+            first = false;
+        }
+        lines.add(line.toString());
+    }
+
+    // Debug classification of bag equips, derived from the SAME predicates and ranking the
+    // sell pipeline uses (no parallel decision tree):
+    //   RESV-SELF  reserved for the bot's own upgrades (collectPotentialSelfUpgradeItems)
+    //   RESV-OTHER promised to other recipients (BotOfferManager)
+    //   HOARD#r    kept for value, rank r on the bounded shelf (or above the never-sell gate)
+    //   HLIM#r     kept for value but beyond the shelf and below the gate -> sells next trip
+    //   TRASH      sells next trip
+    enum BagEquipStatus { RESV_SELF, RESV_OTHER, HOARD, HLIM, TRASH }
+
+    record BagEquipClass(BagEquipStatus status, int rank) {
+        String label() {
+            return switch (status) {
+                case RESV_SELF -> "RESV-SELF";
+                case RESV_OTHER -> "RESV-OTHER";
+                case HOARD -> "HOARD#" + rank;
+                case HLIM -> "HLIM#" + rank;
+                case TRASH -> "TRASH";
+            };
+        }
+    }
+
+    static Map<Item, BagEquipClass> classifyBagEquips(BotEntry entry, Character bot) {
+        ItemInformationProvider ii = ItemInformationProvider.getInstance();
+        List<Item> all = new ArrayList<>();
+        collectFromBag(bot, all, InventoryType.EQUIP, item -> true);
+        Set<Item> selfKeep = BotEquipManager.collectPotentialSelfUpgradeItems(bot);
+        return classifyBagEquips(ii, all, selfKeep,
+                item -> entry != null && BotOfferManager.isReservedForOtherRecipients(entry, bot, item));
+    }
+
+    static Map<Item, BagEquipClass> classifyBagEquips(ItemInformationProvider ii, List<Item> bagEquips,
+                                                      Set<Item> reservedSelf, Predicate<Item> reservedOther) {
+        Map<Item, BagEquipClass> out = new IdentityHashMap<>();
+        List<Equip> kept = new ArrayList<>();
+        for (Item item : bagEquips) {
+            if (!(item instanceof Equip equip)) {
+                continue;
+            }
+            if (reservedSelf.contains(item)) {
+                out.put(item, new BagEquipClass(BagEquipStatus.RESV_SELF, 0));
+            } else if (reservedOther.test(item)) {
+                out.put(item, new BagEquipClass(BagEquipStatus.RESV_OTHER, 0));
+            } else if (shouldKeepForSellTrash(ii, equip)) {
+                kept.add(equip);
+            } else {
+                out.put(item, new BagEquipClass(BagEquipStatus.TRASH, 0));
+            }
+        }
+        List<Equip> ranked = rankKeptValuables(ii, kept);
+        for (int i = 0; i < ranked.size(); i++) {
+            Equip e = ranked.get(i);
+            int rank = i + 1;
+            boolean keeps = rank <= KEEP_VALUABLE_EQUIP_SLOTS
+                    || tradeValueScore(ii, e) >= NEVER_SELL_TRADE_SCORE;
+            out.put(e, new BagEquipClass(keeps ? BagEquipStatus.HOARD : BagEquipStatus.HLIM, rank));
+        }
+        return out;
+    }
+
+    // "inv debug" chat command: writes logs/bot-equip/invlog-<name>-<timestamp>.txt with the
+    // verdict the REAL sell pipeline would apply to every bag item. Verdicts come from the
+    // actual collect* outputs; reasons are coarse labels probed from the same predicates
+    // (no second decision tree). Built to debug USE/ETC hoarding.
+    static String inventoryDebug(BotEntry entry) {
+        Character bot = entry != null ? entry.bot : null;
+        if (bot == null) {
+            return "no bot to dump";
+        }
+        ItemInformationProvider ii = ItemInformationProvider.getInstance();
+        java.time.LocalDateTime now = java.time.LocalDateTime.now();
+        String safeName = bot.getName().replaceAll("[^a-zA-Z0-9_-]", "_");
+        String filename = "invlog-" + safeName + "-" + now.format(BotEquipManager.EQUIP_LOG_FILE_FMT) + ".txt";
+
+        StringBuilder sb = new StringBuilder(8192);
+        sb.append("=== inventory dump ===\n");
+        sb.append("time:    ").append(now.format(BotEquipManager.EQUIP_LOG_HEADER_FMT)).append('\n');
+        sb.append("bot:     ").append(bot.getName())
+          .append(" job=").append(bot.getJob())
+          .append(" lv=").append(bot.getLevel()).append('\n');
+
+        Map<Item, BagEquipClass> statuses = classifyBagEquips(entry, bot);
+        sb.append("\n--- EQUIP ---\n");
+        sb.append(String.format("%-3s %-30s %-7s %7s  %s%n", "pos", "name", "slot", "score", "STATUS"));
+        int equipCount = 0;
+        for (Item item : bot.getInventory(InventoryType.EQUIP).list()) {
+            if (!(item instanceof Equip e)) {
+                continue;
+            }
+            equipCount++;
+            BagEquipClass c = statuses.get(item);
+            String slot = ii.getEquipmentSlot(e.getItemId());
+            sb.append(String.format("%-3d %-30s %-7s %7.1f  %s%n",
+                    e.getPosition(), itemName(ii, e.getItemId()), slot == null ? "?" : slot,
+                    tradeValueScore(ii, e), c == null ? "-" : c.label()));
+        }
+
+        // SELL = JUNK (always sold); SHELF#r = sold only when cramped, rank r worst-first (1 sells
+        // first); RUNWAY = combat reserve, never auto-sold. unit/stack = NPC meso (per-unit / whole
+        // stack); rechargeable ammo is valued per-set, so dup sets show stack meso but rank ~last.
+        Map<Item, UseClass> useClasses = classifyBagUse(bot);
+        sb.append("\n--- USE ---\n");
+        sb.append(String.format("%-28s %-6s %-9s %8s %8s  %s%n",
+                "name", "qty", "tier", "unit", "stack", "reason"));
+        int useSell = 0;
+        int useCount = 0;
+        for (Item item : bot.getInventory(InventoryType.USE).list()) {
+            useCount++;
+            int id = item.getItemId();
+            UseClass uc = useClasses.get(item);
+            String tier;
+            String reason;
+            if (uc == null) {
+                tier = "KEEP";
+                reason = "quest-or-untradeable";
+            } else if (uc.tier() == UseTier.JUNK) {
+                tier = "SELL";
+                reason = uc.reason();
+                useSell++;
+            } else if (uc.tier() == UseTier.RUNWAY) {
+                tier = "RUNWAY";
+                reason = uc.reason();
+            } else {
+                tier = "SHELF#" + uc.shelfRank();
+                reason = uc.reason();
+            }
+            sb.append(String.format("%-28s x%-5d %-9s %8d %8d  %s%n",
+                    itemName(ii, id), item.getQuantity(),
+                    tier, sellPrice.price(id, 1), sellPrice.price(id, item.getQuantity()), reason));
+        }
+
+        Set<Item> sellingEtc = Collections.newSetFromMap(new IdentityHashMap<>());
+        sellingEtc.addAll(collectSellTrashEtcItems(bot));
+        sb.append("\n--- ETC ---\n");
+        sb.append(String.format("%-30s %-6s %-5s %s%n", "name", "qty", "verd", "reason"));
+        int etcSell = 0;
+        int etcCount = 0;
+        for (Item item : bot.getInventory(InventoryType.ETC).list()) {
+            etcCount++;
+            boolean sell = sellingEtc.contains(item);
+            if (sell) {
+                etcSell++;
+            }
+            sb.append(String.format("%-30s x%-5d %-5s %s%n",
+                    itemName(ii, item.getItemId()), item.getQuantity(),
+                    sell ? "SELL" : "KEEP", etcVerdictReason(bot, item, sell)));
+        }
+
+        try {
+            java.nio.file.Files.createDirectories(BotEquipManager.EQUIP_LOG_DIR);
+            java.nio.file.Files.writeString(BotEquipManager.EQUIP_LOG_DIR.resolve(filename), sb.toString());
+        } catch (java.io.IOException e) {
+            log.warn("Failed to write inventory dump", e);
+            return "couldn't write the inventory dump, check server logs";
+        }
+        return String.format("inv dump: %s | equip %d, use sell %d/%d, etc sell %d/%d",
+                filename, equipCount, useSell, useCount, etcSell, etcCount);
+    }
+
+    private static String itemName(ItemInformationProvider ii, int itemId) {
+        String name = ii != null ? ii.getName(itemId) : null;
+        if (name == null || name.isBlank()) {
+            name = "id=" + itemId;
+        }
+        return name.length() > 30 ? name.substring(0, 30) : name;
+    }
+
+    // Coarse reason labels probing the same predicates collectSellTrashEtcItems applies.
+    private static String etcVerdictReason(Character bot, Item item, boolean sell) {
+        int id = item.getItemId();
+        if (sell) {
+            if (isOmokItem(id)) return "omok-sell";
+            return isStaleQuestItem(bot, id) ? "quest-stale" : "sell";
+        }
+        if (!isSafeToDrop(bot, item)) {
+            return isStaleQuestItem(bot, id) ? "quest-stale-but-unsellable" : "quest-or-untradeable";
+        }
+        if (SKILL_CONSUMED_ETC.contains(id)) {
+            return "skill-consumed";
+        }
+        if (isMakerMaterial(id)) {
+            return "maker-material";
+        }
+        if (isRareDrop(id)) {
+            return "rare-drop";
+        }
+        if (keepCrystalLeftover(bot, item)) {
+            return "crystal-leftover-keep";
+        }
+        return "no-npc-price";
+    }
+
+    /** Per-bot cache of the (expensive) equip trade classification. {@code isReservedForOtherRecipients}
+     *  runs the optimizer-reserve check for every bag equip against every party member, so a cramped
+     *  bag re-classifying each tick melts a timer thread (~150ms x N ticks). Cache the result and
+     *  reuse it until the bag changes (signature) or a short TTL lapses (teammate-gear drift, which
+     *  the bag signature can't see). Reused everywhere, including the shop sell sequence. */
+    private static final long EQUIP_TRADE_GROUPS_TTL_MS = 3_000L;
+
+    static final class EquipTradeGroupsCache {
+        private final long bagSignature;
+        private final long computedAtMs;
+        private final EquipTradeGroups groups;
+
+        EquipTradeGroupsCache(long bagSignature, long computedAtMs, EquipTradeGroups groups) {
+            this.bagSignature = bagSignature;
+            this.computedAtMs = computedAtMs;
+            this.groups = groups;
+        }
+    }
+
+    // Cheap, order-independent fingerprint of the EQUIP bag: which slots hold which items, plus a
+    // light stat fold so an in-place scroll/upgrade also invalidates. Slot positions are unique
+    // within a tab, so XOR-combining per-item hashes can't collide on a re-ordered list().
+    private static long equipBagSignature(Character bot) {
+        Inventory inv = bot != null ? bot.getInventory(InventoryType.EQUIP) : null;
+        if (inv == null) {
+            return 0L;
+        }
+        long sig = 0L;
+        int n = 0;
+        for (Item item : inv.list()) {
+            long h = ((long) item.getItemId() * 2654435761L) ^ ((long) item.getPosition() * 40503L);
+            if (item instanceof Equip e) {
+                h ^= ((long) (e.getStr() + e.getDex() * 7 + e.getInt() * 13 + e.getLuk() * 17
+                        + e.getWatk() * 23 + e.getMatk() * 29)) << 24;
+            }
+            sig ^= h;
+            n++;
+        }
+        return sig ^ ((long) n << 56);
+    }
+
     private static EquipTradeGroups classifyEquipTradeGroups(BotEntry entry, Character bot) {
+        // No entry = @autosell preview on a real player's character: always classify fresh (no bot
+        // state to cache on, and the admin wants a live answer).
+        if (entry == null || bot == null) {
+            return computeEquipTradeGroups(entry, bot);
+        }
+        long signature = equipBagSignature(bot);
+        long now = System.currentTimeMillis();
+        EquipTradeGroupsCache cached = entry.cachedEquipTradeGroups;
+        if (cached != null && cached.bagSignature == signature
+                && now - cached.computedAtMs < EQUIP_TRADE_GROUPS_TTL_MS) {
+            return cached.groups;
+        }
+        EquipTradeGroups groups = computeEquipTradeGroups(entry, bot);
+        // Single volatile swap of an immutable holder: a concurrent classify (trades run on timer
+        // threads) at worst recomputes once, never reads a torn signature/groups pair.
+        entry.cachedEquipTradeGroups = new EquipTradeGroupsCache(signature, now, groups);
+        return groups;
+    }
+
+    private static EquipTradeGroups computeEquipTradeGroups(BotEntry entry, Character bot) {
         long startedAt = profileTradeCategory("equips") ? System.nanoTime() : 0L;
         long bagScanStartedAt = startedAt != 0L ? System.nanoTime() : 0L;
         List<Item> all = new ArrayList<>();
@@ -1710,7 +3061,7 @@ class BotInventoryManager {
         Map<String, Integer> stats = ii != null ? ii.getEquipStats(equip.getItemId()) : null;
         if (ItemConstants.isWeapon(equip.getItemId())) {
             Equip baseEquip = ii != null ? (Equip) ii.getEquipById(equip.getItemId()) : null;
-            if (hasProtectedSellTrashWeaponStat(stats, equip, baseEquip)) {
+            if (hasProtectedSellTrashWeaponStat(equip, baseEquip)) {
                 return true;
             }
         } else if (equip.getWatk() > 0) {
@@ -1749,23 +3100,15 @@ class BotInventoryManager {
         return value >= pureThreshold || (value >= aboveBaseThreshold && value > base);
     }
 
-    static boolean hasProtectedSellTrashWeaponStat(Map<String, Integer> stats, Equip equip, Equip baseEquip) {
+    static boolean hasProtectedSellTrashWeaponStat(Equip equip, Equip baseEquip) {
         if (equip == null || baseEquip == null) {
             return false;
         }
-        boolean mageWeapon = isMageWeapon(stats);
-        if (mageWeapon) {
-            return equip.getMatk() - baseEquip.getMatk() >= 4;
-        }
-        return equip.getWatk() - baseEquip.getWatk() >= 4;
-    }
-
-    private static boolean isMageWeapon(Map<String, Integer> stats) {
-        if (stats == null) {
-            return false;
-        }
-        int reqJob = stats.getOrDefault("reqJob", 0);
-        return reqJob == 0 ? false : (reqJob & 0x2) != 0 && (reqJob & ~0x2) == 0;
+        // Either attack axis counts: an above-base MAD roll on an any-job weapon (e.g. the
+        // reqJob-0 Black Umbrella, a 1H sword with base MAD 85) is mage trade stock even when
+        // its WATK rolled clean — don't key the protected axis on the weapon's reqJob mask.
+        return equip.getWatk() - baseEquip.getWatk() >= 4
+                || equip.getMatk() - baseEquip.getMatk() >= 4;
     }
 
     /** Score used to order own-class equips worst-to-best: 4*watk + matk + main + sec. */
@@ -1811,10 +3154,115 @@ class BotInventoryManager {
     }
 
     static boolean isSafeToDrop(Item item) {
-        if (item.isUntradeable() && !YamlConfig.config.server.UNTRADEABLE_ITEMS_TRADEABLE) return false;
-        if (ItemInformationProvider.getInstance().isQuestItem(item.getItemId())) return false;
+        if (untradeable.test(item) && !YamlConfig.config.server.UNTRADEABLE_ITEMS_TRADEABLE) return false;
+        if (questItem.test(item.getItemId())) return false;
         return true;
     }
+
+    /** Bot-aware safe-to-drop: like {@link #isSafeToDrop(Item)}, but a quest item that is STALE for
+     *  THIS bot ({@link #isStaleQuestItem}) is allowed through — the base predicate excludes ALL
+     *  quest items forever, which clogs ETC/USE with items the bot can never use again. Only the
+     *  USE/ETC sell-trash collectors call this overload; the EQUIP path keeps the strict
+     *  {@link #isSafeToDrop(Item)} so it never touches quest gear. Untradeables are still excluded. */
+    static boolean isSafeToDrop(Character bot, Item item) {
+        if (untradeable.test(item) && !YamlConfig.config.server.UNTRADEABLE_ITEMS_TRADEABLE) return false;
+        if (questItem.test(item.getItemId()) && !isStaleQuestItem(bot, item.getItemId())) return false;
+        return true;
+    }
+
+    // ---- stale quest items (Feature B) -------------------------------------------------------
+
+    /** Severely-outleveled margin: a quest is "way past" the bot when the bot's level is at least
+     *  the quest's level cap plus this. Wide on purpose - false negatives (keep) are fine, false
+     *  positives (sell a needed item) are not. */
+    static final int STALE_OUTLEVEL_MARGIN = 30;
+
+    /** Quest status for the stale check, behind a seam so tests don't need WZ. Reuses the same
+     *  {@link BotQuestManager#gate} SSOT the quest loop drives (started/completed reads). */
+    interface QuestStatusLookup {
+        boolean isStarted(Character bot, int questId);
+        boolean isCompleted(Character bot, int questId);
+    }
+
+    static QuestStatusLookup questStatus = new QuestStatusLookup() {
+        @Override public boolean isStarted(Character bot, int questId) {
+            return BotQuestManager.gate.isStarted(bot, questId);
+        }
+        @Override public boolean isCompleted(Character bot, int questId) {
+            return BotQuestManager.gate.isCompleted(bot, questId);
+        }
+    };
+
+    /** Item -> quests that require it (start or complete); seam over {@link BotQuestIndex}. */
+    @FunctionalInterface
+    interface QuestReqsLookup {
+        List<BotQuestIndex.QuestItemReq> reqs(int itemId);
+    }
+
+    static QuestReqsLookup questReqsLookup = BotQuestIndex::questsRequiringItem;
+
+    /** Whether a quest has been proven unfinishable for this bot — the turn-in NPC is on an
+     *  unreachable map, or {@code complete()} refused to register (scripted/edge quests). Reuses the
+     *  per-entry {@link BotEntry#buggedQuestIds} SSOT (set by {@link BotQuestManager#markQuestBugged})
+     *  rather than re-deriving reachability here. Seam so tests stay BotManager-free. */
+    static java.util.function.BiPredicate<Character, Integer> questBugged = (bot, questId) -> {
+        BotEntry entry = BotManager.getInstance().getEntryByBotCharId(bot.getId());
+        return entry != null && entry.buggedQuestIds.contains(questId);
+    };
+
+    /**
+     * Is {@code itemId} a quest item this bot no longer needs - so it can be cleared as clutter
+     * instead of being kept forever? CONSERVATIVE: true only when it IS a quest item AND every
+     * indexed quest that requires it is, for this bot, disposable - COMPLETED, severely outleveled,
+     * or proven unfinishable ({@link #questBugged}: unreachable turn-in NPC, or a complete() that
+     * won't register). A quest the bot has STARTED still keeps the item UNLESS it's bugged (a started
+     * quest whose NPC the bot can never reach is dead weight). Any of:
+     * <ul>
+     *   <li>not a quest item, or used by NO indexed quest -> NOT stale (out of scope);</li>
+     *   <li>ANY using-quest is STARTED and not bugged -> NOT stale (needed right now);</li>
+     *   <li>any using-quest is still doable (not completed, not past, not bugged) -> NOT stale.</li>
+     * </ul>
+     * "Severely outleveled" needs a real level cap ({@code > 0}); a quest with no level info is
+     * undeterminable and treated as still-doable (kept). The permanently-unstartable-prereq branch
+     * is deliberately NOT implemented - {@code canStart} fails for under-level bots that will grow
+     * into the quest, so it is too false-positive-prone (see report).
+     */
+    static boolean isStaleQuestItem(Character bot, int itemId) {
+        if (bot == null || !questItem.test(itemId)) {
+            return false;
+        }
+        List<BotQuestIndex.QuestItemReq> reqs = questReqsLookup.reqs(itemId);
+        if (reqs.isEmpty()) {
+            return false; // used by no indexed quest -> not our scope
+        }
+        // A STARTED, still-finishable quest keeps the item; a started-but-bugged one does not.
+        for (BotQuestIndex.QuestItemReq r : reqs) {
+            if (questStatus.isStarted(bot, r.questId()) && !questBugged.test(bot, r.questId())) {
+                return false;
+            }
+        }
+        // Stale only if EVERY using-quest is done-or-past or proven unfinishable for this bot.
+        for (BotQuestIndex.QuestItemReq r : reqs) {
+            if (!isQuestDoneOrPast(bot, r) && !questBugged.test(bot, r.questId())) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** A single using-quest is "done or past" for the bot: COMPLETED, or severely outleveled with
+     *  a known level cap. Undeterminable (no level cap) counts as still-doable (kept). */
+    private static boolean isQuestDoneOrPast(Character bot, BotQuestIndex.QuestItemReq r) {
+        if (questStatus.isCompleted(bot, r.questId())) {
+            return true;
+        }
+        int cap = Math.max(r.lvmax(), r.lvmin());
+        return cap > 0 && bot.getLevel() >= cap + STALE_OUTLEVEL_MARGIN;
+    }
+
+    // Test seams (see sellPrice et al.): both lookups go through ItemInformationProvider.
+    static IntPredicate questItem = id -> ItemInformationProvider.getInstance().isQuestItem(id);
+    static Predicate<Item> untradeable = Item::isUntradeable;
 
     private static void reply(BotEntry entry, Character bot, int count, String noun) {
         BotManager.getInstance().botReply(entry,
@@ -1950,6 +3398,34 @@ class BotInventoryManager {
         startTradeSequence("ammo_share", recipient, items, 0, true, entry, bot);
     }
 
+    static List<Item> collectRockShareItems(Character donorBot, int rockId, int maxQty) {
+        if (maxQty <= 0 || rockId <= 0) return List.of();
+        Inventory inv = donorBot.getInventory(ItemConstants.getInventoryType(rockId));
+        List<Item> result = new ArrayList<>();
+        int totalQty = 0;
+        for (short slot = 1; slot <= inv.getSlotLimit(); slot++) {
+            Item item = inv.getItem(slot);
+            if (item == null || item.getItemId() != rockId) continue;
+            result.add(item);
+            totalQty += item.getQuantity();
+            if (result.size() >= 9 || totalQty >= maxQty) break;
+        }
+        return result;
+    }
+
+    static void startRockShareTransfer(List<Item> items, Character recipient, BotEntry entry, Character bot, int maxQty) {
+        if (items.isEmpty()) return;
+        if (bot.getTrade() != null || entry.pendingTradeCategory != null || recipient.getTrade() != null) {
+            if (entry.pendingBotTradeRetry == null) {
+                entry.pendingBotTradeRetry = () -> startRockShareTransfer(items, recipient, entry, bot, maxQty);
+                entry.pendingBotTradeRetryMs = BotMovementManager.delayAfterCurrentTick(10_000);
+            }
+            return;
+        }
+        entry.pendingPotShareBudget = maxQty;
+        startTradeSequence("rock_share", recipient, items, 0, true, entry, bot);
+    }
+
     private static boolean isAmmoForWeapon(int itemId, WeaponType weaponType) {
         return switch (weaponType) {
             case BOW -> ItemConstants.isArrowForBow(itemId);
@@ -1982,6 +3458,7 @@ class BotInventoryManager {
 
     private static WeaponType tradeAmmoWeaponType(Character bot) {
         WeaponType weaponType = BotAttackExecutionProvider.getEquippedWeaponType(bot);
+        if (weaponType == null) return null;
         return switch (weaponType) {
             case BOW, CROSSBOW, CLAW, GUN -> weaponType;
             default -> null;

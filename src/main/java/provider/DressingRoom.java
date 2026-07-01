@@ -27,7 +27,6 @@ import net.server.Server;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import server.ItemInformationProvider;
-import tools.Pair;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -41,12 +40,15 @@ public class DressingRoom {
     private static final Logger log = LoggerFactory.getLogger(Server.class);
     private static final DataProvider stringProvider = DataProviderFactory.getDataProvider(STRING);
     private static final ItemInformationProvider ii = ItemInformationProvider.getInstance();
-    private static final Map<EquipType, List<EquipStats>> equipsByType = new HashMap<>(); // Type -> List of Item stats
+    // volatile + atomic publish in load(): the Dressing Room is loaded on a background thread post-
+    // startup (it's a non-core cosmetic feature), so readers must never see a half-built map. They
+    // get an empty map until the build completes and assigns it in one go.
+    private static volatile Map<EquipType, List<EquipStats>> equipsByType = Collections.emptyMap();
 
     public static void load() {
         long start = System.currentTimeMillis();
         Data itemsData = stringProvider.getData("Eqp.img").getChildByPath("Eqp");
-        List<Pair<Integer, String>> idToNamePairs = new ArrayList<>();
+        Map<EquipType, List<EquipStats>> built = new HashMap<>();
         for (Data eqpType : itemsData.getChildren()) {
             for (Data itemFolder : eqpType.getChildren()) {
                 int itemId = Integer.parseInt(itemFolder.getName());
@@ -56,9 +58,10 @@ public class DressingRoom {
                 }
 
                 EquipType equipType = EquipType.getEquipTypeById(itemId);
-                equipsByType.computeIfAbsent(equipType, k -> new ArrayList<>()).add(new EquipStats(itemId, stats));
+                built.computeIfAbsent(equipType, k -> new ArrayList<>()).add(new EquipStats(itemId, stats));
             }
         }
+        equipsByType = built; // single atomic publish — readers flip from empty to fully-loaded
         log.info(String.format("Loaded Dressing Room in %dms.", System.currentTimeMillis() - start));
     }
 

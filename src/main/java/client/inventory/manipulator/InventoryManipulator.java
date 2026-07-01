@@ -724,11 +724,13 @@ public class InventoryManipulator {
     }
 
     private static boolean isDisappearingItemDrop(Item it) {
-        // When everything is tradable, nothing should vanish on drop.
-        if (YamlConfig.config.server.UNTRADEABLE_ITEMS_TRADEABLE) {
+        ItemInformationProvider ii = ItemInformationProvider.getInstance();
+        // When everything is tradable, nothing should vanish on drop - EXCEPT quest items, which can
+        // never be traded or picked up by anyone, so they must still disappear (the isDropRestricted
+        // branch below is the SSOT for that) instead of lingering as ground litter.
+        if (YamlConfig.config.server.UNTRADEABLE_ITEMS_TRADEABLE && !ii.isQuestItem(it.getItemId())) {
             return false;
         }
-        ItemInformationProvider ii = ItemInformationProvider.getInstance();
         if (ii.isDropRestricted(it.getItemId())) {
             // Quest items always disappear; loot-restricted (tradeBlock) items respect the flag
             if (ii.isQuestItem(it.getItemId()) || !YamlConfig.config.server.UNTRADEABLE_ITEMS_TRADEABLE) {

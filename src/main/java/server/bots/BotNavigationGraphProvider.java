@@ -3,6 +3,7 @@ package server.bots;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import server.maps.Foothold;
+import server.maps.MapManager;
 import server.maps.MapleMap;
 import server.maps.Portal;
 import server.maps.Rope;
@@ -23,42 +24,99 @@ import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
+import java.util.function.IntPredicate;
 import java.util.concurrent.Executors;
 
 final class BotNavigationGraphProvider {
     private static final Logger log = LoggerFactory.getLogger(BotNavigationGraphProvider.class);
 
-    private static final int GRAPH_VERSION = 46;
+    // 47: forbidFallDown footholds stay solid during down-jump grace (landing predictions
+    //     change on maps with stacked platforms) — caches must rebuild.
+    // 48: WZ info/fs reinterpreted as slipperiness (was a bogus ground-speed scale): walk
+    //     step on fs maps jumps back to full speed, runways stretch by 1/fs.
+    // 49: down-jumps capped at DOWN_JUMP_MAX_DROP_PX (client probes a bounded range below;
+    //     Orbis-tower-style 860px down-jump edges must disappear).
+    // 50: indexed ground lookups (findBelowIndexed) - tie-breaks between overlapping footholds
+    //     can differ from the tree's traversal order (Ellinia: 2 of 5151 edges).
+    // 54: client-true landings — touchdown halves carried momentum (packet fit), so slippery
+    //     post-landing brake sims stop in ~1/4 the distance and previously-rejected icy hop
+    //     edges (El Nath 267->277->278->279) become stable.
+    // 55: disasm-true air control (CVecCtrl::CalcFloat @ 0x9b2c3c) — input only nudges vx
+    //     inside an 8.93 x fs px/s band (no walkSpeed air cap; counter-strafe pins at the
+    //     band edge) and no-input flight drags 1 x fs (100 x fs at terminal fall). Committed
+    //     arcs still fly the launch key held, so constant-stepX arc sims stay exact.
+    private static final int GRAPH_VERSION = 66; // 51: kinetic slippery model + snowshoes; 52: brake-to-stop landings; 53: glide-unless-edge stop policy (slipperyStopDir); 56: uncap straight-drop launch windows (full droppable span, no +/-20 fragmentation); 57: remove the (empirically wrong) 300px down-jump drop cap - down-jumps fall until landing; 58: rope-grab reach counts descent below the ledge (mid-rope jump-grabs from adjacent platforms); 59: fall-sim caps to map height not 1500ms - long single-fall descents (tall shafts: Ellinia tree, Perion) now generate DROP/JUMP/ROPE edges; 60: teleport (mage) + flash-jump (thief) skill edges; 61: teleport snap = physics SSOT intent (BotPhysicsEngine.teleportLanding — horizontal same-level priority, blocked-if-none); 62: rope-exit/transfer CLIMB edges carry a Y launch window [launchMinY,launchMaxY] (collapses ~anchorYs×3 near-duplicate same-region jump-offs into one windowed edge, mirroring ground-jump X windows); 63: serialized source-bucketed routes from every region to every portal region; 64: flash-jump edges carry an X launch window (same expand/boundary treatment as ground JUMP) — collapses ~per-anchor FJ point-edges into one windowed edge, mirroring JUMP/DROP/rope windows; 65: teleport edges carry an X launch window too (same treatment; exec computes the blink dest live from the bot's position via the physics SSOT) + down-teleport snaps to FURTHEST platform within range + horizontal y-snap band 70→75; 66: ground-walk follows the standing foothold's prev/next chain across a joined fork (client SN model) instead of snapping down onto the lower overlapping arm — fixes the region-11 (100040000) fork walk-trap that stranded/oscillated bots on the dead-end spur; 67: skip phantom cross-region JUMP/FLASH_JUMP edges whose landing is on ground the SOURCE region already covers (overlapping/coincident chains, e.g. map 600020100 r73 ramp-foot over r97 flat) — such an edge can never change region (client tracks the standing-foothold chain) and trapped bots oscillating against an unexecutable jump-pos gate
+    /** The nav-graph cache version. The partition cache derives from these graphs, so it keys its own
+     *  on-disk cache by this number — a graph-version bump invalidates persisted partitions too. */
+    static int graphVersion() {
+        return GRAPH_VERSION;
+    }
+
+    // Fired (with the map id) whenever a graph is rebuilt, so higher layers can drop data derived from the
+    // old graph (e.g. BotMapPartitionProvider's cache). A listener slot — NOT a direct call — so this
+    // provider stays free of any dependency on those layers (the dependency only flows the other way).
+    private static volatile java.util.function.IntConsumer graphRebuildListener = id -> {};
+
+    /** Register the hook fired on every {@link #rebuildGraph}. */
+    static void setGraphRebuildListener(java.util.function.IntConsumer listener) {
+        graphRebuildListener = listener;
+    }
+
     private static final int ENDPOINT_ANCHOR_SPACING_PX = 10;
-    private static final int DOWN_JUMP_PRELAUNCH_WINDOW_PX = 20;
     private static final int SAME_SOLID_NEST_GAP_PX = 8;
     private static final int ROPE_ANCHOR_INTERVAL_PX = 30;
     private static final int JUMP_POST_LANDING_STABILITY_TICKS = 3;
     private static final int MAX_PROFILED_JUMP_REGIONS = 5;
     private static final int FAST_WARMUP_MAX_FOOTHOLDS = 200;
-    private static final Path CACHE_DIR = Path.of("cache", "bot-nav", "v" + GRAPH_VERSION);
+    // Teleport skill edges. Bots are modelled at max teleport range (150px, skill L20) regardless of
+    // their actual level — the graph isn't keyed by teleport level and mages max it fast, so honoring
+    // 130/140/150 separately would triple the edges for a transient low-level case (see design notes).
+    // Package-visible: SSOT for teleport reach, shared with BotNavigationManager's intra-region express.
+    static final int TELEPORT_RANGE_PX = 150;
+    static final int TELEPORT_Y_SNAP_PX = 75;  // horizontal teleport: vertical snap band to a platform (eyeball; client-verify if precision matters)
+    private static final int TELEPORT_COST_MS = 150;   // near-instant cast+recovery (tunable)
+    // Base dir is overridable so tests never persist their (often trimmed) graphs into the live
+    // production cache — a trimmed map at base profile would otherwise overwrite the real graph and
+    // strand bots with region=-1. Tests point -Dbot.nav.cacheDir at cache/bot-nav-test; prod uses the default.
+    private static final Path CACHE_DIR =
+            Path.of(System.getProperty("bot.nav.cacheDir", "cache/bot-nav"), "v" + GRAPH_VERSION);
     private static final Map<GraphCacheKey, BotNavigationGraph> GRAPHS = new ConcurrentHashMap<>();
     private static final Map<GraphCacheKey, CompletableFuture<BotNavigationGraph>> PENDING_GRAPHS = new ConcurrentHashMap<>();
     private static final Map<GraphCacheKey, GraphBuildReport> LAST_BUILD_REPORTS = new ConcurrentHashMap<>();
     private static final Map<Integer, Set<Integer>> COLLIDABLE_WALL_IDS_BY_MAP_ID = new ConcurrentHashMap<>();
     private static final Map<Integer, Set<Integer>> COLLIDABLE_FROM_BELOW_IDS_BY_MAP_ID = new ConcurrentHashMap<>();
+    /** Last time any bot was present in / committed to a map, refreshed each eviction sweep. Drives
+     *  {@link #evictIdleGraphs}: a map idle past the grace window has its in-memory graph dropped. */
+    private static final Map<Integer, Long> MAP_LAST_ACTIVE_MS = new ConcurrentHashMap<>();
     private static final ThreadLocal<BuildProfileBuilder> ACTIVE_BUILD_PROFILE = new ThreadLocal<>();
     private static final ExecutorService GRAPH_WARMUP_EXECUTOR = Executors.newSingleThreadExecutor(r -> {
         Thread thread = new Thread(r, "bot-nav-graph-warmup");
         thread.setDaemon(true);
+        thread.setPriority(Thread.MIN_PRIORITY); // yield to game loop; warmup is background work
         return thread;
     });
     private static final ExecutorService FAST_GRAPH_WARMUP_EXECUTOR = Executors.newSingleThreadExecutor(r -> {
         Thread thread = new Thread(r, "bot-nav-graph-warmup-fast");
         thread.setDaemon(true);
+        thread.setPriority(Thread.MIN_PRIORITY); // yield to game loop; warmup is background work
         return thread;
     });
 
-    private record GraphCacheKey(int mapId, int totalSpeedStat, int totalJumpStat) {
+    private record GraphCacheKey(int mapId, int totalSpeedStat, int totalJumpStat, boolean snowShoes) {
         static GraphCacheKey from(int mapId, BotMovementProfile profile) {
             BotMovementProfile effective = profile == null ? BotMovementProfile.base() : profile;
-            return new GraphCacheKey(mapId, effective.totalSpeedStat(), effective.totalJumpStat());
+            return new GraphCacheKey(mapId, effective.totalSpeedStat(), effective.totalJumpStat(),
+                    effective.snowShoes());
         }
+    }
+
+    /** Snowshoes only change physics on slippery ground (fs &lt; 1): strip the flag everywhere
+     *  else so a snowshoe-wearing bot shares the normal map graphs instead of duplicating them. */
+    private static BotMovementProfile canonicalProfile(MapleMap map, BotMovementProfile profile) {
+        if (profile == null || !profile.snowShoes() || BotPhysicsEngine.slipperyGround(map)) {
+            return profile;
+        }
+        return new BotMovementProfile(profile.totalSpeedStat(), profile.totalJumpStat(), false);
     }
 
     static final class GraphBuildReport {
@@ -211,6 +269,7 @@ final class BotNavigationGraphProvider {
                 case DROP -> dropEdgeCount++;
                 case CLIMB -> climbEdgeCount++;
                 case PORTAL -> portalEdgeCount++;
+                case TELEPORT, FLASH_JUMP -> { } // counted in totalEdgeCount; per-type counts via the live graph (/api/mapinfo)
             }
         }
 
@@ -296,6 +355,11 @@ final class BotNavigationGraphProvider {
         private final Set<RopeGrabKey> misses = new HashSet<>();
     }
 
+    private static final class FlashJumpLandingCache {
+        private final Map<JumpLandingKey, BotPhysicsEngine.JumpLanding> hits = new HashMap<>();
+        private final Set<JumpLandingKey> misses = new HashSet<>();
+    }
+
     static BotNavigationGraph getGraph(MapleMap map) {
         return getGraph(map, BotMovementProfile.base());
     }
@@ -304,12 +368,25 @@ final class BotNavigationGraphProvider {
         if (map == null) {
             return null;
         }
+        movementProfile = canonicalProfile(map, movementProfile);
         GraphCacheKey key = GraphCacheKey.from(map.getId(), movementProfile);
         BotNavigationGraph cached = GRAPHS.get(key);
         if (cached != null) {
             return cached;
         }
         return getOrStartGraphLoad(map, movementProfile, key, false).join();
+    }
+
+    /** Movement profiles that currently have a graph cached for {@code mapId} — the web map-graph
+     *  profile picker lists these (default is the speed100/jump100 {@link BotMovementProfile#base()}). */
+    static List<BotMovementProfile> cachedProfiles(int mapId) {
+        List<BotMovementProfile> out = new ArrayList<>();
+        for (GraphCacheKey k : GRAPHS.keySet()) {
+            if (k.mapId() == mapId) {
+                out.add(new BotMovementProfile(k.totalSpeedStat(), k.totalJumpStat(), k.snowShoes()));
+            }
+        }
+        return out;
     }
 
     /** Returns the cached graph without triggering a build. */
@@ -330,7 +407,7 @@ final class BotNavigationGraphProvider {
         if (map == null) {
             return null;
         }
-        return GRAPHS.get(GraphCacheKey.from(map.getId(), movementProfile));
+        return GRAPHS.get(GraphCacheKey.from(map.getId(), canonicalProfile(map, movementProfile)));
     }
 
     /** Returns the closest cached graph for this map when the exact profile graph is unavailable. */
@@ -339,7 +416,7 @@ final class BotNavigationGraphProvider {
             return null;
         }
 
-        GraphCacheKey requested = GraphCacheKey.from(map.getId(), movementProfile);
+        GraphCacheKey requested = GraphCacheKey.from(map.getId(), canonicalProfile(map, movementProfile));
         BotNavigationGraph bestGraph = null;
         int bestDistance = Integer.MAX_VALUE;
         for (Map.Entry<GraphCacheKey, BotNavigationGraph> entry : GRAPHS.entrySet()) {
@@ -348,8 +425,11 @@ final class BotNavigationGraphProvider {
                 continue;
             }
 
+            // A slip/no-slip mismatch is structurally wrong (different runway/glide physics) —
+            // dominate any speed/jump distance, but stay a usable last-resort fallback.
             int distance = Math.abs(key.totalSpeedStat() - requested.totalSpeedStat())
-                    + Math.abs(key.totalJumpStat() - requested.totalJumpStat());
+                    + Math.abs(key.totalJumpStat() - requested.totalJumpStat())
+                    + (key.snowShoes() != requested.snowShoes() ? 1_000 : 0);
             if (bestGraph == null || distance < bestDistance) {
                 bestGraph = entry.getValue();
                 bestDistance = distance;
@@ -370,15 +450,78 @@ final class BotNavigationGraphProvider {
         return exact != null ? exact : peekClosestGraph(map, movementProfile);
     }
 
+    /** Coarse RAM-attribution readout for the perf log: how many per-(map,profile) graphs are retained
+     *  and their total region count. The graph cache is the prime suspect for bot heap growth — it is
+     *  never evicted, so this only grows as bots visit more maps. */
+    public static String cacheStats() {
+        int regions = 0;
+        for (BotNavigationGraph g : GRAPHS.values()) {
+            if (g != null && g.regions != null) {
+                regions += g.regions.size();
+            }
+        }
+        return "graphs=" + GRAPHS.size() + " regions=" + regions
+                + " pending=" + PENDING_GRAPHS.size() + " reports=" + LAST_BUILD_REPORTS.size();
+    }
+
+    /** Drop in-memory graphs (+ build reports + collidable sets) for maps with no bot present/committed
+     *  for longer than {@code graceMs}. The graph cache is otherwise never evicted, so it grows
+     *  unbounded as bots roam — this caps heap. An evicted graph reloads from the on-disk cache (or
+     *  rebuilds) on the next visit, so eviction is cheap to undo. A live bot still holding its
+     *  {@code entry.navGraph} reference keeps that object alive until it drops it. Returns the number of
+     *  (map,profile) graphs evicted. */
+    static int evictIdleGraphs(Set<Integer> activeMapIds, long graceMs) {
+        long now = System.currentTimeMillis();
+        for (Integer mapId : activeMapIds) {
+            MAP_LAST_ACTIVE_MS.put(mapId, now);
+        }
+        int evicted = 0;
+        for (GraphCacheKey key : new ArrayList<>(GRAPHS.keySet())) {
+            if (now - MAP_LAST_ACTIVE_MS.getOrDefault(key.mapId(), 0L) < graceMs) {
+                continue; // a bot is here or was recently — keep it warm
+            }
+            if (PENDING_GRAPHS.containsKey(key)) {
+                continue; // a build is in flight — don't yank it
+            }
+            GRAPHS.remove(key);
+            LAST_BUILD_REPORTS.remove(key);
+            COLLIDABLE_WALL_IDS_BY_MAP_ID.remove(key.mapId());
+            COLLIDABLE_FROM_BELOW_IDS_BY_MAP_ID.remove(key.mapId());
+            MAP_LAST_ACTIVE_MS.remove(key.mapId());
+            evicted++;
+        }
+        return evicted;
+    }
+
     static void warmGraphAsync(MapleMap map, BotMovementProfile movementProfile) {
         if (map == null) {
             return;
         }
+        movementProfile = canonicalProfile(map, movementProfile);
         GraphCacheKey key = GraphCacheKey.from(map.getId(), movementProfile);
         if (GRAPHS.containsKey(key)) {
             return;
         }
         getOrStartGraphLoad(map, movementProfile, key, true);
+    }
+
+    /**
+     * Route-ahead prewarm for multi-hop travel: load each map and queue its graph warmup, so
+     * the bot doesn't land in graph-warmup fallback at every hop. {@code MapManager.getMap}
+     * itself loads the map from WZ on first touch — heavy, hence the whole loop runs on the
+     * warmup executor, never on a bot tick thread.
+     */
+    static void warmGraphsForRouteAsync(MapManager mapFactory, List<Integer> mapIds,
+                                        BotMovementProfile movementProfile) {
+        GRAPH_WARMUP_EXECUTOR.execute(() -> {
+            for (int mapId : mapIds) {
+                try {
+                    warmGraphAsync(mapFactory.getMap(mapId), movementProfile);
+                } catch (RuntimeException e) {
+                    log.warn("Route prewarm failed for map {}", mapId, e);
+                }
+            }
+        });
     }
 
     static BotNavigationGraph rebuildGraph(MapleMap map) {
@@ -389,6 +532,7 @@ final class BotNavigationGraphProvider {
         GraphCacheKey key = GraphCacheKey.from(map.getId(), movementProfile);
         BotNavigationGraph rebuilt = buildGraph(map, movementProfile);
         GRAPHS.put(key, rebuilt);
+        graphRebuildListener.accept(map.getId()); // drop partitions derived from the superseded graph
         CompletableFuture<BotNavigationGraph> pending = PENDING_GRAPHS.remove(key);
         if (pending != null) {
             pending.complete(rebuilt);
@@ -572,6 +716,7 @@ final class BotNavigationGraphProvider {
             Set<String> edgeKeys = new HashSet<>();
             JumpLandingCache jumpLandingCache = new JumpLandingCache();
             RopeGrabCache ropeGrabCache = new RopeGrabCache();
+            FlashJumpLandingCache flashJumpLandingCache = new FlashJumpLandingCache();
 
             BotPhysicsEngine.setBuildWalkRegionLookup(map, regionsById, regionIdByFootholdId, footholdsById);
 
@@ -594,6 +739,16 @@ final class BotNavigationGraphProvider {
                         anchorsByRegionId.getOrDefault(region.id, List.of()), outgoing, edgeKeys, jumpLandingCache, movementProfile);
             }
             buildProfile.buildJumpEdgesNs = System.nanoTime() - phaseStartedAt;
+
+            // Skill edges (teleport / flash jump): baked into the shared graph, filtered per-bot in
+            // BotNavigationManager.isEdgeUsable by skill possession. Cross-region only — same-platform
+            // express is a runtime decision (the region A* can't hold a self-loop edge).
+            for (BotNavigationGraph.Region region : groundRegions) {
+                List<Point> regionAnchors = anchorsByRegionId.getOrDefault(region.id, List.of());
+                addTeleportEdges(region, map, regionsById, regionIdByFootholdId, regionAnchors, outgoing, edgeKeys);
+                addFlashJumpEdges(region, map, regionsById, regionIdByFootholdId, regionAnchors, outgoing, edgeKeys,
+                        jumpLandingCache, flashJumpLandingCache, movementProfile);
+            }
 
             phaseStartedAt = System.nanoTime();
             for (BotNavigationGraph.Region region : ropeRegions) {
@@ -620,7 +775,7 @@ final class BotNavigationGraphProvider {
             GraphBuildReport report = buildProfile.finish();
             LAST_BUILD_REPORTS.put(GraphCacheKey.from(map.getId(), movementProfile), report);
             log.debug("Built bot nav graph map {} speed={} jump={} in {} ms (regions={}, edges={}, drop={} ms, jump={} ms, jumpSamples={}, cacheHits={})",
-                    map.getId(),
+                    map.getMapName() + " (" + map.getId() + ")",
                     movementProfile.totalSpeedStat(),
                     movementProfile.totalJumpStat(),
                     String.format("%.2f", report.totalBuildNs / 1_000_000.0),
@@ -675,7 +830,7 @@ final class BotNavigationGraphProvider {
         COLLIDABLE_FROM_BELOW_IDS_BY_MAP_ID.put(graph.mapId, new HashSet<>(graph.collidableFromBelowIds));
     }
 
-    private static Set<Integer> classifyCollidableFromBelowFootholds(Map<Integer, Foothold> footholdsById) {
+    static Set<Integer> classifyCollidableFromBelowFootholds(Map<Integer, Foothold> footholdsById) {
         List<ClassifiedLoop> loops = classifyClosedLoops(buildClosedLoops(footholdsById));
         if (loops.isEmpty()) {
             return Set.of();
@@ -954,6 +1109,14 @@ final class BotNavigationGraphProvider {
             if (dropLaunchStep(from, map, anchor, movementProfile) != 0) {
                 continue;
             }
+            // A straight-down drop presses DOWN, but DOWN over a grabbable rope makes physics
+            // grab the rope instead of falling through — that grab is already modelled as a
+            // CLIMB edge (canTopStep/canGrab). Emitting a DROP at the same column produces a
+            // phantom edge A* prefers but execution can never satisfy, causing a grab/regrab
+            // loop at the rope top. Skip it; descent stays available via the rope CLIMB edges.
+            if (downKeyGrabsRope(map, anchor)) {
+                continue;
+            }
 
             JumpLaunchWindow launchWindow = expandDownJumpLaunchWindow(
                     from, map, regionIdByFootholdId, anchor.x, movementProfile);
@@ -972,6 +1135,25 @@ final class BotNavigationGraphProvider {
                     launchWindow.minX(), launchWindow.maxX(),
                     0, 0, launchWindow.landingTimeMs(), outgoing, edgeKeys);
         }
+    }
+
+    /**
+     * True when a straight-down jump from {@code launch} would grab a rope instead of dropping
+     * through the platform. Reuses {@link BotPhysicsEngine#simulateDownJumpRopeGrab} — the exact
+     * physics the rope-entry builder uses for its canTopStep CLIMB edge — so a DROP edge is never
+     * authored where execution would grab. Returns false below a rope's bottom (the down-jump arc
+     * never reaches the rope), so legitimate downward drops are unaffected.
+     */
+    private static boolean downKeyGrabsRope(MapleMap map, Point launch) {
+        for (Rope rope : map.getRopes()) {
+            if (Math.abs(launch.x - rope.x()) > BotMovementManager.cfg.ROPE_GRAB_X) {
+                continue;
+            }
+            if (BotPhysicsEngine.simulateDownJumpRopeGrab(map, launch, rope) != null) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static void addDirectionalDropEdge(BotNavigationGraph.Region from,
@@ -1039,6 +1221,19 @@ final class BotNavigationGraphProvider {
                 edgeKeys);
     }
 
+    /**
+     * Jump-edge launch state: the three launchStepX classes {-walkStep, 0, +walkStep} are
+     * COMPLETE even on slippery ground — no extra launch-speed classes or momentum chaining
+     * state are needed. Packet-verified client physics (see Config.AIR_CONTROL_ACCEL_PXSS):
+     * a jump with a direction held snaps to ±walkSpeed at takeoff regardless of ground speed
+     * (so a directional hop needs no runway and loses nothing to a slow icy start or a
+     * halved post-landing slide), and a no-input jump carries the current hspeed (bounded by
+     * ±walkSpeed, and the executor brakes vertical jumps to ~0 first — "jump-slide" gate).
+     * The simulated constant-stepX ballistic arc is exact because the arc flies with the
+     * launch direction key HELD (CVecCtrl::CalcFloat @ 0x9b2c3c): held input is a no-op above
+     * the 8.93 x fs px/s input band — it neither accelerates nor clamps a walkSpeed launch —
+     * and the no-input drag only applies when no key is held, so vx stays constant.
+     */
     private static void addJumpEdges(BotNavigationGraph.Region from,
                                      MapleMap map,
                                      Map<Integer, BotNavigationGraph.Region> regionsById,
@@ -1074,6 +1269,17 @@ final class BotNavigationGraphProvider {
                 if (launchWindow == null) {
                     continue;
                 }
+                // Phantom cross-region jump: the authored landing is on ground the SOURCE region
+                // already covers (a ramp foot overlapping a flat platform, or coincident chains at the
+                // same height). The client tracks the standing foothold's prev/next chain and never
+                // switches chains on shared ground (CVecCtrl::CalcWalk), so this "jump" cannot actually
+                // change region — A* would commit it and the bot could never execute it (map 600020100
+                // r97->r73: stuck/oscillating). Guard the window's representative endpoint (the landing
+                // the edge actually carries), not the raw per-anchor sim.
+                if (from.surfaceCoversPoint(launchWindow.endPoint().x, launchWindow.endPoint().y,
+                        BotNavigationGraph.SHARED_GROUND_Y_PX)) {
+                    continue;
+                }
 
                 addEdge(from.id, to.id, BotNavigationGraph.EdgeType.JUMP,
                         launchWindow.startPoint(), launchWindow.endPoint(),
@@ -1095,6 +1301,361 @@ final class BotNavigationGraphProvider {
                     stats.cacheMisses,
                     System.nanoTime() - startedAt));
         }
+    }
+
+    /**
+     * Teleport edges: per intent, a horizontal blink (±range, snap to a platform within the vertical
+     * band) and vertical blinks up/down (up/down = furthest platform within range). Given the SAME
+     * X-launch-window treatment as JUMP/FLASH_JUMP: per (anchor, intent) we expand the contiguous span of
+     * launch X that all blink into the same target region and emit ONE windowed edge (adjacent anchors
+     * dedup via edgeKeys) instead of one point-edge per anchor. Execution computes the blink dest LIVE
+     * from the bot's actual position (BotNavigationManager.tryExecuteTeleport) so any X in the window is a
+     * legal full-range hop. Only cross-region landings become edges. Bots are modelled at max range, so no
+     * per-edge distance is stored — usability is just "has teleport".
+     */
+    private static void addTeleportEdges(BotNavigationGraph.Region from,
+                                         MapleMap map,
+                                         Map<Integer, BotNavigationGraph.Region> regionsById,
+                                         Map<Integer, Integer> regionIdByFootholdId,
+                                         List<Point> anchors,
+                                         Map<Integer, List<BotNavigationGraph.Edge>> outgoing,
+                                         Set<String> edgeKeys) {
+        // Intent-based: ask the physics SSOT (BotPhysicsEngine.teleportLanding) where a left/right/up/down
+        // teleport from this anchor legally lands. Generation never invents a position — physics resolves
+        // it (horizontal = closest platform vertically / same-level priority; up/down = furthest within
+        // range; null = blocked, no edge).
+        for (Point anchor : anchors) {
+            for (int[] intent : new int[][]{{-1, 0}, {1, 0}, {0, -1}, {0, 1}}) {
+                addTeleportEdgeForIntent(from, map, regionsById, regionIdByFootholdId, anchor,
+                        intent[0], intent[1], outgoing, edgeKeys);
+            }
+        }
+    }
+
+    private static void addTeleportEdgeForIntent(BotNavigationGraph.Region from,
+                                                 MapleMap map,
+                                                 Map<Integer, BotNavigationGraph.Region> regionsById,
+                                                 Map<Integer, Integer> regionIdByFootholdId,
+                                                 Point anchor,
+                                                 int dirX,
+                                                 int dirY,
+                                                 Map<Integer, List<BotNavigationGraph.Edge>> outgoing,
+                                                 Set<String> edgeKeys) {
+        Point dest = BotPhysicsEngine.teleportLanding(map, anchor, dirX, dirY, TELEPORT_RANGE_PX, TELEPORT_Y_SNAP_PX);
+        if (dest == null || dest.equals(anchor)) {
+            return; // blocked — no platform to snap to in that direction
+        }
+        BotNavigationGraph.Region to = findRegionBelow(map, regionsById, regionIdByFootholdId, new Point(dest.x, dest.y - 1));
+        if (to == null || to.id == from.id) {
+            return; // cross-region only (same-platform express is a runtime decision)
+        }
+
+        JumpLaunchWindow launchWindow = expandTeleportLaunchWindow(from, map, regionsById, regionIdByFootholdId,
+                anchor.x, dirX, dirY, to.id);
+        if (launchWindow == null) {
+            return;
+        }
+
+        addEdge(from.id, to.id, BotNavigationGraph.EdgeType.TELEPORT,
+                launchWindow.startPoint(), launchWindow.endPoint(),
+                launchWindow.minX(), launchWindow.maxX(),
+                0, 0, TELEPORT_COST_MS, outgoing, edgeKeys);
+    }
+
+    private static JumpLaunchWindow expandTeleportLaunchWindow(BotNavigationGraph.Region from,
+                                                               MapleMap map,
+                                                               Map<Integer, BotNavigationGraph.Region> regionsById,
+                                                               Map<Integer, Integer> regionIdByFootholdId,
+                                                               int anchorX,
+                                                               int dirX,
+                                                               int dirY,
+                                                               int targetRegionId) {
+        if (!isValidTeleportLaunchX(from, map, regionsById, regionIdByFootholdId, anchorX, dirX, dirY, targetRegionId)) {
+            return null;
+        }
+
+        int minX = findTeleportBoundary(from, map, regionsById, regionIdByFootholdId, anchorX, dirX, dirY,
+                targetRegionId, true);
+        int maxX = findTeleportBoundary(from, map, regionsById, regionIdByFootholdId, anchorX, dirX, dirY,
+                targetRegionId, false);
+
+        int representativeX = (minX + maxX) / 2;
+        Point representativeStart = from.pointAt(representativeX);
+        Point representativeDest = BotPhysicsEngine.teleportLanding(
+                map, representativeStart, dirX, dirY, TELEPORT_RANGE_PX, TELEPORT_Y_SNAP_PX);
+        if (representativeDest == null) {
+            return null;
+        }
+        BotNavigationGraph.Region to = findRegionBelow(map, regionsById, regionIdByFootholdId,
+                new Point(representativeDest.x, representativeDest.y - 1));
+        if (to == null || to.id != targetRegionId) {
+            return null;
+        }
+
+        return new JumpLaunchWindow(minX, maxX, representativeStart, representativeDest, TELEPORT_COST_MS);
+    }
+
+    private static int findTeleportBoundary(BotNavigationGraph.Region from,
+                                            MapleMap map,
+                                            Map<Integer, BotNavigationGraph.Region> regionsById,
+                                            Map<Integer, Integer> regionIdByFootholdId,
+                                            int startX,
+                                            int dirX,
+                                            int dirY,
+                                            int targetRegionId,
+                                            boolean searchLeft) {
+        int limitX = searchLeft ? from.minX : from.maxX;
+        int validX = startX;
+        int invalidX = startX;
+        int step = 1;
+
+        while (true) {
+            int probeX = searchLeft
+                    ? Math.max(limitX, startX - step)
+                    : Math.min(limitX, startX + step);
+            if (probeX == validX) {
+                break;
+            }
+
+            if (!isValidTeleportLaunchX(from, map, regionsById, regionIdByFootholdId, probeX,
+                    dirX, dirY, targetRegionId)) {
+                invalidX = probeX;
+                break;
+            }
+
+            validX = probeX;
+            if (probeX == limitX) {
+                return probeX;
+            }
+            step *= 2;
+        }
+
+        while (Math.abs(validX - invalidX) > 1) {
+            int probeX = (validX + invalidX) / 2;
+            if (isValidTeleportLaunchX(from, map, regionsById, regionIdByFootholdId, probeX,
+                    dirX, dirY, targetRegionId)) {
+                validX = probeX;
+            } else {
+                invalidX = probeX;
+            }
+        }
+        return validX;
+    }
+
+    private static boolean isValidTeleportLaunchX(BotNavigationGraph.Region from,
+                                                  MapleMap map,
+                                                  Map<Integer, BotNavigationGraph.Region> regionsById,
+                                                  Map<Integer, Integer> regionIdByFootholdId,
+                                                  int launchX,
+                                                  int dirX,
+                                                  int dirY,
+                                                  int targetRegionId) {
+        if (!isApproachableJumpLaunchX(from, map, launchX)) {
+            return false;
+        }
+        Point origin = from.pointAt(launchX);
+        Point dest = BotPhysicsEngine.teleportLanding(map, origin, dirX, dirY, TELEPORT_RANGE_PX, TELEPORT_Y_SNAP_PX);
+        if (dest == null || dest.equals(origin)) {
+            return false;
+        }
+        BotNavigationGraph.Region to = findRegionBelow(map, regionsById, regionIdByFootholdId,
+                new Point(dest.x, dest.y - 1));
+        return to != null && to.id == targetRegionId;
+    }
+
+    /**
+     * Flash-jump edges: a directional jump with the mid-air dash injected at apex (see
+     * BotPhysicsEngine.simulateFlashJumpLanding). Given the SAME X-launch-window treatment as ground
+     * JUMP (expandFlashJumpLaunchWindow / findFlashJumpBoundary): per (anchor, dir) we expand the
+     * contiguous span of launch X that all flash-jump into the same target region AND that a plain jump
+     * canNOT reach — FJ earns an edge only where it adds reach, position-aware. Emitting one windowed
+     * edge collapses the ~per-anchor point-edges this used to produce into a few windowed edges
+     * (adjacent anchors dedup via edgeKeys), mirroring JUMP/DROP/rope windows.
+     */
+    private static void addFlashJumpEdges(BotNavigationGraph.Region from,
+                                          MapleMap map,
+                                          Map<Integer, BotNavigationGraph.Region> regionsById,
+                                          Map<Integer, Integer> regionIdByFootholdId,
+                                          List<Point> anchors,
+                                          Map<Integer, List<BotNavigationGraph.Edge>> outgoing,
+                                          Set<String> edgeKeys,
+                                          JumpLandingCache jumpLandingCache,
+                                          FlashJumpLandingCache flashJumpLandingCache,
+                                          BotMovementProfile movementProfile) {
+        int jumpStep = BotPhysicsEngine.walkStep(map, movementProfile);
+        JumpBuildStats stats = new JumpBuildStats();
+        for (Point anchor : anchors) {
+            for (int dir : new int[]{-1, 1}) {
+                int launchStepX = dir * jumpStep;
+                BotPhysicsEngine.JumpLanding fj = simulateFlashJumpLandingCached(
+                        map, anchor, launchStepX, flashJumpLandingCache, stats, movementProfile);
+                if (fj == null) {
+                    continue;
+                }
+                int toRegionId = regionIdByFootholdId.getOrDefault(fj.foothold().getId(), -1);
+                BotNavigationGraph.Region to = regionsById.get(toRegionId);
+                if (to == null || to.id == from.id) {
+                    continue;
+                }
+                JumpLaunchWindow launchWindow = expandFlashJumpLaunchWindow(from, map, regionIdByFootholdId,
+                        anchor.x, launchStepX, to.id, stats, jumpLandingCache, flashJumpLandingCache, movementProfile);
+                if (launchWindow == null) {
+                    continue;
+                }
+                // Same phantom-edge guard as ground JUMP: skip a flash-jump whose authored landing is on
+                // ground the source region already covers (shared/overlapping chains) — it cannot change
+                // region. Guard the window endpoint (the landing the edge carries), not the raw sim.
+                if (from.surfaceCoversPoint(launchWindow.endPoint().x, launchWindow.endPoint().y,
+                        BotNavigationGraph.SHARED_GROUND_Y_PX)) {
+                    continue;
+                }
+
+                addEdge(from.id, to.id, BotNavigationGraph.EdgeType.FLASH_JUMP,
+                        launchWindow.startPoint(), launchWindow.endPoint(),
+                        launchWindow.minX(), launchWindow.maxX(),
+                        launchStepX, 0, launchWindow.landingTimeMs(), outgoing, edgeKeys);
+            }
+        }
+    }
+
+    private static BotPhysicsEngine.JumpLanding simulateFlashJumpLandingCached(MapleMap map,
+                                                                               Point start,
+                                                                               int launchStepX,
+                                                                               FlashJumpLandingCache flashJumpLandingCache,
+                                                                               JumpBuildStats stats,
+                                                                               BotMovementProfile movementProfile) {
+        JumpLandingKey key = new JumpLandingKey(start.x, start.y, launchStepX);
+        BotPhysicsEngine.JumpLanding cached = flashJumpLandingCache.hits.get(key);
+        if (cached != null) {
+            recordJumpSample(stats, true);
+            return cached;
+        }
+        if (flashJumpLandingCache.misses.contains(key)) {
+            recordJumpSample(stats, true);
+            return null;
+        }
+
+        BotPhysicsEngine.JumpLanding landing = BotPhysicsEngine.simulateFlashJumpLanding(map, start, launchStepX, movementProfile);
+        if (landing == null) {
+            flashJumpLandingCache.misses.add(key);
+        } else {
+            flashJumpLandingCache.hits.put(key, landing);
+        }
+        recordJumpSample(stats, false);
+        return landing;
+    }
+
+    private static JumpLaunchWindow expandFlashJumpLaunchWindow(BotNavigationGraph.Region from,
+                                                               MapleMap map,
+                                                               Map<Integer, Integer> regionIdByFootholdId,
+                                                               int anchorX,
+                                                               int launchStepX,
+                                                               int targetRegionId,
+                                                               JumpBuildStats stats,
+                                                               JumpLandingCache jumpLandingCache,
+                                                               FlashJumpLandingCache flashJumpLandingCache,
+                                                               BotMovementProfile movementProfile) {
+        if (!isValidFlashJumpLaunchX(from, map, regionIdByFootholdId, anchorX, launchStepX, targetRegionId,
+                stats, jumpLandingCache, flashJumpLandingCache, movementProfile)) {
+            return null;
+        }
+
+        int minX = findFlashJumpBoundary(from, map, regionIdByFootholdId, anchorX, launchStepX, targetRegionId,
+                true, stats, jumpLandingCache, flashJumpLandingCache, movementProfile);
+        int maxX = findFlashJumpBoundary(from, map, regionIdByFootholdId, anchorX, launchStepX, targetRegionId,
+                false, stats, jumpLandingCache, flashJumpLandingCache, movementProfile);
+
+        int representativeX = (minX + maxX) / 2;
+        Point representativeStart = from.pointAt(representativeX);
+        BotPhysicsEngine.JumpLanding representative = simulateFlashJumpLandingCached(
+                map, representativeStart, launchStepX, flashJumpLandingCache, stats, movementProfile);
+        if (representative == null
+                || regionIdByFootholdId.getOrDefault(representative.foothold().getId(), -1) != targetRegionId) {
+            return null;
+        }
+
+        return new JumpLaunchWindow(minX, maxX, representativeStart, representative.point(), representative.timeMs());
+    }
+
+    private static int findFlashJumpBoundary(BotNavigationGraph.Region from,
+                                             MapleMap map,
+                                             Map<Integer, Integer> regionIdByFootholdId,
+                                             int startX,
+                                             int launchStepX,
+                                             int targetRegionId,
+                                             boolean searchLeft,
+                                             JumpBuildStats stats,
+                                             JumpLandingCache jumpLandingCache,
+                                             FlashJumpLandingCache flashJumpLandingCache,
+                                             BotMovementProfile movementProfile) {
+        int limitX = searchLeft ? from.minX : from.maxX;
+        int validX = startX;
+        int invalidX = startX;
+        int step = 1;
+
+        while (true) {
+            int probeX = searchLeft
+                    ? Math.max(limitX, startX - step)
+                    : Math.min(limitX, startX + step);
+            if (probeX == validX) {
+                break;
+            }
+
+            if (!isValidFlashJumpLaunchX(from, map, regionIdByFootholdId, probeX,
+                    launchStepX, targetRegionId, stats, jumpLandingCache, flashJumpLandingCache, movementProfile)) {
+                invalidX = probeX;
+                break;
+            }
+
+            validX = probeX;
+            if (probeX == limitX) {
+                return probeX;
+            }
+            step *= 2;
+        }
+
+        while (Math.abs(validX - invalidX) > 1) {
+            int probeX = (validX + invalidX) / 2;
+            if (isValidFlashJumpLaunchX(from, map, regionIdByFootholdId, probeX,
+                    launchStepX, targetRegionId, stats, jumpLandingCache, flashJumpLandingCache, movementProfile)) {
+                validX = probeX;
+            } else {
+                invalidX = probeX;
+            }
+        }
+        return validX;
+    }
+
+    /**
+     * A launch X is a valid flash-jump launch into {@code targetRegionId} iff it is approachable, the
+     * flash-jump from there lands in the target region, AND a plain jump from the same X does NOT reach
+     * the same region (where a plain jump suffices the cheaper JUMP edge covers it — so the FJ window
+     * spans only the X-range FJ uniquely adds; their union covers every reachable launch X with no gap).
+     */
+    private static boolean isValidFlashJumpLaunchX(BotNavigationGraph.Region from,
+                                                   MapleMap map,
+                                                   Map<Integer, Integer> regionIdByFootholdId,
+                                                   int launchX,
+                                                   int launchStepX,
+                                                   int targetRegionId,
+                                                   JumpBuildStats stats,
+                                                   JumpLandingCache jumpLandingCache,
+                                                   FlashJumpLandingCache flashJumpLandingCache,
+                                                   BotMovementProfile movementProfile) {
+        if (!isApproachableJumpLaunchX(from, map, launchX)) {
+            return false;
+        }
+        BotPhysicsEngine.JumpLanding fj = simulateFlashJumpLandingCached(
+                map, from.pointAt(launchX), launchStepX, flashJumpLandingCache, stats, movementProfile);
+        if (fj == null || regionIdByFootholdId.getOrDefault(fj.foothold().getId(), -1) != targetRegionId) {
+            return false;
+        }
+        BotPhysicsEngine.PostLandingJump normal = simulateJumpLandingCached(
+                map, from.pointAt(launchX), launchStepX, jumpLandingCache, stats, movementProfile);
+        int normalRegion = normal == null || normal.lostGround()
+                ? -1
+                : regionIdByFootholdId.getOrDefault(normal.finalFoothold().getId(), -1);
+        return normalRegion != targetRegionId;
     }
 
     private static BotPhysicsEngine.PostLandingJump simulateJumpLandingCached(MapleMap map,
@@ -1303,9 +1864,13 @@ final class BotNavigationGraphProvider {
                                             int targetRegionId,
                                             boolean searchLeft,
                                             BotMovementProfile movementProfile) {
-        int limitX = searchLeft
-                ? Math.max(from.minX, startX - DOWN_JUMP_PRELAUNCH_WINDOW_PX)
-                : Math.min(from.maxX, startX + DOWN_JUMP_PRELAUNCH_WINDOW_PX);
+        // A straight down-jump has NO horizontal launch precision (you press down+jump and fall
+        // in place), so the window is the whole contiguous span of the source region that drops
+        // into the same target - bounded only by the region edges, exactly like findJumpBoundary.
+        // Capping it at +/-20px fragmented one droppable platform into many partial 40px edges
+        // whose union didn't even cover the platform, stranding bots just outside a chosen edge
+        // (El Nath r54->r56, pathlog-Leroy-2026-06-12T141517: 14 edges, none covering x=1287).
+        int limitX = searchLeft ? from.minX : from.maxX;
         int validX = startX;
         int invalidX = startX;
         int step = 1;
@@ -1644,30 +2209,67 @@ final class BotNavigationGraphProvider {
         // Direct step-off at the top of the rope
         addTopStepOffEdge(ropeRegion, rope, map, regionsById, regionIdByFootholdId, outgoing, edgeKeys);
 
-        // Jump-off / step-off to ground at various heights along the rope
+        // Jump-off / step-off to ground at various heights along the rope. The launch axis here is the
+        // climb height Y (the rope analogue of a ground jump's launch X). Probing every anchorY × 3 dirs
+        // and emitting one edge each produced ~anchorYs×3 near-duplicate CLIMB edges all landing in the
+        // same region. Instead, for each (anchorY, stepX) expand the contiguous Y-window that lands in the
+        // SAME region and emit ONE edge carrying [minY, maxY] — identical to how JUMP edges carry an
+        // X-window. Adjacent anchorYs collapse to the same window via the edge-key dedup. Execution then
+        // climbs to any height inside the window (BotNavigationManager.selectClimbWaypoint), not a fixed Y.
+        int loY = BotPhysicsEngine.firstClimbableY(rope);
+        int hiY = rope.bottomY();
         for (int anchorY : ropeAnchorYs(rope)) {
-            Point ropePoint = new Point(ropeX, anchorY);
             for (int stepX : new int[]{-jumpStep, 0, jumpStep}) {
-                BotMovementManager.JumpLanding landing = BotMovementManager.simulateRopeJumpLanding(map, ropePoint, stepX, movementProfile);
-                if (landing == null) {
+                IntPredicate landsInSameRegion = y -> {
+                    BotMovementManager.JumpLanding l = BotMovementManager.simulateRopeJumpLanding(
+                            map, new Point(ropeX, y), stepX, movementProfile);
+                    if (l == null) {
+                        return false;
+                    }
+                    BotNavigationGraph.Region r = regionsById.get(regionIdByFootholdId.getOrDefault(l.foothold().getId(), -1));
+                    return r != null && !r.isRopeRegion;
+                };
+                BotMovementManager.JumpLanding anchorLanding = BotMovementManager.simulateRopeJumpLanding(
+                        map, new Point(ropeX, anchorY), stepX, movementProfile);
+                if (anchorLanding == null) {
                     continue;
                 }
-
-                int toRegionId = regionIdByFootholdId.getOrDefault(landing.foothold().getId(), -1);
+                int toRegionId = regionIdByFootholdId.getOrDefault(anchorLanding.foothold().getId(), -1);
                 BotNavigationGraph.Region toRegion = regionsById.get(toRegionId);
                 if (toRegion == null || toRegion.isRopeRegion) {
                     continue;
                 }
-
+                IntPredicate sameTarget = y -> {
+                    BotMovementManager.JumpLanding l = BotMovementManager.simulateRopeJumpLanding(
+                            map, new Point(ropeX, y), stepX, movementProfile);
+                    return l != null
+                            && regionIdByFootholdId.getOrDefault(l.foothold().getId(), -1) == toRegionId;
+                };
+                if (!landsInSameRegion.test(anchorY)) {
+                    continue;
+                }
+                int minY = findRopeLaunchBoundary(anchorY, loY, hiY, true, sameTarget);
+                int maxY = findRopeLaunchBoundary(anchorY, loY, hiY, false, sameTarget);
+                int midY = (minY + maxY) / 2;
+                Point ropePoint = new Point(ropeX, midY);
+                BotMovementManager.JumpLanding rep = BotMovementManager.simulateRopeJumpLanding(map, ropePoint, stepX, movementProfile);
+                if (rep == null || regionIdByFootholdId.getOrDefault(rep.foothold().getId(), -1) != toRegionId) {
+                    continue;
+                }
+                // Fall cost varies with launch height, so cost the two window endpoints (higher launch =
+                // longer fall = pricier); the search interpolates per the bot's actual climb height.
                 int cost = BotPhysicsEngine.estimateRopeJumpLandingTimeMs(map, ropePoint, stepX, movementProfile);
-                addEdge(ropeRegion.id, toRegion.id, BotNavigationGraph.EdgeType.CLIMB,
-                        ropePoint, landing.point(), stepX, 0, cost, outgoing, edgeKeys);
+                int costAtMinY = BotPhysicsEngine.estimateRopeJumpLandingTimeMs(map, new Point(ropeX, minY), stepX, movementProfile);
+                int costAtMaxY = BotPhysicsEngine.estimateRopeJumpLandingTimeMs(map, new Point(ropeX, maxY), stepX, movementProfile);
+                addRopeWindowEdge(ropeRegion.id, toRegionId, ropePoint, rep.point(), minY, maxY, stepX,
+                        costAtMinY, costAtMaxY, cost, outgoing, edgeKeys);
             }
         }
 
-        // Rope-to-rope transfers need a tighter vertical sweep than generic rope exits.
+        // Rope-to-rope transfers need a tighter vertical sweep than generic rope exits. Same Y-window
+        // treatment: for each target rope, expand the contiguous climb-height range that successfully
+        // grabs it and emit one windowed edge.
         for (int anchorY : ropeTransferAnchorYs(rope)) {
-            Point ropePoint = new Point(ropeX, anchorY);
             for (BotNavigationGraph.Region otherRope : ropeRegions) {
                 if (otherRope.id == ropeRegion.id) {
                     continue;
@@ -1684,16 +2286,65 @@ final class BotNavigationGraphProvider {
                 }
 
                 int launchDir = targetRope.x() > ropeX ? jumpStep : -jumpStep;
+                IntPredicate grabsTarget = y -> BotPhysicsEngine.simulateRopeJumpGrab(
+                        map, new Point(ropeX, y), launchDir, targetRope, movementProfile) != null;
+                if (!grabsTarget.test(anchorY)) {
+                    continue;
+                }
+                int minY = findRopeLaunchBoundary(anchorY, loY, hiY, true, grabsTarget);
+                int maxY = findRopeLaunchBoundary(anchorY, loY, hiY, false, grabsTarget);
+                int midY = (minY + maxY) / 2;
+                Point ropePoint = new Point(ropeX, midY);
                 Point ropeGrab = BotPhysicsEngine.simulateRopeJumpGrab(map, ropePoint, launchDir, targetRope, movementProfile);
                 if (ropeGrab == null) {
                     continue;
                 }
-
                 int cost = BotPhysicsEngine.estimateRopeJumpGrabTimeMs(map, ropePoint, launchDir, targetRope, movementProfile);
-                addEdge(ropeRegion.id, otherRope.id, BotNavigationGraph.EdgeType.CLIMB,
-                        ropePoint, ropeGrab, launchDir, 0, cost, outgoing, edgeKeys);
+                int costAtMinY = BotPhysicsEngine.estimateRopeJumpGrabTimeMs(map, new Point(ropeX, minY), launchDir, targetRope, movementProfile);
+                int costAtMaxY = BotPhysicsEngine.estimateRopeJumpGrabTimeMs(map, new Point(ropeX, maxY), launchDir, targetRope, movementProfile);
+                addRopeWindowEdge(ropeRegion.id, otherRope.id, ropePoint, ropeGrab, minY, maxY, launchDir,
+                        costAtMinY, costAtMaxY, cost, outgoing, edgeKeys);
             }
         }
+    }
+
+    /**
+     * Contiguous-window boundary search on the rope climb-height axis — the Y twin of
+     * {@link #findJumpBoundary}. From {@code startY} it doubles outward then binary-searches toward
+     * {@code searchUp} (smaller Y = up the rope, bounded by {@code loY}) / down ({@code hiY}) for the
+     * last height where {@code validY} still holds.
+     */
+    private static int findRopeLaunchBoundary(int startY, int loY, int hiY, boolean searchUp, IntPredicate validY) {
+        int limitY = searchUp ? loY : hiY;
+        int validYv = startY;
+        int invalidY = startY;
+        int step = 1;
+
+        while (true) {
+            int probeY = searchUp ? Math.max(limitY, startY - step) : Math.min(limitY, startY + step);
+            if (probeY == validYv) {
+                break;
+            }
+            if (!validY.test(probeY)) {
+                invalidY = probeY;
+                break;
+            }
+            validYv = probeY;
+            if (probeY == limitY) {
+                return probeY;
+            }
+            step *= 2;
+        }
+
+        while (Math.abs(validYv - invalidY) > 1) {
+            int probeY = (validYv + invalidY) / 2;
+            if (validY.test(probeY)) {
+                validYv = probeY;
+            } else {
+                invalidY = probeY;
+            }
+        }
+        return validYv;
     }
 
     private static void addTopStepOffEdge(BotNavigationGraph.Region ropeRegion,
@@ -1704,7 +2355,7 @@ final class BotNavigationGraphProvider {
                                           Map<Integer, List<BotNavigationGraph.Edge>> outgoing,
                                           Set<String> edgeKeys) {
         Point probe = new Point(rope.x(), rope.topY() - 3);
-        Point landPoint = map.getPointBelow(probe);
+        Point landPoint = BotPhysicsEngine.pointBelowIndexed(map, probe);
         if (landPoint == null || landPoint.y > rope.topY() + BotPhysicsEngine.climbStepPerTick() + 2) {
             return;
         }
@@ -1885,7 +2536,7 @@ final class BotNavigationGraphProvider {
             return -1;
         }
 
-        Foothold foothold = map.getFootholds().findBelow(point);
+        Foothold foothold = BotPhysicsEngine.findBelowIndexed(map, point);
         if (foothold == null) {
             return -1;
         }
@@ -1995,8 +2646,8 @@ final class BotNavigationGraphProvider {
                                 int cost,
                                 Map<Integer, List<BotNavigationGraph.Edge>> outgoing,
                                 Set<String> edgeKeys) {
-        addEdge(fromRegionId, toRegionId, type, startPoint, endPoint, launchMinX, launchMaxX, launchStepX, portalId,
-                0, 0, 0, cost, outgoing, edgeKeys);
+        addEdge(fromRegionId, toRegionId, type, startPoint, endPoint, launchMinX, launchMaxX,
+                startPoint.y, startPoint.y, launchStepX, portalId, 0, 0, 0, cost, cost, cost, outgoing, edgeKeys);
     }
 
     private static void addEdge(int fromRegionId,
@@ -2009,8 +2660,27 @@ final class BotNavigationGraphProvider {
                                 int cost,
                                 Map<Integer, List<BotNavigationGraph.Edge>> outgoing,
                                 Set<String> edgeKeys) {
-        addEdge(fromRegionId, toRegionId, type, startPoint, endPoint, startPoint.x, startPoint.x, launchStepX, portalId,
-                0, 0, 0, cost, outgoing, edgeKeys);
+        addEdge(fromRegionId, toRegionId, type, startPoint, endPoint, startPoint.x, startPoint.x,
+                startPoint.y, startPoint.y, launchStepX, portalId, 0, 0, 0, cost, cost, cost, outgoing, edgeKeys);
+    }
+
+    /** Rope-exit / rope-transfer CLIMB edge carrying a Y launch window [launchMinY, launchMaxY] at a fixed
+     *  rope x (startPoint.x). Mirror of the windowed JUMP/DROP addEdge, but the launch axis is the climb Y. */
+    private static void addRopeWindowEdge(int fromRegionId,
+                                          int toRegionId,
+                                          Point startPoint,
+                                          Point endPoint,
+                                          int launchMinY,
+                                          int launchMaxY,
+                                          int launchStepX,
+                                          int costAtMinY,
+                                          int costAtMaxY,
+                                          int cost,
+                                          Map<Integer, List<BotNavigationGraph.Edge>> outgoing,
+                                          Set<String> edgeKeys) {
+        addEdge(fromRegionId, toRegionId, BotNavigationGraph.EdgeType.CLIMB, startPoint, endPoint,
+                startPoint.x, startPoint.x, launchMinY, launchMaxY, launchStepX, 0, 0, 0, 0,
+                costAtMinY, costAtMaxY, cost, outgoing, edgeKeys);
     }
 
     private static void addEdge(int fromRegionId,
@@ -2020,24 +2690,30 @@ final class BotNavigationGraphProvider {
                                 Point endPoint,
                                 int launchMinX,
                                 int launchMaxX,
+                                int launchMinY,
+                                int launchMaxY,
                                 int launchStepX,
                                 int portalId,
                                 int ropeX,
                                 int ropeTopY,
                                 int ropeBottomY,
+                                int launchCostAtMinY,
+                                int launchCostAtMaxY,
                                 int cost,
                                 Map<Integer, List<BotNavigationGraph.Edge>> outgoing,
                                 Set<String> edgeKeys) {
         String key = fromRegionId + ":" + toRegionId + ":" + type + ":" + startPoint.x + ":" + startPoint.y + ":"
                 + endPoint.x + ":" + endPoint.y + ":" + launchStepX + ":" + portalId + ":"
-                + ropeX + ":" + ropeTopY + ":" + ropeBottomY + ":" + launchMinX + ":" + launchMaxX;
+                + ropeX + ":" + ropeTopY + ":" + ropeBottomY + ":" + launchMinX + ":" + launchMaxX
+                + ":" + launchMinY + ":" + launchMaxY;
         if (!edgeKeys.add(key)) {
             return;
         }
 
         outgoing.computeIfAbsent(fromRegionId, ignored -> new ArrayList<>())
                 .add(new BotNavigationGraph.Edge(fromRegionId, toRegionId, type, startPoint, endPoint,
-                        launchMinX, launchMaxX, launchStepX, portalId, ropeX, ropeTopY, ropeBottomY, cost));
+                        launchMinX, launchMaxX, launchMinY, launchMaxY, launchStepX, portalId, ropeX, ropeTopY, ropeBottomY,
+                        launchCostAtMinY, launchCostAtMaxY, cost));
         BuildProfileBuilder profile = ACTIVE_BUILD_PROFILE.get();
         if (profile != null) {
             profile.recordEdge(type);

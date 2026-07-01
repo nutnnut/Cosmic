@@ -45,15 +45,14 @@ public final class BotEquipHandler extends AbstractPacketHandler {
         int action = p.readByte();
 
         if (action == REQ_LIST) {
-            int count = BotManager.getInstance().spawnedBotCount(player.getId());
-            c.sendPacket(PacketCreator.botEquipList(count));
+            c.sendPacket(PacketCreator.botEquipList(slotBots(player).size()));
             return;
         }
 
         int botIndex = p.readByte();
         Character bot = resolveBot(player, botIndex);
         if (bot == null) {
-            return;   // not an owned bot — ignore (treat all client input as hostile)
+            return;   // not a slot bot — ignore (treat all client input as hostile)
         }
 
         try {
@@ -97,12 +96,26 @@ public final class BotEquipHandler extends AbstractPacketHandler {
         c.sendPacket(PacketCreator.botEquipSnapshot(botIndex, bot));
     }
 
-    // botIndex 1..5 -> the player's Nth owned bot (stable spawn order), or null.
+    // The characters that fill this player's 1..5 window slots, stable order.
+    //  - own bots first (stable slot index), then the GM's single !inspect target (any logged-in
+    //    character — bot or real player) appended, so a GM can inspect anyone's inventory.
+    //  - non-GMs only ever have owned bots (they can't run !inspect).
+    private static List<Character> slotBots(Character player) {
+        BotManager bm = BotManager.getInstance();
+        List<Character> bots = new java.util.ArrayList<>(bm.getOwnedBotCharacters(player.getId()));
+        Character inspect = bm.getInspectTarget(player.getId());
+        if (inspect != null && !bots.contains(inspect)) {
+            bots.add(inspect);
+        }
+        return bots.size() > 5 ? bots.subList(0, 5) : bots;
+    }
+
+    // botIndex 1..5 -> the player's Nth slot bot (stable order), or null.
     private static Character resolveBot(Character player, int botIndex) {
         if (botIndex < 1) {
             return null;
         }
-        List<Character> bots = BotManager.getInstance().getOwnedBotCharacters(player.getId());
+        List<Character> bots = slotBots(player);
         if (botIndex > bots.size()) {
             return null;
         }

@@ -287,6 +287,16 @@ public class Character extends AbstractCharacterObject {
     private final List<WeakReference<MapleMap>> lastVisitedMaps = new LinkedList<>();
     private WeakReference<MapleMap> ownedMap = new WeakReference<>(null);
     private final Map<Short, QuestStatus> quests;
+    // Content signature of the quests/questprogress/medalmaps state at the last successful save (or at
+    // load). saveCharToDB skips the quest write (a delete-all + per-quest re-insert that dominates the
+    // save for quest-heavy bots) when the current signature matches. null => unknown => always write,
+    // so a missed change can never be silently dropped (the skip is opt-in on an exact content match).
+    private String savedQuestSignature = null;
+    // Same skip-when-unchanged trick for the main inventory write (a delete-all + per-slot re-insert -
+    // the dominant cost of an idle bot's save). null => always write, so a missed change is never dropped.
+    private String savedInventorySignature = null;
+    private String savedMonsterBookSignature = null;
+    private String savedAuxiliarySignature = null;
     private final Set<Monster> controlled = new LinkedHashSet<>();
     private final Map<Integer, String> entered = new LinkedHashMap<>();
     private final Set<MapObject> visibleMapObjects = Collections.newSetFromMap(new ConcurrentHashMap<>());
@@ -4848,6 +4858,189 @@ public class Character extends AbstractCharacterObject {
         }
     }
 
+    /** Deterministic signature of everything the quest block of {@link #saveCharToDB} persists
+     *  (queststatus + questprogress + medalmaps). Sorted by quest/mob id so identical state always
+     *  yields the same string; compared against {@link #savedQuestSignature} to skip an unchanged
+     *  re-write. Built from in-memory state only (no DB), so it's cheap relative to the writes it saves. */
+    private String computeQuestSignature() {
+        List<QuestStatus> qs = getQuests();
+        qs.sort(Comparator.comparingInt(q -> q.getQuest().getId()));
+        StringBuilder sb = new StringBuilder(qs.size() * 24);
+        for (QuestStatus q : qs) {
+            sb.append(q.getQuest().getId()).append(':')
+              .append(q.getStatus().getId()).append(':')
+              .append(q.getCompletionTime()).append(':')
+              .append(q.getExpirationTime()).append(':')
+              .append(q.getForfeited()).append(':')
+              .append(q.getCompleted());
+            Map<Integer, String> prog = q.getProgress();
+            if (!prog.isEmpty()) {
+                List<Integer> keys = new ArrayList<>(prog.keySet());
+                Collections.sort(keys);
+                sb.append('p');
+                for (int k : keys) {
+                    sb.append(k).append('=').append(prog.get(k)).append(',');
+                }
+            }
+            List<Integer> medals = q.getMedalMaps();
+            if (!medals.isEmpty()) {
+                sb.append('m').append(medals);
+            }
+            sb.append(';');
+        }
+        return sb.toString();
+    }
+
+    /** Deterministic signature of everything {@link client.inventory.ItemFactory} persists for the main
+     *  inventory (inventoryitems + inventoryequipment), used to skip the DELETE + re-INSERT in
+     *  {@link #saveCharToDB} when nothing changed. Built from the same item list the save writes, so it
+     *  can't drift from the data - but it MUST list every column ItemFactory writes; if you add one
+     *  there, add it here too, or an unchanged-signature save would silently drop the new field. */
+    static String computeInventorySignature(List<Pair<Item, InventoryType>> items) {
+        List<Pair<Item, InventoryType>> sorted = new ArrayList<>(items);
+        sorted.sort(Comparator
+                .comparingInt((Pair<Item, InventoryType> p) -> p.getRight().getType())
+                .thenComparingInt(p -> p.getLeft().getPosition()));
+        StringBuilder sb = new StringBuilder(sorted.size() * 48);
+        for (Pair<Item, InventoryType> p : sorted) {
+            Item it = p.getLeft();
+            InventoryType mit = p.getRight();
+            sb.append(mit.getType()).append('|')
+              .append(it.getItemId()).append('|')
+              .append(it.getPosition()).append('|')
+              .append(it.getQuantity()).append('|')
+              .append(it.getOwner()).append('|')
+              .append(it.getPetId()).append('|')
+              .append(it.getFlag()).append('|')
+              .append(it.getExpiration()).append('|')
+              .append(it.getGiftFrom());
+            if (mit == InventoryType.EQUIP || mit == InventoryType.EQUIPPED) {
+                Equip eq = (Equip) it;
+                sb.append('E')
+                  .append(eq.getUpgradeSlots()).append(',')
+                  .append(eq.getLevel()).append(',')
+                  .append(eq.getStr()).append(',')
+                  .append(eq.getDex()).append(',')
+                  .append(eq.getInt()).append(',')
+                  .append(eq.getLuk()).append(',')
+                  .append(eq.getHp()).append(',')
+                  .append(eq.getMp()).append(',')
+                  .append(eq.getWatk()).append(',')
+                  .append(eq.getMatk()).append(',')
+                  .append(eq.getWdef()).append(',')
+                  .append(eq.getMdef()).append(',')
+                  .append(eq.getAcc()).append(',')
+                  .append(eq.getAvoid()).append(',')
+                  .append(eq.getHands()).append(',')
+                  .append(eq.getSpeed()).append(',')
+                  .append(eq.getJump()).append(',')
+                  .append(eq.getVicious()).append(',')
+                  .append(eq.getItemLevel()).append(',')
+                  .append(eq.getItemExp()).append(',')
+                  .append(eq.getRingId());
+            }
+            sb.append(';');
+        }
+        return sb.toString();
+    }
+
+    private String computeMonsterBookSignature() {
+        List<Entry<Integer, Integer>> cards = new ArrayList<>(monsterbook.getCardSet());
+        cards.sort(Entry.comparingByKey());
+        StringBuilder sb = new StringBuilder(cards.size() * 12);
+        for (Entry<Integer, Integer> card : cards) {
+            sb.append(card.getKey()).append(':').append(card.getValue()).append(';');
+        }
+        return sb.toString();
+    }
+
+    private String computeAuxiliarySignature() {
+        StringBuilder sb = new StringBuilder(512);
+
+        sb.append("pet:");
+        List<Entry<Integer, Set<Integer>>> petIgnores = new ArrayList<>(getExcluded().entrySet());
+        petIgnores.sort(Entry.comparingByKey());
+        for (Entry<Integer, Set<Integer>> petIgnore : petIgnores) {
+            List<Integer> itemIds = new ArrayList<>(petIgnore.getValue());
+            Collections.sort(itemIds);
+            sb.append(petIgnore.getKey()).append('=').append(itemIds).append(';');
+        }
+
+        sb.append("|key:");
+        List<Entry<Integer, KeyBinding>> keyBindings = new ArrayList<>(keymap.entrySet());
+        keyBindings.sort(Entry.comparingByKey());
+        for (Entry<Integer, KeyBinding> keyBinding : keyBindings) {
+            KeyBinding kb = keyBinding.getValue();
+            sb.append(keyBinding.getKey()).append(':')
+              .append(kb.getType()).append(':')
+              .append(kb.getAction()).append(';');
+        }
+
+        sb.append("|macro:");
+        for (int i = 0; i < skillMacros.length; i++) {
+            SkillMacro macro = skillMacros[i];
+            if (macro != null) {
+                sb.append(i).append(':')
+                  .append(macro.getSkill1()).append(':')
+                  .append(macro.getSkill2()).append(':')
+                  .append(macro.getSkill3()).append(':')
+                  .append(macro.getName()).append(':')
+                  .append(macro.getShout()).append(':')
+                  .append(macro.getPosition()).append(';');
+            }
+        }
+
+        sb.append("|skill:");
+        List<Entry<Skill, SkillEntry>> skillEntries = new ArrayList<>(skills.entrySet());
+        skillEntries.sort(Comparator.comparingInt(e -> e.getKey().getId()));
+        for (Entry<Skill, SkillEntry> skill : skillEntries) {
+            SkillEntry entry = skill.getValue();
+            sb.append(skill.getKey().getId()).append(':')
+              .append(entry.skillevel).append(':')
+              .append(entry.masterlevel).append(':')
+              .append(entry.expiration).append(';');
+        }
+
+        sb.append("|saved:");
+        for (SavedLocationType savedLocationType : SavedLocationType.values()) {
+            SavedLocation savedLocation = savedLocations[savedLocationType.ordinal()];
+            if (savedLocation != null) {
+                sb.append(savedLocationType.name()).append(':')
+                  .append(savedLocation.getMapId()).append(':')
+                  .append(savedLocation.getPortal()).append(';');
+            }
+        }
+
+        sb.append("|trock:").append(trockmaps);
+        sb.append("|vip:").append(viptrockmaps);
+
+        sb.append("|buddy:");
+        List<BuddylistEntry> buddies = new ArrayList<>(buddylist.getBuddies());
+        buddies.sort(Comparator.comparingInt(BuddylistEntry::getCharacterId));
+        for (BuddylistEntry buddy : buddies) {
+            if (buddy.isVisible()) {
+                sb.append(buddy.getCharacterId()).append(':')
+                  .append(buddy.getGroup()).append(';');
+            }
+        }
+
+        sb.append("|area:");
+        List<Entry<Short, String>> areas = new ArrayList<>(area_info.entrySet());
+        areas.sort(Entry.comparingByKey());
+        for (Entry<Short, String> area : areas) {
+            sb.append(area.getKey()).append(':').append(area.getValue()).append(';');
+        }
+
+        sb.append("|event:");
+        List<Entry<String, Events>> eventEntries = new ArrayList<>(events.entrySet());
+        eventEntries.sort(Entry.comparingByKey());
+        for (Entry<String, Events> event : eventEntries) {
+            sb.append(event.getKey()).append(':').append(event.getValue().getInfo()).append(';');
+        }
+
+        return sb.toString();
+    }
+
     public final List<QuestStatus> getCompletedQuests() {
         List<QuestStatus> ret = new LinkedList<>();
         for (QuestStatus qs : getQuests()) {
@@ -5093,16 +5286,9 @@ public class Character extends AbstractCharacterObject {
         return YamlConfig.config.server.USE_ENFORCE_NOVICE_EXPRATE && isBeginnerJob() && level < 11;
     }
 
-    public boolean hasFirstJobExpRate() {
-        return level < 30;
-    }
-
     public int getExpRate() {
         World w = getWorldServer();
         if (hasNoviceExpRate()) {
-            return Math.min(w.getExpRate(), 5);
-        }
-        if (hasFirstJobExpRate()) {
             return Math.min(w.getExpRate(), 5);
         }
 
@@ -5174,9 +5360,6 @@ public class Character extends AbstractCharacterObject {
         World w = getWorldServer();
         if (hasNoviceExpRate()) {
             return Math.min(w.getExpRate(), 2);
-        }
-        if (hasFirstJobExpRate()) {
-            return Math.min(w.getExpRate(), 5) * w.getQuestRate();
         }
 
         return w.getExpRate() * w.getQuestRate();
@@ -5913,6 +6096,7 @@ public class Character extends AbstractCharacterObject {
     }
 
     public void closePlayerMessenger() {
+        server.bots.BotOpsConsole.getInstance().onMessengerClosed(this);
         Messenger m = this.getMessenger();
         if (m == null) {
             return;
@@ -7430,6 +7614,20 @@ public class Character extends AbstractCharacterObject {
                         }
                     }
                 }
+                // Seed the save-skip baseline to the just-loaded quest state, so a char that never
+                // changes a quest this session skips its quest write entirely (incl. the shutdown save).
+                ret.savedQuestSignature = ret.computeQuestSignature();
+                // Same for inventory, but only on the channel server - the login server loads EQUIPPED
+                // only (see the loadItems(..., !channelserver) above), so its list would be incomplete.
+                if (channelserver) {
+                    List<Pair<Item, InventoryType>> loaded = new ArrayList<>();
+                    for (Inventory iv : ret.inventory) {
+                        for (Item it : iv.list()) {
+                            loaded.add(new Pair<>(it, iv.getType()));
+                        }
+                    }
+                    ret.savedInventorySignature = computeInventorySignature(loaded);
+                }
 
                 loadedQuestStatus.clear();
 
@@ -7593,6 +7791,11 @@ public class Character extends AbstractCharacterObject {
                         ret.m_pQuickslotKeyMapped = new QuickslotBinding(ret.m_aQuickslotLoaded);
                     }
                 }
+            }
+
+            if (channelserver) {
+                ret.savedMonsterBookSignature = ret.computeMonsterBookSignature();
+                ret.savedAuxiliarySignature = ret.computeAuxiliarySignature();
             }
 
             return ret;
@@ -8497,6 +8700,15 @@ public class Character extends AbstractCharacterObject {
         return false;
     }
 
+    // ponytail: char saves wipe-and-reinsert their rows on shared tables (inventoryitems, skills,
+    // savedlocations); run in parallel (shutdown disconnect loop + periodic autosave + bot logouts)
+    // they deadlock in InnoDB. Gate the DB write so few enough overlap that the bounded retry reliably
+    // wins. Permits = the deadlock/throughput knob: drop to 1 for guaranteed zero deadlock (saves
+    // serialize). SSOT - covers autosave, bot logout, shutdown and despawn.
+    // ponytail: 1 permit = guaranteed zero deadlock (saves serialize). 4 still deadlocked past the
+    // retry budget under bot-logout storms; bump back up only if save throughput becomes the bottleneck.
+    private static final java.util.concurrent.Semaphore SAVE_GATE = new java.util.concurrent.Semaphore(1, true);
+
     public void saveCharToDB() {
         if (YamlConfig.config.server.USE_AUTOSAVE) {
             Runnable r = new Runnable() {
@@ -8524,11 +8736,27 @@ public class Character extends AbstractCharacterObject {
 
         Server.getInstance().updateCharacterEntry(this);
 
+        // Throttle concurrent saves (see SAVE_GATE) then retry the txn on the residual deadlock -
+        // MySQL says restart it, and the save rebuilds from in-memory state (idempotent) so it's safe.
+        try {
+            SAVE_GATE.acquire();
+        } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
+            log.error("Interrupted before saving chr {}, level: {}, job: {}", name, level, job.getId());
+            return;
+        }
+        try {
+        for (int attempt = 1; ; attempt++) {
         try (Connection con = DatabaseConnection.getConnection()) {
             con.setAutoCommit(false);
             con.setTransactionIsolation(Connection.TRANSACTION_READ_UNCOMMITTED);
 
             try {
+                String monsterBookSig = computeMonsterBookSignature();
+                boolean monsterBookChanged = !monsterBookSig.equals(savedMonsterBookSignature);
+                String auxiliarySig = computeAuxiliarySignature();
+                boolean auxiliaryChanged = !auxiliarySig.equals(savedAuxiliarySignature);
+
                 try (PreparedStatement ps = con.prepareStatement("UPDATE characters SET level = ?, fame = ?, str = ?, dex = ?, luk = ?, `int` = ?, exp = ?, gachaexp = ?, hp = ?, mp = ?, maxhp = ?, maxmp = ?, sp = ?, ap = ?, gm = ?, skincolor = ?, gender = ?, job = ?, hair = ?, face = ?, map = ?, meso = ?, hpMpUsed = ?, spawnpoint = ?, party = ?, buddyCapacity = ?, messengerid = ?, messengerposition = ?, mountlevel = ?, mountexp = ?, mounttiredness= ?, equipslots = ?, useslots = ?, setupslots = ?, etcslots = ?,  monsterbookcover = ?, vanquisherStage = ?, dojoPoints = ?, lastDojoStage = ?, finishedDojoTutorial = ?, vanquisherKills = ?, matchcardwins = ?, matchcardlosses = ?, matchcardties = ?, omokwins = ?, omoklosses = ?, omokties = ?, dataString = ?, fquest = ?, jailexpire = ?, partnerId = ?, marriageItemId = ?, lastExpGainTime = ?, ariantPoints = ?, partySearch = ? WHERE id = ?", Statement.RETURN_GENERATED_KEYS)) {
                     ps.setInt(1, level);    // thanks CanIGetaPR for noticing an unnecessary "level" limitation when persisting DB data
                     ps.setInt(2, fame);
@@ -8621,7 +8849,9 @@ public class Character extends AbstractCharacterObject {
                         ps.setInt(i + 31, getSlots(i));
                     }
 
-                    monsterbook.saveCards(con, id);
+                    if (monsterBookChanged) {
+                        monsterbook.saveCards(con, id);
+                    }
 
                     ps.setInt(36, bookCover);
                     ps.setInt(37, vanquisherStage);
@@ -8667,35 +8897,37 @@ public class Character extends AbstractCharacterObject {
                     pet.saveToDb();
                 }
 
-                for (Entry<Integer, Set<Integer>> es : getExcluded().entrySet()) {    // this set is already protected
-                    try (PreparedStatement psIgnore = con.prepareStatement("DELETE FROM petignores WHERE petid=?")) {
-                        psIgnore.setInt(1, es.getKey());
-                        psIgnore.executeUpdate();
-                    }
-
-                    try (PreparedStatement psIgnore = con.prepareStatement("INSERT INTO petignores (petid, itemid) VALUES (?, ?)")) {
-                        psIgnore.setInt(1, es.getKey());
-                        for (Integer x : es.getValue()) {
-                            psIgnore.setInt(2, x);
-                            psIgnore.addBatch();
+                if (auxiliaryChanged) {
+                    for (Entry<Integer, Set<Integer>> es : getExcluded().entrySet()) {    // this set is already protected
+                        try (PreparedStatement psIgnore = con.prepareStatement("DELETE FROM petignores WHERE petid=?")) {
+                            psIgnore.setInt(1, es.getKey());
+                            psIgnore.executeUpdate();
                         }
-                        psIgnore.executeBatch();
-                    }
-                }
 
-                // Key config
-                deleteWhereCharacterId(con, "DELETE FROM keymap WHERE characterid = ?");
-                try (PreparedStatement psKey = con.prepareStatement("INSERT INTO keymap (characterid, `key`, `type`, `action`) VALUES (?, ?, ?, ?)")) {
-                    psKey.setInt(1, id);
-
-                    Set<Entry<Integer, KeyBinding>> keybindingItems = Collections.unmodifiableSet(keymap.entrySet());
-                    for (Entry<Integer, KeyBinding> keybinding : keybindingItems) {
-                        psKey.setInt(2, keybinding.getKey());
-                        psKey.setInt(3, keybinding.getValue().getType());
-                        psKey.setInt(4, keybinding.getValue().getAction());
-                        psKey.addBatch();
+                        try (PreparedStatement psIgnore = con.prepareStatement("INSERT INTO petignores (petid, itemid) VALUES (?, ?)")) {
+                            psIgnore.setInt(1, es.getKey());
+                            for (Integer x : es.getValue()) {
+                                psIgnore.setInt(2, x);
+                                psIgnore.addBatch();
+                            }
+                            psIgnore.executeBatch();
+                        }
                     }
-                    psKey.executeBatch();
+
+                    // Key config
+                    deleteWhereCharacterId(con, "DELETE FROM keymap WHERE characterid = ?");
+                    try (PreparedStatement psKey = con.prepareStatement("INSERT INTO keymap (characterid, `key`, `type`, `action`) VALUES (?, ?, ?, ?)")) {
+                        psKey.setInt(1, id);
+
+                        Set<Entry<Integer, KeyBinding>> keybindingItems = Collections.unmodifiableSet(keymap.entrySet());
+                        for (Entry<Integer, KeyBinding> keybinding : keybindingItems) {
+                            psKey.setInt(2, keybinding.getKey());
+                            psKey.setInt(3, keybinding.getValue().getType());
+                            psKey.setInt(4, keybinding.getValue().getAction());
+                            psKey.addBatch();
+                        }
+                        psKey.executeBatch();
+                    }
                 }
 
                 // No quickslots, or no change.
@@ -8711,23 +8943,25 @@ public class Character extends AbstractCharacterObject {
                     }
                 }
 
-                // Skill macros
-                deleteWhereCharacterId(con, "DELETE FROM skillmacros WHERE characterid = ?");
-                try (PreparedStatement psMacro = con.prepareStatement("INSERT INTO skillmacros (characterid, skill1, skill2, skill3, name, shout, position) VALUES (?, ?, ?, ?, ?, ?, ?)")) {
-                    psMacro.setInt(1, getId());
-                    for (int i = 0; i < 5; i++) {
-                        SkillMacro macro = skillMacros[i];
-                        if (macro != null) {
-                            psMacro.setInt(2, macro.getSkill1());
-                            psMacro.setInt(3, macro.getSkill2());
-                            psMacro.setInt(4, macro.getSkill3());
-                            psMacro.setString(5, macro.getName());
-                            psMacro.setInt(6, macro.getShout());
-                            psMacro.setInt(7, i);
-                            psMacro.addBatch();
+                if (auxiliaryChanged) {
+                    // Skill macros
+                    deleteWhereCharacterId(con, "DELETE FROM skillmacros WHERE characterid = ?");
+                    try (PreparedStatement psMacro = con.prepareStatement("INSERT INTO skillmacros (characterid, skill1, skill2, skill3, name, shout, position) VALUES (?, ?, ?, ?, ?, ?, ?)")) {
+                        psMacro.setInt(1, getId());
+                        for (int i = 0; i < 5; i++) {
+                            SkillMacro macro = skillMacros[i];
+                            if (macro != null) {
+                                psMacro.setInt(2, macro.getSkill1());
+                                psMacro.setInt(3, macro.getSkill2());
+                                psMacro.setInt(4, macro.getSkill3());
+                                psMacro.setString(5, macro.getName());
+                                psMacro.setInt(6, macro.getShout());
+                                psMacro.setInt(7, i);
+                                psMacro.addBatch();
+                            }
                         }
+                        psMacro.executeBatch();
                     }
-                    psMacro.executeBatch();
                 }
 
                 List<Pair<Item, InventoryType>> itemsWithType = new ArrayList<>();
@@ -8737,114 +8971,138 @@ public class Character extends AbstractCharacterObject {
                     }
                 }
 
-                // Items
-                ItemFactory.INVENTORY.saveItems(itemsWithType, id, con);
-
-                // Skills
-                try (PreparedStatement psSkill = con.prepareStatement("REPLACE INTO skills (characterid, skillid, skilllevel, masterlevel, expiration) VALUES (?, ?, ?, ?, ?)")) {
-                    psSkill.setInt(1, id);
-                    for (Entry<Skill, SkillEntry> skill : skills.entrySet()) {
-                        psSkill.setInt(2, skill.getKey().getId());
-                        psSkill.setInt(3, skill.getValue().skillevel);
-                        psSkill.setInt(4, skill.getValue().masterlevel);
-                        psSkill.setLong(5, skill.getValue().expiration);
-                        psSkill.addBatch();
-                    }
-                    psSkill.executeBatch();
+                // Items - skip the full delete + per-slot re-insert when the inventory is byte-for-byte
+                // what we last persisted. invSig is committed to savedInventorySignature only after the
+                // con.commit() below succeeds (mirrors the quest skip above).
+                String invSig = computeInventorySignature(itemsWithType);
+                boolean inventoryChanged = !invSig.equals(savedInventorySignature);
+                if (inventoryChanged) {
+                    ItemFactory.INVENTORY.saveItems(itemsWithType, id, con);
                 }
 
-                // Saved locations
-                deleteWhereCharacterId(con, "DELETE FROM savedlocations WHERE characterid = ?");
-                try (PreparedStatement psLoc = con.prepareStatement("INSERT INTO savedlocations (characterid, `locationtype`, `map`, `portal`) VALUES (?, ?, ?, ?)")) {
-                    psLoc.setInt(1, id);
-                    for (SavedLocationType savedLocationType : SavedLocationType.values()) {
-                        if (savedLocations[savedLocationType.ordinal()] != null) {
-                            psLoc.setString(2, savedLocationType.name());
-                            psLoc.setInt(3, savedLocations[savedLocationType.ordinal()].getMapId());
-                            psLoc.setInt(4, savedLocations[savedLocationType.ordinal()].getPortal());
-                            psLoc.addBatch();
+                if (auxiliaryChanged) {
+                    // Skills
+                    try (PreparedStatement psSkill = con.prepareStatement("REPLACE INTO skills (characterid, skillid, skilllevel, masterlevel, expiration) VALUES (?, ?, ?, ?, ?)")) {
+                        psSkill.setInt(1, id);
+                        for (Entry<Skill, SkillEntry> skill : skills.entrySet()) {
+                            psSkill.setInt(2, skill.getKey().getId());
+                            psSkill.setInt(3, skill.getValue().skillevel);
+                            psSkill.setInt(4, skill.getValue().masterlevel);
+                            psSkill.setLong(5, skill.getValue().expiration);
+                            psSkill.addBatch();
                         }
+                        psSkill.executeBatch();
                     }
-                    psLoc.executeBatch();
-                }
 
-                deleteWhereCharacterId(con, "DELETE FROM trocklocations WHERE characterid = ?");
-
-                // Vip teleport rocks
-                try (PreparedStatement psVip = con.prepareStatement("INSERT INTO trocklocations(characterid, mapid, vip) VALUES (?, ?, 0)")) {
-                    for (int i = 0; i < getTrockSize(); i++) {
-                        if (trockmaps.get(i) != MapId.NONE) {
-                            psVip.setInt(1, getId());
-                            psVip.setInt(2, trockmaps.get(i));
-                            psVip.addBatch();
+                    // Saved locations
+                    deleteWhereCharacterId(con, "DELETE FROM savedlocations WHERE characterid = ?");
+                    try (PreparedStatement psLoc = con.prepareStatement("INSERT INTO savedlocations (characterid, `locationtype`, `map`, `portal`) VALUES (?, ?, ?, ?)")) {
+                        psLoc.setInt(1, id);
+                        for (SavedLocationType savedLocationType : SavedLocationType.values()) {
+                            if (savedLocations[savedLocationType.ordinal()] != null) {
+                                psLoc.setString(2, savedLocationType.name());
+                                psLoc.setInt(3, savedLocations[savedLocationType.ordinal()].getMapId());
+                                psLoc.setInt(4, savedLocations[savedLocationType.ordinal()].getPortal());
+                                psLoc.addBatch();
+                            }
                         }
+                        psLoc.executeBatch();
                     }
-                    psVip.executeBatch();
-                }
 
-                // Regular teleport rocks
-                try (PreparedStatement psReg = con.prepareStatement("INSERT INTO trocklocations(characterid, mapid, vip) VALUES (?, ?, 1)")) {
-                    for (int i = 0; i < getVipTrockSize(); i++) {
-                        if (viptrockmaps.get(i) != MapId.NONE) {
-                            psReg.setInt(1, getId());
-                            psReg.setInt(2, viptrockmaps.get(i));
-                            psReg.addBatch();
+                    deleteWhereCharacterId(con, "DELETE FROM trocklocations WHERE characterid = ?");
+
+                    // Vip teleport rocks
+                    try (PreparedStatement psVip = con.prepareStatement("INSERT INTO trocklocations(characterid, mapid, vip) VALUES (?, ?, 0)")) {
+                        for (int i = 0; i < getTrockSize(); i++) {
+                            if (trockmaps.get(i) != MapId.NONE) {
+                                psVip.setInt(1, getId());
+                                psVip.setInt(2, trockmaps.get(i));
+                                psVip.addBatch();
+                            }
                         }
+                        psVip.executeBatch();
                     }
-                    psReg.executeBatch();
-                }
 
-                // Buddy
-                deleteWhereCharacterId(con, "DELETE FROM buddies WHERE characterid = ? AND pending = 0");
-                try (PreparedStatement psBuddy = con.prepareStatement("INSERT INTO buddies (characterid, `buddyid`, `pending`, `group`) VALUES (?, ?, 0, ?)")) {
-                    psBuddy.setInt(1, id);
-
-                    for (BuddylistEntry entry : buddylist.getBuddies()) {
-                        if (entry.isVisible()) {
-                            psBuddy.setInt(2, entry.getCharacterId());
-                            psBuddy.setString(3, entry.getGroup());
-                            psBuddy.addBatch();
+                    // Regular teleport rocks
+                    try (PreparedStatement psReg = con.prepareStatement("INSERT INTO trocklocations(characterid, mapid, vip) VALUES (?, ?, 1)")) {
+                        for (int i = 0; i < getVipTrockSize(); i++) {
+                            if (viptrockmaps.get(i) != MapId.NONE) {
+                                psReg.setInt(1, getId());
+                                psReg.setInt(2, viptrockmaps.get(i));
+                                psReg.addBatch();
+                            }
                         }
-                    }
-                    psBuddy.executeBatch();
-                }
-
-                // Area info
-                deleteWhereCharacterId(con, "DELETE FROM area_info WHERE charid = ?");
-                try (PreparedStatement psArea = con.prepareStatement("INSERT INTO area_info (id, charid, area, info) VALUES (DEFAULT, ?, ?, ?)")) {
-                    psArea.setInt(1, id);
-
-                    for (Entry<Short, String> area : area_info.entrySet()) {
-                        psArea.setInt(2, area.getKey());
-                        psArea.setString(3, area.getValue());
-                        psArea.addBatch();
-                    }
-                    psArea.executeBatch();
-                }
-
-                // Event stats
-                deleteWhereCharacterId(con, "DELETE FROM eventstats WHERE characterid = ?");
-                try (PreparedStatement psEvent = con.prepareStatement("INSERT INTO eventstats (characterid, name, info) VALUES (?, ?, ?)")) {
-                    psEvent.setInt(1, id);
-
-                    for (Map.Entry<String, Events> entry : events.entrySet()) {
-                        psEvent.setString(2, entry.getKey());
-                        psEvent.setInt(3, entry.getValue().getInfo());
-                        psEvent.addBatch();
+                        psReg.executeBatch();
                     }
 
-                    psEvent.executeBatch();
+                    // Buddy
+                    deleteWhereCharacterId(con, "DELETE FROM buddies WHERE characterid = ? AND pending = 0");
+                    try (PreparedStatement psBuddy = con.prepareStatement("INSERT INTO buddies (characterid, `buddyid`, `pending`, `group`) VALUES (?, ?, 0, ?)")) {
+                        psBuddy.setInt(1, id);
+
+                        for (BuddylistEntry entry : buddylist.getBuddies()) {
+                            if (entry.isVisible()) {
+                                psBuddy.setInt(2, entry.getCharacterId());
+                                psBuddy.setString(3, entry.getGroup());
+                                psBuddy.addBatch();
+                            }
+                        }
+                        psBuddy.executeBatch();
+                    }
+
+                    // Area info
+                    deleteWhereCharacterId(con, "DELETE FROM area_info WHERE charid = ?");
+                    try (PreparedStatement psArea = con.prepareStatement("INSERT INTO area_info (id, charid, area, info) VALUES (DEFAULT, ?, ?, ?)")) {
+                        psArea.setInt(1, id);
+
+                        for (Entry<Short, String> area : area_info.entrySet()) {
+                            psArea.setInt(2, area.getKey());
+                            psArea.setString(3, area.getValue());
+                            psArea.addBatch();
+                        }
+                        psArea.executeBatch();
+                    }
+
+                    // Event stats
+                    deleteWhereCharacterId(con, "DELETE FROM eventstats WHERE characterid = ?");
+                    try (PreparedStatement psEvent = con.prepareStatement("INSERT INTO eventstats (characterid, name, info) VALUES (?, ?, ?)")) {
+                        psEvent.setInt(1, id);
+
+                        for (Map.Entry<String, Events> entry : events.entrySet()) {
+                            psEvent.setString(2, entry.getKey());
+                            psEvent.setInt(3, entry.getValue().getInfo());
+                            psEvent.addBatch();
+                        }
+
+                        psEvent.executeBatch();
+                    }
                 }
 
+                // Quests and medals. Skip the whole delete-all + per-quest re-insert when the quest
+                // state is byte-for-byte what we last persisted (or loaded) - the dominant per-save cost
+                // for quest-heavy bots, and pure waste when a grind tick changed nothing about quests.
+                // questSig is committed to savedQuestSignature only after con.commit() below succeeds.
+                String questSig = computeQuestSignature();
+                boolean questsChanged = !questSig.equals(savedQuestSignature);
+                if (questsChanged) {
                 deleteQuestProgressWhereCharacterId(con, id);
 
-                // Quests and medals
                 try (PreparedStatement psStatus = con.prepareStatement("INSERT INTO queststatus (`queststatusid`, `characterid`, `quest`, `status`, `time`, `expires`, `forfeited`, `completed`) VALUES (DEFAULT, ?, ?, ?, ?, ?, ?, ?)", Statement.RETURN_GENERATED_KEYS);
                      PreparedStatement psProgress = con.prepareStatement("INSERT INTO questprogress VALUES (DEFAULT, ?, ?, ?, ?)");
                      PreparedStatement psMedal = con.prepareStatement("INSERT INTO medalmaps VALUES (DEFAULT, ?, ?, ?)")) {
                     psStatus.setInt(1, id);
 
                     for (QuestStatus qs : getQuests()) {
+                        // Don't persist pure NOT_STARTED placeholders. getQuest() inserts one into the
+                        // quest map on any lookup, so over time these accumulate and get rewritten on every
+                        // save, bloating the queststatus table. Keep rows carrying real state (forfeit count,
+                        // recorded progress, medal maps); the rest are recreated lazily on demand.
+                        if (qs.getStatus() == QuestStatus.Status.NOT_STARTED
+                                && qs.getForfeited() == 0
+                                && qs.getProgress().isEmpty()
+                                && qs.getMedalMaps().isEmpty()) {
+                            continue;
+                        }
                         psStatus.setInt(2, qs.getQuest().getId());
                         psStatus.setInt(3, qs.getStatus().getId());
                         psStatus.setInt(4, (int) (qs.getCompletionTime() / 1000));
@@ -8874,6 +9132,7 @@ public class Character extends AbstractCharacterObject {
                         }
                     }
                 }
+                } // end if (questsChanged)
 
                 FamilyEntry familyEntry = getFamilyEntry(); //save family rep
                 if (familyEntry != null) {
@@ -8905,6 +9164,10 @@ public class Character extends AbstractCharacterObject {
                 }
 
                 con.commit();
+                savedQuestSignature = questSig; // commit succeeded: this quest state is now persisted
+                savedInventorySignature = invSig; // ditto for the inventory write skip
+                savedMonsterBookSignature = monsterBookSig;
+                savedAuxiliarySignature = auxiliarySig;
             } catch (Exception e) {
                 con.rollback();
                 throw e;
@@ -8912,8 +9175,29 @@ public class Character extends AbstractCharacterObject {
                 con.setTransactionIsolation(Connection.TRANSACTION_REPEATABLE_READ);
                 con.setAutoCommit(true);
             }
+        } catch (java.sql.SQLTransactionRollbackException e) {
+            // Deadlock victim. Back off a jittered, growing delay so the retry desyncs from the
+            // colliding transaction instead of re-colliding (livelock). InnoDB always rolls back
+            // exactly one side, so the other commits and a few tries reliably let everyone through.
+            if (attempt < 6) {
+                log.warn("Deadlock saving chr {} (attempt {}), retrying", name, attempt);
+                try {
+                    Thread.sleep(java.util.concurrent.ThreadLocalRandom.current().nextLong(20L * attempt, 60L * attempt));
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    log.error("Interrupted retrying save for chr {}, level: {}, job: {}", name, level, job.getId(), e);
+                    break;
+                }
+                continue;
+            }
+            log.error("Error saving chr {}, level: {}, job: {} after {} attempts", name, level, job.getId(), attempt, e);
         } catch (Exception e) {
             log.error("Error saving chr {}, level: {}, job: {}", name, level, job.getId(), e);
+        }
+        break;
+        }
+        } finally {
+            SAVE_GATE.release();
         }
     }
 
@@ -11016,6 +11300,9 @@ public class Character extends AbstractCharacterObject {
     private Fitness fitness;
     private Ola ola;
     private long snowballattack;
+    // Wall-clock ms of this player's most recent attack. Lets bots tell an active grinder from an idle
+    // observer when scoring map crowding (server.bots.BotOccupancy) — set in applyAttack, humans only.
+    private volatile long lastAttackTime;
 
     public byte getTeam() {
         return team;
@@ -11047,6 +11334,14 @@ public class Character extends AbstractCharacterObject {
 
     public void setLastSnowballAttack(long time) {
         this.snowballattack = time;
+    }
+
+    public long getLastAttackTime() {
+        return lastAttackTime;
+    }
+
+    public void markAttacked() {
+        this.lastAttackTime = System.currentTimeMillis();
     }
 
     // MCPQ

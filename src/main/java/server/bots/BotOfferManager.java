@@ -54,7 +54,7 @@ final class BotOfferManager {
             return;
         }
         Character owner = entry.owner;
-        if (owner == null) {
+        if (owner == null || owner == bot) { // self-owned bot has no distinct owner to offer to
             return;
         }
 
@@ -68,7 +68,7 @@ final class BotOfferManager {
 
     static void requestBestUpgradeFromOwner(BotEntry entry, Character bot) {
         Character owner = entry.owner;
-        if (owner == null) {
+        if (owner == null || owner == bot) { // self-owned bot has no distinct owner to ask
             return;
         }
         if (entry.pendingAction != null || entry.pendingTradeCategory != null || hasOfferReservation(entry)) {
@@ -86,7 +86,7 @@ final class BotOfferManager {
     }
 
     static boolean offerBestRecommendedGear(BotEntry entry, Character bot, Character owner) {
-        if (owner == null) {
+        if (owner == null || owner == bot) { // self-owned bot can't trade gear to itself
             return false;
         }
 
@@ -113,14 +113,12 @@ final class BotOfferManager {
         // to a sibling if this bot could actually wear it.
         BotEquipManager.autoEquip(bot, owner, entry.pendingLootOfferItem);
 
-        List<BotEntry> siblings = BotManager.getInstance().getBotEntries(owner.getId());
-        for (BotEntry sibling : siblings) {
-            if (sibling == entry || sibling.bot == null || sibling.bot.getMapId() != bot.getMapId()) {
-                continue;
-            }
-            GearOfferChoice choice = findBestGearOffer(entry, sibling.bot, bot);
+        // Share cohort: owner's stable for owned bots, crewmates for a self-owned crew bot, empty for
+        // soloists / dynamic-party bots (so strangers never get offered each other's loot).
+        for (Character sibling : eligibleBotRecipients(owner, bot)) {
+            GearOfferChoice choice = findBestGearOffer(entry, sibling, bot);
             if (choice != null) {
-                return offerGearItem(entry, bot, sibling.bot, choice.item(), choice.need());
+                return offerGearItem(entry, bot, sibling, choice.item(), choice.need());
             }
         }
 
@@ -131,6 +129,121 @@ final class BotOfferManager {
         Item throwingStar = findBestThrowingStarOffer(starRecipient, bot);
         return throwingStar != null
                 && offerGearItem(entry, bot, starRecipient, throwingStar, GearOfferNeed.CURRENT);
+    }
+
+    /**
+     * Proactively offer an equip scroll that is useless to THIS bot but useful to a cohort member /
+     * owner who can actually use it (e.g. a bow-attack scroll -> archer, an INT scroll -> mage).
+     * Category-aware (not just stat): the scroll must apply to gear the recipient wears AND grant a
+     * stat their job values, while applying to nothing this bot wears. No class hardcoding — the
+     * scroll-applicability ({@link BotScrollManager#applicable}) and job stat-relevance
+     * ({@link BotEquipManager#relevantStatsFor}) SSOTs decide. Reuses the loot-offer flow (prompt +
+     * auto-accept + trade); returns true once an offer is queued. Meta scrolls (clean slate / chaos /
+     * modifier / white) are universally valuable and never offered away.
+     */
+    static boolean offerUselessScrollToCohort(BotEntry entry, Character bot) {
+        Character owner = entry.owner;
+        if (owner == null || owner == bot || bot.getTrade() != null
+                || entry.pendingAction != null || entry.pendingTradeCategory != null
+                || hasOfferReservation(entry)) {
+            return false;
+        }
+        ItemInformationProvider ii = ItemInformationProvider.getInstance();
+        for (Item s : bot.getInventory(InventoryType.USE).list()) {
+            int sid = s.getItemId();
+            if (!isOfferableScroll(ii, sid) || scrollUsefulTo(ii, bot, sid)) {
+                continue; // not a category-specific scroll, or this bot can still use it -> keep
+            }
+            Character recipient = bestScrollRecipient(entry, bot, owner, ii, sid);
+            if (recipient != null) {
+                return offerGearItem(entry, bot, recipient, s, GearOfferNeed.CURRENT);
+            }
+        }
+        return false;
+    }
+
+    /** An equip scroll worth routing by category (skips universally-valuable meta scrolls). */
+    private static boolean isOfferableScroll(ItemInformationProvider ii, int sid) {
+        if (!ItemConstants.isEquipScroll(sid)) {
+            return false;
+        }
+        if (ItemConstants.isCleanSlate(sid) || ItemConstants.isChaosScroll(sid)
+                || ItemConstants.isModifierScroll(sid) || sid == constants.id.ItemId.WHITE_SCROLL) {
+            return false;
+        }
+        return ii.getEquipStats(sid) != null;
+    }
+
+    /** Useful to {@code c} = the scroll grants a stat c's job values AND applies to gear c wears. */
+    private static boolean scrollUsefulTo(ItemInformationProvider ii, Character c, int sid) {
+        if (!scrollStatRelevantTo(ii, c, sid)) {
+            return false;
+        }
+        for (Item it : c.getInventory(InventoryType.EQUIPPED).list()) {
+            if (it instanceof Equip e && !ii.isCash(e.getItemId())
+                    && BotScrollManager.applicable(ii, sid, e.getItemId())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean scrollStatRelevantTo(ItemInformationProvider ii, Character c, int sid) {
+        return scrollStatRelevantToJob(ii.getEquipStats(sid), c.getJob());
+    }
+
+    /** Pure seam: does a scroll's stat block grant anything {@code job} values? (WZ-free, testable.) */
+    static boolean scrollStatRelevantToJob(java.util.Map<String, Integer> scrollStats, client.Job job) {
+        if (scrollStats == null || job == null) {
+            return false;
+        }
+        for (BotEquipManager.RelevantStat stat : BotEquipManager.relevantStatsFor(job)) {
+            if (scrollStats.getOrDefault(BotInventoryManager.scrollStatKey(stat), 0) > 0) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** Best same-map recipient (owner + cohort siblings) for whom the scroll is useful — the one
+     *  with the most applicable worn gear that still has free upgrade slots (most immediately usable). */
+    private static Character bestScrollRecipient(BotEntry entry, Character bot, Character owner,
+            ItemInformationProvider ii, int sid) {
+        Character best = null;
+        int bestScore = -1;
+        List<Character> candidates = new ArrayList<>();
+        if (owner != bot && owner.getMapId() == bot.getMapId()) {
+            candidates.add(owner);
+        }
+        for (BotEntry sib : BotManager.getInstance().getBotEntries(owner.getId())) {
+            if (sib == entry || sib.bot == null || sib.bot == bot || sib.bot.getMapId() != bot.getMapId()) {
+                continue;
+            }
+            candidates.add(sib.bot);
+        }
+        for (Character c : candidates) {
+            if (!scrollUsefulTo(ii, c, sid)) {
+                continue;
+            }
+            int score = scrollUsableSlotScore(ii, c, sid);
+            if (score > bestScore) {
+                bestScore = score;
+                best = c;
+            }
+        }
+        return best;
+    }
+
+    /** How many worn equips the scroll applies to still have a free upgrade slot to spend it on. */
+    private static int scrollUsableSlotScore(ItemInformationProvider ii, Character c, int sid) {
+        int score = 0;
+        for (Item it : c.getInventory(InventoryType.EQUIPPED).list()) {
+            if (it instanceof Equip e && !ii.isCash(e.getItemId())
+                    && BotScrollManager.applicable(ii, sid, e.getItemId()) && e.getUpgradeSlots() > 0) {
+                score++;
+            }
+        }
+        return score;
     }
 
     static void scheduleLootOfferPrompt(BotEntry entry, Character bot, Item item, long delayMs) {
@@ -231,7 +344,8 @@ final class BotOfferManager {
                 "Your " + itemDesc + " would be better on me! trade it over?",
                 "I could use that " + itemDesc + " of yours ;)",
                 "that " + itemDesc + " is an upgrade for me, want to trade?");
-        BotChatManager.queueBotSay(entry, BotManager.randomReply(prompts));
+        String prompt = BotManager.randomReply(prompts);
+        BotChatManager.queueBotSay(entry, prompt, List.of("yes", "no"));
     }
 
     private static boolean offerGearItem(BotEntry entry, Character bot, Character recipient, Item item,
@@ -288,8 +402,11 @@ final class BotOfferManager {
         entry.pendingLootOfferRecipientId = recipient.getId();
         entry.pendingLootOfferExpiresAt = System.currentTimeMillis() + 30_000L;
         entry.pendingLootOfferBotRequesting = false;
-        long promptDelayMs = BotChatManager.queueBotSayWithEstimatedDelay(entry,
-                buildLootOfferPrompt(recipient, owner, item, need == GearOfferNeed.FUTURE));
+        String offerPrompt = buildLootOfferPrompt(recipient, owner, item, need == GearOfferNeed.FUTURE);
+        // The loot can be offered to a sibling bot; the hint overlay is owner-facing, so only attach it
+        // when the owner is the one being asked.
+        List<String> offerOptions = recipient.getId() == owner.getId() ? List.of("yes", "no") : null;
+        long promptDelayMs = BotChatManager.queueBotSayWithEstimatedDelay(entry, offerPrompt, offerOptions);
         scheduleBotLootOfferAutoAccept(entry, recipient, promptDelayMs);
     }
 
@@ -352,15 +469,25 @@ final class BotOfferManager {
      * other tokens use "+" since they are bonus values ("+3 str", "+3 att").
      */
     static String formatItemSpecifier(Item item, Character audience) {
+        if (item instanceof Equip && audience == null) {
+            String name = ItemInformationProvider.getInstance().getName(item.getItemId());
+            return name == null || name.isBlank() ? String.valueOf(item.getItemId()) : name;
+        }
+        int jobId = audience == null || audience.getJob() == null ? 0 : audience.getJob().getId();
+        return formatItemSpecifier(item, jobId);
+    }
+
+    /** Same specifier with the perspective job given directly — @autosell keys it on the
+     *  ITEM's class (reqJob) since the seller is mostly unloading other jobs' gear. */
+    static String formatItemSpecifier(Item item, int jobId) {
         String name = ItemInformationProvider.getInstance().getName(item.getItemId());
         if (name == null || name.isBlank()) {
             name = String.valueOf(item.getItemId());
         }
-        if (!(item instanceof Equip eq) || audience == null) {
+        if (!(item instanceof Equip eq)) {
             return name;
         }
 
-        int jobId = audience.getJob() == null ? 0 : audience.getJob().getId();
         boolean mageBranch = isMageBranch(jobId);
         boolean weapon = ItemConstants.isWeapon(item.getItemId());
         char[] order = mainSecondaryStats(jobId);
@@ -435,8 +562,11 @@ final class BotOfferManager {
         if (owner == null) {
             return null;
         }
+        // Self-owned bot: never offer to itself; its cohort is its CREW (eligibleBotRecipients returns
+        // crewmates, empty for soloists / dynamic-party bots). A human-owned bot can also offer to the owner.
+        boolean selfOwned = owner == bot;
         if (ItemConstants.isThrowingStar(item.getItemId())) {
-            if (isBetterThrowingStarForRecipient(owner, bot, item)) {
+            if (!selfOwned && isBetterThrowingStarForRecipient(owner, bot, item)) {
                 return owner;
             }
             return findWeakestThrowingStarRecipient(owner, bot, item);
@@ -446,7 +576,7 @@ final class BotOfferManager {
             return null;
         }
 
-        if (gearOfferNeed(entry, owner, bot, item) != null) {
+        if (!selfOwned && gearOfferNeed(entry, owner, bot, item) != null) {
             return owner;
         }
         for (Character member : eligibleBotRecipients(owner, bot)) {
@@ -517,11 +647,17 @@ final class BotOfferManager {
         if (!ItemConstants.isWeapon(equip.getItemId())) {
             return true;
         }
-        return isWeaponOfferCompatible(recipient, ii.getWeaponType(equip.getItemId()));
+        return isWeaponOfferCompatible(recipient, ii.getWeaponType(equip.getItemId()), equip);
     }
 
     static boolean isWeaponOfferCompatible(Character recipient, WeaponType weaponType) {
         return BotEquipManager.isWeaponCompatible(recipient, weaponType);
+    }
+
+    /** Equip-aware variant: lets a mage recipient claim off-type MATK weapons (same SSOT as
+     *  the equip/reserve pipeline — see BotEquipManager.isWeaponCompatible(bot, type, equip)). */
+    static boolean isWeaponOfferCompatible(Character recipient, WeaponType weaponType, Equip equip) {
+        return BotEquipManager.isWeaponCompatible(recipient, weaponType, equip);
     }
 
     static boolean isReservedForOtherRecipients(BotEntry entry, Character donor, Item item) {
@@ -610,6 +746,17 @@ final class BotOfferManager {
     }
 
     private static List<Character> eligibleBotRecipients(Character owner, Character donor) {
+        if (owner == donor) {
+            // Self-owned bot: its share cohort is its CREW (empty for soloists / dynamic-party bots, so
+            // strangers never trade). Mirrors the owned-bot stable below — same SSOT as supply sharing.
+            List<Character> crew = new ArrayList<>();
+            for (BotEntry e : BotManager.getInstance().crewMatesOnMap(donor)) {
+                if (e.bot != null) {
+                    crew.add(e.bot);
+                }
+            }
+            return crew;
+        }
         BotOwnershipService ownership = BotOwnershipService.getInstance();
         return owner.getPartyMembersOnSameMap().stream()
                 .filter(member -> member != null)

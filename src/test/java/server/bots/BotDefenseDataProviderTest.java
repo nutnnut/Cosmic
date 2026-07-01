@@ -1,10 +1,14 @@
 package server.bots;
 
+import client.BuffStat;
+import client.Character;
 import client.Job;
 import org.junit.jupiter.api.Test;
 import server.bots.combat.BotDefenseDataProvider;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 class BotDefenseDataProviderTest {
     private final BotDefenseDataProvider provider = BotDefenseDataProvider.getInstance();
@@ -39,5 +43,19 @@ class BotDefenseDataProviderTest {
         assertEquals(24, provider.getStandardPdd(Job.THUNDERBREAKER1, 10));
         assertEquals(54, provider.getStandardPdd(Job.ARAN1, 10));
         assertEquals(25, provider.getStandardPdd(Job.EVAN1, 8));
+    }
+
+    @Test
+    void effectiveMaxHpCountsMagicGuardUntilHpOrMpPoolRunsOut() {
+        Character bot = mock(Character.class);
+        when(bot.getCurrentMaxHp()).thenReturn(1_000);
+        when(bot.getBuffedValue(BuffStat.MAGIC_GUARD)).thenReturn(80);
+        when(bot.getMp()).thenReturn(3_200);
+
+        assertEquals(4_000, BotDefenseDataProvider.effectiveMaxHp(bot));
+
+        when(bot.getMp()).thenReturn(10_000);
+
+        assertEquals(5_000, BotDefenseDataProvider.effectiveMaxHp(bot));
     }
 }

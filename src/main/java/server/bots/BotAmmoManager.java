@@ -20,6 +20,14 @@ final class BotAmmoManager {
             "low on bolts, anyone have spare?",
             "need crossbow bolts soon, anyone got extras?",
             "running low on bolts, can someone share?");
+    private static final List<String> STAR_REQUEST_MSGS = List.of(
+            "low on stars, anyone have spare?",
+            "need throwing stars soon, anyone got extras?",
+            "running low on throwing stars, can someone share?");
+    private static final List<String> BULLET_REQUEST_MSGS = List.of(
+            "low on bullets, anyone have spare?",
+            "need bullets soon, anyone got extras?",
+            "running low on bullets, can someone share?");
     private static final List<String> AMMO_OFFER_MSGS = List.of(
             "i have spare ammo, inv u",
             "got some ammo for you, trading",
@@ -82,8 +90,8 @@ final class BotAmmoManager {
             ammoShareCooldownUntil.put(owner.getId(), now + 30_000L);
         }
 
-        BotManager.getInstance().botSay(bot, BotManager.randomReply(
-                weaponType == WeaponType.BOW ? ARROW_REQUEST_MSGS : BOLT_REQUEST_MSGS));
+        BotAutopilotManager.noteLowSupplyPartyRequest(entry);
+        saySupplyRequest(bot, BotManager.randomReply(requestMessages(weaponType)));
 
         AmmoDonorPlan plan = selectAmmoDonor(entry, bot, weaponType);
         if (plan == null) {
@@ -135,7 +143,7 @@ final class BotAmmoManager {
 
     private static AmmoDonorPlan selectAmmoDonor(int ownerId, int mapId, BotEntry excludedEntry, WeaponType needyWeaponType) {
         AmmoDonorPlan best = null;
-        for (BotEntry sibling : BotManager.getInstance().getBotEntries(ownerId)) {
+        for (BotEntry sibling : BotManager.getInstance().shareCandidateEntries(ownerId, excludedEntry)) {
             if (sibling == excludedEntry || sibling.bot == null || sibling.bot.getMapId() != mapId) {
                 continue;
             }
@@ -176,6 +184,14 @@ final class BotAmmoManager {
         });
     }
 
+    private static void saySupplyRequest(Character bot, String message) {
+        if (bot.getParty() != null) {
+            BotManager.getInstance().botSayParty(bot, message);
+        } else {
+            BotManager.getInstance().botSay(bot, message);
+        }
+    }
+
     private static boolean isBetterDonor(AmmoDonorPlan candidate, AmmoDonorPlan best) {
         if (best == null) {
             return true;
@@ -187,7 +203,18 @@ final class BotAmmoManager {
     }
 
     private static boolean canRequestShare(WeaponType weaponType) {
-        return weaponType == WeaponType.BOW || weaponType == WeaponType.CROSSBOW;
+        return weaponType == WeaponType.BOW || weaponType == WeaponType.CROSSBOW
+                || weaponType == WeaponType.CLAW || weaponType == WeaponType.GUN;
+    }
+
+    private static List<String> requestMessages(WeaponType weaponType) {
+        return switch (weaponType) {
+            case BOW -> ARROW_REQUEST_MSGS;
+            case CROSSBOW -> BOLT_REQUEST_MSGS;
+            case CLAW -> STAR_REQUEST_MSGS;
+            case GUN -> BULLET_REQUEST_MSGS;
+            default -> ARROW_REQUEST_MSGS;
+        };
     }
 
     record AmmoDonorPlan(BotEntry entry, int matchingAmmoCount, boolean donorNeedsSameAmmo, int donationQty) {}

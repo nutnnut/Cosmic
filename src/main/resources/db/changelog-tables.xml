@@ -105,4 +105,29 @@
         <sqlFile path="db/tables/025-bot-ownership.sql"/>
     </changeSet>
 
+    <changeSet id="26" author="Claude">
+        <sqlFile path="db/tables/026-bot-config.sql"/>
+    </changeSet>
+
+    <changeSet id="27" author="Claude">
+        <sqlFile path="db/tables/027-managed-bot.sql"/>
+    </changeSet>
+
+    <changeSet id="28" author="Claude">
+        <sqlFile path="db/tables/028-perf-indexes.sql"/>
+    </changeSet>
+
+    <changeSet id="29" author="Claude">
+        <preConditions onFail="MARK_RAN">
+            <not>
+                <indexExists tableName="drop_data" indexName="itemid"/>
+            </not>
+        </preConditions>
+        <sqlFile path="db/tables/029-drop-itemid-index.sql"/>
+    </changeSet>
+
+    <changeSet id="30" author="Claude">
+        <sqlFile path="db/tables/030-bot-familiarity.sql"/>
+    </changeSet>
+
 </databaseChangeLog>

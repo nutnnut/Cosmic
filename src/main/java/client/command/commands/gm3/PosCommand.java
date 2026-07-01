@@ -26,10 +26,11 @@ package client.command.commands.gm3;
 import client.Character;
 import client.Client;
 import client.command.Command;
+import server.bots.BotNavigationDebugOverlay;
 
 public class PosCommand extends Command {
     {
-        setDescription("Show current position and foothold.");
+        setDescription("Show current position, foothold, and the bot nav region you're standing on.");
     }
 
     @Override
@@ -40,5 +41,10 @@ public class PosCommand extends Command {
         float fh = player.getMap().getFootholds().findBelow(player.getPosition()).getId();
         player.dropMessage(6, "Position: (" + xpos + ", " + ypos + ")");
         player.dropMessage(6, "Foothold ID: " + fh);
+        // Bot nav-graph region debug (same graph/region the bot would pick here); SSOT with the web
+        // map-graph region click. See BotNavigationDebugOverlay.posReport / describeRegion.
+        for (String line : BotNavigationDebugOverlay.posReport(player)) {
+            player.dropMessage(6, line);
+        }
     }
 }

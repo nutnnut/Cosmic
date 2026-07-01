@@ -124,17 +124,20 @@ public class XMLDomMapleData implements Data {
             case INT:
             case SHORT: {
                 String value = attributes.getNamedItem("value").getNodeValue();
-                Number nval = GameConstants.parseNumber(value);
 
                 switch (type) {
+                    // Locale-free decimal parse accepting both dot and comma layouts. The old
+                    // locale-driven NumberFormat (USE_UNITPRICE_WITH_COMMA -> French parser)
+                    // stopped at the '.' of dot-decimal dumps and silently truncated every WZ
+                    // float ("0.2" -> 0): map fs, mobRate, recovery, ...
                     case DOUBLE:
-                        return nval.doubleValue();
+                        return Double.parseDouble(value.replace(',', '.'));
                     case FLOAT:
-                        return nval.floatValue();
+                        return Float.parseFloat(value.replace(',', '.'));
                     case INT:
-                        return nval.intValue();
+                        return GameConstants.parseNumber(value).intValue();
                     case SHORT:
-                        return nval.shortValue();
+                        return GameConstants.parseNumber(value).shortValue();
                     default:
                         return null;
                 }

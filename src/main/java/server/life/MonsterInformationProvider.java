@@ -57,6 +57,10 @@ public class MonsterInformationProvider {
     }
 
     private final Map<Integer, List<MonsterDropEntry>> drops = new HashMap<>();
+    // Reverse of `drops`: itemid -> mob ids that drop it. ConcurrentHashMap because the bot grind/quest
+    // threads warm it off the game loop (same pattern as mobNameCache). Memoized per item — quest fetch
+    // items are a handful, so the per-item DB hit is paid once.
+    private final Map<Integer, List<Integer>> itemDroppers = new java.util.concurrent.ConcurrentHashMap<>();
     private final List<MonsterGlobalDropEntry> globaldrops = new ArrayList<>();
     private final Map<Integer, List<MonsterGlobalDropEntry>> continentDrops = new HashMap<>();
 
@@ -64,13 +68,18 @@ public class MonsterInformationProvider {
     private final Set<Integer> hasNoMultiEquipDrops = new HashSet<>();
     private final Map<Integer, List<MonsterDropEntry>> extraMultiEquipDrops = new HashMap<>();
 
-    private final Map<Pair<Integer, Integer>, Integer> mobAttackAnimationTime = new HashMap<>();
+    // ConcurrentHashMap: written via LifeFactory.setMonsterAttackInfo on a mob cache-miss, which the
+    // bot grind-cache warmup drives for every mob off-thread alongside live spawns (see monsterStats).
+    private final Map<Pair<Integer, Integer>, Integer> mobAttackAnimationTime = new java.util.concurrent.ConcurrentHashMap<>();
     private final Map<MobSkill, Integer> mobSkillAnimationTime = new HashMap<>();
 
-    private final Map<Integer, Pair<Integer, Integer>> mobAttackInfo = new HashMap<>();
+    private final Map<Integer, Pair<Integer, Integer>> mobAttackInfo = new java.util.concurrent.ConcurrentHashMap<>();
 
     private final Map<Integer, Boolean> mobBossCache = new HashMap<>();
-    private final Map<Integer, String> mobNameCache = new HashMap<>();
+    // ConcurrentHashMap: warmed off-thread by BotGrindAdvisor.warmGrindData() (grind build looks up
+    // every spawn mob's name) while game threads read/populate it. getMobNameFromId stores "" (never
+    // null) for missing names, so CHM is a safe drop-in.
+    private final Map<Integer, String> mobNameCache = new java.util.concurrent.ConcurrentHashMap<>();
 
     protected MonsterInformationProvider() {
         retrieveGlobal();
@@ -169,6 +178,31 @@ public class MonsterInformationProvider {
         }
 
         drops.put(monsterId, ret);
+        return ret;
+    }
+
+    /** Mob ids that drop {@code itemId} (reverse of {@link #retrieveDrop}). The SSOT for "who do I
+     *  kill to get this item" — used by bot fetch-quest routing. Memoized; empty list = nothing drops
+     *  it (item is bought/crafted/gathered, not grind-obtainable). Mirrors the WZ-agnostic DB query
+     *  in {@code WhoDropsCommand}, but cached. */
+    public final List<Integer> retrieveItemDroppers(final int itemId) {
+        List<Integer> cached = itemDroppers.get(itemId);
+        if (cached != null) {
+            return cached;
+        }
+        final List<Integer> ret = new ArrayList<>();
+        try (Connection con = DatabaseConnection.getConnection();
+             PreparedStatement ps = con.prepareStatement("SELECT DISTINCT dropperid FROM drop_data WHERE itemid = ? AND chance > 0")) {
+            ps.setInt(1, itemId);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    ret.add(rs.getInt("dropperid"));
+                }
+            }
+        } catch (SQLException e) {
+            log.error("Error retrieving droppers for item {}", itemId, e);
+        }
+        itemDroppers.put(itemId, ret);
         return ret;
     }
 
@@ -279,6 +313,7 @@ public class MonsterInformationProvider {
 
     public final void clearDrops() {
         drops.clear();
+        itemDroppers.clear();
         hasNoMultiEquipDrops.clear();
         extraMultiEquipDrops.clear();
         dropsChancePool.clear();

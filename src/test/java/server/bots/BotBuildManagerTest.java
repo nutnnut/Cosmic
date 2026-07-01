@@ -4,14 +4,18 @@ import client.Character;
 import client.Job;
 import client.Skill;
 import client.SkillFactory;
+import client.Stat;
+import client.processor.stat.AssignAPProcessor;
 import constants.game.GameConstants;
 import constants.skills.Archer;
 import constants.skills.Bishop;
 import constants.skills.Magician;
+import constants.skills.Pirate;
 import constants.skills.Rogue;
 import constants.skills.Warrior;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -20,6 +24,7 @@ import org.mockito.MockedStatic;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyByte;
@@ -60,6 +65,29 @@ class BotBuildManagerTest {
         assertEquals(10, entry.lastKnownLevel);
         assertEquals(0, remainingSps[warriorBook]);
         assertEquals(1, skillLevels.getOrDefault(Warrior.IMPROVED_HPREC, 0));
+    }
+
+    @Test
+    void ownerAutoOptionMirrorsOwnerlessApAssignment() {
+        // Owner replies "auto": the bot must flip onto the same self-managed AP path an ownerless bot
+        // uses (resolve now + ratchet later), even though it HAS an online owner (not ownerless).
+        Character bot = mock(Character.class);
+        BotEntry entry = new BotEntry(bot, mock(Character.class), mock(ScheduledFuture.class));
+        when(bot.getJob()).thenReturn(Job.WARRIOR);
+        when(bot.getLevel()).thenReturn(20);
+        when(bot.getRemainingAp()).thenReturn(5);
+        when(bot.getStr()).thenReturn(40);
+        when(bot.getDex()).thenReturn(4);
+        when(bot.getTotalDex()).thenReturn(4);
+        when(bot.getTotalLuk()).thenReturn(4);
+
+        String reply = BotBuildManager.setAutoApBuild(entry, bot);
+
+        assertTrue(entry.apAuto, "auto should flip the bot onto self-managed AP");
+        assertTrue(entry.apBuild != null, "auto should resolve a build immediately");
+        assertEquals(BotBuildManager.StatType.STR, entry.apBuild.primaryStat);
+        assertEquals(BotBuildManager.StatType.DEX, entry.apBuild.secondaryStat);
+        assertTrue(reply != null && !reply.isEmpty());
     }
 
     @Test
@@ -241,6 +269,7 @@ class BotBuildManagerTest {
         skills.put(Rogue.DISORDER, mockSkill(Rogue.DISORDER, 20, false));
         skills.put(Rogue.DARK_SIGHT, mockSkill(Rogue.DARK_SIGHT, 20, false));
 
+        entry.spVariant = "claw"; // supervised thieves now hold SP until the owner picks the weapon line
         when(bot.getJob()).thenReturn(Job.THIEF);
         stubSkillState(bot, remainingSps, skillLevels);
         when(bot.getMasterLevel(any(Skill.class))).thenReturn(0);
@@ -256,6 +285,51 @@ class BotBuildManagerTest {
         assertEquals(1, skillLevels.getOrDefault(Rogue.LUCKY_SEVEN, 0));
         assertEquals(3, skillLevels.getOrDefault(Rogue.NIMBLE_BODY, 0));
         assertEquals(3, skillLevels.getOrDefault(Rogue.KEEN_EYES, 0));
+    }
+
+    @Test
+    void supervisedThiefHoldsSpUntilWeaponLinePicked() {
+        // No spVariant + supervised (not autopilot): the 1st-job weapon line is the owner's pick, so SP
+        // must be HELD, not auto-rolled into a claw/dagger build.
+        Character bot = mock(Character.class);
+        BotEntry entry = new BotEntry(bot, mock(Character.class), mock(ScheduledFuture.class));
+        int thiefBook = GameConstants.getSkillBook(Rogue.LUCKY_SEVEN / 10000);
+        int[] remainingSps = new int[5];
+        remainingSps[thiefBook] = 7;
+        Map<Integer, Integer> skillLevels = new HashMap<>();
+
+        when(bot.getJob()).thenReturn(Job.THIEF);
+        stubSkillState(bot, remainingSps, skillLevels);
+        when(bot.getMasterLevel(any(Skill.class))).thenReturn(0);
+
+        try (MockedStatic<SkillFactory> skillFactory = mockStatic(SkillFactory.class);
+             MockedStatic<BotManager> bm = mockStatic(BotManager.class)) {
+            bm.when(() -> BotManager.isAutopilotActive(entry)).thenReturn(false); // supervised
+            skillFactory.when(() -> SkillFactory.getSkill(anyInt()))
+                    .thenAnswer(invocation -> mockSkill(invocation.getArgument(0), 20, false));
+            BotBuildManager.autoAssignSp(entry, bot);
+        }
+
+        assertNull(entry.spVariant, "variant must stay unset until the owner picks");
+        assertEquals(7, remainingSps[thiefBook], "SP held, not spent");
+        assertTrue(skillLevels.isEmpty(), "no skills trained while awaiting the pick");
+    }
+
+    @Test
+    void committedThiefAutoAdvancesAtLv30WithoutReprompt() {
+        // The weapon line picked at 1st job is authoritative: the lv30 2nd job follows it deterministically
+        // (claw -> Assassin), with no "assassin or bandit?" re-prompt.
+        Character bot = mock(Character.class);
+        BotEntry entry = new BotEntry(bot, mock(Character.class), mock(ScheduledFuture.class));
+        entry.spVariant = "claw";
+        when(bot.getJob()).thenReturn(Job.THIEF);
+        when(bot.getLevel()).thenReturn(30);
+
+        try (MockedStatic<BotManager> bm = mockStatic(BotManager.class)) {
+            assertNull(BotBuildManager.buildJobPrompt(entry, bot)); // deterministic advance, no prompt
+        }
+
+        assertEquals(30, entry.jobPromptSent);
     }
 
     @Test
@@ -424,6 +498,195 @@ class BotBuildManagerTest {
         assertEquals(0, remainingAp.get());
     }
 
+    // ---- autonomous (ownerless) job picker + AP resolver ---------------------------------------
+
+    @Test
+    void weightedPickHonorsZeroWeightsDeterministically() {
+        List<Job> choices = List.of(Job.WARRIOR, Job.MAGICIAN);
+        // A weight of 0 is never chosen while another option has a positive weight.
+        assertEquals(Job.WARRIOR,
+                BotBuildManager.weightedPick(choices, Map.of(Job.WARRIOR, 1, Job.MAGICIAN, 0)));
+        assertEquals(Job.MAGICIAN,
+                BotBuildManager.weightedPick(choices, Map.of(Job.WARRIOR, 0, Job.MAGICIAN, 1)));
+    }
+
+    @Test
+    void pickWeightedJobReturnsValidFirstAndSecondJobs() {
+        assertTrue(List.of(Job.FIGHTER, Job.PAGE, Job.SPEARMAN)
+                .contains(BotBuildManager.pickWeightedJob(Job.WARRIOR)));
+        assertTrue(List.of(Job.ASSASSIN, Job.BANDIT)
+                .contains(BotBuildManager.pickWeightedJob(Job.THIEF)));
+    }
+
+    @Test
+    void pickWeightedJobOnlyPicksBuildableClassesIncludingPirate() {
+        // All five explorer 1st jobs are now buildable (each has an SP build + an AP build), pirate
+        // included. The pick must stay within that set, and pirate must actually be reachable.
+        List<Job> buildable = List.of(Job.WARRIOR, Job.MAGICIAN, Job.BOWMAN, Job.THIEF, Job.PIRATE);
+        boolean sawPirate = false;
+        for (int i = 0; i < 400; i++) {
+            Job pick = BotBuildManager.pickWeightedJob(Job.BEGINNER);
+            assertTrue(buildable.contains(pick));
+            if (pick == Job.PIRATE) {
+                sawPirate = true;
+            }
+        }
+        assertTrue(sawPirate, "pirate is now buildable and must be eligible");
+    }
+
+    @Test
+    void pirateGunVariantTrainsDoubleShotNotKnuckleSkills() {
+        Character bot = mock(Character.class);
+        BotEntry entry = new BotEntry(bot, mock(Character.class), mock(ScheduledFuture.class));
+        entry.spVariant = "gun"; // commit the gun line so getBuildOrder picks the gun pirate build
+        int pirateBook = GameConstants.getSkillBook(Pirate.DOUBLE_SHOT / 10000);
+        int[] remainingSps = new int[5];
+        remainingSps[pirateBook] = 7;
+        Map<Integer, Integer> skillLevels = new HashMap<>();
+        Map<Integer, Skill> skills = new HashMap<>();
+        skills.put(Pirate.DOUBLE_SHOT, mockSkill(Pirate.DOUBLE_SHOT, 20, false));
+        skills.put(Pirate.DASH, mockSkill(Pirate.DASH, 20, false));
+        skills.put(Pirate.BULLET_TIME, mockSkill(Pirate.BULLET_TIME, 20, false));
+
+        when(bot.getJob()).thenReturn(Job.PIRATE);
+        stubSkillState(bot, remainingSps, skillLevels);
+        when(bot.getMasterLevel(any(Skill.class))).thenReturn(0);
+
+        try (MockedStatic<SkillFactory> skillFactory = mockStatic(SkillFactory.class)) {
+            skillFactory.when(() -> SkillFactory.getSkill(anyInt()))
+                    .thenAnswer(invocation -> skills.get(invocation.getArgument(0)));
+            BotBuildManager.autoAssignSp(entry, bot);
+        }
+
+        assertEquals(0, remainingSps[pirateBook]);
+        assertEquals(7, skillLevels.getOrDefault(Pirate.DOUBLE_SHOT, 0)); // gun main attack maxed first
+        assertNull(skillLevels.get(Pirate.FLASH_FIST));
+        assertNull(skillLevels.get(Pirate.SOMERSAULT_KICK));
+    }
+
+    @Test
+    void pirateKnuckleVariantTrainsFlashFistAndSomersaultNotDoubleShot() {
+        Character bot = mock(Character.class);
+        BotEntry entry = new BotEntry(bot, mock(Character.class), mock(ScheduledFuture.class));
+        entry.spVariant = "knuckle";
+        int pirateBook = GameConstants.getSkillBook(Pirate.FLASH_FIST / 10000);
+        int[] remainingSps = new int[5];
+        remainingSps[pirateBook] = 7;
+        Map<Integer, Integer> skillLevels = new HashMap<>();
+        Map<Integer, Skill> skills = new HashMap<>();
+        skills.put(Pirate.FLASH_FIST, mockSkill(Pirate.FLASH_FIST, 20, false));
+        skills.put(Pirate.SOMERSAULT_KICK, mockSkill(Pirate.SOMERSAULT_KICK, 20, false));
+        skills.put(Pirate.DASH, mockSkill(Pirate.DASH, 20, false));
+        skills.put(Pirate.BULLET_TIME, mockSkill(Pirate.BULLET_TIME, 20, false));
+
+        when(bot.getJob()).thenReturn(Job.PIRATE);
+        stubSkillState(bot, remainingSps, skillLevels);
+        when(bot.getMasterLevel(any(Skill.class))).thenReturn(0);
+
+        try (MockedStatic<SkillFactory> skillFactory = mockStatic(SkillFactory.class)) {
+            skillFactory.when(() -> SkillFactory.getSkill(anyInt()))
+                    .thenAnswer(invocation -> skills.get(invocation.getArgument(0)));
+            BotBuildManager.autoAssignSp(entry, bot);
+        }
+
+        assertEquals(0, remainingSps[pirateBook]);
+        assertEquals(1, skillLevels.getOrDefault(Pirate.FLASH_FIST, 0));     // commits the knuckle gate
+        assertEquals(6, skillLevels.getOrDefault(Pirate.SOMERSAULT_KICK, 0)); // main attack next
+        assertNull(skillLevels.get(Pirate.DOUBLE_SHOT));
+    }
+
+    @Test
+    void resolveApBuildForGunPirateIsDexPrimaryStrSecondary() {
+        Character bot = mock(Character.class);
+        BotEntry entry = new BotEntry(bot, mock(Character.class), mock(ScheduledFuture.class));
+        entry.spVariant = "gun"; // gun line is DEX-primary; base Pirate orients off the variant
+        when(bot.getJob()).thenReturn(Job.PIRATE);
+
+        BotBuildManager.ApBuild build = BotBuildManager.resolveApBuild(entry, bot);
+
+        assertEquals(BotBuildManager.StatType.DEX, build.primaryStat);
+        assertEquals(BotBuildManager.StatType.STR, build.secondaryStat);
+    }
+
+    @Test
+    void resolveApBuildReadsTrainedGunSkillWhenVariantUnset() {
+        Character bot = mock(Character.class);
+        BotEntry entry = new BotEntry(bot, mock(Character.class), mock(ScheduledFuture.class));
+        // spVariant intentionally left null: orientation must be read off the trained skill (the SSOT).
+        when(bot.getJob()).thenReturn(Job.PIRATE);
+        when(bot.getSkillLevel(Pirate.DOUBLE_SHOT)).thenReturn(1); // trained the gun attack
+
+        BotBuildManager.ApBuild build = BotBuildManager.resolveApBuild(entry, bot);
+
+        assertEquals(BotBuildManager.StatType.DEX, build.primaryStat);
+        assertEquals(BotBuildManager.StatType.STR, build.secondaryStat);
+    }
+
+    @Test
+    void resolveApBuildReadsTrainedKnuckleSkillWhenVariantUnset() {
+        Character bot = mock(Character.class);
+        BotEntry entry = new BotEntry(bot, mock(Character.class), mock(ScheduledFuture.class));
+        when(bot.getJob()).thenReturn(Job.PIRATE);
+        when(bot.getSkillLevel(Pirate.FLASH_FIST)).thenReturn(1); // trained a knuckle attack
+
+        BotBuildManager.ApBuild build = BotBuildManager.resolveApBuild(entry, bot);
+
+        assertEquals(BotBuildManager.StatType.STR, build.primaryStat);
+        assertEquals(BotBuildManager.StatType.DEX, build.secondaryStat);
+    }
+
+    @Test
+    void resolveApBuildForMageParksSecondaryAtFloor() {
+        Character bot = mock(Character.class);
+        BotEntry entry = new BotEntry(bot, mock(Character.class), mock(ScheduledFuture.class));
+        when(bot.getJob()).thenReturn(Job.MAGICIAN);
+
+        BotBuildManager.ApBuild build = BotBuildManager.resolveApBuild(entry, bot);
+
+        // Mage damage and wand/staff reqs ignore LUK, so the secondary stays parked at the job floor.
+        assertEquals(BotBuildManager.StatType.INT, build.primaryStat);
+        assertEquals(BotBuildManager.StatType.LUK, build.secondaryStat);
+        assertEquals(AssignAPProcessor.getMinStatFloor(Job.MAGICIAN, Stat.LUK), build.secondaryTarget);
+    }
+
+    @Test
+    void ownerlessWarriorResolvesApBuildInsteadOfPrompting() {
+        Character bot = mock(Character.class);
+        BotEntry entry = new BotEntry(bot, bot, mock(ScheduledFuture.class)); // self-owned: owner == bot
+        when(bot.getJob()).thenReturn(Job.WARRIOR);
+        when(bot.getRemainingAp()).thenReturn(5);
+
+        try (MockedStatic<BotManager> bm = mockStatic(BotManager.class)) {
+            bm.when(() -> BotManager.isAutopilotActive(entry)).thenReturn(true);
+            bm.when(() -> BotManager.hasOnlinePlayerOwner(entry)).thenReturn(false);
+            // cfg is a static field (untouched by mockStatic); inventory/WZ is absent so the resolver
+            // falls back to the DEX floor (pure) rather than throwing.
+            assertNull(BotBuildManager.buildApPrompt(entry, bot)); // no owner prompt: resolved autonomously
+        }
+
+        assertEquals(BotBuildManager.StatType.STR, entry.apBuild.primaryStat);
+        assertEquals(BotBuildManager.StatType.DEX, entry.apBuild.secondaryStat);
+        assertEquals(AssignAPProcessor.getMinStatFloor(Job.WARRIOR, Stat.DEX), entry.apBuild.secondaryTarget);
+    }
+
+    @Test
+    void ownerlessBeginnerAutoAdvancesAtLevel10InsteadOfPrompting() {
+        Character bot = mock(Character.class);
+        BotEntry entry = new BotEntry(bot, bot, mock(ScheduledFuture.class)); // self-owned: owner == bot
+        when(bot.getJob()).thenReturn(Job.BEGINNER);
+        when(bot.getLevel()).thenReturn(10);
+
+        try (MockedStatic<BotManager> bm = mockStatic(BotManager.class)) {
+            bm.when(() -> BotManager.isAutopilotActive(entry)).thenReturn(true);
+            bm.when(() -> BotManager.hasOnlinePlayerOwner(entry)).thenReturn(false);
+            // BotManager.after/randMs default to no-op under mockStatic, so scheduleAutoAdvance does
+            // not run the deferred advance here; we assert the branch was taken, not the advance itself.
+            assertNull(BotBuildManager.buildJobPrompt(entry, bot)); // no owner prompt: advance scheduled
+        }
+
+        assertEquals(10, entry.jobPromptSent);
+    }
+
     private static void stubSkillState(Character bot, int[] remainingSps, Map<Integer, Integer> skillLevels) {
         when(bot.getRemainingSps()).thenReturn(remainingSps);
         when(bot.getSkillLevel(any(Skill.class))).thenAnswer(invocation -> {
@@ -451,5 +714,51 @@ class BotBuildManagerTest {
         when(skill.getMaxLevel()).thenReturn(maxLevel);
         when(skill.isFourthJob()).thenReturn(fourthJob);
         return skill;
+    }
+
+    @Test
+    void aboutOnePercentOfBotsAreLockedLifelongBeginners() {
+        int locked = 0;
+        long lockedSeed = 0;
+        for (long s = 1; s <= 50_000; s++) {
+            if (BotPersonality.random(s).permanentBeginner()) {
+                locked++;
+                if (lockedSeed == 0) {
+                    lockedSeed = s;
+                }
+            }
+        }
+        assertTrue(locked > 300 && locked < 700, "locked rate should be ~1%, was " + locked + "/50000");
+
+        // A locked bot never auto-advances, even long past a milestone.
+        Character bot = mock(Character.class);
+        BotEntry entry = new BotEntry(bot, mock(Character.class), mock(ScheduledFuture.class));
+        entry.personality = BotPersonality.random(lockedSeed);
+        when(bot.getJob()).thenReturn(Job.WARRIOR);
+        when(bot.getLevel()).thenReturn(50);
+        assertNull(BotBuildManager.autoAdvanceTarget(entry, bot), "locked beginner must never advance");
+    }
+
+    @Test
+    void magicianFirstJobIsEligibleAtLevel8ButOthersAtLevel10() {
+        Character bot = mock(Character.class);
+        BotEntry entry = new BotEntry(bot, mock(Character.class), mock(ScheduledFuture.class));
+        when(bot.getJob()).thenReturn(Job.BEGINNER);
+
+        // Magician is the lv8 exception.
+        entry.personality = BotPersonality.defaults().withPlannedJobs(Job.MAGICIAN, null);
+        when(bot.getLevel()).thenReturn(7);
+        assertNull(BotBuildManager.autoAdvanceTarget(entry, bot));
+        when(bot.getLevel()).thenReturn(8);
+        assertEquals(Job.MAGICIAN, BotBuildManager.autoAdvanceTarget(entry, bot));
+
+        // Every other 1st job must wait until lv10.
+        entry.personality = BotPersonality.defaults().withPlannedJobs(Job.WARRIOR, null);
+        when(bot.getLevel()).thenReturn(8);
+        assertNull(BotBuildManager.autoAdvanceTarget(entry, bot));
+        when(bot.getLevel()).thenReturn(9);
+        assertNull(BotBuildManager.autoAdvanceTarget(entry, bot));
+        when(bot.getLevel()).thenReturn(10);
+        assertEquals(Job.WARRIOR, BotBuildManager.autoAdvanceTarget(entry, bot));
     }
 }

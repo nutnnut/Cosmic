@@ -49,6 +49,11 @@ public enum EquipSlot {
         return (allowed != null && allowed.length > 0) ? allowed[0] : 0;
     }
 
+    /** Number of distinct slots this kind can occupy at once (e.g. 4 for rings, 1 for most). */
+    public int getSlotCount() {
+        return allowed != null ? allowed.length : 0;
+    }
+
     public boolean isAllowed(int slot, boolean cash) {
         if (slot < 0) {
             if (allowed != null) {

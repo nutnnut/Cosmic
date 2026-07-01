@@ -60,6 +60,57 @@ final class BotPotionManager {
     private BotPotionManager() {
     }
 
+    // Bots whose USE-item StatEffects have been resolved into the shared itemEffect cache, and those
+    // currently being warmed. The first potion scan of a freshly spawned bot otherwise resolves ~all
+    // its USE item effects from WZ inline -- a one-time ~300ms cold load that landed on the bot tick
+    // ("potion-recovery-scan" stall WARN), amplified by several bots booting together. We move that
+    // cold load off the tick (see potionEffectsReady); steady-state stays warm (itemEffect is a shared
+    // ConcurrentHashMap, so a warm scan is just a map-get + field reads per item).
+    private static final java.util.Set<Integer> recoveryEffectsWarmed =
+            java.util.concurrent.ConcurrentHashMap.newKeySet();
+    private static final java.util.Set<Integer> recoveryEffectsWarming =
+            java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+    /**
+     * True once this bot's USE-item effects are resolved into the (shared) {@link
+     * BotInventoryManager#itemEffect} cache. The first call kicks off an off-thread warm and returns
+     * false, so the cold WZ load never runs on the bot tick; subsequent ticks proceed once warm
+     * (a couple of ticks later -- autopot setup being momentarily late at spawn is harmless). The
+     * warm also populates shared potion ids for every other bot.
+     */
+    static boolean potionEffectsReady(Character bot) {
+        if (bot == null) {
+            return true; // nothing to scan; let the caller no-op normally
+        }
+        int id = bot.getId();
+        if (recoveryEffectsWarmed.contains(id)) {
+            return true;
+        }
+        if (recoveryEffectsWarming.add(id)) { // first observer starts the warm
+            try {
+                BotManager.after(1, () -> {
+                    try {
+                        var use = bot.getInventory(InventoryType.USE);
+                        if (use != null) {
+                            for (Item item : use.list()) {
+                                BotInventoryManager.itemEffect(item.getItemId());
+                            }
+                        }
+                    } finally {
+                        recoveryEffectsWarmed.add(id);
+                        recoveryEffectsWarming.remove(id);
+                    }
+                });
+            } catch (RuntimeException ex) {
+                // Scheduling unavailable: never block autopot forever — mark ready so the next tick
+                // does a normal (possibly one-time cold) scan, i.e. the pre-fix behavior.
+                recoveryEffectsWarmed.add(id);
+                recoveryEffectsWarming.remove(id);
+            }
+        }
+        return false;
+    }
+
     /** Single source of truth: items the bot has that count as recovery pots. */
     static List<Item> recoveryPotions(Character bot) {
         long startedAt = BotPerformanceMonitor.start();
@@ -88,8 +139,8 @@ final class BotPotionManager {
             if (effect == null) {
                 continue;
             }
-            boolean healsHp = effect.getHp() > 0 || effect.getHpRate() > 0;
-            boolean healsMp = effect.getMp() > 0 || effect.getMpRate() > 0;
+            boolean healsHp = healsHp(effect);
+            boolean healsMp = healsMp(effect);
             if ((!healsHp && !healsMp) || !effect.getStatups().isEmpty()) {
                 continue;
             }
@@ -115,15 +166,24 @@ final class BotPotionManager {
                 continue;
             }
             int quantity = item.getQuantity();
-            if (effect.getHp() > 0 || effect.getHpRate() > 0) {
+            if (healsHp(effect)) {
                 hp += quantity;
             }
-            if (effect.getMp() > 0 || effect.getMpRate() > 0) {
+            if (healsMp(effect)) {
                 mp += quantity;
             }
         }
         BotPerformanceMonitor.recordSince("potion-recovery-count", startedAt);
         return new int[]{hp, mp};
+    }
+
+    /** SSOT recovery-axis tests (flat or percent), shared by potion counting and the USE runway. */
+    static boolean healsHp(StatEffect fx) {
+        return fx != null && (fx.getHp() > 0 || fx.getHpRate() > 0);
+    }
+
+    static boolean healsMp(StatEffect fx) {
+        return fx != null && (fx.getMp() > 0 || fx.getMpRate() > 0);
     }
 
     /**
@@ -183,21 +243,44 @@ final class BotPotionManager {
     /** Pair of best autopot picks for the HP and MP slots over the bot's recovery pots. */
     record AutopotChoice(int hpItemId, PotionRanking hpRank, int mpItemId, PotionRanking mpRank) {}
 
-    /** Shared selection used by both keybind setup and the debug report. */
-    static AutopotChoice computeAutopotChoice(Character bot) {
+    private record PotionInventorySnapshot(int hpCount, int mpCount, AutopotChoice autopotChoice) {
+        int[] counts() {
+            return new int[]{hpCount, mpCount};
+        }
+    }
+
+    private static PotionInventorySnapshot scanPotionInventory(Character bot) {
         long startedAt = BotPerformanceMonitor.start();
+        int hp = 0;
+        int mp = 0;
         int hpItemId = -1;
         int mpItemId = -1;
         PotionRanking bestHp = null;
         PotionRanking bestMp = null;
+
         for (Item item : bot.getInventory(InventoryType.USE).list()) {
             if (item.getQuantity() <= 0) {
                 continue;
             }
             StatEffect effect = BotInventoryManager.itemEffect(item.getItemId());
-            if (effect == null || effect.getStatups().isEmpty() == false) {
+            if (effect == null || !effect.getStatups().isEmpty()) {
                 continue;
             }
+
+            boolean healsHp = effect.getHp() > 0 || effect.getHpRate() > 0;
+            boolean healsMp = effect.getMp() > 0 || effect.getMpRate() > 0;
+            if (!healsHp && !healsMp) {
+                continue;
+            }
+
+            int quantity = item.getQuantity();
+            if (healsHp) {
+                hp += quantity;
+            }
+            if (healsMp) {
+                mp += quantity;
+            }
+
             PotionRanking hpRank = classifyForSlot(effect, true);
             if (hpRank != null && hpRank.betterThan(bestHp)) {
                 bestHp = hpRank;
@@ -209,13 +292,21 @@ final class BotPotionManager {
                 mpItemId = item.getItemId();
             }
         }
+
         BotPerformanceMonitor.recordSince("potion-recovery-scan", startedAt);
-        return new AutopotChoice(hpItemId, bestHp, mpItemId, bestMp);
+        return new PotionInventorySnapshot(hp, mp, new AutopotChoice(hpItemId, bestHp, mpItemId, bestMp));
+    }
+
+    /** Shared selection used by both keybind setup and the debug report. */
+    static AutopotChoice computeAutopotChoice(Character bot) {
+        return scanPotionInventory(bot).autopotChoice();
     }
 
     static void setupAutopotForBot(Character bot) {
-        AutopotChoice choice = computeAutopotChoice(bot);
+        setupAutopotForBot(bot, computeAutopotChoice(bot));
+    }
 
+    private static void setupAutopotForBot(Character bot, AutopotChoice choice) {
         if (choice.hpItemId() > 0) {
             bot.changeKeybinding(91, new KeyBinding(7, choice.hpItemId()));
             bot.setAutopotHpAlert(BotManager.cfg.AUTOPOT_HP_THRESH);
@@ -235,8 +326,9 @@ final class BotPotionManager {
 
     /** Owner-facing diagnostic: counts vs. selected items for each slot. */
     static String autopotDebugReport(Character bot) {
-        int[] cnt = countPotions(bot);
-        AutopotChoice choice = computeAutopotChoice(bot);
+        PotionInventorySnapshot snapshot = scanPotionInventory(bot);
+        int[] cnt = snapshot.counts();
+        AutopotChoice choice = snapshot.autopotChoice();
         ItemInformationProvider iip = ItemInformationProvider.getInstance();
         return "pots: " + cnt[0] + " hp / " + cnt[1] + " mp"
                 + " | hp slot: " + describeChoice(iip, choice.hpItemId(), choice.hpRank())
@@ -278,6 +370,9 @@ final class BotPotionManager {
     }
 
     static void tickPotionCheck(BotEntry entry, Character bot) {
+        if (!potionEffectsReady(bot)) {
+            return; // first-time USE-effect WZ load is warming off-thread; don't cold-scan on the tick
+        }
         if (entry.potCheckTimerMs > 0) {
             entry.potCheckTimerMs = BotMovementManager.tickDown(entry.potCheckTimerMs);
             return;
@@ -285,40 +380,79 @@ final class BotPotionManager {
         entry.potCheckTimerMs = BotMovementManager.delayAfterCurrentTick(BotManager.cfg.POT_CHECK_INTERVAL_MS);
 
         long startedAt = BotPerformanceMonitor.start();
-        setupAutopotForBot(bot);
+        PotionInventorySnapshot potions = scanPotionInventory(bot);
+        setupAutopotForBot(bot, potions.autopotChoice());
         BotPerformanceMonitor.recordSince("potion-autopot", startedAt);
 
         startedAt = BotPerformanceMonitor.start();
         BotCombatManager.tickAmmoCheck(entry, bot);
         BotPerformanceMonitor.recordSince("potion-ammo-check", startedAt);
 
-        if (!entry.grinding && !entry.following) {
-            return;
+        // Diagnostic BEFORE the grinding/following gate: an autopilot bot with a cramped bag that
+        // never walks to a shop is the open bug, and the leading suspects (grinding=false, etc) would
+        // make the later trigger branch silent. Log the full decision state here so the next live run
+        // is conclusive. Self-throttles and self-gates on "a bag is actually cramped".
+        if (BotAutopilotManager.isActive(entry)) {
+            BotShopManager.logSellBlockIfCramped(entry, bot);
         }
-        startedAt = BotPerformanceMonitor.start();
-        BotAmmoManager.tickAmmoShareCheck(entry, bot);
-        BotPerformanceMonitor.recordSince("potion-ammo-share", startedAt);
 
-        startedAt = BotPerformanceMonitor.start();
-        int[] pots = countPotions(bot);
-        BotPerformanceMonitor.recordSince("potion-count", startedAt);
-
-        startedAt = BotPerformanceMonitor.start();
-        requestLowPotShare(entry, bot, pots[0], true, false);
-        BotPerformanceMonitor.recordSince("potion-share-hp", startedAt);
-
-        startedAt = BotPerformanceMonitor.start();
-        requestLowPotShare(entry, bot, pots[1], false, false);
-        BotPerformanceMonitor.recordSince("potion-share-mp", startedAt);
+        // Crew/owner supply sharing (pots/ammo/rock) is NOT behind the grind/follow gate: a broke bot
+        // that's resting or idle-leeching can still pull pots, and a parked donor can still give. Held
+        // off for a few seconds after a map change/spawn (supplySharingSettled) so a cohort landing
+        // together doesn't fire every request in the same tick.
+        int[] pots = potions.counts();
+        if (BotManager.supplySharingSettled(entry)) {
+            startedAt = BotPerformanceMonitor.start();
+            requestLowPotShare(entry, bot, pots[0], true, false);
+            requestLowPotShare(entry, bot, pots[1], false, false);
+            BotAmmoManager.tickAmmoShareCheck(entry, bot);
+            BotRockManager.tickRockShareCheck(entry, bot);
+            BotPerformanceMonitor.recordSince("potion-share", startedAt);
+        }
 
         if (!entry.grinding) {
             return;
         }
+        // Autopilot bag-pressure relief that needs no town trip: turn hoarded leftover stacks into
+        // Maker crystals / disassemble trash equips right here when a tab is cramped. No-ops silently
+        // unless there's maker skill + a cramped tab + actual work, so it's cheap to attempt each tick.
+        if (BotAutopilotManager.isActive(entry)) {
+            BotMakerManager.autoCompactIfCramped(entry, bot);
+            // Ditch dead quest junk the shop can't take (untradeable, uncompletable/unreachable) by
+            // dropping it like a player would - a disappearing ground drop, no town trip needed.
+            BotInventoryManager.discardDisposableQuestItems(bot);
+        }
         startedAt = BotPerformanceMonitor.start();
-        if (pots[0] < BotManager.cfg.POT_STOP && bot.getHp() < bot.getMaxHp() * 0.4f) {
+        // Affordability gate: a broke bot can't buy pots, so don't send it on a futile buy trip
+        // (walk to shop -> NOT_ENOUGH_MESO -> buy nothing -> walk back -> repeat). The sell-trash
+        // branch below is intentionally NOT gated - selling is how a broke bot earns meso to buy.
+        boolean canAffordPots = BotShopManager.canAffordPotResupply(bot);
+        if (canAffordPots && pots[0] < BotManager.cfg.POT_STOP
+                && BotAutopilotManager.requestResupplyErrand(entry, bot)) {
+            // Autopilot restocks on its own: town errand, shop, walk back. Proactive — no
+            // HP gate, an independent bot shouldn't grind its last potions dry first.
+        } else if (canAffordPots && pots[1] < BotManager.cfg.POT_STOP
+                && BotAutopilotManager.requestResupplyErrand(entry, bot)) {
+            // Mages can be combat-stopped by zero MP pots; give them the same autopilot
+            // resupply path after the party/owner grace request has had a chance to land.
+        } else if (BotAutopilotManager.isActive(entry) && BotShopManager.isOutOfUsableAmmo(bot)
+                && BotShopManager.canRecoverAmmo(entry, bot)
+                && BotAutopilotManager.requestResupplyErrand(entry, bot)) {
+            // Out of throwing stars/bullets -> can't attack at all. Force a town trip when broke
+            // (ungated by pot-meso, like the sell branch): the visit sells trash to fund the refill.
+            // But only if the trip can actually re-arm us (canRecoverAmmo) - a truly-broke bot with
+            // nothing to sell stays and farms with the degenerate close-range swing to earn meso first.
+        } else if (pots[0] < BotManager.cfg.POT_STOP && bot.getHp() < bot.getMaxHp() * 0.4f
+                && BotManager.canWalkToOwner(entry)) {
+            // canWalkToOwner is false for autopilot / self-owned / owner-offline bots, so an
+            // independent bot that can't resupply just holds position and keeps grinding here
+            // instead of anchoring to the owner.
             BotManager.getInstance().issueFollowOwner(entry);
             BotManager.getInstance().botSay(bot, "low on pots!! walking to you");
             bot.changeFaceExpression(Emote.GLARE.getValue());
+        } else if (BotAutopilotManager.isActive(entry) && BotShopManager.shouldAutoSellTrash(entry, bot)) {
+            // Bags filled up mid-grind (passive loot): same errand, the visit also sells.
+            BotAutopilotManager.requestResupplyErrand(entry, bot);
         }
         BotPerformanceMonitor.recordSince("potion-grind-stop", startedAt);
     }
@@ -327,6 +461,7 @@ final class BotPotionManager {
         entry.potShareRequestedHp = false;
         entry.potShareRequestedMp = false;
         BotAmmoManager.checkAmmoShareOnModeStart(entry, bot);
+        BotRockManager.checkRockShareOnModeStart(entry, bot);
         requestLowPotShares(entry, bot, false);
     }
 
@@ -403,7 +538,10 @@ final class BotPotionManager {
     static boolean requestPotShare(BotEntry entry, Character bot, boolean forHp, boolean bypassShareLimits) {
         long startedAt = BotPerformanceMonitor.start();
         Character owner = entry.owner;
-        if (owner == null || bot.getTrade() != null || entry.pendingTradeCategory != null) {
+        // owner == bot is a self-owned (@botme) bot: no separate owner to beg pots from. Skip UNLESS it's
+        // in a crew — then it can request from crewmates (the donor pick resolves the crew cohort).
+        boolean noCohort = owner == null || (owner == bot && entry.crewGroupId == null);
+        if (noCohort || bot.getTrade() != null || entry.pendingTradeCategory != null) {
             BotPerformanceMonitor.recordSince("potion-request", startedAt);
             return false;
         }
@@ -422,7 +560,8 @@ final class BotPotionManager {
             potShareCooldownUntil.put(owner.getId(), now + 30_000L);
         }
 
-        BotManager.getInstance().botSay(bot, BotManager.randomReply(forHp ? POT_REQUEST_HP_MSGS : POT_REQUEST_MP_MSGS));
+        BotAutopilotManager.noteLowSupplyPartyRequest(entry);
+        saySupplyRequest(bot, BotManager.randomReply(forHp ? POT_REQUEST_HP_MSGS : POT_REQUEST_MP_MSGS));
 
         PotDonorPlan plan = selectPotDonor(owner, bot, entry, forHp);
         if (plan == null) {
@@ -437,14 +576,6 @@ final class BotPotionManager {
             if (!bypassShareLimits) {
                 categoryBackoff.put(owner.getId(), now + 10 * 60_000L);
             }
-            String ownerName = owner.getName();
-            List<String> noQualMessages = List.of(
-                    "low too, maybe " + ownerName + " has some?",
-                    "wish i could help, try " + ownerName + "?",
-                    "i'm low too :/ check with " + ownerName,
-                    "barely have any myself, ask " + ownerName);
-            BotManager.after(BotManager.randMs(4000, 6000), () ->
-                    BotManager.getInstance().botSay(plan.entry().bot, BotManager.randomReply(noQualMessages)));
         } else {
             schedulePotShare(plan, bot, forHp, BotManager.randMs(2000, 3000));
         }
@@ -477,7 +608,7 @@ final class BotPotionManager {
         long startedAt = BotPerformanceMonitor.start();
         BotEntry bestEntry = null;
         int bestCount = 0;
-        for (BotEntry sibling : BotManager.getInstance().getBotEntries(owner.getId())) {
+        for (BotEntry sibling : BotManager.getInstance().shareCandidateEntries(owner.getId(), excludedEntry)) {
             if (sibling == excludedEntry || sibling.bot == null || sibling.bot.getMapId() != recipient.getMapId()) {
                 continue;
             }
@@ -508,6 +639,14 @@ final class BotPotionManager {
             BotManager.after(BotManager.randMs(900, 1100), () ->
                     BotInventoryManager.startPotShareTransfer(items, recipient, donorEntry, donorBot, maxQty));
         });
+    }
+
+    private static void saySupplyRequest(Character bot, String message) {
+        if (bot.getParty() != null) {
+            BotManager.getInstance().botSayParty(bot, message);
+        } else {
+            BotManager.getInstance().botSay(bot, message);
+        }
     }
 
     private record PotDonorPlan(BotEntry entry, int count) {
@@ -584,7 +723,8 @@ final class BotPotionManager {
         if (level <= 0) {
             return 0;
         }
-        return Math.max(0, (bot.getInt() / 10) * level);
+        int divisor = Math.max(1, BotManager.cfg.IMPROVED_MP_RECOVERY_DIVISOR);
+        return Math.max(0, (bot.getLevel() * level) / divisor);
     }
 
 }

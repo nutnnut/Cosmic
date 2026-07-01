@@ -539,6 +539,460 @@ class BotPhysicsEngineTest {
         return (int) Math.round(foothold.getY1() + (foothold.getY2() - foothold.getY1()) * ratio);
     }
 
+    @Test
+    void shouldSlipOnSnowFields() {
+        MapleMap normal = flatGroundMap(0f);
+        MapleMap snow = flatGroundMap(0.2f); // El Nath info/fs
+
+        // Slow start: one tick in, the snow bot has a fraction of the normal speed.
+        double normalEarly = hspeedAfterTicks(normal, 1, 1, 0.0);
+        double snowEarly = hspeedAfterTicks(snow, 1, 1, 0.0);
+        assertTrue(snowEarly < normalEarly * 0.5,
+                "snow accel " + snowEarly + " vs normal " + normalEarly);
+
+        // Same top speed: slipperiness scales force AND friction, terminal is unchanged.
+        double normalTop = hspeedAfterTicks(normal, 1, 40, 0.0);
+        double snowTop = hspeedAfterTicks(snow, 1, 200, 0.0);
+        assertEquals(normalTop, snowTop, 0.2);
+
+        // Long slide: input released at top speed, the snow bot keeps most of it.
+        double normalBrake = hspeedAfterTicks(normal, 0, 1, normalTop);
+        double snowBrake = hspeedAfterTicks(snow, 0, 1, normalTop);
+        assertTrue(snowBrake > normalBrake * 2,
+                "snow brake " + snowBrake + " vs normal " + normalBrake);
+    }
+
+    @Test
+    void shouldLoadElNathSlipperinessFromWzAndSlide() {
+        MapleMap elNath = BotNavigationMapLoader.loadMapGeometry(211000000);
+        assertEquals(0.2f, elNath.getFootholdSpeed(), 0.001f);
+
+        // End-to-end on the real map: one tick of acceleration reaches a fraction of the
+        // speed it reaches on a normal map.
+        Foothold fh = elNath.getFootholds().getAllFootholds().stream()
+                .filter(f -> !f.isWall() && f.getY1() == f.getY2() && Math.abs(f.getX2() - f.getX1()) > 80)
+                .findFirst().orElseThrow();
+        Point start = new Point((f1(fh.getX1(), fh.getX2())), fh.getY1());
+        BotPhysicsEngine.GroundTravelState state =
+                new BotPhysicsEngine.GroundTravelState(start.x, 0.0, 0.0);
+        BotPhysicsEngine.GroundStepResult step =
+                BotPhysicsEngine.simulateGroundMotion(elNath, start, fh, 1, state, BotMovementProfile.base());
+        double snowSpeed = Math.abs(step.state().hspeed());
+        double normalSpeed = hspeedAfterTicks(flatGroundMap(0f), 1, 1, 0.0);
+        assertTrue(snowSpeed < normalSpeed * 0.5,
+                "el nath accel " + snowSpeed + " vs normal " + normalSpeed);
+    }
+
+    private static int f1(int x1, int x2) {
+        return Math.min(x1, x2) + 20;
+    }
+
+    @Test
+    void shouldMatchPacketFittedKineticCurvesOnSnow() {
+        // Fitted to logs/monitored-packets-elnath-slippery-walk-left-right-spd100.log:
+        // constant accel 280 px/s^2 (1400*fs), cap 125 px/s, constant glide decel 80 px/s^2.
+        MapleMap snow = flatGroundMap(0.2f);
+        double tickS = BotPhysicsEngine.cfg.TICK_MS / 1000.0;
+        double stepS = 0.008; // CLIENT_GROUND_STEP_MS
+
+        int accelTicks = Math.max(1, (int) Math.round(0.2 / tickS));
+        double vPxs = hspeedAfterTicks(snow, 1, accelTicks, 0.0) / stepS;
+        assertEquals(280.0 * accelTicks * tickS, vPxs, 15.0, "linear 280 px/s^2 ramp");
+
+        double topPxs = hspeedAfterTicks(snow, 1, 400, 0.0) / stepS;
+        assertEquals(125.0, topPxs, 1.0, "cap = walk speed, unchanged by fs");
+
+        int glideTicks = Math.max(1, (int) Math.round(1.0 / tickS));
+        double vAfter1s = hspeedAfterTicks(snow, 0, glideTicks, 1.0) / stepS;
+        assertEquals(125.0 - 80.0, vAfter1s, 8.0, "linear 80 px/s^2 glide");
+    }
+
+    @Test
+    void shouldHalveCarriedMomentumOnLanding() {
+        // Packet-verified landing rule (elnath-tricky-jumps-spd100v2 + 100speedjumpmovement
+        // logs): touchdown halves the horizontal velocity (125 -> 62, 26 -> 13).
+        MapleMap snow = flatGroundMap(0.2f);
+        Character bot = mockBot(new Point(0, 50), snow);
+        BotEntry entry = new BotEntry(bot, null, null);
+        entry.inAir = true;
+        entry.physX = 0;
+        entry.physY = 50;
+        entry.velY = 5f;
+        entry.airVelX = 6; // full walk step, 120 px/s
+        entry.moveDir = 0;
+
+        landAirborne(entry, bot);
+        double stepsPerTick = BotPhysicsEngine.cfg.TICK_MS / 8.0;
+        assertEquals(6 * 0.5 / stepsPerTick, entry.hspeed, 0.05,
+                "landing keeps HALF the incoming horizontal velocity");
+    }
+
+    @Test
+    void shouldRideHalvedMomentumWhenCounterStrafeKeyHeldAtTouchdown() {
+        // Landing no longer counter-strafe-brakes (commit 54daaf229 "ride the momentum"): at the
+        // landing tick moveDir still holds STALE airborne steering, so the old "opposite key zeroes
+        // hspeed" brake fired on noise — it killed landing momentum and left facing backwards. A
+        // counter-strafe key held through touchdown now keeps the same halved momentum as a neutral
+        // landing; the next ground tick brakes on the REAL planned direction (slipperyStopDir still
+        // guards icy ledges). (Trades away the client "stop dead on an icy ledge" trick on purpose.)
+        MapleMap snow = flatGroundMap(0.2f);
+        Character bot = mockBot(new Point(0, 50), snow);
+        BotEntry entry = new BotEntry(bot, null, null);
+        entry.inAir = true;
+        entry.physX = 0;
+        entry.physY = 50;
+        entry.velY = 5f;
+        entry.airVelX = 6;
+        entry.moveDir = -1; // counter-strafe held through touchdown — must NOT zero momentum anymore
+
+        landAirborne(entry, bot);
+        double stepsPerTick = BotPhysicsEngine.cfg.TICK_MS / 8.0;
+        assertEquals(6 * 0.5 / stepsPerTick, entry.hspeed, 0.05,
+                "counter-strafe at touchdown rides the halved landing momentum, no longer stops dead");
+    }
+
+    private static void landAirborne(BotEntry entry, Character bot) {
+        for (int i = 0; i < 60; i++) {
+            if (BotPhysicsEngine.stepAirborne(entry, bot) == BotPhysicsEngine.AirborneStepResult.LANDED) {
+                return;
+            }
+        }
+        throw new AssertionError("bot never landed");
+    }
+
+    @Test
+    void shouldSwingAirVelocityAcrossZeroWithCounterStrafe() {
+        // Disasm-true air control (CVecCtrl::CalcFloat @ 0x9b2c3c): a held counter-direction
+        // decelerates at 200 x fs px/s^2 straight through zero, then PINS at the input band
+        // (walkSpeed/14 = 8.93 px/s at fs=1) in the new direction — mid-air input can never
+        // rebuild walk speed (the old symmetric model swung all the way to -walkSpeed).
+        MapleMap map = flatGroundMap(0f);
+        Character bot = mockBot(new Point(0, -1000), map);
+        BotEntry entry = new BotEntry(bot, null, null);
+        entry.inAir = true;
+        entry.physX = 0;
+        entry.physY = -1000;
+        entry.velY = 0f;
+        entry.airVelX = 6;
+        entry.moveDir = -1;
+
+        for (int i = 0; i < 30; i++) {
+            assertEquals(BotPhysicsEngine.AirborneStepResult.CONTINUE,
+                    BotPhysicsEngine.stepAirborne(entry, bot));
+        }
+        double totalVelX = entry.airVelX + entry.airSteerVelX;
+        assertTrue(totalVelX < 0.0, "counter-strafe should swing past zero, got " + totalVelX);
+        // band = walkSpeed ~6.25 px/tick / 14 = 0.4464 px/tick (= 8.93 px/s);
+        // tolerance covers HFORCE 16.667 making the engine walk speed 6.250125 px/tick.
+        assertEquals(-6.25 / 14.0, totalVelX, 1e-4,
+                "counter-strafe pins at the CalcFloat input band, not -walkSpeed");
+    }
+
+    @Test
+    void shouldNotSlipWithSnowshoes() {
+        MapleMap snow = flatGroundMap(0.2f);
+        BotMovementProfile snowshoes = new BotMovementProfile(100, 100, true);
+        double withShoes = hspeedAfterTicks(snow, snowshoes, 1, 1, 0.0);
+        double normal = hspeedAfterTicks(flatGroundMap(0f), 1, 1, 0.0);
+        assertEquals(normal, withShoes, 1e-9, "snowshoes = normal walk physics on snow");
+        assertEquals(BotPhysicsEngine.launchRunwayPx(flatGroundMap(0f), BotMovementProfile.base()),
+                BotPhysicsEngine.launchRunwayPx(snow, snowshoes),
+                "snowshoes use the normal-map launch runway");
+    }
+
+    @Test
+    void shouldCounterStrafeBrakeOnlyWhileSlidingOnSlipperyGround() {
+        MapleMap snow = flatGroundMap(0.2f);
+        BotMovementProfile base = BotMovementProfile.base();
+        // Sliding right at top speed -> brake left; mirrored for left.
+        assertEquals(-1, BotPhysicsEngine.counterStrafeBrakeDir(snow, base, 1.0));
+        assertEquals(1, BotPhysicsEngine.counterStrafeBrakeDir(snow, base, -1.0));
+        // Released once one brake tick can cancel the residual; never on normal ground
+        // or with snowshoes (normal physics stops on its own).
+        assertEquals(0, BotPhysicsEngine.counterStrafeBrakeDir(snow, base, 0.01));
+        assertEquals(0, BotPhysicsEngine.counterStrafeBrakeDir(flatGroundMap(0f), base, 1.0));
+        assertEquals(0, BotPhysicsEngine.counterStrafeBrakeDir(
+                snow, new BotMovementProfile(100, 100, true), 1.0));
+    }
+
+    @Test
+    void shouldGlideMidPlatformAndBrakeOnlyNearTheEdge() {
+        // Players let go and glide on ice — bots must too. Mid-platform at full speed the
+        // glide-out (~98 px) stays on the 30000px ground: no brake. On a 90px ledge the
+        // glide would slide off: brake engages.
+        MapleMap bigSnow = flatGroundMap(0.2f);
+        Foothold big = bigSnow.getFootholds().findBelow(new Point(0, 99));
+        assertEquals(0, BotPhysicsEngine.slipperyStopDir(bigSnow, BotMovementProfile.base(),
+                new Point(0, 100), big, new BotPhysicsEngine.GroundTravelState(0, 1.0, 0.0)),
+                "safe glide-out -> no brake");
+
+        MapleMap ledge = smallPlatformSnowMap();
+        Foothold small = ledge.getFootholds().findBelow(new Point(-2000 + 30, -100));
+        assertEquals(-1, BotPhysicsEngine.slipperyStopDir(ledge, BotMovementProfile.base(),
+                new Point(-2000 + 30, -50), small, new BotPhysicsEngine.GroundTravelState(-2000 + 30, 1.0, 0.0)),
+                "glide-out crosses the ledge -> counter-strafe brake");
+    }
+
+    @Test
+    void shouldStopMuchShorterWhenBrakingThanGliding() {
+        // Braking sheds 1400*fs px/s^2 vs the 400*fs glide: from top speed the braked stop
+        // distance (~28 px at fs=0.2) is well under half the glide-out (~98 px).
+        MapleMap snow = flatGroundMap(0.2f);
+        double glide = slideOutDistance(snow, false);
+        double braked = slideOutDistance(snow, true);
+        assertTrue(braked > 0 && braked < glide * 0.45,
+                "braked " + braked + " px vs glide " + glide + " px");
+    }
+
+    private static double slideOutDistance(MapleMap map, boolean brake) {
+        Foothold fh = map.getFootholds().findBelow(new Point(0, 99));
+        BotPhysicsEngine.GroundTravelState state = new BotPhysicsEngine.GroundTravelState(0, 1.0, 0.0);
+        Point pos = new Point(0, 100);
+        for (int i = 0; i < 400 && Math.abs(state.hspeed()) > 1e-9; i++) {
+            int dir = brake
+                    ? BotPhysicsEngine.counterStrafeBrakeDir(map, BotMovementProfile.base(), state.hspeed())
+                    : 0;
+            if (brake && dir == 0 && Math.abs(state.hspeed()) < 0.1) {
+                break; // brake released; residual glide-out is sub-pixel
+            }
+            BotPhysicsEngine.GroundStepResult step = BotPhysicsEngine.simulateGroundMotion(
+                    map, pos, fh, dir, state, BotMovementProfile.base());
+            state = step.state();
+            pos = step.point();
+        }
+        return Math.abs(pos.x);
+    }
+
+    @Test
+    void shouldValidateSlipperyLandingsAsBrakeToStop() {
+        // 90px platform, landing 30px from its left edge moving right at full speed:
+        // a glide-out (~98px) would slide off; the braked stop (~28px) holds.
+        MapleMap snow = smallPlatformSnowMap();
+        Foothold platform = snow.getFootholds().findBelow(new Point(-2000 + 30, -100));
+        BotPhysicsEngine.JumpLanding landing = new BotPhysicsEngine.JumpLanding(
+                new Point(-2000 + 30, -50), platform, 5.0, 8.0);
+        BotPhysicsEngine.PostLandingJump result = BotPhysicsEngine.simulatePostLandingGroundTicks(
+                snow, landing, 1, BotMovementProfile.base(), 3);
+        assertTrue(result != null && !result.lostGround(),
+                "counter-strafe braking keeps the landing on the platform");
+    }
+
+    private static MapleMap smallPlatformSnowMap() {
+        // Synthetic-only map id: BotPhysicsEngine caches footholds-by-id per MAP ID, so
+        // reusing the real El Nath id (211000000) collides with tests that load the real map.
+        MapleMap map = new MapleMap(999211001, 0, 0, 999211001, 1.0f);
+        server.maps.FootholdTree tree = new server.maps.FootholdTree(
+                new Point(-3000, -2000), new Point(3000, 2000));
+        tree.insert(new Foothold(new Point(-2000, -50), new Point(-1910, -50), 1)); // 90px ledge
+        tree.insert(new Foothold(new Point(-3000, 400), new Point(3000, 400), 2)); // floor below
+        map.setFootholds(tree);
+        map.setFootholdSpeed(0.2f);
+        return map;
+    }
+
+    @Test
+    void shouldBangBangApproachOnlyOnSlipperyGround() {
+        MapleMap snow = flatGroundMap(0.2f);
+        BotMovementProfile base = BotMovementProfile.base();
+        // fs=1 / snowshoes: plain sign(dx) passthrough regardless of speed.
+        assertEquals(1, BotPhysicsEngine.slipperyApproachDir(flatGroundMap(0f), base, 1.0, 10));
+        assertEquals(-1, BotPhysicsEngine.slipperyApproachDir(flatGroundMap(0f), base, 1.0, -10));
+        assertEquals(1, BotPhysicsEngine.slipperyApproachDir(
+                snow, new BotMovementProfile(100, 100, true), 1.0, 10));
+        // Far target: full acceleration even at top slide speed.
+        assertEquals(1, BotPhysicsEngine.slipperyApproachDir(snow, base, 1.0, 500));
+        // Brake stop-out from top speed (~35 px) no longer fits: counter-strafe.
+        assertEquals(-1, BotPhysicsEngine.slipperyApproachDir(snow, base, 1.0, 20));
+        // Sliding AWAY from the target: pushing toward it doubles as the brake.
+        assertEquals(-1, BotPhysicsEngine.slipperyApproachDir(snow, base, 1.0, -20));
+        // At the target with only residual slide: hold.
+        assertEquals(0, BotPhysicsEngine.slipperyApproachDir(snow, base, 0.05, 0));
+    }
+
+    @Test
+    void shouldStopInsideEdgeWindowInsteadOfSlidingOffOnIce() {
+        // pathlog-Preston-2026-06-12T083326 (El Nath r17): the bot approached the r17->r14
+        // launch window [58,59] at the platform's LEFT edge at full slide speed
+        // (72,69,65,60 then 54 -> off the cliff). With the bang-bang approach the bot must
+        // come to a stop at the window without ever losing ground.
+        MapleMap snow = new MapleMap(999211002, 0, 0, 999211002, 1.0f);
+        server.maps.FootholdTree tree = new server.maps.FootholdTree(
+                new Point(-3000, -2000), new Point(3000, 2000));
+        tree.insert(new Foothold(new Point(-2000, -50), new Point(-1700, -50), 1)); // edge at -2000
+        tree.insert(new Foothold(new Point(-3000, 400), new Point(3000, 400), 2)); // floor below
+        snow.setFootholds(tree);
+        snow.setFootholdSpeed(0.2f);
+
+        int targetX = -1998; // window right at the platform's left edge
+        BotMovementProfile profile = BotMovementProfile.base();
+        Foothold fh = snow.getFootholds().findBelow(new Point(-1850, -100));
+        Point pos = new Point(-1850, -50); // 148 px out, accelerates to full slide on the way
+        BotPhysicsEngine.GroundTravelState state =
+                new BotPhysicsEngine.GroundTravelState(pos.x, 0.0, 0.0);
+        for (int i = 0; i < 600; i++) {
+            // Same derivation as the live tick: approach controller supplies the walk intent,
+            // moveDir==0 falls back to the slipperyStopDir stop policy (applyGroundMotion).
+            int dir = BotPhysicsEngine.slipperyApproachDir(snow, profile, state.hspeed(), targetX - pos.x);
+            if (dir == 0) {
+                dir = BotPhysicsEngine.slipperyStopDir(snow, profile, pos, fh, state);
+            }
+            BotPhysicsEngine.GroundStepResult step =
+                    BotPhysicsEngine.simulateGroundMotion(snow, pos, fh, dir, state, profile);
+            assertFalse(step.lostGround(), "tick " + i + ": slid off the edge at x=" + step.point().x);
+            pos = step.point();
+            fh = step.foothold();
+            state = step.state();
+        }
+        assertTrue(Math.abs(pos.x - targetX) <= 3,
+                "settled at " + pos.x + " px, target " + targetX + " (brake quantization is ~3px)");
+        assertTrue(Math.abs(state.hspeed()) < 0.2, "still sliding at hspeed " + state.hspeed());
+    }
+
+    @Test
+    void shouldFaceTheHeldKeyWhileCounterStrafeBraking() {
+        // A counter-strafing player visibly walks AGAINST the slide: facing and stance must
+        // follow the held INPUT direction, not the velocity-derived slide direction.
+        MapleMap snow = flatGroundMap(0.2f);
+        Character bot = mockBot(new Point(0, 100), snow);
+        BotEntry entry = new BotEntry(bot, null, null);
+        Foothold fh = snow.getFootholds().findBelow(new Point(0, 99));
+        entry.physX = 0;
+        entry.physY = 100;
+        entry.hspeed = 1.0;   // sliding right at top speed
+        entry.facingDir = 1;
+        entry.moveDir = -1;   // approach-controller brake: opposite key held
+        BotPhysicsEngine.applyGroundMotion(entry, bot, fh);
+        assertEquals(-1, entry.facingDir, "facing follows the held key, not the slide");
+        assertEquals(-1, entry.groundBrakeDir);
+        assertEquals(CharacterStance.WALK_LEFT_STANCE, BotPhysicsEngine.resolveStance(entry));
+
+        // Stop-policy brake near a ledge (moveDir==0, slipperyStopDir): same rendering.
+        MapleMap ledge = smallPlatformSnowMap();
+        Character edgeBot = mockBot(new Point(-2000 + 30, -50), ledge);
+        BotEntry edgeEntry = new BotEntry(edgeBot, null, null);
+        Foothold small = ledge.getFootholds().findBelow(new Point(-2000 + 30, -100));
+        edgeEntry.physX = -2000 + 30;
+        edgeEntry.physY = -50;
+        edgeEntry.hspeed = 1.0; // sliding right toward the ledge
+        edgeEntry.facingDir = 1;
+        edgeEntry.moveDir = 0;
+        BotPhysicsEngine.applyGroundMotion(edgeEntry, edgeBot, small);
+        assertEquals(-1, edgeEntry.facingDir);
+        assertEquals(-1, edgeEntry.groundBrakeDir);
+        assertEquals(CharacterStance.WALK_LEFT_STANCE, BotPhysicsEngine.resolveStance(edgeEntry));
+
+        // Normal walking facing semantics unchanged: accelerating right faces right.
+        entry.moveDir = 1;
+        entry.hspeed = 0.5;
+        BotPhysicsEngine.applyGroundMotion(entry, bot, fh);
+        assertEquals(1, entry.facingDir);
+        assertEquals(0, entry.groundBrakeDir);
+        assertEquals(CharacterStance.WALK_RIGHT_STANCE, BotPhysicsEngine.resolveStance(entry));
+    }
+
+    @Test
+    void shouldNotFlipFacingWithoutActualMovement() {
+        // No facing change without at least one tick of real displacement (user realism
+        // rule): a bot dithering its input at rest - sub-pixel pulses toward a tight launch
+        // window - must not broadcast a stationary moonwalk/flip-flop to watchers.
+        MapleMap snow = flatGroundMap(0.2f);
+        Character bot = mockBot(new Point(0, 100), snow);
+        BotEntry entry = new BotEntry(bot, null, null);
+        Foothold fh = snow.getFootholds().findBelow(new Point(0, 99));
+        entry.physX = 0;
+        entry.physY = 100;
+        entry.hspeed = -0.02; // residual sub-pixel slide left
+        entry.facingDir = -1;
+        entry.moveDir = 1;    // counter-input held, but the tick moves less than a pixel
+        BotPhysicsEngine.applyGroundMotion(entry, bot, fh);
+        assertEquals(0, bot.getPosition().x, "fixture: the tick must not move a whole pixel");
+        assertEquals(-1, entry.facingDir, "no facing flip without actual movement");
+        assertEquals(0, entry.groundBrakeDir, "no counter-strafe walk stance while stationary");
+    }
+
+    @Test
+    void shouldKeepFacingLastPressedKeyWhileGlidingWithNoInput() {
+        // Key released mid-slide: facing stays on the LAST pressed key, the glide never
+        // turns the character into the slide direction.
+        MapleMap snow = flatGroundMap(0.2f);
+        Character bot = mockBot(new Point(0, 100), snow);
+        BotEntry entry = new BotEntry(bot, null, null);
+        Foothold fh = snow.getFootholds().findBelow(new Point(0, 99));
+        entry.physX = 0;
+        entry.physY = 100;
+        entry.hspeed = 1.0;   // sliding right at top speed, mid-platform (glide, no brake)
+        entry.facingDir = -1; // last pressed key was left
+        entry.moveDir = 0;    // no key held
+        BotPhysicsEngine.applyGroundMotion(entry, bot, fh);
+        assertTrue(bot.getPosition().x > 0, "fixture: the glide tick must actually move");
+        assertEquals(-1, entry.facingDir, "facing stays on the last pressed key during glide");
+    }
+
+    @Test
+    void shouldReserveKineticRunwayOnSnow() {
+        int normal = BotPhysicsEngine.launchRunwayPx(flatGroundMap(0f), BotMovementProfile.base());
+        int snow = BotPhysicsEngine.launchRunwayPx(flatGroundMap(0.2f), BotMovementProfile.base());
+        assertTrue(snow > normal, "snow still reserves extra accel room");
+        assertTrue(snow <= normal + 35,
+                "kinetic vmax^2/(2*a*fs) ~ 28 px, not the old 1/fs blowup: " + snow);
+    }
+
+    @Test
+    void shouldDownJumpToAnyRealFloorBelowRegardlessOfDistance() {
+        // Down-jump has NO drop-distance cap. The old 300px probe was empirically wrong: it stranded
+        // the Orbis station (a ~780px straight drop) and was removed at GRAPH_VERSION 56->57. A landing
+        // is found wherever a real floor exists below, any distance — refusal is forbidFallDown / no
+        // floor, never distance (see kb_bot_downjump_eligibility, docs/bot/physics-client-audit.md).
+        // Do NOT re-cap without in-client + disasm proof.
+        assertTrue(BotPhysicsEngine.simulateDownJumpLanding(
+                twoFloorMap(150), new Point(0, -150)) != null, "short gap: legal down-jump");
+        assertTrue(BotPhysicsEngine.simulateDownJumpLanding(
+                twoFloorMap(860), new Point(0, -860)) != null,
+                "deep gap with a real floor below is still legal — distance is not a refusal reason");
+    }
+
+    private static MapleMap twoFloorMap(int gapPx) {
+        MapleMap map = new MapleMap(200000000, 0, 0, 200000000, 1.0f);
+        server.maps.FootholdTree tree = new server.maps.FootholdTree(
+                new Point(-2000, -2000), new Point(2000, 2000));
+        tree.insert(new Foothold(new Point(-500, -gapPx), new Point(500, -gapPx), 1));
+        tree.insert(new Foothold(new Point(-500, 0), new Point(500, 0), 2));
+        map.setFootholds(tree);
+        return map;
+    }
+
+    private static MapleMap flatGroundMap(float fs) {
+        // Synthetic-only map id (see smallPlatformSnowMap): never reuse a real map id here.
+        MapleMap map = new MapleMap(999211000, 0, 0, 999211000, 1.0f);
+        server.maps.FootholdTree tree = new server.maps.FootholdTree(
+                new Point(-20000, -2000), new Point(20000, 2000));
+        tree.insert(new Foothold(new Point(-15000, 100), new Point(15000, 100), 1));
+        map.setFootholds(tree);
+        if (fs > 0f) {
+            map.setFootholdSpeed(fs);
+        }
+        return map;
+    }
+
+    private static double hspeedAfterTicks(MapleMap map, int desiredDir, int ticks, double initialHSpeed) {
+        return hspeedAfterTicks(map, BotMovementProfile.base(), desiredDir, ticks, initialHSpeed);
+    }
+
+    private static double hspeedAfterTicks(MapleMap map, BotMovementProfile profile, int desiredDir,
+                                           int ticks, double initialHSpeed) {
+        Foothold fh = map.getFootholds().findBelow(new Point(0, 99));
+        BotPhysicsEngine.GroundTravelState state =
+                new BotPhysicsEngine.GroundTravelState(0, initialHSpeed, 0.0);
+        Point pos = new Point(0, 100);
+        for (int i = 0; i < ticks; i++) {
+            BotPhysicsEngine.GroundStepResult step =
+                    BotPhysicsEngine.simulateGroundMotion(map, pos, fh, desiredDir, state, profile);
+            state = step.state();
+            pos = step.point();
+        }
+        return Math.abs(state.hspeed());
+    }
+
     private static MapleMap createEmptyTestMap(int mapId) {
         MapleMap map = new MapleMap(mapId, 0, 0, mapId, 1.0f);
         map.setFootholds(new server.maps.FootholdTree(new Point(-2000, -2000), new Point(2000, 2000)));
@@ -791,7 +1245,7 @@ class BotPhysicsEngineTest {
         assertEquals(BotPhysicsEngine.AirborneStepResult.WALL, BotPhysicsEngine.stepAirborne(entry, bot));
         assertTrue(bot.getPosition().x > 50, "wall collision should place the bot on the near side, not inside the wall");
 
-        entry.airSteerVelX = -BotPhysicsEngine.cfg.AIR_STEER_MAX;
+        entry.airSteerVelX = -1.5;
         BotPhysicsEngine.stepAirborne(entry, bot);
 
         assertTrue(bot.getPosition().x > 50, "continued air steering into the wall must not cross to the far side");

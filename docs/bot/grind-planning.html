@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bot Grind Planning — Gear, Scrolls, Exp and How They Compete</title>
+<style>
+  :root{
+    --bg:#0f1115; --panel:#171a21; --panel2:#1e222b; --ink:#e6e9ef; --mut:#9aa4b2;
+    --acc:#6ea8fe; --good:#54d18c; --warn:#e6b860; --bad:#e57373; --line:#2a2f3a;
+    --code:#0b0d11;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:15px/1.6 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
+  .wrap{max-width:960px;margin:0 auto;padding:40px 22px 80px}
+  h1{font-size:30px;margin:0 0 6px}
+  h2{font-size:21px;margin:42px 0 14px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+  h3{font-size:16px;margin:24px 0 8px;color:var(--acc)}
+  .sub{color:var(--mut);margin:0 0 8px}
+  p{margin:10px 0}
+  code,kbd{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:.92em}
+  code{background:var(--code);border:1px solid var(--line);border-radius:5px;padding:1px 6px;color:#cfe3ff}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px 20px;margin:14px 0}
+  table{width:100%;border-collapse:collapse;margin:12px 0;font-size:14px}
+  th,td{text-align:left;padding:9px 11px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{color:var(--mut);font-weight:600;background:var(--panel2)}
+  tr:last-child td{border-bottom:none}
+  .formula{font-family:ui-monospace,Consolas,monospace;background:var(--code);border:1px solid var(--line);
+    border-left:3px solid var(--acc);border-radius:8px;padding:12px 16px;margin:12px 0;color:#dbe7ff}
+  .note{border-left:3px solid var(--warn);background:#1c1a12;border-radius:8px;padding:10px 14px;margin:12px 0;color:#f0e3c4}
+  .ok{border-left:3px solid var(--good);background:#11201a;border-radius:8px;padding:10px 14px;margin:12px 0;color:#cdeedd}
+  .muted{color:var(--mut)}
+  .files code{display:inline-block;margin:2px 0}
+  hr{border:none;border-top:1px solid var(--line);margin:34px 0}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>Bot Grind Planning</h1>
+<p class="sub">How a bot (or a party) decides where to grind: the exact formulas behind
+gear drops, scroll drops, exp, mob difficulty, multi-mob maps and travel cost.</p>
+<p class="muted">Code: <code>BotGrindAdvisor</code> (builds candidates from world data),
+<code>BotGrindPlanner</code> (pure scoring/selection), <code>BotTravelCost</code> (travel penalty),
+<code>BotScrollManager</code> (offense score SSOT). Wiring: <code>BotAutopilotManager</code>.</p>
+
+<h2>1. The candidate: one map, its mobs blended by spawn share</h2>
+<p>A candidate is a <b>map</b>, not a single mob. The bot kills whatever it encounters, so time
+spent on one mob is time not spent on another. Every per-mob number is weighted by that mob's
+share of the map's spawn points:</p>
+<div class="formula">
+share<sub>i</sub> = spawnPoints<sub>i</sub> / &Sigma; spawnPoints &nbsp;&nbsp;(over the map's grindable mobs)<br><br>
+killSeconds(map) = &Sigma; share<sub>i</sub> &middot; killSeconds<sub>i</sub><br>
+exp(map) = &Sigma; share<sub>i</sub> &middot; exp<sub>i</sub> &middot; expRate<br>
+chancePerKill(item) = &Sigma;<sub>mobs i dropping it</sub> share<sub>i</sub> &middot; dropChance<sub>i</sub> &middot; dropRate / 1,000,000
+</div>
+<p>So a map mixing a great-exp mob with a poor one scores <b>in between</b>, weighted by how much
+of each you actually meet, and an item's effective rate is diluted when its dropper shares the
+map with junk mobs. Mobs the bot <i>can't</i> grind (bosses, friendlies, anything it can't
+meaningfully damage, 0-exp props) are excluded from the blend entirely — they don't dilute,
+because the bot won't engage them, but they also don't add density (see seek time below).
+The candidate is labeled with the dominant mob (most spawn points; exp breaks ties) for chat.</p>
+<p class="muted">Skipped maps: towns, instanced/event fields (mapId &ge; 900000000), maps with
+fewer than 3 grindable spawn points.</p>
+
+<h2>2. Mob difficulty: inferred through kill time, not a separate check</h2>
+<p>There is no "difficulty rating". Difficulty enters the model exactly once, as <b>time to kill
+one mob for THIS bot</b>, computed from the same combat model the bot fights with:</p>
+<div class="formula">
+perAttack = estimateBestSkillHitDamage(bot, mob) &nbsp;<span class="muted">// skill damage SSOT; falls back to
+expectedDamageAfterDef(maxBaseDamage(totalWatk), mob WDEF)</span><br>
+dps = perAttack / 0.72s &nbsp;<span class="muted">// attack cycle anchor</span><br>
+killSeconds = max(0.72, mobHP / dps)
+</div>
+<p>A tanky or high-WDEF mob takes longer to kill, which lowers kills/hour, which lowers
+<i>both</i> its exp/h and its drops/h — so "hard but rewarding" vs "easy but mediocre" is a fair
+fight in the same units. If <code>perAttack &le; 0</code> the mob is unkillable for this bot and
+drops out of the map blend.</p>
+<p>Seek overhead (walking between spawns) scales with real <b>density</b> — the field each
+spawn has to itself, from the map's playable area (VR bounds, miniMap fallback):</p>
+<div class="formula">
+areaPerSpawn = mapAreaPx / spawnPoints<br>
+seekSeconds = clamp(3.0 &middot; areaPerSpawn / 250,000 px&sup2;, 0.5, 15)
+&nbsp;<span class="muted">// no area data: clamp(3.0 &middot; 8 / spawnPoints, ...)</span><br><br>
+demand = 3600 / (killSeconds + seekSeconds)<br>
+supply = spawnPoints &middot; 3600 / 10s &nbsp;<span class="muted">// server respawn cycle refills at most spawnPoints per 10s</span><br>
+killsPerHour = min(demand, supply)
+</div>
+<p>The supply cap is what makes a small packed map great solo but poor for a party: members
+share the spawn points (see &sect;7), so each one's refill rate drops to
+<code>spawnPoints/N &middot; 360/h</code> — on a 4-spawn map a 4-member party caps at ~360
+kills/h each no matter how dense it feels, while a roomier 12-spawn map keeps feeding
+everyone. Solo, the same small map wins on near-zero seek time.</p>
+<div class="note"><b>Not modeled (yet):</b> death risk. A mob that out-damages the bot still
+looks attractive if it's technically killable. Touch damage, accuracy floors and potion burn are
+outside the model; in practice the level gap rarely lets that matter because unkillable = excluded.</div>
+
+<h2>3. What a drop is worth: the offense score SSOT</h2>
+<p>Every item value flows through one job-weighted offense score
+(<code>BotScrollManager.offenseValue</code>):</p>
+<div class="formula">
+score = 5.0 &middot; WATK + 1.0 &middot; mainStat + 0.3 &middot; secondaryStat
+&nbsp;<span class="muted">// physical classes</span><br>
+score = 1.0 &middot; MATK + 1.0 &middot; INT + 0.3 &middot; LUK
+&nbsp;<span class="muted">// mages — MATK is deliberately a stat point, not a watk point</span>
+</div>
+<p>One point of weapon attack is worth five points of main stat; MATK is worth one point even
+to mages and zero to everyone else; the wrong class's stats are worth nothing. This single
+scale is what lets gear, scrolls and exp compete.</p>
+
+<h3>3a. Equip drops — expected improvement over the worn roll</h3>
+<p>Drop stats are randomized (vanilla spread plus the rare "godly" uplift), so a drop's value is
+<b>the expected improvement over what's already worn</b>, Monte-Carlo'd through the real drop
+path (the same <code>randomizeStats</code> call the map uses), 32 samples:</p>
+<div class="formula">
+scoreGain = E[ max(0, score(rolled drop) &minus; score(worn)) ]
+</div>
+<ul>
+<li>Empty slot &rarr; worth the full mean of the roll distribution.</li>
+<li>Below-average worn roll &rarr; re-farming the same item stays moderately valuable.</li>
+<li>Near-godly worn roll &rarr; almost every reroll is worthless &rarr; value decays to ~0.</li>
+</ul>
+<p>This is the emergent stay-or-leave condition: no drop counters, no timers — the spot's value
+falls as the bot's roll improves, until somewhere else (travel-discounted) beats it.
+Gains below <b>0.5</b> score are dropped as rounding noise.</p>
+<p>Both sides of the comparison also count <b>scroll headroom</b> — remaining upgrade slots are
+future stats:</p>
+<div class="formula">
+potentialValue(equip) = score(equip) + 0.5 &middot; remainingSlots &middot; bestScrollEvPerSlot(type)<br>
+bestScrollEvPerSlot(type) = max over catalog scrolls applicable to the type of
+(effectiveSuccess &middot; score(scroll stats))
+</div>
+<p>The per-slot value is priced from the real scroll catalog through the self-scrolling rules
+(applicability, effective success, boom/meta scrolls excluded), so it is <b>equip-type based,
+never flat</b>: glove slots are worth att scrolls (~6.0 each at 60% +2 ATT), while pieces that
+only take stat scrolls get ~1.2 per slot. A fresh drop ships with full slots, so a weaker glove
+that still scrolls can out-value a stronger but maxed-out worn one — while the 0.5 discount
+(scrolls must still be obtained and survive their rolls) keeps bots from re-farming
+weak-scrolling pieces every few levels for slot count alone.</p>
+
+<h3>3c. Owned-but-benched gear and level-gated drops</h3>
+<p>The bar a drop must beat is the best the bot already <b>owns</b> for the slot — worn or
+bagged — and not-yet-wearable items count on both sides, decayed by the wait:</p>
+<div class="formula">
+value(item wearable in g levels) = 0.9<sup>g</sup> &middot; potentialValue(item)
+&nbsp;<span class="muted">// horizon 10 levels</span><br>
+bar(slot) = max over owned items of that value &nbsp;&middot;&nbsp;
+gain(drop) = E[ max(0, 0.9<sup>g</sup> &middot; roll &minus; bar) ]
+</div>
+<p>Worked example — worn 10, bagged 30 wearable in 5 levels (bar = max(10, 0.59&middot;30) = 17.7):
+a wear-now 20 drop keeps <i>interim</i> value (+2.3 — it serves until the 30 comes online);
+a 25 drop also 5 levels out is worth 0 (same wait as the owned 30, worse item); without the
+bagged 30 that same future 25 would be a real discounted upgrade over the worn 10.</p>
+<div class="note"><b>Requirements are never projected.</b> An item counts as "wearable in g
+levels" only when <i>level</i> is its sole unmet requirement with today's stats; an unmet
+stat/job requirement means never. Bot AP builds park the secondary stat at a fixed target
+(rest into primary), so a low-DEX warrior genuinely never grows into DEX-gated gear — and the
+primary stat outruns own-job gear requirements anyway, so projecting only level loses almost
+nothing while never chasing impossible upgrades.</div>
+
+<h3>3b. Scroll drops — success-weighted stat value</h3>
+<p>Equip scrolls (item 2040000&ndash;2049999) are gear progression too. One scroll is worth its
+plain expectation:</p>
+<div class="formula">
+scoreGain = effectiveSuccess &middot; score(scroll stats)
+&nbsp;<span class="muted">// success incl. server bonus, capped 100%</span>
+</div>
+<p>No tiering anywhere — the "good scrolls" fall out by arithmetic: a 60% +2 ATT glove scroll is
+worth 0.6&middot;10 = <b>6.0</b>, beating a safe 100% +1 ATT (5.0) and a 10% +5 ATT long shot
+(2.5). ATT scrolls dominate stat scrolls 5:1 per point; a MATK scroll counts like a stat
+scroll for mages and is worth 0 to everyone else. Gates: the bot must <b>wear</b> something the scroll applies to with an open upgrade
+slot, and boom-risk (<code>cursed</code>) plus meta scrolls (clean slate / modifier / white) are
+worth 0 — self-scrolling v1 refuses to use those, so farming them buys nothing.</p>
+<p class="muted">Valuation only: actually applying scrolls stays behind the owner-confirmed
+self-scroll command. Sell-trash never sells scrolls.</p>
+
+<h2>4. Desirability and the two lenses</h2>
+<p>A jackpot the bot will never see shouldn't move the plan. Each prospect's appeal is its DPS
+fraction discounted by attainability within a 2-hour horizon:</p>
+<div class="formula">
+dpsGainFraction = scoreGain / totalWornOffense<br>
+expectedCopies = chancePerKill &middot; killsPerHour &middot; 2h<br>
+desirability = dpsGainFraction &middot; min(1, expectedCopies)
+</div>
+<p>Each candidate map then gets two travel-weighted lenses:</p>
+<div class="formula">
+expLens = exp(map) &middot; killsPerHour &middot; travelWeight(map)<br>
+gearLens = ( &Sigma;<sub>prospects</sub> desirability &middot; killsPerHour &middot; chancePerKill ) &middot; travelWeight(map)
+</div>
+
+<h2>5. Travel penalty</h2>
+<p>Far maps are discounted by estimated travel time over the legal travel graph
+(Dijkstra over portal/scroll/taxi/ferry edges from the bot's current map):</p>
+<div class="formula">
+travelWeight = max(0.25, 1 &minus; travelSeconds / 3600)<br>
+<span class="muted">portal hop 25s &middot; return scroll 5s &middot; taxi 30s &middot;
+ferry = wait + ride from the live travel-rate config (rate 5 &rarr; 15min ride becomes 3min)</span>
+</div>
+<p>The current map costs 0s — home-field advantage. Staying wins while marginal reroll value
+holds; leaving wins when a discounted alternative overtakes it. Cross-continent (ferry) maps are
+only in the pool when sailing is allowed (owner offline/absent, or owner approved "sail away";
+a &ge;1.5&times; overseas advantage triggers a one-time ask).</p>
+
+<h2>6. Picking the spot: gear first, exp breaks ties</h2>
+<ol>
+<li>If <b>any</b> candidate has desirability &ge; <b>0.02</b> (an attainable ~2% DPS gain),
+planning is <b>gear-first</b>: shortlist candidates within <b>70%</b> of the best gearLens,
+then pick among the shortlist by expLens (weighted draw among those within <b>85%</b> of the
+best, so a hundred bots don't pile onto one map).</li>
+<li>Otherwise: pure exp ranking (same near-best weighted draw).</li>
+</ol>
+<p>So gear progression dominates whenever something attainable exists — and because godly rolls
+are rare, something nearby almost always qualifies — while exp quietly picks the best of the
+gear-comparable spots. With nothing worth farming, the bot reverts to a pure exp grinder.</p>
+
+<h2>7. Party planning: the whole party's gain, one map</h2>
+<p>The party picks <b>one</b> map by summing what every member gets out of it:</p>
+<div class="formula">
+spawnPoints &rarr; spawnPoints / partySize &nbsp;<span class="muted">// members compete for spawns:
+seek rises (same area, fewer free mobs) and the respawn supply cap drops per member</span><br>
+memberScore(map) = gearLens&#770; + 0.25 &middot; expLens&#770; &nbsp;<span class="muted">// each lens normalized to that member's best; pure exp if the member has no attainable gear</span><br>
+partyScore(map) = &Sigma;<sub>members</sub> max over the member's mobs on that map<br>
+pick = weighted draw among maps within 85% of the best partyScore
+</div>
+<p>Because it's a sum of per-member bests, a map that feeds three members modest upgrades
+(or two upgrades and good exp for the rest) beats a map that's optimal for a single member —
+scaled by each member's own drop odds, kill speed and travel distance. Scroll and equip
+prospects are priced per member against <i>their own</i> worn gear, so the same drop can count
+for several members at once. Members with nothing useful on the picked map tag along as backup.</p>
+
+<h2>8. Farm-item mode ("farm &lt;item&gt;")</h2>
+<p>When the objective is a specific item, scoring is purely expected items/hour with the same
+spawn-share dilution — junk mobs sharing the dropper's map take kill time without dropping:</p>
+<div class="formula">
+itemsPerHour(map) = chancePerKill(item, blended) &middot; killsPerHour(map) &middot; travelWeight(map)
+</div>
+
+<h2>9. Constants at a glance</h2>
+<table>
+<tr><th>Constant</th><th>Value</th><th>Meaning</th></tr>
+<tr><td><code>ATT_WEIGHT / MATK / MAIN / SECONDARY</code></td><td>5.0 / 1.0 / 1.0 / 0.3</td><td>Offense score weights (MATK counts like a stat, mages only)</td></tr>
+<tr><td><code>ROLL_SAMPLES</code></td><td>32</td><td>Monte Carlo drop rolls per equip per pass</td></tr>
+<tr><td><code>MIN_GEAR_GAIN_SCORE</code></td><td>0.5</td><td>Smaller expected gains are noise, not progression</td></tr>
+<tr><td><code>SCROLL_HEADROOM_FRACTION</code></td><td>0.5</td><td>Discount on open-slot value (slots &times; best catalog scroll EV for the type)</td></tr>
+<tr><td><code>GEAR_LEVEL_HORIZON / LEVEL_WAIT_DECAY</code></td><td>10 / 0.9</td><td>Level-gated gear counts up to 10 levels ahead at 0.9<sup>levels</sup> value</td></tr>
+<tr><td><code>ATTAINABILITY_HORIZON_HOURS</code></td><td>2.0</td><td>"Can I realistically get it" window</td></tr>
+<tr><td><code>MEANINGFUL_GEAR_DESIRE</code></td><td>0.02</td><td>Attainable ~2% DPS gain anywhere &rarr; gear-first mode</td></tr>
+<tr><td><code>GEAR_POOL_FRACTION</code></td><td>0.7</td><td>Gear shortlist: within 70% of best gear-value/h</td></tr>
+<tr><td><code>NEAR_BEST_FRACTION</code></td><td>0.85</td><td>Weighted-random draw band (anti-clogging)</td></tr>
+<tr><td><code>EXP_TIEBREAK_WEIGHT</code></td><td>0.25</td><td>Party lens: exp next to gear</td></tr>
+<tr><td><code>ATTACK_CYCLE_SECONDS</code></td><td>0.72</td><td>Damage-per-attack &rarr; DPS anchor</td></tr>
+<tr><td><code>SEEK_BASE / TYPICAL_AREA_PER_SPAWN</code></td><td>3.0s @ 250k px&sup2;</td><td>Seek overhead from map density, clamped 0.5&ndash;15s</td></tr>
+<tr><td><code>RESPAWN_PERIOD_SECONDS</code></td><td>10</td><td>Supply cap: a map refills &le; spawnPoints kills per cycle</td></tr>
+<tr><td><code>MIN_SPAWN_POINTS</code></td><td>3</td><td>Below this a map isn't a grind spot</td></tr>
+<tr><td><code>PORTAL / SCROLL / TAXI hop</code></td><td>25s / 5s / 30s</td><td>Travel edge costs (flat)</td></tr>
+<tr><td><code>MIN_SCORE_WEIGHT</code></td><td>0.25</td><td>Travel discount floor (1h+ away)</td></tr>
+<tr><td><code>UPGRADE_REDECIDE_DELAY</code></td><td>25s</td><td>Equipping looted gear pulls the next decision forward</td></tr>
+</table>
+
+<div class="ok"><b>Summary of the competition.</b> Everything is converted to one currency
+(offense score per hour, travel-discounted): equips via expected-improvement-over-worn,
+scrolls via success&times;stat-value, both diluted by spawn share and drop odds; mob toughness
+prices itself through kill time; exp never outranks an attainable upgrade but decides among
+gear-equivalent spots — and for a party, the map that enriches the most members wins.</div>
+
+<hr>
+<p class="files muted">Source:
+<code>src/main/java/server/bots/BotGrindAdvisor.java</code>,
+<code>src/main/java/server/bots/BotGrindPlanner.java</code>,
+<code>src/main/java/server/bots/BotTravelCost.java</code>,
+<code>src/main/java/server/bots/BotScrollManager.java</code> (offense SSOT),
+<code>src/main/java/server/bots/BotAutopilotManager.java</code>.
+Tests: <code>BotGrindAdvisorTest</code>, <code>BotGrindPlannerTest</code>, <code>BotTravelCostTest</code>,
+<code>BotAutopilotManagerTest</code>.</p>
+
+</div>
+</body>
+</html>

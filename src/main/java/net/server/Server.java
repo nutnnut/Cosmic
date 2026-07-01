@@ -65,6 +65,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import provider.DressingRoom;
 import server.CashShop.CashItemFactory;
+import server.EquipStatsDiskCache;
+import server.ItemInformationProvider;
 import server.SkillbookInformationProvider;
 import server.ThreadManager;
 import server.TimerManager;
@@ -887,6 +889,30 @@ public class Server {
         futures.add(initExecutor.submit(CashItemFactory::loadAllCashItems));
         futures.add(initExecutor.submit(Quest::loadAllQuests));
         futures.add(initExecutor.submit(SkillbookInformationProvider::loadAllSkillbookInformation));
+        // Must finish BEFORE the login port opens: it reads every equip's WZ img through the
+        // synchronized XMLWZFile lock - run post-online (as before) it starves every early
+        // login/bot thread off that lock for the full load (~10s freezes until done).
+        // The disk cache skips the ~66s WZ parse on every boot after the first.
+        futures.add(initExecutor.submit(() -> {
+            boolean primed = EquipStatsDiskCache.preload(ItemInformationProvider.getInstance());
+            if (primed) {
+                // Steady state: getEquipStats is already warm from the disk cache, so the Dressing
+                // Room's map build is cheap and hits the cache, never the synchronized XMLWZFile lock.
+                // It's a non-core cosmetic feature -> run it on a background daemon so the login port
+                // never waits on it. It publishes its map atomically (empty until done), so the only
+                // effect is the Dressing Room being empty for the first moments online. NOT awaited.
+                Thread dressingRoomLoader = new Thread(DressingRoom::load, "dressing-room-loader");
+                dressingRoomLoader.setDaemon(true);
+                dressingRoomLoader.start();
+            } else {
+                // First boot only (no disk cache): DressingRoom.load() is ALSO what warms getEquipStats
+                // for every equip -- the cache early logins/bots need BEFORE the port opens (reading it
+                // through the WZ lock post-online starves them) and what dump() then persists. Keep it
+                // blocking this once; every later boot takes the primed branch above and starts fast.
+                DressingRoom.load();
+                EquipStatsDiskCache.dump(ItemInformationProvider.getInstance());
+            }
+        }));
         initExecutor.shutdown();
 
         TimeZone.setDefault(TimeZone.getTimeZone(YamlConfig.config.server.TIMEZONE));
@@ -947,7 +973,12 @@ public class Server {
         Duration initDuration = Duration.between(beforeInit, Instant.now());
         log.info("Cosmic is now online after {} ms.", initDuration.toMillis());
 
-        DressingRoom.load();
+        // Living-server bot population scheduler. Registers its sweep timer now but self-guards on
+        // BotManager.cfg.POPULATION_SCHED_ENABLED (default OFF), so this is a no-op until enabled.
+        server.bots.BotScheduler.getInstance().start();
+
+        // Localhost-only web view of the bot world graph + live per-map character occupancy.
+        server.bots.BotWorldGraphWebServer.start();
 
         OpcodeConstants.generateOpcodeNames();
         CommandsExecutor.getInstance();
@@ -1954,6 +1985,10 @@ public class Server {
         if (getWorlds() == null) {
             return;//already shutdown
         }
+        // Stop the population scheduler before the mass-disconnect: no point logging bots in while
+        // everyone is being saved + dropped, and it keeps extra bot-logout saves from racing the
+        // disconnect sweep. (Matches the "never silently spawn" default; re-enable via @botpop.)
+        server.bots.BotScheduler.getInstance().setEnabled(false);
         for (World w : getWorlds()) {
             w.shutdown();
         }

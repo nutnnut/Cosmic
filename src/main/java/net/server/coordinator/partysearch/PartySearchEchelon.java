@@ -27,22 +27,20 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.locks.Lock;
-import java.util.concurrent.locks.ReadWriteLock;
-import java.util.concurrent.locks.ReentrantReadWriteLock;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * @author Ronan
  */
 public class PartySearchEchelon {
-    private final Lock psRLock;
-    private final Lock psWLock;
+    // Every method mutates `echelon` (put/remove/clear), so all access is exclusive — a plain lock.
+    // (Was a ReadWriteLock whose read lock guarded the mutating attach/detach, which corrupted the
+    // non-thread-safe HashMap under concurrency: size() went negative -> "Illegal Capacity: -1".)
+    private final Lock psWLock = new ReentrantLock(true);
 
     private final Map<Integer, WeakReference<Character>> echelon = new HashMap<>(20);
 
     public PartySearchEchelon() {
-        ReadWriteLock partySearchLock = new ReentrantReadWriteLock(true);
-        this.psRLock = partySearchLock.readLock();
-        this.psWLock = partySearchLock.writeLock();
     }
 
     public List<Character> exportEchelon() {
@@ -65,20 +63,20 @@ public class PartySearchEchelon {
     }
 
     public void attachPlayer(Character chr) {
-        psRLock.lock();
-        try {
-            echelon.put(chr.getId(), new WeakReference<>(chr));
+        psWLock.lock();     // WRITE lock: this mutates the (non-thread-safe) HashMap. Using the shared
+        try {               // read lock let concurrent attach/detach corrupt size() -> negative ->
+            echelon.put(chr.getId(), new WeakReference<>(chr));   // "Illegal Capacity: -1" in export.
         } finally {
-            psRLock.unlock();
+            psWLock.unlock();
         }
     }
 
     public boolean detachPlayer(Character chr) {
-        psRLock.lock();
+        psWLock.lock();     // WRITE lock: mutating the HashMap must be exclusive (see attachPlayer).
         try {
             return echelon.remove(chr.getId()) != null;
         } finally {
-            psRLock.unlock();
+            psWLock.unlock();
         }
     }
 

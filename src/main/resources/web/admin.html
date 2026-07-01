@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Bot Admin</title>
+<style>
+  body{margin:0;background:#10141c;color:#cdd6e4;font:14px system-ui,sans-serif;padding:20px}
+  h1{color:#9fb0c8;font-weight:600;margin:0 0 4px}
+  h2{color:#6cc6ff;font-weight:600;margin:24px 0 8px;font-size:16px}
+  a{color:#6cc6ff}
+  .panel{background:#171c26;border:1px solid #2a3346;border-radius:8px;padding:14px;margin-bottom:14px}
+  table{border-collapse:collapse;width:100%}
+  td{padding:3px 8px;border-bottom:1px solid #1f2632;vertical-align:middle}
+  td.name{font-family:ui-monospace,monospace;color:#aebfd6;white-space:nowrap}
+  td.type{color:#5c6b85;font-size:12px}
+  input[type=text]{background:#0d1117;color:#cdd6e4;border:1px solid #3a4761;border-radius:4px;padding:4px 6px;width:130px}
+  button{background:#21304a;color:#cde;border:1px solid #3a4761;border-radius:5px;padding:5px 12px;cursor:pointer}
+  button:hover{background:#2a3c5c}
+  button.danger{background:#4a2330;border-color:#7a3a4a}
+  button.danger:hover{background:#5c2a3a}
+  .row{display:flex;gap:10px;align-items:center;margin:6px 0;flex-wrap:wrap}
+  .status{font-family:ui-monospace,monospace;color:#7e8ca8;font-size:12px;white-space:pre-line;margin-top:6px}
+  .filter{margin-bottom:8px}
+  #toast{position:fixed;bottom:18px;right:18px;background:#21304a;border:1px solid #3a4761;border-radius:6px;padding:10px 14px;opacity:0;transition:opacity .2s}
+  #toast.show{opacity:1}
+</style>
+</head>
+<body>
+<h1>Bot Admin / Settings</h1>
+<div><a href="/map">World Map</a> &middot; no auth, LAN only</div>
+
+<h2>Population scheduler</h2>
+<div class="panel">
+  <div class="row">
+    Multiplier <input type="text" id="popMult" size="5">
+    <button onclick="setPop({mult:popMult.value})">Set</button>
+    <button onclick="setPop({enabled:'true'})">Scheduler ON</button>
+    <button onclick="setPop({enabled:'false'})">Scheduler OFF</button>
+    <button onclick="setPop({sweep:'true'})">Sweep now</button>
+  </div>
+  <div class="status" id="popStatus"></div>
+  <div class="row">
+    Perf log <input type="text" id="perfSecs" size="4" value="15"> seconds
+    <button onclick="perfLog(false)">Log CSV only</button>
+    <button onclick="perfLog(true)">Log + convert to HTML</button>
+  </div>
+  <div class="status" id="perfStatus"></div>
+</div>
+
+<h2>LLM chat</h2>
+<div class="panel">
+  <div class="row">
+    <span id="llmState"></span>
+    <button onclick="setLlm({enabled:'true',debug:'false'})">On</button>
+    <button onclick="setLlm({enabled:'false'})">Off</button>
+    <button onclick="setLlm({debug:'true'})">Debug</button>
+  </div>
+</div>
+
+<h2>Manager config</h2>
+<div class="panel">
+  <input class="filter" type="text" placeholder="filter..." oninput="filter('manager',this.value)">
+  <table id="manager"></table>
+</div>
+
+<h2>Combat config</h2>
+<div class="panel">
+  <input class="filter" type="text" placeholder="filter..." oninput="filter('combat',this.value)">
+  <table id="combat"></table>
+</div>
+
+<h2>Danger zone</h2>
+<div class="panel">
+  <div class="row">
+    <button class="danger" onclick="disconnectAll()">Disconnect all bots</button>
+    <button class="danger" onclick="wipe()">Wipe managed bots</button>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+const $ = id => document.getElementById(id);
+function toast(m){const t=$('toast');t.textContent=m;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2500);}
+async function post(b){const r=await fetch('/api/settings',{method:'POST',body:JSON.stringify(b)});return r.json();}
+
+function renderFields(group, rows){
+  const t=$(group);t.innerHTML='';
+  for(const f of rows){
+    const tr=document.createElement('tr');tr.dataset.name=f.name.toLowerCase();
+    const isBool=f.type==='boolean'||f.type==='Boolean';
+    tr.innerHTML=`<td class="name">${f.name}</td><td class="type">${f.type}</td>`;
+    const td=document.createElement('td');
+    const inp=document.createElement('input');inp.type='text';inp.value=f.value;
+    const btn=document.createElement('button');btn.textContent='Save';
+    btn.onclick=async()=>{const res=await post({cmd:'set',group,field:f.name,value:inp.value});toast(res.msg||res.error||'?');};
+    if(isBool){inp.setAttribute('list','boollist');}
+    td.appendChild(inp);td.appendChild(document.createTextNode(' '));td.appendChild(btn);
+    tr.appendChild(td);t.appendChild(tr);
+  }
+}
+function filter(group, q){
+  q=q.toLowerCase();
+  for(const tr of $(group).children){tr.style.display=tr.dataset.name.includes(q)?'':'none';}
+}
+async function load(){
+  const s=await(await fetch('/api/settings')).json();
+  renderFields('manager',s.manager);
+  renderFields('combat',s.combat);
+  $('popMult').value=s.pop.multiplier;
+  $('popStatus').textContent=s.pop.status.join('\n');
+  $('llmState').textContent='enabled: '+s.llm.enabled+', debug: '+s.llm.debug;
+}
+async function setPop(b){const r=await post(Object.assign({cmd:'pop'},b));if(r.status)$('popStatus').textContent=r.status.join('\n');toast(r.error||'ok');load();}
+async function setLlm(b){const r=await post(Object.assign({cmd:'llm'},b));toast(r.error||('llm '+r.enabled+'/'+r.debug));load();}
+async function perfLog(html){
+  const secs=$('perfSecs').value;
+  $('perfStatus').textContent='capturing '+secs+'s'+(html?' + converting...':'...');
+  const r=await post({cmd:'perflog',seconds:secs,html:html?'true':'false'});
+  $('perfStatus').textContent=r.error||r.msg||'?';toast(r.error||r.msg||'ok');
+}
+async function disconnectAll(){
+  if(prompt('Type DISCONNECT to disconnect ALL online bots')!=='DISCONNECT')return;
+  const r=await post({cmd:'disconnectAll',confirm:'DISCONNECT'});toast(r.error||('disconnected '+r.disconnected));
+}
+async function wipe(){
+  if(prompt('Type WIPE to PERMANENTLY DELETE every managed bot')!=='WIPE')return;
+  const r=await post({cmd:'wipe',confirm:'WIPE'});toast(r.error||('wiped '+r.wiped+', skipped '+r.skipped));
+}
+load();
+</script>
+<datalist id="boollist"><option value="true"><option value="false"></datalist>
+</body>
+</html>

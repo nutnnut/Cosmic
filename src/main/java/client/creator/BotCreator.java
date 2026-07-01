@@ -11,6 +11,7 @@ import constants.id.MapId;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import server.ItemInformationProvider;
+import server.bots.BotAppearance;
 
 /**
  * Creates bot/companion characters server-side using the same Character.getDefault +
@@ -28,36 +29,40 @@ public class BotCreator extends CharacterFactory {
 
         Character botChar = Character.getDefault(c);
         botChar.setWorld(c.getWorld());
-        botChar.setSkinColor(SkinColor.getById(0));
-        botChar.setGender(0);
+        BotAppearance look = BotAppearance.random();
+        botChar.setSkinColor(SkinColor.getById(look.skin));
+        botChar.setGender(look.gender);
         botChar.setName(name);
-        botChar.setHair(30020);
-        botChar.setFace(20100);
+        botChar.setHair(look.hair);
+        botChar.setFace(look.face);
         botChar.setJob(Job.BEGINNER);
         botChar.setLevel(1);
-        botChar.setMapId(MapId.HENESYS);
+        botChar.setMapId(MapId.MUSHROOM_TOWN);
 
-        // Equip standard beginner starting gear (mirrors CharacterFactory.createNewCharacter)
+        // Equip gender-legal beginner starting gear (rolled by BotAppearance from the same WZ pools as
+        // face/hair) — mirrors CharacterFactory.createNewCharacter, but no longer hardcodes the male
+        // top/bottom, which rendered wrong on female bots.
         Inventory equipped = botChar.getInventory(InventoryType.EQUIPPED);
         ItemInformationProvider ii = ItemInformationProvider.getInstance();
 
-        Item top = ii.getEquipById(1040002);    // White Undershirt
+        Item top = ii.getEquipById(look.top);
         top.setPosition((byte) -5);
         equipped.addItemFromDB(top);
 
-        Item bottom = ii.getEquipById(1060002); // Undies (blue shorts)
+        Item bottom = ii.getEquipById(look.bottom);
         bottom.setPosition((byte) -6);
         equipped.addItemFromDB(bottom);
 
-        Item shoes = ii.getEquipById(1072001);  // Rubber Boots
+        Item shoes = ii.getEquipById(look.shoes);
         shoes.setPosition((byte) -7);
         equipped.addItemFromDB(shoes);
 
-        Item weapon = ii.getEquipById(1302000); // Wooden Sword
+        Item weapon = ii.getEquipById(look.weapon);
         weapon.setPosition((byte) -11);
         equipped.addItemFromDB(weapon.copy());
 
-        CharacterFactoryRecipe recipe = new CharacterFactoryRecipe(Job.BEGINNER, 1, MapId.HENESYS, 1040002, 1060002, 1072001, 1302000);
+        CharacterFactoryRecipe recipe = new CharacterFactoryRecipe(Job.BEGINNER, 1, MapId.MUSHROOM_TOWN,
+                look.top, look.bottom, look.shoes, look.weapon);
 
         if (!botChar.insertNewChar(recipe)) {
             log.error("insertNewChar failed for bot '{}'", name);

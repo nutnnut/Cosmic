@@ -81,9 +81,18 @@ class BotMovementManager {
         public int FOLLOW_DIST = 80;
         public int GRIND_EDGE_MARGIN = 40; // keep bot this many px from foothold edge while grinding
         public int MOB_AVOID_LOOKAHEAD_STEPS = 3;
+        // Per-grounded-tick chance to actually commit a legal dodge jump when a mob blocks the walk
+        // lane. 1.0 = always commit the dodge (no humanlike miss); lower it (< 1.0) to add reaction
+        // jitter so dodges aren't frame-perfect — the bot re-rolls each grounded tick the mob stays in
+        // the lane, so even a low value still dodges eventually.
+        public double MOB_AVOID_REACTION_CHANCE = 1.0;
 
         public int JUMP_Y_THRESH = 30;
-        public int TELEPORT_DIST = 4000;
+        // Within-map "hopelessly far -> teleport to target" fallback. Big maps legitimately exceed
+        // smaller values during normal travel, which made bots teleport to the target when they were
+        // not actually stuck; 8000 covers the large fields. (Out-of-bounds recovery uses the tighter
+        // OOB_TELEPORT_DIST below, gated on the bot being provably outside the map's VR rect.)
+        public int TELEPORT_DIST = 8000;
         // Tighter teleport trigger when the bot has slipped outside the map's VR rectangle.
         // Long falls below VRBottom never collide with anything and otherwise wait until the
         // 4000 Manhattan threshold; this lets us recover sooner once we know the bot is OOB.
@@ -196,8 +205,19 @@ class BotMovementManager {
         entry.navEdge = null;
         entry.navJumpLaunchEdge = null;
         entry.navJumpLaunchX = Integer.MIN_VALUE;
+        entry.navJumpLaunchDelaySteps = Integer.MIN_VALUE;
         entry.navTargetRegionId = -1;
+        entry.navFootholdDetourEdge = null;
+        entry.navFootholdDetourTarget = null;
         entry.navPreciseTarget = false;
+        entry.navBlockedPosTicks = 0;
+        // NOTE: committedRoute is deliberately NOT cleared here. clearNavigationState fires on many
+        // incidental ticks — notably tryExecuteCommittedEdgeAfterGroundMovement the instant a jump
+        // completes on landing — and wiping the route there degraded "commit one route and follow it"
+        // back into "recompute per landing", reviving the position-dependent r45<->r42 ping-pong
+        // (pathlog-Sunset). The route self-invalidates in nextCommittedRouteEdge (goal-region change or
+        // knocked off-route); it is cleared explicitly only on a real replan: graph swap (stale edge
+        // instances) and the stale-edge give-up, both in BotNavigationManager.resolveTarget.
     }
 
     static void tickClimbing(BotEntry entry, Point targetPos, boolean runAiTick) {
@@ -257,14 +277,14 @@ class BotMovementManager {
     }
 
     static void jumpOffRope(BotEntry entry, Character bot, int dx) {
-        int airVelX = resolveAirVelocityX(bot.getMap(), entry.movementProfile, dx);
+        int airVelX = resolveAirVelocityX(entry, bot.getMap(), entry.movementProfile, dx);
         BotPhysicsEngine.beginJumpOffRope(entry, bot, airVelX);
         broadcastMovement(entry);
     }
 
     static void jumpToRope(BotEntry entry, Character bot, int dx) {
         Rope sourceRope = entry.climbRope;
-        int airVelX = resolveAirVelocityX(bot.getMap(), entry.movementProfile, dx);
+        int airVelX = resolveAirVelocityX(entry, bot.getMap(), entry.movementProfile, dx);
         BotPhysicsEngine.beginRopeTransferJump(entry, bot, sourceRope, airVelX);
         broadcastMovement(entry);
     }
@@ -327,13 +347,22 @@ class BotMovementManager {
                 return;
             }
 
-            // Set air steering intent. Gated by shouldApplyAirSteering to preserve
-            // fixed ballistic path for committed nav jumps/drops.
-            // If fidget manager already set moveDir (non-zero), preserve it.
-            if (entry.moveDir == 0 && targetPos != null && shouldApplyAirSteering(entry)) {
-                int dx = targetPos.x - botPos.x;
-                entry.moveDir = Math.abs(dx) > BotPhysicsEngine.cfg.SWIM_ARRIVAL_RADIUS_PX
-                        ? Integer.signum(dx) : 0;
+            // Set air steering intent. If fidget manager already set moveDir (non-zero),
+            // preserve it. Committed nav trajectories (fixedAirArc, JUMP/DROP/CLIMB-launch
+            // edges) instead fly with the LAUNCH key held — like the real player performing
+            // the hop: held input is a CalcFloat no-op above the 8.93 x fs px/s input band
+            // (keeps vx constant, matching the graph's constant-stepX arc sim) and suppresses
+            // the no-input air drag that free flight gets.
+            if (entry.moveDir == 0) {
+                if (shouldApplyAirSteering(entry)) {
+                    if (targetPos != null) {
+                        int dx = targetPos.x - botPos.x;
+                        entry.moveDir = Math.abs(dx) > BotPhysicsEngine.cfg.SWIM_ARRIVAL_RADIUS_PX
+                                ? Integer.signum(dx) : 0;
+                    }
+                } else {
+                    entry.moveDir = Integer.signum(entry.airVelX);
+                }
             }
 
             BotPhysicsEngine.AirborneStepResult result = BotPhysicsEngine.stepAirborne(entry, bot);
@@ -358,7 +387,13 @@ class BotMovementManager {
             if (successfullyGrabbedRope(entry, bot, bot.getPosition())) {
                 return;
             }
-            broadcastMovement(entry);
+            if (entry.flashJumpFired) {
+                Point now = bot.getPosition();
+                broadcastFlashJump(entry, now.x - botPos.x, now.y - botPos.y);
+                entry.flashJumpFired = false;
+            } else {
+                broadcastMovement(entry);
+            }
         } finally {
             BotPerformanceMonitor.record("move-air", System.nanoTime() - startedAt);
         }
@@ -371,6 +406,12 @@ class BotMovementManager {
 
         for (Rope rope : bot.getMap().getRopes()) {
             if (sameRope(entry.blockedRopeGrab, rope)) {
+                continue;
+            }
+            // A nav rope-jump targets one specific rope; never grab a different one the arc happens to
+            // pass (co-located ropes at the launch otherwise hijack the jump). Recovery jumps leave the
+            // target null and may grab any reachable rope.
+            if (entry.climbIntentRope != null && !sameRope(entry.climbIntentRope, rope)) {
                 continue;
             }
             if (Math.abs(rope.x() - botPos.x) > BotPhysicsEngine.cfg.ROPE_GRAB_X) {
@@ -499,6 +540,35 @@ class BotMovementManager {
             // and now drifted past LEVEL, switch to free sink so we catch up.
             entry.swimVerticalHold = prevVerticalHold > 0 ? 1 : 0;
         }
+
+        // Wall-escape: physics flagged a wall hit last tick while we were steering toward the target.
+        // The greedy dy-based vertical above would pin us against the wall when the target sits at or
+        // below our level behind it. UP-hold alone can't rise (SWIM_UP_THRUST < SWIM_GRAVITY), so fire
+        // a cooldown-gated JUMP burst — the only source of real upward momentum — to clear the obstacle,
+        // holding UP between bursts to soften the sink.
+        if (entry.swimWallBlocked && entry.swimMoveDir != 0) {
+            if (now >= entry.swimNextJumpAtMs) {
+                entry.swimJumpRequested = true;
+                entry.swimNextJumpAtMs = now + BotPhysicsEngine.cfg.SWIM_JUMP_COOLDOWN_MS;
+            }
+            entry.swimVerticalHold = -1;
+        }
+    }
+
+    /**
+     * SSOT settle for "no movement intent this tick". A mode handler that consumes its tick with
+     * {@code return true} but never steps physics leaves the last WALK packet standing, and clients
+     * extrapolate it into walk-in-place. Idling the ground physics with a null target decays the
+     * leftover walk velocity/stance to STAND and emits one stop packet (the broadcast dedups, so the
+     * steady-state standing ticks send nothing). Air/climb states settle through their own physics
+     * ticks, so they're left alone; on a swim map a resting bot floats (inAir) and is likewise skipped —
+     * its SWIM stance never extrapolates as a walk. Called once per tick from the common tick.
+     */
+    static void settleIdle(BotEntry entry) {
+        if (entry == null || entry.bot == null || entry.inAir || entry.climbing) {
+            return;
+        }
+        tickGrounded(entry, null);
     }
 
     static void tickGrounded(BotEntry entry, Point targetPos) {
@@ -595,10 +665,17 @@ class BotMovementManager {
 
     private static MoveAction planGroundAction(BotEntry entry, Foothold currentFh, Point botPos, Point targetPos) {
         boolean directionalDrop = isDirectionalDropEdge(entry.navEdge);
-        int stopDist = directionalDrop ? 0 : entry.navPreciseTarget ? preciseNavStopDist(entry.navEdge) : cfg.STOP_DIST;
-        // No hysteresis when navigating to an edge — always move toward the waypoint
+        boolean footholdDetour = entry.navFootholdDetourTarget != null;
+        int stopDist = directionalDrop || footholdDetour ? 0
+                : entry.navPreciseTarget ? preciseNavStopDist(entry.navEdge) : cfg.STOP_DIST;
+        // No hysteresis when navigating to an edge — always move toward the waypoint. FOLLOW_DIST
+        // hysteresis exists to stop owner-follow spacing jitter; a grind-wander/objective target must be
+        // reached, so it restarts at stopDist (else the bot parks within 80px of its goal and never
+        // closes the gap — pathlog-duiuganda: stalled 49px short with nav=same-region edge=none).
         int followDist = directionalDrop ? 0
-                : (entry.navEdge != null || entry.navPreciseTarget) ? stopDist : cfg.FOLLOW_DIST;
+                : (entry.navEdge != null || entry.navPreciseTarget) ? stopDist
+                : entry.grinding ? stopDist
+                : cfg.FOLLOW_DIST;
         int stepX = resolveGroundStepX(entry, botPos, targetPos, stopDist, followDist);
         if (stepX == 0) {
             return MoveAction.idle();
@@ -606,6 +683,12 @@ class BotMovementManager {
         boolean canWalkStep = BotPhysicsEngine.canWalkGroundStep(entry.bot.getMap(), botPos, stepX);
         if (!canWalkStep) {
             boolean blockedByWall = BotPhysicsEngine.isGroundStepBlockedByWall(entry.bot.getMap(), botPos, stepX);
+            // Swim maps bypass the nav graph (no JUMP/DROP edges), so a grounded bot blocked by a wall
+            // toward its target has no authored way off the platform — it would idle forever. Launch into
+            // the water ourselves; once airborne, tickSwimming steers it over the obstacle.
+            if (blockedByWall && entry.bot.getMap().isSwim()) {
+                return MoveAction.jump(stepX);
+            }
             if (!blockedByWall
                     && ((directionalDrop && Integer.signum(stepX) == Integer.signum(entry.navEdge.launchStepX))
                     || BotFallbackMovementManager.shouldWalkOffLedge(entry, botPos, targetPos, stepX))) {
@@ -632,7 +715,22 @@ class BotMovementManager {
         if (entry == null || entry.bot == null || currentFh == null || botPos == null || stepX == 0) {
             return false;
         }
-        if ((!entry.following && !entry.grinding) || entry.navEdge != null || entry.navPreciseTarget) {
+        // Mode gate: dodge applies to autopilot-driven ground locomotion (following or grinding, which
+        // also covers travel — BotAutopilotManager resumes travel with grinding=true). It must NOT fire
+        // while a non-WALK edge is committed (JUMP/DROP/CLIMB/PORTAL have launch windows a dodge would
+        // wreck) nor while steering to a precise nav target. A committed WALK edge is itself plain
+        // ground walking toward a region exit, so dodging across it is safe: simulatedJumpLandsInCurrentRegion
+        // below guarantees the bot lands in the same region and does not derail the path.
+        boolean traveling = entry.followTravelTargetMapId != -1;
+        if (!dodgeModeAllowed(entry.following, entry.grinding, traveling, entry.navEdge, entry.navPreciseTarget)) {
+            return false;
+        }
+
+        // Humanlike reaction: don't dodge with perfect reflexes. Checked BEFORE the mob-lane scan
+        // (it's a mob-independent roll) so we skip that scan on the ~40% of ticks it rejects. The bot
+        // is grounded only between jumps, so airborne spacing already prevents per-tick spam; this just
+        // adds a little imperfection so dodges aren't frame-perfect.
+        if (ThreadLocalRandom.current().nextDouble() >= cfg.MOB_AVOID_REACTION_CHANCE) {
             return false;
         }
 
@@ -642,6 +740,27 @@ class BotMovementManager {
         }
 
         return simulatedJumpLandsInCurrentRegion(entry, currentFh, botPos, stepX);
+    }
+
+    /**
+     * Pure mode predicate for the walk-lane mob dodge (separated for unit testing without nav/graph
+     * state). Dodge is allowed only during autopilot-driven ground locomotion (following or grinding;
+     * travel resumes with grinding=true), and only when not steering to a precise nav target and not on
+     * a committed non-WALK edge. A committed WALK edge is still plain ground walking, so dodging across
+     * it is safe; JUMP/DROP/CLIMB/PORTAL edges have launch windows a dodge would wreck.
+     */
+    static boolean dodgeModeAllowed(boolean following, boolean grinding, boolean traveling,
+            BotNavigationGraph.Edge navEdge, boolean navPreciseTarget) {
+        // traveling: autopilot map-to-map travel walks long ground stretches to a portal where neither
+        // following nor grinding is reliably set yet — so it never dodged blocking mobs. A travel WALK
+        // edge is plain ground walking like the others, so allow the same dodge SSOT there.
+        if (!following && !grinding && !traveling) {
+            return false;
+        }
+        if (navPreciseTarget) {
+            return false;
+        }
+        return navEdge == null || navEdge.type == BotNavigationGraph.EdgeType.WALK;
     }
 
     private static Monster firstBlockingMobInWalkLane(BotEntry entry, Foothold currentFh, Point botPos, int stepX) {
@@ -701,7 +820,7 @@ class BotMovementManager {
 
     private static boolean simulatedJumpLandsInCurrentRegion(BotEntry entry, Foothold currentFh, Point botPos, int stepX) {
         MapleMap map = entry.bot.getMap();
-        int airVelX = resolveAirVelocityX(map, entry.movementProfile, stepX);
+        int airVelX = resolveAirVelocityX(entry, map, entry.movementProfile, stepX);
         JumpLanding landing = simulateJumpLanding(map, botPos, airVelX, entry.movementProfile);
         if (landing == null || landing.point() == null || landing.foothold() == null) {
             return false;
@@ -821,11 +940,51 @@ class BotMovementManager {
             return 0;
         }
         entry.wasMovingX = true;
-        return stepX;
+        // Bang-bang approach on slippery ground: only push toward the target while the bot
+        // can still brake to a stop inside the remaining distance; otherwise counter-strafe
+        // (or coast) so the bot arrives able to stop in the window/radius instead of sliding
+        // past it (pathlog-Preston-2026-06-12T083326). Plain passthrough on fs=1 maps.
+        // Directional walk-off drops are exempt: they leave the platform with momentum on
+        // purpose, so braking short of the ledge would break the edge.
+        if (isDirectionalDropEdge(entry.navEdge)) {
+            return stepX;
+        }
+        int approachDir = BotPhysicsEngine.slipperyApproachDir(map, entry.movementProfile, entry.hspeed,
+                targetX - botX, launchWindowOvershootSlackPx(entry, botX, targetX));
+        return approachDir == Integer.signum(stepX) ? stepX : approachDir;
+    }
+
+    /**
+     * Extra overshoot allowance (px) past the steering target before the slippery approach
+     * controller must brake. Anywhere inside a committed edge's launch window is executable,
+     * so a pulse projected to land between the target and the window's far edge is arrival,
+     * not overshoot. Without it a tight window (2px on El Nath fs=0.2) can be unreachable
+     * from rest: the smallest legal 50ms pulse travels farther than the distance to the
+     * target pixel and the controller refuses to accelerate at all
+     * (pathlog-Leroy-2026-06-12T140609).
+     */
+    private static int launchWindowOvershootSlackPx(BotEntry entry, int botX, int targetX) {
+        BotNavigationGraph.Edge edge = entry.navEdge;
+        if (edge == null) {
+            return 0;
+        }
+        boolean windowed = edge.type == BotNavigationGraph.EdgeType.JUMP
+                || (edge.type == BotNavigationGraph.EdgeType.DROP && edge.launchStepX == 0);
+        if (!windowed || !edge.containsLaunchX(targetX)) {
+            return 0;
+        }
+        int dir = Integer.signum(targetX - botX);
+        if (dir == 0) {
+            return 0;
+        }
+        int slack = dir > 0 ? edge.launchMaxX - targetX : targetX - edge.launchMinX;
+        // JUMP execution additionally requires |x - launchX| <= walkStep around the selected
+        // launch point — never allow sliding deeper into a wide window than that gate accepts.
+        return Math.clamp(slack, 0, BotPhysicsEngine.walkStep(entry.bot.getMap(), entry.movementProfile));
     }
 
     static void initiateJump(BotEntry entry, Character bot, int dx) {
-        BotPhysicsEngine.beginGroundJump(entry, bot, resolveAirVelocityX(bot.getMap(), entry.movementProfile, dx));
+        BotPhysicsEngine.beginGroundJump(entry, bot, resolveAirVelocityX(entry, bot.getMap(), entry.movementProfile, dx));
         broadcastMovement(entry);
     }
 
@@ -850,15 +1009,34 @@ class BotMovementManager {
         broadcastMovement(entry);
     }
 
-    static void initiateRopeJump(BotEntry entry, Character bot, int dx) {
-        BotPhysicsEngine.beginClimbUpJump(entry, bot, resolveAirVelocityX(bot.getMap(), entry.movementProfile, dx));
+    static void initiateRopeJump(BotEntry entry, Character bot, int dx, Rope targetRope) {
+        BotPhysicsEngine.beginClimbUpJump(entry, bot, resolveAirVelocityX(entry, bot.getMap(), entry.movementProfile, dx));
+        // Aim the mid-air grab at THIS rope only (set after launch — launchAirborne cleared it). Without
+        // a target, successfullyGrabbedRope grabs whatever rope the arc passes, so a rope co-located at
+        // the launch X hijacks a jump meant for a farther rope (Nautilus rope[6] stealing a jump at
+        // rope[7]) → grab/exit oscillation.
+        entry.climbIntentRope = targetRope;
         broadcastMovement(entry);
     }
 
-    private static int resolveAirVelocityX(MapleMap map, BotMovementProfile profile, int dx) {
+    private static int resolveAirVelocityX(BotEntry entry, MapleMap map, BotMovementProfile profile, int dx) {
         if (dx == 0) {
-            return 0;
+            // No direction held at takeoff: the client carries the CURRENT ground hspeed into
+            // the air (packet-verified standing jumps 0->0, 3->3, 9->10, 29->29 px/s). Only
+            // meaningful on slippery ground where a no-input bot can still be sliding; on
+            // fs=1 maps hspeed without input is ~0, so behavior there is exactly as before.
+            return entry != null && BotPhysicsEngine.slipperyGround(map) && !entry.climbing
+                    ? BotPhysicsEngine.carriedAirVelX(map, entry)
+                    : 0;
         }
+        // Full walk step always: intent-based, like holding the arrow key through a jump.
+        // This is also the packet-true client launch rule: jumping with a direction held
+        // snaps vx to +-walkSpeed instantly regardless of current ground speed (even from a
+        // slow icy start, -34 -> -124 px/s at takeoff) — see Config.AIR_CONTROL_ACCEL_PXSS.
+        // Graph jump edges are calibrated at ±walkStep of their OWN profile, so this matches
+        // the simulated arc as long as planning and execution share a graph — which
+        // resolveTarget's navGraph identity check now guarantees (a stale cross-profile edge,
+        // e.g. stepX=-6 executed at walkStep 9, used to overfly its landing forever).
         int walkStep = BotPhysicsEngine.walkStep(map, profile);
         return dx > 0 ? walkStep : -walkStep;
     }
@@ -878,7 +1056,16 @@ class BotMovementManager {
     }
 
     private static void doBroadcastMovement(BotEntry entry) {
+        entry.broadcastedThisTick = true; // movement state reconciled this tick (even if deduped below)
         Character bot = entry.bot;
+        // No human/GM in the map -> nobody renders this move. Skip BEFORE building the packet so we
+        // also avoid the per-tick allocation, not just the send. Invalidate the dedup cache so the
+        // first tick after a player enters re-broadcasts a fresh state (spawn covers the static pose).
+        // ponytail: O(chars) scan per tick per bot; make MapleMap track a non-bot count if it ever shows up hot.
+        if (!bot.getMap().isObservedByPlayer()) {
+            entry.movementBroadcastValid = false;
+            return;
+        }
         int x = bot.getPosition().x;
         int y = bot.getPosition().y;
         BotPhysicsEngine.MovementSnapshot snapshot = BotPhysicsEngine.movementSnapshot(entry);
@@ -939,13 +1126,132 @@ class BotMovementManager {
         bot.getMap().broadcastMessage(bot, movePacket, false);
     }
 
-    static Map<Integer, Foothold> buildFhIndex(MapleMap map) {
-        Map<Integer, Foothold> index = new HashMap<>();
-        for (Foothold foothold : map.getFootholds().getAllFootholds()) {
-            index.put(foothold.getId(), foothold);
-        }
-        return index;
+    /** Broadcast a teleport so other clients render a BLINK instead of a glide. Captured client
+     *  teleport packets (logs/monitored-packets-teleport*) carry 4@origin then 3@dest, followed by
+     *  an ordinary absolute landing fragment so observers settle at the arrival side immediately. */
+    static void broadcastTeleport(BotEntry entry, Point origin, Point dest) {
+        Character bot = entry.bot;
+        BotPhysicsEngine.MovementSnapshot snapshot = BotPhysicsEngine.movementSnapshot(entry);
+        int fhId = resolveBroadcastFhId(entry, bot);
+        byte[] data = buildTeleportMovementData(origin, dest, snapshot, fhId);
+        InPacket packet = new ByteBufInPacket(Unpooled.wrappedBuffer(data));
+        Packet movePacket = PacketCreator.movePlayer(bot.getId(), packet, data.length);
+        bot.getMap().broadcastMessage(bot, movePacket, false);
+        // Pin the dedup cache at the landing state so the next normal broadcast doesn't re-glide origin->dest.
+        entry.broadcastedThisTick = true;
+        entry.movementBroadcastValid = true;
+        entry.lastBroadcastX = dest.x;
+        entry.lastBroadcastY = dest.y;
+        entry.lastBroadcastVelX = snapshot.velX();
+        entry.lastBroadcastVelY = snapshot.velY();
+        entry.lastBroadcastStance = snapshot.stance();
+        entry.lastBroadcastFh = fhId;
     }
+
+    static byte[] buildTeleportMovementData(Point origin,
+                                            Point dest,
+                                            BotPhysicsEngine.MovementSnapshot snapshot,
+                                            int fhId) {
+        byte[] data = new byte[35];
+        int i = 0;
+        data[i++] = 3; // teleport origin, teleport destination, landing settle
+        i = putTeleportFrag(data, i, (byte) 4, origin.x, origin.y, snapshot.stance());
+        i = putTeleportFrag(data, i, (byte) 3, dest.x, dest.y, snapshot.stance());
+        putAbsoluteFrag(data, i, dest.x, dest.y, snapshot.velX(), snapshot.velY(), fhId, snapshot.stance());
+        return data;
+    }
+
+    private static int putTeleportFrag(byte[] data, int i, byte cmd, int x, int y, int stance) {
+        data[i++] = cmd;
+        data[i++] = (byte) (x & 0xFF);
+        data[i++] = (byte) (x >> 8);
+        data[i++] = (byte) (y & 0xFF);
+        data[i++] = (byte) (y >> 8);
+        data[i++] = 0; // xwobble
+        data[i++] = 0;
+        data[i++] = 0; // ywobble
+        data[i++] = 0;
+        data[i++] = (byte) stance;
+        return i;
+    }
+
+    private static int putAbsoluteFrag(byte[] data, int i, int x, int y, int velX, int velY, int fhId, int stance) {
+        data[i++] = 0;
+        data[i++] = (byte) (x & 0xFF);
+        data[i++] = (byte) (x >> 8);
+        data[i++] = (byte) (y & 0xFF);
+        data[i++] = (byte) (y >> 8);
+        data[i++] = (byte) (velX & 0xFF);
+        data[i++] = (byte) (velX >> 8);
+        data[i++] = (byte) (velY & 0xFF);
+        data[i++] = (byte) (velY >> 8);
+        data[i++] = (byte) (fhId & 0xFF);
+        data[i++] = (byte) (fhId >> 8);
+        data[i++] = (byte) stance;
+        data[i++] = (byte) (BotPhysicsEngine.cfg.TICK_MS & 0xFF);
+        data[i++] = (byte) (BotPhysicsEngine.cfg.TICK_MS >> 8);
+        return i;
+    }
+
+    /** Broadcast a flash jump so observers render the dash animation instead of a plain air-glide. The
+     *  client plays the flash-jump action only for movement command type 6 ("fj", a RelativeLifeMovement:
+     *  see AbstractMovementPacketHandler). The bot's normal per-tick type-0 absolute move conveys position
+     *  but not the FJ action. Fired once at the apex impulse; the arc's remaining type-0 ticks carry the
+     *  rest of the trajectory. Mirrors {@link #broadcastTeleport}.
+     *
+     *  <p>The fj fragment MUST be preceded, in the SAME path, by an absolute fragment. Verified against the
+     *  v83 client (CMovePath::Decode @ 0x0068a33c): a type-6 fragment does NOT read x/y from the packet —
+     *  the client sets its position to the PREVIOUS fragment's position and stores the two shorts into the
+     *  velocity slots. The "previous position" register is seeded with packet-header garbage, so a LONE
+     *  fj fragment renders the bot off-screen for one frame until the next absolute tick snaps it back.
+     *  Every real flash-jump capture leads with an absolute cmd-0 (logs/monitored-packets-flashjump*). */
+    static void broadcastFlashJump(BotEntry entry, int relDx, int relDy) {
+        Character bot = entry.bot;
+        BotPhysicsEngine.MovementSnapshot snapshot = BotPhysicsEngine.movementSnapshot(entry);
+        int stance = snapshot.stance(); // JUMP stance while airborne
+        int fhId = resolveBroadcastFhId(entry, bot);
+        int x = bot.getPosition().x;
+        int y = bot.getPosition().y;
+        int dur = BotPhysicsEngine.cfg.TICK_MS;
+        byte[] data = new byte[23];
+        int i = 0;
+        data[i++] = 2;                       // two commands: absolute anchor + fj
+        data[i++] = 0;                       // cmd 0 — absolute, anchors the fj fragment's position
+        data[i++] = (byte) (x & 0xFF);
+        data[i++] = (byte) (x >> 8);
+        data[i++] = (byte) (y & 0xFF);
+        data[i++] = (byte) (y >> 8);
+        data[i++] = (byte) (snapshot.velX() & 0xFF);
+        data[i++] = (byte) (snapshot.velX() >> 8);
+        data[i++] = (byte) (snapshot.velY() & 0xFF);
+        data[i++] = (byte) (snapshot.velY() >> 8);
+        data[i++] = (byte) (fhId & 0xFF);
+        data[i++] = (byte) (fhId >> 8);
+        data[i++] = (byte) stance;
+        data[i++] = (byte) (dur & 0xFF);
+        data[i++] = (byte) (dur >> 8);
+        data[i++] = 6;                       // cmd 6 "fj" — RelativeLifeMovement (plays the dash action)
+        data[i++] = (byte) (relDx & 0xFF);
+        data[i++] = (byte) (relDx >> 8);
+        data[i++] = (byte) (relDy & 0xFF);
+        data[i++] = (byte) (relDy >> 8);
+        data[i++] = (byte) stance;
+        data[i++] = 0;                       // fj duration 0 — matches real captures (no extrapolation)
+        data[i++] = 0;
+        InPacket packet = new ByteBufInPacket(Unpooled.wrappedBuffer(data));
+        Packet movePacket = PacketCreator.movePlayer(bot.getId(), packet, data.length);
+        bot.getMap().broadcastMessage(bot, movePacket, false);
+        // Pin the dedup cache at the post-impulse state so this tick isn't re-sent as a redundant type-0.
+        entry.broadcastedThisTick = true;
+        entry.movementBroadcastValid = true;
+        entry.lastBroadcastX = bot.getPosition().x;
+        entry.lastBroadcastY = bot.getPosition().y;
+        entry.lastBroadcastVelX = snapshot.velX();
+        entry.lastBroadcastVelY = snapshot.velY();
+        entry.lastBroadcastStance = stance;
+        entry.lastBroadcastFh = fhId;
+    }
+
 
     private static JumpLanding wrapLanding(BotPhysicsEngine.JumpLanding landing) {
         if (landing == null) {

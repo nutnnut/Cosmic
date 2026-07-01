@@ -46,7 +46,9 @@ public class LifeFactory {
     private final static DataProvider stringDataWZ = DataProviderFactory.getDataProvider(WZFiles.STRING);
     private static final Data mobStringData = stringDataWZ.getData("Mob.img");
     private static final Data npcStringData = stringDataWZ.getData("Npc.img");
-    private static final Map<Integer, MonsterStats> monsterStats = new HashMap<>();
+    // ConcurrentHashMap: the bot grind-cache warmup (BotGrindAdvisor.warmGrindData) pre-loads every
+    // mob's stats off-thread at boot, concurrently with live map spawns also calling getMonster.
+    private static final Map<Integer, MonsterStats> monsterStats = new java.util.concurrent.ConcurrentHashMap<>();
     private static final Set<Integer> hpbarBosses = getHpBarBosses();
 
     private static Set<Integer> getHpBarBosses() {
@@ -120,9 +122,9 @@ public class LifeFactory {
         stats.setHp(DataTool.getIntConvert("maxHP", monsterInfoData));
         stats.setFriendly(DataTool.getIntConvert("damagedByMob", monsterInfoData, stats.isFriendly() ? 1 : 0) == 1);
         stats.setPADamage(DataTool.getIntConvert("PADamage", monsterInfoData));
-        stats.setPDDamage(DataTool.getIntConvert("PDDamage", monsterInfoData));
+        stats.setPDDamage(DataTool.getIntConvert("PDDamage", monsterInfoData, 0));
         stats.setMADamage(DataTool.getIntConvert("MADamage", monsterInfoData));
-        stats.setMDDamage(DataTool.getIntConvert("MDDamage", monsterInfoData));
+        stats.setMDDamage(DataTool.getIntConvert("MDDamage", monsterInfoData, 0));
         stats.setAccuracy(DataTool.getIntConvert("acc", monsterInfoData, stats.getAccuracy()));
         stats.setAvoidability(DataTool.getIntConvert("eva", monsterInfoData, stats.getAvoidability()));
         stats.setMp(DataTool.getIntConvert("maxMP", monsterInfoData, stats.getMp()));

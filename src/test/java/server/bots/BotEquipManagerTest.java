@@ -34,23 +34,99 @@ import static org.mockito.Mockito.when;
 
 class BotEquipManagerTest {
 
-    @Test
-    void firstJobBowmanAcceptsBowAndCrossbowOnly() {
-        Character bot = mock(Character.class);
-        when(bot.getJob()).thenReturn(Job.BOWMAN);
+    // ---- recommendSecondaryTarget / chooseSecondaryTarget (autonomous AP build) ----------------
+    // floors/base/gear are int[4] indexed [STR, DEX, INT, LUK]. Warrior: primary STR ('s'),
+    // secondary DEX ('d'). cycleMs 0 keeps DPS == raw so the arithmetic is exact in assertions.
 
-        assertTrue(BotEquipManager.isWeaponCompatible(bot, WeaponType.BOW));
-        assertTrue(BotEquipManager.isWeaponCompatible(bot, WeaponType.CROSSBOW));
-        assertFalse(BotEquipManager.isWeaponCompatible(bot, WeaponType.CLAW));
+    private static BotEquipManager.WeaponCand sword(int reqDex, int watk) {
+        return new BotEquipManager.WeaponCand(reqDex, watk, WeaponType.SWORD1H, 0);
     }
 
     @Test
-    void hunterOnlyAcceptsBows() {
+    void chooseSecondaryTargetStaysAtFloorWhenGearCoversRequirement() {
+        int[] floors = {4, 4, 4, 4};
+        int[] base = {4, 4, 4, 4};
+        int[] gear = {0, 30, 0, 0}; // +30 DEX from gear
+        // Weapon needs 20 DEX; gear alone covers it -> no AP into DEX -> near-pure.
+        int target = BotEquipManager.chooseSecondaryTarget(Job.WARRIOR, 's', 'd', 4,
+                floors, base, gear, 50, List.of(sword(20, 100)), 0);
+        assertEquals(4, target);
+    }
+
+    @Test
+    void chooseSecondaryTargetRaisesToRequirementMinusGearWhenGearIsShort() {
+        int[] floors = {4, 4, 4, 4};
+        int[] base = {4, 4, 4, 4};
+        int[] gear = {0, 10, 0, 0}; // +10 DEX from gear
+        // Weapon needs 40 DEX; gear supplies 10 -> AP must cover the remaining 30.
+        int target = BotEquipManager.chooseSecondaryTarget(Job.WARRIOR, 's', 'd', 4,
+                floors, base, gear, 100, List.of(sword(40, 100)), 0);
+        assertEquals(30, target);
+    }
+
+    @Test
+    void chooseSecondaryTargetKeepsFloorWhenWeaponUpgradeIsNotWorthTheApLoss() {
+        int[] floors = {4, 4, 4, 4};
+        int[] base = {4, 4, 4, 4};
+        int[] gear = {0, 0, 0, 0};
+        // Cheap weapon (no extra DEX) vs a 80-DEX weapon with only a tiny WATK bump: the AP lost
+        // from STR to fund 76 DEX outweighs the WATK gain, so the bot stays pure on the cheap one.
+        int target = BotEquipManager.chooseSecondaryTarget(Job.WARRIOR, 's', 'd', 4,
+                floors, base, gear, 100, List.of(sword(4, 100), sword(80, 105)), 0);
+        assertEquals(4, target);
+    }
+
+    @Test
+    void chooseSecondaryTargetInvestsSecondaryWhenWeaponUpgradeIsWorthIt() {
+        int[] floors = {4, 4, 4, 4};
+        int[] base = {4, 4, 4, 4};
+        int[] gear = {0, 0, 0, 0};
+        // Cheap weak weapon vs a 30-DEX weapon with a large WATK jump: paying 26 AP into DEX wins.
+        int target = BotEquipManager.chooseSecondaryTarget(Job.WARRIOR, 's', 'd', 4,
+                floors, base, gear, 100, List.of(sword(4, 50), sword(30, 300)), 0);
+        assertEquals(30, target);
+    }
+
+    @Test
+    void chooseSecondaryTargetNeverStrandsTheEquippedWeapon() {
+        int[] floors = {4, 4, 4, 4};
+        int[] base = {4, 4, 4, 4};
+        int[] gear = {0, 0, 0, 0};
+        // Best candidate needs no DEX, but the currently-equipped weapon needs 50 DEX: the target
+        // is floored at the equipped requirement so reallocation doesn't unequip the worn weapon.
+        int target = BotEquipManager.chooseSecondaryTarget(Job.WARRIOR, 's', 'd', 4,
+                floors, base, gear, 200, List.of(sword(4, 200)), 50);
+        assertEquals(50, target);
+    }
+
+    @Test
+    void chooseSecondaryTargetFallsBackToFloorWithNoCandidates() {
+        int[] floors = {4, 4, 4, 4};
+        int[] base = {4, 4, 4, 4};
+        int[] gear = {0, 0, 0, 0};
+        int target = BotEquipManager.chooseSecondaryTarget(Job.WARRIOR, 's', 'd', 4,
+                floors, base, gear, 100, List.of(), 0);
+        assertEquals(4, target);
+    }
+
+    @Test
+    void firstJobBowmanPrefersBowAndCrossbowOnly() {
+        Character bot = mock(Character.class);
+        when(bot.getJob()).thenReturn(Job.BOWMAN);
+
+        assertTrue(BotEquipManager.isPreferredWeapon(bot, WeaponType.BOW));
+        assertTrue(BotEquipManager.isPreferredWeapon(bot, WeaponType.CROSSBOW));
+        assertFalse(BotEquipManager.isPreferredWeapon(bot, WeaponType.CLAW));
+    }
+
+    @Test
+    void hunterPrefersBowsButCanFallbackToCrossbow() {
         Character bot = mock(Character.class);
         when(bot.getJob()).thenReturn(Job.HUNTER);
 
-        assertTrue(BotEquipManager.isWeaponCompatible(bot, WeaponType.BOW));
-        assertFalse(BotEquipManager.isWeaponCompatible(bot, WeaponType.CROSSBOW));
+        assertTrue(BotEquipManager.isPreferredWeapon(bot, WeaponType.BOW));
+        assertFalse(BotEquipManager.isPreferredWeapon(bot, WeaponType.CROSSBOW));
+        assertTrue(BotEquipManager.isWeaponCompatible(bot, WeaponType.CROSSBOW));
     }
 
     @Test
@@ -61,8 +137,8 @@ class BotEquipManagerTest {
         when(gunPirate.getSkillLevel(Pirate.FLASH_FIST)).thenReturn(0);
         when(gunPirate.getSkillLevel(Pirate.SOMERSAULT_KICK)).thenReturn(0);
 
-        assertTrue(BotEquipManager.isWeaponCompatible(gunPirate, WeaponType.GUN));
-        assertFalse(BotEquipManager.isWeaponCompatible(gunPirate, WeaponType.KNUCKLE));
+        assertTrue(BotEquipManager.isPreferredWeapon(gunPirate, WeaponType.GUN));
+        assertFalse(BotEquipManager.isPreferredWeapon(gunPirate, WeaponType.KNUCKLE));
 
         Character knucklePirate = mock(Character.class);
         when(knucklePirate.getJob()).thenReturn(Job.PIRATE);
@@ -70,8 +146,8 @@ class BotEquipManagerTest {
         when(knucklePirate.getSkillLevel(Pirate.FLASH_FIST)).thenReturn(1);
         when(knucklePirate.getSkillLevel(Pirate.SOMERSAULT_KICK)).thenReturn(0);
 
-        assertTrue(BotEquipManager.isWeaponCompatible(knucklePirate, WeaponType.KNUCKLE));
-        assertFalse(BotEquipManager.isWeaponCompatible(knucklePirate, WeaponType.GUN));
+        assertTrue(BotEquipManager.isPreferredWeapon(knucklePirate, WeaponType.KNUCKLE));
+        assertFalse(BotEquipManager.isPreferredWeapon(knucklePirate, WeaponType.GUN));
     }
 
     @Test
@@ -83,9 +159,9 @@ class BotEquipManagerTest {
         when(swordFighter.getSkillLevel(Fighter.AXE_MASTERY)).thenReturn(0);
         when(swordFighter.getSkillLevel(Fighter.AXE_BOOSTER)).thenReturn(0);
 
-        assertTrue(BotEquipManager.isWeaponCompatible(swordFighter, WeaponType.SWORD1H));
-        assertTrue(BotEquipManager.isWeaponCompatible(swordFighter, WeaponType.SWORD2H));
-        assertFalse(BotEquipManager.isWeaponCompatible(swordFighter, WeaponType.GENERAL1H_SWING));
+        assertTrue(BotEquipManager.isPreferredWeapon(swordFighter, WeaponType.SWORD1H));
+        assertTrue(BotEquipManager.isPreferredWeapon(swordFighter, WeaponType.SWORD2H));
+        assertFalse(BotEquipManager.isPreferredWeapon(swordFighter, WeaponType.GENERAL1H_SWING));
 
         Character axeFighter = mock(Character.class);
         when(axeFighter.getJob()).thenReturn(Job.FIGHTER);
@@ -94,9 +170,9 @@ class BotEquipManagerTest {
         when(axeFighter.getSkillLevel(Fighter.AXE_MASTERY)).thenReturn(1);
         when(axeFighter.getSkillLevel(Fighter.AXE_BOOSTER)).thenReturn(0);
 
-        assertTrue(BotEquipManager.isWeaponCompatible(axeFighter, WeaponType.GENERAL1H_SWING));
-        assertTrue(BotEquipManager.isWeaponCompatible(axeFighter, WeaponType.GENERAL2H_SWING));
-        assertFalse(BotEquipManager.isWeaponCompatible(axeFighter, WeaponType.SWORD1H));
+        assertTrue(BotEquipManager.isPreferredWeapon(axeFighter, WeaponType.GENERAL1H_SWING));
+        assertTrue(BotEquipManager.isPreferredWeapon(axeFighter, WeaponType.GENERAL2H_SWING));
+        assertFalse(BotEquipManager.isPreferredWeapon(axeFighter, WeaponType.SWORD1H));
     }
 
     @Test
@@ -108,9 +184,9 @@ class BotEquipManagerTest {
         when(spearBot.getSkillLevel(Spearman.POLEARM_MASTERY)).thenReturn(0);
         when(spearBot.getSkillLevel(Spearman.POLEARM_BOOSTER)).thenReturn(0);
 
-        assertTrue(BotEquipManager.isWeaponCompatible(spearBot, WeaponType.SPEAR_STAB));
-        assertTrue(BotEquipManager.isWeaponCompatible(spearBot, WeaponType.SPEAR_SWING));
-        assertFalse(BotEquipManager.isWeaponCompatible(spearBot, WeaponType.POLE_ARM_SWING));
+        assertTrue(BotEquipManager.isPreferredWeapon(spearBot, WeaponType.SPEAR_STAB));
+        assertTrue(BotEquipManager.isPreferredWeapon(spearBot, WeaponType.SPEAR_SWING));
+        assertFalse(BotEquipManager.isPreferredWeapon(spearBot, WeaponType.POLE_ARM_SWING));
 
         Character polearmBot = mock(Character.class);
         when(polearmBot.getJob()).thenReturn(Job.SPEARMAN);
@@ -119,9 +195,9 @@ class BotEquipManagerTest {
         when(polearmBot.getSkillLevel(Spearman.POLEARM_MASTERY)).thenReturn(1);
         when(polearmBot.getSkillLevel(Spearman.POLEARM_BOOSTER)).thenReturn(0);
 
-        assertTrue(BotEquipManager.isWeaponCompatible(polearmBot, WeaponType.POLE_ARM_SWING));
-        assertTrue(BotEquipManager.isWeaponCompatible(polearmBot, WeaponType.POLE_ARM_STAB));
-        assertFalse(BotEquipManager.isWeaponCompatible(polearmBot, WeaponType.SPEAR_STAB));
+        assertTrue(BotEquipManager.isPreferredWeapon(polearmBot, WeaponType.POLE_ARM_SWING));
+        assertTrue(BotEquipManager.isPreferredWeapon(polearmBot, WeaponType.POLE_ARM_STAB));
+        assertFalse(BotEquipManager.isPreferredWeapon(polearmBot, WeaponType.SPEAR_STAB));
     }
 
     @Test
@@ -133,8 +209,8 @@ class BotEquipManagerTest {
         when(hero.getSkillLevel(Crusader.AXE_COMA)).thenReturn(0);
         when(hero.getSkillLevel(Crusader.AXE_PANIC)).thenReturn(0);
 
-        assertTrue(BotEquipManager.isWeaponCompatible(hero, WeaponType.SWORD1H));
-        assertFalse(BotEquipManager.isWeaponCompatible(hero, WeaponType.GENERAL1H_SWING));
+        assertTrue(BotEquipManager.isPreferredWeapon(hero, WeaponType.SWORD1H));
+        assertFalse(BotEquipManager.isPreferredWeapon(hero, WeaponType.GENERAL1H_SWING));
 
         Character darkKnight = mock(Character.class);
         when(darkKnight.getJob()).thenReturn(Job.DARKKNIGHT);
@@ -143,8 +219,8 @@ class BotEquipManagerTest {
         when(darkKnight.getSkillLevel(DragonKnight.POLE_ARM_CRUSHER)).thenReturn(1);
         when(darkKnight.getSkillLevel(DragonKnight.POLE_ARM_DRAGON_FURY)).thenReturn(0);
 
-        assertTrue(BotEquipManager.isWeaponCompatible(darkKnight, WeaponType.POLE_ARM_SWING));
-        assertFalse(BotEquipManager.isWeaponCompatible(darkKnight, WeaponType.SPEAR_STAB));
+        assertTrue(BotEquipManager.isPreferredWeapon(darkKnight, WeaponType.POLE_ARM_SWING));
+        assertFalse(BotEquipManager.isPreferredWeapon(darkKnight, WeaponType.SPEAR_STAB));
     }
 
     @Test
@@ -154,8 +230,85 @@ class BotEquipManagerTest {
         when(bot.getSkillLevel(Rogue.LUCKY_SEVEN)).thenReturn(1);
         when(bot.getSkillLevel(Rogue.DOUBLE_STAB)).thenReturn(0);
 
-        assertTrue(BotEquipManager.isWeaponCompatible(bot, WeaponType.CLAW));
-        assertFalse(BotEquipManager.isWeaponCompatible(bot, WeaponType.DAGGER_OTHER));
+        assertTrue(BotEquipManager.isPreferredWeapon(bot, WeaponType.CLAW));
+        assertFalse(BotEquipManager.isPreferredWeapon(bot, WeaponType.DAGGER_OTHER));
+    }
+
+    @Test
+    void mageAcceptsOffTypeWeaponCarryingMatk() {
+        // Black Umbrella field case: a reqJob-0 ONE-HANDED SWORD with MAD. v83 magic damage
+        // reads total MATK only — casting ignores weapon type — so any wearable MAD weapon
+        // is a real mage weapon candidate.
+        Character mage = mock(Character.class);
+        when(mage.getJob()).thenReturn(Job.CLERIC);
+
+        Equip blackUmbrella = matkWeapon(1302026, 92);
+        assertTrue(BotEquipManager.isPreferredWeapon(mage, WeaponType.SWORD1H, blackUmbrella));
+
+        // A 0-MAD off-type weapon adds nothing for a mage and stays incompatible.
+        Equip plainSword = matkWeapon(1302000, 0);
+        assertFalse(BotEquipManager.isPreferredWeapon(mage, WeaponType.SWORD1H, plainSword));
+    }
+
+    @Test
+    void physicalClassTreatsOffTypeWeaponAsFallbackNotPreferred() {
+        Character sin = mock(Character.class);
+        when(sin.getJob()).thenReturn(Job.ASSASSIN);
+
+        Equip blackUmbrella = matkWeapon(1302026, 92);
+        assertFalse(BotEquipManager.isPreferredWeapon(sin, WeaponType.SWORD1H, blackUmbrella));
+        assertTrue(BotEquipManager.isWeaponCompatible(sin, WeaponType.SWORD1H, blackUmbrella));
+    }
+
+    @Test
+    void mageSelfReservesWearableOffTypeMatkWeapon() {
+        Character bot = mock(Character.class);
+        when(bot.getJob()).thenReturn(Job.MAGICIAN);
+
+        Equip umbrella = matkWeapon(1302026, 92);
+        BotEquipManager.SelfReserveHooks hooks = mock(BotEquipManager.SelfReserveHooks.class);
+        stubReserveItem(hooks, Job.MAGICIAN, umbrella, "Wp", 70, 0, 6, 6, 6, 6, 0);
+        when(hooks.getWeaponType(1302026)).thenReturn(WeaponType.SWORD1H);
+
+        Set<Equip> keep = BotEquipManager.selectOwnedItemsForSelfReserve(bot, hooks, List.of(umbrella));
+
+        assertTrue(keep.contains(umbrella),
+                "mage must RESV-SELF an any-job MAD sword instead of letting it fall to sell-trash");
+    }
+
+    @Test
+    void offTypeMatkWeaponTracksByHandednessAgainstMageBaseline() {
+        // 1H umbrella maps to the wand-side track: a dominating WORN 2H staff must not
+        // suppress it (1H frees the shield slot), but a 2H off-type MAD weapon competes in
+        // the staff track and IS dominated.
+        Character mage = mock(Character.class);
+        when(mage.getJob()).thenReturn(Job.MAGICIAN);
+        Inventory equipped = mock(Inventory.class);
+        when(mage.getInventory(InventoryType.EQUIPPED)).thenReturn(equipped);
+
+        Equip wornStaff = matkWeapon(1382005, 100);
+        when(equipped.list()).thenReturn(List.of(wornStaff));
+
+        Equip umbrella1H = matkWeapon(1302026, 92);
+        Equip matkPolearm2H = matkWeapon(1442999, 92);
+
+        BotEquipManager.EquipUsefulnessHooks hooks = mock(BotEquipManager.EquipUsefulnessHooks.class);
+        for (Equip e : List.of(wornStaff, umbrella1H, matkPolearm2H)) {
+            when(hooks.getEquipmentSlot(e.getItemId())).thenReturn("Wp");
+            when(hooks.meetsReqs(e, Job.MAGICIAN, Short.MAX_VALUE,
+                    Integer.MAX_VALUE / 4, Integer.MAX_VALUE / 4,
+                    Integer.MAX_VALUE / 4, Integer.MAX_VALUE / 4, 0)).thenReturn(true);
+        }
+        when(hooks.getWeaponType(1382005)).thenReturn(WeaponType.STAFF);
+        when(hooks.getWeaponType(1302026)).thenReturn(WeaponType.SWORD1H);
+        when(hooks.getWeaponType(1442999)).thenReturn(WeaponType.POLE_ARM_SWING);
+        when(hooks.isTwoHanded(1382005)).thenReturn(true);
+        when(hooks.isTwoHanded(1442999)).thenReturn(true);
+
+        assertTrue(BotEquipManager.isEquipUsefulToBot(mage, hooks, umbrella1H),
+                "1H MAD weapon rivals wands, so the stronger worn staff must not dominate it");
+        assertFalse(BotEquipManager.isEquipUsefulToBot(mage, hooks, matkPolearm2H),
+                "2H MAD weapon rivals staves and is dominated by the stronger worn staff");
     }
 
     @Test
@@ -618,6 +771,176 @@ class BotEquipManagerTest {
     }
 
     @Test
+    void selfReserveKeepsLowerStatItemWhenSlotsCanBeatFinishedItem() {
+        Character bot = mock(Character.class);
+        when(bot.getJob()).thenReturn(Job.MAGICIAN);
+
+        Equip finishedEarring = equipWithSlots(1032000, 8, 0, 0, 0);
+        Equip cleanEarring = equipWithSlots(1032000, 0, 0, 0, 5);
+
+        BotEquipManager.SelfReserveHooks hooks = mock(BotEquipManager.SelfReserveHooks.class);
+        stubReserveItem(hooks, Job.MAGICIAN, finishedEarring, "Ae", 15, 0, 0, 0, 0, 0, 0);
+        stubReserveItem(hooks, Job.MAGICIAN, cleanEarring, "Ae", 15, 0, 0, 0, 0, 0, 0);
+        when(hooks.maxScrollOffenseGainPerSlot(bot, 1032000)).thenReturn(3.0);
+
+        Set<Equip> keep = BotEquipManager.selectOwnedItemsForSelfReserve(bot, hooks,
+                List.of(finishedEarring, cleanEarring));
+
+        assertTrue(keep.contains(finishedEarring));
+        assertTrue(keep.contains(cleanEarring),
+                "clean earring should survive because its open slots can exceed the finished copy");
+    }
+
+    @Test
+    void selfReserveFinishedGloveDominatesCleanGloveWhenSlotsCannotCatchUp() {
+        Character bot = mock(Character.class);
+        when(bot.getJob()).thenReturn(Job.ASSASSIN);
+
+        Equip finishedGlove = equipWithSlots(1082000, 0, 0, 15, 0);
+        Equip cleanGlove = equipWithSlots(1082000, 0, 0, 0, 5);
+
+        BotEquipManager.SelfReserveHooks hooks = mock(BotEquipManager.SelfReserveHooks.class);
+        stubReserveItem(hooks, Job.ASSASSIN, finishedGlove, "Gv", 10, 0, 0, 0, 0, 0, 0);
+        stubReserveItem(hooks, Job.ASSASSIN, cleanGlove, "Gv", 10, 0, 0, 0, 0, 0, 0);
+        when(hooks.maxScrollOffenseGainPerSlot(bot, 1082000)).thenReturn(15.0);
+
+        Set<Equip> keep = BotEquipManager.selectOwnedItemsForSelfReserve(bot, hooks,
+                List.of(finishedGlove, cleanGlove));
+
+        assertTrue(keep.contains(finishedGlove));
+        assertFalse(keep.contains(cleanGlove),
+                "15 ATT finished glove should dominate 0 ATT/5-slot glove because the clean copy cannot exceed it");
+    }
+
+    @Test
+    void selfReserveKeepsOneDuplicateCleanScrollableItem() {
+        Character bot = mock(Character.class);
+        when(bot.getJob()).thenReturn(Job.ASSASSIN);
+
+        List<Equip> gloves = new ArrayList<>();
+        for (int i = 1; i <= 10; i++) {
+            Equip glove = equipWithSlots(1082000, 0, 0, 0, 5);
+            when(glove.getPosition()).thenReturn((short) i);
+            gloves.add(glove);
+        }
+
+        BotEquipManager.SelfReserveHooks hooks = mock(BotEquipManager.SelfReserveHooks.class);
+        for (Equip glove : gloves) {
+            stubReserveItem(hooks, Job.ASSASSIN, glove, "Gv", 10, 0, 0, 0, 0, 0, 0);
+        }
+        when(hooks.maxScrollOffenseGainPerSlot(bot, 1082000)).thenReturn(15.0);
+
+        Set<Equip> keep = BotEquipManager.selectOwnedItemsForSelfReserve(bot, hooks, gloves);
+
+        assertEquals(1, keep.size(), "identical clean full-slot duplicates should collapse to one reserve item");
+        assertTrue(keep.contains(gloves.get(0)), "lowest bag slot should win the duplicate tiebreak");
+    }
+
+    @Test
+    void selfReserveTrackCapKeepsOnlyTopThreeByCeiling() {
+        Character bot = mock(Character.class);
+        when(bot.getJob()).thenReturn(Job.ASSASSIN);
+
+        // Five mutually non-dominated gloves (LUK up, DEX down): Pareto keeps all five,
+        // the track cap must keep only the three with the highest offense ceiling.
+        Equip luk10 = capGlove(1082000, 10, 1, 0);
+        Equip luk8 = capGlove(1082000, 8, 2, 0);
+        Equip luk6 = capGlove(1082000, 6, 3, 0);
+        Equip luk4 = capGlove(1082000, 4, 4, 0);
+        Equip luk2 = capGlove(1082000, 2, 5, 0);
+
+        BotEquipManager.SelfReserveHooks hooks = mock(BotEquipManager.SelfReserveHooks.class);
+        for (Equip e : List.of(luk10, luk8, luk6, luk4, luk2)) {
+            stubReserveItem(hooks, Job.ASSASSIN, e, "Gv", 10, 0, 0, 0, 0, 0, 0);
+        }
+
+        Set<Equip> keep = BotEquipManager.selectOwnedItemsForSelfReserve(bot, hooks,
+                List.of(luk10, luk8, luk6, luk4, luk2));
+
+        assertEquals(BotEquipManager.SELF_RESERVE_TRACK_CAP, keep.size(),
+                "track cap should bound the Pareto front");
+        assertTrue(keep.contains(luk10));
+        assertTrue(keep.contains(luk8));
+        assertTrue(keep.contains(luk6));
+        assertFalse(keep.contains(luk4), "lowest-ceiling survivors should be demoted by the cap");
+        assertFalse(keep.contains(luk2), "lowest-ceiling survivors should be demoted by the cap");
+    }
+
+    @Test
+    void selfReserveTrackCapRanksScrollUpsideAboveFlatStats() {
+        Character bot = mock(Character.class);
+        when(bot.getJob()).thenReturn(Job.ASSASSIN);
+
+        // Slotted project glove: luk 3 + 7 open slots * 3.0 gain -> ceiling 24, beats the
+        // flat luk-4 glove (ceiling 5.2) even though its current stats are lower.
+        Equip slottedProject = capGlove(1082000, 3, 0, 7);
+        Equip flatLuk10 = capGlove(1082000, 10, 1, 0);
+        Equip flatLuk8 = capGlove(1082000, 8, 2, 0);
+        Equip flatLuk4 = capGlove(1082000, 4, 3, 0);
+
+        BotEquipManager.SelfReserveHooks hooks = mock(BotEquipManager.SelfReserveHooks.class);
+        for (Equip e : List.of(slottedProject, flatLuk10, flatLuk8, flatLuk4)) {
+            stubReserveItem(hooks, Job.ASSASSIN, e, "Gv", 10, 0, 0, 0, 0, 0, 0);
+        }
+        when(hooks.maxScrollOffenseGainPerSlot(bot, 1082000)).thenReturn(3.0);
+
+        Set<Equip> keep = BotEquipManager.selectOwnedItemsForSelfReserve(bot, hooks,
+                List.of(slottedProject, flatLuk10, flatLuk8, flatLuk4));
+
+        assertEquals(BotEquipManager.SELF_RESERVE_TRACK_CAP, keep.size());
+        assertTrue(keep.contains(slottedProject),
+                "scroll upside counts toward the ceiling, so the slotted project should survive the cap");
+        assertTrue(keep.contains(flatLuk10));
+        assertTrue(keep.contains(flatLuk8));
+        assertFalse(keep.contains(flatLuk4),
+                "slightly higher current stats should not outrank a high-ceiling scroll project");
+    }
+
+    private static Equip capGlove(int itemId, int luk, int dex, int slots) {
+        Equip e = mock(Equip.class);
+        when(e.getItemId()).thenReturn(itemId);
+        when(e.getStr()).thenReturn((short) 0);
+        when(e.getDex()).thenReturn((short) dex);
+        when(e.getInt()).thenReturn((short) 0);
+        when(e.getLuk()).thenReturn((short) luk);
+        when(e.getWatk()).thenReturn((short) 0);
+        when(e.getMatk()).thenReturn((short) 0);
+        when(e.getAcc()).thenReturn((short) 0);
+        when(e.getUpgradeSlots()).thenReturn((byte) slots);
+        return e;
+    }
+
+    @Test
+    void selfReserveCurrentTotalWearableCrossbowDominatesWeakerZeroReqCrossbow() {
+        Character bot = mock(Character.class);
+        when(bot.getJob()).thenReturn(Job.CROSSBOWMAN);
+        when(bot.getLevel()).thenReturn(64);
+        when(bot.getFame()).thenReturn(0);
+        when(bot.getTotalStr()).thenReturn(52);
+        when(bot.getTotalDex()).thenReturn(250);
+        when(bot.getTotalInt()).thenReturn(4);
+        when(bot.getTotalLuk()).thenReturn(4);
+
+        Equip strongerCurrentTotalWearable = equipWithSlots(1462001, 0, 0, 86, 0);
+        Equip weakerZeroReq = equipWithSlots(1462002, 0, 0, 66, 0);
+
+        BotEquipManager.SelfReserveHooks hooks = mock(BotEquipManager.SelfReserveHooks.class);
+        stubReserveItem(hooks, Job.CROSSBOWMAN, strongerCurrentTotalWearable, "Wp", 61, 4, 38, 0, 0, 0, 0);
+        stubReserveItem(hooks, Job.CROSSBOWMAN, weakerZeroReq, "Wp", 43, 4, 0, 0, 0, 0, 0);
+        when(hooks.getWeaponType(1462001)).thenReturn(WeaponType.CROSSBOW);
+        when(hooks.getWeaponType(1462002)).thenReturn(WeaponType.CROSSBOW);
+        when(hooks.meetsReqs(strongerCurrentTotalWearable, Job.CROSSBOWMAN, 64,
+                52, 250, 4, 4, 0)).thenReturn(true);
+
+        Set<Equip> keep = BotEquipManager.selectOwnedItemsForSelfReserve(bot, hooks,
+                List.of(strongerCurrentTotalWearable, weakerZeroReq));
+
+        assertTrue(keep.contains(strongerCurrentTotalWearable));
+        assertFalse(keep.contains(weakerZeroReq),
+                "weaker zero-req crossbow should not be reserved once the stronger higher-req crossbow is wearable with current totals");
+    }
+
+    @Test
     void selfReserveSameReqDifferentItemIdDoesDominate() {
         Character bot = mock(Character.class);
         when(bot.getJob()).thenReturn(Job.SPEARMAN);
@@ -974,6 +1297,13 @@ class BotEquipManagerTest {
         assertFalse(anyCap, "full Clawer log should optimize without hitting the Pareto cap");
     }
 
+    private static Equip matkWeapon(int itemId, int matk) {
+        Equip e = mock(Equip.class);
+        when(e.getItemId()).thenReturn(itemId);
+        when(e.getMatk()).thenReturn((short) matk);
+        return e;
+    }
+
     private static Equip mageOverall(int int_, int luk) {
         Equip e = mock(Equip.class);
         when(e.getStr()).thenReturn((short) 0);
@@ -1016,6 +1346,27 @@ class BotEquipManagerTest {
         when(e.getWatk()).thenReturn((short) 0);
         when(e.getMatk()).thenReturn((short) 0);
         when(e.getAcc()).thenReturn((short) acc);
+        return e;
+    }
+
+    private static Equip equipWithSlots(int itemId, int int_, int luk, int watk, int slots) {
+        Equip e = mock(Equip.class);
+        when(e.getItemId()).thenReturn(itemId);
+        when(e.getStr()).thenReturn((short) 0);
+        when(e.getDex()).thenReturn((short) 0);
+        when(e.getInt()).thenReturn((short) int_);
+        when(e.getLuk()).thenReturn((short) luk);
+        when(e.getWatk()).thenReturn((short) watk);
+        when(e.getMatk()).thenReturn((short) 0);
+        when(e.getWdef()).thenReturn((short) 0);
+        when(e.getMdef()).thenReturn((short) 0);
+        when(e.getAcc()).thenReturn((short) 0);
+        when(e.getAvoid()).thenReturn((short) 0);
+        when(e.getHp()).thenReturn((short) 0);
+        when(e.getMp()).thenReturn((short) 0);
+        when(e.getSpeed()).thenReturn((short) 0);
+        when(e.getJump()).thenReturn((short) 0);
+        when(e.getUpgradeSlots()).thenReturn((byte) slots);
         return e;
     }
 

@@ -1,0 +1,12 @@
+-- drop_data reverse lookup index. MonsterInformationProvider.retrieveItemDroppers /
+-- BotGrindAdvisor.queryDroppers run "SELECT DISTINCT dropperid FROM drop_data
+-- WHERE itemid = ? AND chance > ?" — but the base schema only indexes dropperid, so
+-- every call full-scanned all ~22k rows (+ DISTINCT sort). The bot quest scorer
+-- (BotQuestManager.pickStartable, on the tick thread) calls it per fetch-quest item
+-- per quest per bot; at boot dozens of bots fired it concurrently -> 43k calls,
+-- ~111ms each, ~960M rows examined, mysqld pegged and 96s bot-tick stalls.
+-- A covering (itemid, chance, dropperid) index serves the whole query from the index
+-- (range seek on itemid+chance, dropperid read straight from the leaf) -> sub-ms.
+-- Also covers the gear-drop warm scan and queryDroppers GROUP BY dropperid.
+-- Same cold-start audit as 028-perf-indexes.sql.
+CREATE INDEX itemid ON drop_data (itemid, chance, dropperid);

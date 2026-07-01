@@ -4,16 +4,20 @@
 
 ## Features
 
-- follow, trade, loot
-- auto fight/grind, use skill, auto assign ap/sp, buffs (Only 1st jobs + select 2nd job configured/tested)
-- auto buy/resupply potions/ammo if shop available within the same map
-- auto share potions/ammo among themselves and to owner(if requested) when running low while farming
+- bot autonomy / autopilot - send a bot or party off to travel, grind, resupply, and play on its own
+- fully ownerless bots/living-server population (`!botpop`)
+- companion bots that fight, follow, trade, loot
+- form your own crew, or join a new party of bots everytime
+- auto fight/grind, use skill, auto assign ap/sp, buffs (Not all classes/skills are implemented)
+- auto buy/resupply potions/ammo
+- auto share potions/ammo/rocks among themselves and to owner(if requested) when running low while farming
 - auto equip and optimize own gear loadout - including chaining stats bonus to unlock higher requirement equips and weapons, allowing dexless/strless/lukless builds
+- auto gear progression, grind mob for drop, grind scroll, apply scroll, use gachapon
 - auto share equipment upgrades with owner and other sibling bots (auto compare stats directly against recipient's inventory)
 - auto sort equipment from junk equip so selling trash equips become manageable. (sell trash command available)
 - automation command for maker skill disassemble gear / craft monster crystals
-- auto complete any quest the owner turn in (with rewards)
-- AI LLM support (reply to chat, no effect on gameplay whatsoever)
+- auto questing (basic quests like kill/fetch/talk quests)
+- optional AI LLM support (reply to chat, no effect on gameplay whatsoever)
 - Party Quest Automation(currently only KPQ 1st stage + auto accept rewards 5th stage)
 - Each bot is a real character you can log in as, can spawn your alts as bots
 
@@ -31,12 +35,25 @@
 ### Option 2: register existing character
 log in on the target character and run: `@registerbot <characterName>`
 
+### Option 3: auto-generate a brand-new bot
+`@spawnbot generate confirm` invents a procedural MMO name and auto-creates the account + character for it (password `botbot`). Add `autopilot` to have it start playing on its own (see below).
+
 ## Spawning a Bot
 
-### Option 1: `@spawnbot <name>`
+`@spawnbot <name|generate> [confirm] [autopilot]`
 
-### Option 2: Buddy invite shortcut
+- `<name>` — spawn an existing/authorized character as a follower bot.
+- `generate` — pick a procedural name instead of typing one (creates it with `confirm`).
+- `confirm` — create the character if it doesn't exist yet.
+- `autopilot` — spawn it **self-owned / ownerless**: it plays independently from the moment it spawns instead of following you. Fresh ownerless bots start at level 1 in Mushroom Town.
+
+**Spawning many bots:** there's no single "spawn N" command — each `@spawnbot` makes one bot. To stand up a crowd, run `@spawnbot generate confirm autopilot` repeatedly (each gets its own name and plays on its own), then optionally group your own alts with `@botparty`.
+
+### Buddy invite shortcut
 Add bots as friends. Bots will always show up as online. Invite a bot to party or chatroom through buddy menu to spawn.
+
+### Take over the character you're on
+`@botme` turns your current character into a bot. `@botparty` does it for a full party of your alts (everyone else in the party must be a bot) and runs party autopilot.
 
 ## Bot commands
 
@@ -80,6 +97,18 @@ jason stop - only jason will stop
 | `patrol` / `roam` / `wander`| Prioritize farming at specified platform and nearby platforms only |
 | `sentry` / `camp` / `guard mode` / `post up` / `anchor here` / `farm here` / `grind here` /  | Stand at exact position, never chase, only attacking anything in range |
 | `fidget` | Trigger a small idle/social fidget |
+
+### Autonomy (Autopilot)
+
+Send bots off to play independently - they travel across maps on their own, pick where to grind, farm, resupply when low, and keep going.
+
+| Say | Effect |
+|---|---|
+| `go grind somewhere` / `farm wherever` / `autopilot` / `go solo` | Bot plays independently - picks a map, travels there, farms and resupplies on its own |
+| `grind together` / `farm together` / `party grind` / `go together` | Whole bot party runs autopilot together |
+| `farm <item>` | Autopilot toward whatever map best drops that item |
+| `where should we grind` / `where to grind` | Bot suggests a good grind spot (weighs EXP and gear gains) |
+| `autopilot debug` / `ap debug` / `why autopilot` | Explain the current autopilot decision |
 
 ### Movement Formation
 
@@ -152,6 +181,21 @@ Follow mode behavior
 | `fame me` | Bot fames you (subject to daily & monthly limits) |
 | `fame <name>` | Bot fames the named player or bot on the map |
 
+### Quests
+
+Bots auto-run worthwhile mob quests in the background while grinding.
+
+| Say | Effect |
+|---|---|
+| `quests` / `quest status` / `quest progress` | Active quest progress summary |
+| `recommend quest` / `quest rec` / `best quest` / `suggest quest` | Suggest a worthwhile quest to start |
+
+### Maker / Crafting
+
+| Say | Effect |
+|---|---|
+| `maker plan` / `craft plan` / `what can I craft` | Preview gear upgrades the bot could craft (read-only) |
+
 ### Gear
 
 Bots auto-equip the best available gear they can use. They can also recommend gear for you, request current upgrades from you, and trade away non-reserved spare gear.
@@ -202,8 +246,51 @@ Verbs: `trade [me] <type/name>`, `give [me] <type/name>`, `drop <type/name>`, `p
 ### Debug Commands
 | Say                                       | Effect                  |
 |-------------------------------------------|-------------------------|
+| `inv debug` | Detailed inventory dump with the keep/sell classification |
+| `scroll debug` | Dump the bot's self-scrolling decision to a file |
+| `autopilot debug` / `ap debug` | Full autopilot grind-decision dump |
 | `!botperfdebug` | Toggle console spam on bot performance |
 | `!botnav`                  | Navigation debug command |
+| `grind profile` | Measure the real party grind-decision cost under live load (perf) |
+| `@botstatus` | (GM) Private listing of every bot on the map |
+| `@autosell` | (GM) Preview/run the bot sell pipeline on your own character |
+| `!inspect <botName>` | inspect bot inventory through bot inventory UI F8 Menu (Requires custom client, download in discord)
+| `!inspectsell <botName>` | sort inspected bot inventories by their sell priority
+
+### Living-server population (`@botpop`)
+
+A background scheduler can keep a population of **server-generated** bots logging in and out on their
+own, on varying per-bot schedules, so the world feels alive. It is **OFF by default**.
+
+**IMPORTANT — only `@spawnbot generate` bots and auto-generated bots are managed.** The scheduler will only ever spawn/retire. Bots you made with a name (`@spawnbot <name>`), `@botme`, or
+`@registerbot` are **never** auto-scheduled — this is the safety rule that stops it from ever spawning a
+real player's character. (So spawning 2 named bots and logging them out, then `@botpop on`, does nothing —
+they aren't in the managed pool.)
+
+| Command | Effect |
+|---|---|
+| `@botpop` / `@botpop status` | Status |
+| `@botpop on` / `@botpop off` | Toggle auto spawning bots |
+| `@botpop list` | List managed bots (id, group, active/retired/disabled, online) |
+| `@botpop sweep` | Force one reconcile pass now (instead of waiting for the next tick) |
+| `@botpop clear` | Disconnect **all** online bots |
+| `@botpop add <name>` / `@botpop remove <name>` | Mark/unmark an existing character as a managed (schedulable) bot |
+| `@botpop crew <id\|none> <name...>` | Assign managed bots to a persistent crew (they co-spawn, party, and share gear/ammo/supplies), or clear with `none` |
+| `@botpop wipe [confirm]` | delete all managed bots(so new bots lv1 spawns) |
+
+Even then, a given bot only logs in when (a) it's "active today" (each bot plays only a fraction of days),
+(b) the current hour is one it likes, and (c) the hourly target exceeds the live count — so at an off-hour
+or for a sporadic bot it may stay offline. Tune the 24-hour target curve and knobs in `BotManager.cfg`
+(`POPULATION_CURVE`, `POPULATION_MULTIPLIER`, `POPULATION_SCHED_ENABLED`, etc.). Design notes:
+`docs/bot/living-server-design.md`.
+
+**Auto-generation & turnover (shipped):** with `POPULATION_AUTOGEN` on (default), you don't need to
+pre-build a pool at all — when the live count is under target the scheduler **generates fresh bots to
+fill the gap** (a deficit-proportional batch per sweep, `POPULATION_AUTOGEN_FILL`/`POPULATION_AUTOGEN_MAX`),
+and bots "retire" after a personality-set career length so the population turns over. Combined with the
+`@botpop on` fast-start ramp, a fresh/wiped world fills toward the curve within ~30s. `POPULATION_MULTIPLIER`
+scales the whole online target (and fill speed) up/down. Some autogen events arrive as a **crew** (a friend
+group that spawns, parties, and shares supplies together) rather than a lone newcomer.
 
 ## Notes
 - Bot characters can be logged into as normal accounts (user = bot name, password = `botbot`) to manually equip or manage inventory.
