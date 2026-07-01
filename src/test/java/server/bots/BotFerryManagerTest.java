@@ -185,6 +185,10 @@ class BotFerryManagerTest {
 
             assertTrue(BotFerryManager.tickBoarding(f.entry(), f.bot(), ELLINIA, 0L, true));
             assertEquals(List.of(101000301), seams.boarded);
+            // A leftover ticket (bought before a relog/shutdown interrupted the trip) must not be
+            // re-bought: the seller and usher share this map, so a buy attempt would fire here first
+            // if hasTicket weren't honored.
+            assertTrue(seams.ticketsBought.isEmpty());
         }
     }
 
@@ -214,6 +218,9 @@ class BotFerryManagerTest {
 
             assertTrue(BotFerryManager.tickBoarding(f.entry(), f.bot(), ORBIS, 0L, true));
             assertEquals(List.of(200000110), seams.guided);
+            // Seller and platform guide share this map too: a leftover ticket must skip the seller
+            // and go straight to the guide, not re-buy.
+            assertTrue(seams.ticketsBought.isEmpty());
         }
     }
 
