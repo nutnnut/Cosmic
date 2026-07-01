@@ -7,6 +7,7 @@ import provider.DataTool;
 import provider.wz.WZFiles;
 import server.maps.Foothold;
 import server.maps.FootholdTree;
+import server.maps.MapFactory;
 import server.maps.MapleMap;
 import server.maps.Portal;
 import server.maps.PortalFactory;
@@ -41,6 +42,8 @@ final class BotNavigationMapLoader {
         }
 
         MapleMap map = new MapleMap(mapId, 0, 0, DataTool.getInt("returnMap", infoData, mapId), monsterRate);
+        map.setMapName(MapFactory.loadPlaceName(mapId));
+        map.setStreetName(MapFactory.loadStreetName(mapId));
         map.setFieldLimit(DataTool.getInt(infoData.getChildByPath("fieldLimit"), 0));
         map.setSwim(DataTool.getInt(infoData.getChildByPath("swim"), 0) != 0);
         loadBounds(map, mapData, infoData);
