@@ -8,14 +8,17 @@ import java.util.Map;
 import java.util.function.IntToDoubleFunction;
 
 /**
- * Live map occupancy for grind dispersion. Counts how many OTHER players/bots are committed to or
- * standing on each map so the planner can treat a crowded map as extra competition for spawns
+ * Live map occupancy for grind dispersion. Counts how many OTHER players/bots are actively contesting
+ * spawns on each map so the planner can treat a crowded map as extra competition for spawns
  * (anti-stacking / anti kill-steal — see {@link BotGrindPlanner}'s spawn-share model).
  *
- * <p>A traveling bot is counted on its COMMITTED autopilot target ({@code entry.autopilotMapId}), not
- * where it currently stands — so many bots deciding at once spread across maps instead of stampeding
- * the same empty one. Everyone else (humans, idle/following bots) counts on their current map. The
- * deciding bot and its own party are excluded: the party already shares spawns by its size.
+ * <p>Only spawn CONTESTANTS are counted ({@link #contestsSpawns}): grinding bots, and humans who
+ * attacked recently. A standing/socializing player or a following/idle bot is ignored, so bots don't
+ * visibly avoid a map just because someone is watching. A traveling bot is counted on its COMMITTED
+ * autopilot target ({@code entry.autopilotMapId}), not where it currently stands — so many bots
+ * deciding at once spread across maps instead of stampeding the same empty one; everyone else counts on
+ * their current map. The deciding bot and its own party are excluded: the party already shares spawns
+ * by its size.
  */
 final class BotOccupancy {
 
@@ -36,9 +39,24 @@ final class BotOccupancy {
             if (myPartyId != -1 && chr.getParty() != null && chr.getParty().getId() == myPartyId) {
                 continue; // cohort: already modeled by party-size spawn sharing
             }
+            if (!contestsSpawns(chr)) {
+                continue; // idle observer / following bot: not competing for mobs, don't disperse off them
+            }
             byMap.merge(occupiedMap(chr), 1, Integer::sum);
         }
         return byMap;
+    }
+
+    /** True when this character is actually contesting mob spawns — so crowding off it is justified.
+     *  A bot counts only in an active combat mode ({@code grinding}: grind/sentry/patrol/roam, NOT
+     *  follow/idle); a human counts only if they attacked within {@code ACTIVE_GRIND_WINDOW_MS}. This is
+     *  what lets a player stand on a map and watch bots work without the bots fleeing the "crowd". */
+    private static boolean contestsSpawns(Character chr) {
+        if (chr.getClient() instanceof BotClient) {
+            BotEntry e = BotManager.getInstance().getEntryByBotCharId(chr.getId());
+            return e != null && e.grinding;
+        }
+        return System.currentTimeMillis() - chr.getLastAttackTime() <= BotManager.cfg.ACTIVE_GRIND_WINDOW_MS;
     }
 
     /** Where this character competes: a traveling bot claims its committed target map; everyone else

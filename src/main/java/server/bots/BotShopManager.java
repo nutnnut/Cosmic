@@ -134,7 +134,7 @@ final class BotShopManager {
         clearShopState(entry);
 
         boolean wantsSellTrash = shouldAutoSellTrash(entry, bot);
-        NpcShopMatch match = findBestShop(bot, wantsSellTrash);
+        NpcShopMatch match = findBestShop(entry, bot, wantsSellTrash);
         if (match == null) {
             return;
         }
@@ -146,7 +146,9 @@ final class BotShopManager {
         int potTrigger = BotManager.cfg.POT_LOW_WARN * POT_TRIGGER_THRESHOLD;
         boolean needsHpPots = pots[0] < potTrigger && findPotionItem(match.shop, bot, true) != null;
         boolean needsMpPots = pots[1] < potTrigger && findPotionItem(match.shop, bot, false) != null;
-        if (!needsRecharge && !needsAmmoForShop && !needsHpPots && !needsMpPots && !wantsSellTrash) {
+        boolean needsPreferredWeapon = findNeededPreferredWeaponItem(bot, match.shop) != null;
+        if (!needsRecharge && !needsAmmoForShop && !needsHpPots && !needsMpPots
+                && !needsPreferredWeapon && !wantsSellTrash) {
             return;
         }
 
@@ -246,7 +248,7 @@ final class BotShopManager {
             return;
         }
 
-        NpcShopMatch match = findBestShop(bot, true);
+        NpcShopMatch match = findBestShop(entry, bot, true);
         if (match == null) {
             entry.shopSellTrashPending = false;
             BotManager.getInstance().botReply(entry, "can't find a shop here");
@@ -350,8 +352,8 @@ final class BotShopManager {
      *  any shop; otherwise it must stock something the bot actually needs right now (pots OR ammo) —
      *  this is the granular, bag-state-aware check, distinct from the looser potion-only filter the
      *  cross-map errand destination search uses. */
-    private static NpcShopMatch findBestShop(Character bot, boolean allowAnyShop) {
-        return findBestShop(bot.getMap(), allowAnyShop ? shop -> true : shop -> shopHasAnythingNeeded(bot, shop));
+    private static NpcShopMatch findBestShop(BotEntry entry, Character bot, boolean allowAnyShop) {
+        return findBestShop(bot.getMap(), allowAnyShop ? shop -> true : shop -> shopHasAnythingNeeded(entry, bot, shop));
     }
 
     /** First shop NPC on {@code map} whose shop the {@code accept} predicate matches. Generalized
@@ -402,10 +404,18 @@ final class BotShopManager {
      * (supply run) — are bag-state-independent, so each is cached per source map.
      */
     static Integer findNearestShopMap(Character bot, boolean allowAnyShop) {
+        return findNearestShopMap(null, bot, allowAnyShop);
+    }
+
+    static Integer findNearestShopMap(BotEntry entry, Character bot, boolean allowAnyShop) {
         if (bot == null || bot.getMap() == null || bot.getClient() == null) {
             return null;
         }
         int from = bot.getMapId();
+        boolean needsPreferredWeapon = needsPreferredWeaponForCurrentJob(bot);
+        if (needsPreferredWeapon) {
+            return findNearestUncachedShopMap(bot, shop -> shopHasAnythingNeeded(entry, bot, shop));
+        }
         // Sell-trash trip => any shop; supply run => a potion-stocking shop (also carries ammo).
         Map<Integer, Integer> cache = allowAnyShop ? nearestAnyShopMapCache : nearestPotionShopMapCache;
         Integer cached = cache.get(from);
@@ -436,6 +446,27 @@ final class BotShopManager {
         }
         cache.put(from, found == null ? NO_SHOP_MAP : found);
         return found;
+    }
+
+    private static Integer findNearestUncachedShopMap(Character bot, Predicate<Shop> accept) {
+        int from = bot.getMapId();
+        try {
+            var factory = bot.getClient().getChannelServer().getMapFactory();
+            Set<Integer> seen = new HashSet<>();
+            for (int hops = 0; hops <= SHOP_SEARCH_MAX_HOPS; hops++) {
+                for (int mapId : BotAutopilotManager.reachableForBot(bot, from, hops, BotWorldGraph.RouteOptions.PORTALS_ONLY)) {
+                    if (!seen.add(mapId)) {
+                        continue;
+                    }
+                    if (findBestShop(factory.getMap(mapId), accept) != null) {
+                        return mapId;
+                    }
+                }
+            }
+        } catch (RuntimeException ex) {
+            return null;
+        }
+        return null;
     }
 
     /** Pots low enough to need restocking. Per the errand policy this is the ONLY need that requires a
@@ -497,7 +528,14 @@ final class BotShopManager {
      *  Best-effort: a partial character mock that breaks a count reads as "doesn't need to buy", so
      *  the bot falls back to any shop rather than stranding the errand. */
     static boolean needsToBuySupplies(Character bot) {
+        return needsToBuySupplies(null, bot);
+    }
+
+    static boolean needsToBuySupplies(BotEntry entry, Character bot) {
         try {
+            if (needsPreferredWeaponForCurrentJob(bot)) {
+                return true;
+            }
             if (potsLow(bot)) {
                 return true;
             }
@@ -527,7 +565,10 @@ final class BotShopManager {
     /** On-arrival visit criterion: does this shop stock something the bot needs RIGHT NOW (ammo to
      *  recharge/buy, or a potion type it's low on that the shop sells)? Bag-state-aware, unlike the
      *  potion-only errand-destination filter. */
-    private static boolean shopHasAnythingNeeded(Character bot, Shop shop) {
+    private static boolean shopHasAnythingNeeded(BotEntry entry, Character bot, Shop shop) {
+        if (findNeededPreferredWeaponItem(bot, shop) != null) {
+            return true;
+        }
         WeaponType wt = BotAttackExecutionProvider.getEquippedWeaponType(bot);
         if (needsFixedAmmoForShop(bot, shop, wt, ammoTriggerThreshold())) {
             return true;
@@ -1087,6 +1128,8 @@ final class BotShopManager {
 
     /** Cap on meso spent buying gear per shop visit, so one purchase can't drain the bot. */
     private static final int EQUIP_BUY_MAX_MESO = 50_000;
+    /** Preferred weapons recover major DPS/skill routing, so allow more surplus than cosmetic upgrades. */
+    private static final int PREFERRED_WEAPON_BUY_MAX_MESO = 500_000;
 
     /**
      * Buy at most ONE worthwhile equipment upgrade from the shop catalog. Shop equips have FIXED
@@ -1098,6 +1141,10 @@ final class BotShopManager {
      */
     private static PurchaseSequence evaluateAndBuyEquip(PurchaseSequence sequence, Shop shop) {
         Character bot = sequence.bot();
+        PurchaseSequence afterPreferredWeapon = evaluateAndBuyNeededPreferredWeapon(sequence, shop);
+        if (afterPreferredWeapon != sequence) {
+            return afterPreferredWeapon;
+        }
         // Surplus only: reserve the pot/ammo resupply floor, then cap the gear spend.
         long budget = Math.min((long) EQUIP_BUY_MAX_MESO, (long) bot.getMeso() - BotManager.cfg.AMMO_RESERVE_MESO);
         if (budget <= 0) {
@@ -1139,6 +1186,101 @@ final class BotShopManager {
             sequence.bought().add(resolveItemName(bestItemId, "gear"));
         }
         return sequence;
+    }
+
+    private static PurchaseSequence evaluateAndBuyNeededPreferredWeapon(PurchaseSequence sequence, Shop shop) {
+        Character bot = sequence.bot();
+        ShopSlotItem needed = findNeededPreferredWeaponItem(bot, shop);
+        if (needed == null) {
+            return sequence;
+        }
+        if (shop.buyDirect(bot, needed.slot(), needed.shopItem.getItemId(), (short) 1) == Shop.TransactionResult.SUCCESS) {
+            sequence.bought().add(resolveItemName(needed.shopItem.getItemId(), "weapon"));
+            BotEquipManager.autoEquip(bot, sequence.entry().owner, null, true);
+            return sequence;
+        }
+        return sequence.withFirstShortfall(new BuyReport(needed.shopItem.getItemId(), 0, 1, ShortfallReason.NO_MESO));
+    }
+
+    /** Seam over the preferred-weapon gate so unit tests need neither ItemInformationProvider nor a
+     *  DB pool (its &lt;clinit&gt; loads card data over JDBC). Seamed here at the SSOT rather than per
+     *  call site, since {@link #needsToBuySupplies(BotEntry, Character)} also calls it internally.
+     *  Default delegates to the real computation; tests swap it for a fixed predicate. */
+    static java.util.function.Predicate<Character> needsPreferredWeaponForCurrentJobSeam =
+            BotShopManager::computeNeedsPreferredWeaponForCurrentJob;
+
+    static boolean needsPreferredWeaponForCurrentJob(Character bot) {
+        return needsPreferredWeaponForCurrentJobSeam.test(bot);
+    }
+
+    private static boolean computeNeedsPreferredWeaponForCurrentJob(Character bot) {
+        if (bot == null || preferredWeaponBudget(bot) <= 0) {
+            return false;
+        }
+        ItemInformationProvider ii = ItemInformationProvider.getInstance();
+        Item worn = bot.getInventory(InventoryType.EQUIPPED).getItem((short) -11);
+        if (!(worn instanceof Equip weapon)) {
+            return true;
+        }
+        return !BotEquipManager.isPreferredWeapon(bot, ii.getWeaponType(weapon.getItemId()), weapon);
+    }
+
+    static String preferredWeaponName(Character bot) {
+        if (bot == null || bot.getJob() == null) {
+            return "weapon";
+        }
+        return switch (bot.getJob()) {
+            case HUNTER, RANGER, BOWMASTER -> "bow";
+            case CROSSBOWMAN, SNIPER, MARKSMAN -> "crossbow";
+            case ASSASSIN, HERMIT, NIGHTLORD -> "claw";
+            case BANDIT, CHIEFBANDIT, SHADOWER -> "dagger";
+            case BRAWLER, MARAUDER, BUCCANEER -> "knuckle";
+            case GUNSLINGER, OUTLAW, CORSAIR -> "gun";
+            case FP_WIZARD, FP_MAGE, FP_ARCHMAGE, IL_WIZARD, IL_MAGE, IL_ARCHMAGE,
+                    CLERIC, PRIEST, BISHOP, MAGICIAN -> "wand/staff";
+            default -> "preferred weapon";
+        };
+    }
+
+    private static long preferredWeaponBudget(Character bot) {
+        return Math.min((long) PREFERRED_WEAPON_BUY_MAX_MESO, (long) bot.getMeso() - BotManager.cfg.AMMO_RESERVE_MESO);
+    }
+
+    private static ShopSlotItem findNeededPreferredWeaponItem(Character bot, Shop shop) {
+        if (bot == null || shop == null || !needsPreferredWeaponForCurrentJob(bot)) {
+            return null;
+        }
+        long budget = preferredWeaponBudget(bot);
+        if (budget <= 0) {
+            return null;
+        }
+        ItemInformationProvider ii = ItemInformationProvider.getInstance();
+        ShopSlotItem best = null;
+        double bestValue = Double.NEGATIVE_INFINITY;
+        List<ShopItem> items = shop.getItems();
+        for (int i = 0; i < items.size(); i++) {
+            ShopItem si = items.get(i);
+            int id = si.getItemId();
+            int price = si.getPrice();
+            if (price <= 0 || price > budget || !ItemConstants.isEquipment(id) || ii.isCash(id)) {
+                continue;
+            }
+            Short slot = BotScrollManager.primarySlot(ii, id);
+            if (slot == null || slot != (short) -11) {
+                continue;
+            }
+            if (!(ii.getEquipById(id) instanceof Equip cand)
+                    || !BotEquipManager.isPreferredWeapon(bot, ii.getWeaponType(id), cand)
+                    || !ii.canWearEquipment(bot, cand, slot)) {
+                continue;
+            }
+            double value = BotScrollManager.potentialValue(bot, ii, cand);
+            if (best == null || value > bestValue || (value == bestValue && price < best.shopItem.getPrice())) {
+                best = new ShopSlotItem((short) i, si);
+                bestValue = value;
+            }
+        }
+        return best;
     }
 
     private static ShopSlotItem findPotionItem(Shop shop, Character bot, boolean forHp) {

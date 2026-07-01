@@ -34,6 +34,15 @@ final class BotNavigationGraph implements Serializable {
         FLASH_JUMP
     }
 
+    // Two foothold chains (regions) can occupy the SAME physical ground where a ramp's flat foot
+    // overlaps a flat platform (e.g. map 600020100 r73 over r97). The client tracks the standing
+    // foothold's prev/next chain (CVecCtrl) and never switches chains on such shared ground. Shared
+    // means the surfaces coincide EXACTLY: a landing even 1px off sits on top of a genuinely distinct
+    // platform — a real region change and a legitimate edge — so the tolerance is 0, not a band.
+    // Used by the builder (reject phantom cross-region edges landing on shared ground) and by region
+    // resolution (keep the chain we walked in on).
+    static final int SHARED_GROUND_Y_PX = 0;
+
     static final class Segment implements Serializable {
         // Part of the on-disk BotNavigationGraph cache schema; do not remove.
         @Serial
@@ -200,6 +209,24 @@ final class BotNavigationGraph implements Serializable {
                 return 0;
             }
             return x < segment.minX ? segment.minX - x : x - segment.maxX;
+        }
+
+        /** True when this region's own walkable surface passes through (x, ~y) — i.e. the point lies
+         *  ON this platform. A cross-region ballistic edge (JUMP/FLASH_JUMP) whose landing this
+         *  returns true for is a phantom: it lands on ground the SOURCE region already covers
+         *  (overlapping/coincident chains), and the client never switches chains there, so executing
+         *  it cannot change region. Region resolution uses the same test to keep the chain the bot
+         *  walked in on across shared ground. */
+        boolean surfaceCoversPoint(int x, int y, int yTolerance) {
+            if (isRopeRegion || x < minX || x > maxX) {
+                return false; // bbox reject: most cross-region landings are outside the source extent
+            }
+            for (Segment segment : segments) {
+                if (segment.containsX(x) && Math.abs(segment.pointAt(x).y - y) <= yTolerance) {
+                    return true;
+                }
+            }
+            return false;
         }
     }
 

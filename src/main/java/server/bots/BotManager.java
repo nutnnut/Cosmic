@@ -185,8 +185,11 @@ public class BotManager {
                 19, 20, 21, 21, 20, 18, 16, 15, 13, 10, 10, 10 // 12-23
         };
         public int POPULATION_NOISE = 2;                   // +/- jitter on the hourly target
-        public double POPULATION_MULTIPLIER = 3.0;         // scales the whole online target up/down, so bot
+        public double POPULATION_MULTIPLIER = 10.0;        // scales the whole online target up/down, so bot
                                                            // count is adjustable without editing the curve/noise
+        public boolean CHILL_SESSION_ENABLED = true;       // bots can "log in to chill": spend a half-length
+                                                           // session lingering in town instead of grinding
+        public double CHILL_SESSION_MULTIPLIER = 1.0;      // scales the per-login chill chance (0 = never chill)
         public int MANAGED_POOL_MAX = 1000;                 // backstop cap on the non-retired bot roster. NOT
                                                            // the online count (that's the curve x multiplier);
                                                            // autogen only fires under deficit, so the pool
@@ -218,6 +221,10 @@ public class BotManager {
         // this many extra spawn-competitors, so crowded maps yield fewer kills/h and bots spread out
         // instead of stacking / kill-stealing. 0 disables. See BotOccupancy + BotGrindPlanner spawn-share.
         public double CROWD_PENALTY_FACTOR = 2.0;
+        // Only count a character as crowd competition if it's actually contesting spawns: a bot in an
+        // active combat mode, or a human who attacked within this window. A standing/socializing player
+        // (or a following/idle bot) is ignored, so bots don't visibly avoid maps people are watching on.
+        public long ACTIVE_GRIND_WINDOW_MS = 60_000;
 
         // Travel-time penalty floor: the minimum score multiplier a far map keeps (BotTravelCost). At
         // 0.5 even the far side of the world stays half-valued, so a genuinely better distant map can
@@ -1103,7 +1110,11 @@ public class BotManager {
     /**
      * Logout-linger tick branch (runs while {@code loggingOut}, before the normal grind flow): retreat to
      * a safe town and stand at a random spot until the linger deadline, then hand off to
-     * {@link #finishLoggingOut}. Never fights (loiter with {@code runAiTick=false}).
+     * {@link #finishLoggingOut}. Loiters with the live {@code runAiTick} (like every other loiter caller)
+     * so the bot can actually navigate to its chosen town anchor — even one a portal/jump away. The
+     * loiter's opportunity-attack is a no-op here because this branch only runs once the bot is in a safe
+     * (monster-free) town; a forced {@code runAiTick=false} would block all edge execution and leave a bot
+     * with a cross-region anchor stuck in place until the linger deadline.
      */
     private void tickLogout(BotEntry entry, Character bot, Point botPos, boolean runAiTick) {
         if (System.currentTimeMillis() >= entry.logoutLingerUntilMs) {
@@ -1129,7 +1140,7 @@ public class BotManager {
             entry.logoutAnchor = pickTownLoiterAnchor(entry, bot, botPos);
             BotMovementManager.resetEntryState(entry);
         }
-        loiterAtAnchor(entry, bot, botPos, entry.logoutAnchor, false);
+        loiterAtAnchor(entry, bot, botPos, entry.logoutAnchor, runAiTick);
     }
 
     /**
@@ -1702,6 +1713,51 @@ public class BotManager {
         return constants.id.NpcId.MAPLE_ADMINISTRATOR;
     }
 
+    /** lt/rb half-extent (px) of the box around a speaker that an open-world "hi"/"sup" reaches. */
+    private static final int PROXIMITY_CHAT_RADIUS = 300;
+
+    /**
+     * Open-world social: a greeting/status query spoken in map chat by ANY player reaches every self-owned
+     * MANAGED bot inside a {@value #PROXIMITY_CHAT_RADIUS}px box around the speaker. Whitelist:
+     * <ul>
+     *   <li><b>greeting ("hi") / status ("sup"/"where are you")</b> — answered for everyone;</li>
+     *   <li><b>read-only info (pots/inventory/ammo/stats/...)</b> — answered only for a GM; a non-GM
+     *       stranger gets brushed off ({@link BotChatManager#refuseInfoQuery}).</li>
+     * </ul>
+     * Reuses {@link BotChatManager#handleChat} so the reply logic stays SSOT. Companions (owner != bot)
+     * are skipped: they answer their own owner via the broadcast path, not strangers.
+     */
+    private void maybeHandleProximityChat(Character speaker, String message, ReplyChannel channel) {
+        if (channel != ReplyChannel.MAP || speaker == null || speaker.getMap() == null
+                || speaker.getClient() instanceof BotClient) {
+            return;
+        }
+        boolean basic = BotChatManager.isGreeting(message) || BotChatManager.isLocationStatusQuery(message);
+        boolean info = !basic && BotChatManager.isReadOnlyInfoQuery(message);
+        if (!basic && !info) {
+            return;
+        }
+        boolean answer = basic || speaker.isGM(); // info queries: GM only, else refuse
+        Point sp = speaker.getPosition();
+        Rectangle box = new Rectangle(sp.x - PROXIMITY_CHAT_RADIUS, sp.y - PROXIMITY_CHAT_RADIUS,
+                2 * PROXIMITY_CHAT_RADIUS, 2 * PROXIMITY_CHAT_RADIUS);
+        for (Character c : speaker.getMap().getAllPlayers()) {
+            if (c == speaker || !(c.getClient() instanceof BotClient) || !box.contains(c.getPosition())) {
+                continue;
+            }
+            BotEntry e = getEntryByBotCharId(c.getId());
+            if (e == null || !(e.owner == null || e.owner == c)) {
+                continue; // managed/self-owned only; companions answer their owner, not passers-by
+            }
+            e.replyChannel = ReplyChannel.MAP;
+            if (answer) {
+                BotChatManager.handleChat(e, message);
+            } else {
+                BotChatManager.refuseInfoQuery(e);
+            }
+        }
+    }
+
     public void handleChat(Character owner, String message, ReplyChannel channel) {
         if (handlePendingLootOfferResponse(owner, message)) {
             return;
@@ -1832,6 +1888,11 @@ public class BotManager {
         if (BotSocialManager.maybeHandlePartyChat(owner, message)) {
             return;
         }
+
+        // OPEN-WORLD SOCIAL: a "hi" or "sup" from ANY player reaches every nearby self-owned managed
+        // bot, not just the speaker's companions. Non-consuming — the speaker's OWN companions still
+        // answer through the owner broadcast below.
+        maybeHandleProximityChat(owner, message, channel);
 
         List<BotEntry> entries = bots.get(owner.getId());
         if (entries == null || entries.isEmpty()) return;
@@ -3221,6 +3282,25 @@ public class BotManager {
         Point lootPos = activeGrindLootPosition(entry, botPos);
         if (lootPos == null) {
             return null;
+        }
+        // The convenience test below compares loot travel-distance against the mob's STRAIGHT-LINE
+        // distance, which is only comparable on shared flat terrain. When the mob sits in another
+        // nav region (up a rope / across a drop) its Euclidean distance badly understates the real
+        // travel cost, so flat loot always "wins" and the bot lurches toward drops at the foot of
+        // the climb forever instead of ascending to fight (oscillation, never attacks). Restrict the
+        // detour to a same-region (flat) fight; cross-region loot is collected when the bot travels
+        // there naturally.
+        Character bot = entry != null ? entry.bot : null;
+        MapleMap map = bot != null ? bot.getMap() : null;
+        if (map != null) {
+            BotNavigationGraph graph = BotNavigationGraphProvider.peekGraph(map, entry.movementProfile);
+            if (graph != null) {
+                int botRegionId = BotNavigationManager.resolveCurrentRegionId(graph, entry, map, botPos);
+                int mobRegionId = BotNavigationManager.resolveTargetRegionId(graph, entry, map, mobPos);
+                if (botRegionId >= 0 && mobRegionId >= 0 && botRegionId != mobRegionId) {
+                    return null;
+                }
+            }
         }
         double lootDistSq = activeLootTravelDistSq(botPos, lootPos);
         double mobDistSq = mobPos.distanceSq(botPos);
@@ -5366,6 +5446,9 @@ public class BotManager {
         if (perf) t = System.nanoTime();
         BotPotionManager.tickPassiveRecovery(entry, bot);
         if (perf) BotPerformanceMonitor.record("common-passive-recovery", System.nanoTime() - t);
+        if (perf) t = System.nanoTime();
+        BotCombatManager.tryCastMagicGuard(entry, bot);
+        if (perf) BotPerformanceMonitor.record("common-magic-guard", System.nanoTime() - t);
         if (perf) t = System.nanoTime();
         // Top-priority pot-saver: a low-HP-pool bot keeps Beginner Recovery up to bleed the HP gap with
         // spare MP. Runs in the common section (in OR out of combat); self-gates so it never interrupts

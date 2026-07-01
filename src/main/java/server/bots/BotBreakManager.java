@@ -45,11 +45,51 @@ final class BotBreakManager {
         return rollUnit < Math.min(0.5, perMinute);
     }
 
+    /**
+     * Probability a bot logs in ALREADY mid-break: its steady-state break fraction
+     * ({@code breaks/hr x mean length / 60}). Without this every freshly-spawned bot starts at "grind"
+     * and the whole population stampedes the grind maps at once, only trickling to town minutes later as
+     * the once-a-minute roll slowly fires. Seeding logins with the resting fraction staggers them the way
+     * a random snapshot of an established player base looks. Capped so a degenerate profile can't log in
+     * perpetually resting.
+     */
+    static double loginBreakChance(double breakFreqPerHour, int breakLenMeanMin) {
+        double frac = Math.max(0.0, breakFreqPerHour) * Math.max(1, breakLenMeanMin) / 60.0;
+        return Math.min(0.5, frac);
+    }
+
+    /** Arm a break at login as if the bot were already partway through one: in a town it lingers as a
+     *  town-break (sell/resupply/self-scroll); elsewhere a random remaining slice of an in-place rest, so
+     *  staggered logins also finish at staggered times rather than all resuming grind together. */
+    static void startLoginBreak(BotEntry entry, Character bot, long now) {
+        if (bot != null && bot.getMap() != null && bot.getMap().isTown()) {
+            startTownBreak(entry, bot, now);
+        } else {
+            BotPersonality p = entry.personality != null ? entry.personality : BotPersonality.defaults();
+            long full = breakDurationMs(p.breakLenMeanMin());
+            entry.breakUntilMs = now + Math.round(full * ThreadLocalRandom.current().nextDouble());
+            entry.breakIdleAnchor = null;
+        }
+        entry.nextBreakRollAtMs = now + 60_000L; // don't stack the once-a-minute roll on top of this
+    }
+
     /** Jittered break length in ms from the personality mean (0.5x..1.5x). */
     static long breakDurationMs(int breakLenMeanMin) {
         int meanMin = Math.max(1, breakLenMeanMin);
         double factor = 0.5 + ThreadLocalRandom.current().nextDouble(); // 0.5..1.5
         return Math.round(meanMin * 60_000L * factor);
+    }
+
+    /** Min level before a bot may take a chill session — fresh bots grind to find their feet first. */
+    private static final int CHILL_MIN_LEVEL = 5;
+
+    /** Whether a session (solo bot or crew leader) logs in to CHILL: config-gated and level-gated, then
+     *  the personality chance scaled by the global multiplier. {@code rollUnit} is a uniform [0,1) sample. */
+    static boolean rollChill(BotPersonality p, int level, double rollUnit) {
+        if (!BotManager.cfg.CHILL_SESSION_ENABLED || p == null || level < CHILL_MIN_LEVEL) {
+            return false;
+        }
+        return rollUnit < p.chillSessionChance() * BotManager.cfg.CHILL_SESSION_MULTIPLIER;
     }
 
     /** A town-break lingers in town (sell/resupply + self-scroll), longer than an in-place break. Scales

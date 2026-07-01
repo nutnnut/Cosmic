@@ -198,6 +198,8 @@ public final class BotAttackDataProvider {
         overrides.put("shoot1", 22);
         overrides.put("shoot2", 23);
         overrides.put("shootF", 27);
+        overrides.put("wand1", 28);
+        overrides.put("wand2", 29);
         overrides.put("heal", 31);
         overrides.put("proneStab", 32);
         overrides.put("prone", 33);
@@ -330,11 +332,9 @@ public final class BotAttackDataProvider {
     }
 
     private static Map<String, Integer> createWandBodyActionIdOverrides() {
-        // Wand/staff swingO block uses IDs 28/29 in actions.txt.
-        Map<String, Integer> overrides = new HashMap<>();
-        overrides.put("swingO1", 28);
-        overrides.put("swingO3", 29);
-        return Map.copyOf(overrides);
+        // Real staff/wand melee broadcasts use the standard body action ids (see
+        // logs/monitored-packets-staff-melee-swing.log), not the later magic-only swingO block.
+        return Map.of();
     }
 
     private static Map<String, Integer> createClawBodyActionIdOverrides() {
@@ -391,7 +391,7 @@ public final class BotAttackDataProvider {
             case 3 -> new AttackAnimationSpec(3, List.of("shoot1"));
             case 4 -> new AttackAnimationSpec(4, List.of("shoot2"));
             case 5 -> new AttackAnimationSpec(5, List.of("stabO1", "stabO2", "swingT1", "swingT2", "swingT3"));
-            case 6 -> new AttackAnimationSpec(6, List.of("swingO1", "swingO3"));
+            case 6 -> new AttackAnimationSpec(6, List.of("swingO2"));
             case 7 -> new AttackAnimationSpec(7, List.of("swingO1", "swingO2", "swingO3"));
             case 9 -> new AttackAnimationSpec(9, List.of("handgun"));
             default -> getBasicAttackSpec(fallbackWeaponType);
@@ -422,7 +422,7 @@ public final class BotAttackDataProvider {
                     new AttackAnimationSpec(2, List.of("stabT1", "swingP1"));
             case GENERAL2H_SWING, GENERAL2H_STAB, SWORD2H ->
                     new AttackAnimationSpec(5, List.of("stabO1", "stabO2", "swingT1", "swingT2", "swingT3"));
-            case WAND, STAFF -> new AttackAnimationSpec(6, List.of("swingO1", "swingO3"));
+            case WAND, STAFF -> new AttackAnimationSpec(6, List.of("swingO2"));
             case CLAW -> new AttackAnimationSpec(7, List.of("swingO1", "swingO2", "swingO3"));
             case GUN -> new AttackAnimationSpec(9, List.of("handgun"));
             default -> new AttackAnimationSpec(1, List.of("stabO1", "stabO2", "swingO1", "swingO2", "swingO3"));

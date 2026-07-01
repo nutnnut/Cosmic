@@ -132,11 +132,9 @@ public class BotChatManager {
     // longer chat like "hi how are you today" falls through to the LLM instead
     // of being short-circuited by a canned greeting.
     private static final Pattern GREETING_PATTERN = Pattern.compile(
-            "^\\s*(hi+|hey+|hello+|sup|yo+|howdy|hiya|heya|hai|ello|"
-            + "whats?\\s*up|waz+up|wassup|hows?\\s+it\\s+going|"
+            "^\\s*(hi+|hey+|hello+|yo+|howdy|hiya|heya|hai|ello|"
             + "(good\\s+)?(morning|evening|afternoon)|"
-            + "how\\s+(are|r)\\s+(you|u|ya)(\\s+doing)?|"
-            + "what.?s\\s+(good|up|new|poppin.?))\\s*[?!.,]*\\s*$",
+            + "how\\s+(are|r)\\s+(you|u|ya)(\\s+doing)?)\\s*[?!.,]*\\s*$",
             Pattern.CASE_INSENSITIVE);
     private static final Pattern FIDGET_PATTERN = Pattern.compile(
             "^\\s*fidget\\s*[?!.,]*\\s*$",
@@ -166,6 +164,9 @@ public class BotChatManager {
             + "|(?:what|which)\\s+map\\s+(?:are|r)\\s+(?:you|u|ya)\\s+(?:in|on|at)"
             + "|(?:what|which)\\s+map\\s+(?:are|r)\\s+(?:you|u|ya)"
             + "|(?:what\\s+are\\s+you|what\\s+r\\s+u|what\\s+you)\\s+doing"
+            // "sup" / "wassup" / "whats up" / "hows it going" / "whats good/new/poppin": casual
+            // "what's going on" — routed to the status report (going to X to Y), not a canned greeting.
+            + "|sup|wa[sz]+up|what.?s?\\s*up|hows?\\s+it\\s+going|what.?s\\s+(?:good|new|poppin.?)"
             + "|(?:location|loc|where)\\s*\\??"
             + ")\\s*[?!.,]*\\s*$",
             Pattern.CASE_INSENSITIVE);
@@ -1183,7 +1184,7 @@ public class BotChatManager {
                 entry.bot.changeFaceExpression(randomFidgetExpression());
                 BotFidgetManager.maybeStartSocialFidget(entry);
             });
-        } else if (GREETING_PATTERN.matcher(message).matches()) {
+        } else if (isGreeting(message)) {
             BotManager.after(BotManager.randMs(900, 1100), () -> {
                 entry.bot.changeFaceExpression(Emote.HAPPY.getValue());
                 BotFidgetManager.maybeStartGreetingFidget(entry, ThreadLocalRandom.current().nextInt(100));
@@ -1824,6 +1825,52 @@ public class BotChatManager {
 
     static boolean isLocationStatusQuery(String message) {
         return message != null && LOCATION_STATUS_PATTERN.matcher(message).matches();
+    }
+
+    static boolean isGreeting(String message) {
+        return message != null && GREETING_PATTERN.matcher(message).matches();
+    }
+
+    /**
+     * Whole-message read-only info queries — the {@code report*} branches of {@link #handleChat} that
+     * only describe the bot (stats, gear, supplies, exp, mesos, quests, …) and never mutate state or move
+     * items. SSOT for the open-world proximity gate: a GM may pull these from any nearby managed bot; a
+     * non-GM stranger gets refused ({@link #refuseInfoQuery}).
+     */
+    static boolean isReadOnlyInfoQuery(String message) {
+        if (message == null) {
+            return false;
+        }
+        return matchesWholeCommand(STATS_PATTERN, message)
+                || matchesWholeCommand(RANGE_PATTERN, message)
+                || isMovementStatsQuery(message)
+                || matchesWholeCommand(BUILD_PATTERN, message)
+                || matchesWholeCommand(SKILLS_PATTERN, message)
+                || matchesWholeCommand(INVENTORY_PATTERN, message)
+                || matchesWholeCommand(INV_SLOTS_PATTERN, message)
+                || matchesWholeCommand(SCROLLS_PATTERN, message)
+                || matchesWholeCommand(POTIONS_PATTERN, message)
+                || matchesWholeCommand(EXP_PATTERN, message)
+                || isMesoQuery(message)
+                || matchesWholeCommand(DEBUG_STATS_PATTERN, message)
+                || matchesWholeCommand(CRIT_DEBUG_PATTERN, message)
+                || matchesWholeCommand(POT_DEBUG_PATTERN, message)
+                || matchesWholeCommand(RECOMMENDED_GEAR_PATTERN, message)
+                || matchesWholeCommand(BUFF_LIST_PATTERN, message)
+                || matchesWholeCommand(CREW_PATTERN, message)
+                || QUESTS_PATTERN.matcher(message).matches()
+                || ITEM_QUERY_PATTERN.matcher(message).matches();
+    }
+
+    private static final List<String> INFO_REFUSAL_REPLIES = List.of(
+            "no", "nope", "nah", "lol no", "not telling ya", "not gonna tell you that",
+            "thats my business", "mind ya business", "why would i tell you that",
+            "do i know you?", "who are you again?", "ask my owner", "not for strangers", "hard pass");
+
+    /** A non-GM stranger asked a managed bot for its private info — brush them off (US-ASCII). */
+    static void refuseInfoQuery(BotEntry entry) {
+        BotManager.after(BotManager.randMs(500, 800),
+                () -> queueBotReply(entry, BotManager.randomReply(INFO_REFUSAL_REPLIES)));
     }
 
     static List<String> buildMovementStatsReport(Character bot) {

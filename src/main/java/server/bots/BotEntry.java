@@ -396,6 +396,9 @@ public class BotEntry {
     long breakUntilMs = 0L;
     long nextBreakRollAtMs = 0L;
     java.awt.Point breakIdleAnchor = null;
+    // "Logged in to chill": rolled once at session start (BotScheduler). The bot heads to town and
+    // lingers there the whole (half-length) session instead of grinding — near-zero tick cost.
+    boolean chillSession = false;
     // Ad-hoc party-up (BotSocialManager): throttles how often a solo bot considers offering to party,
     // and stops a bot just offered-to from immediately re-offering.
     long nextSocialAtMs = 0L;
@@ -728,6 +731,11 @@ public class BotEntry {
     // launching at the identical spot when an arc is borderline.
     int navJumpLaunchDelaySteps = Integer.MIN_VALUE;
     int navTargetRegionId = -1;
+    // Last region the bot resolved to, for chain continuity across SHARED ground (two overlapping
+    // foothold chains at the same coordinate). A coordinate-only lookup can flip between them every
+    // tick; the client stays on the chain it walked in on, so resolveCurrentRegionId keeps this id
+    // when the current point is shared with it. Reset on graph/map swap (region ids are per-graph).
+    int lastRegionId = -1;
     BotNavigationGraph.Edge navFootholdDetourEdge = null;
     Point navFootholdDetourTarget = null;
     // Committed route: the full planned hop sequence to the current goal region. The bot follows it

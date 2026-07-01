@@ -86,7 +86,7 @@ class BotEquipManager {
         }
     }
 
-    record EquipScore(int damage, int statSum) {}
+    record EquipScore(int weaponRank, int damage, int statSum) {}
     record WeaponScoreBreakdown(int rawMax, int preCycleDamage, int cycleMs, int normalizedDamage) {}
 
     /**
@@ -851,7 +851,7 @@ class BotEquipManager {
         EquipScore bestScore = null;
         for (DpNode node : frontier) {
             if (!validateReqs(hooks, node, dpSlots, weapon)) continue;
-            EquipScore s = scoreNode(node, weapon, wt, mob);
+            EquipScore s = scoreNode(bot, node, weapon, wt, mob);
             if (bestScore == null || compareScores(s, bestScore) > 0) {
                 bestScore = s;
                 best = node;
@@ -867,7 +867,7 @@ class BotEquipManager {
             for (DpNode node : frontier) {
                 DpNode relaxed = relaxToFeasible(hooks, node, dpSlots, weapon);
                 if (relaxed == null) continue;
-                EquipScore s = scoreNode(relaxed, weapon, wt, mob);
+                EquipScore s = scoreNode(bot, relaxed, weapon, wt, mob);
                 if (bestScore == null || compareScores(s, bestScore) > 0) {
                     bestScore = s;
                     best = relaxed;
@@ -1112,15 +1112,16 @@ class BotEquipManager {
         return new DpNode(s, hp, mp, statSum, picks);
     }
 
-    private static EquipScore scoreNode(DpNode node, Equip weapon, WeaponType wt, MapDamageProfile mob) {
+    private static EquipScore scoreNode(Character bot, DpNode node, Equip weapon, WeaponType wt, MapDamageProfile mob) {
+        int weaponRank = weaponPreferenceRank(bot, weapon, wt);
         if (isMageJob(node.snap.job())) {
-            return new EquipScore(magicScore(node.snap), node.statSum);
+            return new EquipScore(weaponRank, magicScore(node.snap), node.statSum);
         }
-        if (wt == null) return new EquipScore(0, node.statSum);
+        if (wt == null) return new EquipScore(weaponRank, 0, node.statSum);
         int dmg = damageWith(node.snap, null, wt, mob);
         int cycleMs = weapon != null ? weaponCycleMs(weapon.getItemId()) : 0;
         if (cycleMs > 0) dmg = (int) (dmg * 1000.0 / cycleMs);
-        return new EquipScore(dmg, node.statSum);
+        return new EquipScore(weaponRank, dmg, node.statSum);
     }
 
     private static StatSnapshot snapshotForBranch(StatSnapshot naked, Equip weapon, Map<Short, Equip> picks) {
@@ -1566,11 +1567,17 @@ class BotEquipManager {
     static Set<Equip> selectOwnedItemsForSelfReserve(Character bot, SelfReserveHooks hooks,
                                                      Collection<Equip> ownedItems) {
         EnumSet<RelevantStat> relevant = relevantStatsFor(bot.getJob());
+        boolean ownsPreferredWeapon = ownsPreferredWeapon(bot, hooks, ownedItems);
         Map<String, List<Equip>> byTrack = new LinkedHashMap<>();
         for (Equip equip : ownedItems) {
             if (equip == null || hooks.isCash(equip.getItemId())) continue;
             if (!isFutureOwnClassEquip(bot, hooks, equip)) continue;
             if (!hasPositiveRelevant(relevant, equip) && maxScrollReserveUpside(hooks, bot, equip) <= 0.0) continue;
+            String slot = textSlotKey(hooks, equip);
+            if (isWeaponSlot(slot) && ownsPreferredWeapon
+                    && !isPreferredWeapon(bot, hooks.getWeaponType(equip.getItemId()), equip)) {
+                continue;
+            }
             String track = selfReserveTrackKey(bot, hooks, equip);
             if (track == null) continue;
             byTrack.computeIfAbsent(track, ignored -> new ArrayList<>()).add(equip);
@@ -1593,6 +1600,21 @@ class BotEquipManager {
             keep.addAll(capSelfReserveTrack(hooks, bot, survivors));
         }
         return keep;
+    }
+
+    private static boolean ownsPreferredWeapon(Character bot, SelfReserveHooks hooks, Collection<Equip> ownedItems) {
+        for (Equip equip : ownedItems) {
+            if (equip == null || hooks.isCash(equip.getItemId())) {
+                continue;
+            }
+            String slot = textSlotKey(hooks, equip);
+            if (isWeaponSlot(slot)
+                    && isFutureOwnClassEquip(bot, hooks, equip)
+                    && isPreferredWeapon(bot, hooks.getWeaponType(equip.getItemId()), equip)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
@@ -1644,6 +1666,13 @@ class BotEquipManager {
 
     private static String weaponUsefulnessTrackKey(Character bot, EquipUsefulnessHooks hooks, Equip equip) {
         WeaponType weaponType = hooks.getWeaponType(equip.getItemId());
+        if (isOffTypeMageMatkWeapon(bot, equip)
+                && weaponType != WeaponType.WAND && weaponType != WeaponType.STAFF) {
+            // Off-type MATK weapon on a mage: compete in the mage track matching its
+            // handedness so the 2H<->shield ensemble math stays correct - a 1H sword
+            // umbrella rivals wands (frees the shield slot), a 2H rivals staves.
+            return hooks.isTwoHanded(equip.getItemId()) ? "staff" : "wand";
+        }
         if (!isWeaponCompatible(bot, weaponType)) {
             if (!isOffTypeMageMatkWeapon(bot, equip)) return null;
             // Off-type MATK weapon on a mage: compete in the mage track matching its
@@ -1893,6 +1922,8 @@ class BotEquipManager {
     }
 
     private static int compareScores(EquipScore left, EquipScore right) {
+        int rankCmp = Integer.compare(left.weaponRank(), right.weaponRank());
+        if (rankCmp != 0) return rankCmp;
         int cmp = Integer.compare(left.damage(), right.damage());
         if (cmp != 0) return cmp;
         return Integer.compare(left.statSum(), right.statSum());
@@ -2214,10 +2245,17 @@ class BotEquipManager {
     }
 
     static boolean isWeaponCompatible(Character bot, WeaponType weaponType) {
+        return weaponType == null || weaponType != WeaponType.NOT_A_WEAPON;
+    }
+
+    static boolean isPreferredWeapon(Character bot, WeaponType weaponType) {
         if (weaponType == null || weaponType == WeaponType.NOT_A_WEAPON) {
             return true;
         }
 
+        if (bot == null || bot.getJob() == null) {
+            return true;
+        }
         Job job = bot.getJob();
         if (job == Job.THIEF) {
             if (bot.getSkillLevel(Rogue.LUCKY_SEVEN) > 0) {
@@ -2298,12 +2336,23 @@ class BotEquipManager {
      * (AttackRoute, ammo) need the right weapon type, so an off-type WATK weapon is trade
      * stock for them, never equipment.
      */
+    static boolean isPreferredWeapon(Character bot, WeaponType weaponType, Equip equip) {
+        return isPreferredWeapon(bot, weaponType) || isOffTypeMageMatkWeapon(bot, equip);
+    }
+
     static boolean isWeaponCompatible(Character bot, WeaponType weaponType, Equip equip) {
-        return isWeaponCompatible(bot, weaponType) || isOffTypeMageMatkWeapon(bot, equip);
+        return isWeaponCompatible(bot, weaponType);
     }
 
     private static boolean isOffTypeMageMatkWeapon(Character bot, Equip equip) {
-        return equip != null && isMageJob(bot.getJob()) && equip.getMatk() > 0;
+        return bot != null && equip != null && isMageJob(bot.getJob()) && equip.getMatk() > 0;
+    }
+
+    private static int weaponPreferenceRank(Character bot, Equip weapon, WeaponType weaponType) {
+        if (weapon == null || weaponType == null || weaponType == WeaponType.NOT_A_WEAPON) {
+            return 0;
+        }
+        return isPreferredWeapon(bot, weaponType, weapon) ? 2 : 1;
     }
 
     private static Equip compatibleWeaponOrNull(Character bot, ItemInformationProvider ii, Equip equip) {

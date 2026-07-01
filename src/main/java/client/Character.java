@@ -9093,6 +9093,16 @@ public class Character extends AbstractCharacterObject {
                     psStatus.setInt(1, id);
 
                     for (QuestStatus qs : getQuests()) {
+                        // Don't persist pure NOT_STARTED placeholders. getQuest() inserts one into the
+                        // quest map on any lookup, so over time these accumulate and get rewritten on every
+                        // save, bloating the queststatus table. Keep rows carrying real state (forfeit count,
+                        // recorded progress, medal maps); the rest are recreated lazily on demand.
+                        if (qs.getStatus() == QuestStatus.Status.NOT_STARTED
+                                && qs.getForfeited() == 0
+                                && qs.getProgress().isEmpty()
+                                && qs.getMedalMaps().isEmpty()) {
+                            continue;
+                        }
                         psStatus.setInt(2, qs.getQuest().getId());
                         psStatus.setInt(3, qs.getStatus().getId());
                         psStatus.setInt(4, (int) (qs.getCompletionTime() / 1000));
@@ -11290,6 +11300,9 @@ public class Character extends AbstractCharacterObject {
     private Fitness fitness;
     private Ola ola;
     private long snowballattack;
+    // Wall-clock ms of this player's most recent attack. Lets bots tell an active grinder from an idle
+    // observer when scoring map crowding (server.bots.BotOccupancy) — set in applyAttack, humans only.
+    private volatile long lastAttackTime;
 
     public byte getTeam() {
         return team;
@@ -11321,6 +11334,14 @@ public class Character extends AbstractCharacterObject {
 
     public void setLastSnowballAttack(long time) {
         this.snowballattack = time;
+    }
+
+    public long getLastAttackTime() {
+        return lastAttackTime;
+    }
+
+    public void markAttacked() {
+        this.lastAttackTime = System.currentTimeMillis();
     }
 
     // MCPQ

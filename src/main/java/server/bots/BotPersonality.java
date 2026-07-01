@@ -170,6 +170,21 @@ public record BotPersonality(
         return Math.max(0.0, Math.min(1.0, (0.95 - farmIdleRatio) / 0.5));
     }
 
+    /**
+     * Per-login chance this becomes a CHILL session: instead of grinding, the bot heads to town and
+     * lingers there (sell/resupply/self-scroll/gacha/socialize) for a half-length session. Tourists and
+     * casuals chill most, hardcores almost never; lazier (low farm/idle) bots chill more within their tier.
+     */
+    public double chillSessionChance() {
+        double base = switch (career) {
+            case TOURIST -> 0.50;
+            case CASUAL -> 0.30;
+            case REGULAR -> 0.15;
+            case HARDCORE -> 0.05;
+        };
+        return base * (0.5 + laziness()); // 0.5..1.5: lazier bots chill more often
+    }
+
     /** Base per-decision wanderlust probability before trait scaling. */
     private static final double WANDERLUST_BASE = 0.12;
 

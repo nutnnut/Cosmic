@@ -518,10 +518,16 @@ function renderRoster(){
   }
   const filt = query ? items.filter(it => it.c.n.toLowerCase().includes(query)) : items;
   // managed = self-owned/ownerless bots (commandable, c=1); companion = bots following an online owner
-  let players=0, managed=0, companion=0;
-  for(const it of items){ if(!it.bot) players++; else if(it.c.c) managed++; else companion++; }
-  document.getElementById('rosterHead').textContent =
-    (query ? filt.length+' shown · ' : '') + players + ' online + ' + managed + ' managed + ' + companion + ' companion';
+  let players=0, managed=0, companion=0, grinding=0, onBreak=0, chilling=0;
+  for(const it of items){
+    if(!it.bot){ players++; continue; }
+    if(it.c.c) managed++; else companion++;
+    if(it.c.a==='chill') chilling++; else if(it.c.a==='break') onBreak++; else grinding++;   // tally over all bots
+  }
+  const head = (query ? filt.length+' shown · ' : '') + players + ' online + ' + managed + ' managed + ' + companion + ' companion';
+  const breakdown = (managed+companion)
+    ? grinding+' grinding · '+onBreak+' taking a break · '+chilling+' just chilling' : '';
+  document.getElementById('rosterHead').innerHTML = head + (breakdown ? '<br>'+breakdown : '');
   const mapHits = query ? getMapNameIndex().filter(m => m.lower.includes(query)) : [];
   const sig = query+'#'+rtsMode+'#'+sortMode+'#'+[...selected].join(',')+'#'
     + filt.map(it => it.c.n+'@'+it.map+'/'+it.c.l+'/'+(it.c.p||0)+'/'+(it.c.g||0)).join('|')

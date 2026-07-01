@@ -1,5 +1,6 @@
 package server.bots.combat;
 
+import client.BuffStat;
 import client.Character;
 import client.Job;
 import server.life.Monster;
@@ -185,7 +186,7 @@ public final class BotDefenseDataProvider {
      * valuation and safe-rest/idle region picking agree with what actually happens in combat.
      */
     public double expectedTouchHpLossFraction(Character bot, int mobPADamage, int mobLevel, int mobAccuracy) {
-        int maxHp = Math.max(1, bot.getCurrentMaxHp());
+        int maxHp = Math.max(1, effectiveMaxHp(bot));
         var formulas = server.combat.CombatFormulaProvider.getInstance();
         double pHit = formulas.calculateBotAvoidChance(
                 mobAccuracy, mobLevel, bot.getLevel(), formulas.getTotalAvoidability(bot));
@@ -196,6 +197,22 @@ public final class BotDefenseDataProvider {
     /** Live-mob convenience for the SSOT danger primitive. */
     public double expectedTouchHpLossFraction(Character bot, Monster mob) {
         return expectedTouchHpLossFraction(bot, mob.getPADamage(), mob.getLevel(), mob.getAccuracy());
+    }
+
+    public static int effectiveMaxHp(Character bot) {
+        int maxHp = Math.max(1, bot.getCurrentMaxHp());
+        Integer magicGuard = bot.getBuffedValue(BuffStat.MAGIC_GUARD);
+        if (magicGuard == null) {
+            return maxHp;
+        }
+        double mgPct = magicGuard.doubleValue() / 100.0;
+        if (mgPct <= 0.0 || mgPct >= 1.0) {
+            return maxHp;
+        }
+        int mp = Math.max(0, bot.getMp());
+        double totalFromHp = maxHp / (1.0 - mgPct);
+        double totalFromMp = mp / mgPct;
+        return Math.max(maxHp, (int) Math.min(totalFromHp, totalFromMp));
     }
 
     private int physicalTouchDamage(Character bot, int physicalAttackDamage, int mobLevel, double factor) {

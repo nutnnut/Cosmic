@@ -132,6 +132,11 @@ final class BotTravelSimulationLabTest {
         var prevScroll = BotTravelManager.returnScrollCount;
         try {
             BotTravelManager.returnScrollCount = b -> 0;
+            // Pre-seed the Ellinia->Lith Harbor taxi hop (same as the sibling cab tests) so tickTravel
+            // takes the taxi-hop branch before partition routing — partition routing now runs even for
+            // fully-connected maps (commit 459421c91) and would NPE on the lab's clientless mock at
+            // BotTravelManager.java:337 (bot.getClient().getChannelServer().getMapFactory()).
+            seedTaxiHop(entry, cab, /*deadlineFromNowMs*/ 120_000L);
             stubSeams(cab);
 
             // First tick seeds the taxi hop and dwells at the cab (sets npcDwellUntilMs to a fresh 2-7s window).

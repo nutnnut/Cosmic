@@ -109,6 +109,17 @@ class BotCombatManagerTest {
     }
 
     @Test
+    void shouldUseWandCastFallbackForMagicSkillWithoutExplicitAction() {
+        Skill skill = new Skill(Magician.MAGIC_CLAW);
+
+        String action = BotAttackExecutionProvider.resolveSkillAttackAction(null, skill, 20, WeaponType.STAFF);
+        int bodyActionId = BotAttackExecutionProvider.bodyActionId(action, "wand1", WeaponType.STAFF);
+
+        assertTrue(Set.of("wand1", "wand2").contains(action));
+        assertTrue(Set.of(28, 29).contains(bodyActionId));
+    }
+
+    @Test
     void shouldMatchRealMagicGuardSpecialMovePacketLayout() {
         Character bot = mockBot(new Point(100, 200), mock(MapleMap.class), 20_000, null);
 
@@ -125,6 +136,35 @@ class BotCombatManagerTest {
         byte[] packet = BotCombatManager.buildSupportSpecialMovePacket(bot, Cleric.BLESS, 9, 0x00919AAF);
 
         assertArrayEquals(HexTool.toBytes("5B 00 AF 9A 91 00 4C 1C 23 00 09 5D 15 C6 01 80 00 00"), packet);
+    }
+
+    @Test
+    void shouldRespectSkillBuffToggleWhenTryingMagicGuard() {
+        Character bot = mockBot(new Point(100, 200), mock(MapleMap.class), 20_000, null);
+        BotEntry entry = new BotEntry(bot, null, null);
+        entry.skillBuffsEnabled = false;
+        entry.buffSkillIds.add(Magician.MAGIC_GUARD);
+
+        assertFalse(BotCombatManager.tryCastMagicGuard(entry, bot));
+    }
+
+    @Test
+    void shouldNotFireAtTargetKilledBeforeSendGate() {
+        // Repro for "bot shoots but hits no mob": a target validated alive at selection time gets killed
+        // (cross-thread, or via a cadenced plan reused after death) before attackMonster builds the packet.
+        Character bot = mockBot(new Point(0, 0), mock(MapleMap.class), 20_000, null);
+        BotEntry entry = new BotEntry(bot, null, null);
+        Monster dead = mockMob(new Point(10, 0), 1110101);
+        when(dead.isAlive()).thenReturn(false);
+        when(dead.getHp()).thenReturn(-1);
+        BotCombatManager.AttackPlan plan = new BotCombatManager.AttackPlan(
+                0, 0, 1, new Rectangle(-100, -100, 200, 200), List.of(dead),
+                BotCombatManager.AttackRoute.CLOSE, 0, 0, 0, 0, 0, 0, 600, WeaponType.GUN);
+
+        BotCombatManager.attackMonster(entry, bot, plan);
+
+        assertEquals("blocked:dead-target", entry.dbgAttackExecResult);
+        assertEquals(0, entry.attackCooldownMs, "no cooldown/packet committed when target already dead");
     }
 
     @Test
@@ -723,6 +763,51 @@ class BotCombatManagerTest {
     }
 
     @Test
+    void shouldNotPlanNegligibleDamageBasicAttack() {
+        MapleMap map = mock(MapleMap.class);
+        Character bot = mockBot(new Point(100, 200), map, 20_000, null);
+        when(bot.calculateMaxBaseDamage(anyInt())).thenReturn(0);
+        when(bot.calculateMinBaseDamage(anyInt(), Mockito.anyDouble())).thenReturn(0);
+        Monster target = mockMob(new Point(140, 200), 9300102);
+        when(target.getAvoidability()).thenReturn(9_999);
+        when(map.getAllMonsters()).thenReturn(List.of(target));
+        BotEntry entry = new BotEntry(bot, null, null);
+
+        BotCombatManager.AttackPlan plan = BotCombatManager.planAttack(entry, bot, target);
+
+        assertNull(plan, "negligible basic swings must not attack-lock movement");
+    }
+
+    @Test
+    void shouldKeepNegligibleDegenerateRangedBasicAttackPlan() {
+        MapleMap map = mock(MapleMap.class);
+        Character bot = mockBot(new Point(100, 200), map, 20_000, null);
+        when(bot.calculateMaxBaseDamage(anyInt())).thenReturn(0);
+        when(bot.calculateMinBaseDamage(anyInt(), Mockito.anyDouble())).thenReturn(0);
+        Monster target = mockMob(new Point(140, 200), 9300103);
+        when(target.getAvoidability()).thenReturn(9_999);
+        when(map.getAllMonsters()).thenReturn(List.of(target));
+        BotEntry entry = new BotEntry(bot, null, null);
+        BotCombatManager.AttackPlan plan;
+        BotAttackExecutionProvider.BasicAttackData degenerateClose =
+                new BotAttackExecutionProvider.BasicAttackData(
+                        new Rectangle(100, 150, 80, 70), 0, 30, 0, "swingT1",
+                        0, 4, 100, 600, BotCombatManager.AttackRoute.CLOSE);
+
+        try (MockedStatic<BotAttackExecutionProvider> attacks =
+                     Mockito.mockStatic(BotAttackExecutionProvider.class, Mockito.CALLS_REAL_METHODS)) {
+            attacks.when(() -> BotAttackExecutionProvider.buildBasicAttackData(eq(bot), any(Point.class)))
+                    .thenReturn(degenerateClose);
+            attacks.when(() -> BotAttackExecutionProvider.getEquippedWeaponType(bot)).thenReturn(WeaponType.BOW);
+
+            plan = BotCombatManager.planAttack(entry, bot, target);
+        }
+
+        assertNotNull(plan, "degenerate bow/claw/gun fallback must survive the chip-damage gate");
+        assertEquals(BotCombatManager.AttackRoute.CLOSE, plan.route);
+    }
+
+    @Test
     void shouldNotUseWeakAoeOnlyBecauseCurrentHpIsLow() {
         MapleMap map = mock(MapleMap.class);
         Character bot = mockBot(new Point(100, 200), map, 20_000, null);
@@ -1094,6 +1179,7 @@ class BotCombatManagerTest {
     @Test
     void shouldMatchOpenStoryGroundMobKnockbackWhenHitFromRight() {
         MapleMap map = mock(MapleMap.class);
+        when(map.isObservedByPlayer()).thenReturn(true);
         Character bot = mockBot(new Point(100, 200), map, 20_000, null);
         Monster mob = mockMob(new Point(140, 200), 9300000);
         BotEntry entry = new BotEntry(bot, null, null);
@@ -1115,6 +1201,7 @@ class BotCombatManagerTest {
     @Test
     void shouldOnlyRedirectHorizontalVelocityWhenMobHitOccursMidAir() {
         MapleMap map = mock(MapleMap.class);
+        when(map.isObservedByPlayer()).thenReturn(true);
         Character bot = mockBot(new Point(100, 200), map, 20_000, null);
         Monster mob = mockMob(new Point(60, 200), 9300001);
         BotEntry entry = new BotEntry(bot, null, null);
@@ -1221,6 +1308,28 @@ class BotCombatManagerTest {
         }
 
         assertTrue(bot.getHp() < 20_000, "hostile contact should reduce bot HP");
+    }
+
+    @Test
+    void shouldSplitBotDamageThroughMagicGuardAndOverflowMissingMpToHp() {
+        MapleMap map = mock(MapleMap.class);
+        Character bot = mockBot(new Point(100, 200), map, 20_000, null);
+        when(bot.getBuffedValue(BuffStat.MAGIC_GUARD)).thenReturn(80);
+        when(bot.getMp()).thenReturn(10);
+        BotEntry entry = new BotEntry(bot, null, null);
+
+        float fallDistance = 1200.0f;
+        int damage = BotCombatManager.fallDamageFromDistance(fallDistance);
+        int expectedMpLoss = (int) (damage * 0.8);
+        int expectedHpLoss = damage - expectedMpLoss;
+        if (expectedMpLoss > 10) {
+            expectedHpLoss += expectedMpLoss - 10;
+            expectedMpLoss = 10;
+        }
+
+        runWithStubbedBotAfter(() -> BotCombatManager.applyFallDamage(entry, bot, fallDistance));
+
+        verify(bot).addMPHPAndTriggerAutopot(-expectedHpLoss, -expectedMpLoss);
     }
 
     @Test
@@ -1608,6 +1717,7 @@ class BotCombatManagerTest {
         Monster occupiedTarget = mockMob(new Point(220, 100), 9300400);
         Monster openTarget = mockMob(new Point(340, 100), 9300401);
         doReturn(List.of(occupiedTarget, openTarget)).when(map).getAllMonsters();
+        doReturn(List.of(siblingBot)).when(map).getAllPlayers();
 
         BotEntry entry = new BotEntry(bot, owner, null);
         entry.grinding = true;

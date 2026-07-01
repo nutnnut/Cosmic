@@ -110,22 +110,23 @@ class BotEquipManagerTest {
     }
 
     @Test
-    void firstJobBowmanAcceptsBowAndCrossbowOnly() {
+    void firstJobBowmanPrefersBowAndCrossbowOnly() {
         Character bot = mock(Character.class);
         when(bot.getJob()).thenReturn(Job.BOWMAN);
 
-        assertTrue(BotEquipManager.isWeaponCompatible(bot, WeaponType.BOW));
-        assertTrue(BotEquipManager.isWeaponCompatible(bot, WeaponType.CROSSBOW));
-        assertFalse(BotEquipManager.isWeaponCompatible(bot, WeaponType.CLAW));
+        assertTrue(BotEquipManager.isPreferredWeapon(bot, WeaponType.BOW));
+        assertTrue(BotEquipManager.isPreferredWeapon(bot, WeaponType.CROSSBOW));
+        assertFalse(BotEquipManager.isPreferredWeapon(bot, WeaponType.CLAW));
     }
 
     @Test
-    void hunterOnlyAcceptsBows() {
+    void hunterPrefersBowsButCanFallbackToCrossbow() {
         Character bot = mock(Character.class);
         when(bot.getJob()).thenReturn(Job.HUNTER);
 
-        assertTrue(BotEquipManager.isWeaponCompatible(bot, WeaponType.BOW));
-        assertFalse(BotEquipManager.isWeaponCompatible(bot, WeaponType.CROSSBOW));
+        assertTrue(BotEquipManager.isPreferredWeapon(bot, WeaponType.BOW));
+        assertFalse(BotEquipManager.isPreferredWeapon(bot, WeaponType.CROSSBOW));
+        assertTrue(BotEquipManager.isWeaponCompatible(bot, WeaponType.CROSSBOW));
     }
 
     @Test
@@ -136,8 +137,8 @@ class BotEquipManagerTest {
         when(gunPirate.getSkillLevel(Pirate.FLASH_FIST)).thenReturn(0);
         when(gunPirate.getSkillLevel(Pirate.SOMERSAULT_KICK)).thenReturn(0);
 
-        assertTrue(BotEquipManager.isWeaponCompatible(gunPirate, WeaponType.GUN));
-        assertFalse(BotEquipManager.isWeaponCompatible(gunPirate, WeaponType.KNUCKLE));
+        assertTrue(BotEquipManager.isPreferredWeapon(gunPirate, WeaponType.GUN));
+        assertFalse(BotEquipManager.isPreferredWeapon(gunPirate, WeaponType.KNUCKLE));
 
         Character knucklePirate = mock(Character.class);
         when(knucklePirate.getJob()).thenReturn(Job.PIRATE);
@@ -145,8 +146,8 @@ class BotEquipManagerTest {
         when(knucklePirate.getSkillLevel(Pirate.FLASH_FIST)).thenReturn(1);
         when(knucklePirate.getSkillLevel(Pirate.SOMERSAULT_KICK)).thenReturn(0);
 
-        assertTrue(BotEquipManager.isWeaponCompatible(knucklePirate, WeaponType.KNUCKLE));
-        assertFalse(BotEquipManager.isWeaponCompatible(knucklePirate, WeaponType.GUN));
+        assertTrue(BotEquipManager.isPreferredWeapon(knucklePirate, WeaponType.KNUCKLE));
+        assertFalse(BotEquipManager.isPreferredWeapon(knucklePirate, WeaponType.GUN));
     }
 
     @Test
@@ -158,9 +159,9 @@ class BotEquipManagerTest {
         when(swordFighter.getSkillLevel(Fighter.AXE_MASTERY)).thenReturn(0);
         when(swordFighter.getSkillLevel(Fighter.AXE_BOOSTER)).thenReturn(0);
 
-        assertTrue(BotEquipManager.isWeaponCompatible(swordFighter, WeaponType.SWORD1H));
-        assertTrue(BotEquipManager.isWeaponCompatible(swordFighter, WeaponType.SWORD2H));
-        assertFalse(BotEquipManager.isWeaponCompatible(swordFighter, WeaponType.GENERAL1H_SWING));
+        assertTrue(BotEquipManager.isPreferredWeapon(swordFighter, WeaponType.SWORD1H));
+        assertTrue(BotEquipManager.isPreferredWeapon(swordFighter, WeaponType.SWORD2H));
+        assertFalse(BotEquipManager.isPreferredWeapon(swordFighter, WeaponType.GENERAL1H_SWING));
 
         Character axeFighter = mock(Character.class);
         when(axeFighter.getJob()).thenReturn(Job.FIGHTER);
@@ -169,9 +170,9 @@ class BotEquipManagerTest {
         when(axeFighter.getSkillLevel(Fighter.AXE_MASTERY)).thenReturn(1);
         when(axeFighter.getSkillLevel(Fighter.AXE_BOOSTER)).thenReturn(0);
 
-        assertTrue(BotEquipManager.isWeaponCompatible(axeFighter, WeaponType.GENERAL1H_SWING));
-        assertTrue(BotEquipManager.isWeaponCompatible(axeFighter, WeaponType.GENERAL2H_SWING));
-        assertFalse(BotEquipManager.isWeaponCompatible(axeFighter, WeaponType.SWORD1H));
+        assertTrue(BotEquipManager.isPreferredWeapon(axeFighter, WeaponType.GENERAL1H_SWING));
+        assertTrue(BotEquipManager.isPreferredWeapon(axeFighter, WeaponType.GENERAL2H_SWING));
+        assertFalse(BotEquipManager.isPreferredWeapon(axeFighter, WeaponType.SWORD1H));
     }
 
     @Test
@@ -183,9 +184,9 @@ class BotEquipManagerTest {
         when(spearBot.getSkillLevel(Spearman.POLEARM_MASTERY)).thenReturn(0);
         when(spearBot.getSkillLevel(Spearman.POLEARM_BOOSTER)).thenReturn(0);
 
-        assertTrue(BotEquipManager.isWeaponCompatible(spearBot, WeaponType.SPEAR_STAB));
-        assertTrue(BotEquipManager.isWeaponCompatible(spearBot, WeaponType.SPEAR_SWING));
-        assertFalse(BotEquipManager.isWeaponCompatible(spearBot, WeaponType.POLE_ARM_SWING));
+        assertTrue(BotEquipManager.isPreferredWeapon(spearBot, WeaponType.SPEAR_STAB));
+        assertTrue(BotEquipManager.isPreferredWeapon(spearBot, WeaponType.SPEAR_SWING));
+        assertFalse(BotEquipManager.isPreferredWeapon(spearBot, WeaponType.POLE_ARM_SWING));
 
         Character polearmBot = mock(Character.class);
         when(polearmBot.getJob()).thenReturn(Job.SPEARMAN);
@@ -194,9 +195,9 @@ class BotEquipManagerTest {
         when(polearmBot.getSkillLevel(Spearman.POLEARM_MASTERY)).thenReturn(1);
         when(polearmBot.getSkillLevel(Spearman.POLEARM_BOOSTER)).thenReturn(0);
 
-        assertTrue(BotEquipManager.isWeaponCompatible(polearmBot, WeaponType.POLE_ARM_SWING));
-        assertTrue(BotEquipManager.isWeaponCompatible(polearmBot, WeaponType.POLE_ARM_STAB));
-        assertFalse(BotEquipManager.isWeaponCompatible(polearmBot, WeaponType.SPEAR_STAB));
+        assertTrue(BotEquipManager.isPreferredWeapon(polearmBot, WeaponType.POLE_ARM_SWING));
+        assertTrue(BotEquipManager.isPreferredWeapon(polearmBot, WeaponType.POLE_ARM_STAB));
+        assertFalse(BotEquipManager.isPreferredWeapon(polearmBot, WeaponType.SPEAR_STAB));
     }
 
     @Test
@@ -208,8 +209,8 @@ class BotEquipManagerTest {
         when(hero.getSkillLevel(Crusader.AXE_COMA)).thenReturn(0);
         when(hero.getSkillLevel(Crusader.AXE_PANIC)).thenReturn(0);
 
-        assertTrue(BotEquipManager.isWeaponCompatible(hero, WeaponType.SWORD1H));
-        assertFalse(BotEquipManager.isWeaponCompatible(hero, WeaponType.GENERAL1H_SWING));
+        assertTrue(BotEquipManager.isPreferredWeapon(hero, WeaponType.SWORD1H));
+        assertFalse(BotEquipManager.isPreferredWeapon(hero, WeaponType.GENERAL1H_SWING));
 
         Character darkKnight = mock(Character.class);
         when(darkKnight.getJob()).thenReturn(Job.DARKKNIGHT);
@@ -218,8 +219,8 @@ class BotEquipManagerTest {
         when(darkKnight.getSkillLevel(DragonKnight.POLE_ARM_CRUSHER)).thenReturn(1);
         when(darkKnight.getSkillLevel(DragonKnight.POLE_ARM_DRAGON_FURY)).thenReturn(0);
 
-        assertTrue(BotEquipManager.isWeaponCompatible(darkKnight, WeaponType.POLE_ARM_SWING));
-        assertFalse(BotEquipManager.isWeaponCompatible(darkKnight, WeaponType.SPEAR_STAB));
+        assertTrue(BotEquipManager.isPreferredWeapon(darkKnight, WeaponType.POLE_ARM_SWING));
+        assertFalse(BotEquipManager.isPreferredWeapon(darkKnight, WeaponType.SPEAR_STAB));
     }
 
     @Test
@@ -229,8 +230,8 @@ class BotEquipManagerTest {
         when(bot.getSkillLevel(Rogue.LUCKY_SEVEN)).thenReturn(1);
         when(bot.getSkillLevel(Rogue.DOUBLE_STAB)).thenReturn(0);
 
-        assertTrue(BotEquipManager.isWeaponCompatible(bot, WeaponType.CLAW));
-        assertFalse(BotEquipManager.isWeaponCompatible(bot, WeaponType.DAGGER_OTHER));
+        assertTrue(BotEquipManager.isPreferredWeapon(bot, WeaponType.CLAW));
+        assertFalse(BotEquipManager.isPreferredWeapon(bot, WeaponType.DAGGER_OTHER));
     }
 
     @Test
@@ -242,22 +243,21 @@ class BotEquipManagerTest {
         when(mage.getJob()).thenReturn(Job.CLERIC);
 
         Equip blackUmbrella = matkWeapon(1302026, 92);
-        assertTrue(BotEquipManager.isWeaponCompatible(mage, WeaponType.SWORD1H, blackUmbrella));
+        assertTrue(BotEquipManager.isPreferredWeapon(mage, WeaponType.SWORD1H, blackUmbrella));
 
         // A 0-MAD off-type weapon adds nothing for a mage and stays incompatible.
         Equip plainSword = matkWeapon(1302000, 0);
-        assertFalse(BotEquipManager.isWeaponCompatible(mage, WeaponType.SWORD1H, plainSword));
+        assertFalse(BotEquipManager.isPreferredWeapon(mage, WeaponType.SWORD1H, plainSword));
     }
 
     @Test
-    void physicalClassStillRejectsOffTypeWeaponDespiteMatk() {
-        // Type tables stay strict for physical classes: attack skills and the bot combat
-        // pipeline need the right weapon type, so an off-type weapon is trade stock.
+    void physicalClassTreatsOffTypeWeaponAsFallbackNotPreferred() {
         Character sin = mock(Character.class);
         when(sin.getJob()).thenReturn(Job.ASSASSIN);
 
         Equip blackUmbrella = matkWeapon(1302026, 92);
-        assertFalse(BotEquipManager.isWeaponCompatible(sin, WeaponType.SWORD1H, blackUmbrella));
+        assertFalse(BotEquipManager.isPreferredWeapon(sin, WeaponType.SWORD1H, blackUmbrella));
+        assertTrue(BotEquipManager.isWeaponCompatible(sin, WeaponType.SWORD1H, blackUmbrella));
     }
 
     @Test

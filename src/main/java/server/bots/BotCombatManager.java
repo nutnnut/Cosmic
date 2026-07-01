@@ -13,6 +13,7 @@ import constants.inventory.ItemConstants;
 import constants.skills.Archer;
 import constants.skills.Assassin;
 import constants.skills.Bandit;
+import constants.skills.BlazeWizard;
 import constants.skills.Bowmaster;
 import constants.skills.Buccaneer;
 import constants.skills.Cleric;
@@ -22,10 +23,12 @@ import constants.skills.Beginner;
 import constants.skills.Crusader;
 import constants.skills.DawnWarrior;
 import constants.skills.DragonKnight;
+import constants.skills.Evan;
 import constants.skills.Fighter;
 import constants.skills.GM;
 import constants.skills.Hermit;
 import constants.skills.Hunter;
+import constants.skills.Magician;
 import constants.skills.Marksman;
 import constants.skills.NightWalker;
 import constants.skills.Priest;
@@ -74,6 +77,7 @@ import java.util.concurrent.ThreadLocalRandom;
 class BotCombatManager {
     private static final Logger log = LoggerFactory.getLogger(BotCombatManager.class);
     private static final long UNREACHABLE_GRAPH_COST = Long.MAX_VALUE / 4;
+    private static final double MIN_EXPECTED_DAMAGE_PER_ATTACK = 1.0d;
 
     // Skills that bots must never cast — stealth makes them untargetable by monsters,
     // breaking combat entirely.
@@ -88,6 +92,11 @@ class BotCombatManager {
             Crusader.ARMOR_CRASH,
             WhiteKnight.MAGIC_CRASH,
             DragonKnight.POWER_CRASH
+    );
+    static final Set<Integer> CRITICAL_SURVIVAL_BUFFS = Set.of(
+            Magician.MAGIC_GUARD,
+            BlazeWizard.MAGIC_GUARD,
+            Evan.MAGIC_GUARD
     );
     private static final int DRAGON_ROAR_MIN_TARGETS_WITHOUT_HEALER = 10;
 
@@ -476,7 +485,19 @@ class BotCombatManager {
             return;
         }
 
-        bot.addMPHPAndTriggerAutopot(-dmg, 0);
+        Integer magicGuard = bot.getBuffedValue(BuffStat.MAGIC_GUARD);
+        if (magicGuard != null) {
+            int mploss = (int) (dmg * (magicGuard.doubleValue() / 100.0));
+            int hploss = dmg - mploss;
+            int curmp = bot.getMp();
+            if (mploss > curmp) {
+                hploss += mploss - curmp;
+                mploss = curmp;
+            }
+            bot.addMPHPAndTriggerAutopot(-hploss, -mploss);
+        } else {
+            bot.addMPHPAndTriggerAutopot(-dmg, 0);
+        }
 
         bot.getMap().broadcastMessage(bot,
                 PacketCreator.damagePlayer(damageFrom, monsterId, bot.getId(), dmg, 0,
@@ -666,7 +687,26 @@ class BotCombatManager {
             return;
         }
 
+        for (int skillId : CRITICAL_SURVIVAL_BUFFS) {
+            if (!entry.buffSkillIds.contains(skillId)) continue;
+            if (now < entry.nextBuffAt.getOrDefault(skillId, 0L)) continue;
+            if (bot.skillIsCooling(skillId)) continue;
+
+            Skill skill = SkillFactory.getSkill(skillId);
+            int lvl = bot.getSkillLevel(skill);
+            if (lvl <= 0) continue;
+
+            StatEffect fx = skill.getEffect(lvl);
+            if (!isActiveSupportSkill(skill, fx) || BUFF_BLACKLIST.contains(skill.getId())) {
+                continue;
+            }
+            if (castSupportSkill(entry, bot, skill, fx, now)) {
+                return;
+            }
+        }
+
         for (int skillId : entry.buffSkillIds) {
+            if (CRITICAL_SURVIVAL_BUFFS.contains(skillId)) continue;
             if (now < entry.nextBuffAt.getOrDefault(skillId, 0L)) continue;
             if (bot.skillIsCooling(skillId)) continue;
 
@@ -1272,6 +1312,10 @@ class BotCombatManager {
         PlanScore best = null;
         double bestScore = Double.NEGATIVE_INFINITY;
         for (PlanScore score : scores) {
+            if (score.rawDamage < MIN_EXPECTED_DAMAGE_PER_ATTACK
+                    && !isDegenerateBasicCloseAttack(bot, score.plan)) {
+                continue;
+            }
             if (hasGuaranteedFullHpKill && !score.minimumKillsFullHpTargets) {
                 continue;
             }
@@ -1284,6 +1328,14 @@ class BotCombatManager {
             }
         }
         return best != null ? best.plan : null;
+    }
+
+    private static boolean isDegenerateBasicCloseAttack(Character bot, AttackPlan plan) {
+        return plan != null
+                && plan.skillId == 0
+                && plan.route == AttackRoute.CLOSE
+                && BotAttackExecutionProvider.isDegenerateCapableRangedWeapon(
+                BotAttackExecutionProvider.getEquippedWeaponType(bot));
     }
 
     private record PlanScore(AttackPlan plan, double usefulDamage, double rawDamage, double usefulDps, double rawDps,
@@ -1443,6 +1495,16 @@ class BotCombatManager {
             return;
         }
         Monster primary = attackPlan != null && !attackPlan.targets.isEmpty() ? attackPlan.targets.get(0) : null;
+        // Cross-thread kill guard. Callers validate isAlive() before planning, but another player/bot can
+        // kill the target between selection and this send gate (the plan can also be a cadenced reuse from a
+        // tick ago). Firing at a corpse rolls damage, burns MP/ammo + cooldown, and broadcasts a hit that
+        // lands on nothing — the "bot shoots but hits no mob" symptom. This is the last race-free read before
+        // we commit, so re-check here and skip; the next tick replans against live mobs.
+        if (primary != null && !primary.isAlive()) {
+            recordAttackExec(entry, attackPlan, primary, "blocked:dead-target", 0,
+                    primaryHp(primary), primaryHp(primary), botMp(bot), botMp(bot));
+            return;
+        }
         if (entry.attackCooldownMs > 0) {
             recordAttackExec(entry, attackPlan, primary, "blocked:action-lock", 0, primaryHp(primary), primaryHp(primary),
                     botMp(bot), botMp(bot));
@@ -3056,6 +3118,28 @@ class BotCombatManager {
         StatEffect fx = recovery.getEffect(lvl);
         if (fx == null) return false;                                 // canPaySkillCost (MP) is checked inside castSupportSkill
         return castSupportSkill(entry, bot, recovery, fx, System.currentTimeMillis());
+    }
+
+    static boolean tryCastMagicGuard(BotEntry entry, Character bot) {
+        if (entry.attackCooldownMs > 0) return false;
+        if (entry.inAir || entry.climbing) return false;
+        if (!entry.skillBuffsEnabled) return false;
+        if (bot == null || !bot.isAlive()) return false;
+        if (bot.getBuffedValue(BuffStat.MAGIC_GUARD) != null) return false;
+
+        for (int skillId : CRITICAL_SURVIVAL_BUFFS) {
+            if (!entry.buffSkillIds.contains(skillId)) continue;
+            if (bot.skillIsCooling(skillId)) return false;
+
+            Skill skill = SkillFactory.getSkill(skillId);
+            int lvl = bot.getSkillLevel(skill);
+            if (lvl <= 0) continue;
+
+            StatEffect fx = skill.getEffect(lvl);
+            if (!isActiveSupportSkill(skill, fx)) return false;
+            return castSupportSkill(entry, bot, skill, fx, System.currentTimeMillis());
+        }
+        return false;
     }
 
     private static boolean castSupportSkill(BotEntry entry, Character bot, Skill skill, StatEffect fx, long now) {

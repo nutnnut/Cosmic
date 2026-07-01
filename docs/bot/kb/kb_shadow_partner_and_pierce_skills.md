@@ -24,6 +24,22 @@ Captured 2026-05-18 while implementing Iron Arrow, Avenger, and Shadow Partner s
 - Server-side ammo in `RangedAttackHandler` (line ~176, ~234): `bulletCount *= 2`, `bulletConsume *= 2` when SP is active. So Avenger + SP consumes 6 stars/cast.
 - Damage formula path: `CombatFormulaProvider.makeTarget` already gates on `hits > 1 && bot.getBuffEffect(SHADOWPARTNER) != null` and routes to `rollWithShadowPartnerPhysical` / `rollWithShadowPartnerMagic`. So the bot just needs to pass `hits = baseHits * 2` and SP roll generation is handled for free.
 
+### Client truth: shadow lines are DERIVED, not re-rolled (fixed 2026-06-30)
+
+The shadow REPLAYS each original hit — it does not roll its own. Per-line, in order:
+**`partnerLine[i] = floor(mainLine[i] * 0.5)`**. Consequences that must hold:
+- **Crit flag matches in order.** If main line `i` crit, partner line `i` is also flagged crit (the half-value is already crit-boosted because it's derived from the post-crit main value). `critIndices` gets `mainHits + i`.
+- **Miss mirrors.** A main line of `0` (whiff) → partner `0`. The shadow can't connect when the original missed.
+- **Magnitude is proportional**, not an independent draw from a halved range.
+
+WZ `4111002` `x = 50` is **constant across all 30 levels**, so the 0.5 ratio (`SHADOW_PARTNER_RATIO`) is exact at every level, not an approximation. `prop` (= ceil(level/3)) is unrelated to damage.
+
+The original implementation rolled the partner half independently (own hit/miss, own crit coin-flip, own damage draw in `[min/2, max/2]`) — that desynced crit flags and miss/hit from the main line and broke per-line proportionality. Both `rollWithShadowPartner{Physical,Magic}` now derive from the already-rolled `main` list.
+
+The deterministic estimators (`estimateExpectedDamage`/`estimateMinimumDamage`) were already correct and untouched: `E[floor(main*0.5)] = 0.5*E[main]` and the crit term is linear, so the half-range-average model equals the true expectation.
+
+Packet layout unchanged — `[main 0..mainHits)][partner mainHits..hits)`, which is what the server validator assumes (`AbstractDealDamageHandler` `j >= numDamage/2 → hitDmgMax *= 0.5`).
+
 ## Bot integration (committed this session)
 
 `BotCombatManager.shadowPartnerHitMultiplier(bot, route)`:

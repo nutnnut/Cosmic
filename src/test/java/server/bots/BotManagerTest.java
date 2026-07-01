@@ -103,6 +103,8 @@ class BotManagerTest {
 
         Map<Integer, List<BotEntry>> bots = (Map<Integer, List<BotEntry>>) field(BotManager.class, "bots").get(manager);
         bots.put(owner.getId(), List.of(sourceEntry, observerEntry));
+        Map<Integer, BotEntry> byCharId = (Map<Integer, BotEntry>) field(BotManager.class, "botsByCharId").get(manager);
+        byCharId.put(10, sourceEntry);
 
         try (MockedStatic<BotOfferManager> offers = mockStatic(BotOfferManager.class)) {
             manager.notifyOwnerGainedTradeItem(owner, tradedEquip, sourceBot);
@@ -110,6 +112,7 @@ class BotManagerTest {
             offers.verifyNoInteractions();
         } finally {
             bots.remove(owner.getId());
+            byCharId.remove(10);
         }
     }
 
@@ -893,6 +896,11 @@ class BotManagerTest {
         Character admin = mock(Character.class);
         when(admin.getId()).thenReturn(506);
         doReturn(admin).when(map).getCharacterById(506);
+        net.server.world.World ws = mock(net.server.world.World.class);
+        net.server.PlayerStorage ps = mock(net.server.PlayerStorage.class);
+        when(bot.getWorldServer()).thenReturn(ws);
+        when(ws.getPlayerStorage()).thenReturn(ps);
+        when(ps.getCharacterById(506)).thenReturn(admin);
         // A debug binding alone still leaves a self-owned bot anchorless (no follow hijack).
         BotManager.bindDebugCommander(entry, admin);
         assertNull(BotManager.getInstance().resolveFollowAnchor(entry, bot));
@@ -1637,6 +1645,11 @@ class BotManagerTest {
         Character foreignBot = mock(Character.class);
         when(foreignBot.getName()).thenReturn("Leroy");
         when(foreignBot.getMap()).thenReturn(map);
+        net.server.world.World ws = mock(net.server.world.World.class);
+        net.server.PlayerStorage ps = mock(net.server.PlayerStorage.class);
+        when(foreignBot.getWorldServer()).thenReturn(ws);
+        when(ws.getPlayerStorage()).thenReturn(ps);
+        when(ps.getCharacterById(500)).thenReturn(admin);
         BotEntry foreignEntry = new BotEntry(foreignBot, realOwner, null);
 
         Map<Integer, List<BotEntry>> bots = (Map<Integer, List<BotEntry>>) field(BotManager.class, "bots").get(manager);
@@ -1764,6 +1777,11 @@ class BotManagerTest {
         when(owner.getId()).thenReturn(80);
         Character bot = mock(Character.class);
         when(bot.getMap()).thenReturn(map);
+        net.server.world.World ws = mock(net.server.world.World.class);
+        net.server.PlayerStorage ps = mock(net.server.PlayerStorage.class);
+        when(bot.getWorldServer()).thenReturn(ws);
+        when(ws.getPlayerStorage()).thenReturn(ps);
+        when(ps.getCharacterById(505)).thenReturn(admin);
         BotEntry entry = new BotEntry(bot, owner, null);
 
         // Unbound: anchor is the owner.

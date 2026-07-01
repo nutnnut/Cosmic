@@ -271,6 +271,9 @@ final class BotStarterKitManager {
                     }
                     return false; // legacy: release the tick so travel retries / grind fills the gap
                 }
+                if (BotFerryManager.isWaitingOrRiding(entry, bot)) {
+                    return true; // legitimate ferry wait/ride: stay committed without a stuck log
+                }
                 warnJobErrandStuck(entry, bot, "travel gave up reaching instructor");
                 return true; // keep retrying, stuck here until it gets through — never grind
             }
@@ -319,7 +322,8 @@ final class BotStarterKitManager {
         // unreachable for a cross-continent instructor the bot could ferry to.
         java.util.List<Integer> liveRoute = BotAutopilotManager.routeForBot(bot,
                 bot.getMapId(), entry.jobErrandMapId, JOB_ERRAND_MAX_TRAVEL_HOPS,
-                new BotWorldGraph.RouteOptions(false, bot.getMeso(), true, bot.getJob().getId() == 0, bot.getLevel()));
+                new BotWorldGraph.RouteOptions(false, bot.getMeso(), true, bot.getJob().getId() == 0,
+                        bot.getLevel(), BotAutopilotManager.worldTourReturn(bot)));
         boolean reachable = liveRoute != null;
         // Surface WHY travel actually gave up (deadline / taxi-fare-fail / ferry-board-fail / portal-closed
         // / route-null) plus the failed hop and the bot's meso — "route-reachable=true" alone hides the

@@ -226,13 +226,17 @@ final class BotAutopilotManager {
                 || !entry.owner.isLoggedinWorld();
     }
 
-    /** The bot's Spinel return target (saved WORLDTOUR origin) ONLY while it is standing in the
-     *  Mushroom Shrine, else -1. Tying it to actual presence means the world-tour return is just the
-     *  first hop back out — a stale saved location (left the shrine by death/relog) can never reopen
-     *  the shrine as a through-shortcut to Lith Harbor. Mirrored by BotWorldGraph.expand/findTaxiEdge
-     *  and BotTravelCost.floodSeconds. */
+    /** The bot's Spinel return target (saved WORLDTOUR origin) ONLY while it is anywhere in Zipangu
+     *  (continent 8 — Mushroom Shrine 800000000, Showa, the fields), else -1. Continent 8 is an island:
+     *  its sole entry is the Spinel ride (which saves WORLDTOUR) and death/relog keeps the bot in-continent,
+     *  so any bot inside has a valid origin and route planning from the interior can include the Spinel exit
+     *  (walk to shrine → ride out). Showa town death-returns to itself (not the shrine), so the gate is the
+     *  CONTINENT, not the return-map. Off-continent (mainland) a stale save still gets -1, so it can't reopen
+     *  the shrine as a through-shortcut to Lith Harbor. Mirrored by BotWorldGraph.expand/findTaxiEdge and
+     *  BotTravelCost.floodSeconds. */
     static int worldTourReturn(Character bot) {
-        return bot.getMapId() == BotWorldGraph.MUSHROOM_SHRINE ? bot.peekSavedLocation("WORLDTOUR") : -1;
+        boolean inZipangu = bot.getMapId() / 100000000 == BotWorldGraph.MUSHROOM_SHRINE / 100000000;
+        return inZipangu ? bot.peekSavedLocation("WORLDTOUR") : -1;
     }
 
     /** What the bot can spend on travel right now: scrolls if carried, taxis per meso,
@@ -324,7 +328,7 @@ final class BotAutopilotManager {
         IntToDoubleFunction crowd = members.isEmpty() ? mapId -> 0.0
                 : BotOccupancy.extraCompetitors(members.get(0).bot, BotManager.cfg.CROWD_PENALTY_FACTOR);
         return BotGrindPlanner.planPartyBest(in.perMember(), in.weights(), crowd,
-                currentPartyMap(members), ThreadLocalRandom.current());
+                currentPartyMap(members), grinderMask(members), ThreadLocalRandom.current());
     };
 
     /** The map the cohort is already grinding (most common autopilotMapId among members still in
@@ -624,6 +628,10 @@ final class BotAutopilotManager {
         boolean active(BotEntry entry);
         /** One tick of the errand; true when it consumed the tick (the caller then returns true). */
         boolean tick(BotEntry entry, Character bot, boolean runAiTick);
+        /** True to skip this errand's tick this cycle and fall through to the resupply flow below
+         *  (still active — just not driving this tick). Lets a cramped bag preempt a detour that
+         *  might need to buy something (a ferry/taxi fare item) it has no room for. */
+        default boolean yieldForResupply(BotEntry entry, Character bot) { return false; }
     }
 
     // Detour errands in precedence order. Job advance first (must not over-level en route), then the
@@ -639,6 +647,13 @@ final class BotAutopilotManager {
                 @Override public boolean active(BotEntry entry) { return entry.jobErrandMapId != -1; }
                 @Override public boolean tick(BotEntry entry, Character bot, boolean runAiTick) {
                     return BotStarterKitManager.tickJobErrand(entry, bot, runAiTick);
+                }
+                // A cross-continent leg (taxi/ferry) buys a fare item; a full bag fails that buy and
+                // the job errand retries it forever (JOB_CHANGE_FALLBACK_ANYWHERE is off — it never
+                // releases the tick to let a resupply trip run and free space). Yield so the resupply
+                // flow below can sell trash first; job errand resumes once space frees up.
+                @Override public boolean yieldForResupply(BotEntry entry, Character bot) {
+                    return bagFull.bagFull(entry, bot);
                 }
             },
             new DetourErrand() { // quest piggyback: detour to a quest NPC to start/turn in, then resume
@@ -689,7 +704,8 @@ final class BotAutopilotManager {
         if (!operatorPinned) {
             for (DetourErrand errand : DETOUR_ERRANDS) {
                 errand.maybeStart(entry, bot);
-                if (errand.active(entry) && errand.tick(entry, bot, runAiTick)) {
+                if (errand.active(entry) && !errand.yieldForResupply(entry, bot)
+                        && errand.tick(entry, bot, runAiTick)) {
                     return true;
                 }
             }
@@ -722,6 +738,14 @@ final class BotAutopilotManager {
                     }
                     if (nowRest < entry.breakUntilMs) {
                         return false; // resting in town: grind-tick break-idle + self-scroll run this tick
+                    }
+                    if (entry.chillSession) {
+                        // Logged in to chill: re-arm the rest window instead of resuming grind, so the bot
+                        // lingers in town the whole (half-length) session. Scheduler logs it out at session end.
+                        BotPersonality p = entry.personality != null ? entry.personality : BotPersonality.defaults();
+                        entry.breakUntilMs = nowRest + BotBreakManager.townBreakDurationMs(p.laziness());
+                        entry.breakIdleAnchor = null;
+                        return false;
                     }
                     entry.restErrand = false; // rest over -> head back to the grind map
                     entry.autopilotErrandMapId = -1;
@@ -762,8 +786,9 @@ final class BotAutopilotManager {
         // re-arm it. A truly-broke bot with nothing to sell keeps grinding (degenerate close-range
         // swing) to earn the meso first rather than bouncing to town forever.
         boolean ammoStranded = BotShopManager.isOutOfUsableAmmo(bot) && BotShopManager.canRecoverAmmo(entry, bot);
+        boolean needsPreferredWeapon = BotShopManager.needsPreferredWeaponForCurrentJob(bot);
         if (!operatorPinned && entry.autopilotErrandMapId == -1 && !entry.autopilotReturningFromErrand
-                && (lowAndCanBuy || ammoStranded || bagFull.bagFull(entry, bot))) {
+                && (lowAndCanBuy || ammoStranded || needsPreferredWeapon || bagFull.bagFull(entry, bot))) {
             requestResupplyErrand(entry, bot);
             if (entry.autopilotErrandMapId != -1) {
                 destination = entry.autopilotErrandMapId; // head to town this tick, not the grind map
@@ -862,7 +887,7 @@ final class BotAutopilotManager {
         if (bot.getMap() == null) {
             return -1;
         }
-        Integer shopMap = BotShopManager.findNearestShopMap(bot, !BotShopManager.needsToBuySupplies(bot));
+        Integer shopMap = BotShopManager.findNearestShopMap(entry, bot, !BotShopManager.needsToBuySupplies(entry, bot));
         int town = shopMap != null && shopMap != bot.getMapId()
                 ? shopMap
                 : (bot.getMap().getReturnMap() != null ? bot.getMap().getReturnMap().getId() : -1);
@@ -901,10 +926,16 @@ final class BotAutopilotManager {
         // the only need that requires a specific (potion-stocking) shop; a full bag or low ammo is fine
         // at any shop. Falls back to the old return-map town when no shop is reachable in range.
         int targetMapId;
-        Integer shopMapId = BotShopManager.findNearestShopMap(bot, !BotShopManager.needsToBuySupplies(bot));
+        boolean needsPreferredWeapon = BotShopManager.needsPreferredWeaponForCurrentJob(bot);
+        Integer shopMapId = BotShopManager.findNearestShopMap(entry, bot, !BotShopManager.needsToBuySupplies(entry, bot));
         if (shopMapId != null && shopMapId != bot.getMapId()) {
             targetMapId = shopMapId;
         } else {
+            if (needsPreferredWeapon) {
+                entry.autopilotNextErrandAtMs = now + ERRAND_COOLDOWN_MS;
+                logErrandBlock(entry, bot, "no-reachable-shop-with-preferred-weapon");
+                return false;
+            }
             var returnMap = bot.getMap().getReturnMap();
             if (returnMap == null || returnMap.getId() == bot.getMapId()) {
                 // No errand to run, but ARM the cooldown anyway: findNearestShopMap above does an
@@ -954,6 +985,14 @@ final class BotAutopilotManager {
     private static List<String> resupplyErrandReasons(BotEntry entry, Character bot) {
         List<String> reasons = new ArrayList<>();
         try {
+            if (BotShopManager.needsPreferredWeaponForCurrentJob(bot)) {
+                reasons.add("need a " + BotShopManager.preferredWeaponName(bot));
+            }
+        } catch (RuntimeException ignored) {
+            // Gear-readiness text is diagnostic only; keep the errand alive.
+        }
+
+        try {
             int[] pots = BotPotionManager.countPotions(bot);
             if (pots[0] < BotManager.cfg.POT_STOP) {
                 reasons.add("low HP pots (" + pots[0] + " left)");
@@ -994,6 +1033,25 @@ final class BotAutopilotManager {
         return reasons;
     }
 
+    /** Coarse activity bucket for the roster summary: {@code "chill"} for a whole-session chill login;
+     *  {@code "break"} when otherwise resting and not working (in-session break, gachapon trip,
+     *  idle/idle-leech, or winding down to log off); else {@code "grind"} for everything productive
+     *  (grinding, traveling there, resupplying, quest/job errands). Mirrors {@link #statusReport}. */
+    static String activityCategory(BotEntry entry, Character bot) {
+        if (entry == null || bot == null) {
+            return "grind";
+        }
+        if (entry.chillSession) {
+            return "chill";
+        }
+        if (entry.loggingOut || entry.gachaErrandMapId != -1
+                || System.currentTimeMillis() < entry.breakUntilMs
+                || entry.idleLeech || !isActive(entry)) {
+            return "break";
+        }
+        return "grind";
+    }
+
     static String statusReport(BotEntry entry, Character bot) {
         String currentMap = currentMapName(bot);
         if (entry == null || bot == null) {
@@ -1028,7 +1086,9 @@ final class BotAutopilotManager {
         // Transient sub-states sit on top of grind mode (entry.grinding stays true), so report them
         // first — otherwise a town break or level-gap idle-leech misreads as "grinding here".
         if (System.currentTimeMillis() < entry.breakUntilMs) {
-            return "im at " + currentMap + ", taking a break";
+            return entry.chillSession
+                    ? "im at " + currentMap + ", just chilling in town today, not really grinding"
+                    : "im at " + currentMap + ", taking a break";
         }
         if (entry.idleLeech) {
             return "im at " + currentMap + ", idling while my party catches up";
@@ -1454,6 +1514,39 @@ final class BotAutopilotManager {
             return gap > release;        // stay idling until the gap closes to <= release
         }
         return gap >= trigger;           // start idling once the gap reaches the trigger
+    }
+
+    /**
+     * Planning-time view of {@link #decideIdleLeech}: which members will actually deal damage on the
+     * shared grind map, so only they drive the party's map pick (an idle-leecher must not pull the
+     * cohort onto a map tuned to its higher level that the lower members can barely hit). Mirrors the
+     * live gate — current leech state for hysteresis, cohort-wide minimum level (the planner assumes
+     * they converge on one map). Returns {@code null} ("everyone grinds") when leeching is off, the
+     * party is too small, or nobody would leech, so the planner keeps its all-members path.
+     */
+    static boolean[] grinderMask(List<BotEntry> members) {
+        if (!BotManager.cfg.PARTY_LEECH_ENABLED || members.size() < 2) {
+            return null;
+        }
+        int minLevel = Integer.MAX_VALUE;
+        for (BotEntry m : members) {
+            if (m.bot != null) {
+                minLevel = Math.min(minLevel, m.bot.getLevel());
+            }
+        }
+        if (minLevel == Integer.MAX_VALUE) {
+            return null;
+        }
+        boolean[] grind = new boolean[members.size()];
+        boolean anyLeech = false;
+        for (int i = 0; i < members.size(); i++) {
+            BotEntry m = members.get(i);
+            boolean leech = m.bot != null && decideIdleLeech(m.idleLeech, m.bot.getLevel(), minLevel,
+                    BotManager.cfg.PARTY_LEECH_GAP_TRIGGER, BotManager.cfg.PARTY_LEECH_GAP_RELEASE);
+            grind[i] = !leech;
+            anyLeech |= leech;
+        }
+        return anyLeech ? grind : null;
     }
 
     /**

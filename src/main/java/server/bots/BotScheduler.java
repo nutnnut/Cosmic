@@ -55,11 +55,19 @@ public final class BotScheduler {
     }
 
     void sweep() {
+        sweep(false);
+    }
+
+    /** {@code stableTarget}=true reconciles to the deterministic median target (the value
+     *  {@link #statusLines()} displays) instead of rolling fresh noise — used by manual admin sweeps so
+     *  repeated clicks converge to the shown target rather than chasing a random, multiplier-amplified
+     *  noise band (and ratcheting up, since spawns are immediate but logouts linger). */
+    void sweep(boolean stableTarget) {
         if (!BotManager.cfg.POPULATION_SCHED_ENABLED) {
             return;
         }
         try {
-            reconcile();
+            reconcile(stableTarget);
         } catch (RuntimeException e) {
             log.warn("bot population sweep failed", e);
         }
@@ -88,9 +96,11 @@ public final class BotScheduler {
         }
     }
 
-    /** Force a reconcile now (no-op if disabled). */
+    /** Force a reconcile now (no-op if disabled). Reconciles to the deterministic median target the
+     *  status line shows, so an admin "Sweep now" converges to that count instead of overshooting a
+     *  fresh random noise roll each click. */
     public void sweepNow() {
-        sweep();
+        sweep(true);
     }
 
     /** Hourly online target, scaled by POPULATION_MULTIPLIER so the whole population is adjustable
@@ -145,11 +155,13 @@ public final class BotScheduler {
 
     private record Candidate(int charId, double desire) {}
 
-    private void reconcile() {
+    private void reconcile(boolean stableTarget) {
         long now = System.currentTimeMillis();
         int hour = LocalTime.now().getHour();
         long epochDay = LocalDate.now().toEpochDay();
-        int target = scaledTarget(hour, BotManager.cfg.POPULATION_NOISE, ThreadLocalRandom.current().nextDouble());
+        int target = stableTarget
+                ? scaledTarget(hour, 0, 0.5)
+                : scaledTarget(hour, BotManager.cfg.POPULATION_NOISE, ThreadLocalRandom.current().nextDouble());
 
         BotManager bm = BotManager.getInstance();
         List<ManagedBot> managed = ManagedBotService.getInstance().loadAll();
@@ -256,12 +268,16 @@ public final class BotScheduler {
             long since = crewOnlineSince.computeIfAbsent(gid, k -> now);
             BotPersonality leaderP = BotPersonality.parse(
                     BotConfigService.getInstance().load(crewLeader(members)));
+            // A crew that logged in to chill runs a half-length session too (driven off the leader's flag).
+            BotEntry leaderEntry = bm.getEntryByBotCharId(crewLeader(members));
+            boolean crewChill = leaderEntry != null && leaderEntry.chillSession;
+            long crewSessionMs = crewChill ? sessionMsOf(leaderP) / 2 : sessionMsOf(leaderP);
             // Stay-online QoL: keep the whole crew online if any member is partied with a real player.
             boolean crewWithPlayer = members.stream().anyMatch(m -> {
                 BotEntry me = bm.getEntryByBotCharId(m.botCharId());
                 return me != null && BotManager.partyHasRealPlayer(me.bot);
             });
-            if (BotScheduleMath.sessionElapsed(since, sessionMsOf(leaderP), now) && !crewWithPlayer) {
+            if (BotScheduleMath.sessionElapsed(since, crewSessionMs, now) && !crewWithPlayer) {
                 for (ManagedBot m : members) {
                     if (bm.getEntryByBotCharId(m.botCharId()) != null) {
                         bm.logoutManagedBot(m.botCharId());
@@ -274,6 +290,11 @@ public final class BotScheduler {
             for (ManagedBot m : members) {
                 if (bm.getEntryByBotCharId(m.botCharId()) == null && bm.spawnManagedBot(m.botCharId())) {
                     broughtAny = true;
+                }
+            }
+            if (crewChill) { // a respawned straggler joins its crew's chill instead of grinding alone
+                for (ManagedBot m : members) {
+                    applyCrewChill(bm, m.botCharId(), now);
                 }
             }
             formCrewParty(bm, members, broughtAny);
@@ -301,6 +322,7 @@ public final class BotScheduler {
             }
             if (broughtAny) {
                 crewOnlineSince.put(e.getKey(), now);
+                markCrewSession(bm, e.getValue(), now);
                 formCrewParty(bm, e.getValue(), true);
                 crewLive += liveCount(bm, e.getValue());
             }
@@ -443,7 +465,7 @@ public final class BotScheduler {
                 break;
             }
             if (bm.spawnManagedBot(c.charId())) {
-                onlineSince.put(c.charId(), now);
+                beginSoloSession(bm, c.charId(), now);
                 brought++;
             }
         }
@@ -471,7 +493,7 @@ public final class BotScheduler {
                     int newId = BotGenerator.generateManaged(BotManager.cfg.POPULATION_WORLD,
                             BotManager.cfg.POPULATION_CHANNEL, hardcore, BotManager.cfg.HARDCORE_CAP);
                     if (newId > 0 && bm.spawnManagedBot(newId)) {
-                        onlineSince.put(newId, now);
+                        beginSoloSession(bm, newId, now);
                     }
                 }
             } else {
@@ -523,6 +545,7 @@ public final class BotScheduler {
             }
         }
         crewOnlineSince.put(gid, now);
+        markCrewSession(bm, crew, now);
         formCrewParty(bm, crew, true);
         return crew.size();
     }
@@ -545,8 +568,65 @@ public final class BotScheduler {
         }
     }
 
+    /** Mark a soloist's session start: record login time and, for a personality-driven fraction of
+     *  logins, make it a CHILL session — the bot routes to town and lingers there the whole (half-length)
+     *  session instead of grinding (reuses the town-break machinery; near-zero tick cost). */
+    private void beginSoloSession(BotManager bm, int charId, long now) {
+        onlineSince.put(charId, now);
+        BotEntry e = bm.getEntryByBotCharId(charId);
+        if (e == null) {
+            return;
+        }
+        BotPersonality p = e.personality != null ? e.personality : BotPersonality.defaults();
+        if (BotBreakManager.rollChill(p, e.bot.getLevel(), ThreadLocalRandom.current().nextDouble())) {
+            e.chillSession = true;
+            BotBreakManager.startTownBreak(e, e.bot, now);
+        } else if (ThreadLocalRandom.current().nextDouble()
+                < BotBreakManager.loginBreakChance(p.breakFreqPerHour(), p.breakLenMeanMin())) {
+            // Seed the resting fraction at login so the population hits its break/grind equilibrium
+            // immediately, instead of every bot grinding at spawn and only settling over many minutes.
+            BotBreakManager.startLoginBreak(e, e.bot, now);
+        }
+    }
+
+    /** Decide once, when a crew session begins, whether the whole crew is logging in to CHILL (leader's
+     *  personality + the global chance config); if so flag every live member and route them to town to
+     *  linger together. Mirrors {@link #beginSoloSession} for crews — the leader speaks for the unit. */
+    private void markCrewSession(BotManager bm, List<ManagedBot> members, long now) {
+        BotEntry leaderEntry = bm.getEntryByBotCharId(crewLeader(members));
+        if (leaderEntry == null || leaderEntry.bot == null) {
+            return;
+        }
+        BotPersonality leaderP = BotPersonality.parse(BotConfigService.getInstance().load(crewLeader(members)));
+        if (BotBreakManager.rollChill(leaderP, leaderEntry.bot.getLevel(), ThreadLocalRandom.current().nextDouble())) {
+            for (ManagedBot m : members) {
+                applyCrewChill(bm, m.botCharId(), now);
+            }
+        } else if (ThreadLocalRandom.current().nextDouble()
+                < BotBreakManager.loginBreakChance(leaderP.breakFreqPerHour(), leaderP.breakLenMeanMin())) {
+            // Seed the crew's resting fraction at login too, so crews hit equilibrium from spawn.
+            for (ManagedBot m : members) {
+                BotEntry e = bm.getEntryByBotCharId(m.botCharId());
+                if (e != null) {
+                    BotBreakManager.startLoginBreak(e, e.bot, now);
+                }
+            }
+        }
+    }
+
+    /** Flag one crew member's session as chill and route it to town (no-op if not live or already chill).
+     *  Used at crew session start and to fold a self-healed straggler into an already-chilling crew. */
+    private static void applyCrewChill(BotManager bm, int charId, long now) {
+        BotEntry e = bm.getEntryByBotCharId(charId);
+        if (e != null && !e.chillSession) {
+            e.chillSession = true;
+            BotBreakManager.startTownBreak(e, e.bot, now);
+        }
+    }
+
     private static long sessionMs(BotEntry e) {
         int min = e.personality != null ? e.personality.sessionLenMeanMin() : 60;
-        return Math.max(1, min) * 60_000L;
+        long ms = Math.max(1, min) * 60_000L;
+        return e.chillSession ? ms / 2 : ms; // chill logins run half-length so more bots cycle in/out
     }
 }
