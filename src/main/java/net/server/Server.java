@@ -980,6 +980,10 @@ public class Server {
         // Localhost-only web view of the bot world graph + live per-map character occupancy.
         server.bots.BotWorldGraphWebServer.start();
 
+        // Living-economy shared price statistic: periodic ledger sweep (cheap no-op until market
+        // events flow). Bots read it only through their noisy per-bot perception.
+        server.bots.BotMarketConsensus.startSweeping();
+
         OpcodeConstants.generateOpcodeNames();
         CommandsExecutor.getInstance();
 

@@ -18,6 +18,49 @@ import java.util.Map;
  */
 final class BotMarketBook {
 
+    /** Periodic self-flush cadence (staggered per bot below); durability bound, not policy. */
+    private static final long FLUSH_INTERVAL_MS = 240_000;
+
+    /**
+     * The bot's book, lazily created + loaded from the store on first touch (mirrors the
+     * personality loadOrCreate-at-spawn pattern). Informedness derives from social traits:
+     * plugged-in bots hold tighter price ideas (design sec 4 layer 2).
+     */
+    static BotMarketBook of(BotEntry entry, client.Character bot) {
+        BotMarketBook book = entry.marketBook;
+        if (book == null) {
+            BotPersonality p = entry.personality != null ? entry.personality : BotPersonality.defaults();
+            double informed = BotMarketMath.clamp01(0.5 * p.sociability() + 0.5 * p.chattiness());
+            book = new BotMarketBook(bot.getId(), informed, BotMarketConsensus.getInstance());
+            book.loadFrom(BotMarketStore.getInstance().loadBeliefs(bot.getId()));
+            entry.marketBook = book;
+        }
+        return book;
+    }
+
+    /**
+     * Persist dirty rows every few minutes ON THE BOT'S OWN TICK THREAD (books are not
+     * thread-safe by design — a book belongs to its bot's tick context). Losing a few minutes
+     * of observations on a hard kill is acceptable: beliefs are re-learnable.
+     */
+    static void maybeFlush(BotEntry entry, client.Character bot) {
+        BotMarketBook book = entry.marketBook;
+        if (book == null) {
+            return;
+        }
+        long now = System.currentTimeMillis();
+        if (now < book.nextFlushAtMs) {
+            return;
+        }
+        book.nextFlushAtMs = now + FLUSH_INTERVAL_MS + (bot.getId() % 60_000L); // staggered, not synchronized
+        List<BotMarketStore.StoredBelief> dirty = book.drainDirty();
+        if (!dirty.isEmpty()) {
+            BotMarketStore.getInstance().saveBeliefs(bot.getId(), dirty);
+        }
+    }
+
+    private long nextFlushAtMs;
+
     /** The shared layer-1 statistic, injected (production: BotMarketConsensus singleton). */
     interface ConsensusSource {
         /** Consensus meso for a key, or 0 when the market has never seen it. */

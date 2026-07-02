@@ -1563,6 +1563,35 @@ public class BotManager {
         notifyOwnerGainedItem(recipient, item);
     }
 
+    /**
+     * A hired-merchant stall sold something (any owner species — player stalls are market signal
+     * too): append to the living-economy tape, count the fee as a meso sink, and let bot
+     * participants' price books learn the clearing. Best-effort — must never break a sale.
+     * Quality band is 0 until the equip-banding valuer lands (design sec 3).
+     */
+    public void notifyStallSale(int ownerId, Character buyer, int itemId, int units, long paidTotal, int mapId) {
+        try {
+            long unitPrice = units > 0 ? Math.max(1, paidTotal / units) : paidTotal;
+            BotMarketLedger.getInstance().append(BotMarketLedger.EventKind.STALL_SALE, itemId, 0,
+                    Math.max(1, units), unitPrice, ownerId, buyer != null ? buyer.getId() : null, mapId);
+            BotMarketLedger.getInstance().recordFlow("trade-tax", server.Trade.getFee(paidTotal), false);
+            long now = System.currentTimeMillis();
+            long key = BotMarketMath.priceKey(itemId, 0);
+            BotEntry seller = getEntryByBotCharId(ownerId);
+            if (seller != null && seller.bot != null) {
+                BotMarketBook.of(seller, seller.bot).observe(key, unitPrice, BotMarketMath.W_TRADE, now);
+            }
+            if (buyer != null) {
+                BotEntry buyerEntry = getEntryByBotCharId(buyer.getId());
+                if (buyerEntry != null && buyerEntry.bot != null) {
+                    BotMarketBook.of(buyerEntry, buyerEntry.bot).observe(key, unitPrice, BotMarketMath.W_TRADE, now);
+                }
+            }
+        } catch (RuntimeException e) {
+            log.warn("notifyStallSale bookkeeping failed for item {}: {}", itemId, e.toString());
+        }
+    }
+
     private boolean isItemFromOwnedBot(Character owner, Character source) {
         if (owner == null || source == null || !(source.getClient() instanceof BotClient)) {
             return false;
@@ -5448,6 +5477,9 @@ public class BotManager {
         if (perf) t = System.nanoTime();
         BotPotionManager.tickPassiveRecovery(entry, bot);
         if (perf) BotPerformanceMonitor.record("common-passive-recovery", System.nanoTime() - t);
+        // Living economy: persist this bot's dirty price beliefs every few minutes, on its own
+        // tick thread (books are tick-thread-owned by design).
+        BotMarketBook.maybeFlush(entry, bot);
         if (perf) t = System.nanoTime();
         BotCombatManager.tryCastMagicGuard(entry, bot);
         if (perf) BotPerformanceMonitor.record("common-magic-guard", System.nanoTime() - t);

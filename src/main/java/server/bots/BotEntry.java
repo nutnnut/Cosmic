@@ -627,6 +627,10 @@ public class BotEntry {
     // the same physics-only tick + passive-loot suppression a trade window gets.
     volatile boolean marketBusy = false;
 
+    // This bot's private price book (living economy layer 2) - lazily loaded on first market
+    // touch via BotMarketBook.of, self-flushed on the bot's own tick. Tick-thread-owned.
+    BotMarketBook marketBook = null;
+
     // Trade queue
     String pendingTradeCategory = null;
     List<Item> pendingTradeItems = null;

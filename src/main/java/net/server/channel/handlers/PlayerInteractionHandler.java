@@ -264,10 +264,7 @@ public final class PlayerInteractionHandler extends AbstractPacketHandler {
                         c.getWorldServer().registerPlayerShop(shop);
                         //c.sendPacket(PacketCreator.getPlayerShopRemoveVisitor(1));
                     } else if (ItemConstants.isHiredMerchant(itemId)) {
-                        HiredMerchant merchant = new HiredMerchant(chr, desc, itemId);
-                        chr.setHiredMerchant(merchant);
-                        c.getWorldServer().registerHiredMerchant(merchant);
-                        chr.getClient().getChannelServer().addHiredMerchant(chr.getId(), merchant);
+                        HiredMerchant merchant = HiredMerchant.createFor(chr, desc, itemId);
                         chr.sendPacket(PacketCreator.getHiredMerchant(chr, merchant, true));
                     }
                 }
@@ -384,11 +381,7 @@ public final class PlayerInteractionHandler extends AbstractPacketHandler {
                     chr.getMap().broadcastMessage(PacketCreator.updatePlayerShopBox(shop));
                     shop.setOpen(true);
                 } else if (merchant != null && merchant.isOwner(chr)) {
-                    chr.setHasMerchant(true);
-                    merchant.setOpen(true);
-                    chr.getMap().addMapObject(merchant);
-                    chr.setHiredMerchant(null);
-                    chr.getMap().broadcastMessage(PacketCreator.spawnHiredMerchantBox(merchant));
+                    merchant.publish(chr);
                 }
             } else if (mode == Action.READY.getCode()) {
                 MiniGame game = chr.getMiniGame();

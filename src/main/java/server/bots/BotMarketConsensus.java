@@ -21,10 +21,26 @@ import java.util.concurrent.ConcurrentHashMap;
  * production singleton glues it to {@link BotMarketLedger} + {@link BotMarketStore}. Scheduling
  * the sweep on a timer lands with the first execution slice (S2) — nothing flows until then.
  */
-final class BotMarketConsensus implements BotMarketBook.ConsensusSource {
+public final class BotMarketConsensus implements BotMarketBook.ConsensusSource {
+
+    private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(BotMarketConsensus.class);
 
     /** Sweep input window (structural bound: how far back "recent" reaches). */
     static final long WINDOW_MS = 7L * 24 * 60 * 60 * 1000;
+
+    /** Minutes-scale sweep cadence (design sec 4 layer 1) — off the hot path, cheap when idle. */
+    static final long SWEEP_INTERVAL_MS = 180_000;
+
+    /** Register the periodic ledger sweep (called once from Server boot, BotScheduler-style). */
+    public static void startSweeping() {
+        server.TimerManager.getInstance().register(() -> {
+            try {
+                getInstance().sweepFromLedger(System.currentTimeMillis());
+            } catch (RuntimeException e) {
+                log.warn("market consensus sweep failed: {}", e.toString());
+            }
+        }, SWEEP_INTERVAL_MS);
+    }
 
     private static final BotMarketConsensus instance =
             new BotMarketConsensus(BotMarketLedger.getInstance(), BotMarketStore.getInstance());
