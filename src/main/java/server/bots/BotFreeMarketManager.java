@@ -601,9 +601,11 @@ final class BotFreeMarketManager {
 
     /**
      * Walk to Fredrick and reclaim closed-stall proceeds (items + merchant mesos). The reclaim is
-     * ALL-OR-NOTHING server logic (canRetrieveFromFredrick): with a too-full bag nothing moves and
-     * Fredrick simply keeps holding — an inbound failure retries on the way out (stall stocking
-     * frees bag space in between), an exit-leg failure waits for the next trip. Never loses items.
+     * ALL-OR-NOTHING server logic (canRetrieveFromFredrick): with a too-full bag nothing moves
+     * and Fredrick simply keeps holding — failures retry on the exit leg and then on later trips
+     * (hourly probe), after the normal sell-trash/resupply cycles have freed bag space. While
+     * anything remains uncollected the trip stays browse-only (see tickSetup: opening a stall
+     * would DELETE the stored rows). Never loses items.
      */
     private static boolean tickFredrick(BotEntry entry, Character bot, boolean runAiTick, long now) {
         if (bot.getMapId() != FM_ENTRANCE) { // bumped out mid-walk — rejoin the machine
@@ -737,7 +739,12 @@ final class BotFreeMarketManager {
         // A live stall from a previous session (or no stock worth listing) -> browse-only trip.
         boolean stallAlive = bot.getWorldServer().getHiredMerchant(bot.getId()) != null;
         List<ListingPlan> listings = stallAlive ? List.of() : selectListings(entry, bot, now);
-        if (stallAlive || listings.isEmpty() || !ensurePermit(entry, bot)) {
+        // NEVER open while Fredrick still holds proceeds: stocking a new stall saves over the
+        // MERCHANT store, whose save DELETEs the uncollected rows first (saveItemsMerchant) -
+        // the item loss the real client prevents by refusing to open until you collect. The
+        // entrance stop already tried to collect this trip; if the bag couldn't take it all,
+        // this trip is browse-only and the pickup re-trips on the hourly probe.
+        if (stallAlive || listings.isEmpty() || hasFredrickHoldings(bot) || !ensurePermit(entry, bot)) {
             advancePhase(entry, PHASE_BROWSE, now);
             return true;
         }
