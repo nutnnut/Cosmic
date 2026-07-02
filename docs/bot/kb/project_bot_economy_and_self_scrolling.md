@@ -8,9 +8,11 @@ metadata:
 ---
 
 Long-term goal: a bot-driven **simulated economy** (bots dominate; humans interact as first-class
-participants). Full design lives in-repo at `docs/bot/economy-design.md` — read it for the model
+participants). **BUILD DESIGN OF RECORD (2026-07-02): `docs/bot/living-economy-design.md`** —
+decentralized belief-based pricing (no central price loop), FM stalls + shout grammar + haggling,
+slice plan S0-S6; it wins on conflicts. `docs/bot/economy-design.md` stays as the math reference
 (reproduction-cost scroll DP, opportunity-cost WTP, farming-cost anchor gated by combat feasibility,
-damped relative price-discovery vs. faucet/sink monetary control, two-only exogenous inputs).
+LP-dual equilibrium theory, Fish Spear calibration).
 
 Key decisions locked in conversation (also in the doc):
 - Frontier producer = **bots only**, filtered by **last-login freshness** (stale chars excluded from
