@@ -1528,94 +1528,91 @@ final class BotScrollManager {
         }
         ProducerCombat pc = resolveProducerCombat(entry, bot);
         double baseScore = marketStatValue(clean);
-        double rolledScore = marketStatValueOf(eq);
         int tuc = clean.getOrDefault("tuc", 0);
-        List<BotScrollValuer.ScrollSpec> specs = marketReproSpecs(pc, ii, eq.getItemId());
-        double unit = commonScrollGain(specs);
+        double[] gains = catalogGains(ii, eq.getItemId());
+        double unit = bandUnit(gains);
+        int maxBand = maxBand(gains, unit, tuc);
+        int band = equipQualityBand(ii, eq);
         double cleanCost = cleanBaseCostMeso(pc, ii, eq.getItemId());
-        // Cap the band at what the slot budget can actually reach: past it the restart DP never
-        // terminates in success and its cost estimate is meaningless (a wild clean roll above the
-        // scroll ceiling just prices AT the ceiling).
-        double maxGain = 0.0;
-        for (BotScrollValuer.ScrollSpec s : specs) {
-            maxGain = Math.max(maxGain, s.statGain());
-        }
-        int maxBand = unit <= 0 ? 0 : (int) Math.floor(tuc * maxGain / unit);
-        int band = Math.min(BotMarketMath.qualityBand(rolledScore - baseScore, unit), maxBand);
-        java.util.function.DoubleUnaryOperator vf =
-                BotScrollValuer.reproductionValue(baseScore, tuc, specs, cleanCost);
+        java.util.function.DoubleUnaryOperator vf = BotScrollValuer.reproductionValue(
+                baseScore, tuc, marketReproSpecs(pc, ii, eq.getItemId()), cleanCost);
         java.util.function.DoubleUnaryOperator bandCurve = b -> {
             if (b <= 0 || unit <= 0) {
                 return cleanCost;
             }
-            double capped = Math.min(b, maxBand);
-            return SECONDHAND_DISCOUNT * vf.applyAsDouble(baseScore + capped * unit);
+            // Cap at the slot budget's reachable ceiling: past it the restart DP never terminates
+            // in success and its estimate is meaningless (a wild clean roll prices AT the ceiling).
+            return SECONDHAND_DISCOUNT * vf.applyAsDouble(baseScore + Math.min(b, maxBand) * unit);
         };
         return new EquipQuote(eq.getItemId(), band, Math.round(bandCurve.applyAsDouble(band)), bandCurve);
     }
 
-    /** Catalog-wide reproduction specs for {@code equipId}: every obtainable non-boom stat scroll
-     *  that fits the slot, gain valued job-neutrally ({@link #marketStatValue}) at FULL market
-     *  price. The market counterpart to {@link #reproSpecs}, which only sees owned scrolls. */
+    /** Quality band of a rolled equip — the price-key dimension both sides of a trade must agree
+     *  on, so it is deterministic from the WZ catalog alone (no producer/price context): the
+     *  piece's job-neutral stat surplus over its clean base, in units of the slot's median
+     *  catalog-scroll gain, capped at the slot budget's reachable ceiling. 0 for clean/unknown. */
+    static int equipQualityBand(ItemInformationProvider ii, Equip eq) {
+        Map<String, Integer> clean = ii.getEquipStats(eq.getItemId());
+        if (clean == null) {
+            return 0;
+        }
+        double[] gains = catalogGains(ii, eq.getItemId());
+        double unit = bandUnit(gains);
+        int band = BotMarketMath.qualityBand(marketStatValueOf(eq) - marketStatValue(clean), unit);
+        return Math.min(band, maxBand(gains, unit, clean.getOrDefault("tuc", 0)));
+    }
+
+    /** Catalog-wide reproduction specs for {@code equipId}: the slot's obtainable stat scrolls
+     *  ({@link #scrollsByCategory} — meta/boom/zero-success already excluded), gain valued
+     *  job-neutrally at FULL market price. The market counterpart to {@link #reproSpecs},
+     *  which only sees owned scrolls. */
     private static List<BotScrollValuer.ScrollSpec> marketReproSpecs(ProducerCombat pc,
             ItemInformationProvider ii, int equipId) {
         List<BotScrollValuer.ScrollSpec> specs = new ArrayList<>();
-        for (int sid : scrollCatalog()) {
-            if (ItemConstants.isCleanSlate(sid) || ItemConstants.isModifierScroll(sid)
-                    || sid == ItemId.WHITE_SCROLL || !applicable(ii, sid, equipId)) {
+        for (int sid : scrollsByCategory(ii).getOrDefault((equipId / 10000) % 100, List.of())) {
+            if (!applicable(ii, sid, equipId)) {
                 continue;
             }
             Map<String, Integer> st = ii.getEquipStats(sid);
-            if (st == null) {
-                continue;
-            }
-            int success = st.getOrDefault("success", 0);
-            if (success <= 0 || st.getOrDefault("cursed", 0) > 0) {
-                continue;
-            }
-            double gain = marketStatValue(st);
+            double gain = st == null ? 0.0 : marketStatValue(st);
             if (gain > 0) {
                 specs.add(new BotScrollValuer.ScrollSpec(
-                        effectiveSuccessPct(success) / 100.0, gain, scrollPriceMeso(pc, sid)));
+                        effectiveSuccessPct(st.getOrDefault("success", 0)) / 100.0,
+                        gain, scrollPriceMeso(pc, sid)));
             }
         }
         return specs;
     }
 
-    /** The band unit: median stat-score gain across the slot's obtainable scrolls — the "one
-     *  average scroll success" both sides of a trade must agree on for price keys to line up.
-     *  Deterministic per catalog, so every bot computes the same bands. */
-    private static double commonScrollGain(List<BotScrollValuer.ScrollSpec> specs) {
-        if (specs.isEmpty()) {
-            return 0.0;
+    /** Sorted positive job-neutral gains of the slot's applicable catalog scrolls. */
+    private static double[] catalogGains(ItemInformationProvider ii, int equipId) {
+        List<Double> gains = new ArrayList<>();
+        for (int sid : scrollsByCategory(ii).getOrDefault((equipId / 10000) % 100, List.of())) {
+            if (!applicable(ii, sid, equipId)) {
+                continue;
+            }
+            Map<String, Integer> st = ii.getEquipStats(sid);
+            double gain = st == null ? 0.0 : marketStatValue(st);
+            if (gain > 0) {
+                gains.add(gain);
+            }
         }
-        double[] gains = new double[specs.size()];
-        for (int i = 0; i < specs.size(); i++) {
-            gains[i] = specs.get(i).statGain();
+        double[] out = new double[gains.size()];
+        for (int i = 0; i < out.length; i++) {
+            out[i] = gains.get(i);
         }
-        java.util.Arrays.sort(gains);
-        return gains[gains.length / 2];
+        java.util.Arrays.sort(out);
+        return out;
     }
 
-    private static volatile List<Integer> scrollCatalogCache;
+    /** The band unit — "one average scroll success" — as the median catalog-scroll gain. */
+    private static double bandUnit(double[] sortedGains) {
+        return sortedGains.length == 0 ? 0.0 : sortedGains[sortedGains.length / 2];
+    }
 
-    /** Every scroll item id in the WZ catalog (204xxxx); empty on WZ-less test runs. */
-    private static List<Integer> scrollCatalog() {
-        List<Integer> cached = scrollCatalogCache;
-        if (cached == null) {
-            List<Integer> ids = new ArrayList<>();
-            try {
-                for (Pair<Integer, String> item : ItemInformationProvider.getInstance().getAllItems()) {
-                    if (item.getLeft() / 10000 == SCROLL_ITEM_PREFIX) {
-                        ids.add(item.getLeft());
-                    }
-                }
-            } catch (RuntimeException e) {
-                // WZ unavailable (tests): empty catalog -> quotes degrade to the clean base cost
-            }
-            scrollCatalogCache = cached = List.copyOf(ids);
-        }
-        return cached;
+    private static int maxBand(double[] sortedGains, double unit, int tuc) {
+        return unit <= 0 || sortedGains.length == 0 ? 0
+                : (int) Math.floor(tuc * sortedGains[sortedGains.length - 1] / unit);
     }
 
     /**
