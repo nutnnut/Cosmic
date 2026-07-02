@@ -505,6 +505,8 @@ public class BotEntry {
     long fmStandStuckSinceMs = 0L;       // walk watchdog: last time fmStandBestDist improved
     int fmFredrickState = 0;             // 0 unchecked, 1 retry on the way out, 2 done this trip
     boolean fmFredrickOnExit = false;    // current Fredrick stop is the exit-leg one
+    long nextFredrickProbeAtMs = 0L;     // slow-cadence "does Fredrick hold my stuff" DB probe
+    boolean fredrickPickupPending = false; // cached probe result; a pickup of its own is a trip reason
 
     // Supervised-mode quest AUTO-SUGGEST (Feature A): when the owner is online and the bot is at
     // their side, the bot occasionally SUGGESTS a standout nearby quest in chat (it never wanders

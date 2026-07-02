@@ -357,10 +357,14 @@ final class BotFreeMarketManager {
         }
 
         boolean stallServiceDue = entry.nextStallServiceAtMs > 0 && now >= entry.nextStallServiceAtMs;
+        boolean fredrickDue = fredrickPickupDue(entry, bot, now);
         List<ListingPlan> listable = selectListings(entry, bot, now);
         // A chilling bot will also just go browse (its book still learns); a break-bot needs a
-        // reason - and NPC-shop staples don't count as one (they only tag along).
-        if (!stallServiceDue && tripWorthyCount(listable) < MIN_LISTINGS_TO_TRIP && !chilling) {
+        // reason - and NPC-shop staples don't count as one (they only tag along). Proceeds
+        // waiting at Fredrick ARE a reason of their own: a bot whose whole surplus sold and
+        // closed to Fredrick would otherwise never trip again to collect its wealth.
+        if (!stallServiceDue && !fredrickDue && tripWorthyCount(listable) < MIN_LISTINGS_TO_TRIP
+                && !chilling) {
             return; // nothing worth the walk. ponytail: S4 adds the own-income-rate travel gate
         }
 
@@ -379,7 +383,9 @@ final class BotFreeMarketManager {
         entry.fmErrandProgress.begin(now);
         entry.fmPhaseDeadlineAtMs = now + ERRAND_TIMEOUT_MS;
         reply.accept(entry, stallServiceDue ? "gonna check on my shop at the fm"
-                : "got some stuff to sell, heading to the free market");
+                : fredrickDue && tripWorthyCount(listable) < MIN_LISTINGS_TO_TRIP
+                        ? "gonna collect my earnings from fredrick"
+                        : "got some stuff to sell, heading to the free market");
     }
 
     /**
@@ -438,7 +444,20 @@ final class BotFreeMarketManager {
         if (entry.nextStallServiceAtMs > 0 && now >= entry.nextStallServiceAtMs) {
             return true;
         }
+        if (fredrickPickupDue(entry, bot, now)) {
+            return true;
+        }
         return tripWorthyCount(selectListings(entry, bot, now)) >= MIN_LISTINGS_TO_TRIP;
+    }
+
+    /** Slow-cadence probe (one DB read per bot-hour): is Fredrick holding proceeds worth a trip?
+     *  Cached on the entry; cleared the moment a pickup succeeds ({@link #tickFredrick}). */
+    static boolean fredrickPickupDue(BotEntry entry, Character bot, long now) {
+        if (now >= entry.nextFredrickProbeAtMs) {
+            entry.nextFredrickProbeAtMs = now + 3_600_000L + BotManager.randMs(0, 1_800_000);
+            entry.fredrickPickupPending = hasFredrickHoldings(bot);
+        }
+        return entry.fredrickPickupPending;
     }
 
     // ---- errand tick ---------------------------------------------------------------------------
@@ -635,6 +654,7 @@ final class BotFreeMarketManager {
         }
         if (!hasFredrickHoldings(bot)) {
             entry.fmFredrickState = 2;
+            entry.fredrickPickupPending = false;
             reply.accept(entry, "picked up my stall proceeds from fredrick");
         } else if (!entry.fmFredrickOnExit) {
             entry.fmFredrickState = 1; // bag too full — retry on the way out
