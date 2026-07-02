@@ -129,7 +129,9 @@ Today four value scales coexist (stat-score, meso, optimizer DPS-int, offense×h
   This keys prices to quality without a new scale, is job-magnitude-safe (delta over own clean
   base), and makes §8.1.4 free: badly-scrolled gear lands in low bands priced between clean and
   well-scrolled by the convex curve + observed trades. Precise Equip stats still ride along in the
-  listing itself (`PlayerShopItem` holds the real item).
+  listing itself (`PlayerShopItem` holds the real item). Bands are **points on the item's
+  reproduction curve, not independent price cells** — quotes for unobserved bands and substitute
+  items derive from observed ones through the structured priors in §4.
 
 **Use-value (what it's worth TO ME), all reused:**
 - Equip: Δ(optimizer score / effective DPS) from `autoEquip`'s comparison machinery +
@@ -205,6 +207,32 @@ touched gloves runs on its noisy consensus idea. Confidence **decays per elapsed
 observation-gap** (half-life ≈ a few × that key's median inter-event gap, wall-clock-floored):
 liquid items forget fast and track the market; illiquid items remember. Self-normalizing; no
 global rate constant.
+
+**Structured priors — related prices stay coherent (cross-item information flow).** Price keys
+are NOT independent cells; most keys will never trade, and a naive per-key table would let a
+10-STR hat trade at 1m while its 11-STR sibling rots at a 300k anchor. Any quote (consensus or
+perception) for a key with thin direct evidence is **generated from the value structure and
+corrected by observations**, falling back through three relations:
+1. **Same item, other quality bands — the reproduction curve.** `reproductionValue` already gives
+   the *shape* of value across bands (convex, scroll-prices-in). Maintain a per-itemId
+   **calibration factor** = weighted avg(observed band price ÷ curve(band)) over that item's
+   observed bands; quote unobserved bands as factor × curve(band). A trade at ANY band moves the
+   whole line's curve, so the +11 band quotes ≈ +10's price *plus the marginal expected scroll
+   cost of the 11th point* (convexity ⇒ never less than the observed band).
+2. **Same slot, substitute items — implied stat price.** Maintain per-slot implied
+   meso-per-marketStatValue-point from items that DID trade; a never-traded item quotes from its
+   own stat score × that implied rate (what a human does: "10-STR hats go 1m, so this one's a bit
+   more"). The UpgradeMenu then enforces it behaviorally: an underpriced substitute tops every
+   buyer's Δscore/price ranking, sells instantly, and the sold-fast/failed-fill signals close the
+   gap — structure gives the fast prior, arbitrage gives the correction.
+3. **Anchor** (own farming/repro cost, NPC band) when even comparables are empty.
+The consensus sweep maintains the two derived aggregates (per-itemId calibration, per-slot
+implied stat price) alongside per-key rows — a few cheap regressions over recent events, off the
+hot path. Scrolls couple in both directions through the same structure: scroll consensus prices
+are *inputs* to every reproduction curve (a 60% ATT scroll spike re-quotes all scrolled-ATT gear
+upward and lowers scrolling EV → less finished-gear supply → §7 re-equilibrates), and scroll WTP
+is the curve's marginal effect (the planner DP's shadow price) — the joint equilibrium of
+economy-design.md, realized as information flow instead of a solver.
 
 Zero information anywhere: consensus falls back to anchors (§0), a bot with neither consensus nor
 observations quotes its own farming/repro cost — heterogeneous by construction. Human fuzz on
@@ -540,8 +568,12 @@ sellers exit (emergent floor, §0); (c) demand spike → price rises, capped by 
 sustained oscillation (damping); (e) **sparse-market stability**: with ~3 agents and rare trades,
 quotes stay in a band around consensus instead of random-walking, while cross-bot dispersion
 stays nonzero (perception noise — bots still disagree); (f) an injected outlier trade (gift
-price) barely moves consensus on a liquid item. Fish Spear fixture: weak-bot WTP ≫ its own farm
-cost; buying beats grinding. Two-bots-and-a-player glove case scripted at this layer.
+price) barely moves consensus on a liquid item; (g) **cross-key coherence**: with trades only at
+the 10-STR band, the 11-STR band of the same item quotes ≥ the 10-STR price + marginal repro
+cost (never below the observed band), and a never-traded same-slot substitute quotes from the
+implied stat price, converging without requiring its own trades. Fish Spear fixture: weak-bot
+WTP ≫ its own farm cost; buying beats grinding. Two-bots-and-a-player glove case scripted at
+this layer.
 
 **S2. FM errand + stalls** — `BotFreeMarketManager` (nav work items from the explorer: BotEntry
 errand fields, DetourErrand registration + statusReport branch, room pick, `HiredMerchant.openFor`
@@ -614,3 +646,7 @@ future extensions; both already have SSOT hooks (`expectedAcquireGain`, recipe t
    with real partial private observation (local-only, source-weighted, confidence-decayed), plus
    speech rounding. Personal experience dominates hearsay as confidence grows.
 10. **Inflation:** measured (ledger counters), never managed. Operator steers real faucets/sinks.
+11. **Cross-item price coherence (owner question, 2026-07-02):** flat per-key beliefs rejected —
+    quotes for thin keys are *generated* from structure (calibrated reproduction curve across
+    bands, per-slot implied stat price across substitutes, anchors last) and corrected by
+    observations; arbitrage via the UpgradeMenu closes residual gaps. See §4 structured priors.

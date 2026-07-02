@@ -3552,10 +3552,11 @@ public class BotManager {
         }
         BotPerformanceMonitor.recordStallPhase("tick-common-systems", tCommonTrace);
 
-        // Trade window open: keep physics consistent (gravity / swim / idle stance) but
-        // do not issue any movement input — no follow, grind, attack, teleport, or shop visit.
-        // Prevents the bot from wandering away or auto-equipping while the player is mid-trade.
-        if (bot.getTrade() != null) {
+        // Trade window open (or non-Trade market work staging inventory, e.g. stall stocking /
+        // merchant buys — entry.marketBusy): keep physics consistent (gravity / swim / idle
+        // stance) but do not issue any movement input — no follow, grind, attack, teleport, or
+        // shop visit. Prevents the bot from wandering away or auto-equipping mid-exchange.
+        if (bot.getTrade() != null || entry.marketBusy) {
             if (!perf) {
                 tickTradePhysicsOnly(entry, bot);
             } else {
@@ -5432,8 +5433,9 @@ public class BotManager {
         // this scheduler thread and races Trade.completeTrade()'s addFromDrop on the packet
         // thread: fitsInInventory() can pass, then this fills the last slot before addFromDrop
         // runs, and the silently-ignored false return loses the partner's item.
-        // See memory/kb_bot_trade_dupe_loss_audit.md.
-        if (bot.getTrade() == null && runSlowScans) {
+        // See memory/kb_bot_trade_dupe_loss_audit.md. marketBusy extends the same protection
+        // to non-Trade inventory staging (stall stocking / merchant buys).
+        if (bot.getTrade() == null && !entry.marketBusy && runSlowScans) {
             if (perf) t = System.nanoTime();
             BotInventoryManager.tickPassiveLoot(entry, bot);
             if (perf) BotPerformanceMonitor.record("common-passive-loot", System.nanoTime() - t);

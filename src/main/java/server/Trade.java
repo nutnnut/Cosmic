@@ -126,7 +126,14 @@ public class Trade {
 
         for (Item item : exchangeItems) {
             KarmaManipulator.toggleKarmaFlagToUntradeable(item);
-            InventoryManipulator.addFromDrop(chr.getClient(), item, show);
+            if (!InventoryManipulator.addFromDrop(chr.getClient(), item, show)) {
+                // inventory changed between fitsInInventory() and here (e.g. concurrent pickup):
+                // drop at the receiver's feet instead of silently voiding the item
+                log.warn("Trade item {} x{} did not fit {}'s inventory on completion; dropped to floor",
+                        item.getItemId(), item.getQuantity(), chr.getName());
+                chr.getMap().spawnItemDrop(chr, chr, item, chr.getPosition(), true, true);
+                chr.dropMessage(1, "Your inventory was full; a traded item was dropped at your feet.");
+            }
             server.bots.BotManager.getInstance().notifyOwnerGainedTradeItem(chr, item, partner.getChr());
         }
 
@@ -249,6 +256,11 @@ public class Trade {
 
     public boolean hasAnyOffer() {
         return meso > 0 || !items.isEmpty();
+    }
+
+    /** Meso currently staged in this trade window (pre-completion). Read-only; used by bots to evaluate an offer. */
+    public int getStagedMeso() {
+        return meso;
     }
 
     public int getExchangeMesos() {

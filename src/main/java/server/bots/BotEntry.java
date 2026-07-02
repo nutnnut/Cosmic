@@ -621,6 +621,12 @@ public class BotEntry {
     Runnable pendingBotTradeRetry = null;
     int pendingBotTradeRetryMs = 0;
 
+    // Market work that mutates inventory outside a Trade (staging stall stock into a
+    // HiredMerchant, executing a merchant buy): a HiredMerchant is not a Trade, so the
+    // getTrade() tick gates don't cover it. Set while such an operation is in flight to get
+    // the same physics-only tick + passive-loot suppression a trade window gets.
+    volatile boolean marketBusy = false;
+
     // Trade queue
     String pendingTradeCategory = null;
     List<Item> pendingTradeItems = null;
