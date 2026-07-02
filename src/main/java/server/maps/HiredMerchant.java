@@ -347,7 +347,7 @@ public class HiredMerchant extends AbstractMapObject {
                     // Living-economy tape + participant price books. Unconditional: player stalls
                     // are market signal too. Best-effort - must never break a sale.
                     server.bots.BotManager.getInstance().notifyStallSale(
-                            ownerId, c.getPlayer(), pItem.getItem().getItemId(),
+                            ownerId, c.getPlayer(), pItem.getItem(),
                             newItem.getQuantity(), paidTotal, getMapId());
 
                     Character owner = Server.getInstance().getWorld(world).getPlayerStorage().getCharacterByName(ownerName);

@@ -1547,6 +1547,27 @@ final class BotScrollManager {
         return new EquipQuote(eq.getItemId(), band, Math.round(bandCurve.applyAsDouble(band)), bandCurve);
     }
 
+    /** What a best-buyer bot pays for a rolled stall equip: its combat upgrade gain over the
+     *  bot's worn piece (potentialValue diff; 0 when unwearable or no upgrade) at the same
+     *  meso-per-EV anchor scroll demand uses ({@link #SCROLL_CEILING_PER_EV}), scaled by the
+     *  slot's investment durability — a glove upgrade outlives a weapon upgrade for buyers
+     *  exactly as it does for scrollers. */
+    static long equipBuyCeilingMeso(Character bot, Equip candidate) {
+        ItemInformationProvider ii = ItemInformationProvider.getInstance();
+        Short slot = primarySlot(ii, candidate.getItemId());
+        if (slot == null || !ii.canWearEquipment(bot, candidate, slot)) {
+            return 0;
+        }
+        Equip worn = wornInSlot(bot, ii, slot);
+        double gain = potentialValue(bot, ii, candidate)
+                - (worn == null ? 0.0 : potentialValue(bot, ii, worn));
+        if (gain <= 0) {
+            return 0;
+        }
+        return Math.round(SCROLL_CEILING_PER_EV * gain
+                * slotDurabilityFactor(candidate.getItemId() / 10000 % 100));
+    }
+
     /** Quality band of a rolled equip — the price-key dimension both sides of a trade must agree
      *  on, so it is deterministic from the WZ catalog alone (no producer/price context): the
      *  piece's job-neutral stat surplus over its clean base, in units of the slot's median

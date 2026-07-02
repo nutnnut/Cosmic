@@ -1573,16 +1573,18 @@ public class BotManager {
      * A hired-merchant stall sold something (any owner species — player stalls are market signal
      * too): append to the living-economy tape, count the fee as a meso sink, and let bot
      * participants' price books learn the clearing. Best-effort — must never break a sale.
-     * Quality band is 0 until the equip-banding valuer lands (design sec 3).
+     * The sold item itself is passed so equips band by their rolled quality (design sec 3).
      */
-    public void notifyStallSale(int ownerId, Character buyer, int itemId, int units, long paidTotal, int mapId) {
+    public void notifyStallSale(int ownerId, Character buyer, Item sold, int units, long paidTotal, int mapId) {
         try {
+            int itemId = sold.getItemId();
+            int band = BotFreeMarketManager.bandOf(sold);
             long unitPrice = units > 0 ? Math.max(1, paidTotal / units) : paidTotal;
-            BotMarketLedger.getInstance().append(BotMarketLedger.EventKind.STALL_SALE, itemId, 0,
+            BotMarketLedger.getInstance().append(BotMarketLedger.EventKind.STALL_SALE, itemId, band,
                     Math.max(1, units), unitPrice, ownerId, buyer != null ? buyer.getId() : null, mapId);
             BotMarketLedger.getInstance().recordFlow("trade-tax", server.Trade.getFee(paidTotal), false);
             long now = System.currentTimeMillis();
-            long key = BotMarketMath.priceKey(itemId, 0);
+            long key = BotMarketMath.priceKey(itemId, band);
             BotEntry seller = getEntryByBotCharId(ownerId);
             if (seller != null && seller.bot != null) {
                 BotMarketBook.of(seller, seller.bot).observe(key, unitPrice, BotMarketMath.W_TRADE, now);
@@ -1594,7 +1596,8 @@ public class BotManager {
                 }
             }
         } catch (RuntimeException e) {
-            log.warn("notifyStallSale bookkeeping failed for item {}: {}", itemId, e.toString());
+            log.warn("notifyStallSale bookkeeping failed for item {}: {}",
+                    sold != null ? sold.getItemId() : -1, e.toString());
         }
     }
 

@@ -1741,6 +1741,20 @@ class BotInventoryManager {
         return collectEquipsGroup(EquipsGroup.NORMAL, entry, bot);
     }
 
+    /** The valuables shelf itself, ranked: NORMAL-group bag equips kept for their above-base
+     *  rolls ({@link #shouldKeepForSellTrash}) — the natural stall supply. These pieces sit in
+     *  the bag waiting for a buyer; the FM stall is where they finally meet one. */
+    static List<Equip> collectMarketableEquips(BotEntry entry, Character bot) {
+        ItemInformationProvider ii = ItemInformationProvider.getInstance();
+        List<Equip> kept = new ArrayList<>();
+        for (Item item : collectTrashEquips(entry, bot)) {
+            if (item instanceof Equip equip && shouldKeepForSellTrash(ii, equip)) {
+                kept.add(equip);
+            }
+        }
+        return rankKeptValuables(ii, kept);
+    }
+
     static List<Item> collectSellTrashEquips(BotEntry entry, Character bot) {
         List<Item> trash = collectTrashEquips(entry, bot);
         if (trash.isEmpty()) {

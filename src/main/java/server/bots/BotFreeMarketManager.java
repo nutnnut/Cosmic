@@ -1,6 +1,7 @@
 package server.bots;
 
 import client.Character;
+import client.inventory.Equip;
 import client.inventory.InventoryType;
 import client.inventory.Item;
 import client.inventory.manipulator.InventoryManipulator;
@@ -314,6 +315,7 @@ final class BotFreeMarketManager {
             out.add(new ListingVerdict(id, qty, ask, npcWhole, shopPrice, premium, "list",
                     new ListingPlan(item, (short) 1, (short) qty, ask)));
         }
+        evaluateEquipListings(bot, book, now, out);
         out.sort(java.util.Comparator.comparingLong(ListingVerdict::premium).reversed());
         int slots = 0;
         for (int i = 0; i < out.size(); i++) {
@@ -324,6 +326,89 @@ final class BotFreeMarketManager {
             }
         }
         return out;
+    }
+
+    /**
+     * Evaluate the valuables shelf ({@link BotInventoryManager#collectMarketableEquips}) for the
+     * stall: each rolled piece is its own verdict/plan (the server clears equips one at a time —
+     * two same-id equips carry different rolls, so no bundling). The ask blends the bot's belief
+     * at the piece's BANDED price key over the reproduction-curve quote as cost basis; when the
+     * bot has traded bands of this item before, the curve is first pinned to that evidence
+     * ({@link BotMarketMath#curveCalibration}). The NPC counter only caps CLEAN pieces — a shop
+     * copy substitutes a band-0 base, never a scrolled roll.
+     */
+    private static void evaluateEquipListings(Character bot, BotMarketBook book, long now,
+                                              List<ListingVerdict> out) {
+        BotEntry entry = BotManager.getInstance().getEntryByBotCharId(bot.getId());
+        for (Equip eq : BotInventoryManager.collectMarketableEquips(entry, bot)) {
+            int id = eq.getItemId();
+            long npcWhole = npcSell.price(id, 1);
+            int shopPrice = npcShopPrice.price(id);
+            if (!tradeable.test(id)) {
+                out.add(new ListingVerdict(id, 1, 0, npcWhole, shopPrice, 0, "untradeable", null));
+                continue;
+            }
+            BotScrollManager.EquipQuote quote = BotScrollManager.equipMarketQuote(entry, bot, eq);
+            if (quote == null || quote.curveQuoteMeso() <= 0) {
+                out.add(new ListingVerdict(id, 1, 0, npcWhole, shopPrice, 0, "no price basis", null));
+                continue;
+            }
+            long key = BotMarketMath.priceKey(id, quote.band());
+            double curveQuote = calibratedCurveQuote(book, quote, now);
+            int ask = unitAsk(book.perceivedPrice(key, now), book.privateConfidence(key, now), curveQuote);
+            if (quote.band() == 0 && shopPrice > 0 && ask >= shopPrice) {
+                ask = shopPrice - 1; // a clean piece competes with the NPC counter; a roll doesn't
+            }
+            if (ask <= 0) {
+                out.add(new ListingVerdict(id, 1, 0, npcWhole, shopPrice, 0, "no price basis", null));
+                continue;
+            }
+            long premium = listingPremium(ask, 1, npcWhole);
+            if (premium <= 0) {
+                out.add(new ListingVerdict(id, 1, ask, npcWhole, shopPrice, premium,
+                        "npc sale pays better", null));
+                continue;
+            }
+            if (premium < slotWorthMesos()) {
+                out.add(new ListingVerdict(id, 1, ask, npcWhole, shopPrice, premium,
+                        "premium not worth a slot", null));
+                continue;
+            }
+            out.add(new ListingVerdict(id, 1, ask, npcWhole, shopPrice, premium, "list",
+                    new ListingPlan(eq, (short) 1, (short) 1, ask)));
+        }
+    }
+
+    /** Highest band probed for calibration evidence — covers every real scroll outcome. */
+    private static final int CALIBRATION_BAND_PROBE = 12;
+
+    /** The reproduction curve pinned to the bands of this item the bot has price beliefs about;
+     *  the raw curve quote when it has none. */
+    private static double calibratedCurveQuote(BotMarketBook book, BotScrollManager.EquipQuote quote,
+                                               long now) {
+        List<BotMarketMath.Sample> observed = new ArrayList<>();
+        for (int b = 0; b <= CALIBRATION_BAND_PROBE; b++) {
+            long k = BotMarketMath.priceKey(quote.itemId(), b);
+            double conf = book.privateConfidence(k, now);
+            if (conf <= 0) {
+                continue;
+            }
+            double price = book.perceivedPrice(k, now);
+            if (price > 0) {
+                observed.add(new BotMarketMath.Sample(b, price, conf));
+            }
+        }
+        double pinned = BotMarketMath.quoteFromCurve(
+                BotMarketMath.curveCalibration(observed, quote.bandCurve()),
+                quote.bandCurve(), quote.band());
+        return pinned > 0 ? pinned : quote.curveQuoteMeso();
+    }
+
+    /** Price-key quality band of any item: rolled equips band by quality, everything else 0. */
+    static int bandOf(Item item) {
+        return item instanceof Equip eq
+                ? BotScrollManager.equipQualityBand(ItemInformationProvider.getInstance(), eq)
+                : 0;
     }
 
     /** Stacks that justify a trip on their own: NPC-shop staples only ever tag along — a bag of
@@ -944,7 +1029,7 @@ final class BotFreeMarketManager {
                 InventoryManipulator.removeFromSlot(bot.getClient(), type, plan.item().getPosition(),
                         (short) (plan.bundles() * plan.perBundle()), true);
                 BotMarketLedger.getInstance().append(BotMarketLedger.EventKind.LIST,
-                        plan.item().getItemId(), 0, plan.bundles() * plan.perBundle(),
+                        plan.item().getItemId(), bandOf(plan.item()), plan.bundles() * plan.perBundle(),
                         plan.unitPrice(), bot.getId(), null, bot.getMapId());
                 listed++;
             }
@@ -988,7 +1073,7 @@ final class BotFreeMarketManager {
                 }
                 int perBundle = Math.max(1, psi.getItem().getQuantity());
                 double unit = (double) psi.getPrice() / perBundle;
-                long key = BotMarketMath.priceKey(psi.getItem().getItemId(), 0);
+                long key = BotMarketMath.priceKey(psi.getItem().getItemId(), bandOf(psi.getItem()));
                 book.observe(key, unit, BotMarketMath.W_ASK, now);
                 maybeBargainBuy(entry, bot, book, merchant, slot, psi, unit, key, now);
             }
@@ -1007,13 +1092,25 @@ final class BotFreeMarketManager {
         if (entry.fmBargainBuys >= MAX_BARGAIN_BUYS) {
             return;
         }
-        double perceived = book.perceivedPrice(key, now);
-        if (perceived <= 0) {
-            return; // no idea what it's worth - not a bargain, just unknown
-        }
-        double margin = BotMarketMath.openingMargin(0.5, book.privateConfidence(key, now));
-        if (unitAsk > perceived * (1.0 - Math.min(0.5, margin))) {
-            return;
+        boolean gearUpgrade = false;
+        if (psi.getItem() instanceof Equip stallEq) {
+            // Gear demand: a rolled piece is bought as a combat UPGRADE within the buyer's own
+            // combat ceiling — no prior price belief needed, which is what lets a fresh equip
+            // market clear at all (and those clearings then teach everyone's books the bands).
+            long ceiling = BotScrollManager.equipBuyCeilingMeso(bot, stallEq);
+            if (ceiling <= 0 || psi.getPrice() > ceiling) {
+                return; // not wearable / no upgrade / priced above its combat worth to this bot
+            }
+            gearUpgrade = true;
+        } else {
+            double perceived = book.perceivedPrice(key, now);
+            if (perceived <= 0) {
+                return; // no idea what it's worth - not a bargain, just unknown
+            }
+            double margin = BotMarketMath.openingMargin(0.5, book.privateConfidence(key, now));
+            if (unitAsk > perceived * (1.0 - Math.min(0.5, margin))) {
+                return;
+            }
         }
         if (bot.getMeso() < psi.getPrice()) {
             return;
@@ -1026,7 +1123,8 @@ final class BotFreeMarketManager {
         try {
             merchant.buy(bot.getClient(), slot, (short) 1); // book learns via notifyStallSale
             entry.fmBargainBuys++;
-            reply.accept(entry, "grabbed a deal at someone's shop");
+            reply.accept(entry, gearUpgrade ? "found a gear upgrade at someone's shop"
+                    : "grabbed a deal at someone's shop");
         } catch (RuntimeException e) {
             log.warn("bargain buy failed for {}: {}", bot.getName(), e.toString());
         } finally {
