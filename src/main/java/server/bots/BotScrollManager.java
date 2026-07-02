@@ -30,6 +30,7 @@ import java.util.HashSet;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.DoubleUnaryOperator;
@@ -218,8 +219,13 @@ final class BotScrollManager {
             return;
         }
 
-        ScrollResult result = applyScroll(bot, equip, scrollItem);
-        announce(bot, result, equip);
+        boolean useWhite = shouldUseWhiteScroll(entry, bot, equip, scrollItem);
+        ScrollResult result = applyScroll(bot, equip, scrollItem, useWhite);
+        if (useWhite && result == ScrollResult.FAIL) {
+            BotManager.getInstance().botSay(bot, "failed, but the white scroll saved my slot");
+        } else {
+            announce(bot, result, equip);
+        }
         if (result != null) {
             BotManager.getInstance().notifyNearbyBotsOfScroll(bot, result, scrollItem.getItemId(), 3_000L);
         }
@@ -309,8 +315,12 @@ final class BotScrollManager {
      *  while the plan computed off-thread) before committing. */
     private static void applyAutoScrollPlan(BotEntry entry, Resolved resolved) {
         Character bot = entry.bot;
-        if (resolved == null || bot == null || !entry.selfScrollEnabled
+        if (bot == null || !entry.selfScrollEnabled
                 || entry.pendingAction != null || entry.pendingTradeCategory != null) {
+            return;
+        }
+        if (resolved == null) {
+            maybeChaosPlay(entry, bot); // no regular play: maybe gamble a chaos reroll instead
             return;
         }
         Equip equip = resolved.equip();
@@ -351,6 +361,13 @@ final class BotScrollManager {
     // equip in place (returns the same ref, or null on a boom), then the scroll is consumed and the
     // client view refreshed. Returns the outcome, or null if the scroll vanished before applying.
     private static ScrollResult applyScroll(Character chr, Equip toScroll, Item scroll) {
+        return applyScroll(chr, toScroll, scroll, false);
+    }
+
+    /** {@code useWhite}: protect the slot on a fail, consuming an owned White Scroll — the same
+     *  {@code ws} flag/consume flow ScrollHandler runs for players. Silently degrades to an
+     *  unprotected apply when no White Scroll is actually in the bag. */
+    private static ScrollResult applyScroll(Character chr, Equip toScroll, Item scroll, boolean useWhite) {
         ItemInformationProvider ii = ItemInformationProvider.getInstance();
         Client c = chr.getClient();
         int scrollId = scroll.getItemId();
@@ -360,7 +377,15 @@ final class BotScrollManager {
         byte oldLevel = toScroll.getLevel();
         byte oldSlots = toScroll.getUpgradeSlots();
 
-        Equip scrolled = (Equip) ii.scrollEquipWithId(toScroll, scrollId, false, 0, false);
+        Item wscroll = null;
+        if (useWhite) {
+            wscroll = useInv.findById(ItemId.WHITE_SCROLL);
+            if (wscroll == null) {
+                useWhite = false;
+            }
+        }
+
+        Equip scrolled = (Equip) ii.scrollEquipWithId(toScroll, scrollId, useWhite, 0, false);
         ScrollResult result;
         if (scrolled == null) {
             result = ScrollResult.CURSE;
@@ -376,6 +401,13 @@ final class BotScrollManager {
         try {
             if (scroll.getQuantity() < 1) {
                 return null;
+            }
+            if (useWhite && !ItemConstants.isCleanSlate(scrollId)) {
+                if (wscroll.getQuantity() < 1) {
+                    return null;
+                }
+                InventoryManipulator.removeFromSlot(c, InventoryType.USE, wscroll.getPosition(),
+                        (short) 1, false, false);
             }
             InventoryManipulator.removeFromSlot(c, InventoryType.USE, scroll.getPosition(), (short) 1, false);
         } finally {
@@ -1337,11 +1369,12 @@ final class BotScrollManager {
     /** Meso price of a scroll = MIN over sources: cheapest NPC-shop price, else its drop-farm cost
      *  (rarity→meso). Falls back to a flat default only when it is neither shop-sold nor dropped. */
     private static double scrollPriceMeso(ProducerCombat pc, int scrollId) {
-        // ponytail: hardcoded floor until the value model prices these properly. Chaos/White scrolls
-        // are high-demand trade goods the shop/farm heuristic values far too low, so bots dumped them
-        // for buffer early. Flat 10M keep-floor; drop this once scrollMarketValueMeso estimates them.
+        // Chaos/White now have real consumption (chaos gambles, white protection), so the live
+        // market consensus prices them; the old 10M stopgap survives only as a cold-market floor
+        // until the tape has clearings.
         if (ItemConstants.isChaosScroll(scrollId) || scrollId == ItemId.WHITE_SCROLL) {
-            return 10_000_000;
+            return Math.max(10_000_000.0,
+                    BotMarketConsensus.getInstance().consensus(BotMarketMath.priceKey(scrollId, 0)));
         }
         Integer price = shopPrices().get(scrollId);
         if (price != null) {
@@ -1518,7 +1551,8 @@ final class BotScrollManager {
      * consumed upgrade slots (bands don't encode them). Null when WZ knows no clean stats.
      */
     record EquipQuote(int itemId, int band, long curveQuoteMeso,
-                      java.util.function.DoubleUnaryOperator bandCurve) {}
+                      java.util.function.DoubleUnaryOperator bandCurve,
+                      double baseScore, double bandUnit) {}
 
     static EquipQuote equipMarketQuote(BotEntry entry, Character bot, Equip eq) {
         ItemInformationProvider ii = ItemInformationProvider.getInstance();
@@ -1544,7 +1578,8 @@ final class BotScrollManager {
             // in success and its estimate is meaningless (a wild clean roll prices AT the ceiling).
             return SECONDHAND_DISCOUNT * vf.applyAsDouble(baseScore + Math.min(b, maxBand) * unit);
         };
-        return new EquipQuote(eq.getItemId(), band, Math.round(bandCurve.applyAsDouble(band)), bandCurve);
+        return new EquipQuote(eq.getItemId(), band, Math.round(bandCurve.applyAsDouble(band)),
+                bandCurve, baseScore, unit);
     }
 
     /** What a best-buyer bot pays for a rolled stall equip: its combat upgrade gain over the
@@ -1634,6 +1669,151 @@ final class BotScrollManager {
     private static int maxBand(double[] sortedGains, double unit, int tuc) {
         return unit <= 0 || sortedGains.length == 0 ? 0
                 : (int) Math.floor(tuc * sortedGains[sortedGains.length - 1] / unit);
+    }
+
+    // ---- chaos & white scroll consumption (S4, owner-specced) ----------------------------------
+
+    private static final int CHAOS_MC_SAMPLES = 128;
+    /** A piece must sit at least this many bands above clean before a chaos gamble is considered —
+     *  the convexity that makes the reroll EV-positive only exists on an already-scrolled piece. */
+    private static final int CHAOS_MIN_BAND = 2;
+
+    record ChaosPlay(Equip target, Item scroll, double evMeso, String targetName) {}
+
+    /**
+     * Best chaos gamble across the bot's owned chaos scrolls × scrollable pieces, or null. The
+     * reroll walks every positive stat ±range symmetrically, but the piece's market value curve
+     * is CONVEX in stat score — so on a well-scrolled piece the expected post-reroll VALUE beats
+     * the current value (upside bands are worth more than downside bands lose). EV is judged in
+     * meso against the chaos scroll's own market cost, with a deterministic per-bot gambler
+     * appetite: a gambler plays slightly negative EV for the thrill, a cautious bot wants edge.
+     */
+    static ChaosPlay bestChaosPlay(BotEntry entry, Character bot) {
+        ItemInformationProvider ii = ItemInformationProvider.getInstance();
+        Item chaos = null;
+        for (Item s : bot.getInventory(InventoryType.USE).list()) {
+            if (ItemConstants.isChaosScroll(s.getItemId()) && s.getQuantity() > 0) {
+                chaos = s;
+                break;
+            }
+        }
+        if (chaos == null) {
+            return null;
+        }
+        Map<String, Integer> st = ii.getEquipStats(chaos.getItemId());
+        double p = effectiveSuccessPct(st == null ? 60 : st.getOrDefault("success", 60)) / 100.0;
+        ProducerCombat pc = resolveProducerCombat(entry, bot);
+        double cost = SCROLL_OPPORTUNITY_FRACTION * scrollPriceMeso(pc, chaos.getItemId());
+        int range = YamlConfig.config.server.CHSCROLL_STAT_RANGE;
+        double appetite = (bot.getId() * 2654435761L >>> 24 & 0xFF) / 255.0;
+        double required = cost * (0.3 - 0.6 * appetite);
+        ChaosPlay best = null;
+        for (Equip eq : collectEquips(bot, ii)) {
+            if (eq.getUpgradeSlots() < 1) {
+                continue; // server quirk: a chaos apply still needs (and consumes) a slot
+            }
+            EquipQuote q = equipMarketQuote(entry, bot, eq);
+            if (q == null || q.band() < CHAOS_MIN_BAND || q.bandUnit() <= 0) {
+                continue;
+            }
+            double vNow = q.bandCurve().applyAsDouble(q.band());
+            double ev = p * (chaosOutcomeMeanValue(eq, q, range) - vNow) - cost;
+            if (ev > required && (best == null || ev > best.evMeso())) {
+                best = new ChaosPlay(eq, chaos, ev, equipName(ii, eq.getItemId()));
+            }
+        }
+        return best;
+    }
+
+    /** Mean post-chaos market value of {@code eq}: Monte-Carlo over the server's actual reroll
+     *  semantics (every positive stat moves uniform ±range, floored at 0), each sample read off
+     *  the piece's own band curve at the fractional band its score lands on. */
+    private static double chaosOutcomeMeanValue(Equip eq, EquipQuote q, int range) {
+        double sum = 0;
+        for (int i = 0; i < CHAOS_MC_SAMPLES; i++) {
+            double score = ATT_WEIGHT * chaosStat(eq.getWatk(), range)
+                    + MATK_WEIGHT * chaosStat(eq.getMatk(), range)
+                    + MAIN_STAT_WEIGHT * (chaosStat(eq.getStr(), range) + chaosStat(eq.getDex(), range)
+                            + chaosStat(eq.getInt(), range) + chaosStat(eq.getLuk(), range))
+                    + WDEF_WEIGHT * chaosStat(eq.getWdef(), range)
+                    + MDEF_WEIGHT * chaosStat(eq.getMdef(), range)
+                    + HP_WEIGHT * chaosStat(eq.getHp(), range) + MP_WEIGHT * chaosStat(eq.getMp(), range)
+                    + AVOID_WEIGHT * chaosStat(eq.getAvoid(), range)
+                    + MOVE_WEIGHT * (chaosStat(eq.getSpeed(), range) + chaosStat(eq.getJump(), range));
+            sum += q.bandCurve().applyAsDouble(Math.max(0, (score - q.baseScore()) / q.bandUnit()));
+        }
+        return sum / CHAOS_MC_SAMPLES;
+    }
+
+    private static double chaosStat(short cur, int range) {
+        return cur <= 0 ? 0
+                : Math.max(0, cur + ThreadLocalRandom.current().nextInt(-range, range + 1));
+    }
+
+    /** No regular scroll play existed this scan: consider gambling a chaos reroll instead. The
+     *  scan is as heavy as a plan build (quotes + MC per piece), so it runs on the decide pool
+     *  and applies through the same pending/confirm flow as any scroll. */
+    private static void maybeChaosPlay(BotEntry entry, Character bot) {
+        BotGrindAdvisor.DECIDE_POOL.execute(() -> {
+            ChaosPlay play;
+            long t0 = BotPerformanceMonitor.start();
+            try {
+                play = bestChaosPlay(entry, bot);
+            } catch (RuntimeException e) {
+                return; // WZ/inventory hiccup off-thread — next scan retries
+            } finally {
+                BotPerformanceMonitor.recordSince("chaos-scan", t0);
+            }
+            if (play == null) {
+                return;
+            }
+            BotManager.after(0, () -> {
+                if (!entry.selfScrollEnabled || entry.pendingAction != null
+                        || entry.pendingTradeCategory != null) {
+                    return;
+                }
+                entry.pendingScrollEquip = play.target();
+                entry.pendingScrollScroll = play.scroll();
+                String pitch = "feeling lucky - gonna chaos my " + play.targetName()
+                        + ", could go big or brick it";
+                if (entry.owner == bot) {
+                    BotManager.getInstance().botSay(bot, pitch);
+                    BotManager.after(BotManager.randMs(1500, 2500), () -> executeConfirmed(entry, bot));
+                } else {
+                    entry.pendingAction = "scroll_confirm";
+                    BotManager.getInstance().botReply(entry, pitch
+                            + String.format(" (ev ~%,.0f meso for me)", play.evMeso()));
+                }
+            });
+        });
+    }
+
+    /** White-scroll gate (owner-specced): protect an apply when failRate × the slot's option
+     *  value — the next success this slot could still deliver on the piece's own convex curve —
+     *  exceeds the White Scroll's market cost. On a nearly-done piece the marginal band is worth
+     *  a fortune, so the last slots protect themselves; early slots never do. */
+    static boolean shouldUseWhiteScroll(BotEntry entry, Character bot, Equip equip, Item scroll) {
+        int sid = scroll.getItemId();
+        if (ItemConstants.isCleanSlate(sid) || ItemConstants.isModifierScroll(sid)) {
+            return false; // nothing at stake
+        }
+        if (bot.getInventory(InventoryType.USE).findById(ItemId.WHITE_SCROLL) == null) {
+            return false;
+        }
+        Map<String, Integer> st = ItemInformationProvider.getInstance().getEquipStats(sid);
+        double p = st == null ? 0 : effectiveSuccessPct(st.getOrDefault("success", 0)) / 100.0;
+        if (p <= 0 || p >= 1) {
+            return false; // can't fail (or can't succeed): protection buys nothing
+        }
+        EquipQuote q = equipMarketQuote(entry, bot, equip);
+        if (q == null || q.bandUnit() <= 0) {
+            return false;
+        }
+        double marginal = q.bandCurve().applyAsDouble(q.band() + 1)
+                - q.bandCurve().applyAsDouble(q.band());
+        ProducerCombat pc = resolveProducerCombat(entry, bot);
+        return (1.0 - p) * p * Math.max(0, marginal)
+                > SCROLL_OPPORTUNITY_FRACTION * scrollPriceMeso(pc, ItemId.WHITE_SCROLL);
     }
 
     /**
