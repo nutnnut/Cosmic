@@ -323,7 +323,7 @@ final class BotStarterKitManager {
         java.util.List<Integer> liveRoute = BotAutopilotManager.routeForBot(bot,
                 bot.getMapId(), entry.jobErrandMapId, JOB_ERRAND_MAX_TRAVEL_HOPS,
                 new BotWorldGraph.RouteOptions(false, bot.getMeso(), true, bot.getJob().getId() == 0,
-                        bot.getLevel(), BotAutopilotManager.worldTourReturn(bot)));
+                        bot.getLevel(), BotAutopilotManager.worldTourReturn(bot), BotAutopilotManager.fmReturn(bot)));
         boolean reachable = liveRoute != null;
         // Surface WHY travel actually gave up (deadline / taxi-fare-fail / ferry-board-fail / portal-closed
         // / route-null) plus the failed hop and the bot's meso — "route-reachable=true" alone hides the

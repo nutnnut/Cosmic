@@ -247,4 +247,31 @@ class BotWorldGraphTest {
         assertNull(BotWorldGraph.scriptedEntrancePortal(101000000, 100000201)); // wrong dest for that map
         assertNull(BotWorldGraph.scriptedEntrancePortal(100000000, 100000201)); // not the entrance map
     }
+
+    @Test
+    void fmExitEdgeExistsOnlyForTheBotStandingInside() {
+        int entrance = constants.id.MapId.FM_ENTRANCE; // 910000000
+        int room = 910000001;
+        int town = 220000000;
+        // Rooms connect to the entrance via ordinary portals (WZ scan); the town->entrance market
+        // portal is scripted and deliberately ABSENT, so the FM is enterable only by the errand.
+        BotWorldGraph.Index graph = BotWorldGraph.indexOf(Map.of(
+                room, new int[]{entrance},
+                entrance, new int[]{room},
+                town, new int[0]));
+
+        // No fmReturn (any bot elsewhere): the FM is a dead end - nothing routes out or through.
+        assertNull(BotWorldGraph.route(graph, room, town, 8, PORTALS_ONLY));
+
+        // A bot standing inside carries fmReturn (its saved FREE_MARKET town): room -> entrance ->
+        // town routes normally, so decides/travel need no FM special-casing anywhere else.
+        BotWorldGraph.RouteOptions inside = new BotWorldGraph.RouteOptions(
+                false, 0, false, false, Integer.MAX_VALUE, -1, town);
+        assertEquals(List.of(entrance, town), BotWorldGraph.route(graph, room, town, 8, inside));
+
+        // The exit hop is executed by walking the scripted out00 (its script warps to the saved
+        // town); entrance -> room hops are real portals and must NOT map to the exit.
+        assertEquals("out00", BotWorldGraph.scriptedEntrancePortal(entrance, town));
+        assertNull(BotWorldGraph.scriptedEntrancePortal(entrance, room));
+    }
 }

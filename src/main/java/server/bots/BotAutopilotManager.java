@@ -239,11 +239,19 @@ final class BotAutopilotManager {
         return inZipangu ? bot.peekSavedLocation("WORLDTOUR") : -1;
     }
 
+    /** The Free Market's per-bot exit edge (BotWorldGraph FM_ENTRANCE -> saved town): present only
+     *  while the bot stands inside the FM maps — mirrors {@link #worldTourReturn} so the market can
+     *  only ever be routed OUT of, never THROUGH. */
+    static int fmReturn(Character bot) {
+        return BotFreeMarketManager.isFmMap(bot.getMapId())
+                ? BotFreeMarketManager.fmReturnTownMapId(bot) : -1;
+    }
+
     /** What the bot can spend on travel right now: scrolls if carried, taxis per meso,
      *  ferries per the caller's owner-permission gate ({@link #ferryAllowed}). */
     static BotWorldGraph.RouteOptions travelOptions(Character bot, boolean withFerry) {
         return new BotWorldGraph.RouteOptions(BotShopManager.countReturnScrolls(bot) > 0, bot.getMeso(), withFerry,
-                bot.getJob().getId() == 0, bot.getLevel(), worldTourReturn(bot));
+                bot.getJob().getId() == 0, bot.getLevel(), worldTourReturn(bot), fmReturn(bot));
     }
 
     /**
@@ -304,11 +312,8 @@ final class BotAutopilotManager {
         List<IntToDoubleFunction> weights = new ArrayList<>(members.size());
         for (BotEntry member : members) {
             BotWorldGraph.RouteOptions options = travelOptions(member.bot, ferryAllowed(member));
-            // Off-graph FM maps anchor at the member's return town, so one shopping member
-            // doesn't empty the whole party's common reachable set.
-            int from = BotFreeMarketManager.routeAnchorMapId(member.bot);
-            Set<Integer> reachable = reachableForBot(member.bot, from, MAX_TRAVEL_HOPS, options);
-            weights.add(travelWeight(member.bot, from, MAX_TRAVEL_HOPS, options,
+            Set<Integer> reachable = reachableForBot(member.bot, member.bot.getMapId(), MAX_TRAVEL_HOPS, options);
+            weights.add(travelWeight(member.bot, member.bot.getMapId(), MAX_TRAVEL_HOPS, options,
                     member.activeQuestMobIds));
             if (common == null) {
                 common = new HashSet<>(reachable);
@@ -668,12 +673,6 @@ final class BotAutopilotManager {
                 }
             },
             new DetourErrand() { // free-market session: stall + browse trip during a rest break
-                // Self-rescue: an autopilot bot standing in an FM map without an errand (fizzle
-                // edge, relog, cleared orders) re-arms the exit walk — FM maps are off-graph, so
-                // nothing else can route it out.
-                @Override public void maybeStart(BotEntry entry, Character bot) {
-                    BotFreeMarketManager.maybeStartExitRecovery(entry, bot);
-                }
                 @Override public boolean active(BotEntry entry) { return entry.fmErrandMapId != -1; }
                 @Override public boolean tick(BotEntry entry, Character bot, boolean runAiTick) {
                     return BotFreeMarketManager.tickErrand(entry, bot, runAiTick);
@@ -697,9 +696,7 @@ final class BotAutopilotManager {
      */
     static boolean tick(BotEntry entry, Character bot, boolean runAiTick) {
         if (!isActive(entry) || bot.getMap() == null) {
-            // Even a plan-less bot must not sit inside the off-graph FM maps (nothing below can
-            // route it out of them) — the market manager arms + drives a bare exit walk.
-            return bot.getMap() != null && BotFreeMarketManager.tickStrandedExit(entry, bot, runAiTick);
+            return false;
         }
         // Party SSOT: pull this member's grind destination from the one shared plan before anything
         // reads autopilotMapId below. A follower can no longer drift onto a stale solo pick (the old
@@ -1377,13 +1374,11 @@ final class BotAutopilotManager {
     }
 
     private static Recommendation recommendOnce(BotEntry entry, Character bot, boolean withFerry) {
-        // A bot inside the off-graph FM maps plans from its return town (else nothing is reachable).
-        int from = BotFreeMarketManager.routeAnchorMapId(bot);
         if (entry.autopilotFarmItemId != 0) {
             return farmAdvisor.recommend(entry, bot, entry.autopilotFarmItemId,
-                    from, MAX_TRAVEL_HOPS, withFerry);
+                    bot.getMapId(), MAX_TRAVEL_HOPS, withFerry);
         }
-        return advisor.recommend(entry, bot, from, MAX_TRAVEL_HOPS, withFerry);
+        return advisor.recommend(entry, bot, bot.getMapId(), MAX_TRAVEL_HOPS, withFerry);
     }
 
     /** The one-line "can i take the boat?" ask, or null when overseas isn't clearly better. */

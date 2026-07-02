@@ -71,16 +71,23 @@ final class BotWorldGraph {
 
     /** Per-query toggles for the consumable edges; pure portal walking ignores them all.
      *  {@code worldTourReturn} is the bot's saved WORLDTOUR origin (or -1) — the only exit Spinel
-     *  offers from {@link #MUSHROOM_SHRINE}, so it's empty for any bot not standing there. */
+     *  offers from {@link #MUSHROOM_SHRINE}, so it's empty for any bot not standing there.
+     *  {@code fmReturn} is the same shape for the Free Market: the saved FREE_MARKET town its exit
+     *  portal warps to, present only while the bot stands inside the FM maps. */
     record RouteOptions(boolean withReturnScroll, int meso, boolean withFerry, boolean isBeginner,
-                        int riderLevel, int worldTourReturn) {
+                        int riderLevel, int worldTourReturn, int fmReturn) {
+        /** Rider options without a Free-Market return (any bot not standing in the FM). */
+        RouteOptions(boolean withReturnScroll, int meso, boolean withFerry, boolean isBeginner,
+                     int riderLevel, int worldTourReturn) {
+            this(withReturnScroll, meso, withFerry, isBeginner, riderLevel, worldTourReturn, -1);
+        }
         /** Travel options for a specific rider, without a saved world-tour return. */
         RouteOptions(boolean withReturnScroll, int meso, boolean withFerry, boolean isBeginner, int riderLevel) {
-            this(withReturnScroll, meso, withFerry, isBeginner, riderLevel, -1);
+            this(withReturnScroll, meso, withFerry, isBeginner, riderLevel, -1, -1);
         }
         /** Non-beginner options (the common case); unrestricted by level (abstract reachability probes). */
         RouteOptions(boolean withReturnScroll, int meso, boolean withFerry) {
-            this(withReturnScroll, meso, withFerry, false, Integer.MAX_VALUE, -1);
+            this(withReturnScroll, meso, withFerry, false, Integer.MAX_VALUE, -1, -1);
         }
         static final RouteOptions PORTALS_ONLY = new RouteOptions(false, 0, false);
     }
@@ -493,6 +500,14 @@ final class BotWorldGraph {
         if (mapId == MUSHROOM_SHRINE && options.worldTourReturn() != -1) {
             out.add(new WeightedEdge(options.worldTourReturn(), BotTravelCost.TAXI_SECONDS));
         }
+        // The Free Market's only exit (entrance out00, script market00) warps to the bot's saved
+        // FREE_MARKET origin — same shape as the shrine return: the edge exists only for a bot
+        // standing inside the market (fmReturn != -1), so the FM subgraph stays a dead end that
+        // can never be routed THROUGH between its 24 portal towns, only out of. Room -> entrance
+        // legs are ordinary unscripted portals already present from the WZ scan.
+        if (mapId == constants.id.MapId.FM_ENTRANCE && options.fmReturn() != -1) {
+            out.add(new WeightedEdge(options.fmReturn(), BotTravelCost.PORTAL_HOP_SECONDS));
+        }
         if (options.withFerry()) {
             for (BotFerryManager.FerryRoute ferry : BotFerryManager.routesBoardingAt(mapId)) {
                 if (options.meso() >= ferry.ticketCost()) {
@@ -595,6 +610,13 @@ final class BotWorldGraph {
             if (e.fromMap() == fromMap && e.destMap() == destMap) {
                 return e.portalName();
             }
+        }
+        // FM exit is per-bot dynamic (out00's script warps to the SAVED town), so it can't be a
+        // static row: any hop out of the entrance that isn't into a room walks the exit portal.
+        // If the script lands somewhere other than the planned hop, travel just replans from there.
+        if (fromMap == constants.id.MapId.FM_ENTRANCE
+                && !constants.game.GameConstants.isFreeMarketRoom(destMap)) {
+            return "out00";
         }
         return null;
     }

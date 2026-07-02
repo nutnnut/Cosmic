@@ -534,55 +534,6 @@ final class BotFreeMarketManager {
         return saved > 0 ? saved : constants.id.MapId.HENESYS;
     }
 
-    /**
-     * Where route planning should measure from: the FM maps are OFF the world graph, so a bot
-     * inside them plans from the town it entered from instead — otherwise every reachable-set
-     * query comes back empty and solo/party decides fail for as long as the bot is shopping.
-     */
-    static int routeAnchorMapId(Character bot) {
-        return isFmMap(bot.getMapId()) ? fmReturnTownMapId(bot) : bot.getMapId();
-    }
-
-    /**
-     * Stranded-in-FM self-rescue: a bot standing in an FM map with NO market errand can't get
-     * out on its own (off-graph — travel, autopilot and party plans all fail from here), so any
-     * such state, however reached (fizzle, relog, cleared orders), re-arms a bare exit walk.
-     * Skips bots that are legitimately here under supervision (following / operator command)
-     * or mid-trade. Called from the FM detour errand's maybeStart (autopilot bots) and from
-     * {@link #tickStrandedExit} (plan-less bots).
-     */
-    static void maybeStartExitRecovery(BotEntry entry, Character bot) {
-        if (entry.fmErrandMapId != -1 || bot.getMap() == null || !isFmMap(bot.getMapId())) {
-            return;
-        }
-        if (entry.following || entry.operatorCmd != null || bot.getTrade() != null || entry.marketBusy) {
-            return;
-        }
-        long now = System.currentTimeMillis();
-        entry.fmErrandMapId = fmReturnTownMapId(bot);
-        entry.fmRoomMapId = constants.game.GameConstants.isFreeMarketRoom(bot.getMapId())
-                ? bot.getMapId() : -1;
-        entry.fmPhase = PHASE_EXIT;
-        entry.fmPlaceTries = 0;
-        entry.fmBargainBuys = 0;
-        entry.fmBrowseUntilMs = 0L;
-        entry.fmStandSpot = null;
-        entry.fmErrandProgress.begin(now);
-        entry.fmPhaseDeadlineAtMs = now + PHASE_DEADLINE_MS;
-        log.info("bot {} stranded in FM map {} with no errand - walking it out", bot.getName(), bot.getMapId());
-    }
-
-    /**
-     * Exit path for bots WITHOUT an active autopilot plan (the detour-errand loop only runs
-     * when autopilot is active): arm + drive the exit walk so a plan-less bot never sits in an
-     * FM map. True when the tick was consumed by the walk.
-     */
-    static boolean tickStrandedExit(BotEntry entry, Character bot, boolean runAiTick) {
-        maybeStartExitRecovery(entry, bot);
-        return entry.fmErrandMapId != -1 && isFmMap(bot.getMapId())
-                && tickErrand(entry, bot, runAiTick);
-    }
-
     /** Last resort when the exit WALK wedges: exactly what the exit portal script (market00.js)
      *  does — consume the FREE_MARKET saved location and warp to it (Henesys fallback). */
     private static void warpOutOfMarket(Character bot) {
@@ -703,9 +654,9 @@ final class BotFreeMarketManager {
                 if (spot == null || Math.abs(spot.y - pos.y) > 60) {
                     continue; // ran off this floor strip (edge, stairwell gap, lower level)
                 }
-                Portal portal = map.findClosestTeleportPortal(spot);
-                if (portal != null && portal.getPosition().distance(spot) < 130.0) {
-                    continue; // canPlaceStore's 120px portal buffer, padded
+                if (nearAnyPortal(map, spot)) {
+                    continue; // keep every doorway/arrival point clear (canPlaceStore only checks
+                              // teleport portals, which misses script exits like out00 - live bug)
                 }
                 if (nearStall(stalls, spot)) {
                     continue;
@@ -717,6 +668,15 @@ final class BotFreeMarketManager {
             }
         }
         return null;
+    }
+
+    private static boolean nearAnyPortal(server.maps.MapleMap map, Point spot) {
+        for (Portal p : map.getPortals()) {
+            if (p.getPosition() != null && p.getPosition().distance(spot) < 130.0) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static boolean nearStall(List<MapObject> stalls, Point spot) {
