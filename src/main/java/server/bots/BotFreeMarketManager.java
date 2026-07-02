@@ -85,6 +85,14 @@ final class BotFreeMarketManager {
 
     /** Don't bother with a trip for fewer than this many listable stacks (resource bound). */
     static final int MIN_LISTINGS_TO_TRIP = 3;
+
+    /** Chance a login-time bot with a closed stall / uncollected proceeds at Fredrick starts its
+     *  market day immediately. High on purpose: at steady state nearly all of these bots would
+     *  HAVE a live stall — a restart closed it — so this is state restoration, not phase seeding. */
+    private static final double STALL_REBUILD_LOGIN_CHANCE = 0.5;
+    /** Mean minutes of one market trip (travel + browse + setup), for the steady-state
+     *  mid-trip-at-login fraction — same shape as {@link BotBreakManager#loginBreakChance}. */
+    private static final double MARKET_TRIP_MEAN_MIN = 15.0;
     /**
      * One-way travel cap for the FM leg, from wherever the bot is RESTING (owner rule: no
      * back-and-forth treks — a bot deep in a dungeon never diverts to the market mid-grind; the
@@ -386,6 +394,50 @@ final class BotFreeMarketManager {
                 : fredrickDue && tripWorthyCount(listable) < MIN_LISTINGS_TO_TRIP
                         ? "gonna collect my earnings from fredrick"
                         : "got some stuff to sell, heading to the free market");
+    }
+
+    /**
+     * Steady-state login seeding (the {@link BotBreakManager#loginBreakChance} trick applied to
+     * the market): a random snapshot of an established population has bots mid-market-day and
+     * stalls live, but a restart wipes that state (open stalls close to Fredrick) and the normal
+     * path only rebuilds it once break RNG parks a reasoned bot townside — leaving the FM empty
+     * for the first hour. At login, a bot with a market reason rolls to start its market day now:
+     * backlog holders (closed stall / proceeds to restore) at {@link #STALL_REBUILD_LOGIN_CHANCE},
+     * ordinary sellers at their steady-state mid-trip fraction. The seed only arms a town break
+     * and an immediate scan — {@link #tickScan}'s regular reason checks still own the decision,
+     * so nothing is faked and a bot whose reason evaporates simply rests.
+     */
+    static void maybeSeedLoginMarketDay(BotEntry entry, Character bot, long now) {
+        if (!BotManager.cfg.FM_MARKET_ENABLED || bot == null || bot.getMap() == null
+                || !BotAutopilotManager.isActive(entry)) {
+            return;
+        }
+        if (entry.fmErrandMapId != -1 || entry.gachaErrandMapId != -1
+                || entry.questErrandMapId != -1 || entry.jobErrandMapId != -1) {
+            return;
+        }
+        BotPersonality p = entry.personality != null ? entry.personality : BotPersonality.defaults();
+        ThreadLocalRandom rnd = ThreadLocalRandom.current();
+        // Expensive probes (DB / inventory scan) only run behind their passed roll; logins are
+        // staggered by the fast-start ramp, so the boot sweep stays cheap.
+        boolean seed = rnd.nextDouble() < STALL_REBUILD_LOGIN_CHANCE && hasFredrickHoldings(bot);
+        if (!seed) {
+            seed = rnd.nextDouble() < loginMarketTripChance(p.breakFreqPerHour())
+                    && tripWorthyCount(selectListings(entry, bot, now)) >= MIN_LISTINGS_TO_TRIP;
+        }
+        if (!seed) {
+            return;
+        }
+        if (!entry.chillSession && !BotBreakManager.onRestBreak(entry, bot, now)) {
+            BotBreakManager.startTownBreak(entry, bot, now); // routes to town via restErrand if afield
+        }
+        entry.nextFmScanAtMs = now; // first scan fires as soon as the bot is resting townside
+    }
+
+    /** Steady-state probability a seller is mid-market-trip at a random login instant:
+     *  trips/hr (≈ its break cadence, since reasoned rest breaks become trips) × trip length. */
+    static double loginMarketTripChance(double breakFreqPerHour) {
+        return Math.min(0.35, Math.max(0.0, breakFreqPerHour) * MARKET_TRIP_MEAN_MIN / 60.0);
     }
 
     /**

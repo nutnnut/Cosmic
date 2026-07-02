@@ -39,6 +39,17 @@ class BotFreeMarketManagerTest {
     }
 
     @Test
+    void loginMarketTripChanceIsTheSteadyStateMidTripFraction() {
+        // 2 breaks/hr x 15 min mean trip = mid-trip half the time... capped at the 0.35 ceiling
+        assertEquals(0.35, BotFreeMarketManager.loginMarketTripChance(2.0), 1e-9);
+        // 1 break/hr -> 15/60 = 25% of a random snapshot is mid-trip
+        assertEquals(0.25, BotFreeMarketManager.loginMarketTripChance(1.0), 1e-9);
+        assertEquals(0.0, BotFreeMarketManager.loginMarketTripChance(0.0), 1e-9);
+        assertEquals(0.0, BotFreeMarketManager.loginMarketTripChance(-3.0), 1e-9,
+                "degenerate personality never seeds");
+    }
+
+    @Test
     void slotWorthTracksTheFarmingCostScaffold() {
         assertEquals(Math.round(BotScrollManager.FARM_MESO_PER_SECOND * 30.0),
                 BotFreeMarketManager.slotWorthMesos(),
