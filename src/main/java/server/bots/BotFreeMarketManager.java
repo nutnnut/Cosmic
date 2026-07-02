@@ -493,8 +493,13 @@ final class BotFreeMarketManager {
      * so nothing is faked and a bot whose reason evaporates simply rests.
      */
     static void maybeSeedLoginMarketDay(BotEntry entry, Character bot, long now) {
-        if (!BotManager.cfg.FM_MARKET_ENABLED || bot == null || bot.getMap() == null
-                || !BotAutopilotManager.isActive(entry)) {
+        if (!BotManager.cfg.FM_MARKET_ENABLED || bot == null || bot.getMap() == null) {
+            return;
+        }
+        // NOT the tickScan isActive gate: at login the autopilot hasn't decided yet
+        // (autopilotMapId still -1), which silently killed every seed on the first live round.
+        // What actually matters here is "no online owner supervising" — companions stay put.
+        if (entry.owner != null && entry.owner != bot && entry.owner.isLoggedin()) {
             return;
         }
         if (entry.fmErrandMapId != -1 || entry.gachaErrandMapId != -1

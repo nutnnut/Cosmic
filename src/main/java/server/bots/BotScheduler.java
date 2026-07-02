@@ -615,6 +615,14 @@ public final class BotScheduler {
                 }
             }
         }
+        // Market-day seeding for crew members too (a third of the population): tickScan's reason
+        // checks still own the trip decision, and crews already tolerate individual errands.
+        for (ManagedBot m : members) {
+            BotEntry e = bm.getEntryByBotCharId(m.botCharId());
+            if (e != null) {
+                BotFreeMarketManager.maybeSeedLoginMarketDay(e, e.bot, now);
+            }
+        }
     }
 
     /** Flag one crew member's session as chill and route it to town (no-op if not live or already chill).
