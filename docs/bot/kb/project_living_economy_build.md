@@ -117,6 +117,20 @@ d320fc868):
 - Verified en route: bots DO already buy potions from NPC shops (BotShopManager resupply,
   `ShopFactory.getShopForNPC` + `shop.buyDirect`), so capping potion listings loses nothing.
 
+## Scroll value calibration (2026-07-02, owner-raised: glove-ATT too cheap vs weapon scrolls)
+
+`BotScrollManager.slotDurabilityFactor(cat)` — WZ-derived investment-durability per equip
+category ((id/10000)%100, same code `applicable()` matches scrolls by): least-squares growth of
+`marketStatValue` per reqLevel within the category, durability = 1/(1 + growth ×
+REPLACEMENT_HORIZON_LEVELS=30), normalized to weapon-average = 1.0 (keeps the Attack-60% 4.5M
+anchor), clamped [0.5, 4], min 8 samples else 1.0, 1.0 on WZ-less test runs. Applied in
+`scrollCombatCeilingMeso` — flat slots (gloves/shoes/capes) scale UP vs weapons. Behavior follows
+price for free: the planner's per-apply cost = SCROLL_OPPORTUNITY_FRACTION × price, so pricier
+flat-slot scrolls are burned only for bigger gains. Factors print at boot
+("scroll slot-durability factors"). Deferred to S4: explicit keeper-gating in the planner
+(only precious-scroll keepers) + use-vs-sell mesoFocus tilt; relative ratios to be sanity-checked
+vs SoloMapling's price table (agent report) + live /market charts.
+
 ## Pending / next
 
 - **S2 LIVE VERIFY round 2 (next action, restart required):** watch stranded bots walk out on

@@ -29,6 +29,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.IdentityHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.DoubleUnaryOperator;
@@ -1358,10 +1359,15 @@ final class BotScrollManager {
     }
 
     /** Combat-demand ceiling for an equip scroll, in meso: the most a best-buyer pays for the combat
-     *  value it injects = {@link #SCROLL_CEILING_PER_EV} × successRate × {@link #marketStatValue}. The
-     *  USE-shelf keeper caps a scroll's worth at min(obtainCost, this) — a flooded/shop-cheap scroll
-     *  stays at its obtain cost, an overpriced-but-weak one is pulled down to its real combat value.
-     *  Returns 0 for stat-less scrolls (clean slate, chaos, enhancement) so they keep obtain-cost worth. */
+     *  value it injects = {@link #SCROLL_CEILING_PER_EV} × successRate × {@link #marketStatValue},
+     *  scaled by the target slot's {@link #slotDurabilityFactor} — the same +2 ATT is worth far more
+     *  on a glove (stays best-in-slot near-forever) than on a soon-outgrown weapon. The USE-shelf
+     *  keeper caps a scroll's worth at min(obtainCost, this) — a flooded/shop-cheap scroll stays at
+     *  its obtain cost, an overpriced-but-weak one is pulled down to its real combat value. Because
+     *  the planner's per-apply cost is a fraction of this price, the durability premium also makes
+     *  bots proportionally more reluctant to burn flat-slot scrolls on marginal gains — behavior and
+     *  price calibrate together. Returns 0 for stat-less scrolls (clean slate, chaos, enhancement)
+     *  so they keep obtain-cost worth. */
     static double scrollCombatCeilingMeso(int scrollId) {
         Map<String, Integer> st = ItemInformationProvider.getInstance().getEquipStats(scrollId);
         if (st == null) {
@@ -1370,7 +1376,103 @@ final class BotScrollManager {
         int success = st.getOrDefault("success", 0);
         double statWorth = marketStatValue(st);
         return success <= 0 || statWorth <= 0 ? 0.0
-                : SCROLL_CEILING_PER_EV * (success / 100.0) * statWorth;
+                : SCROLL_CEILING_PER_EV * (success / 100.0) * statWorth
+                        * slotDurabilityFactor(scrollId / 100 % 100);
+    }
+
+    /** Levels of onward progression a scroll investment is judged against when asking how fast a
+     *  slot outgrows its gear — a data-shape constant for the durability curve, not a price knob. */
+    private static final double REPLACEMENT_HORIZON_LEVELS = 30.0;
+    /** Category needs at least this many stat-bearing equips for a trustworthy growth fit. */
+    private static final int DURABILITY_MIN_SAMPLES = 8;
+    private static volatile Map<Integer, Double> slotDurability;
+
+    /**
+     * Investment durability of scrolling equip category {@code cat} (the {@code (id/10000)%100}
+     * slot code shared by {@link #applicable}): how long a scrolled piece stays best-in-slot,
+     * derived from the WZ equip catalog. Within each category we fit the growth of base
+     * {@link #marketStatValue} per required level: weapons grow steeply (a scrolled level-40
+     * sword is landfill twenty levels later — short investment life), gloves/shoes/capes are
+     * nearly flat (a well-scrolled glove serves forever). Normalized so the WEAPON-category
+     * average is 1.0: {@link #SCROLL_CEILING_PER_EV} keeps its live-market Attack-60% anchor and
+     * flat-slot scrolls scale UP relative to it — matching the real economy, where armor-ATT
+     * scrolls trade far above same-tier weapon scrolls. 1.0 for unknown/sparse categories and on
+     * WZ-less test runs (getAllItems empty), so nothing shifts without data.
+     */
+    static double slotDurabilityFactor(int equipCategory) {
+        Map<Integer, Double> cached = slotDurability;
+        if (cached == null) {
+            cached = buildSlotDurability();
+            slotDurability = cached;
+        }
+        return cached.getOrDefault(equipCategory, 1.0);
+    }
+
+    private static Map<Integer, Double> buildSlotDurability() {
+        ItemInformationProvider ii = ItemInformationProvider.getInstance();
+        Map<Integer, List<double[]>> samples = new HashMap<>();
+        try {
+            for (Pair<Integer, String> item : ii.getAllItems()) {
+                int id = item.getLeft();
+                if (id < 1000000 || id >= 2000000) {
+                    continue;
+                }
+                Map<String, Integer> st = ii.getEquipStats(id);
+                if (st == null) {
+                    continue;
+                }
+                double worth = marketStatValue(st);
+                if (worth <= 0) {
+                    continue;
+                }
+                samples.computeIfAbsent(id / 10000 % 100, k -> new ArrayList<>())
+                        .add(new double[]{st.getOrDefault("reqLevel", 0), worth});
+            }
+        } catch (RuntimeException e) {
+            // WZ unavailable (tests): empty map -> every factor 1.0
+        }
+        Map<Integer, Double> raw = new HashMap<>();
+        double weaponSum = 0;
+        int weaponN = 0;
+        for (Map.Entry<Integer, List<double[]>> e : samples.entrySet()) {
+            List<double[]> pts = e.getValue();
+            if (pts.size() < DURABILITY_MIN_SAMPLES) {
+                continue;
+            }
+            double meanX = 0, meanY = 0;
+            for (double[] p : pts) {
+                meanX += p[0];
+                meanY += p[1];
+            }
+            meanX /= pts.size();
+            meanY /= pts.size();
+            double cov = 0, var = 0;
+            for (double[] p : pts) {
+                cov += (p[0] - meanX) * (p[1] - meanY);
+                var += (p[0] - meanX) * (p[0] - meanX);
+            }
+            double slope = var > 0 ? cov / var : 0;
+            double growthRel = Math.max(0, slope / Math.max(1e-6, meanY)); // fractional worth gain per level
+            double durability = 1.0 / (1.0 + growthRel * REPLACEMENT_HORIZON_LEVELS);
+            raw.put(e.getKey(), durability);
+            if (e.getKey() >= 30 && e.getKey() <= 49) {
+                weaponSum += durability;
+                weaponN++;
+            }
+        }
+        double weaponAvg = weaponN > 0 ? weaponSum / weaponN : 1.0;
+        Map<Integer, Double> out = new HashMap<>();
+        StringBuilder dbg = new StringBuilder();
+        for (Map.Entry<Integer, Double> e : raw.entrySet()) {
+            double factor = Math.clamp(e.getValue() / weaponAvg, 0.5, 4.0);
+            out.put(e.getKey(), factor);
+            dbg.append(e.getKey()).append('=').append(String.format(Locale.US, "%.2f", factor)).append(' ');
+        }
+        if (!out.isEmpty()) {
+            org.slf4j.LoggerFactory.getLogger(BotScrollManager.class)
+                    .info("scroll slot-durability factors (weapon avg = 1.0): {}", dbg.toString().trim());
+        }
+        return out;
     }
 
     /** Market (acquisition) value of any shop-bought item — the cheapest legitimate NPC buy price.
