@@ -121,9 +121,16 @@ d320fc868):
 
 `BotScrollManager.slotDurabilityFactor(cat)` — WZ-derived investment-durability per equip
 category ((id/10000)%100, same code `applicable()` matches scrolls by): least-squares growth of
-`marketStatValue` per reqLevel within the category, durability = 1/(1 + growth ×
-REPLACEMENT_HORIZON_LEVELS=30), normalized to weapon-average = 1.0 (keeps the Attack-60% 4.5M
-anchor), clamped [0.5, 4], min 8 samples else 1.0, 1.0 on WZ-less test runs. Applied in
+`marketStatValue` per reqLevel within the category, durability = SCROLL_JOB_WORTH /
+(SCROLL_JOB_WORTH + slope × REPLACEMENT_HORIZON_LEVELS=30) where SCROLL_JOB_WORTH = a canonical
++10 ATT job (50 statValue units), normalized to weapon-average = 1.0 (keeps the Attack-60% 4.5M
+anchor), clamped [0.5, 4], min 8 samples else 1.0, 1.0 on WZ-less test runs.
+**v1 bug (fixed 1f6f24f6d, first live round printed it):** growth was measured RELATIVE to the
+category's own mean worth (slope/meanY) — gloves' tiny base worth made negligible drift read as
+fast growth → factor 0.79, CHEAPER than weapons, opposite of reality. Durability must compare the
+slot's ABSOLUTE base-stat growth against the fixed worth a scroll job adds. Post-fix WZ-backed
+check (`BotSlotDurabilityPrintTest`, needs local DB+wz): glove 2.62 / claw 1.17 = 2.24x — inside
+the SoloMapling 2.0-2.4x reference band; shoes 2.63, capes 2.38, 1h-swords 0.84. Applied in
 `scrollCombatCeilingMeso` — flat slots (gloves/shoes/capes) scale UP vs weapons. Behavior follows
 price for free: the planner's per-apply cost = SCROLL_OPPORTUNITY_FRACTION × price, so pricier
 flat-slot scrolls are burned only for bigger gains. Factors print at boot
