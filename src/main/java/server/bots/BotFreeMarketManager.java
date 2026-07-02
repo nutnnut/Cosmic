@@ -523,6 +523,9 @@ final class BotFreeMarketManager {
         entry.fmPlannedListings = listable; // staged at the stall without re-pricing on-tick
         entry.fmErrandProgress.begin(now);
         entry.fmPhaseDeadlineAtMs = now + ERRAND_TIMEOUT_MS;
+        trace(entry, "trip armed: town=" + town + " listable=" + listable.size()
+                + " tripworthy=" + tripWorthyCount(listable)
+                + " stallService=" + stallServiceDue + " fredrick=" + fredrickDue);
         reply.accept(entry, stallServiceDue ? "gonna check on my shop at the fm"
                 : fredrickDue && tripWorthyCount(listable) < MIN_LISTINGS_TO_TRIP
                         ? "gonna collect my earnings from fredrick"
@@ -661,6 +664,8 @@ final class BotFreeMarketManager {
         }
         long now = System.currentTimeMillis();
         if (entry.fmErrandProgress.stalled(now, ERRAND_TIMEOUT_MS) || now > entry.fmPhaseDeadlineAtMs) {
+            trace(entry, "watchdog: " + (now > entry.fmPhaseDeadlineAtMs ? "phase deadline" : "no progress")
+                    + " in " + FM_PHASE_NAMES[entry.fmPhase] + " at map " + bot.getMapId());
             // NEVER release the errand while still inside the FM maps: they're off the world
             // graph, so a bot dropped here has no route anywhere and strands (live-observed).
             // A fizzle inside pivots to the exit walk; a wedged exit walk falls back to the
@@ -858,6 +863,7 @@ final class BotFreeMarketManager {
         } finally {
             entry.marketBusy = false;
         }
+        trace(entry, "fredrick retrieve tried; still holding=" + hasFredrickHoldings(bot));
         if (!hasFredrickHoldings(bot)) {
             entry.fmFredrickState = 2;
             entry.fredrickPickupPending = false;
@@ -893,7 +899,19 @@ final class BotFreeMarketManager {
         bot.changeMap(town, "market00");
     }
 
+    private static final String[] FM_PHASE_NAMES =
+            {"TRAVEL", "ENTER", "TO_ROOM", "SETUP", "BROWSE", "EXIT", "FREDRICK"};
+
+    /** Trip trace on the MARKET_TX_CONSOLE flag: a handful of lines per trip, invaluable when a
+     *  live funnel stalls somewhere between the town portal and a published stall. */
+    private static void trace(BotEntry entry, String msg) {
+        if (BotManager.cfg.MARKET_TX_CONSOLE) {
+            log.info("fm[{}] {}", entry.bot != null ? entry.bot.getName() : "?", msg);
+        }
+    }
+
     private static void advancePhase(BotEntry entry, int phase, long now) {
+        trace(entry, "phase -> " + FM_PHASE_NAMES[phase]);
         entry.fmPhase = phase;
         entry.fmPhaseDeadlineAtMs = now + PHASE_DEADLINE_MS;
         entry.fmErrandProgress.touch(now);
@@ -950,7 +968,13 @@ final class BotFreeMarketManager {
         // the item loss the real client prevents by refusing to open until you collect. The
         // entrance stop already tried to collect this trip; if the bag couldn't take it all,
         // this trip is browse-only and the pickup re-trips on the hourly probe.
-        if (stallAlive || listings.isEmpty() || hasFredrickHoldings(bot) || !ensurePermit(entry, bot)) {
+        String skip = stallAlive ? "stall already live"
+                : listings.isEmpty()
+                        ? "no valid listings (" + entry.fmPlannedListings.size() + " planned)"
+                : hasFredrickHoldings(bot) ? "fredrick still holds proceeds"
+                : !ensurePermit(entry, bot) ? "no permit" : null;
+        if (skip != null) {
+            trace(entry, "setup -> browse-only: " + skip);
             advancePhase(entry, PHASE_BROWSE, now);
             return true;
         }
@@ -1114,6 +1138,7 @@ final class BotFreeMarketManager {
             }
             merchant.publish(bot);
             entry.nextStallServiceAtMs = now + BotManager.randMs(20 * 3_600_000, 26 * 3_600_000);
+            trace(entry, "stall published: " + listed + " slots at map " + bot.getMapId());
             reply.accept(entry, "shop's up, " + listed + " things listed");
         } catch (RuntimeException e) {
             log.warn("stall setup failed for {}: {}", bot.getName(), e.toString());
@@ -1219,6 +1244,7 @@ final class BotFreeMarketManager {
                 ? Math.round(3_600_000L * (2.0 + 6.0 * ThreadLocalRandom.current().nextDouble())
                         * (1.5 - 0.5 * p.chattiness()))
                 : BotManager.randMs(10 * 60_000, 25 * 60_000);
+        trace(entry, "trip done: visited=" + visited + " nextScanIn=" + (gap / 60_000) + "min");
         entry.nextFmScanAtMs = System.currentTimeMillis() + gap;
         if (say != null) {
             reply.accept(entry, say);
