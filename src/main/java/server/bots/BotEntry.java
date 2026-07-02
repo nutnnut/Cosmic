@@ -144,7 +144,11 @@ public class BotEntry {
     int cachedSkillJob = -1;
     int cachedSkillLevel = -1;
     int cachedSkillSignature = 0;
-    final List<Integer> attackSkillIds = new ArrayList<>();
+    // COW: rebuilt rarely (level/gear signature change, tick thread) but ALSO iterated from the
+    // DECIDE_POOL (BotGrindAdvisor.killProfile -> estimateBestSkillHitDamage) - a plain ArrayList
+    // threw ConcurrentModificationException when a decide overlapped a skill-cache rebuild. A
+    // torn read mid-rebuild (empty/partial for one estimate) is harmless; the crash was not.
+    final List<Integer> attackSkillIds = new java.util.concurrent.CopyOnWriteArrayList<>();
     int attackSkillId = 0;
     int aoeSkillId = 0;
     int aoeSkillMobs = 1;
