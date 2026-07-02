@@ -134,9 +134,18 @@ d320fc868):
   10M, SCROLL_CEILING_PER_EV, AMMO_CEILING_*), equip banding + listing, fold tradeValueScore
   into marketStatValue path, own-income travel gate, new BotPersonality fields
   (haggleStance/mesoFocus/buffSpend/collectorTaste).
-- **S2 follow-ups queued:** Fredrick proceeds collection (FredrickProcessor.fredrickRetrieveItems
-  is an INSTANCE method — check acquisition), live-stall restock/reprice service visit (currently
-  stall-alive → browse-only), stall-name flavor corpus (SoloMapling audit).
+- **DONE (2026-07-02): Fredrick proceeds collection.** PHASE_FREDRICK in the FM errand: on any
+  entrance arrival (inbound AND exit-leg) with `hasFredrickHoldings` (merchantMeso field cheap
+  check + ItemFactory.MERCHANT one DB read; a LIVE stall owns its rows — always gate on
+  stall-dead), walk to NPC 9030000 (gacha-style approach, 500px trigger) and run the SHARED
+  player op `FredrickProcessor.fredrickRetrieveItems` via
+  `Server.getChannelDependencies().fredrickProcessor()` (accessor added). The op is
+  ALL-OR-NOTHING (canRetrieveFromFredrick: every item must fit + meso headroom) — inbound
+  failure retries on the exit leg (bag emptiest right after stall stocking), exit failure waits
+  for the next trip; Fredrick keeps holding, nothing is ever lost. State: entry.fmFredrickState
+  (0/1 retry/2 done per trip) + fmFredrickOnExit.
+- **S2 follow-ups queued:** live-stall restock/reprice service visit (currently stall-alive →
+  browse-only), stall-name flavor corpus (SoloMapling audit).
 - **S5:** gossip diffusion, ammo purchase behavior, buff buying, `/api/market` +
   `/api/market/bot` routes (UPDATE docs/bot/web-endpoints.md when added — rule 8).
 - P3: FARM_MESO_PER_SECOND=1000 → own observed meso/hr EMA (design sec 13).

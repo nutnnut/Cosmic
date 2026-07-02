@@ -992,6 +992,12 @@ public class Server {
         }
     }
 
+    /** The channel-handler service singletons (note service, Fredrick processor). Exposed so bot
+     *  code can run the SAME Fredrick reclaim op players use instead of reimplementing it. */
+    public ChannelDependencies getChannelDependencies() {
+        return channelDependencies;
+    }
+
     private ChannelDependencies registerChannelDependencies() {
         NoteService noteService = new NoteService(new NoteDao());
         FredrickProcessor fredrickProcessor = new FredrickProcessor(noteService);

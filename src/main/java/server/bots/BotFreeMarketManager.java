@@ -65,6 +65,12 @@ final class BotFreeMarketManager {
     static final int PHASE_SETUP = 3;    // in the room: place + stock + publish the stall
     static final int PHASE_BROWSE = 4;   // read the other stalls, maybe grab a bargain
     static final int PHASE_EXIT = 5;     // walk back out to the saved town
+    static final int PHASE_FREDRICK = 6; // at the entrance: reclaim closed-stall proceeds
+
+    /** Fredrick, Hired-Merchant Union chief — stands in the FM entrance (WZ life, verified). */
+    static final int FREDRICK_NPC = 9030000;
+    /** Within this many px of Fredrick counts as "at the counter" (cab/shop/gacha convention). */
+    private static final int FREDRICK_TRIGGER_RADIUS_PX = 500;
 
     // Jittered scan cadence (mirrors gacha; the satiation interval is the real limiter).
     private static final long SCAN_MIN_MS = 90_000L;
@@ -155,6 +161,34 @@ final class BotFreeMarketManager {
 
     static java.util.function.BiConsumer<BotEntry, String> reply =
             (entry, text) -> BotManager.getInstance().botReply(entry, text);
+
+    /** Fredrick reclaim op — the SAME all-or-nothing server logic players trigger through the
+     *  Fredrick UI (canRetrieveFromFredrick gate inside). Seamed for tests. */
+    @FunctionalInterface
+    interface FredrickRetrieve {
+        void retrieve(Character bot);
+    }
+    static FredrickRetrieve fredrickRetrieve = bot -> net.server.Server.getInstance()
+            .getChannelDependencies().fredrickProcessor().fredrickRetrieveItems(bot.getClient());
+
+    /**
+     * Fredrick holds proceeds for this bot: closed-stall merchant mesos and/or stored items. A
+     * LIVE stall still owns its items/mesos (saveItems writes the same MERCHANT store), so there
+     * is nothing to reclaim until it closes. One DB read; called only on entrance arrivals.
+     */
+    static boolean hasFredrickHoldings(Character bot) {
+        if (bot.getWorldServer().getHiredMerchant(bot.getId()) != null) {
+            return false;
+        }
+        if (bot.getMerchantMeso() != 0) {
+            return true;
+        }
+        try {
+            return !client.inventory.ItemFactory.MERCHANT.loadItems(bot.getId(), false).isEmpty();
+        } catch (Exception e) {
+            return false; // DB hiccup: skip this pass, the next trip re-checks
+        }
+    }
 
     // ---- pure pricing core (unit-tested) -------------------------------------------------------
 
@@ -447,7 +481,7 @@ final class BotFreeMarketManager {
             }
             case PHASE_ENTER -> {
                 if (bot.getMapId() == FM_ENTRANCE) {
-                    advancePhase(entry, PHASE_TO_ROOM, now);
+                    advancePhase(entry, nextFromEntrance(entry, bot, false), now);
                     return true;
                 }
                 Portal market = bot.getMap() != null ? bot.getMap().getPortal("market00") : null;
@@ -479,6 +513,9 @@ final class BotFreeMarketManager {
             case PHASE_SETUP -> {
                 return tickSetup(entry, bot, runAiTick, now);
             }
+            case PHASE_FREDRICK -> {
+                return tickFredrick(entry, bot, runAiTick, now);
+            }
             case PHASE_BROWSE -> {
                 if (entry.fmBrowseUntilMs == 0L) {
                     int dwellFactor = entry.chillSession ? CHILL_DWELL_FACTOR : 1; // market day lingers
@@ -499,9 +536,17 @@ final class BotFreeMarketManager {
                     return false;
                 }
                 if (entry.fmRoomMapId != -1 && bot.getMapId() == FM_ENTRANCE) {
-                    // room -> entrance hop done: fresh deadline for the entrance -> town leg
+                    // room -> entrance hop done: fresh deadline for the entrance -> town leg,
+                    // plus the Fredrick stop when he still holds proceeds — the bag is at its
+                    // emptiest right here (stall stock just left it), so the all-or-nothing
+                    // reclaim has its best odds.
                     entry.fmRoomMapId = -1;
                     entry.fmPhaseDeadlineAtMs = now + PHASE_DEADLINE_MS;
+                    int next = nextFromEntrance(entry, bot, true);
+                    if (next != PHASE_EXIT) {
+                        advancePhase(entry, next, now);
+                        return true;
+                    }
                 }
                 Portal out = bot.getMap() != null ? bot.getMap().getPortal("out00") : null;
                 if (out == null) {
@@ -521,6 +566,83 @@ final class BotFreeMarketManager {
 
     static boolean isFmMap(int mapId) {
         return mapId == FM_ENTRANCE || constants.game.GameConstants.isFreeMarketRoom(mapId);
+    }
+
+    /** Arriving at the entrance (inbound or heading out): swing by Fredrick first when he holds
+     *  closed-stall proceeds for this bot and this trip hasn't settled with him yet. */
+    private static int nextFromEntrance(BotEntry entry, Character bot, boolean exiting) {
+        if (entry.fmFredrickState != 2 && hasFredrickHoldings(bot)) {
+            entry.fmFredrickOnExit = exiting;
+            entry.fmStandSpot = null;
+            return PHASE_FREDRICK;
+        }
+        return exiting ? PHASE_EXIT : PHASE_TO_ROOM;
+    }
+
+    /**
+     * Walk to Fredrick and reclaim closed-stall proceeds (items + merchant mesos). The reclaim is
+     * ALL-OR-NOTHING server logic (canRetrieveFromFredrick): with a too-full bag nothing moves and
+     * Fredrick simply keeps holding — an inbound failure retries on the way out (stall stocking
+     * frees bag space in between), an exit-leg failure waits for the next trip. Never loses items.
+     */
+    private static boolean tickFredrick(BotEntry entry, Character bot, boolean runAiTick, long now) {
+        if (bot.getMapId() != FM_ENTRANCE) { // bumped out mid-walk — rejoin the machine
+            entry.fmPhase = entry.fmFredrickOnExit ? PHASE_EXIT : PHASE_ENTER;
+            return true;
+        }
+        int resumePhase = entry.fmFredrickOnExit ? PHASE_EXIT : PHASE_TO_ROOM;
+        server.life.NPC fredrick = bot.getMap().getNPCById(FREDRICK_NPC);
+        if (fredrick == null) {
+            entry.fmFredrickState = 2; // no counter on this map somehow — carry on
+            advancePhase(entry, resumePhase, now);
+            return true;
+        }
+        Point npcPos = fredrick.getPosition();
+        if (entry.fmStandSpot == null) {
+            entry.fmStandSpot = BotTravelManager.pickReachableApproachPoint(
+                    entry, bot, npcPos, BotTravelManager.APPROACH_SPREAD_PX, FREDRICK_TRIGGER_RADIUS_PX);
+            entry.fmStandBestDist = Integer.MAX_VALUE;
+            entry.fmStandStuckSinceMs = now;
+        }
+        Point stand = entry.fmStandSpot;
+        Point botPos = bot.getPosition();
+        int distToNpc = Math.abs(botPos.x - npcPos.x) + Math.abs(botPos.y - npcPos.y);
+        int distToStand = Math.abs(botPos.x - stand.x) + Math.abs(botPos.y - stand.y);
+        if (distToNpc > FREDRICK_TRIGGER_RADIUS_PX && distToStand > 24) {
+            if (distToStand < entry.fmStandBestDist - 4) {
+                entry.fmStandBestDist = distToStand; // net progress re-arms the walk watchdog
+                entry.fmStandStuckSinceMs = now;
+            }
+            if (now - entry.fmStandStuckSinceMs > PLACE_WALK_STUCK_MS) {
+                entry.fmFredrickState = entry.fmFredrickOnExit ? 2 : 1; // counter unreachable now
+                entry.fmStandSpot = null;
+                advancePhase(entry, resumePhase, now);
+                return true;
+            }
+            BotTravelManager.pinMoveTarget(entry, stand);
+            BotTravelManager.movementStep.step(entry, stand, runAiTick);
+            entry.fmErrandProgress.touch(now);
+            return true;
+        }
+        BotTravelManager.clearMoveTargetPin(entry);
+        entry.fmStandSpot = null;
+        entry.marketBusy = true;
+        try {
+            fredrickRetrieve.retrieve(bot);
+        } finally {
+            entry.marketBusy = false;
+        }
+        if (!hasFredrickHoldings(bot)) {
+            entry.fmFredrickState = 2;
+            reply.accept(entry, "picked up my stall proceeds from fredrick");
+        } else if (!entry.fmFredrickOnExit) {
+            entry.fmFredrickState = 1; // bag too full — retry on the way out
+        } else {
+            entry.fmFredrickState = 2;
+            reply.accept(entry, "fredricks still holding some of my stuff, no room in my bag");
+        }
+        advancePhase(entry, resumePhase, now);
+        return true;
     }
 
     /**
@@ -840,6 +962,8 @@ final class BotFreeMarketManager {
         entry.fmStandSpot = null;
         entry.fmStandBestDist = Integer.MAX_VALUE;
         entry.fmStandStuckSinceMs = 0L;
+        entry.fmFredrickState = 0;
+        entry.fmFredrickOnExit = false;
         entry.fmErrandProgress.clear();
         entry.marketBusy = false;
     }

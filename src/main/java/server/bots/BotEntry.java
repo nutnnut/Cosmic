@@ -503,6 +503,8 @@ public class BotEntry {
     Point fmStandSpot = null;            // chosen stall spot in the room
     int fmStandBestDist = Integer.MAX_VALUE; // walk watchdog: best distance to fmStandSpot so far
     long fmStandStuckSinceMs = 0L;       // walk watchdog: last time fmStandBestDist improved
+    int fmFredrickState = 0;             // 0 unchecked, 1 retry on the way out, 2 done this trip
+    boolean fmFredrickOnExit = false;    // current Fredrick stop is the exit-leg one
 
     // Supervised-mode quest AUTO-SUGGEST (Feature A): when the owner is online and the bot is at
     // their side, the bot occasionally SUGGESTS a standout nearby quest in chat (it never wanders
