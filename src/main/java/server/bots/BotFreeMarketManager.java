@@ -518,10 +518,11 @@ final class BotFreeMarketManager {
             }
             case PHASE_BROWSE -> {
                 if (entry.fmBrowseUntilMs == 0L) {
+                    int others = browseStalls(entry, bot, now);
                     int dwellFactor = entry.chillSession ? CHILL_DWELL_FACTOR : 1; // market day lingers
-                    entry.fmBrowseUntilMs = now + (long) dwellFactor
-                            * BotManager.randMs((int) BROWSE_MIN_MS, (int) BROWSE_MAX_MS);
-                    browseStalls(entry, bot, now);
+                    entry.fmBrowseUntilMs = now + (others == 0
+                            ? BotManager.randMs(3_000, 8_000) // empty room: glance around and go
+                            : (long) dwellFactor * BotManager.randMs((int) BROWSE_MIN_MS, (int) BROWSE_MAX_MS));
                 }
                 entry.fmErrandProgress.touch(now);
                 if (now < entry.fmBrowseUntilMs) {
@@ -672,8 +673,13 @@ final class BotFreeMarketManager {
         entry.fmErrandProgress.touch(now);
     }
 
-    /** Entrance -> room: prefer the room portals in a stable per-bot order (in01..in22 per the
-     *  entrance WZ portal list; probing a couple past the end is harmless). */
+    /**
+     * Entrance -> room, humanlike (owner rule: closer rooms first, but not always): roulette
+     * weighted toward the FRONT rooms and toward rooms that already have stalls — that's where
+     * the market is (stock to browse for buyers, foot traffic for sellers), so activity clusters
+     * into a real marketplace instead of scattering over 22 mostly-empty rooms. The random tail
+     * still sends the occasional bot deep, so far rooms never fully die.
+     */
     private static Portal pickRoomPortal(BotEntry entry, Character bot) {
         List<Portal> candidates = new ArrayList<>();
         for (int i = 1; i <= 22; i++) {
@@ -685,9 +691,22 @@ final class BotFreeMarketManager {
         if (candidates.isEmpty()) {
             return null;
         }
-        // stable per-bot-per-day pick spreads bots across rooms without coordination
-        int idx = (int) Math.floorMod(bot.getId() * 31L + (System.currentTimeMillis() / 86_400_000L),
-                candidates.size());
+        Map<Integer, Integer> stallsByRoom = new java.util.HashMap<>();
+        for (HiredMerchant hm : bot.getWorldServer().getActiveMerchants()) {
+            stallsByRoom.merge(hm.getMapId(), 1, Integer::sum);
+        }
+        double[] weights = new double[candidates.size()];
+        double total = 0;
+        for (int i = 0; i < candidates.size(); i++) {
+            int stalls = stallsByRoom.getOrDefault(candidates.get(i).getTargetMapId(), 0);
+            weights[i] = (1.0 + 2.0 * stalls) / (1.0 + i / 2.0);
+            total += weights[i];
+        }
+        double roll = ThreadLocalRandom.current().nextDouble() * total;
+        int idx = 0;
+        while (idx < weights.length - 1 && (roll -= weights[idx]) > 0) {
+            idx++;
+        }
         Portal chosen = candidates.get(idx);
         entry.fmRoomMapId = chosen.getTargetMapId();
         return chosen;
@@ -870,8 +889,10 @@ final class BotFreeMarketManager {
         }
     }
 
-    /** Browse every other stall on this room map: observations always, bargains sparingly. */
-    private static void browseStalls(BotEntry entry, Character bot, long now) {
+    /** Browse every other stall on this room map: observations always, bargains sparingly.
+     *  Returns how many other stalls there were (0 = empty room, the caller cuts the dwell). */
+    private static int browseStalls(BotEntry entry, Character bot, long now) {
+        int others = 0;
         BotMarketBook book = BotMarketBook.of(entry, bot);
         List<MapObject> stalls = bot.getMap().getMapObjectsInRange(bot.getPosition(),
                 Double.POSITIVE_INFINITY, List.of(MapObjectType.HIRED_MERCHANT));
@@ -879,6 +900,7 @@ final class BotFreeMarketManager {
             if (!(obj instanceof HiredMerchant merchant) || merchant.getOwnerId() == bot.getId()) {
                 continue;
             }
+            others++;
             List<PlayerShopItem> items = merchant.getItems();
             for (int slot = 0; slot < items.size(); slot++) {
                 PlayerShopItem psi = items.get(slot);
@@ -892,6 +914,7 @@ final class BotFreeMarketManager {
                 maybeBargainBuy(entry, bot, book, merchant, slot, psi, unit, key, now);
             }
         }
+        return others;
     }
 
     /**
