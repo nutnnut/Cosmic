@@ -101,8 +101,9 @@ d320fc868):
   portal buffer), 12s per-slot no-progress watchdog → next slot; slots/tries exhausted →
   browse-only, NEVER a fizzled errand. Entrance room portals are `in01..in22` (no in00).
 - **Junk listings:** NPC-shop staples (potions) listed at silly asks. Fix in evaluateListings:
-  ask CAPPED under the NPC shop counter price (`npcShopPrice` seam, one
-  `SELECT itemid, MIN(price) FROM shopitems` cached), stacks list only when after-fee premium
+  ask CAPPED under the NPC shop counter price (`npcShopPrice` seam backed by
+  `BotScrollManager.marketBuyPriceMeso` — the EXISTING cached shopitems reverse index with the
+  GM/junk-listing filter; do NOT re-query shopitems), stacks list only when after-fee premium
   over NPC-selling covers ~30s of FARM_MESO_PER_SECOND (scaffold now package-visible in
   BotScrollManager; P3 retires both together), premium-ranked to fill 16 slots, and
   MIN_LISTINGS_TO_TRIP counts only non-NPC-shop stacks (staples tag along, never cause a trip).

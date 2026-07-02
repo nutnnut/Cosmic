@@ -118,38 +118,14 @@ final class BotFreeMarketManager {
         return p > 0 ? Math.round(p) : 0;
     };
 
-    /** Lowest price any NPC shop charges for the item (0 = not NPC-sold): the buyer's standing
-     *  outside option, read once from the shopitems SSOT. Data-derived bound, not a knob. */
+    /** Lowest LEGITIMATE price any NPC shop charges for the item (0 = not NPC-sold): the buyer's
+     *  standing outside option. Backed by the scroll manager's cached shopitems reverse index
+     *  (SSOT — includes the GM/junk-listing filter), not a parallel query. */
     @FunctionalInterface
     interface NpcShopPrice {
         int price(int itemId);
     }
-    static NpcShopPrice npcShopPrice = BotFreeMarketManager::cachedNpcShopPrice;
-    private static volatile Map<Integer, Integer> npcShopMinPrices;
-
-    private static int cachedNpcShopPrice(int itemId) {
-        Map<Integer, Integer> cache = npcShopMinPrices;
-        if (cache == null) {
-            cache = loadNpcShopMinPrices(); // idempotent; a racing double-load is harmless
-            npcShopMinPrices = cache;
-        }
-        return cache.getOrDefault(itemId, 0);
-    }
-
-    private static Map<Integer, Integer> loadNpcShopMinPrices() {
-        Map<Integer, Integer> out = new java.util.HashMap<>();
-        try (java.sql.Connection con = tools.DatabaseConnection.getConnection();
-             java.sql.PreparedStatement ps = con.prepareStatement(
-                     "SELECT itemid, MIN(price) FROM shopitems WHERE price > 0 GROUP BY itemid");
-             java.sql.ResultSet rs = ps.executeQuery()) {
-            while (rs.next()) {
-                out.put(rs.getInt(1), rs.getInt(2));
-            }
-        } catch (java.sql.SQLException e) {
-            log.warn("npc shop price cache failed to load: {}", e.toString());
-        }
-        return out;
-    }
+    static NpcShopPrice npcShopPrice = BotScrollManager::marketBuyPriceMeso;
 
     /** Tradeability gate for listing (drop/trade-restricted items stay home). */
     static java.util.function.IntPredicate tradeable = id -> {
