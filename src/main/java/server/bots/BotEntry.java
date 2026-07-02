@@ -482,6 +482,22 @@ public class BotEntry {
     long gachaTripBudgetNx = 0L;          // personality NX budget for this trip; replaces the flat ticket cap
     int gachaSpentThisTrip = 0;           // NX spent so far this trip (vs gachaTripBudgetNx)
 
+    // Free-market session errand (BotFreeMarketManager): autopilot-only. During a rest break a bot
+    // with sellable surplus (or a stall due for service) walks to an FM town, enters, opens/browses
+    // stalls, and returns. fmErrandMapId = the target FM TOWN (-1 = no session); fmPhase drives
+    // travel -> enter -> room -> setup -> browse -> exit. Reset in clearFmErrand().
+    int fmErrandMapId = -1;
+    int fmRoomMapId = -1;
+    int fmPhase = 0;                     // BotFreeMarketManager.PHASE_*
+    final BotTravelManager.ErrandProgress fmErrandProgress = new BotTravelManager.ErrandProgress();
+    long fmPhaseDeadlineAtMs = 0L;       // per-phase watchdog
+    long nextFmScanAtMs = 0L;            // scan cadence + post-trip satiation
+    long nextStallServiceAtMs = 0L;      // when the live stall wants a service visit
+    long fmBrowseUntilMs = 0L;           // humanlike browse dwell
+    int fmPlaceTries = 0;                // bounded stall-spot attempts
+    int fmBargainBuys = 0;               // bounded impulse purchases per trip
+    Point fmStandSpot = null;            // chosen stall spot in the room
+
     // Supervised-mode quest AUTO-SUGGEST (Feature A): when the owner is online and the bot is at
     // their side, the bot occasionally SUGGESTS a standout nearby quest in chat (it never wanders
     // off to do it - that's autopilot's job). nextQuestSuggestAtMs is the multi-minute cooldown;

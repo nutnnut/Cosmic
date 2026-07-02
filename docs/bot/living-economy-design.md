@@ -331,12 +331,20 @@ steer absolute price level they tune real sinks/faucets (server rates), never bo
   `walkToPortalAndEnter` → `portal.enterPortal` path (bots CAN run portal JS,
   BotTravelManager :405/:437); exit via entrance `out00` (script restores `FREE_MARKET` saved
   location). Room hop = normal portals.
-- **Trigger** (when): market sessions layer into the existing break/chill system — a town-break
-  upgrade: roll FM instead of plain rest-town when the bot has (a) shelf surplus worth listing
-  (§7 test), (b) unfilled wants it believes FM can fill, or (c) a stall needing service
-  (restock/reprice/expiry). Chill-session bots may spend the whole session there. Cost/benefit
-  gate mirrors gacha's netScore with `BotTravelCost.floodSeconds`, priced at the bot's own meso/hr
-  (never a constant/hr). Runs identically with zero humans online (§2 of the brief; substrate
+- **Trigger** (when) — travel-frugal by rule (owner directive 2026-07-02): market sessions
+  **never interrupt grinding**; a bot deep in a dungeon does not divert to the market mid-arc.
+  Three entry paths, all riding movement that happens anyway:
+  1. **Trade break adjacent to the normal break** — when a town break is rolled and the bot has
+     market intent (shelf surplus ≥ threshold, or stall service due), `decideBreakDestination`
+     upgrades the break town to an FM-portal town if one is within a small detour budget
+     (`preferFmBreakTown`); the FM leg then starts at ~zero extra hops.
+  2. **Rest-spot opportunism** — from wherever a rest break parked the bot, the trip only fires
+     if an FM town is within a hard one-way travel cap (`MAX_ONE_WAY_TRAVEL_SECONDS`); deep-grind
+     bots resting at a nearby safe map simply skip the market until a townside break.
+  3. **Market chill session** — a chill-session bot may spend the session at the FM (long browse
+     dwell): the trading equivalent of the chill login.
+  Cost/benefit refinement (S4): the intent test gains the own-income-rate travel gate mirroring
+  gacha's netScore. Runs identically with zero humans online (§2 of the brief; substrate
   verified: bot ticks are human-independent, `RespawnTask`/`MapleMap.respawn` count bots).
 - In-FM session loop: browse stalls on current room map (observe asks → beliefs), buy wants
   (`merchant.buy` direct, tax applies), service own stall, shout (§8.4), gossip, idle/chair (§15).

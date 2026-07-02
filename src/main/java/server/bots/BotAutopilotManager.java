@@ -662,6 +662,16 @@ final class BotAutopilotManager {
                     return BotQuestManager.tickErrand(entry, bot, runAiTick);
                 }
             },
+            new DetourErrand() { // free-market session: stall + browse trip during a rest break
+                @Override public boolean active(BotEntry entry) { return entry.fmErrandMapId != -1; }
+                @Override public boolean tick(BotEntry entry, Character bot, boolean runAiTick) {
+                    return BotFreeMarketManager.tickErrand(entry, bot, runAiTick);
+                }
+                // Stall setup may need bag/CASH space for the permit; let a cramped bag resupply first.
+                @Override public boolean yieldForResupply(BotEntry entry, Character bot) {
+                    return bagFull.bagFull(entry, bot);
+                }
+            },
             new DetourErrand() { // gachapon trip: detour to a gacha NPC, buy + roll tickets, then resume
                 @Override public boolean active(BotEntry entry) { return entry.gachaErrandMapId != -1; }
                 @Override public boolean tick(BotEntry entry, Character bot, boolean runAiTick) {
@@ -690,6 +700,7 @@ final class BotAutopilotManager {
         // anchor is set; clearWaitAnchor restores grinding=true.
         if (entry.autopilotWaitAnchor != null
                 && (entry.questErrandMapId != -1 || entry.gachaErrandMapId != -1
+                    || entry.fmErrandMapId != -1
                     || entry.autopilotErrandMapId != -1 || entry.jobErrandMapId != -1)) {
             clearWaitAnchor(entry);
         }
@@ -897,10 +908,15 @@ final class BotAutopilotManager {
         int grindMap = entry.autopilotMapId != -1 ? entry.autopilotMapId : bot.getMapId();
         int townHops = BotBreakManager.hopsBack(town, grindMap);
         if (ThreadLocalRandom.current().nextDouble() < BotBreakManager.townBreakChance(townHops)) {
-            return town;
+            // Trade break rides the normal break: with pending market intent, land the SAME break
+            // trip at an FM-portal town when one is a small detour away (never a separate trek).
+            Integer fmTown = BotFreeMarketManager.preferFmBreakTown(entry, bot, town,
+                    System.currentTimeMillis());
+            return fmTown != null ? fmTown : town;
         }
         int nearby = BotBreakManager.findNearbyBreakMap(grindMap, townHops);
-        return nearby != -1 ? nearby : town; // no closer safe map -> town anyway
+        return nearby != -1 ? nearby : town; // no closer safe map -> town anyway (deep spots rest
+                                             // nearby and skip the market until a townside break)
     }
 
     static boolean requestResupplyErrand(BotEntry entry, Character bot) {
@@ -1044,7 +1060,7 @@ final class BotAutopilotManager {
         if (entry.chillSession) {
             return "chill";
         }
-        if (entry.loggingOut || entry.gachaErrandMapId != -1
+        if (entry.loggingOut || entry.gachaErrandMapId != -1 || entry.fmErrandMapId != -1
                 || System.currentTimeMillis() < entry.breakUntilMs
                 || entry.idleLeech || !isActive(entry)) {
             return "break";
@@ -1082,6 +1098,12 @@ final class BotAutopilotManager {
             return bot.getMapId() == entry.gachaErrandMapId
                     ? "im at " + currentMap + ", at the gachapon"
                     : "im at " + currentMap + ", heading to the gachapon";
+        }
+        if (entry.fmErrandMapId != -1) {
+            return constants.game.GameConstants.isFreeMarketRoom(bot.getMapId())
+                    || bot.getMapId() == BotFreeMarketManager.FM_ENTRANCE
+                    ? "im at the free market, doing some shopping"
+                    : "im at " + currentMap + ", heading to the free market";
         }
         // Transient sub-states sit on top of grind mode (entry.grinding stays true), so report them
         // first — otherwise a town break or level-gap idle-leech misreads as "grinding here".

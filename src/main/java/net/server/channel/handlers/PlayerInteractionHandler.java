@@ -845,7 +845,8 @@ public final class PlayerInteractionHandler extends AbstractPacketHandler {
         return false;
     }
 
-    private static boolean canPlaceStore(Character chr) {
+    // public: server.bots stall setup runs the same placement rules a real player does
+    public static boolean canPlaceStore(Character chr) {
         try {
             for (MapObject mmo : chr.getMap().getMapObjectsInRange(chr.getPosition(), 23000, Arrays.asList(MapObjectType.HIRED_MERCHANT, MapObjectType.PLAYER))) {
                 if (mmo instanceof Character mc) {

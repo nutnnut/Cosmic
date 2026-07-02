@@ -252,6 +252,9 @@ public class BotManager {
         // Gachapon (BotGachaponManager): autopilot bots spend NX earned from looted NX cards on
         // gachapon, chasing uniques by expected value. Kill switch + the spend knobs, all visible.
         public boolean GACHAPON_ENABLED = true;
+        // Living-economy free-market sessions: autopilot bots with sellable surplus open real
+        // hired-merchant stalls in FM rooms and browse others' (docs/bot/living-economy-design.md).
+        public boolean FM_MARKET_ENABLED = true;
         // Keep at least this much account NX in reserve - bots gamble only the surplus above it.
         public int GACHA_NX_RESERVE = 1_000;
         // EV planning horizon: how many rolls a trip is assumed to do when ranking towns (plannedRolls,
@@ -5514,6 +5517,9 @@ public class BotManager {
         if (perf) t = System.nanoTime();
         BotGachaponManager.tickScan(entry, bot);
         if (perf) BotPerformanceMonitor.record("common-gacha-scan", System.nanoTime() - t);
+        if (perf) t = System.nanoTime();
+        BotFreeMarketManager.tickScan(entry, bot);
+        if (perf) BotPerformanceMonitor.record("common-fm-scan", System.nanoTime() - t);
         if (perf) t = System.nanoTime();
         BotInventoryManager.tickTrade(entry, bot);
         if (perf) BotPerformanceMonitor.record("common-trade", System.nanoTime() - t);
