@@ -1383,6 +1383,10 @@ final class BotScrollManager {
     /** Levels of onward progression a scroll investment is judged against when asking how fast a
      *  slot outgrows its gear — a data-shape constant for the durability curve, not a price knob. */
     private static final double REPLACEMENT_HORIZON_LEVELS = 30.0;
+    /** Worth (in {@link #marketStatValue} units) of a canonical completed scroll job — five
+     *  successful +2 ATT applies. The yardstick a slot's base-stat growth is measured against:
+     *  the investment dies when levelling has out-grown roughly this much added worth. */
+    private static final double SCROLL_JOB_WORTH = 5 * 2 * ATT_WEIGHT;
     /** Category needs at least this many stat-bearing equips for a trustworthy growth fit. */
     private static final int DURABILITY_MIN_SAMPLES = 8;
     private static volatile Map<Integer, Double> slotDurability;
@@ -1451,9 +1455,13 @@ final class BotScrollManager {
                 cov += (p[0] - meanX) * (p[1] - meanY);
                 var += (p[0] - meanX) * (p[0] - meanX);
             }
-            double slope = var > 0 ? cov / var : 0;
-            double growthRel = Math.max(0, slope / Math.max(1e-6, meanY)); // fractional worth gain per level
-            double durability = 1.0 / (1.0 + growthRel * REPLACEMENT_HORIZON_LEVELS);
+            double slope = var > 0 ? Math.max(0, cov / var) : 0; // absolute worth gain per level
+            // A scroll job is outgrown once the slot's base-stat growth overtakes the worth the
+            // scrolls added. ABSOLUTE slope vs a fixed payload — NOT slope/meanY: gloves' tiny
+            // base worth made their negligible drift look like fast relative growth (0.79 factor
+            // when the real economy says ~2x weapons).
+            double durability = SCROLL_JOB_WORTH
+                    / (SCROLL_JOB_WORTH + slope * REPLACEMENT_HORIZON_LEVELS);
             raw.put(e.getKey(), durability);
             if (e.getKey() >= 30 && e.getKey() <= 49) {
                 weaponSum += durability;
