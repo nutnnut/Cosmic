@@ -185,6 +185,16 @@ class BotMarketMathTest {
     }
 
     @Test
+    void undercutTargetCrossesBelowCompetitionButNotAboveOwnValue() {
+        assertEquals(980_000 * 0.98, BotMarketMath.undercutTarget(1_300_000, 980_000, 0.02), 1e-6,
+                "steps just under the cheapest visible competitor");
+        assertEquals(1_300_000, BotMarketMath.undercutTarget(1_300_000, 5_000_000, 0.02), 1e-6,
+                "a silly competitor doesn't drag the target up");
+        assertEquals(1_300_000, BotMarketMath.undercutTarget(1_300_000, 0, 0.02), 1e-6,
+                "no visible competition -> own perception");
+    }
+
+    @Test
     void openingMarginFollowsStanceAndIgnorance() {
         double firmIgnorant = BotMarketMath.openingMargin(1.0, 0);
         double firmInformed = BotMarketMath.openingMargin(1.0, 20);

@@ -251,8 +251,12 @@ Boot: reload both; no ledger replay needed — prices survive restarts.
 `haggleStance` trait and confidence (low confidence → wider margin, room to learn). No perception
 at all → cost-plus: own farming/reproduction cost × (1 + margin). Floor = reservation (§3).
 **Repricing happens when the bot services its stall/listings** (next FM session, §8): unsold →
-step ask down toward best evidence (competing asks seen, recent sale prices), step gap-proportional
-and confidence-damped exactly like §4; sold-out-fast → next batch asks higher. Because repricing
+step ask down toward best evidence — recent sale prices, and when competing stalls are visible,
+**just under the cheapest competing ask** (`undercutTarget`: you must cross below it to win the
+buyer; a silly competitor never drags you up; reservation still floors the step) — step
+gap-proportional and confidence-damped exactly like §4; sold-out-fast → next batch asks higher.
+This unsold-pressure repricing is the load-bearing negative feedback: without it a market can
+freeze in a structural no-trade zone (every ask a margin above every WTP) — sim-verified. Because repricing
 rides each bot's own personality schedule, bots **never reprice in the same tick** — the brief's
 damping/staggering requirement falls out of the living-server layer for free.
 

@@ -283,6 +283,20 @@ final class BotMarketMath {
     }
 
     /**
+     * Reprice evidence when competing for the next sale: just under the best visible competing
+     * ask (you must cross below it to win the buyer), but never chasing above your own perceived
+     * value (a silly competitor doesn't drag you up). With no visible competition, evidence is
+     * simply your perception. Reservation still floors the actual reprice step.
+     */
+    static double undercutTarget(double perceived, double bestCompetingAsk, double undercutFraction) {
+        if (bestCompetingAsk <= 0) {
+            return perceived;
+        }
+        double under = bestCompetingAsk * (1.0 - Math.max(0, undercutFraction));
+        return perceived > 0 ? Math.min(perceived, under) : under;
+    }
+
+    /**
      * Counter-offer: concede from the current ask toward the best acceptable floor by the
      * trait-scaled concession fraction. firmness 1 = barely moves, 0 = meets the offer.
      */
