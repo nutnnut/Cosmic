@@ -15,6 +15,7 @@ import server.maps.MapObject;
 import server.maps.MapObjectType;
 import server.maps.PlayerShopItem;
 import server.maps.Portal;
+import server.maps.SavedLocationType;
 
 import java.awt.Point;
 import java.util.ArrayList;
@@ -92,8 +93,15 @@ final class BotFreeMarketManager {
     static final int STALL_SLOT_CAP = 16;
     /** Bounded bargain purchases per trip (wallet + WTP are the real limits; this bounds dwell). */
     private static final int MAX_BARGAIN_BUYS = 2;
-    /** Bounded stall-spot placement attempts before falling back to browse-only. */
+    /** Bounded stall-spot candidates consumed (unreachable or refused) before browse-only. */
     private static final int MAX_PLACE_TRIES = 3;
+    /** Slot-column spacing: canPlaceStore rejects another merchant within ~152px (23000
+     *  distance-squared), so stalls line up a touch wider than that. */
+    static final int STALL_SPACING_PX = 170;
+    /** How far out (in slot columns, each way) to hunt for a free spot on the floor strip. */
+    private static final int MAX_STALL_SLOT_STEPS = 8;
+    /** Give up walking to one candidate spot after this long without net progress. */
+    private static final long PLACE_WALK_STUCK_MS = 12_000L;
 
     private BotFreeMarketManager() {
     }
@@ -109,6 +117,39 @@ final class BotFreeMarketManager {
         double p = ItemInformationProvider.getInstance().getPrice(id, qty);
         return p > 0 ? Math.round(p) : 0;
     };
+
+    /** Lowest price any NPC shop charges for the item (0 = not NPC-sold): the buyer's standing
+     *  outside option, read once from the shopitems SSOT. Data-derived bound, not a knob. */
+    @FunctionalInterface
+    interface NpcShopPrice {
+        int price(int itemId);
+    }
+    static NpcShopPrice npcShopPrice = BotFreeMarketManager::cachedNpcShopPrice;
+    private static volatile Map<Integer, Integer> npcShopMinPrices;
+
+    private static int cachedNpcShopPrice(int itemId) {
+        Map<Integer, Integer> cache = npcShopMinPrices;
+        if (cache == null) {
+            cache = loadNpcShopMinPrices(); // idempotent; a racing double-load is harmless
+            npcShopMinPrices = cache;
+        }
+        return cache.getOrDefault(itemId, 0);
+    }
+
+    private static Map<Integer, Integer> loadNpcShopMinPrices() {
+        Map<Integer, Integer> out = new java.util.HashMap<>();
+        try (java.sql.Connection con = tools.DatabaseConnection.getConnection();
+             java.sql.PreparedStatement ps = con.prepareStatement(
+                     "SELECT itemid, MIN(price) FROM shopitems WHERE price > 0 GROUP BY itemid");
+             java.sql.ResultSet rs = ps.executeQuery()) {
+            while (rs.next()) {
+                out.put(rs.getInt(1), rs.getInt(2));
+            }
+        } catch (java.sql.SQLException e) {
+            log.warn("npc shop price cache failed to load: {}", e.toString());
+        }
+        return out;
+    }
 
     /** Tradeability gate for listing (drop/trade-restricted items stay home). */
     static java.util.function.IntPredicate tradeable = id -> {
@@ -156,10 +197,21 @@ final class BotFreeMarketManager {
         return (int) Math.min(Integer.MAX_VALUE, Math.max(1, ask));
     }
 
-    /** List on the stall only when the after-fee proceeds beat just NPC-selling the stack. */
-    static boolean beatsNpcSale(int unitAsk, int quantity, long npcSellWholeStack) {
+    /** After-fee premium of selling the stack on a stall vs just NPC-selling it — the quantity a
+     *  listing must justify. <= 0 means the NPC counter is the standing better bid. */
+    static long listingPremium(int unitAsk, int quantity, long npcSellWholeStack) {
         long gross = (long) unitAsk * Math.max(1, quantity);
-        return gross - Trade.getFee(gross) > npcSellWholeStack;
+        return gross - Trade.getFee(gross) - npcSellWholeStack;
+    }
+
+    /** A stall slot must out-earn the time the trip represents: ~this many seconds of the
+     *  farming-cost scaffold ({@link BotScrollManager#FARM_MESO_PER_SECOND}; both retire together
+     *  at P3). Keeps NPC staples (potions) off the stall without a ban — their premium is real
+     *  but tiny, so it never covers the bother of a slot. */
+    private static final double LISTING_WORTH_SECONDS = 30.0;
+
+    static long slotWorthMesos() {
+        return Math.round(BotScrollManager.FARM_MESO_PER_SECOND * LISTING_WORTH_SECONDS);
     }
 
     /** A planned stall listing: one bag stack -> one merchant slot. */
@@ -169,38 +221,103 @@ final class BotFreeMarketManager {
         }
     }
 
+    /** One SHELF stack's evaluation trail: the ask math plus why it did or didn't make the stall
+     *  (the market debug endpoint renders these verbatim). {@code plan == null} -> not listed. */
+    record ListingVerdict(int itemId, int quantity, int ask, long npcSellBack, int npcShopPrice,
+                          long premium, String verdict, ListingPlan plan) {}
+
     /**
      * Select the USE-shelf surplus worth listing: SHELF-tier stacks (never RUNWAY - those are the
-     * bot's own supplies; JUNK is worthless NPC fodder) whose after-fee ask beats the NPC
-     * alternative. Prices: book perception blended over the shelf keep-value cost basis.
+     * bot's own supplies; JUNK is worthless NPC fodder), premium-ranked. Prices: book perception
+     * blended over the shelf keep-value cost basis.
      */
     static List<ListingPlan> selectListings(BotEntry entry, Character bot, long now) {
-        List<ListingPlan> out = new ArrayList<>();
+        return selectListings(bot, BotMarketBook.of(entry, bot), now);
+    }
+
+    /** Book-parameterized core, so read-only callers (the debug endpoint) can pass a detached
+     *  replica instead of touching the tick-thread-owned book on {@code entry}. */
+    static List<ListingPlan> selectListings(Character bot, BotMarketBook book, long now) {
+        List<ListingPlan> picked = new ArrayList<>();
+        for (ListingVerdict v : evaluateListings(bot, book, now)) {
+            if (v.plan() != null) {
+                picked.add(v.plan());
+            }
+        }
+        return picked;
+    }
+
+    /**
+     * Evaluate every SHELF-tier bag stack for the stall, premium-ranked. The ask comes from the
+     * bot's book over its keep-value cost basis, CAPPED just under the NPC shop price when an NPC
+     * sells the item (the buyer's standing outside option — an ask at the counter price can never
+     * clear), and a stack lists only when the after-fee premium over NPC-selling it covers a
+     * slot's worth of farming time. Cheap NPC staples price themselves out naturally, no ban.
+     * Top {@link #STALL_SLOT_CAP} by premium carry plans; the rest keep their verdicts.
+     */
+    static List<ListingVerdict> evaluateListings(Character bot, BotMarketBook book, long now) {
+        List<ListingVerdict> out = new ArrayList<>();
         Map<Item, BotInventoryManager.UseClass> classes = BotInventoryManager.classifyBagUse(bot);
-        BotMarketBook book = BotMarketBook.of(entry, bot);
         for (Map.Entry<Item, BotInventoryManager.UseClass> e : classes.entrySet()) {
             if (e.getValue().tier() != BotInventoryManager.UseTier.SHELF) {
                 continue;
             }
             Item item = e.getKey();
+            int id = item.getItemId();
             int qty = Math.max(1, item.getQuantity());
-            if (!tradeable.test(item.getItemId())) {
+            long npcWhole = npcSell.price(id, qty);
+            int shopPrice = npcShopPrice.price(id);
+            if (!tradeable.test(id)) {
+                out.add(new ListingVerdict(id, qty, 0, npcWhole, shopPrice, 0, "untradeable", null));
                 continue;
             }
-            long key = BotMarketMath.priceKey(item.getItemId(), 0);
-            double perceivedUnit = book.perceivedPrice(key, now);
+            long key = BotMarketMath.priceKey(id, 0);
             double costBasisUnit = e.getValue().keepValue() / qty;
-            int ask = unitAsk(perceivedUnit, book.privateConfidence(key, now), costBasisUnit);
-            if (ask <= 0 || !beatsNpcSale(ask, qty, npcSell.price(item.getItemId(), qty))) {
+            int ask = unitAsk(book.perceivedPrice(key, now), book.privateConfidence(key, now), costBasisUnit);
+            if (shopPrice > 0 && ask >= shopPrice) {
+                ask = shopPrice - 1; // undercut the counter or don't bother
+            }
+            if (ask <= 0) {
+                out.add(new ListingVerdict(id, qty, 0, npcWhole, shopPrice, 0, "no price basis", null));
+                continue;
+            }
+            long premium = listingPremium(ask, qty, npcWhole);
+            if (premium <= 0) {
+                out.add(new ListingVerdict(id, qty, ask, npcWhole, shopPrice, premium,
+                        "npc sale pays better", null));
+                continue;
+            }
+            if (premium < slotWorthMesos()) {
+                out.add(new ListingVerdict(id, qty, ask, npcWhole, shopPrice, premium,
+                        "premium not worth a slot", null));
                 continue;
             }
             // One merchant slot per bag stack: a single bundle holding the whole stack.
-            out.add(new ListingPlan(item, (short) 1, (short) qty, ask));
-            if (out.size() >= STALL_SLOT_CAP) {
-                break;
+            out.add(new ListingVerdict(id, qty, ask, npcWhole, shopPrice, premium, "list",
+                    new ListingPlan(item, (short) 1, (short) qty, ask)));
+        }
+        out.sort(java.util.Comparator.comparingLong(ListingVerdict::premium).reversed());
+        int slots = 0;
+        for (int i = 0; i < out.size(); i++) {
+            ListingVerdict v = out.get(i);
+            if (v.plan() != null && ++slots > STALL_SLOT_CAP) {
+                out.set(i, new ListingVerdict(v.itemId(), v.quantity(), v.ask(), v.npcSellBack(),
+                        v.npcShopPrice(), v.premium(), "crowded out (slot cap)", null));
             }
         }
         return out;
+    }
+
+    /** Stacks that justify a trip on their own: NPC-shop staples only ever tag along — a bag of
+     *  potions is never the REASON to walk to the market. */
+    static int tripWorthyCount(List<ListingPlan> listings) {
+        int n = 0;
+        for (ListingPlan p : listings) {
+            if (npcShopPrice.price(p.item().getItemId()) <= 0) {
+                n++;
+            }
+        }
+        return n;
     }
 
     // ---- scan: decide whether to start a market session ---------------------------------------
@@ -231,8 +348,9 @@ final class BotFreeMarketManager {
 
         boolean stallServiceDue = entry.nextStallServiceAtMs > 0 && now >= entry.nextStallServiceAtMs;
         List<ListingPlan> listable = selectListings(entry, bot, now);
-        // A chilling bot will also just go browse (its book still learns); a break-bot needs a reason.
-        if (!stallServiceDue && listable.size() < MIN_LISTINGS_TO_TRIP && !chilling) {
+        // A chilling bot will also just go browse (its book still learns); a break-bot needs a
+        // reason - and NPC-shop staples don't count as one (they only tag along).
+        if (!stallServiceDue && tripWorthyCount(listable) < MIN_LISTINGS_TO_TRIP && !chilling) {
             return; // nothing worth the walk. ponytail: S4 adds the own-income-rate travel gate
         }
 
@@ -310,7 +428,7 @@ final class BotFreeMarketManager {
         if (entry.nextStallServiceAtMs > 0 && now >= entry.nextStallServiceAtMs) {
             return true;
         }
-        return selectListings(entry, bot, now).size() >= MIN_LISTINGS_TO_TRIP;
+        return tripWorthyCount(selectListings(entry, bot, now)) >= MIN_LISTINGS_TO_TRIP;
     }
 
     // ---- errand tick ---------------------------------------------------------------------------
@@ -322,8 +440,23 @@ final class BotFreeMarketManager {
         }
         long now = System.currentTimeMillis();
         if (entry.fmErrandProgress.stalled(now, ERRAND_TIMEOUT_MS) || now > entry.fmPhaseDeadlineAtMs) {
-            finishErrand(entry, bot, "market trip fizzled, heading back to it later");
-            return false;
+            // NEVER release the errand while still inside the FM maps: they're off the world
+            // graph, so a bot dropped here has no route anywhere and strands (live-observed).
+            // A fizzle inside pivots to the exit walk; a wedged exit walk falls back to the
+            // exact thing the exit portal script (market00.js) does — warp to the saved town.
+            if (!isFmMap(bot.getMapId())) {
+                finishErrand(entry, bot, "market trip fizzled, heading back to it later");
+                return false;
+            }
+            if (entry.fmPhase == PHASE_EXIT) {
+                warpOutOfMarket(bot);
+                finishErrand(entry, bot, null);
+                return false;
+            }
+            reply.accept(entry, "market trip fizzled, heading out");
+            advancePhase(entry, PHASE_EXIT, now);
+            entry.fmErrandProgress.begin(now); // fresh progress clock for the exit legs
+            return true;
         }
         switch (entry.fmPhase) {
             case PHASE_TRAVEL -> {
@@ -385,12 +518,18 @@ final class BotFreeMarketManager {
                 return true;
             }
             case PHASE_EXIT -> {
-                if (!GameConstants_isFm(bot.getMapId())) {
+                if (!isFmMap(bot.getMapId())) {
                     finishErrand(entry, bot, null); // back in the world
                     return false;
                 }
+                if (entry.fmRoomMapId != -1 && bot.getMapId() == FM_ENTRANCE) {
+                    // room -> entrance hop done: fresh deadline for the entrance -> town leg
+                    entry.fmRoomMapId = -1;
+                    entry.fmPhaseDeadlineAtMs = now + PHASE_DEADLINE_MS;
+                }
                 Portal out = bot.getMap() != null ? bot.getMap().getPortal("out00") : null;
                 if (out == null) {
+                    warpOutOfMarket(bot); // an FM map without out00 shouldn't exist — script-mirror out
                     finishErrand(entry, bot, null);
                     return false;
                 }
@@ -404,8 +543,78 @@ final class BotFreeMarketManager {
         }
     }
 
-    private static boolean GameConstants_isFm(int mapId) {
+    static boolean isFmMap(int mapId) {
         return mapId == FM_ENTRANCE || constants.game.GameConstants.isFreeMarketRoom(mapId);
+    }
+
+    /**
+     * The town this bot's market session returns to: the FREE_MARKET saved location the town
+     * portal script stamped on the way in (non-destructive peek — {@code getSavedLocation}
+     * CLEARS on read and the exit portal script still needs it). Henesys when unset (mirrors
+     * market00.js's own fallback).
+     */
+    static int fmReturnTownMapId(Character bot) {
+        int saved = bot.peekSavedLocation(SavedLocationType.FREE_MARKET.name());
+        return saved > 0 ? saved : constants.id.MapId.HENESYS;
+    }
+
+    /**
+     * Where route planning should measure from: the FM maps are OFF the world graph, so a bot
+     * inside them plans from the town it entered from instead — otherwise every reachable-set
+     * query comes back empty and solo/party decides fail for as long as the bot is shopping.
+     */
+    static int routeAnchorMapId(Character bot) {
+        return isFmMap(bot.getMapId()) ? fmReturnTownMapId(bot) : bot.getMapId();
+    }
+
+    /**
+     * Stranded-in-FM self-rescue: a bot standing in an FM map with NO market errand can't get
+     * out on its own (off-graph — travel, autopilot and party plans all fail from here), so any
+     * such state, however reached (fizzle, relog, cleared orders), re-arms a bare exit walk.
+     * Skips bots that are legitimately here under supervision (following / operator command)
+     * or mid-trade. Called from the FM detour errand's maybeStart (autopilot bots) and from
+     * {@link #tickStrandedExit} (plan-less bots).
+     */
+    static void maybeStartExitRecovery(BotEntry entry, Character bot) {
+        if (entry.fmErrandMapId != -1 || bot.getMap() == null || !isFmMap(bot.getMapId())) {
+            return;
+        }
+        if (entry.following || entry.operatorCmd != null || bot.getTrade() != null || entry.marketBusy) {
+            return;
+        }
+        long now = System.currentTimeMillis();
+        entry.fmErrandMapId = fmReturnTownMapId(bot);
+        entry.fmRoomMapId = constants.game.GameConstants.isFreeMarketRoom(bot.getMapId())
+                ? bot.getMapId() : -1;
+        entry.fmPhase = PHASE_EXIT;
+        entry.fmPlaceTries = 0;
+        entry.fmBargainBuys = 0;
+        entry.fmBrowseUntilMs = 0L;
+        entry.fmStandSpot = null;
+        entry.fmErrandProgress.begin(now);
+        entry.fmPhaseDeadlineAtMs = now + PHASE_DEADLINE_MS;
+        log.info("bot {} stranded in FM map {} with no errand - walking it out", bot.getName(), bot.getMapId());
+    }
+
+    /**
+     * Exit path for bots WITHOUT an active autopilot plan (the detour-errand loop only runs
+     * when autopilot is active): arm + drive the exit walk so a plan-less bot never sits in an
+     * FM map. True when the tick was consumed by the walk.
+     */
+    static boolean tickStrandedExit(BotEntry entry, Character bot, boolean runAiTick) {
+        maybeStartExitRecovery(entry, bot);
+        return entry.fmErrandMapId != -1 && isFmMap(bot.getMapId())
+                && tickErrand(entry, bot, runAiTick);
+    }
+
+    /** Last resort when the exit WALK wedges: exactly what the exit portal script (market00.js)
+     *  does — consume the FREE_MARKET saved location and warp to it (Henesys fallback). */
+    private static void warpOutOfMarket(Character bot) {
+        int town = bot.getSavedLocation(SavedLocationType.FREE_MARKET.name());
+        if (town <= 0) {
+            town = constants.id.MapId.HENESYS;
+        }
+        bot.changeMap(town, "market00");
     }
 
     private static void advancePhase(BotEntry entry, int phase, long now) {
@@ -414,10 +623,11 @@ final class BotFreeMarketManager {
         entry.fmErrandProgress.touch(now);
     }
 
-    /** Entrance -> room: prefer the room portals in a stable per-bot order (in00..in19 probes). */
+    /** Entrance -> room: prefer the room portals in a stable per-bot order (in01..in22 per the
+     *  entrance WZ portal list; probing a couple past the end is harmless). */
     private static Portal pickRoomPortal(BotEntry entry, Character bot) {
         List<Portal> candidates = new ArrayList<>();
-        for (int i = 0; i <= 19; i++) {
+        for (int i = 1; i <= 22; i++) {
             Portal p = bot.getMap().getPortal(String.format("in%02d", i));
             if (p != null && constants.game.GameConstants.isFreeMarketRoom(p.getTargetMapId())) {
                 candidates.add(p);
@@ -434,7 +644,7 @@ final class BotFreeMarketManager {
         return chosen;
     }
 
-    /** In the room: walk to a spot, place + stock + publish the stall, then browse. */
+    /** In the room: walk to a free slot on this floor, place + stock + publish, then browse. */
     private static boolean tickSetup(BotEntry entry, Character bot, boolean runAiTick, long now) {
         // A live stall from a previous session (or no stock worth listing) -> browse-only trip.
         boolean stallAlive = bot.getWorldServer().getHiredMerchant(bot.getId()) != null;
@@ -443,16 +653,26 @@ final class BotFreeMarketManager {
             advancePhase(entry, PHASE_BROWSE, now);
             return true;
         }
-        Portal out = bot.getMap().getPortal("out00");
-        Point anchor = out != null ? out.getPosition() : bot.getPosition();
         if (entry.fmStandSpot == null) {
-            int offset = 260 + entry.fmPlaceTries * 160 + (bot.getId() % 7) * 30;
-            entry.fmStandSpot = BotTravelManager.pickReachableApproachPoint(
-                    entry, bot, new Point(anchor.x + offset, anchor.y), 40, 900);
+            entry.fmStandSpot = pickStallSpot(entry, bot);
+            if (entry.fmStandSpot == null) {
+                advancePhase(entry, PHASE_BROWSE, now); // this floor is full - browse and go
+                return true;
+            }
+            entry.fmStandBestDist = Integer.MAX_VALUE;
+            entry.fmStandStuckSinceMs = now;
         }
         Point stand = entry.fmStandSpot;
-        if (entry.inAir || entry.climbing
-                || Math.abs(bot.getPosition().x - stand.x) + Math.abs(bot.getPosition().y - stand.y) > 24) {
+        int dist = Math.abs(bot.getPosition().x - stand.x) + Math.abs(bot.getPosition().y - stand.y);
+        if (entry.inAir || entry.climbing || dist > 24) {
+            if (dist < entry.fmStandBestDist - 4) {
+                entry.fmStandBestDist = dist; // net progress re-arms the walk watchdog
+                entry.fmStandStuckSinceMs = now;
+            }
+            if (now - entry.fmStandStuckSinceMs > PLACE_WALK_STUCK_MS) {
+                nextPlacementTry(entry, now); // can't reach this slot - try the next one over
+                return true;
+            }
             BotTravelManager.pinMoveTarget(entry, stand);
             BotTravelManager.movementStep.step(entry, stand, runAiTick);
             entry.fmErrandProgress.touch(now);
@@ -460,16 +680,76 @@ final class BotFreeMarketManager {
         }
         BotTravelManager.clearMoveTargetPin(entry);
         if (!PlayerInteractionHandler.canPlaceStore(bot)) {
-            entry.fmPlaceTries++;
-            entry.fmStandSpot = null;
-            if (entry.fmPlaceTries >= MAX_PLACE_TRIES) {
-                advancePhase(entry, PHASE_BROWSE, now); // no free spot - browse and go
-            }
+            nextPlacementTry(entry, now);
             return true;
         }
         openAndStockStall(entry, bot, listings, now);
         advancePhase(entry, PHASE_BROWSE, now);
         return true;
+    }
+
+    /** Consume the current candidate slot (unreachable or refused) and move to the next; out of
+     *  tries -> browse-only, never a fizzled errand over placement. */
+    private static void nextPlacementTry(BotEntry entry, long now) {
+        entry.fmPlaceTries++;
+        entry.fmStandSpot = null;
+        entry.fmErrandProgress.touch(now);
+        if (entry.fmPlaceTries >= MAX_PLACE_TRIES) {
+            advancePhase(entry, PHASE_BROWSE, now);
+        }
+    }
+
+    /**
+     * A stall spot on the floor strip the bot is standing on: slot columns every
+     * {@link #STALL_SPACING_PX} out from where it entered (per-bot fill direction for variety),
+     * ground-snapped to the SAME walking level and screened by the same rules
+     * {@link PlayerInteractionHandler#canPlaceStore} enforces (portal buffer, merchant spacing)
+     * so the final check passes. A purely horizontal walk converges - the old cross-platform
+     * targets anchored off the exit portal were often unreachable and timed the phase out
+     * (live-observed fizzle loop). {@code fmPlaceTries} skips slots already consumed this
+     * session. Null = no free slot on this floor.
+     */
+    private static Point pickStallSpot(BotEntry entry, Character bot) {
+        server.maps.MapleMap map = bot.getMap();
+        if (map == null || map.getFootholds() == null) {
+            return null;
+        }
+        Point pos = bot.getPosition();
+        List<MapObject> stalls = map.getMapObjectsInRange(pos, Double.POSITIVE_INFINITY,
+                List.of(MapObjectType.HIRED_MERCHANT));
+        boolean rightFirst = (bot.getId() & 1) == 0;
+        int skipped = 0;
+        for (int step = 0; step <= MAX_STALL_SLOT_STEPS; step++) {
+            for (int side = 0; side < (step == 0 ? 1 : 2); side++) {
+                int dir = (side == 0) == rightFirst ? 1 : -1;
+                Point spot = BotPhysicsEngine.pointBelowIndexed(map,
+                        new Point(pos.x + dir * step * STALL_SPACING_PX, pos.y - 30));
+                if (spot == null || Math.abs(spot.y - pos.y) > 60) {
+                    continue; // ran off this floor strip (edge, stairwell gap, lower level)
+                }
+                Portal portal = map.findClosestTeleportPortal(spot);
+                if (portal != null && portal.getPosition().distance(spot) < 130.0) {
+                    continue; // canPlaceStore's 120px portal buffer, padded
+                }
+                if (nearStall(stalls, spot)) {
+                    continue;
+                }
+                if (skipped++ < entry.fmPlaceTries) {
+                    continue; // consumed on an earlier try this session
+                }
+                return spot;
+            }
+        }
+        return null;
+    }
+
+    private static boolean nearStall(List<MapObject> stalls, Point spot) {
+        for (MapObject o : stalls) {
+            if (o.getPosition().distanceSq(spot) < 26000) { // canPlaceStore uses 23000; padded
+                return true;
+            }
+        }
+        return false;
     }
 
     /** The permit check + gacha-style NX purchase abstraction (design sec 8.2, resolution 8). */
@@ -622,6 +902,8 @@ final class BotFreeMarketManager {
         entry.fmPlaceTries = 0;
         entry.fmBargainBuys = 0;
         entry.fmStandSpot = null;
+        entry.fmStandBestDist = Integer.MAX_VALUE;
+        entry.fmStandStuckSinceMs = 0L;
         entry.fmErrandProgress.clear();
         entry.marketBusy = false;
     }

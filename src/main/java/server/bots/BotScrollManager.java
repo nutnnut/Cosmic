@@ -96,8 +96,10 @@ final class BotScrollManager {
 
     // ---- Farming-cost (rarity→meso) anchors. See BotFarmingCostModel. ----
     /** Effort→meso anchor: how much a second of the bot's farming is worth. The single tunable knob
-     *  here (economy-design §9); a future ledger can replace it with the bot's real meso/sec. */
-    private static final double FARM_MESO_PER_SECOND = 1_000.0;
+     *  here (economy-design §9); a future ledger can replace it with the bot's real meso/sec.
+     *  Package-visible: BotFreeMarketManager prices a stall slot's bother off the same anchor,
+     *  so the P3 retirement (own observed meso/hr) swaps both call sites at once. */
+    static final double FARM_MESO_PER_SECOND = 1_000.0;
     /** FALLBACK per-kill travel/respawn-wait overhead — used only when the spawn index has no
      *  data for the dropper; otherwise {@link #seekOverheadSeconds} supplies real density. */
     private static final double FARM_SEEK_OVERHEAD_SECONDS = 3.0;

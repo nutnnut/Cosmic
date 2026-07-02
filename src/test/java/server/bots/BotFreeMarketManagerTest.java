@@ -25,17 +25,40 @@ class BotFreeMarketManagerTest {
     }
 
     @Test
-    void listingMustBeatNpcSaleAfterTradeFee() {
-        // 100k NPC stack value: a 101k gross that loses its fee should NOT list
+    void listingPremiumIsAfterFeeGainOverNpcSale() {
+        // 100k NPC stack value: a 101k gross premium is whatever survives the fee
         long npc = 100_000;
         int barelyAbove = 101_000;
         long fee = Trade.getFee(barelyAbove);
-        assertEquals(fee > 1_000, !BotFreeMarketManager.beatsNpcSale(barelyAbove, 1, npc),
-                "fee decides the marginal case");
-        assertTrue(BotFreeMarketManager.beatsNpcSale(150_000, 1, npc),
+        assertEquals(1_000 - fee, BotFreeMarketManager.listingPremium(barelyAbove, 1, npc),
+                "fee comes straight off the premium");
+        assertTrue(BotFreeMarketManager.listingPremium(150_000, 1, npc) > 0,
                 "clear premium over NPC lists");
-        assertFalse(BotFreeMarketManager.beatsNpcSale(90_000, 1, npc),
+        assertTrue(BotFreeMarketManager.listingPremium(90_000, 1, npc) < 0,
                 "below NPC sell-back never lists (NPC is the standing better bid)");
+    }
+
+    @Test
+    void slotWorthTracksTheFarmingCostScaffold() {
+        assertEquals(Math.round(BotScrollManager.FARM_MESO_PER_SECOND * 30.0),
+                BotFreeMarketManager.slotWorthMesos(),
+                "a slot must out-earn ~30s of the farming-cost anchor (retires with it at P3)");
+    }
+
+    @Test
+    void npcShopStaplesNeverJustifyATrip() {
+        BotFreeMarketManager.NpcShopPrice realLookup = BotFreeMarketManager.npcShopPrice;
+        try {
+            BotFreeMarketManager.npcShopPrice = id -> id == 2000002 ? 160 : 0; // potion vs scroll
+            var potion = new BotFreeMarketManager.ListingPlan(
+                    new client.inventory.Item(2000002, (short) 0, (short) 100), (short) 1, (short) 100, 150);
+            var scroll = new BotFreeMarketManager.ListingPlan(
+                    new client.inventory.Item(2040804, (short) 0, (short) 3), (short) 1, (short) 3, 600_000);
+            assertEquals(1, BotFreeMarketManager.tripWorthyCount(java.util.List.of(potion, scroll)),
+                    "only the non-NPC-shop stack counts toward the trip trigger");
+        } finally {
+            BotFreeMarketManager.npcShopPrice = realLookup;
+        }
     }
 
     @Test

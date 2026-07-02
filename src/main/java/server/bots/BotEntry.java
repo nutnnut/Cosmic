@@ -497,6 +497,8 @@ public class BotEntry {
     int fmPlaceTries = 0;                // bounded stall-spot attempts
     int fmBargainBuys = 0;               // bounded impulse purchases per trip
     Point fmStandSpot = null;            // chosen stall spot in the room
+    int fmStandBestDist = Integer.MAX_VALUE; // walk watchdog: best distance to fmStandSpot so far
+    long fmStandStuckSinceMs = 0L;       // walk watchdog: last time fmStandBestDist improved
 
     // Supervised-mode quest AUTO-SUGGEST (Feature A): when the owner is online and the bot is at
     // their side, the bot occasionally SUGGESTS a standout nearby quest in chat (it never wanders

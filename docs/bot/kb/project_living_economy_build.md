@@ -75,12 +75,51 @@ FM town within `FM_BREAK_DETOUR_BUDGET_SECONDS=45` when `hasMarketIntent`; (2) h
 `MAX_ONE_WAY_TRAVEL_SECONDS=90` cap from rest spots (deep-dungeon bots skip until a townside
 break); (3) chill session = market day (8x browse dwell).
 
+## S2 live round 1 (2026-07-02) — found + fixed, needs restart to verify
+
+First live run stranded DOZENS of bots inside FM maps. Root causes + fixes (one commit after
+d320fc868):
+
+- **Stranding root cause:** tickErrand's timeout branch called finishErrand IN PLACE. FM maps
+  (910000000 entrance + rooms) are OFF BotWorldGraph, so a bot released there can't route
+  anywhere: solo decide spams "no reachable grind spot", party decide fails for the WHOLE party
+  ("can't find a spot we can all reach"). Fixes: (1) timeout inside FM pivots to PHASE_EXIT (only
+  finish once outside; wedged exit warps out mirroring market00.js's saved-location read);
+  (2) `maybeStartExitRecovery` re-arms a bare exit walk for ANY bot standing in FM without an
+  errand — hooked in the FM DetourErrand.maybeStart (active bots) AND the `!isActive` branch of
+  BotAutopilotManager.tick via `tickStrandedExit` (plan-less bots; self-play scheduler bots hit
+  this); skips following/operator/trading bots; (3) `routeAnchorMapId` — decide/partyInputs plan
+  from `peekSavedLocation(FREE_MARKET)` town while a bot is inside FM. GOTCHA:
+  `Character.getSavedLocation` is a DESTRUCTIVE read (clears) — peek for planning, destructive
+  only in the actual warp-out. (4) BotAutopilotManager.clear() now clears the FM errand too
+  (parity with quest/gacha; recovery re-arms the exit if it was mid-FM).
+- **SETUP fizzle root cause:** stand spots anchored off out00 (+260px…) often sat on another
+  floor level → walk never converged → 60s phase deadline → fizzle (live: permit bought, fizzle
+  60s later, every trip). Fix: slot columns every `STALL_SPACING_PX=170` along the bot's CURRENT
+  floor strip (BotPhysicsEngine.pointBelowIndexed ground snap, |dy|<=60 same-level guard),
+  pre-screened with canPlaceStore's own rules (152px merchant spacing = 23000 distanceSq, 120px
+  portal buffer), 12s per-slot no-progress watchdog → next slot; slots/tries exhausted →
+  browse-only, NEVER a fizzled errand. Entrance room portals are `in01..in22` (no in00).
+- **Junk listings:** NPC-shop staples (potions) listed at silly asks. Fix in evaluateListings:
+  ask CAPPED under the NPC shop counter price (`npcShopPrice` seam, one
+  `SELECT itemid, MIN(price) FROM shopitems` cached), stacks list only when after-fee premium
+  over NPC-selling covers ~30s of FARM_MESO_PER_SECOND (scaffold now package-visible in
+  BotScrollManager; P3 retires both together), premium-ranked to fill 16 slots, and
+  MIN_LISTINGS_TO_TRIP counts only non-NPC-shop stacks (staples tag along, never cause a trip).
+- **Debug surface (owner request):** `/api/market/stalls` (every open merchant: pos + stock) and
+  `/api/market/bot?name=` (fm state, wallet split, bag classification, listing verdicts, beliefs
+  via a DETACHED store-loaded replica — never the tick-owned book). docs/bot/web-endpoints.md
+  updated (rule 8).
+- Verified en route: bots DO already buy potions from NPC shops (BotShopManager resupply,
+  `ShopFactory.getShopForNPC` + `shop.buyDirect`), so capping potion listings loses nothing.
+
 ## Pending / next
 
-- **S2 LIVE VERIFY (next action):** restart server (consensus timer + all changes need boot),
-  `@botpop on`, seed managed bots with USE surplus; watch: bot announces market trip on a town
-  break → stall up in an FM room (`/api/live`, map 910000001+) → second bot browses/buys →
-  `bot_market_event` rows + both books move. Design sec 14 S2 criteria.
+- **S2 LIVE VERIFY round 2 (next action, restart required):** watch stranded bots walk out on
+  boot (log line "stranded in FM map ... walking it out"), then a clean stall loop: trip → slot
+  spread ≥170px apart (`/api/market/stalls` x/y), listings all premium-worthy (no potions —
+  `/api/market/bot` verdicts), browse/bargain, EXIT back to town, party decides working with a
+  member mid-market. Design sec 14 S2 criteria on top.
 - **S3:** BotMarketGrammar (S>/B>/PC>, reuse MESO_AMOUNT_TOKEN + trade-command name resolution),
   BotMarketShoutBus (map-scoped; player entry via GeneralChatHandler branch, bot loopback at
   botSay), want/stock matching, accept-at-ask trades via tickManualTrade extension, BotPrompt

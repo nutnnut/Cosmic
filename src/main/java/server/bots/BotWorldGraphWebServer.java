@@ -15,13 +15,16 @@ import provider.DataProvider;
 import provider.DataProviderFactory;
 import provider.DataTool;
 import provider.wz.WZFiles;
+import server.ItemInformationProvider;
 import server.bots.llm.BotLlmConfig;
 import server.life.LifeFactory;
 import server.life.MonsterInformationProvider;
 import server.life.NPC;
+import server.maps.HiredMerchant;
 import server.maps.MapObject;
 import server.maps.MapObjectType;
 import server.maps.MapleMap;
+import server.maps.PlayerShopItem;
 import server.maps.Portal;
 
 import java.awt.Point;
@@ -171,6 +174,8 @@ public final class BotWorldGraphWebServer {
             s.createContext("/api/mapinfo", BotWorldGraphWebServer::serveMapInfo);
             s.createContext("/api/command", BotWorldGraphWebServer::serveCommand);
             s.createContext("/api/botdebug", BotWorldGraphWebServer::serveBotDebug);
+            s.createContext("/api/market/stalls", BotWorldGraphWebServer::serveMarketStalls);
+            s.createContext("/api/market/bot", BotWorldGraphWebServer::serveMarketBot);
             s.createContext("/api/bot/pathlog", BotWorldGraphWebServer::servePathLog);
             s.createContext("/api/perf", BotWorldGraphWebServer::servePerf);
             s.createContext("/api/spawnbot", BotWorldGraphWebServer::serveSpawnBot);
@@ -1838,6 +1843,166 @@ public final class BotWorldGraphWebServer {
     // --- live occupancy ---
 
     /** Every character currently online across all worlds/channels (bots included). */
+    // --- living-economy debug surface (docs/bot/living-economy-design.md sec 11) ---
+
+    /** Every OPEN hired merchant in every world: where it stands, whose it is, what it sells. */
+    private static void serveMarketStalls(HttpExchange ex) throws IOException {
+        StringBuilder sb = new StringBuilder("{\"stalls\":[");
+        boolean first = true;
+        for (World w : Server.getInstance().getWorlds()) {
+            for (HiredMerchant hm : w.getActiveMerchants()) {
+                if (!first) {
+                    sb.append(',');
+                }
+                first = false;
+                Point pos = hm.getPosition();
+                sb.append("{\"owner\":").append(hm.getOwnerId())
+                        .append(",\"n\":").append(jsonStr(hm.getOwner()))
+                        .append(",\"desc\":").append(jsonStr(hm.getDescription()))
+                        .append(",\"map\":").append(hm.getMapId())
+                        .append(",\"ch\":").append(hm.getChannel())
+                        .append(",\"x\":").append(pos.x)
+                        .append(",\"y\":").append(pos.y)
+                        .append(",\"mesos\":").append(hm.getMesos())
+                        .append(",\"items\":[");
+                List<PlayerShopItem> items = hm.getItems();
+                for (int i = 0; i < items.size(); i++) {
+                    PlayerShopItem psi = items.get(i);
+                    if (i > 0) {
+                        sb.append(',');
+                    }
+                    int per = Math.max(1, psi.getItem().getQuantity());
+                    sb.append("{\"item\":").append(psi.getItem().getItemId())
+                            .append(",\"name\":").append(jsonStr(itemName(psi.getItem().getItemId())))
+                            .append(",\"bundles\":").append(psi.getBundles())
+                            .append(",\"per\":").append(per)
+                            .append(",\"price\":").append(psi.getPrice())
+                            .append(",\"unit\":").append(Math.round((double) psi.getPrice() / per))
+                            .append(",\"live\":").append(psi.isExist())
+                            .append('}');
+                }
+                sb.append("]}");
+            }
+        }
+        send(ex, 200, "application/json", sb.append("]}").toString().getBytes(StandardCharsets.UTF_8));
+    }
+
+    /**
+     * {@code ?id=<charId>} or {@code ?name=<botName>}: one bot's market brain — FM errand state,
+     * wallet split, bag classification and the stall dry-run with per-stack verdicts. Prices come
+     * from a DETACHED book replica loaded from the persisted beliefs (never the tick-thread-owned
+     * book on the entry), so the numbers can lag the live book by up to a flush interval (~4min).
+     */
+    private static void serveMarketBot(HttpExchange ex) throws IOException {
+        Map<String, String> q = queryParams(ex.getRequestURI().getRawQuery());
+        int id = 0;
+        try {
+            id = Integer.parseInt(q.getOrDefault("id", "0").trim());
+        } catch (NumberFormatException ignore) { /* fall through to name lookup */ }
+        String name = q.getOrDefault("name", "").trim();
+        Character bot = null;
+        for (Character chr : onlineCharacters()) {
+            if (!(chr.getClient() instanceof BotClient)) {
+                continue;
+            }
+            if ((id > 0 && chr.getId() == id) || (!name.isEmpty() && chr.getName().equalsIgnoreCase(name))) {
+                bot = chr;
+                break;
+            }
+        }
+        BotEntry e = bot == null ? null : lookupBotEntry(bot.getId());
+        if (bot == null || e == null) {
+            send(ex, 404, "application/json",
+                    "{\"error\":\"bot not found (use ?id= or ?name=)\"}".getBytes(StandardCharsets.UTF_8));
+            return;
+        }
+        long now = System.currentTimeMillis();
+        StringBuilder sb = new StringBuilder("{\"id\":").append(bot.getId())
+                .append(",\"n\":").append(jsonStr(bot.getName()))
+                .append(",\"map\":").append(bot.getMapId())
+                .append(",\"fm\":{\"errandTown\":").append(e.fmErrandMapId)
+                .append(",\"phase\":").append(e.fmPhase)
+                .append(",\"room\":").append(e.fmRoomMapId)
+                .append(",\"placeTries\":").append(e.fmPlaceTries)
+                .append(",\"standX\":").append(e.fmStandSpot != null ? e.fmStandSpot.x : 0)
+                .append(",\"standY\":").append(e.fmStandSpot != null ? e.fmStandSpot.y : 0)
+                .append(",\"marketBusy\":").append(e.marketBusy)
+                .append(",\"nextScanInS\":").append(Math.max(0, (e.nextFmScanAtMs - now) / 1000))
+                .append(",\"stallServiceInS\":").append(e.nextStallServiceAtMs == 0 ? -1
+                        : Math.max(0, (e.nextStallServiceAtMs - now) / 1000))
+                .append("},");
+        BotAssetView.Snapshot snap = BotAssetView.snapshotWithFredrick(bot);
+        sb.append("\"meso\":{\"liquid\":").append(snap.liquidMeso())
+                .append(",\"merchant\":").append(snap.merchantMeso())
+                .append(",\"storage\":").append(snap.storageMeso())
+                .append(",\"escrow\":").append(snap.tradeEscrowMeso())
+                .append(",\"total\":").append(snap.totalMeso()).append("},");
+        BotPersonality p = e.personality != null ? e.personality : BotPersonality.defaults();
+        double informed = BotMarketMath.clamp01(0.5 * p.sociability() + 0.5 * p.chattiness());
+        Map<Long, BotMarketStore.StoredBelief> rows = BotMarketStore.getInstance().loadBeliefs(bot.getId());
+        BotMarketBook replica = new BotMarketBook(bot.getId(), informed, BotMarketConsensus.getInstance());
+        replica.loadFrom(rows);
+        sb.append("\"listings\":[");
+        boolean first = true;
+        for (BotFreeMarketManager.ListingVerdict v : BotFreeMarketManager.evaluateListings(bot, replica, now)) {
+            if (!first) {
+                sb.append(',');
+            }
+            first = false;
+            sb.append("{\"item\":").append(v.itemId())
+                    .append(",\"name\":").append(jsonStr(itemName(v.itemId())))
+                    .append(",\"qty\":").append(v.quantity())
+                    .append(",\"ask\":").append(v.ask())
+                    .append(",\"npcSellBack\":").append(v.npcSellBack())
+                    .append(",\"npcShop\":").append(v.npcShopPrice())
+                    .append(",\"premium\":").append(v.premium())
+                    .append(",\"verdict\":").append(jsonStr(v.verdict()))
+                    .append('}');
+        }
+        sb.append("],\"bag\":[");
+        first = true;
+        for (Map.Entry<client.inventory.Item, BotInventoryManager.UseClass> b
+                : BotInventoryManager.classifyBagUse(bot).entrySet()) {
+            if (!first) {
+                sb.append(',');
+            }
+            first = false;
+            sb.append("{\"item\":").append(b.getKey().getItemId())
+                    .append(",\"name\":").append(jsonStr(itemName(b.getKey().getItemId())))
+                    .append(",\"qty\":").append(b.getKey().getQuantity())
+                    .append(",\"tier\":").append(jsonStr(b.getValue().tier().name()))
+                    .append(",\"keep\":").append(Math.round(b.getValue().keepValue()))
+                    .append('}');
+        }
+        sb.append("],\"beliefs\":[");
+        first = true;
+        for (BotMarketStore.StoredBelief b : rows.values()) {
+            if (!first) {
+                sb.append(',');
+            }
+            first = false;
+            int itemId = (int) (b.priceKey() >> 8); // priceKey = itemId*256 + qualityBand
+            sb.append("{\"key\":").append(b.priceKey())
+                    .append(",\"item\":").append(itemId)
+                    .append(",\"name\":").append(jsonStr(itemName(itemId)))
+                    .append(",\"band\":").append((int) (b.priceKey() & 0xFF))
+                    .append(",\"est\":").append(b.estimate())
+                    .append(",\"conf\":").append(String.format(Locale.US, "%.2f", b.confidence()))
+                    .append(",\"obs\":").append(b.obs())
+                    .append(",\"ageS\":").append(Math.max(0, (now - b.lastSeenMs()) / 1000))
+                    .append(",\"consensus\":").append(Math.round(
+                            BotMarketConsensus.getInstance().consensus(b.priceKey())))
+                    .append('}');
+        }
+        sb.append("]}");
+        send(ex, 200, "application/json", sb.toString().getBytes(StandardCharsets.UTF_8));
+    }
+
+    private static String itemName(int itemId) {
+        String n = ItemInformationProvider.getInstance().getName(itemId);
+        return n == null ? "" : n;
+    }
+
     private static List<Character> onlineCharacters() {
         List<Character> out = new ArrayList<>();
         for (World w : Server.getInstance().getWorlds()) {

@@ -304,8 +304,11 @@ final class BotAutopilotManager {
         List<IntToDoubleFunction> weights = new ArrayList<>(members.size());
         for (BotEntry member : members) {
             BotWorldGraph.RouteOptions options = travelOptions(member.bot, ferryAllowed(member));
-            Set<Integer> reachable = reachableForBot(member.bot, member.bot.getMapId(), MAX_TRAVEL_HOPS, options);
-            weights.add(travelWeight(member.bot, member.bot.getMapId(), MAX_TRAVEL_HOPS, options,
+            // Off-graph FM maps anchor at the member's return town, so one shopping member
+            // doesn't empty the whole party's common reachable set.
+            int from = BotFreeMarketManager.routeAnchorMapId(member.bot);
+            Set<Integer> reachable = reachableForBot(member.bot, from, MAX_TRAVEL_HOPS, options);
+            weights.add(travelWeight(member.bot, from, MAX_TRAVEL_HOPS, options,
                     member.activeQuestMobIds));
             if (common == null) {
                 common = new HashSet<>(reachable);
@@ -412,6 +415,8 @@ final class BotAutopilotManager {
         entry.autopilotDecisionInFlight = false;
         BotQuestManager.clearQuestErrand(entry); // a canceled autopilot abandons any quest detour
         BotGachaponManager.clearGachaErrand(entry); // ...and any gachapon trip
+        BotFreeMarketManager.clearFmErrand(entry); // ...and any market session (if the bot is still
+        // inside the FM, the stranded-exit recovery re-arms a bare exit walk next tick)
         BotStarterKitManager.clearJobErrand(entry); // ...and any job-change instructor walk
         BotTravelManager.resetForModeChange(entry); // drop the in-flight hop AND the give-up cooldown,
         // so a re-command (follow/grind/move) isn't silently gated by a stale travel give-up window.
@@ -663,6 +668,12 @@ final class BotAutopilotManager {
                 }
             },
             new DetourErrand() { // free-market session: stall + browse trip during a rest break
+                // Self-rescue: an autopilot bot standing in an FM map without an errand (fizzle
+                // edge, relog, cleared orders) re-arms the exit walk — FM maps are off-graph, so
+                // nothing else can route it out.
+                @Override public void maybeStart(BotEntry entry, Character bot) {
+                    BotFreeMarketManager.maybeStartExitRecovery(entry, bot);
+                }
                 @Override public boolean active(BotEntry entry) { return entry.fmErrandMapId != -1; }
                 @Override public boolean tick(BotEntry entry, Character bot, boolean runAiTick) {
                     return BotFreeMarketManager.tickErrand(entry, bot, runAiTick);
@@ -686,7 +697,9 @@ final class BotAutopilotManager {
      */
     static boolean tick(BotEntry entry, Character bot, boolean runAiTick) {
         if (!isActive(entry) || bot.getMap() == null) {
-            return false;
+            // Even a plan-less bot must not sit inside the off-graph FM maps (nothing below can
+            // route it out of them) — the market manager arms + drives a bare exit walk.
+            return bot.getMap() != null && BotFreeMarketManager.tickStrandedExit(entry, bot, runAiTick);
         }
         // Party SSOT: pull this member's grind destination from the one shared plan before anything
         // reads autopilotMapId below. A follower can no longer drift onto a stale solo pick (the old
@@ -1364,11 +1377,13 @@ final class BotAutopilotManager {
     }
 
     private static Recommendation recommendOnce(BotEntry entry, Character bot, boolean withFerry) {
+        // A bot inside the off-graph FM maps plans from its return town (else nothing is reachable).
+        int from = BotFreeMarketManager.routeAnchorMapId(bot);
         if (entry.autopilotFarmItemId != 0) {
             return farmAdvisor.recommend(entry, bot, entry.autopilotFarmItemId,
-                    bot.getMapId(), MAX_TRAVEL_HOPS, withFerry);
+                    from, MAX_TRAVEL_HOPS, withFerry);
         }
-        return advisor.recommend(entry, bot, bot.getMapId(), MAX_TRAVEL_HOPS, withFerry);
+        return advisor.recommend(entry, bot, from, MAX_TRAVEL_HOPS, withFerry);
     }
 
     /** The one-line "can i take the boat?" ask, or null when overseas isn't clearly better. */
