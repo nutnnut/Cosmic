@@ -448,10 +448,56 @@ final class BotFreeMarketManager {
                 || entry.questErrandMapId != -1 || entry.jobErrandMapId != -1) {
             return; // one errand at a time
         }
+        if (entry.fmPlanPending) {
+            return; // an off-thread plan is already in flight
+        }
+        // The listing plan is HEAVY since equips joined the shelf (reproduction DP + farm costs
+        // per piece) — same lesson as scheduleScrollPlan: never on the bot tick thread. Compute
+        // on the shared decide pool, then start the trip back on the scheduler thread.
+        entry.fmPlanPending = true;
+        BotGrindAdvisor.DECIDE_POOL.execute(() -> {
+            boolean stallServiceDue;
+            boolean fredrickDue;
+            List<ListingPlan> listable;
+            long t0 = BotPerformanceMonitor.start();
+            try {
+                long planNow = System.currentTimeMillis();
+                stallServiceDue = entry.nextStallServiceAtMs > 0 && planNow >= entry.nextStallServiceAtMs;
+                fredrickDue = fredrickPickupDue(entry, bot, planNow);
+                listable = selectListings(entry, bot, planNow);
+            } catch (RuntimeException e) {
+                entry.fmPlanPending = false;
+                return; // WZ/inventory hiccup off-thread — the next scan retries
+            } finally {
+                BotPerformanceMonitor.recordSince("fm-plan", t0);
+            }
+            entry.fmLastTripWorthy = tripWorthyCount(listable) >= MIN_LISTINGS_TO_TRIP;
+            boolean sd = stallServiceDue;
+            boolean fd = fredrickDue;
+            List<ListingPlan> plans = listable;
+            BotManager.after(0, () -> {
+                entry.fmPlanPending = false;
+                startMarketTrip(entry, bot, sd, fd, plans);
+            });
+        });
+    }
 
-        boolean stallServiceDue = entry.nextStallServiceAtMs > 0 && now >= entry.nextStallServiceAtMs;
-        boolean fredrickDue = fredrickPickupDue(entry, bot, now);
-        List<ListingPlan> listable = selectListings(entry, bot, now);
+    /** Arm the market errand from a computed plan — scheduler thread. Re-checks the gating state
+     *  (it may have moved while the plan computed off-thread); a stale plan just no-ops. */
+    private static void startMarketTrip(BotEntry entry, Character bot, boolean stallServiceDue,
+                                        boolean fredrickDue, List<ListingPlan> listable) {
+        long now = System.currentTimeMillis();
+        if (!BotAutopilotManager.isActive(entry) || bot.getMap() == null) {
+            return;
+        }
+        boolean chilling = entry.chillSession;
+        if (!chilling && !BotBreakManager.onRestBreak(entry, bot, now)) {
+            return;
+        }
+        if (entry.fmErrandMapId != -1 || entry.gachaErrandMapId != -1
+                || entry.questErrandMapId != -1 || entry.jobErrandMapId != -1) {
+            return;
+        }
         // A chilling bot will also just go browse (its book still learns); a break-bot needs a
         // reason - and NPC-shop staples don't count as one (they only tag along). Proceeds
         // waiting at Fredrick ARE a reason of their own: a bot whose whole surplus sold and
@@ -473,6 +519,8 @@ final class BotFreeMarketManager {
         entry.fmBargainBuys = 0;
         entry.fmBrowseUntilMs = 0L;
         entry.fmStandSpot = null;
+        entry.fmVisitedMarket = false;
+        entry.fmPlannedListings = listable; // staged at the stall without re-pricing on-tick
         entry.fmErrandProgress.begin(now);
         entry.fmPhaseDeadlineAtMs = now + ERRAND_TIMEOUT_MS;
         reply.accept(entry, stallServiceDue ? "gonna check on my shop at the fm"
@@ -508,12 +556,12 @@ final class BotFreeMarketManager {
         }
         BotPersonality p = entry.personality != null ? entry.personality : BotPersonality.defaults();
         ThreadLocalRandom rnd = ThreadLocalRandom.current();
-        // Expensive probes (DB / inventory scan) only run behind their passed roll; logins are
-        // staggered by the fast-start ramp, so the boot sweep stays cheap.
+        // The DB probe only runs behind its passed roll; logins are staggered by the fast-start
+        // ramp. NO inventory/pricing scan here (heavy since equips joined the shelf) — the seed
+        // just wakes the scan, and tickScan's off-thread plan owns the reason check.
         boolean seed = rnd.nextDouble() < STALL_REBUILD_LOGIN_CHANCE && hasFredrickHoldings(bot);
         if (!seed) {
-            seed = rnd.nextDouble() < loginMarketTripChance(p.breakFreqPerHour())
-                    && tripWorthyCount(selectListings(entry, bot, now)) >= MIN_LISTINGS_TO_TRIP;
+            seed = rnd.nextDouble() < loginMarketTripChance(p.breakFreqPerHour());
         }
         if (!seed) {
             return;
@@ -589,7 +637,9 @@ final class BotFreeMarketManager {
         if (fredrickPickupDue(entry, bot, now)) {
             return true;
         }
-        return tripWorthyCount(selectListings(entry, bot, now)) >= MIN_LISTINGS_TO_TRIP;
+        // Cached verdict from the last off-thread listing plan — this runs on break-destination
+        // decides (tick thread), which must never pay the full pricing scan.
+        return entry.fmLastTripWorthy;
     }
 
     /** Slow-cadence probe (one DB read per bot-hour): is Fredrick holding proceeds worth a trip?
@@ -733,12 +783,24 @@ final class BotFreeMarketManager {
     /** Arriving at the entrance (inbound or heading out): swing by Fredrick first when he holds
      *  closed-stall proceeds for this bot and this trip hasn't settled with him yet. */
     private static int nextFromEntrance(BotEntry entry, Character bot, boolean exiting) {
+        entry.fmVisitedMarket = true; // the trip reached the market — full satiation applies
         if (entry.fmFredrickState != 2 && hasFredrickHoldings(bot)) {
             entry.fmFredrickOnExit = exiting;
             entry.fmStandSpot = null;
             return PHASE_FREDRICK;
         }
         return exiting ? PHASE_EXIT : PHASE_TO_ROOM;
+    }
+
+    /** The trip's carried listing plan, minus anything that left the bag since planning. */
+    private static List<ListingPlan> validPlans(Character bot, List<ListingPlan> plans) {
+        List<ListingPlan> valid = new ArrayList<>(plans.size());
+        for (ListingPlan p : plans) {
+            if (BotInventoryManager.hasItem(bot, p.item()) && p.item().getQuantity() >= p.perBundle()) {
+                valid.add(p);
+            }
+        }
+        return valid;
     }
 
     /**
@@ -879,8 +941,10 @@ final class BotFreeMarketManager {
     /** In the room: walk to a free slot on this floor, place + stock + publish, then browse. */
     private static boolean tickSetup(BotEntry entry, Character bot, boolean runAiTick, long now) {
         // A live stall from a previous session (or no stock worth listing) -> browse-only trip.
+        // Listings were planned off-thread at trip start (startMarketTrip); staging only
+        // re-validates the items still exist — no re-pricing on the tick thread.
         boolean stallAlive = bot.getWorldServer().getHiredMerchant(bot.getId()) != null;
-        List<ListingPlan> listings = stallAlive ? List.of() : selectListings(entry, bot, now);
+        List<ListingPlan> listings = stallAlive ? List.of() : validPlans(bot, entry.fmPlannedListings);
         // NEVER open while Fredrick still holds proceeds: stocking a new stall saves over the
         // MERCHANT store, whose save DELETEs the uncollected rows first (saveItemsMerchant) -
         // the item loss the real client prevents by refusing to open until you collect. The
@@ -1144,11 +1208,17 @@ final class BotFreeMarketManager {
     }
 
     static void finishErrand(BotEntry entry, Character bot, String say) {
+        boolean visited = entry.fmVisitedMarket; // read before clearFmErrand wipes it
         clearFmErrand(entry);
         BotPersonality p = entry.personality != null ? entry.personality : BotPersonality.defaults();
         // Satiation: sessions ride the break cadence; meso-focused wiring lands with the S4 traits.
-        long gap = Math.round(3_600_000L * (2.0 + 6.0 * ThreadLocalRandom.current().nextDouble())
-                * (1.5 - 0.5 * p.chattiness()));
+        // A FIZZLE (never reached the market — walk timeout, unreachable portal) retries on a
+        // short backoff instead: burning the full satiation on a failed walk locked bots out of
+        // the market for hours (live round: 'holy' fizzled at Rien, next scan pushed ~7h).
+        long gap = visited
+                ? Math.round(3_600_000L * (2.0 + 6.0 * ThreadLocalRandom.current().nextDouble())
+                        * (1.5 - 0.5 * p.chattiness()))
+                : BotManager.randMs(10 * 60_000, 25 * 60_000);
         entry.nextFmScanAtMs = System.currentTimeMillis() + gap;
         if (say != null) {
             reply.accept(entry, say);
@@ -1169,6 +1239,8 @@ final class BotFreeMarketManager {
         entry.fmStandStuckSinceMs = 0L;
         entry.fmFredrickState = 0;
         entry.fmFredrickOnExit = false;
+        entry.fmVisitedMarket = false;
+        entry.fmPlannedListings = List.of();
         entry.fmErrandProgress.clear();
         entry.marketBusy = false;
     }

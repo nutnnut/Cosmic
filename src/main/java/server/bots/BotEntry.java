@@ -507,6 +507,10 @@ public class BotEntry {
     boolean fmFredrickOnExit = false;    // current Fredrick stop is the exit-leg one
     long nextFredrickProbeAtMs = 0L;     // slow-cadence "does Fredrick hold my stuff" DB probe
     boolean fredrickPickupPending = false; // cached probe result; a pickup of its own is a trip reason
+    volatile boolean fmPlanPending = false; // an off-thread listing plan is in flight (tickScan)
+    volatile java.util.List<BotFreeMarketManager.ListingPlan> fmPlannedListings = java.util.List.of();
+    volatile boolean fmLastTripWorthy = false; // cached off-thread verdict for cheap intent checks
+    boolean fmVisitedMarket = false;     // trip reached the FM entrance (fizzles skip satiation)
 
     // Supervised-mode quest AUTO-SUGGEST (Feature A): when the owner is online and the bot is at
     // their side, the bot occasionally SUGGESTS a standout nearby quest in chat (it never wanders
