@@ -1491,6 +1491,133 @@ final class BotScrollManager {
         return buy == null ? 0 : buy;
     }
 
+    // ---- equip market quote (S4): band + reproduction-curve price for one rolled piece ---------
+
+    /** Secondhand discount on scrolled pieces (SoloMapling parity): a buyer pays at most 60% of
+     *  what reproducing the piece would cost — below that, crafting your own dominates. The CLEAN
+     *  band is never discounted; a clean base is fully fungible with a shop/drop copy. */
+    static final double SECONDHAND_DISCOUNT = 0.6;
+
+    /** Job-agnostic market worth of an equip's ACTUAL rolled stats — the {@link Equip}-getter
+     *  counterpart to {@link #marketStatValue}, for pricing a specific rolled piece. */
+    static double marketStatValueOf(Equip eq) {
+        return ATT_WEIGHT * eq.getWatk() + MATK_WEIGHT * eq.getMatk()
+                + MAIN_STAT_WEIGHT * (eq.getStr() + eq.getDex() + eq.getInt() + eq.getLuk())
+                + survivalValue(eq);
+    }
+
+    /**
+     * Market quote for one rolled equip. {@code band} is the shared price-key quality dimension
+     * ({@link BotMarketMath#priceKey}): how many common-scroll-successes the piece sits above its
+     * clean base — provenance-blind on purpose, a godly clean roll prices like a scrolled one.
+     * {@code bandCurve} maps any band to meso along the reproduction-cost curve
+     * ({@link BotScrollValuer#reproductionValue} over the catalog-wide scroll set at full market
+     * prices), discounted {@link #SECONDHAND_DISCOUNT} above clean; hand it to
+     * {@link BotMarketMath#curveCalibration} with the item's traded bands to pin the whole line to
+     * live evidence. {@code curveQuoteMeso} is the curve read at this piece's own band. v1 ignores
+     * consumed upgrade slots (bands don't encode them). Null when WZ knows no clean stats.
+     */
+    record EquipQuote(int itemId, int band, long curveQuoteMeso,
+                      java.util.function.DoubleUnaryOperator bandCurve) {}
+
+    static EquipQuote equipMarketQuote(BotEntry entry, Character bot, Equip eq) {
+        ItemInformationProvider ii = ItemInformationProvider.getInstance();
+        Map<String, Integer> clean = ii.getEquipStats(eq.getItemId());
+        if (clean == null) {
+            return null;
+        }
+        ProducerCombat pc = resolveProducerCombat(entry, bot);
+        double baseScore = marketStatValue(clean);
+        double rolledScore = marketStatValueOf(eq);
+        int tuc = clean.getOrDefault("tuc", 0);
+        List<BotScrollValuer.ScrollSpec> specs = marketReproSpecs(pc, ii, eq.getItemId());
+        double unit = commonScrollGain(specs);
+        double cleanCost = cleanBaseCostMeso(pc, ii, eq.getItemId());
+        // Cap the band at what the slot budget can actually reach: past it the restart DP never
+        // terminates in success and its cost estimate is meaningless (a wild clean roll above the
+        // scroll ceiling just prices AT the ceiling).
+        double maxGain = 0.0;
+        for (BotScrollValuer.ScrollSpec s : specs) {
+            maxGain = Math.max(maxGain, s.statGain());
+        }
+        int maxBand = unit <= 0 ? 0 : (int) Math.floor(tuc * maxGain / unit);
+        int band = Math.min(BotMarketMath.qualityBand(rolledScore - baseScore, unit), maxBand);
+        java.util.function.DoubleUnaryOperator vf =
+                BotScrollValuer.reproductionValue(baseScore, tuc, specs, cleanCost);
+        java.util.function.DoubleUnaryOperator bandCurve = b -> {
+            if (b <= 0 || unit <= 0) {
+                return cleanCost;
+            }
+            double capped = Math.min(b, maxBand);
+            return SECONDHAND_DISCOUNT * vf.applyAsDouble(baseScore + capped * unit);
+        };
+        return new EquipQuote(eq.getItemId(), band, Math.round(bandCurve.applyAsDouble(band)), bandCurve);
+    }
+
+    /** Catalog-wide reproduction specs for {@code equipId}: every obtainable non-boom stat scroll
+     *  that fits the slot, gain valued job-neutrally ({@link #marketStatValue}) at FULL market
+     *  price. The market counterpart to {@link #reproSpecs}, which only sees owned scrolls. */
+    private static List<BotScrollValuer.ScrollSpec> marketReproSpecs(ProducerCombat pc,
+            ItemInformationProvider ii, int equipId) {
+        List<BotScrollValuer.ScrollSpec> specs = new ArrayList<>();
+        for (int sid : scrollCatalog()) {
+            if (ItemConstants.isCleanSlate(sid) || ItemConstants.isModifierScroll(sid)
+                    || sid == ItemId.WHITE_SCROLL || !applicable(ii, sid, equipId)) {
+                continue;
+            }
+            Map<String, Integer> st = ii.getEquipStats(sid);
+            if (st == null) {
+                continue;
+            }
+            int success = st.getOrDefault("success", 0);
+            if (success <= 0 || st.getOrDefault("cursed", 0) > 0) {
+                continue;
+            }
+            double gain = marketStatValue(st);
+            if (gain > 0) {
+                specs.add(new BotScrollValuer.ScrollSpec(
+                        effectiveSuccessPct(success) / 100.0, gain, scrollPriceMeso(pc, sid)));
+            }
+        }
+        return specs;
+    }
+
+    /** The band unit: median stat-score gain across the slot's obtainable scrolls — the "one
+     *  average scroll success" both sides of a trade must agree on for price keys to line up.
+     *  Deterministic per catalog, so every bot computes the same bands. */
+    private static double commonScrollGain(List<BotScrollValuer.ScrollSpec> specs) {
+        if (specs.isEmpty()) {
+            return 0.0;
+        }
+        double[] gains = new double[specs.size()];
+        for (int i = 0; i < specs.size(); i++) {
+            gains[i] = specs.get(i).statGain();
+        }
+        java.util.Arrays.sort(gains);
+        return gains[gains.length / 2];
+    }
+
+    private static volatile List<Integer> scrollCatalogCache;
+
+    /** Every scroll item id in the WZ catalog (204xxxx); empty on WZ-less test runs. */
+    private static List<Integer> scrollCatalog() {
+        List<Integer> cached = scrollCatalogCache;
+        if (cached == null) {
+            List<Integer> ids = new ArrayList<>();
+            try {
+                for (Pair<Integer, String> item : ItemInformationProvider.getInstance().getAllItems()) {
+                    if (item.getLeft() / 10000 == SCROLL_ITEM_PREFIX) {
+                        ids.add(item.getLeft());
+                    }
+                }
+            } catch (RuntimeException e) {
+                // WZ unavailable (tests): empty catalog -> quotes degrade to the clean base cost
+            }
+            scrollCatalogCache = cached = List.copyOf(ids);
+        }
+        return cached;
+    }
+
     /**
      * Lazily-loaded cheapest <em>legitimate</em> NPC-shop buy price per item id — all shop items
      * (scrolls AND bases). GM/junk shop listings are excluded: a real shop never sells an item below
