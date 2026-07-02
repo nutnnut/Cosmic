@@ -1360,15 +1360,17 @@ final class BotNavigationManager {
             return fromRegion.pointAt(targetX);
         }
 
-        if (hasReachedDirectionalDropRunway(botPos, edge)) {
-            return new Point(edge.endPoint);
-        }
-
         BotNavigationGraph.Region fromRegion = graph.getRegion(edge.fromRegionId);
         if (fromRegion == null || fromRegion.isRopeRegion) {
             return new Point(edge.endPoint);
         }
 
+        // The live walk-off sim is the ONLY gate for feeding the landing point. An earlier
+        // "x past the runway anchor in the launch direction" shortcut also matched a bot standing
+        // on a DIFFERENT same-height foothold beyond the gap: it then steered at endPoint.x,
+        // reached that x still grounded (no lip there), and walked in place against the committed
+        // edge forever - travel deadlined and retried the identical hop in a loop
+        // (pathlog-itunes-2026-07-02T071428, NLC 600000000, DROP (2938,261)->(2898,381)).
         BotPhysicsEngine.WalkOffLanding liveOutcome = BotPhysicsEngine.simulateWalkOffLanding(
                 entry.bot.getMap(), botPos, Integer.signum(edge.launchStepX),
                 new BotPhysicsEngine.GroundTravelState(entry.physX, entry.hspeed, entry.groundPhysicsCarryMs),
@@ -1382,21 +1384,14 @@ final class BotNavigationManager {
         return new Point(edge.startPoint);
     }
 
-    private static boolean hasReachedDirectionalDropRunway(Point botPos, BotNavigationGraph.Edge edge) {
-        if (botPos == null || edge == null || edge.launchStepX == 0) {
-            return false;
-        }
-
-        int direction = Integer.signum(edge.launchStepX);
-        return direction > 0
-                ? botPos.x >= edge.startPoint.x
-                : botPos.x <= edge.startPoint.x;
-    }
-
+    /** Walking the authored direction from here must (a) dismount BEFORE the steering point —
+     *  point-steering stops at endPoint.x, so a lip beyond it is never reached (the wrong-ledge
+     *  walk-in-place park) — and (b) land in the edge's target region. The exact landing pixel is
+     *  irrelevant at execution time: the route simply continues from wherever it touches down. */
     private static boolean matchesDirectionalDrop(BotNavigationGraph.Edge edge,
                                                   BotNavigationGraph graph,
                                                   BotPhysicsEngine.WalkOffLanding outcome) {
-        if (outcome == null || outcome.landing() == null) {
+        if (outcome == null || outcome.landing() == null || outcome.launchPoint() == null) {
             return false;
         }
         Foothold landingFoothold = outcome.landing().foothold();
@@ -1406,10 +1401,10 @@ final class BotNavigationManager {
         if (graph.regionIdByFootholdId.getOrDefault(landingFoothold.getId(), -1) != edge.toRegionId) {
             return false;
         }
-        int xTolerance = Math.max(6, Math.abs(edge.launchStepX) + 2);
-        int yTolerance = BotMovementManager.cfg.JUMP_Y_THRESH * 2;
-        return Math.abs(outcome.landing().point().x - edge.endPoint.x) <= xTolerance
-                && Math.abs(outcome.landing().point().y - edge.endPoint.y) <= yTolerance;
+        int slack = Math.max(6, Math.abs(edge.launchStepX) + 2);
+        return edge.launchStepX < 0
+                ? outcome.launchPoint().x >= edge.endPoint.x - slack
+                : outcome.launchPoint().x <= edge.endPoint.x + slack;
     }
 
     // Crowd de-stacking under a shared cache: each bot hashes (by its stable routeSeed) to one of

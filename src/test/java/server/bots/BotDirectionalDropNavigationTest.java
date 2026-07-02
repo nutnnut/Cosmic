@@ -61,6 +61,49 @@ class BotDirectionalDropNavigationTest {
                 "once the bot has crossed the negative-direction drop anchor, nav should keep holding the drop direction");
     }
 
+    @Test
+    void shouldSteerBackToRunwayWhenBotStandsOnWrongFootholdPastTheAnchor() {
+        // Live incident (pathlog-itunes-2026-07-02, NLC 600000000): a same-height ledge sits
+        // across a gap from the drop runway. The bot's x is "past" the runway anchor in the
+        // launch direction, but walking that way never crosses the runway's lip - the old
+        // x-only shortcut fed endPoint and the bot parked at endPoint.x grounded, walking in
+        // place against the committed edge forever. The live walk-off sim must reject this
+        // stance and steer back to the authored runway start instead.
+        MapleMap map = new MapleMap(910000043, 0, 0, 910000043, 1.0f);
+        Foothold wrongLedge = new Foothold(new Point(-200, 100), new Point(40, 100), 1);
+        Foothold runway = new Foothold(new Point(60, 100), new Point(200, 100), 2);
+        Foothold lower = new Foothold(new Point(-300, 160), new Point(300, 160), 3);
+        server.maps.FootholdTree footholds = new server.maps.FootholdTree(new Point(-2000, -2000), new Point(2000, 2000));
+        footholds.insert(wrongLedge);
+        footholds.insert(runway);
+        footholds.insert(lower);
+        map.setFootholds(footholds);
+
+        BotNavigationGraph graph = BotNavigationGraphProvider.rebuildGraph(map);
+        // The runway foothold's LEFT walk-off: launch direction is negative, landing in the gap.
+        BotNavigationGraph.Edge edge = graph.regions.stream()
+                .flatMap(region -> graph.getOutgoing(region.id).stream())
+                .filter(candidate -> candidate.type == BotNavigationGraph.EdgeType.DROP
+                        && candidate.launchStepX < 0
+                        && candidate.endPoint.y > candidate.startPoint.y
+                        && candidate.startPoint.x > 40)
+                .findFirst()
+                .orElse(null);
+        assertNotNull(edge, "fixture should produce the runway foothold's leftward walk-off drop edge");
+
+        // Bot on the WRONG ledge: x satisfies the old "past the anchor" test (x <= startPoint.x
+        // for a negative launch), but walking left from here dismounts off the wrong lip.
+        Character bot = mockBot(new Point(0, 100), map);
+        BotEntry entry = new BotEntry(bot, null, null);
+        entry.physX = bot.getPosition().x;
+        entry.physY = bot.getPosition().y;
+
+        Point waypoint = BotNavigationManager.selectDropWaypoint(entry, graph, bot.getPosition(), edge);
+
+        assertEquals(edge.startPoint, waypoint,
+                "a stance the walk-off sim rejects must steer back to the authored runway, not the landing");
+    }
+
     private static DropTestFixture createDirectionalDropFixture(int mapId) {
         return createDirectionalDropFixture(mapId, true);
     }

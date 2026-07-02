@@ -81,18 +81,21 @@ First live run stranded DOZENS of bots inside FM maps. Root causes + fixes (one 
 d320fc868):
 
 - **Stranding root cause:** tickErrand's timeout branch called finishErrand IN PLACE. FM maps
-  (910000000 entrance + rooms) are OFF BotWorldGraph, so a bot released there can't route
-  anywhere: solo decide spams "no reachable grind spot", party decide fails for the WHOLE party
-  ("can't find a spot we can all reach"). Fixes: (1) timeout inside FM pivots to PHASE_EXIT (only
-  finish once outside; wedged exit warps out mirroring market00.js's saved-location read);
-  (2) `maybeStartExitRecovery` re-arms a bare exit walk for ANY bot standing in FM without an
-  errand — hooked in the FM DetourErrand.maybeStart (active bots) AND the `!isActive` branch of
-  BotAutopilotManager.tick via `tickStrandedExit` (plan-less bots; self-play scheduler bots hit
-  this); skips following/operator/trading bots; (3) `routeAnchorMapId` — decide/partyInputs plan
-  from `peekSavedLocation(FREE_MARKET)` town while a bot is inside FM. GOTCHA:
-  `Character.getSavedLocation` is a DESTRUCTIVE read (clears) — peek for planning, destructive
-  only in the actual warp-out. (4) BotAutopilotManager.clear() now clears the FM errand too
-  (parity with quest/gacha; recovery re-arms the exit if it was mid-FM).
+  (910000000 entrance + rooms) were OFF BotWorldGraph, so a bot released there couldn't route
+  anywhere: solo decide spams "no reachable grind spot", party decide fails for the WHOLE party.
+  **Final fix (owner-directed, supersedes the first-round bespoke recovery): the FM exit is IN
+  the world graph now, shrine-pattern.** Room<->entrance legs were already real portal edges
+  from the WZ scan; the missing link was the dynamic exit (entrance out00, script market00,
+  warps to the SAVED town). `RouteOptions.fmReturn` (mirrors `worldTourReturn`) carries the
+  peeked FREE_MARKET town ONLY while the bot stands inside FM maps — so the FM can be routed
+  OUT of but never THROUGH (no 24-town wormhole); `scriptedEntrancePortal` maps any
+  entrance->non-room hop to "out00". With that, decide/travel/party all work from inside FM
+  with ZERO special cases (the first-round `maybeStartExitRecovery`/`tickStrandedExit`/
+  `routeAnchorMapId` layer was deleted). The errand still owns its own exit: timeout inside FM
+  pivots to PHASE_EXIT (wedged exit warps out mirroring market00.js), and
+  BotAutopilotManager.clear() clears the FM errand (parity with quest/gacha). GOTCHA:
+  `Character.getSavedLocation` is a DESTRUCTIVE read (clears) — `peekSavedLocation` for
+  planning, destructive read only in the actual warp-out.
 - **SETUP fizzle root cause:** stand spots anchored off out00 (+260px…) often sat on another
   floor level → walk never converged → 60s phase deadline → fizzle (live: permit bought, fizzle
   60s later, every trip). Fix: slot columns every `STALL_SPACING_PX=170` along the bot's CURRENT
