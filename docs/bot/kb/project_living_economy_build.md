@@ -150,6 +150,15 @@ boot-log glove factor lands ≈2x weapon avg; if far off, tune REPLACEMENT_HORIZ
   BotMarketShoutBus (map-scoped; player entry via GeneralChatHandler branch, bot loopback at
   botSay), want/stock matching, accept-at-ask trades via tickManualTrade extension, BotPrompt
   hints. Verify: shout→trade with farming running, no dupe (gate already live).
+- **S4 chaos/white consumption (owner-specced 2026-07-02):** bots currently NEVER consume
+  Chaos/White (every planner path skips them — verified BotScrollManager:874, scrollGain,
+  BotOfferManager) → they're bubble assets (10M floor + speculation, no sink). Once the S4
+  convex equip-value curve lands: (1) CHAOS on an already-ATT-scrolled flat-slot piece — ±5
+  reroll is stat-symmetric but meso-positive on a superlinear curve; use when curve-EV over
+  outcomes beats the chaos market price; gambler-trait tilt; sell winners at band price.
+  (2) WHITE on the LAST slots of a well-scrolled piece — use when failRate × marginal-slot
+  option value (same convex curve) > white price. Both retire the 10M hardcode by giving the
+  scrolls consumption-anchored value, and create the craft-and-flip production chain.
 - **S4:** BotTradeNegotiator (counters/rude-cancel; settle pre-lock), UpgradeMenu WTP,
   grind-advisor market term (mesoFocus trait), flip `SCROLL_FOR_PROFIT_ENABLED`
   (BotScrollPlanner:114), retire placeholders (SCROLL_OPPORTUNITY_MARGIN/FRACTION, Chaos/White
