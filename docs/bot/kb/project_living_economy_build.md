@@ -128,8 +128,16 @@ anchor), clamped [0.5, 4], min 8 samples else 1.0, 1.0 on WZ-less test runs. App
 price for free: the planner's per-apply cost = SCROLL_OPPORTUNITY_FRACTION × price, so pricier
 flat-slot scrolls are burned only for bigger gains. Factors print at boot
 ("scroll slot-durability factors"). Deferred to S4: explicit keeper-gating in the planner
-(only precious-scroll keepers) + use-vs-sell mesoFocus tilt; relative ratios to be sanity-checked
-vs SoloMapling's price table (agent report) + live /market charts.
+(only precious-scroll keepers) + use-vs-sell mesoFocus tilt.
+
+**SoloMapling calibration reference (hand-curated YAML, extracted 2026-07-02 — RELATIVE ratios
+only):** glove-ATT ≈ 2.0x claw/dagger-ATT at 60% (3.0M vs 1.5-1.6M), ≈ 2.2-2.4x at 10%; shield-ATK
+dark 70% is their priciest armor scroll (6M); Chaos AND White ≈ 50M each (our hardcoded floor is
+10M — the live consensus already trades Chaos ~28M, let the market keep finding it; revisit the
+floor at S4 retirement). Their scrolled-EQUIP price = DP "cheapest expected scroll-craft cost to
+reach the rolled bonus" x 0.6 secondhand discount (UpgradeSimulator.getEquipMarketValue) — same
+shape as our planned S4 reproduction-value curve calibration, good precedent. Verify our
+boot-log glove factor lands ≈2x weapon avg; if far off, tune REPLACEMENT_HORIZON_LEVELS.
 
 ## Pending / next
 
