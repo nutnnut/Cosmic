@@ -176,6 +176,9 @@ public final class BotWorldGraphWebServer {
             s.createContext("/api/botdebug", BotWorldGraphWebServer::serveBotDebug);
             s.createContext("/api/market/stalls", BotWorldGraphWebServer::serveMarketStalls);
             s.createContext("/api/market/bot", BotWorldGraphWebServer::serveMarketBot);
+            s.createContext("/api/market/items", BotWorldGraphWebServer::serveMarketItems);
+            s.createContext("/api/market/history", BotWorldGraphWebServer::serveMarketHistory);
+            s.createContext("/market", BotWorldGraphWebServer::serveMarketPage);
             s.createContext("/api/bot/pathlog", BotWorldGraphWebServer::servePathLog);
             s.createContext("/api/perf", BotWorldGraphWebServer::servePerf);
             s.createContext("/api/spawnbot", BotWorldGraphWebServer::serveSpawnBot);
@@ -208,6 +211,7 @@ public final class BotWorldGraphWebServer {
             + "a{color:#6cc6ff;font-size:20px;text-decoration:none;padding:14px 24px;border:1px solid #3a4761;"
             + "border-radius:8px}a:hover{background:#171c26}</style></head>"
             + "<body><h1>Bot World</h1><a href=\"/map\">Open the World Map &rarr;</a>"
+            + "<a href=\"/market\">Market Prices &rarr;</a>"
             + "<a href=\"/admin\">Admin / Settings &rarr;</a></body></html>";
 
     private static void servePage(HttpExchange ex) throws IOException {
@@ -2001,6 +2005,93 @@ public final class BotWorldGraphWebServer {
     private static String itemName(int itemId) {
         String n = ItemInformationProvider.getInstance().getName(itemId);
         return n == null ? "" : n;
+    }
+
+    /** The trading-site style price history page ({@code market.html}); data via the two APIs below. */
+    private static void serveMarketPage(HttpExchange ex) throws IOException {
+        byte[] body;
+        try (InputStream in = BotWorldGraphWebServer.class.getResourceAsStream("/web/market.html")) {
+            if (in == null) {
+                send(ex, 500, "text/plain", "market.html resource missing".getBytes(StandardCharsets.UTF_8));
+                return;
+            }
+            body = in.readAllBytes();
+        }
+        send(ex, 200, "text/html; charset=utf-8", body);
+    }
+
+    /** Items with tape activity, most-cleared first — the chart's item picker. */
+    private static void serveMarketItems(HttpExchange ex) throws IOException {
+        StringBuilder sb = new StringBuilder("{\"items\":[");
+        boolean first = true;
+        for (BotMarketLedger.TradedItem t : BotMarketLedger.getInstance().tradedItems(300)) {
+            if (!first) {
+                sb.append(',');
+            }
+            first = false;
+            sb.append("{\"item\":").append(t.itemId())
+                    .append(",\"name\":").append(jsonStr(itemName(t.itemId())))
+                    .append(",\"sales\":").append(t.clearings())
+                    .append(",\"events\":").append(t.events())
+                    .append(",\"lastAt\":").append(t.lastAtMs())
+                    .append(",\"lastPrice\":").append(t.lastUnitPrice())
+                    .append('}');
+        }
+        send(ex, 200, "application/json", sb.append("]}").toString().getBytes(StandardCharsets.UTF_8));
+    }
+
+    /** {@code ?item=<id>[&hours=168]}: the item's tape series — clearings (trades + stall sales),
+     *  asks (listings) and the current consensus estimate (band 0). */
+    private static void serveMarketHistory(HttpExchange ex) throws IOException {
+        Map<String, String> q = queryParams(ex.getRequestURI().getRawQuery());
+        int itemId;
+        try {
+            itemId = Integer.parseInt(q.getOrDefault("item", "0").trim());
+        } catch (NumberFormatException e) {
+            itemId = 0;
+        }
+        if (itemId <= 0) {
+            send(ex, 400, "application/json", "{\"error\":\"?item=<itemId> required\"}".getBytes(StandardCharsets.UTF_8));
+            return;
+        }
+        long hours;
+        try {
+            hours = Long.parseLong(q.getOrDefault("hours", "168").trim());
+        } catch (NumberFormatException e) {
+            hours = 168;
+        }
+        long sinceMs = System.currentTimeMillis() - Math.max(1, hours) * 3_600_000L;
+        StringBuilder clearings = new StringBuilder("[");
+        StringBuilder asks = new StringBuilder("[");
+        boolean firstClear = true;
+        boolean firstAsk = true;
+        for (BotMarketLedger.MarketEvent e : BotMarketLedger.getInstance().itemHistory(itemId, sinceMs)) {
+            boolean clearing = e.kind().isClearing();
+            if (!clearing && e.kind() != BotMarketLedger.EventKind.LIST) {
+                continue; // delist/expire/shout/flow rows aren't price points
+            }
+            StringBuilder sb = clearing ? clearings : asks;
+            if (clearing ? !firstClear : !firstAsk) {
+                sb.append(',');
+            }
+            if (clearing) {
+                firstClear = false;
+            } else {
+                firstAsk = false;
+            }
+            sb.append("{\"t\":").append(e.atMs())
+                    .append(",\"p\":").append(e.unitPrice())
+                    .append(",\"q\":").append(e.qty())
+                    .append('}');
+        }
+        long key = BotMarketMath.priceKey(itemId, 0);
+        String json = "{\"item\":" + itemId
+                + ",\"name\":" + jsonStr(itemName(itemId))
+                + ",\"consensus\":" + Math.round(BotMarketConsensus.getInstance().consensus(key))
+                + ",\"volume\":" + String.format(Locale.US, "%.2f", BotMarketConsensus.getInstance().volume(key))
+                + ",\"clearings\":" + clearings.append(']')
+                + ",\"asks\":" + asks.append(']') + "}";
+        send(ex, 200, "application/json", json.getBytes(StandardCharsets.UTF_8));
     }
 
     private static List<Character> onlineCharacters() {

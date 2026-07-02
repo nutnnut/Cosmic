@@ -106,6 +106,26 @@ Read-only per-bot autopilot internals for live debugging (party cohesion, follow
 "routeCache":{"hits","misses","rate"}}             // region-route cache effectiveness, cumulative since server start (rate = hits/(hits+misses)); A/B vs pathfind count in bot-perf CSV
 ```
 
+### `/market` (page)
+Trading-site style price history: item picker (most-cleared first) + canvas chart of clearings
+(green line, dot size = qty), listing asks (hollow blue dots) and the current consensus estimate
+(dashed). Range buttons 24h/3d/7d/30d/1y; auto-refreshes. Linked from the landing page.
+
+### `/api/market/items`
+Items with any tape activity, most-cleared first (max 300): the chart's item picker.
+```
+{"items":[{"item","name","sales","events","lastAt","lastPrice"}, ...]}
+```
+
+### `/api/market/history?item=<itemId>[&hours=168]`
+One item's price series from `bot_market_event`: clearings (TRADE + STALL_SALE) and listing asks,
+plus the live consensus estimate + damping volume for band 0.
+```
+{"item","name","consensus","volume",
+ "clearings":[{"t","p","q"}, ...],   // unit price p at time t, qty q
+ "asks":[{"t","p","q"}, ...]}
+```
+
 ### `/api/market/stalls`
 Every OPEN hired merchant in every world (bot- and player-owned alike): position, description and
 full stock. The live-debug view for stall placement/pricing (living-economy design sec 11).

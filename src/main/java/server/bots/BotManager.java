@@ -255,6 +255,9 @@ public class BotManager {
         // Living-economy free-market sessions: autopilot bots with sellable surplus open real
         // hired-merchant stalls in FM rooms and browse others' (docs/bot/living-economy-design.md).
         public boolean FM_MARKET_ENABLED = true;
+        // Console line per market-tape event (list/sale/trade/...) - the live debugging feed for
+        // the economy; the tape itself (bot_market_event) is always written regardless.
+        public boolean MARKET_TX_CONSOLE = true;
         // Keep at least this much account NX in reserve - bots gamble only the surplus above it.
         public int GACHA_NX_RESERVE = 1_000;
         // EV planning horizon: how many rolls a trip is assumed to do when ranking towns (plannedRolls,

@@ -73,6 +73,16 @@ public final class BotMarketLedger {
     /** Append one event; swallow-and-log on DB trouble (the tape must never break gameplay). */
     public void append(EventKind kind, int itemId, int quality, int qty, long unitPrice,
                        Integer sellerId, Integer buyerId, Integer mapId) {
+        if (BotManager.cfg.MARKET_TX_CONSOLE) {
+            String name;
+            try {
+                name = server.ItemInformationProvider.getInstance().getName(itemId);
+            } catch (RuntimeException e) {
+                name = null; // WZ not loaded (tests) - id-only line
+            }
+            log.info("market {}: {}x {} ({}) @{} seller={} buyer={} map={}",
+                    kind, qty, name != null ? name : "?", itemId, unitPrice, sellerId, buyerId, mapId);
+        }
         try (Connection con = DatabaseConnection.getConnection();
              PreparedStatement ps = con.prepareStatement(
                      "INSERT INTO bot_market_event (kind, item_id, quality, qty, unit_price, seller_id, buyer_id, map_id)"
@@ -130,6 +140,65 @@ public final class BotMarketLedger {
             }
         } catch (SQLException e) {
             log.warn("bot_market_event read failed: {}", e.toString());
+        }
+        return out;
+    }
+
+    /** One item's tape rows since {@code sinceMs}, ascending — the price-history chart series. */
+    public List<MarketEvent> itemHistory(int itemId, long sinceMs) {
+        List<MarketEvent> out = new ArrayList<>();
+        try (Connection con = DatabaseConnection.getConnection();
+             PreparedStatement ps = con.prepareStatement(
+                     "SELECT id, at, kind, item_id, quality, qty, unit_price, seller_id, buyer_id, map_id"
+                             + " FROM bot_market_event WHERE item_id = ? AND at >= ? ORDER BY at ASC")) {
+            ps.setInt(1, itemId);
+            ps.setTimestamp(2, new Timestamp(sinceMs));
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    EventKind kind = EventKind.fromCode(rs.getInt("kind"));
+                    if (kind == null) {
+                        continue;
+                    }
+                    out.add(new MarketEvent(
+                            rs.getLong("id"),
+                            rs.getTimestamp("at").getTime(),
+                            kind,
+                            rs.getInt("item_id"),
+                            rs.getInt("quality"),
+                            rs.getInt("qty"),
+                            rs.getLong("unit_price"),
+                            readNullableInt(rs, "seller_id"),
+                            readNullableInt(rs, "buyer_id"),
+                            readNullableInt(rs, "map_id")));
+                }
+            }
+        } catch (SQLException e) {
+            log.warn("bot_market_event history read failed: {}", e.toString());
+        }
+        return out;
+    }
+
+    /** An item with tape activity: how liquid it is and when it last moved (chart item picker). */
+    public record TradedItem(int itemId, int clearings, int events, long lastAtMs, long lastUnitPrice) {}
+
+    /** Items on the tape, most-cleared first (then most-listed), for the chart's item list. */
+    public List<TradedItem> tradedItems(int limit) {
+        List<TradedItem> out = new ArrayList<>();
+        try (Connection con = DatabaseConnection.getConnection();
+             PreparedStatement ps = con.prepareStatement(
+                     "SELECT item_id, SUM(kind IN (0, 1)) sales, COUNT(*) events, MAX(at) last_at,"
+                             + " SUBSTRING_INDEX(GROUP_CONCAT(unit_price ORDER BY at DESC), ',', 1) last_price"
+                             + " FROM bot_market_event GROUP BY item_id"
+                             + " ORDER BY sales DESC, events DESC LIMIT ?")) {
+            ps.setInt(1, Math.max(1, limit));
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    out.add(new TradedItem(rs.getInt("item_id"), rs.getInt("sales"), rs.getInt("events"),
+                            rs.getTimestamp("last_at").getTime(), rs.getLong("last_price")));
+                }
+            }
+        } catch (SQLException e) {
+            log.warn("bot_market_event items read failed: {}", e.toString());
         }
         return out;
     }
