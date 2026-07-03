@@ -925,6 +925,20 @@ final class BotFreeMarketManager {
      * still sends the occasional bot deep, so far rooms never fully die.
      */
     private static Portal pickRoomPortal(BotEntry entry, Character bot) {
+        // Committed for this trip: keep walking to the SAME door. This runs every TO_ROOM tick,
+        // and re-rolling the roulette per tick flip-flopped the walk target between 22 portals -
+        // bots oscillated at the entrance until the watchdog fizzled EVERY trip (live market
+        // deadlock: two restarts with zero stalls). The old picker was per-tick-stable by
+        // construction (bot-id hash); a roulette must bank its winner instead.
+        if (entry.fmRoomMapId != -1) {
+            for (int i = 1; i <= 22; i++) {
+                Portal p = bot.getMap().getPortal(String.format("in%02d", i));
+                if (p != null && p.getTargetMapId() == entry.fmRoomMapId) {
+                    return p;
+                }
+            }
+            entry.fmRoomMapId = -1; // committed room's door not on this map - re-roll below
+        }
         List<Portal> candidates = new ArrayList<>();
         for (int i = 1; i <= 22; i++) {
             Portal p = bot.getMap().getPortal(String.format("in%02d", i));
