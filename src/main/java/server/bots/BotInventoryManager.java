@@ -305,6 +305,7 @@ class BotInventoryManager {
 
     static void tickManualTrade(BotEntry entry, Character bot) {
         if (entry.pendingTradeCategory != null) return;
+        if (entry.shoutTradeActive()) return; // a shout-trade owns this Trade window (S3)
 
         Trade trade = bot.getTrade();
         Character commander = BotManager.getInstance().commanderOrOwner(entry);
@@ -729,6 +730,7 @@ class BotInventoryManager {
 
     /** Called every bot simulation tick while a trade sequence is in progress. */
     static void tickTrade(BotEntry entry, Character bot) {
+        if (entry.shoutTradeActive()) return; // a shout-trade owns this Trade window (S3)
         // Fire a queued bot-initiated retry once this bot is free and the delay expires.
         if (entry.pendingTradeCategory == null && entry.pendingBotTradeRetry != null) {
             if (entry.pendingBotTradeRetryMs > 0) {

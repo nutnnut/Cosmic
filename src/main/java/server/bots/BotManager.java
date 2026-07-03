@@ -999,6 +999,8 @@ public class BotManager {
                 if (e.bot.getId() == botCharId) {
                     cancelBotTask(e);
                     unindexBotEntry(e);
+                    BotShoutTradeManager.forget(botCharId); // drop any pending shout-deal awaiting this bot
+                    BotMarketShoutBus.getInstance().dropSpeaker(botCharId); // and its live shouts
                     return true;
                 }
                 return false;
@@ -5538,6 +5540,9 @@ public class BotManager {
         if (perf) t = System.nanoTime();
         BotFreeMarketManager.tickScan(entry, bot);
         if (perf) BotPerformanceMonitor.record("common-fm-scan", System.nanoTime() - t);
+        if (perf) t = System.nanoTime();
+        BotShoutTradeManager.tick(entry, bot, runAiTick);
+        if (perf) BotPerformanceMonitor.record("common-shout-trade", System.nanoTime() - t);
         if (perf) t = System.nanoTime();
         BotInventoryManager.tickTrade(entry, bot);
         if (perf) BotPerformanceMonitor.record("common-trade", System.nanoTime() - t);

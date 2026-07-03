@@ -858,6 +858,23 @@ public class BotEntry {
     Trade manualTradeRef = null;
     int manualTradeTimeoutMs = 0;
 
+    // Shout-trade (living-economy S3): a priced equip<->meso swap triggered by a market shout. While
+    // partnerId != -1 this bot owns its Trade window and the manual/queued trade ticks stand down.
+    volatile int shoutTradePartnerId = -1;              // counterparty char id; -1 = no active deal
+    BotMarketGrammar.Offer shoutTradeOffer;             // agreed terms (item, qty, price)
+    boolean shoutTradeSelling;                          // role: true = I stage the equip, false = meso
+    boolean shoutTradeInitiator;                        // true = I matched + invited (I log the tape)
+    client.inventory.Equip shoutTradeSellEquip;        // seller only: the exact piece to hand over
+    boolean shoutTradeInvited;                          // initiator has sent the invite
+    boolean shoutTradeStaged;                           // my side of the window is staged
+    boolean shoutTradeLocked;                           // I confirmed my side (completeTrade called)
+    long shoutTradeDeadlineMs;                          // give-up wall clock
+    long nextShoutEmitMs;                               // emission cooldown
+
+    boolean shoutTradeActive() {
+        return shoutTradePartnerId != -1;
+    }
+
     // Movement packet cache so repeated no-op packets are suppressed
     boolean movementBroadcastValid = false;
     int lastBroadcastX = 0;
