@@ -1182,6 +1182,35 @@ final class BotPhysicsEngine {
         return simulateWalkOffLanding(map, from, desiredDir, initialGroundTravelState(from), profile);
     }
 
+    /**
+     * The live launch state at a walk-off lip is not unique: the bot arrives with an arbitrary
+     * fractional physX phase, sub-step carryMs, and hspeed (standing start at the anchor vs
+     * walking through at full speed), which shifts the exact dismount pixel and the seeded air
+     * drift by a rounding step (e.g. 6 vs 7 px/tick at 105% speed). Returns the walk-off outcome
+     * for a spread of those launch states — baseline (the historical single sim: phase 0,
+     * standing start) FIRST — so graphgen can check the landing is stable across all of them
+     * before authoring an edge from just one. Entries may be null (that variant found no landing).
+     */
+    static java.util.List<WalkOffLanding> walkOffLandingVariants(MapleMap map,
+                                                                 Point from,
+                                                                 int desiredDir,
+                                                                 BotMovementProfile profile) {
+        java.util.List<WalkOffLanding> outcomes = new java.util.ArrayList<>();
+        double terminalHSpeed = maxHSpeedPerClientStep(profile) * desiredDir;
+        double[] physXPhases = {0.0, -0.4, 0.4};
+        double[] carryPhases = {0.0, CLIENT_GROUND_STEP_MS / 2.0};
+        double[] launchHSpeeds = {0.0, terminalHSpeed};
+        for (double phase : physXPhases) {
+            for (double carryMs : carryPhases) {
+                for (double hspeed : launchHSpeeds) {
+                    outcomes.add(simulateWalkOffLanding(map, from, desiredDir,
+                            new GroundTravelState(from.x + phase, hspeed, carryMs), profile));
+                }
+            }
+        }
+        return outcomes;
+    }
+
     static WalkOffLanding simulateWalkOffLanding(MapleMap map,
                                                  Point from,
                                                  int desiredDir,

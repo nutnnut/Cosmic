@@ -9,6 +9,7 @@ import java.awt.*;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doAnswer;
@@ -103,6 +104,38 @@ class BotDirectionalDropNavigationTest {
         assertEquals(edge.startPoint, waypoint,
                 "a stance the walk-off sim rejects must steer back to the authored runway, not the landing");
     }
+
+    @Test
+    void shouldNotAuthorKnifeEdgeDirectionalDropWhoseLandingRegionFlipsWithLaunchPhase() {
+        // FM 910000000 regression (pathlog-CabinOpened-2026-07-03): the walk-off landing is
+        // knife-edge sensitive to the live launch state (fractional physX phase, carryMs,
+        // arrival hspeed) — the authored baseline landed r5 but live phases fell past it to
+        // r6, and the planner replanned through the same lying edge forever. A shelf whose
+        // near edge sits inside the landing variance band must NOT get a walk-off drop edge.
+        MapleMap map = new MapleMap(910000044, 0, 0, 910000044, 1.0f);
+        Foothold upper = new Foothold(new Point(0, 100), new Point(100, 100), 1);
+        Foothold knifeShelf = new Foothold(new Point(KNIFE_SHELF_EDGE_X, 160), new Point(280, 160), 2);
+        Foothold floor = new Foothold(new Point(-100, 400), new Point(600, 400), 3);
+        server.maps.FootholdTree footholds = new server.maps.FootholdTree(new Point(-2000, -2000), new Point(2000, 2000));
+        footholds.insert(upper);
+        footholds.insert(knifeShelf);
+        footholds.insert(floor);
+        map.setFootholds(footholds);
+
+        BotNavigationGraph graph = BotNavigationGraphProvider.rebuildGraph(map);
+
+        boolean hasRightWalkOffFromUpper = graph.regions.stream()
+                .flatMap(region -> graph.getOutgoing(region.id).stream())
+                .anyMatch(edge -> edge.type == BotNavigationGraph.EdgeType.DROP
+                        && edge.launchStepX > 0
+                        && edge.startPoint.y == 100);
+        assertFalse(hasRightWalkOffFromUpper,
+                "a walk-off drop whose landing region flips with the launch phase must not be authored");
+    }
+
+    // Calibrated so the walk-off landing variance band for the base 100/100 profile straddles
+    // the shelf's near edge (baseline vs full-speed/phase variants land on different regions).
+    private static final int KNIFE_SHELF_EDGE_X = 138;
 
     private static DropTestFixture createDirectionalDropFixture(int mapId) {
         return createDirectionalDropFixture(mapId, true);

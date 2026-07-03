@@ -287,6 +287,32 @@ Fix: the dismount now also requires the bot to be near the rope BOTTOM
 (`botPos.y >= bottomY - STOP_DIST`) — climb the descent out first, then jump off toward the
 target.
 
+## 14. Knife-edge walk-off DROP authored from ONE launch state — planner lie, replan loop (v69)
+
+Symptom (live 2026-07-03, FM entrance 910000000, pathlog-CabinOpened): exact-profile graph,
+`DROP r4->r5` authored landing (353,-176) on the r5 portal ledge. Live, the bot crossed r5's
+height at x=370 and fell through to the r6 floor — the only route from r6 leads back through
+r7 -> portal -> r4, so travel replanned through the same edge forever (~3.3s loop, `Stuck: no`
+since the bot keeps moving). A second edge on the same map (`DROP r1->r5`) failed identically.
+
+Root cause: `addDirectionalDropEdge` authored the landing from a SINGLE walk-off sim (runway
+anchor, fractional physX phase 0, standing start). The live launch state is not unique — the bot
+arrives with arbitrary fractional physX, sub-step `carryMs`, and hspeed, which shifts the
+dismount pixel and the seeded air drift by one rounding step (6 vs 7 px/tick at 105% speed).
+Near a platform edge, that flips which region catches the fall. The #9 `matchesDirectionalDrop`
+relaxation ("dismount anywhere that descends, replan from touchdown") then converts the wrong
+landing into a silent infinite replan loop whenever the touchdown region routes back through the
+source region.
+
+Fix (build time, GRAPH_VERSION 68→69): `BotPhysicsEngine.walkOffLandingVariants` sims the
+walk-off across the live launch-state spread (physX phase, carryMs, standing vs full-speed
+arrival); `addDirectionalDropEdge` authors the edge only when EVERY variant lands the same
+region. Knife-edge drops are simply not authored — the planner uses committed JUMP edges or
+portal routes instead (both deterministic).
+
+Rule: an edge whose outcome depends on live launch state the graph doesn't encode must be
+authored for its WHOLE outcome envelope or not at all — one sampled outcome is a planner lie.
+
 ## Not-a-bug
 `pathlog-fictionxD` "jumping back-forth" = a single clean walk-off DROP mid-descent (`Stuck:no`,
 `r=-1` is the normal airborne reading). No oscillation.
@@ -310,6 +336,8 @@ target.
   `runSearch` profile-mismatch arc mask + `graphMatchesLiveProfile` (#12);
   `BotNavigationGraph.EXCLUDE_JUMP_ARCS` (#12);
   `BotMovementManager.tickClimbing` rope-bottom dismount gate (#13)
+- `BotPhysicsEngine.walkOffLandingVariants` + `addDirectionalDropEdge` variant-stability guard,
+  `GRAPH_VERSION` 68→69 (#14); `BotFreeMarketEntranceDescentTest` (WZ-backed 910000000, #14)
 - Tests in `BotNavigationGraphProviderTest` (fast synthetic + Henesys WZ graph),
   `BotRegion11ForkOscillationTest` (synthetic region-11 fork, #5/#5b),
   `BotHenesysDeptStoreDescentTest` (WZ-backed 100000102 descent, #9/#10).
