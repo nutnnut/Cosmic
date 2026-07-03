@@ -46,6 +46,9 @@ final class BotNavigationManager {
     // position (6-10 ticks = 300-500ms, jittered per park spot).
     private static final int BLOCKED_POS_GIVE_UP_MIN_TICKS = 6;
     private static final int BLOCKED_POS_GIVE_UP_JITTER_TICKS = 4;
+    // Drift radius for the blocked-position watchdog: a bounce across a launch point spans up to
+    // ~2 walk steps; anything inside this box is "parked", not progress (trackBlockedPositionGate).
+    private static final int BLOCKED_POS_DRIFT_PX = 16;
     // Steering anchor inside a launch window: aim a few px inside the nearest window edge
     // (window center when narrower than two insets) instead of the exact boundary pixel.
     // The executable region is the WHOLE window; steering at the boundary pixel parks bots
@@ -413,10 +416,13 @@ final class BotNavigationManager {
 
     /**
      * Counts consecutive ticks spent parked against a committed edge's position gate
-     * (block reason "*-pos") without any actual movement. resolveTarget gives the edge up
-     * and replans once the count passes a jittered threshold (~300-500ms). Any position
-     * change restarts the count, so a slow legal approach (e.g. slippery-ground pulse
-     * creep) is never interrupted while it is making progress.
+     * (block reason "*-pos") without real progress. resolveTarget gives the edge up
+     * and replans once the count passes a jittered threshold (~300-500ms). Progress means
+     * leaving a small drift radius around where the blocking began: the old exact-position
+     * reset let a bot that BOUNCES ±walkStep across an unhittable launch point (1px jump
+     * window) restart the count every tick and oscillate forever. A slow legal approach
+     * (e.g. slippery-ground pulse creep) escapes the radius within a few ticks and still
+     * restarts the count; a false trip merely replans from the same spot and carries on.
      */
     private static void trackBlockedPositionGate(BotEntry entry, Point botPos, boolean edgeReused) {
         boolean blockedPos = edgeReused
@@ -427,8 +433,8 @@ final class BotNavigationManager {
             return;
         }
         if (entry.navBlockedPosTicks == 0
-                || botPos.x != entry.navBlockedPosX
-                || botPos.y != entry.navBlockedPosY) {
+                || Math.abs(botPos.x - entry.navBlockedPosX) > BLOCKED_POS_DRIFT_PX
+                || Math.abs(botPos.y - entry.navBlockedPosY) > BLOCKED_POS_DRIFT_PX) {
             entry.navBlockedPosTicks = 0;
             entry.navBlockedPosGiveUpTicks = BLOCKED_POS_GIVE_UP_MIN_TICKS
                     + ThreadLocalRandom.current().nextInt(BLOCKED_POS_GIVE_UP_JITTER_TICKS + 1);
@@ -1386,8 +1392,11 @@ final class BotNavigationManager {
 
     /** Walking the authored direction from here must (a) dismount BEFORE the steering point —
      *  point-steering stops at endPoint.x, so a lip beyond it is never reached (the wrong-ledge
-     *  walk-in-place park) — and (b) land in the edge's target region. The exact landing pixel is
-     *  irrelevant at execution time: the route simply continues from wherever it touches down. */
+     *  walk-in-place park) — and (b) actually DESCEND off this region. The exact landing platform
+     *  is deliberately NOT matched against the edge's target: a walk-off landing is knife-edge
+     *  sensitive to the sub-tick launch x (1px flips which shelf catches the fall — 100000102 r17
+     *  lands r18 or r23 depending on stance), so requiring toRegionId equality parked bots at the
+     *  runway anchor forever. The route simply continues (replans) from wherever it touches down. */
     private static boolean matchesDirectionalDrop(BotNavigationGraph.Edge edge,
                                                   BotNavigationGraph graph,
                                                   BotPhysicsEngine.WalkOffLanding outcome) {
@@ -1398,8 +1407,12 @@ final class BotNavigationManager {
         if (landingFoothold == null) {
             return false;
         }
-        if (graph.regionIdByFootholdId.getOrDefault(landingFoothold.getId(), -1) != edge.toRegionId) {
-            return false;
+        int landingRegionId = graph.regionIdByFootholdId.getOrDefault(landingFoothold.getId(), -1);
+        if (landingRegionId < 0 || landingRegionId == edge.fromRegionId) {
+            return false; // no region change (or off-graph ground): the dismount achieves nothing
+        }
+        if (outcome.landing().point().y <= outcome.launchPoint().y + 4) {
+            return false; // not a descent (same builder guard as addDirectionalDropEdge)
         }
         int slack = Math.max(6, Math.abs(edge.launchStepX) + 2);
         return edge.launchStepX < 0
@@ -2547,11 +2560,14 @@ final class BotNavigationManager {
                                                                      MapleMap map,
                                                                      Point botPos,
                                                                      BotNavigationGraph.Edge edge) {
-        if (!canExecuteJumpFromCurrentPosition(graph, map, botPos, edge)) {
+        if (edge.type != BotNavigationGraph.EdgeType.JUMP && edge.type != BotNavigationGraph.EdgeType.FLASH_JUMP) {
+            return false;
+        }
+        int tolerance = Math.max(1, BotPhysicsEngine.walkStep(map, entry != null ? entry.movementProfile : null));
+        if (!isWithinJumpLaunchWindow(graph, botPos, edge, tolerance)) {
             return false;
         }
         int launchX = selectedJumpLaunchX(entry, graph, edge);
-        int tolerance = Math.max(1, BotPhysicsEngine.walkStep(map, entry != null ? entry.movementProfile : null));
         return Math.abs(botPos.x - launchX) <= tolerance;
     }
 
@@ -2593,9 +2609,24 @@ final class BotNavigationManager {
     static boolean isWithinJumpLaunchWindow(BotNavigationGraph graph,
                                             Point botPos,
                                             BotNavigationGraph.Edge edge) {
+        return isWithinJumpLaunchWindow(graph, botPos, edge, 0);
+    }
+
+    /** {@code minAcceptSpanPx}: minimum acceptance span for the launch window. A window narrower
+     *  than the bot's walk step (down to 1px, e.g. 100000102 JUMP r12-&gt;r19 [108,108]) cannot be
+     *  hit exactly by quantized ±walkStep movement — the bot bounced across it forever with
+     *  jump-pos. Widen acceptance symmetrically until the span covers one motor step; windows
+     *  already at least that wide keep exact containment. */
+    static boolean isWithinJumpLaunchWindow(BotNavigationGraph graph,
+                                            Point botPos,
+                                            BotNavigationGraph.Edge edge,
+                                            int minAcceptSpanPx) {
         if (botPos == null
-                || (edge.type != BotNavigationGraph.EdgeType.JUMP && edge.type != BotNavigationGraph.EdgeType.FLASH_JUMP)
-                || !edge.containsLaunchX(botPos.x)) {
+                || (edge.type != BotNavigationGraph.EdgeType.JUMP && edge.type != BotNavigationGraph.EdgeType.FLASH_JUMP)) {
+            return false;
+        }
+        int tolerance = Math.max(0, (minAcceptSpanPx - (edge.launchMaxX - edge.launchMinX) + 1) / 2);
+        if (!edge.containsLaunchX(botPos.x, tolerance)) {
             return false;
         }
 

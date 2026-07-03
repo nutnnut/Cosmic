@@ -194,6 +194,53 @@ point is shared with it (the chain we walked in on), reset on graph swap. Regres
 `BotSharedGroundPhantomJumpTest` (synthetic ramp-foot-over-flat; reproduces the phantom with the guard
 disabled, and asserts a genuine same-height gap jump is NOT over-pruned).
 
+## 9. Directional walk-off DROP: lip-authored landing vs real dismount overshoot (anchor park)
+Symptom (live 2026-07-03, Henesys department store 100000102): bots "resupplied and omw back"
+never left — parked/oscillating on the small shelves r17/r18 above the ground floor, travel
+re-running the r17→r24 plan every tick (perf stalls 280ms–2.3s under load). `/api/pathfind`
+17→24 succeeded — planner fine; execution wedged.
+
+Root cause (physics disagreement between builder and executor): `addDirectionalDropEdge`
+authored the landing with `simulateFallLanding` from the EXACT lip pixel, but a real dismount
+(`simulateWalkOffLanding` — the sim the bot's ground motion actually runs) leaves the ground up
+to one sub-tick walk step PAST the lip. Those few px can change which platform catches the fall
+(r18's walk-off really lands the y=120 bookshelf, not the floor the lip-fall predicted; r17's
+landing flips r18↔r23 on a **1px** launch difference — knife-edge). The 2026-07-02 NLC gate
+(`matchesDirectionalDrop`) then required the landing REGION to equal the authored `toRegionId`,
+mismatched every tick, and steered back to the runway anchor forever — a permanent park the
+blocked-pos watchdog missed (position kept changing by ±walkStep).
+
+Fix (rule #9, three parts, all nav/physics):
+- **Builder** — `addDirectionalDropEdge` authors the landing via `simulateWalkOffLanding` from
+  the runway anchor (execution SSOT). `GRAPH_VERSION 66→68` (67 was documented in #8 but the
+  constant was never bumped — 68 also finally regenerates those stale caches).
+- **Executor gate** — `matchesDirectionalDrop` no longer matches the exact landing region
+  (knife-edge); it requires a real dismount that DESCENDS off the source region and launches
+  before the steering stop (the wrong-ledge park check stays). The route replans from wherever
+  it touches down.
+- **Watchdog** — `trackBlockedPositionGate` resets on leaving a 16px drift radius
+  (`BLOCKED_POS_DRIFT_PX`) instead of on any 1px move, so a bounce against an unexecutable gate
+  now trips the ~300-500ms give-up.
+
+Regression: `BotHenesysDeptStoreDescentTest` (WZ-backed — 12 start stances incl. the live stuck
+ones must reach the exit portal; every authored directional DROP must land where the walk-off
+sim lands).
+
+## 10. 1px JUMP launch window is unhittable by quantized steps (jump-pos bounce)
+Symptom (same map, surfaced by #9's regression sweep): committed `JUMP r12→r19` with launch
+window `[108,108]`; the bot's integer positions phase-skip x=108 (±6px steps), so
+`isWithinJumpLaunchWindow`'s exact `containsLaunchX` never passed — `jump-pos` forever while the
+±6 bounce defeated the exact-position watchdog. Some windows are legitimately 1px (the arc only
+lands the target region from one column, e.g. an overhead shelf clips wider launches) — but a
+1px window is below the bot's motor precision.
+
+Fix: `isWithinJumpLaunchWindow` gained a `minAcceptSpanPx` overload —
+`canExecuteSelectedJumpFromCurrentPosition` passes the walk step, widening acceptance
+symmetrically only when the window is narrower than one step (wide windows keep exact
+containment; the existing `selectedJumpLaunchX` ±walkStep check still applies). An off-column
+launch lands a few px off-plan and simply replans — strictly better than the infinite park.
+Plus the #9 watchdog drift radius as the systemic backstop.
+
 ## Not-a-bug
 `pathlog-fictionxD` "jumping back-forth" = a single clean walk-off DROP mid-descent (`Stuck:no`,
 `r=-1` is the normal airborne reading). No oscillation.
@@ -209,8 +256,13 @@ disabled, and asserts a genuine same-height gap jump is NOT over-pruned).
 - `BotEntry.java`, `BotMovementManager.clearNavigationState` — committed-route state (#3)
 - `BotPhysicsEngine.findWalkRegionGroundSample` + `isChainStep` — chain-step preference at joined
   forks (#5b); `BotNavigationGraphProvider.GRAPH_VERSION` 65→66
+- `BotNavigationGraphProvider.addDirectionalDropEdge` — walk-off-sim landing authoring,
+  `GRAPH_VERSION` 66→68 (#9); `BotNavigationManager.matchesDirectionalDrop` (#9),
+  `trackBlockedPositionGate` + `BLOCKED_POS_DRIFT_PX` (#9/#10),
+  `isWithinJumpLaunchWindow(minAcceptSpanPx)` (#10)
 - Tests in `BotNavigationGraphProviderTest` (fast synthetic + Henesys WZ graph),
-  `BotRegion11ForkOscillationTest` (synthetic region-11 fork, #5/#5b).
+  `BotRegion11ForkOscillationTest` (synthetic region-11 fork, #5/#5b),
+  `BotHenesysDeptStoreDescentTest` (WZ-backed 100000102 descent, #9/#10).
 
 Related: [[kb_bot_nav_costs_and_anchors]], [[kb_bot_downjump_eligibility]],
 [[kb_bot_town_nav_airborne_target]], [[kb_bot_navigation_architecture]].
