@@ -1,11 +1,11 @@
 ---
 name: project_living_economy_build
-description: "Living economy BUILD STATE (branch dev-economy): S0-S2 landed, what each commit holds, implementation insights, pending live-verify + S3-S6 roadmap - resume here"
+description: "Living economy BUILD STATE (branch dev-economy): S0-S4 + S2 follow-ups + S3 landed, what each commit holds, implementation insights, pending live-verify + S5-S6 roadmap - resume here"
 metadata:
   type: project
 ---
 
-# Living economy — build state (2026-07-02)
+# Living economy — build state (2026-07-03)
 
 **Design of record: `docs/bot/living-economy-design.md`** (rev 2: consensus statistic + noisy
 per-bot perception; structured priors for cross-item coherence; travel-frugality owner rules in
@@ -148,15 +148,54 @@ boot-log glove factor lands ≈2x weapon avg; if far off, tune REPLACEMENT_HORIZ
 
 ## Pending / next
 
-- **S2 LIVE VERIFY round 2 (next action, restart required):** watch stranded bots walk out on
-  boot (log line "stranded in FM map ... walking it out"), then a clean stall loop: trip → slot
-  spread ≥170px apart (`/api/market/stalls` x/y), listings all premium-worthy (no potions —
-  `/api/market/bot` verdicts), browse/bargain, EXIT back to town, party decides working with a
-  member mid-market. Design sec 14 S2 criteria on top.
-- **S3:** BotMarketGrammar (S>/B>/PC>, reuse MESO_AMOUNT_TOKEN + trade-command name resolution),
-  BotMarketShoutBus (map-scoped; player entry via GeneralChatHandler branch, bot loopback at
-  botSay), want/stock matching, accept-at-ask trades via tickManualTrade extension, BotPrompt
-  hints. Verify: shout→trade with farming running, no dupe (gate already live).
+- **S2 live-verified (2026-07-03):** 8 stalls × 16 slots clustered, Fredrick collect→publish
+  working, 31 banded equip listings + 3 real banded equip STALL_SALEs on the tape (prior session).
+- **DONE (2026-07-03): S2 follow-ups — live-stall restock/reprice service + stall-name corpus**
+  (commit e6c6c1b67). On a re-visit with the stall still open the bot TENDS it instead of going
+  browse-only: `HiredMerchant.botServiceReprice(ToIntFunction<PlayerShopItem>)` purges sold-out
+  slots + rebuilds repriced survivors under the `items` monitor (mutually exclusive with buys;
+  price is FINAL so a changed slot is a fresh PlayerShopItem), returns free-slot count, no save;
+  `serviceLiveStall` then restocks free slots via the SAME addItem + removeFromSlot + LIST-tape
+  loop as opening, one saveItems at the end, under `marketBusy`. Reprice = `BotMarketMath.repriceAsk`
+  toward the banded-key belief (pressure 0.5), floored at max(½ ask, NPC sell-back per unit) — no
+  parallel pricing. Service cadence 20-26h → 3-6h so sold slots refill + stale asks track belief
+  across a market day (rides break/satiation cadence, not a dedicated trek). Headless world-scoped
+  stall lookup, so it works from any room. Stall signs → ~40-sign ASCII corpus (headline × tag,
+  two hashes). Verified: 28 economy tests green.
+- **DONE (2026-07-03): S3 — shout grammar + bus + accept-at-ask direct equip trades**
+  (commits 722719702, b7901797e, 727daf1b3).
+  - **`BotMarketGrammar`** (pure, WZ-free structure): parses S>/B>/PC> → `Offer(kind,itemId,qty,
+    priceMeso)`; name via `getItemDataByName` exact-match-wins or `#<id>`; meso via
+    `BotChatManager.parseMesoAmount`/`MESO_AMOUNT_TOKEN` (both made package-visible, SSOT). Also
+    `format(Offer)` for the spoken line. Swappable `nameResolver` seam → `BotMarketGrammarTest`
+    (10) injects a fake catalog, no WZ. Players PARSE inbound, bots FORMAT outbound — both converge
+    on the bus as the same `Offer`.
+  - **`BotMarketShoutBus`** (map-scoped bulletin, NOT an order book): `{speakerId,offer,expiresAt}`
+    per map, synchronized list, ~3min TTL swept lazily, bounded 32/map, re-shout replaces the
+    speaker's prior same-item shout. Player shouts publish via a grammar branch in
+    `BotManager.handleChat` (MAP channel). `BotMarketShoutBusTest` (6).
+  - **`BotShoutTradeManager`** (matching + priced trade): polls the bus each AI tick, matches a
+    heard S> (buy) / B> (sell), invites the speaker MAP-WIDE (inviteTrade has no distance check),
+    one side stages the equip + the other the meso over vanilla `Trade`, each LOCKS only after
+    verifying the counter-stage. Bots also EMIT an S> for their top surplus equip on a 4-9min
+    cadence when idling in an FM room with an audience → bot↔bot with no human. **v1 EQUIP-scoped:**
+    WTP = `equipBuyCeilingMeso` on the ACTUAL staged piece, WTS = `equipMarketQuote` curve value
+    (SSOT — all design examples are equips). Cross-bot recognition via a `dealsByResponder`
+    ConcurrentHashMap the initiator registers keyed by the speaker (responder) id; responder claims
+    it on the incoming invite. tickTrade/tickManualTrade stand down while `entry.shoutTradeActive()`.
+- **KEY TRADE-SAFETY INSIGHT (don't relearn):** the existing gift auto-confirm (`recipientIsBot`
+  / partner-confirmed in tickManualTrade/tickTrade) is UNSAFE for a PRICED trade — neither side may
+  lock before seeing the counter-stage, or it could pay/hand over against a wrong or short offer.
+  So the shout trade uses its OWN price-aware confirm. Completion vs cancel are BOTH `getTrade()==
+  null` (ambiguous); resolved by only calling `finish` when THIS side actually LOCKED
+  (`shoutTradeLocked`) — a symmetric deal where I locked with terms met is guaranteed to clear, so
+  a window that vanishes before I locked was a partner cancel, never a phantom clearing (no spurious
+  belief/tape). Every move rides Trade's staged-debit (`setMeso` debits now) + refund-on-cancel.
+- **S3 LIVE VERIFY (restart required):** (1) a human `S> <equip> <price>` near a bot with that
+  slot want → the bot invites + buys within ~a minute, farming pauses then resumes, no dupe/loss;
+  (2) bot↔bot: watch FM rooms for `S> ...` chat lines (emission) → a second bot completes the swap
+  (tape `bot_market_event kind=0` TRADE rows, and `kind=5` SHOUT ads). `/api/market/bot?name=` for
+  the buy/sell books moving on W_SHOUT/W_TRADE. Not yet observed live.
 - **Live-round fixes (2026-07-02/03, post-S4):** three deadlock-class bugs found by watching the
   restart funnel, each invisible without live checks:
   1. Login market-day seed gated on `BotAutopilotManager.isActive` — always false at session
@@ -229,8 +268,11 @@ boot-log glove factor lands ≈2x weapon avg; if far off, tune REPLACEMENT_HORIZ
   failure retries on the exit leg (bag emptiest right after stall stocking), exit failure waits
   for the next trip; Fredrick keeps holding, nothing is ever lost. State: entry.fmFredrickState
   (0/1 retry/2 done per trip) + fmFredrickOnExit.
-- **S2 follow-ups queued:** live-stall restock/reprice service visit (currently stall-alive →
-  browse-only), stall-name flavor corpus (SoloMapling audit).
+- **S3 deferred (next slice):** consumable/stack shout-trading (v1 is equip-only — needs a WTP/WTS
+  for non-equips: buyer use-value, seller cost basis); PC> price-check replies (parsed + fed to
+  belief but bots don't answer yet); B> emission (bots only emit S> now); an approach-walk to the
+  counterparty before inviting (v1 invites map-wide, no walk); BotPrompt hints surfacing shout
+  offers to an online owner; auto-equip a shout-bought upgrade (sits in bag until normal equip pass).
 - **S5:** gossip diffusion, ammo purchase behavior, buff buying, `/api/market` +
   `/api/market/bot` routes (UPDATE docs/bot/web-endpoints.md when added — rule 8).
 - P3: FARM_MESO_PER_SECOND=1000 → own observed meso/hr EMA (design sec 13).
