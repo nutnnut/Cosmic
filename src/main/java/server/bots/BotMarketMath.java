@@ -315,6 +315,37 @@ final class BotMarketMath {
         return offer >= reservation * (1.0 + Math.max(0, slackFraction));
     }
 
+    /** Below this a price is left exact — cheap capped consumables should not drift into charm. */
+    static final long HUMANIZE_FLOOR = 100_000L;
+
+    /**
+     * Quantize a raw ask into a human-looking price so a stall or shout never reads like calculator
+     * output (5,825,734). Each bot commits to ONE deterministic style keyed by its id, so its whole
+     * shop stays coherent (a bot that lists round millions does it everywhere; another always ends in
+     * 9s). Prices below {@link #HUMANIZE_FLOOR} pass through unchanged. This is presentation only: the
+     * value is still the model's, we only round HOW it is spoken — always to a nearby number, never a
+     * new economic decision. Styles (from the owner's examples): 2 significant figures (5,800,000),
+     * nearest nice half (6,000,000), 3 significant figures (5,830,000), and charm 9s (5,799,999).
+     */
+    static long humanizeAsk(long price, int botId) {
+        if (price < HUMANIZE_FLOOR) {
+            return price;
+        }
+        long step = 1;                       // 10^(digits-3): the base carrying 3 significant figures
+        while (price / step >= 1000) {
+            step *= 10;
+        }
+        long t = price / step;               // in [100, 1000): the three significant figures
+        int style = (int) Math.floorMod(mix(botId, 0x505249434531L), 4L); // salt "PRICE1"
+        long rounded = switch (style) {
+            case 0 -> Math.round(t / 10.0) * 10 * step;   // 2 sig figs, trailing zeros
+            case 1 -> Math.round(t / 50.0) * 50 * step;   // nearest nice half (…,0 / …,5)
+            case 2 -> t * step;                           // 3 sig figs, trailing zeros
+            default -> (t / 10) * 10 * step - 1;          // charm: round down to 2 sig, then 9s
+        };
+        return Math.max(1, rounded);
+    }
+
     // ------------------------------------------------------------------ helpers
 
     static double clamp01(double v) {

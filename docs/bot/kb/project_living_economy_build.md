@@ -146,6 +146,19 @@ reach the rolled bonus" x 0.6 secondhand discount (UpgradeSimulator.getEquipMark
 shape as our planned S4 reproduction-value curve calibration, good precedent. Verify our
 boot-log glove factor lands ≈2x weapon avg; if far off, tune REPLACEMENT_HORIZON_LEVELS.
 
+- **DONE (2026-07-03): human/rounded pricing (SSOT).** `BotMarketMath.humanizeAsk(price, botId)` —
+  presentation-only quantizer so stall/shout asks stop reading like calculator output (5,825,734).
+  Each bot commits to ONE deterministic style (mix(botId) → 4 styles: 2-sig `5,800,000`, nice-half
+  `6,000,000`, 3-sig `5,820,000`, charm-9s `5,799,999`) so its whole shop is coherent. Prices below
+  `HUMANIZE_FLOOR=100k` pass through exact (capped consumables/rechargeables don't drift). Applied at
+  the 4 final-price boundaries (belief-based ask in evaluateListings + evaluateEquipListings BEFORE
+  the shopPrice hard-cap so a ceiling is never charmed back up; serviceReprice at the unit level;
+  shout emission). `unitAsk` (the unit-tested VALUE core) is deliberately untouched — value vs
+  presentation stay separate. 3 new BotMarketMathTest cases (18 total). NOTE: rechargeable/capped
+  asks skip humanization by design; a scrolled equip (band>0, the big-number case) always gets it.
+  Owner-raised as a side-task next to the S4 mesoFocus/haggle trait wiring — humanizeAsk STYLE is a
+  natural future BotPersonality field (currently keyed off id).
+
 ## Pending / next
 
 - **S2 live-verified (2026-07-03):** 8 stalls × 16 slots clustered, Fredrick collect→publish

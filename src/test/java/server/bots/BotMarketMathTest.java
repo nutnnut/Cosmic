@@ -203,4 +203,42 @@ class BotMarketMathTest {
         assertTrue(firmInformed > softInformed, "firm stance asks more");
         assertTrue(softInformed > 0, "even pushovers keep a sliver of margin");
     }
+
+    @Test
+    void humanizeAskLeavesSmallPricesExactAndRoundsBigOnes() {
+        assertEquals(4_321, BotMarketMath.humanizeAsk(4_321, 7),
+                "below the floor a price is spoken verbatim");
+        // A big raw ask is quantized to a nearby human number of the SAME magnitude, never 0.
+        long h = BotMarketMath.humanizeAsk(5_825_734, 7);
+        assertTrue(h >= 5_500_000 && h <= 6_000_000,
+                "a 5.8M ask rounds to a nearby millions figure, magnitude preserved");
+    }
+
+    @Test
+    void humanizeAskIsDeterministicPerBotButVariesAcrossBots() {
+        // Same bot -> same style every time (a coherent shop). Enough distinct bots must exercise
+        // more than one style (the point of per-bot styles).
+        assertEquals(BotMarketMath.humanizeAsk(5_825_734, 42),
+                BotMarketMath.humanizeAsk(5_825_734, 42), "one bot prices the same item identically");
+        java.util.Set<Long> shapes = new java.util.HashSet<>();
+        for (int bot = 0; bot < 32; bot++) {
+            shapes.add(BotMarketMath.humanizeAsk(5_825_734, bot));
+        }
+        assertTrue(shapes.size() >= 3, "the population uses several rounding styles");
+    }
+
+    @Test
+    void humanizeAskCoversTheOwnersExampleStyles() {
+        // Sweep bots until we have seen each named style land on the owner's 5.8M example.
+        boolean twoSig = false, niceHalf = false, threeSig = false, charm9s = false;
+        for (int bot = 0; bot < 64; bot++) {
+            long h = BotMarketMath.humanizeAsk(5_825_734, bot);
+            if (h == 5_800_000) twoSig = true;
+            if (h == 6_000_000) niceHalf = true;
+            if (h == 5_820_000) threeSig = true;
+            if (h == 5_799_999) charm9s = true;
+        }
+        assertTrue(twoSig && niceHalf && threeSig && charm9s,
+                "all four styles (2-sig, nice-half, 3-sig, charm-9s) are reachable");
+    }
 }

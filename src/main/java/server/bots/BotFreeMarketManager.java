@@ -309,6 +309,7 @@ final class BotFreeMarketManager {
             long key = BotMarketMath.priceKey(id, 0);
             double costBasisUnit = e.getValue().keepValue() / qty;
             int ask = unitAsk(book.perceivedPrice(key, now), book.privateConfidence(key, now), costBasisUnit);
+            ask = (int) Math.min(Integer.MAX_VALUE, BotMarketMath.humanizeAsk(ask, bot.getId()));
             if (shopPrice > 0 && ask >= shopPrice) {
                 ask = shopPrice - 1; // undercut the counter or don't bother
             }
@@ -380,6 +381,7 @@ final class BotFreeMarketManager {
             long key = BotMarketMath.priceKey(id, quote.band());
             double curveQuote = calibratedCurveQuote(book, quote, now);
             int ask = unitAsk(book.perceivedPrice(key, now), book.privateConfidence(key, now), curveQuote);
+            ask = (int) Math.min(Integer.MAX_VALUE, BotMarketMath.humanizeAsk(ask, bot.getId()));
             if (quote.band() == 0 && shopPrice > 0 && ask >= shopPrice) {
                 ask = shopPrice - 1; // a clean piece competes with the NPC counter; a roll doesn't
             }
@@ -1276,7 +1278,8 @@ final class BotFreeMarketManager {
         long npcUnit = npcSell.price(it.getItemId(), 1);
         double reservation = Math.max(npcUnit, curUnitAsk * REPRICE_MAX_DROP);
         double newUnit = BotMarketMath.repriceAsk(curUnitAsk, perceived, confidence, REPRICE_PRESSURE, reservation);
-        long newBundle = Math.round(newUnit * perBundle);
+        long humanUnit = BotMarketMath.humanizeAsk(Math.round(newUnit), bot.getId());
+        long newBundle = humanUnit * perBundle;
         return (int) Math.min(Integer.MAX_VALUE, Math.max(1, newBundle));
     }
 

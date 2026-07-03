@@ -345,6 +345,7 @@ public final class BotShoutTradeManager {
         if (ask <= 0 || name == null) {
             return;
         }
+        ask = BotMarketMath.humanizeAsk(ask, bot.getId());
         Offer offer = new Offer(Kind.SELL, eq.getItemId(), 1, (int) Math.min(Integer.MAX_VALUE, ask));
         BotMarketShoutBus.getInstance().publish(bot.getMapId(), bot.getId(), offer, now);
         BotMarketLedger.getInstance().append(EventKind.SHOUT, offer.itemId(), 0, 1,
