@@ -69,6 +69,25 @@ class BotMarketShoutBusTest {
     }
 
     @Test
+    void claimRemovesExactlyOnceSoNoReMatchSpam() {
+        bus.publish(MAP, 100, sell(1082002, 1_000_000), 0L);
+        // first matcher claims it; a second matcher (or the same bot next tick) finds nothing
+        assertTrue(bus.claim(MAP, 100, sell(1082002, 500_000)), "first claim should succeed");
+        assertTrue(!bus.claim(MAP, 100, sell(1082002, 500_000)), "second claim must fail");
+        assertTrue(bus.active(MAP, 999, 1_000L).isEmpty(), "claimed shout must leave the feed");
+    }
+
+    @Test
+    void dropSpeakerOnMapClearsOnLeave() {
+        bus.publish(MAP, 100, sell(1082002, 1_000_000), 0L);
+        bus.publish(MAP, 200, sell(1332006, 300_000), 0L);
+        bus.dropSpeakerOnMap(MAP, 100);
+        List<Shout> live = bus.active(MAP, 999, 1_000L);
+        assertEquals(1, live.size());
+        assertEquals(200, live.get(0).speakerId());
+    }
+
+    @Test
     void dropSpeakerRemovesTheirShouts() {
         bus.publish(MAP, 100, sell(1082002, 1_000_000), 0L);
         bus.publish(MAP, 200, sell(1332006, 300_000), 0L);

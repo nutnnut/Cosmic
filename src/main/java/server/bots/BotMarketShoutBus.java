@@ -53,6 +53,35 @@ public final class BotMarketShoutBus {
         }
     }
 
+    /**
+     * Atomically remove (claim) a speaker's shout for this item+kind, returning true iff it was
+     * present. A matcher claims the shout the instant it commits, so exactly ONE bot pursues it and
+     * a declined/timed-out attempt leaves nothing on the feed to re-match — without this a live
+     * shout gets re-matched every tick by every bot on the map (invite spam).
+     */
+    public boolean claim(int mapId, int speakerId, Offer offer) {
+        List<Shout> feed = byMap.get(mapId);
+        if (feed == null) {
+            return false;
+        }
+        synchronized (feed) {
+            return feed.removeIf(s -> s.speakerId() == speakerId
+                    && s.offer().kind() == offer.kind()
+                    && s.offer().itemId() == offer.itemId());
+        }
+    }
+
+    /** Drop a speaker's shouts on one map (e.g. when the character leaves it). */
+    public void dropSpeakerOnMap(int mapId, int speakerId) {
+        List<Shout> feed = byMap.get(mapId);
+        if (feed == null) {
+            return;
+        }
+        synchronized (feed) {
+            feed.removeIf(s -> s.speakerId() == speakerId);
+        }
+    }
+
     /** Live (unexpired) shouts on a map, excluding the listener's own; sweeps expired lazily. */
     public List<Shout> active(int mapId, int listenerId, long now) {
         List<Shout> feed = byMap.get(mapId);

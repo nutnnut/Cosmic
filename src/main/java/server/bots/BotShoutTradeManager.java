@@ -67,8 +67,8 @@ public final class BotShoutTradeManager {
         maybeEmitShout(entry, bot, now);
     }
 
-    /** Drop a departing/despawning speaker's shouts + any deal awaiting them (called on logout). */
-    static void forget(int charId) {
+    /** Drop any pending shout-deal awaiting a departing/despawning character (map-leave or logout). */
+    public static void forget(int charId) {
         dealsByResponder.remove(charId);
     }
 
@@ -95,12 +95,18 @@ public final class BotShoutTradeManager {
                 continue; // left the map, or already busy in a trade
             }
             if (o.kind() == Kind.SELL && plausibleBuy(bot, o)) {
+                if (!BotMarketShoutBus.getInstance().claim(bot.getMapId(), s.speakerId(), o)) {
+                    continue; // another bot claimed it first
+                }
                 commit(entry, bot, speaker, o, false, null, now); // I buy
                 return true;
             }
             if (o.kind() == Kind.BUY) {
                 Equip mine = findSellableEquip(entry, bot, o);
                 if (mine != null) {
+                    if (!BotMarketShoutBus.getInstance().claim(bot.getMapId(), s.speakerId(), o)) {
+                        continue; // another bot claimed it first
+                    }
                     commit(entry, bot, speaker, o, true, mine, now); // I sell
                     return true;
                 }
