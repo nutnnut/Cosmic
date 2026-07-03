@@ -1542,6 +1542,20 @@ final class BotNavigationManager {
 
     /** The skill-edge mask a live bot is actually eligible for (teleport / flash-jump), the SSOT both the
      *  planner and the /mapgraph debug link compute from. 0 = walk-only. */
+    /** True when the graph was built for the bot's live movement physics. Speed/jump stats shape
+     *  every authored JUMP/FLASH_JUMP arc; snowshoes only matter where the ground is slippery
+     *  (mirrors the provider's canonicalProfile stripping). */
+    private static boolean graphMatchesLiveProfile(BotNavigationGraph graph, MapleMap map, Character bot) {
+        if (graph.movementProfile == null) {
+            return true;
+        }
+        BotMovementProfile live = BotMovementProfile.fromCharacter(bot);
+        return graph.movementProfile.totalSpeedStat() == live.totalSpeedStat()
+                && graph.movementProfile.totalJumpStat() == live.totalJumpStat()
+                && (graph.movementProfile.snowShoes() == live.snowShoes()
+                    || !BotPhysicsEngine.slipperyGround(map));
+    }
+
     static int botSkillMask(Character bot) {
         int mask = 0;
         if (bot != null) {
@@ -2080,6 +2094,17 @@ final class BotNavigationManager {
         if (skillsEnabled && bot != null) {
             skillMask |= botSkillMask(bot);
         }
+        // Closest-profile fallback graph (exact-profile build pending): JUMP/FLASH_JUMP arcs are
+        // authored by per-x physics simulation of the GRAPH's profile, and flying them with
+        // different live speed/jump stats lands a different arc — e.g. Haste 140/120 on the base
+        // 100/100 graph overshot the platform and looped forever (pathlog-TeensDusk-2026-07-03,
+        // 103000000 JUMP r127->r122). Plan around them; WALK/PORTAL/CLIMB/DROP/TELEPORT stay
+        // profile-safe. canReach/costToGoal/nearestReachableRegion all share this mask, so
+        // reachability verdicts and redirects stay consistent with what the executor can fly.
+        if (bot != null && !graphMatchesLiveProfile(graph, map, bot)) {
+            skillMask = (skillMask | BotNavigationGraph.EXCLUDE_JUMP_ARCS)
+                    & ~BotNavigationGraph.SKILL_FLASH_JUMP;
+        }
         try {
             // Reachability early-exit: if the target region is not forward-reachable from the start for
             // this bot's usable edges, no path can exist -- skip the search. Without this a high-fan-out
@@ -2563,43 +2588,19 @@ final class BotNavigationManager {
         if (edge.type != BotNavigationGraph.EdgeType.JUMP && edge.type != BotNavigationGraph.EdgeType.FLASH_JUMP) {
             return false;
         }
+        // STRICT window containment — the builder's expandJumpLaunchWindow authors the maximal
+        // per-x-simulated valid span, so any acceptance outside it fires a physically impossible
+        // arc by construction. A widened acceptance (one motor step) used to live here for narrow
+        // windows, but on a steep target slope the landing floor rises several px per x, so one
+        // pixel outside the window the arc falls short and the bot jumps in place forever
+        // (pathlog-CheatSTanK-2026-07-03, 600000000 JUMP r68->r62 window=[1620,1623] from x=1624).
+        // Unhittable narrow windows are instead handled by the blocked-pos watchdog give-up.
+        if (!isWithinJumpLaunchWindow(graph, botPos, edge)) {
+            return false;
+        }
         int tolerance = Math.max(1, BotPhysicsEngine.walkStep(map, entry != null ? entry.movementProfile : null));
-        if (!isWithinJumpLaunchWindow(graph, botPos, edge, tolerance)) {
-            return false;
-        }
         int launchX = selectedJumpLaunchX(entry, graph, edge);
-        if (Math.abs(botPos.x - launchX) > tolerance) {
-            return false;
-        }
-        if (!edge.containsLaunchX(botPos.x)) {
-            // Only reachable via the narrow-window widened acceptance above. The authored window is
-            // physically exact — on a steep target slope the landing floor rises several px per x, so
-            // one pixel outside it the arc falls short and the bot jumps in place forever
-            // (pathlog-CheatSTanK-2026-07-03, 600000000 JUMP r68->r62 window=[1620,1623] from x=1624).
-            // Fire only if the live arc actually leaves the launch region; otherwise stay not-ready so
-            // precise steering (stopDist=0) walks the bot INTO the window.
-            return jumpArcLeavesFromRegion(graph, entry, map, botPos, edge);
-        }
-        return true;
-    }
-
-    private static boolean jumpArcLeavesFromRegion(BotNavigationGraph graph,
-                                                   BotEntry entry,
-                                                   MapleMap map,
-                                                   Point botPos,
-                                                   BotNavigationGraph.Edge edge) {
-        BotNavigationGraph.Region toRegion = graph.getRegion(edge.toRegionId);
-        if (entry == null || toRegion == null || toRegion.isRopeRegion) {
-            return true; // rope grabs aren't modeled by the landing sim; keep the widened acceptance
-        }
-        BotPhysicsEngine.JumpLanding landing = edge.type == BotNavigationGraph.EdgeType.FLASH_JUMP
-                ? BotPhysicsEngine.simulateFlashJumpLanding(map, botPos, edge.launchStepX, entry.movementProfile)
-                : BotPhysicsEngine.simulateJumpLanding(map, botPos, edge.launchStepX, entry.movementProfile);
-        if (landing == null || landing.foothold() == null) {
-            return false;
-        }
-        int landingRegionId = graph.regionIdByFootholdId.getOrDefault(landing.foothold().getId(), -1);
-        return landingRegionId >= 0 && landingRegionId != edge.fromRegionId;
+        return Math.abs(botPos.x - launchX) <= tolerance;
     }
 
     private static boolean isReachableWithinRegion(BotNavigationGraph graph,
@@ -2637,27 +2638,20 @@ final class BotNavigationManager {
         return true;
     }
 
+    /** Strict containment in the authored launch window. The builder authors the maximal
+     *  per-x-simulated valid span, so widening acceptance beyond it (a former one-motor-step
+     *  slack for narrow windows, 8a7e7b3) launches physically impossible arcs — on steep target
+     *  slopes even 1px outside the window the jump falls short and loops in place
+     *  (pathlog-CheatSTanK-2026-07-03). Narrow windows the motor can't stand in are handled by
+     *  the blocked-pos watchdog give-up, not by accepting an invalid launch. */
     static boolean isWithinJumpLaunchWindow(BotNavigationGraph graph,
                                             Point botPos,
                                             BotNavigationGraph.Edge edge) {
-        return isWithinJumpLaunchWindow(graph, botPos, edge, 0);
-    }
-
-    /** {@code minAcceptSpanPx}: minimum acceptance span for the launch window. A window narrower
-     *  than the bot's walk step (down to 1px, e.g. 100000102 JUMP r12-&gt;r19 [108,108]) cannot be
-     *  hit exactly by quantized ±walkStep movement — the bot bounced across it forever with
-     *  jump-pos. Widen acceptance symmetrically until the span covers one motor step; windows
-     *  already at least that wide keep exact containment. */
-    static boolean isWithinJumpLaunchWindow(BotNavigationGraph graph,
-                                            Point botPos,
-                                            BotNavigationGraph.Edge edge,
-                                            int minAcceptSpanPx) {
         if (botPos == null
                 || (edge.type != BotNavigationGraph.EdgeType.JUMP && edge.type != BotNavigationGraph.EdgeType.FLASH_JUMP)) {
             return false;
         }
-        int tolerance = Math.max(0, (minAcceptSpanPx - (edge.launchMaxX - edge.launchMinX) + 1) / 2);
-        if (!edge.containsLaunchX(botPos.x, tolerance)) {
+        if (!edge.containsLaunchX(botPos.x)) {
             return false;
         }
 

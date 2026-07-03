@@ -230,10 +230,15 @@ class BotMovementManager {
             int dy = targetPos.y - botPos.y;
             int dxOwner = targetPos.x - entry.climbRope.x();
 
-            // If not navigating, allow jumping off when target is far away horizontally
+            // If not navigating, allow jumping off when the target is far away horizontally and
+            // deeper than the rope reaches — but only once the descent is spent (near the rope
+            // bottom). Dismounting the moment the bot attaches at the rope top launches it back
+            // onto the entry platform for zero descent, and the fallback steering walks it right
+            // back to the rope forever (pathlog-BishopDemo-2026-07-03, 551000000 rope@x=200).
             if (runAiTick && entry.navEdge == null
                     && Math.abs(dxOwner) > cfg.FOLLOW_DIST
-                    && entry.climbRope.bottomY() < targetPos.y) {
+                    && entry.climbRope.bottomY() < targetPos.y
+                    && botPos.y >= entry.climbRope.bottomY() - cfg.STOP_DIST) {
                 jumpOffRope(entry, bot, dxOwner);
                 return;
             }

@@ -241,6 +241,52 @@ containment; the existing `selectedJumpLaunchX` ±walkStep check still applies).
 launch lands a few px off-plan and simply replans — strictly better than the infinite park.
 Plus the #9 watchdog drift radius as the systemic backstop.
 
+## 11. #10's widened acceptance fired physically impossible launches (jump-in-place loop) — REVERTED
+Symptom (live 2026-07-03, NLC 600000000, pathlog-CheatSTanK): vertical `JUMP r68→r62`, window
+`[1620,1623]`, bot parked at x=1624 jumping straight up forever — the r62 slope rises ~4.9px per
+x, so the floor at 1624 (y≈170) sits above the jump apex (y=174) while at 1621 (y≈185) it clears.
+Neither watchdog fired: the gate *accepted* the launch (no `jump-pos` ticks) and the arc kept the
+bot "moving".
+
+Root cause: the #10 `minAcceptSpanPx` widening let the executor fire from OUTSIDE the authored
+window. But `expandJumpLaunchWindow` authors the **maximal per-x-simulated valid span** — every
+x outside it is a proven miss, so any runtime widening launches an invalid arc by construction.
+Narrow windows exist precisely where the physics are knife-edge (steep target slopes).
+
+Fix: widening reverted — `isWithinJumpLaunchWindow` is strictly the authored window again; the
+graph is the SSOT, the runtime only checks it. Unhittable 1px windows fall to the #9/#10
+blocked-pos watchdog (`jump-pos` give-up + replan), which the descent regression confirms still
+clears 100000102. **Rule: never "help" an authored launch window at runtime — if a window looks
+wrong, fix the builder.**
+
+## 12. Closest-profile fallback graph flies arcs with the wrong physics (overshoot loop)
+Symptom (live 2026-07-03, Kerning 103000000, pathlog-TeensDusk): Haste bot (speed 140 / jump
+120) navigating the base 100/100 graph (`Fallback: closestGraph=yes` — its exact-profile graph
+not built yet after the v68 cache invalidation). Committed `JUMP r127→r122` launched correctly
+in-window, but with jumpForce 666 and airVelX ±9 the arc flew ~50% farther than authored,
+overshot the target platform entirely and landed back on r127 → walk back, jump, repeat ~2.5s
+per cycle. No watchdog: execution "succeeds" every time.
+
+Fix: `runSearch` clears arc edges from the plan when the serving graph's profile ≠ the bot's
+live profile (`graphMatchesLiveProfile`): new `BotNavigationGraph.EXCLUDE_JUMP_ARCS` mask bit
+(exclusion semantics — default callers unchanged) drops ground JUMPs, and `SKILL_FLASH_JUMP` is
+cleared too. WALK/PORTAL/CLIMB/DROP/TELEPORT stay (profile-safe: teleport dest is computed live,
+directional walk-off drops live-sim with the entry profile). `canReach`/`costToGoal`/
+`nearestReachableRegion` share the mask, so reachability verdicts match what the executor can
+actually fly; the exact-profile graph warms in the background and the plan upgrades on swap.
+
+## 13. Heuristic-fallback rope-top dismount loop (no-graph maps)
+Symptom (live 2026-07-03, NLC-mall-town 551000000, pathlog-BishopDemo): no graph at all
+(`graph-warmup` after the v68 invalidation), heuristic fallback walking. Target ~500px below;
+fallback correctly steers to a rope to descend, attaches at the rope TOP — and `tickClimbing`'s
+non-nav dismount rule ("target far horizontally AND below the rope bottom → jump off") fired
+immediately, launching the bot back onto the entry platform for zero descent; fallback walks it
+back to the rope, ~1.6s loop.
+
+Fix: the dismount now also requires the bot to be near the rope BOTTOM
+(`botPos.y >= bottomY - STOP_DIST`) — climb the descent out first, then jump off toward the
+target.
+
 ## Not-a-bug
 `pathlog-fictionxD` "jumping back-forth" = a single clean walk-off DROP mid-descent (`Stuck:no`,
 `r=-1` is the normal airborne reading). No oscillation.
@@ -259,7 +305,11 @@ Plus the #9 watchdog drift radius as the systemic backstop.
 - `BotNavigationGraphProvider.addDirectionalDropEdge` — walk-off-sim landing authoring,
   `GRAPH_VERSION` 66→68 (#9); `BotNavigationManager.matchesDirectionalDrop` (#9),
   `trackBlockedPositionGate` + `BLOCKED_POS_DRIFT_PX` (#9/#10),
-  `isWithinJumpLaunchWindow(minAcceptSpanPx)` (#10)
+  `isWithinJumpLaunchWindow(minAcceptSpanPx)` (#10; reverted to strict in #11)
+- `BotNavigationManager.isWithinJumpLaunchWindow` strict window (#11),
+  `runSearch` profile-mismatch arc mask + `graphMatchesLiveProfile` (#12);
+  `BotNavigationGraph.EXCLUDE_JUMP_ARCS` (#12);
+  `BotMovementManager.tickClimbing` rope-bottom dismount gate (#13)
 - Tests in `BotNavigationGraphProviderTest` (fast synthetic + Henesys WZ graph),
   `BotRegion11ForkOscillationTest` (synthetic region-11 fork, #5/#5b),
   `BotHenesysDeptStoreDescentTest` (WZ-backed 100000102 descent, #9/#10).

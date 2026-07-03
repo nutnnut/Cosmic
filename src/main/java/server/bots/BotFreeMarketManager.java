@@ -1,6 +1,7 @@
 package server.bots;
 
 import client.Character;
+import constants.inventory.ItemConstants;
 import client.inventory.Equip;
 import client.inventory.InventoryType;
 import client.inventory.Item;
@@ -113,6 +114,11 @@ final class BotFreeMarketManager {
     /** Slot-column spacing: canPlaceStore rejects another merchant within ~152px (23000
      *  distance-squared), so stalls line up a touch wider than that. */
     static final int STALL_SPACING_PX = 170;
+    /** Min gap to any other stall (distance-squared). The server's canPlaceStore blocks at ~151px
+     *  (23000 sq) but its check isn't atomic with publish, so two bots that clear it in the same beat
+     *  stack illegally; the bot enforces a wider 200px both when picking a slot AND again right before
+     *  publishing, so a stall that appeared mid-walk bumps it to the next slot instead of overlapping. */
+    private static final int STALL_MIN_SPACING_SQ = 200 * 200;
     /** How far out (in slot columns, each way) to hunt for a free spot on the floor strip. */
     private static final int MAX_STALL_SLOT_STEPS = 8;
     /** Give up walking to one candidate spot after this long without net progress. */
@@ -305,6 +311,14 @@ final class BotFreeMarketManager {
             int ask = unitAsk(book.perceivedPrice(key, now), book.privateConfidence(key, now), costBasisUnit);
             if (shopPrice > 0 && ask >= shopPrice) {
                 ask = shopPrice - 1; // undercut the counter or don't bother
+            }
+            if (ItemConstants.isRechargeable(id)) {
+                // Throwing stars / bullets are a rechargeable SET: never split, recharged to max for
+                // pennies, so the whole stack is worth ONE flat set price - not the belief's per-unit
+                // ask x count (a stack of 5 and 5000 are worth the same). Anchor to the flat NPC set
+                // cost (npcWhole = getPrice = wholePrice + tiny recharge) and undercut it, spread back
+                // over the stack so the single whole-stack bundle carries that flat, count-free price.
+                ask = (int) Math.max(1, Math.min(Integer.MAX_VALUE, Math.max(1, npcWhole - 1) / qty));
             }
             if (ask <= 0) {
                 out.add(new ListingVerdict(id, qty, 0, npcWhole, shopPrice, 0, "no price basis", null));
@@ -1040,8 +1054,8 @@ final class BotFreeMarketManager {
             return true;
         }
         BotTravelManager.clearMoveTargetPin(entry);
-        if (!PlayerInteractionHandler.canPlaceStore(bot)) {
-            nextPlacementTry(entry, now);
+        if (!PlayerInteractionHandler.canPlaceStore(bot) || stallSpotTaken(bot)) {
+            nextPlacementTry(entry, now); // occupied (or a stall appeared mid-walk) - slide to the next slot
             return true;
         }
         openAndStockStall(entry, bot, listings, now);
@@ -1115,7 +1129,22 @@ final class BotFreeMarketManager {
 
     private static boolean nearStall(List<MapObject> stalls, Point spot) {
         for (MapObject o : stalls) {
-            if (o.getPosition().distanceSq(spot) < 26000) { // canPlaceStore uses 23000; padded
+            if (o.getPosition().distanceSq(spot) < STALL_MIN_SPACING_SQ) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** Live 200px spacing re-check at the actual stand position, right before opening: catches a stall
+     *  another bot published while this one walked to its slot (canPlaceStore's own 151px window can
+     *  miss it, and its check isn't atomic with publish). */
+    private static boolean stallSpotTaken(Character bot) {
+        List<MapObject> stalls = bot.getMap().getMapObjectsInRange(bot.getPosition(),
+                Double.POSITIVE_INFINITY, List.of(MapObjectType.HIRED_MERCHANT));
+        for (MapObject o : stalls) {
+            if (o instanceof HiredMerchant hm && hm.getOwnerId() != bot.getId()
+                    && o.getPosition().distanceSq(bot.getPosition()) < STALL_MIN_SPACING_SQ) {
                 return true;
             }
         }
