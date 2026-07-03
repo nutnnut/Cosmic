@@ -1801,6 +1801,18 @@ public class BotManager {
             return;
         }
 
+        // Market shout (S>/B>/PC>): parse and post to the map's shout bus so nearby bots can match
+        // it (design 8.4). The chat line itself was already broadcast by the general-chat handler;
+        // a well-formed shout is consumed here, a malformed one falls through to normal handling.
+        if (channel == ReplyChannel.MAP && BotMarketGrammar.looksLikeShout(message)) {
+            BotMarketGrammar.Offer offer = BotMarketGrammar.parse(message);
+            if (offer != null) {
+                BotMarketShoutBus.getInstance().publish(owner.getMapId(), owner.getId(), offer,
+                        System.currentTimeMillis());
+                return;
+            }
+        }
+
         // Recruit must work even when owner has no bots yet
         Matcher rm = RECRUIT_PATTERN.matcher(message);
         if (rm.find()) {
