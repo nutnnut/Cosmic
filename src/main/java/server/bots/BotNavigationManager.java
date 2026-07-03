@@ -2568,7 +2568,38 @@ final class BotNavigationManager {
             return false;
         }
         int launchX = selectedJumpLaunchX(entry, graph, edge);
-        return Math.abs(botPos.x - launchX) <= tolerance;
+        if (Math.abs(botPos.x - launchX) > tolerance) {
+            return false;
+        }
+        if (!edge.containsLaunchX(botPos.x)) {
+            // Only reachable via the narrow-window widened acceptance above. The authored window is
+            // physically exact — on a steep target slope the landing floor rises several px per x, so
+            // one pixel outside it the arc falls short and the bot jumps in place forever
+            // (pathlog-CheatSTanK-2026-07-03, 600000000 JUMP r68->r62 window=[1620,1623] from x=1624).
+            // Fire only if the live arc actually leaves the launch region; otherwise stay not-ready so
+            // precise steering (stopDist=0) walks the bot INTO the window.
+            return jumpArcLeavesFromRegion(graph, entry, map, botPos, edge);
+        }
+        return true;
+    }
+
+    private static boolean jumpArcLeavesFromRegion(BotNavigationGraph graph,
+                                                   BotEntry entry,
+                                                   MapleMap map,
+                                                   Point botPos,
+                                                   BotNavigationGraph.Edge edge) {
+        BotNavigationGraph.Region toRegion = graph.getRegion(edge.toRegionId);
+        if (entry == null || toRegion == null || toRegion.isRopeRegion) {
+            return true; // rope grabs aren't modeled by the landing sim; keep the widened acceptance
+        }
+        BotPhysicsEngine.JumpLanding landing = edge.type == BotNavigationGraph.EdgeType.FLASH_JUMP
+                ? BotPhysicsEngine.simulateFlashJumpLanding(map, botPos, edge.launchStepX, entry.movementProfile)
+                : BotPhysicsEngine.simulateJumpLanding(map, botPos, edge.launchStepX, entry.movementProfile);
+        if (landing == null || landing.foothold() == null) {
+            return false;
+        }
+        int landingRegionId = graph.regionIdByFootholdId.getOrDefault(landing.foothold().getId(), -1);
+        return landingRegionId >= 0 && landingRegionId != edge.fromRegionId;
     }
 
     private static boolean isReachableWithinRegion(BotNavigationGraph graph,

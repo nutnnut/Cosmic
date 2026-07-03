@@ -400,6 +400,10 @@ public class BotEntry {
     long breakUntilMs = 0L;
     long nextBreakRollAtMs = 0L;
     java.awt.Point breakIdleAnchor = null;
+    // Pure-idle (inert autopilot) town destack: a held spread spot so idle bots don't stack on the
+    // spawn portal (the NPC-approach loiter SSOT). Re-picked on map change.
+    java.awt.Point idleDestackSpot = null;
+    int idleDestackMapId = -1;
     // "Logged in to chill": rolled once at session start (BotScheduler). The bot heads to town and
     // lingers there the whole (half-length) session instead of grinding — near-zero tick cost.
     boolean chillSession = false;

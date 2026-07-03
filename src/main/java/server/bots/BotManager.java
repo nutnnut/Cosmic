@@ -1150,7 +1150,7 @@ public class BotManager {
         }
         // In a safe map: walk to a random nearby spot once, then idle there until the deadline.
         if (entry.logoutAnchor == null) {
-            entry.logoutAnchor = pickTownLoiterAnchor(entry, bot, botPos);
+            entry.logoutAnchor = resolveIdleSpot(entry, bot, botPos);
             BotMovementManager.resetEntryState(entry);
         }
         loiterAtAnchor(entry, bot, botPos, entry.logoutAnchor, runAiTick);
@@ -3261,6 +3261,21 @@ public class BotManager {
         return safe != null ? safe : pick.centerPoint();
     }
 
+    /**
+     * SSOT for "pick a random spot to idle" across every park path (logout, operator-idle, break,
+     * idle-leech, inert-town-idle). One behavior: near a town NPC/character when the map is safe -
+     * the destack loiter that makes idlers fan out and look alive ({@link #pickTownLoiterAnchor}) -
+     * or the danger-aware safe-region spread ({@link #resolveSafeIdleRegion}) when live mobs are
+     * around (a break taken mid-grind). Both destack; callers just hold the returned spot and drive
+     * {@link #loiterAtAnchor}/{@link #walkToOrIdleAt} to it.
+     */
+    Point resolveIdleSpot(BotEntry entry, Character bot, Point botPos) {
+        if (bot != null && bot.getMap() != null && !bot.getMap().getAllMonsters().isEmpty()) {
+            return resolveSafeIdleRegion(entry, bot, botPos, true); // mobs near -> danger-aware spread
+        }
+        return pickTownLoiterAnchor(entry, bot, botPos); // safe map -> NPC-cluster destack
+    }
+
     /** The ground region a mob is standing in (x within span, foothold y within {@link #IDLE_REGION_Y_BAND}),
      *  or null when it's airborne / off-platform. */
     private static BotNavigationGraph.Region idleRegionAt(BotNavigationGraph graph, Point p) {
@@ -3645,6 +3660,9 @@ public class BotManager {
         // bot that has gone idle (e.g. arrived in town between autopilot decisions) never runs the
         // linger/disconnect and stands online forever past its deadline.
         if (!entry.loggingOut) {
+            if (tickTownIdleDestack(entry, bot, runAiTick)) {
+                return; // walking to / holding at a spread town-idle spot instead of stacking in place
+            }
             boolean idleConsumed;
             if (!perf) {
                 idleConsumed = tickIdleEntry(entry, bot);
@@ -3921,7 +3939,7 @@ public class BotManager {
             // Pick a personal idle spot ONCE and hold it: re-resolving every tick made leechers drift
             // and pile onto the same point. Independent one-shot in-region picks spread them out.
             if (entry.leechIdleAnchor == null) {
-                entry.leechIdleAnchor = resolveSafeIdleRegion(entry, bot, botPos, true); // spread among safe regions
+                entry.leechIdleAnchor = resolveIdleSpot(entry, bot, botPos); // SSOT idle-spot destack
                 entry.idleAnchorHp = bot.getHp(); // snapshot at the fresh spot; a later drop => got hit
             }
             return walkToOrIdleAt(entry, bot, botPos, entry.leechIdleAnchor, runAiTick);
@@ -3937,7 +3955,7 @@ public class BotManager {
         if (BotBreakManager.onBreak(entry, breakNow)) {
             entry.grindTarget = null;
             if (entry.breakIdleAnchor == null) {
-                entry.breakIdleAnchor = resolveSafeIdleRegion(entry, bot, botPos, true); // spread among safe regions
+                entry.breakIdleAnchor = resolveIdleSpot(entry, bot, botPos); // SSOT idle-spot destack
             }
             return walkToOrIdleAt(entry, bot, botPos, entry.breakIdleAnchor, runAiTick);
         } else if (entry.breakUntilMs != 0L) {
@@ -5073,7 +5091,7 @@ public class BotManager {
     private boolean tickOperatorIdleAtSpot(BotEntry entry, Character bot, Point botPos, long now,
                                            boolean runAiTick, BotFidgetMode forced) {
         if (entry.operatorSpot == null || entry.operatorSpotMapId != bot.getMapId()) {
-            entry.operatorSpot = pickTownLoiterAnchor(entry, bot, botPos);
+            entry.operatorSpot = resolveIdleSpot(entry, bot, botPos);
             entry.operatorSpotMapId = bot.getMapId();
         }
         Point spot = entry.operatorSpot != null ? entry.operatorSpot : botPos;
@@ -5624,6 +5642,50 @@ public class BotManager {
                 BotMovementManager.broadcastMovement(entry);
             }
         }
+    }
+
+    /**
+     * A self-owned/managed bot whose autopilot has gone inert (between decides, or a chill session)
+     * would otherwise stand still via {@link #tickIdleEntry} and pile onto the spawn portal with every
+     * other idle bot. Instead park it at a spread spot near a town NPC/character - the same AFK/town-
+     * idle destack SSOT the operator "idle" command uses ({@link #pickTownLoiterAnchor}) - so idlers
+     * fan out. Only genuinely-idle bots on a SAFE (mob-free) map; grind maps keep the danger-aware
+     * break-idle, errand/trade/follow bots are left alone, and the autopilot self-heal still runs so
+     * the bot re-decides back into grinding. Returns true when it drove the tick.
+     */
+    private boolean tickTownIdleDestack(BotEntry entry, Character bot, boolean runAiTick) {
+        // Mirror tickIdleEntry's "genuinely idle" guard, plus: no errand in flight, no operator hold.
+        if (entry.following || entry.grinding || entry.farmAnchor != null || entry.shopVisitPending
+                || entry.autopilotWaitAnchor != null || entry.operatorCmd != null
+                || entry.fmErrandMapId != -1 || entry.gachaErrandMapId != -1
+                || entry.questErrandMapId != -1 || entry.jobErrandMapId != -1
+                || entry.autopilotErrandMapId != -1) {
+            return false;
+        }
+        boolean selfOwned = entry.owner == null || entry.owner == entry.bot;
+        if (!selfOwned || entry.inAir || entry.climbing || bot.getMap() == null
+                || operatorMapHasMobs(bot.getMapId())) {
+            return false; // owned companions idle by their owner; grind maps use the danger-aware idle
+        }
+        // Keep the self-heal alive (it lives in tickIdleEntry, which we are about to preempt): a bot
+        // whose autopilot leaked to inert must still re-decide back out to grinding.
+        maybeRecoverInertAutopilot(entry, bot);
+        if (entry.grinding || BotAutopilotManager.isActive(entry)) {
+            return false; // recovery kicked it back out this tick -> don't park
+        }
+        Point botPos = bot.getPosition();
+        if (botPos == null) {
+            return false;
+        }
+        if (entry.idleDestackSpot == null || entry.idleDestackMapId != bot.getMapId()) {
+            entry.idleDestackSpot = resolveIdleSpot(entry, bot, botPos);
+            entry.idleDestackMapId = bot.getMapId();
+        }
+        if (entry.idleDestackSpot == null) {
+            return false;
+        }
+        loiterAtAnchor(entry, bot, botPos, entry.idleDestackSpot, runAiTick); // walk-near + settle SSOT
+        return true;
     }
 
     private boolean tickIdleEntry(BotEntry entry, Character bot) {
