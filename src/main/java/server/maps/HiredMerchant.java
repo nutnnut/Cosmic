@@ -617,6 +617,32 @@ public class HiredMerchant extends AbstractMapObject {
         }
     }
 
+    /**
+     * Owner-absent bot stall service (living-economy S2): under the {@code items} monitor — so it is
+     * mutually exclusive with buys — drop sold-out slots, then reprice each surviving slot via
+     * {@code repriceFn} (a new bundle price; a return {@literal <=} 0 or equal to the current price
+     * leaves the slot as-is). {@link PlayerShopItem}'s price is final, so a changed slot is rebuilt in
+     * place with the same item and bundle count. Does NOT persist — the caller batches a single
+     * {@link #saveItems} after any restock adds. Returns the number of free slots left for restock.
+     */
+    public int botServiceReprice(java.util.function.ToIntFunction<PlayerShopItem> repriceFn) {
+        synchronized (items) {
+            for (int i = items.size() - 1; i >= 0; i--) {
+                if (!items.get(i).isExist()) {
+                    items.remove(i);
+                }
+            }
+            for (int i = 0; i < items.size(); i++) {
+                PlayerShopItem cur = items.get(i);
+                int np = repriceFn.applyAsInt(cur);
+                if (np > 0 && np != cur.getPrice()) {
+                    items.set(i, new PlayerShopItem(cur.getItem(), cur.getBundles(), np));
+                }
+            }
+            return Math.max(0, 16 - items.size());
+        }
+    }
+
     private void removeFromSlot(int slot) {
         items.remove(slot);
 

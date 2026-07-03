@@ -117,6 +117,16 @@ final class BotFreeMarketManager {
     private static final int MAX_STALL_SLOT_STEPS = 8;
     /** Give up walking to one candidate spot after this long without net progress. */
     private static final long PLACE_WALK_STUCK_MS = 12_000L;
+    /** Re-visit an open stall every few hours to reprice/restock (living-economy S2). Short vs the
+     *  ~24h forceClose so sold-out slots refill and stale asks track belief across a market day —
+     *  the visit rides the same break/satiation cadence, so it's a detour on a town break, not a
+     *  dedicated trek. */
+    private static final int STALL_SERVICE_MIN_MS = 3 * 3_600_000;
+    private static final int STALL_SERVICE_MAX_MS = 6 * 3_600_000;
+    /** Reprice step aggressiveness (fraction of the ask→belief gap closed per visit) and the floor
+     *  on how far one visit may cut an ask (never below half, nor the NPC sell-back). */
+    private static final double REPRICE_PRESSURE = 0.5;
+    private static final double REPRICE_MAX_DROP = 0.5;
 
     private BotFreeMarketManager() {
     }
@@ -975,15 +985,21 @@ final class BotFreeMarketManager {
         // A live stall from a previous session (or no stock worth listing) -> browse-only trip.
         // Listings were planned off-thread at trip start (startMarketTrip); staging only
         // re-validates the items still exist — no re-pricing on the tick thread.
-        boolean stallAlive = bot.getWorldServer().getHiredMerchant(bot.getId()) != null;
-        List<ListingPlan> listings = stallAlive ? List.of() : validPlans(bot, entry.fmPlannedListings);
+        // A live stall from a previous session: tend it (reprice + restock) instead of opening a
+        // new one, then browse — the "next session: collect/restock/reprice" step (design 8.2).
+        HiredMerchant liveStall = bot.getWorldServer().getHiredMerchant(bot.getId());
+        if (liveStall != null) {
+            serviceLiveStall(entry, bot, liveStall, now);
+            advancePhase(entry, PHASE_BROWSE, now);
+            return true;
+        }
+        List<ListingPlan> listings = validPlans(bot, entry.fmPlannedListings);
         // NEVER open while Fredrick still holds proceeds: stocking a new stall saves over the
         // MERCHANT store, whose save DELETEs the uncollected rows first (saveItemsMerchant) -
         // the item loss the real client prevents by refusing to open until you collect. The
         // entrance stop already tried to collect this trip; if the bag couldn't take it all,
         // this trip is browse-only and the pickup re-trips on the hourly probe.
-        String skip = stallAlive ? "stall already live"
-                : listings.isEmpty()
+        String skip = listings.isEmpty()
                         ? "no valid listings (" + entry.fmPlannedListings.size() + " planned)"
                 : hasFredrickHoldings(bot) ? "fredrick still holds proceeds"
                 : !ensurePermit(entry, bot) ? "no permit" : null;
@@ -1151,7 +1167,7 @@ final class BotFreeMarketManager {
                 log.warn("stall saveItems failed for {}: {}", bot.getName(), e.toString());
             }
             merchant.publish(bot);
-            entry.nextStallServiceAtMs = now + BotManager.randMs(20 * 3_600_000, 26 * 3_600_000);
+            entry.nextStallServiceAtMs = now + BotManager.randMs(STALL_SERVICE_MIN_MS, STALL_SERVICE_MAX_MS);
             trace(entry, "stall published: " + listed + " slots at map " + bot.getMapId());
             reply.accept(entry, "shop's up, " + listed + " things listed");
         } catch (RuntimeException e) {
@@ -1159,6 +1175,74 @@ final class BotFreeMarketManager {
         } finally {
             entry.marketBusy = false;
         }
+    }
+
+    /**
+     * Tend an already-open stall on a re-visit (living-economy S2): drop sold-out slots, reprice the
+     * survivors toward current belief, and restock any free slots from freshly-marketable bag stock.
+     * Reprice + purge happen atomically under the stall's item monitor
+     * ({@link HiredMerchant#botServiceReprice}) so buys can't interleave; restock reuses the same
+     * add + inventory-debit pair as opening. Headless (world-scoped stall lookup) — works from any FM
+     * room the bot happens to browse. All under the {@code marketBusy} tick gate; one save at the end.
+     */
+    private static void serviceLiveStall(BotEntry entry, Character bot, HiredMerchant merchant, long now) {
+        entry.marketBusy = true;
+        try {
+            BotMarketBook book = BotMarketBook.of(entry, bot);
+            int free = merchant.botServiceReprice(psi -> serviceReprice(bot, book, psi, now));
+            int restocked = 0;
+            for (ListingPlan plan : validPlans(bot, entry.fmPlannedListings)) {
+                if (restocked >= free) {
+                    break;
+                }
+                Item staged = plan.item().copy();
+                staged.setQuantity(plan.perBundle());
+                long bundlePrice = Math.min(Integer.MAX_VALUE, plan.bundlePrice());
+                PlayerShopItem shopItem = new PlayerShopItem(staged, plan.bundles(), (int) bundlePrice);
+                if (!merchant.addItem(shopItem)) {
+                    break; // slot cap
+                }
+                InventoryType type = plan.item().getInventoryType();
+                InventoryManipulator.removeFromSlot(bot.getClient(), type, plan.item().getPosition(),
+                        (short) (plan.bundles() * plan.perBundle()), true);
+                BotMarketLedger.getInstance().append(BotMarketLedger.EventKind.LIST,
+                        plan.item().getItemId(), bandOf(plan.item()), plan.bundles() * plan.perBundle(),
+                        plan.unitPrice(), bot.getId(), null, bot.getMapId());
+                restocked++;
+            }
+            try {
+                merchant.saveItems(false);
+            } catch (Exception e) {
+                log.warn("stall service saveItems failed for {}: {}", bot.getName(), e.toString());
+            }
+            entry.nextStallServiceAtMs = now + BotManager.randMs(STALL_SERVICE_MIN_MS, STALL_SERVICE_MAX_MS);
+            trace(entry, "stall serviced: restocked " + restocked + " of " + free + " free slots");
+            if (restocked > 0) {
+                reply.accept(entry, "restocked my shop, " + restocked + " more up");
+            }
+        } finally {
+            entry.marketBusy = false;
+        }
+    }
+
+    /**
+     * New per-bundle price for a live slot: step the current ask toward the bot's belief at the
+     * slot's banded key by {@link #REPRICE_PRESSURE}, floored so one visit never cuts an ask below
+     * {@link #REPRICE_MAX_DROP} of itself nor below the per-unit NPC sell-back. A belief-less slot
+     * (no evidence) keeps its price. Reuses {@link BotMarketMath#repriceAsk} — no parallel pricing.
+     */
+    private static int serviceReprice(Character bot, BotMarketBook book, PlayerShopItem psi, long now) {
+        Item it = psi.getItem();
+        int perBundle = Math.max(1, it.getQuantity());
+        long key = BotMarketMath.priceKey(it.getItemId(), bandOf(it));
+        double perceived = book.perceivedPrice(key, now);
+        double confidence = book.privateConfidence(key, now);
+        double curUnitAsk = psi.getPrice() / (double) perBundle;
+        long npcUnit = npcSell.price(it.getItemId(), 1);
+        double reservation = Math.max(npcUnit, curUnitAsk * REPRICE_MAX_DROP);
+        double newUnit = BotMarketMath.repriceAsk(curUnitAsk, perceived, confidence, REPRICE_PRESSURE, reservation);
+        long newBundle = Math.round(newUnit * perBundle);
+        return (int) Math.min(Integer.MAX_VALUE, Math.max(1, newBundle));
     }
 
     /** Browse every other stall on this room map: observations always, bargains sparingly.
@@ -1240,10 +1324,26 @@ final class BotFreeMarketManager {
         }
     }
 
+    /** Deterministic per-bot stall sign (ASCII, invariant 3). A flavor corpus so a room of stalls
+     *  reads like a real market instead of a wall of "surplus sale"; two independent hashes pick a
+     *  headline and an optional tag so ~40 signs cover the population without a per-bot field. */
+    private static final String[] STALL_HEADLINES = {
+            "cheap stuff", "fair prices", "surplus sale", "come look", "good deals here",
+            "clearance", "everything must go", "loot for sale", "grab a bargain", "quality goods",
+            "no scams here", "leftovers", "priced to move", "trader's corner", "market finds",
+            "extras and spares", "gear and scrolls", "stock up here", "haggle welcome", "fresh drops",
+    };
+    private static final String[] STALL_TAGS = {
+            "", "", "", " (cheap!)", " - buy now", " ~ open", " - lvl up gear",
+            " * good stock *", " - fair only", " - real prices",
+    };
+
     private static String stallName(Character bot) {
-        String[] pool = {"cheap stuff", "fair prices", "surplus sale", "come look",
-                bot.getName() + "'s shop", "good deals here"};
-        return pool[Math.floorMod(bot.getId(), pool.length)];
+        int id = bot.getId();
+        long tagHash = (id * 2654435761L) >>> 8; // second, independent hash so headline/tag vary apart
+        String headline = STALL_HEADLINES[Math.floorMod(id, STALL_HEADLINES.length)];
+        String tag = STALL_TAGS[Math.floorMod(tagHash, STALL_TAGS.length)];
+        return headline + tag;
     }
 
     static void finishErrand(BotEntry entry, Character bot, String say) {
