@@ -511,9 +511,13 @@ final class BotFreeMarketManager {
         // A chilling bot will also just go browse (its book still learns); a break-bot needs a
         // reason - and NPC-shop staples don't count as one (they only tag along). Proceeds
         // waiting at Fredrick ARE a reason of their own: a bot whose whole surplus sold and
-        // closed to Fredrick would otherwise never trip again to collect its wealth.
+        // closed to Fredrick would otherwise never trip again to collect its wealth. A social roll
+        // also sends an empty-handed break-bot in just to hang out - the FM stays busy and its book
+        // still learns from browsing (satiation gates repeats).
+        boolean social = !chilling
+                && ThreadLocalRandom.current().nextDouble() < BotManager.cfg.FM_SOCIAL_BREAK_CHANCE;
         if (!stallServiceDue && !fredrickDue && tripWorthyCount(listable) < MIN_LISTINGS_TO_TRIP
-                && !chilling) {
+                && !chilling && !social) {
             return; // nothing worth the walk. ponytail: S4 adds the own-income-rate travel gate
         }
 
@@ -539,7 +543,9 @@ final class BotFreeMarketManager {
         reply.accept(entry, stallServiceDue ? "gonna check on my shop at the fm"
                 : fredrickDue && tripWorthyCount(listable) < MIN_LISTINGS_TO_TRIP
                         ? "gonna collect my earnings from fredrick"
-                        : "got some stuff to sell, heading to the free market");
+                : tripWorthyCount(listable) >= MIN_LISTINGS_TO_TRIP
+                        ? "got some stuff to sell, heading to the free market"
+                        : "gonna go window-shop at the free market");
     }
 
     /**

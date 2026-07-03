@@ -255,6 +255,11 @@ public class BotManager {
         // Living-economy free-market sessions: autopilot bots with sellable surplus open real
         // hired-merchant stalls in FM rooms and browse others' (docs/bot/living-economy-design.md).
         public boolean FM_MARKET_ENABLED = true;
+        // Chance a townside rest break pops into the free market to browse/hang out even with nothing
+        // to sell - the FM is ~1 hop from most towns, so idle bots congregating there make the market
+        // feel alive (more foot traffic = more browsing + shout-trade chances). Satiation still gates
+        // repeats, so this is a per-break bias, not a treadmill.
+        public double FM_SOCIAL_BREAK_CHANCE = 0.4;
         // Console line per market-tape event (list/sale/trade/...) - the live debugging feed for
         // the economy; the tape itself (bot_market_event) is always written regardless.
         public boolean MARKET_TX_CONSOLE = true;
