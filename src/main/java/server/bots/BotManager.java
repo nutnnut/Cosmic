@@ -3176,6 +3176,8 @@ public class BotManager {
     /** Max |y| gap (px) between a mob and a ground region's foothold to count the mob as standing
      *  IN that region — beyond this it's airborne / on another platform and isn't attributed. */
     private static final int IDLE_REGION_Y_BAND = 60;
+    /** Random idle-spot samples to pick the least-crowded from (break/leech destack). */
+    private static final int IDLE_DESTACK_SAMPLES = 8;
 
     /**
      * Safe idle/rest region on the bot's CURRENT map — SSOT for all three idle states (out-of-pot
@@ -3229,12 +3231,26 @@ public class BotManager {
                 safest.add(r);
             }
         }
-        BotNavigationGraph.Region pick = spread
-                ? safest.get(ThreadLocalRandom.current().nextInt(safest.size()))
-                : safest.get(0);
         if (spread) {
-            return pick.pointAt(ThreadLocalRandom.current().nextInt(pick.minX, pick.maxX + 1));
+            // Destack (owner rule: idle-spot picks should spread like the NPC-approach SSOT). Sample
+            // several random spots across the safest regions and take the one farthest from other
+            // characters, so idlers fan out instead of piling on one x - a bare random x destacks only
+            // by luck and left break/chill bots stacked on the same spot in town.
+            List<Point> others = new ArrayList<>();
+            for (Character c : map.getAllPlayers()) {
+                if (c != bot && c.getPosition() != null) {
+                    others.add(c.getPosition());
+                }
+            }
+            List<Point> candidates = new ArrayList<>();
+            for (int i = 0; i < IDLE_DESTACK_SAMPLES; i++) {
+                BotNavigationGraph.Region r = safest.get(ThreadLocalRandom.current().nextInt(safest.size()));
+                candidates.add(r.pointAt(ThreadLocalRandom.current().nextInt(r.minX, r.maxX + 1)));
+            }
+            Point spot = pickFarthestFromMobs(candidates, others);
+            return spot != null ? spot : candidates.get(0);
         }
+        BotNavigationGraph.Region pick = safest.get(0);
         int span = pick.width();
         int samples = Math.min(12, Math.max(2, span / 50 + 1));
         List<Point> candidates = new ArrayList<>(samples);
