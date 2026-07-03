@@ -5,6 +5,7 @@ Behavioral guidelines to reduce common LLM coding mistakes. Merge with project-s
 ## Project skills (read before editing the relevant area)
 
 - `.claude/skills/bot-combat/SKILL.md` — bot attack pipeline, packet shapes (`0xBA`/`0xBB`/`0xBC`), `AttackRoute` selection, hitbox model, ammo/Shadow Partner gates, and the checklist for adding new bot attack skills. Read this before touching `server.bots.*` combat code or debugging bot attack packets.
+- `.claude/skills/bot-nav/SKILL.md` — bot movement/navigation stack: layer map (physics SSOT → graph builder → planner/executor → motor → fallback), the iron rules (graph is baked truth, no runtime physics prediction, author the whole outcome envelope, fix the wrong layer), the live pathlog/web-endpoint debugging workflow, GRAPH_VERSION rules, and the stuck-class index. Read this before touching `server.bots.*` nav/movement/physics code or debugging a stuck/looping bot.
 - `.claude/skills/wz-data/SKILL.md` — WZ data (`wz/*.wz/*.img.xml`): file layout, XML node grammar, skill key meanings (`time`/`lt`/`mobCount`/…), the `DataProvider`/`DataTool` read path, and the gotchas for scanning the XML in scripts/tests. Read this before reading/parsing WZ data or writing tooling over it.
 
 ## Bot knowledge base
