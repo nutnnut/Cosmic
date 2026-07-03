@@ -229,16 +229,31 @@ class BotMarketMathTest {
 
     @Test
     void humanizeAskCoversTheOwnersExampleStyles() {
-        // Sweep bots until we have seen each named style land on the owner's 5.8M example.
-        boolean twoSig = false, niceHalf = false, threeSig = false, charm9s = false;
-        for (int bot = 0; bot < 64; bot++) {
-            long h = BotMarketMath.humanizeAsk(5_825_734, bot);
-            if (h == 5_800_000) twoSig = true;
-            if (h == 6_000_000) niceHalf = true;
-            if (h == 5_820_000) threeSig = true;
-            if (h == 5_799_999) charm9s = true;
+        // Sweep bots until we have seen every style land on the owner's 5.8M example.
+        java.util.Set<Long> seen = new java.util.HashSet<>();
+        for (int bot = 0; bot < 96; bot++) {
+            seen.add(BotMarketMath.humanizeAsk(5_825_734, bot));
         }
-        assertTrue(twoSig && niceHalf && threeSig && charm9s,
-                "all four styles (2-sig, nice-half, 3-sig, charm-9s) are reachable");
+        assertTrue(seen.contains(5_800_000L), "2 significant figures");
+        assertTrue(seen.contains(5_799_999L), "charm 9s");
+        assertTrue(seen.contains(5_799_000L), "charm with a .000 tail");
+        assertTrue(seen.contains(6_000_000L), "nice half");
+        assertTrue(seen.contains(5_750_000L), "nice quarter");
+        assertTrue(seen.contains(5_555_555L), "repeated digits");
+    }
+
+    @Test
+    void humanizeRepeatStyleSnapsToNearestRepdigitLandmark() {
+        // The repeated-digit style: 120k rounds to the pure repdigit, 150k crosses the ~20%
+        // midpoint to the d-then-5s landmark. Each is unique to the repeat style, so its presence
+        // in the population sweep confirms both the style and its snap boundary.
+        java.util.Set<Long> at120 = new java.util.HashSet<>();
+        java.util.Set<Long> at150 = new java.util.HashSet<>();
+        for (int bot = 0; bot < 96; bot++) {
+            at120.add(BotMarketMath.humanizeAsk(120_000, bot));
+            at150.add(BotMarketMath.humanizeAsk(150_000, bot));
+        }
+        assertTrue(at120.contains(111_111L), "120k snaps to the pure repdigit");
+        assertTrue(at150.contains(155_555L), "150k crosses to the d-then-5s landmark");
     }
 }

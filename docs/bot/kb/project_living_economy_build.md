@@ -148,8 +148,11 @@ boot-log glove factor lands ≈2x weapon avg; if far off, tune REPLACEMENT_HORIZ
 
 - **DONE (2026-07-03): human/rounded pricing (SSOT).** `BotMarketMath.humanizeAsk(price, botId)` —
   presentation-only quantizer so stall/shout asks stop reading like calculator output (5,825,734).
-  Each bot commits to ONE deterministic style (mix(botId) → 4 styles: 2-sig `5,800,000`, nice-half
-  `6,000,000`, 3-sig `5,820,000`, charm-9s `5,799,999`) so its whole shop is coherent. Prices below
+  Each bot commits to ONE deterministic style (mix(botId) → 6 styles: 2-sig `5,800,000`, charm-9s
+  `5,799,999`, charm-.000-tail `5,799,000`, nice-half `6,000,000`/`550k`, nice-quarter
+  `5,750,000`/`575k`, repeated-digits `5,555,555`/`120k→111,111`/`150k→155,555`) so its whole shop is
+  coherent. The repeat style snaps to the nearest of {d-repeated, d-then-5s, (d+1)-repeated}, which
+  puts the 111,111↔155,555 boundary at the owner's ~20% tolerance for free. Prices below
   `HUMANIZE_FLOOR=100k` pass through exact (capped consumables/rechargeables don't drift). Applied at
   the 4 final-price boundaries (belief-based ask in evaluateListings + evaluateEquipListings BEFORE
   the shopPrice hard-cap so a ceiling is never charmed back up; serviceReprice at the unit level;

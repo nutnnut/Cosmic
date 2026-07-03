@@ -325,25 +325,61 @@ final class BotMarketMath {
      * 9s). Prices below {@link #HUMANIZE_FLOOR} pass through unchanged. This is presentation only: the
      * value is still the model's, we only round HOW it is spoken — always to a nearby number, never a
      * new economic decision. Styles (from the owner's examples): 2 significant figures (5,800,000),
-     * nearest nice half (6,000,000), 3 significant figures (5,830,000), and charm 9s (5,799,999).
+     * charm 9s (5,799,999), charm with a .000 tail (5,799,000), nice half (6,000,000 / 550k), nice
+     * quarter (5,750,000 / 575k), and repeated digits (5,555,555; 120k→111,111; 150k→155,555).
      */
     static long humanizeAsk(long price, int botId) {
         if (price < HUMANIZE_FLOOR) {
             return price;
         }
         long step = 1;                       // 10^(digits-3): the base carrying 3 significant figures
+        int digits = 3;
         while (price / step >= 1000) {
             step *= 10;
+            digits++;
         }
         long t = price / step;               // in [100, 1000): the three significant figures
-        int style = (int) Math.floorMod(mix(botId, 0x505249434531L), 4L); // salt "PRICE1"
+        long twoSig = (t / 10) * 10 * step;  // rounded DOWN to two significant figures
+        int style = (int) Math.floorMod(mix(botId, 0x505249434531L), 6L); // salt "PRICE1"
         long rounded = switch (style) {
-            case 0 -> Math.round(t / 10.0) * 10 * step;   // 2 sig figs, trailing zeros
-            case 1 -> Math.round(t / 50.0) * 50 * step;   // nearest nice half (…,0 / …,5)
-            case 2 -> t * step;                           // 3 sig figs, trailing zeros
-            default -> (t / 10) * 10 * step - 1;          // charm: round down to 2 sig, then 9s
+            case 0 -> twoSig;                             // 2 sig figs, trailing zeros
+            case 1 -> twoSig - 1;                         // charm 9s: 5,799,999
+            case 2 -> twoSig - 1000;                      // charm with a .000 tail: 5,799,000
+            case 3 -> Math.round(t / 50.0) * 50 * step;   // nice half (2nd digit -> 0 / 5)
+            case 4 -> Math.round(t / 25.0) * 25 * step;   // nice quarter (2nd digit -> 0 / 25 / 5 / 75)
+            default -> nearestRepeat(price, digits, (int) (t / 100)); // repeated digits: 5,555,555
         };
         return Math.max(1, rounded);
+    }
+
+    /**
+     * Nearest "repeated-digit" landmark to {@code price}: given its digit count and leading digit d,
+     * the candidates are d-repeated (111,111), d-then-5s (155,555), and (d+1)-repeated (222,222).
+     * Snapping to the nearest puts the switch-over midway (≈20% of value) — the owner's tolerance:
+     * 120k→111,111 but 150k→155,555. A price whose lead digit is 5 collapses both charm forms onto
+     * one repdigit (5.8M → 5,555,555).
+     */
+    private static long nearestRepeat(long price, int digits, int lead) {
+        long repunit = 0;                    // {digits} ones: 111…1
+        for (int i = 0; i < digits; i++) {
+            repunit = repunit * 10 + 1;
+        }
+        long pow = 1;                        // 10^(digits-1): the leading digit's place value
+        for (int i = 1; i < digits; i++) {
+            pow *= 10;
+        }
+        long[] cands = {
+            lead * repunit,                  // d d d d …   (d-repeated)
+            lead * pow + 5 * (repunit / 10), // d 5 5 5 …   (d then 5s)
+            (lead + 1) * repunit,            // (d+1) repeated (rolls over the top)
+        };
+        long best = cands[0];
+        for (long c : cands) {
+            if (Math.abs(price - c) < Math.abs(price - best)) {
+                best = c;
+            }
+        }
+        return best;
     }
 
     // ------------------------------------------------------------------ helpers
