@@ -157,6 +157,26 @@ boot-log glove factor lands ≈2x weapon avg; if far off, tune REPLACEMENT_HORIZ
   BotMarketShoutBus (map-scoped; player entry via GeneralChatHandler branch, bot loopback at
   botSay), want/stock matching, accept-at-ask trades via tickManualTrade extension, BotPrompt
   hints. Verify: shout→trade with farming running, no dupe (gate already live).
+- **Live-round fixes (2026-07-02/03, post-S4):** three deadlock-class bugs found by watching the
+  restart funnel, each invisible without live checks:
+  1. Login market-day seed gated on `BotAutopilotManager.isActive` — always false at session
+     begin (autopilotMapId set by the FIRST decide after login) → seed silently dead (e330f616a).
+  2. `selectListings` on the bot tick thread — heavy since equips joined the shelf (repro DP +
+     farm costs per piece); walks stuttered, trips fizzled. The scheduleScrollPlan lesson,
+     RE-learned: heavy valuation NEVER on the tick thread. Plan now on DECIDE_POOL ("fm-plan"
+     tag), carried on the entry, staged with a cheap hasItem re-validate (40f0de623). Fizzled
+     trips (never reached the entrance) also no longer burn the 2-8h satiation — 10-25 min
+     retry instead ('holy' was locked out 7h by one failed walk).
+  3. **Room-roulette per-tick reroll (0a01115c6): the market deadlock.** pickRoomPortal runs
+     every TO_ROOM tick; the roulette (5e5c0d48f) rolled a fresh room each call → walk target
+     flip-flopped between 22 portals → every bot oscillated at the entrance till the watchdog
+     fizzled the trip. Two restarts: zero rooms entered, zero stalls, zero tape. RULE: a
+     function called per-tick must return a per-tick-STABLE decision — roulettes/randomness
+     bank their winner at commit time (fmRoomMapId), never re-roll in the walk loop.
+  Plus: FM trip trace behind MARKET_TX_CONSOLE (5f605f7d6 — phase transitions, setup-gate
+  reason, Fredrick outcome); LifeFactory negative-caches failed mob loads (3c094c453 — ghost
+  drop_data droppers 2230112/9101000/9410019 spammed SEVERE per equip quote; skipping verified
+  lossless, only 2 items affected, one ghost-only).
 - **DONE (2026-07-02): S4 equip market block** (commits 69f48528d..ab5c55736). Key discovery:
   the convex reproduction-cost DP already existed — `BotScrollValuer.reproductionValue`
   (restart-on-ruin, abandon-and-rebuy option; STRONGER than SoloMapling's infinite-retry
