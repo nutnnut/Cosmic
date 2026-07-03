@@ -466,7 +466,7 @@ public class BotChatManager {
     private static final String MESO_CMD_VERB = "(?:trade(?:\\s+(?:me|us))?|give(?:\\s+(?:me|us))?|gimme|pass(?:\\s+me)?)";
     private static final String TRANSFER_OWNER = "(?:(?:your|ur|my|all)\\s+)?";
     private static final String TRANSFER_RECIPIENT = "(?:(?:me|us)\\s+)?";
-    private static final String MESO_AMOUNT_TOKEN = "\\d[\\d,]*(?:\\.\\d+)?\\s*[kmb]?";
+    static final String MESO_AMOUNT_TOKEN = "\\d[\\d,]*(?:\\.\\d+)?\\s*[kmb]?";
     private static final Pattern TRADE_MESOS_COMMAND_PATTERN = Pattern.compile(
             "\\b" + MESO_CMD_VERB + "\\s+" + TRANSFER_RECIPIENT
             + "(?:(all)\\s+)?"
@@ -3141,7 +3141,7 @@ public class BotChatManager {
         return "mesos:" + parseMesoAmount(matcher.group(2));
     }
 
-    private static int parseMesoAmount(String amountToken) {
+    static int parseMesoAmount(String amountToken) {
         String normalized = amountToken.toLowerCase().replace(",", "").replaceAll("\\s+", "");
         long multiplier = 1L;
         if (!normalized.isEmpty()) {
