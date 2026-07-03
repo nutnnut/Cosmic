@@ -191,6 +191,12 @@ boot-log glove factor lands ≈2x weapon avg; if far off, tune REPLACEMENT_HORIZ
   (`shoutTradeLocked`) — a symmetric deal where I locked with terms met is guaranteed to clear, so
   a window that vanishes before I locked was a partner cancel, never a phantom clearing (no spurious
   belief/tape). Every move rides Trade's staged-debit (`setMeso` debits now) + refund-on-cancel.
+- **S3 live-round fix (2026-07-03, commit 5342622c3):** first live test = trade-request SPAM. A
+  matched shout stayed on the bus for its 3min TTL, so after a decline the bot (and every bot on
+  the map) re-matched + re-invited every tick. Fix: matcher CLAIMS (removes) the shout at commit —
+  pursued once, by one bot; a decline/timeout leaves nothing to re-match. Also drop a character's
+  shouts + pending deal on map-leave (`MapleMap.removePlayer`). RULE: a bus-polled offer that
+  triggers an action must be consumed at claim, or it re-fires every tick.
 - **S3 LIVE VERIFY (restart required):** (1) a human `S> <equip> <price>` near a bot with that
   slot want → the bot invites + buys within ~a minute, farming pauses then resumes, no dupe/loss;
   (2) bot↔bot: watch FM rooms for `S> ...` chat lines (emission) → a second bot completes the swap
