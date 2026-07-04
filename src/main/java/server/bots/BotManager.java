@@ -2289,8 +2289,8 @@ public class BotManager {
             entry.debugCommanderId = 0;
             entry.debugCommanderUntilMs = 0L;
             entry.debugCommanderFollow = false;
-            entry.followOffsetX = 0;                       // drop this bot's own formation slot
             if (wasFollowing && formerGm > 0) {
+                entry.followOffsetX = 0;                       // drop this bot's debug-follow formation slot
                 getInstance().assignDebugFollowFormation(formerGm); // re-stagger the bots still following
             }
         }
@@ -2313,6 +2313,14 @@ public class BotManager {
         for (int i = 0; i < cohort.size(); i++) {
             cohort.get(i).followOffsetX = fs.offsetFor(i, cohort.size());
         }
+    }
+
+    void activateDebugFollowFormation(BotEntry entry) {
+        if (entry == null || !isDebugCommanderFresh(entry)) {
+            return;
+        }
+        entry.debugCommanderFollow = true;
+        assignDebugFollowFormation(entry.debugCommanderId);
     }
 
     /** The bound admin commander while the binding is fresh, else null. Resolved world-wide (not just

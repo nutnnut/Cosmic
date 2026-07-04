@@ -1159,7 +1159,10 @@ public class BotChatManager {
                 maybeSuggestGearToSiblings(entry, entry.bot);
                 BotManager.getInstance().botReply(entry, BotManager.randomReply(FOLLOW_REPLIES));
                 BotPotionManager.checkPotShareOnModeStart(entry, entry.bot);
-                BotManager.after(BotManager.randMs(250, 750), () -> BotManager.getInstance().issueFollowOwner(entry));
+                BotManager.after(BotManager.randMs(250, 750), () -> {
+                    BotManager.getInstance().issueFollowOwner(entry);
+                    BotManager.getInstance().activateDebugFollowFormation(entry);
+                });
             });
         } else if (isGrindCommand(message)) {
             BotManager.after(BotManager.randMs(1500, 2000), () -> {

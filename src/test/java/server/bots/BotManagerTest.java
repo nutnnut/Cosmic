@@ -933,6 +933,66 @@ class BotManagerTest {
     }
 
     @Test
+    @SuppressWarnings("unchecked")
+    void debugFollowFormationSplitsSelfOwnedManagedBotsAcrossSameGm() throws Exception {
+        BotManager manager = BotManager.getInstance();
+        Character admin = mock(Character.class);
+        when(admin.getId()).thenReturn(506);
+
+        net.server.world.World ws = mock(net.server.world.World.class);
+        net.server.PlayerStorage ps = mock(net.server.PlayerStorage.class);
+        when(ws.getPlayerStorage()).thenReturn(ps);
+        when(ps.getCharacterById(506)).thenReturn(admin);
+
+        Character firstBot = mock(Character.class);
+        when(firstBot.getId()).thenReturn(88);
+        when(firstBot.getWorldServer()).thenReturn(ws);
+        Character secondBot = mock(Character.class);
+        when(secondBot.getId()).thenReturn(99);
+        when(secondBot.getWorldServer()).thenReturn(ws);
+
+        BotEntry first = new BotEntry(firstBot, firstBot, null);
+        BotEntry second = new BotEntry(secondBot, secondBot, null);
+
+        Map<Integer, List<BotEntry>> bots = (Map<Integer, List<BotEntry>>) field(BotManager.class, "bots").get(manager);
+        bots.put(firstBot.getId(), new CopyOnWriteArrayList<>(List.of(first)));
+        bots.put(secondBot.getId(), new CopyOnWriteArrayList<>(List.of(second)));
+        try {
+            BotManager.bindDebugCommander(first, admin);
+            BotManager.bindDebugCommander(second, admin);
+
+            manager.issueFollowOwner(first);
+            manager.activateDebugFollowFormation(first);
+            manager.issueFollowOwner(second);
+            manager.activateDebugFollowFormation(second);
+
+            assertTrue(first.debugCommanderFollow);
+            assertTrue(second.debugCommanderFollow);
+            assertEquals(BotManager.cfg.FOLLOW_STAGGER, first.followOffsetX);
+            assertEquals(-BotManager.cfg.FOLLOW_STAGGER, second.followOffsetX);
+            assertEquals(admin, manager.resolveFollowAnchor(first, firstBot));
+            assertEquals(admin, manager.resolveFollowAnchor(second, secondBot));
+        } finally {
+            bots.remove(firstBot.getId());
+            bots.remove(secondBot.getId());
+        }
+    }
+
+    @Test
+    void clearingInactiveDebugCommanderPreservesOwnedBotFormationSlot() {
+        Character owner = mock(Character.class);
+        when(owner.getId()).thenReturn(77);
+        Character bot = mock(Character.class);
+        when(bot.getId()).thenReturn(88);
+        BotEntry entry = new BotEntry(bot, owner, null);
+        entry.followOffsetX = BotManager.cfg.FOLLOW_STAGGER;
+
+        BotManager.clearDebugCommander(entry);
+
+        assertEquals(BotManager.cfg.FOLLOW_STAGGER, entry.followOffsetX);
+    }
+
+    @Test
     void shouldIgnoreCachedGrindLootInsidePassiveLootRadiusWhenNoMobTarget() {
         Character bot = mockMovingBot(new Point(100, 100), createEmptyTestMap(910000034));
         BotEntry entry = new BotEntry(bot, mock(Character.class), null);
