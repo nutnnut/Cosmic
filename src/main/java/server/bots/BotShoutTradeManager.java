@@ -230,7 +230,7 @@ public final class BotShoutTradeManager {
         if (ask <= 0) {
             return;
         }
-        ask = BotMarketMath.humanizeAsk(ask, bot.getId());
+        ask = BotMarketMath.humanizeAskRound(ask, bot.getId()); // clean k/m for the spoken price
         entry.shoutTradePartnerId = partner.getId();
         entry.shoutTradeOffer = new Offer(Kind.SELL, eq.getItemId(), 1, (int) Math.min(Integer.MAX_VALUE, ask));
         entry.shoutTradeSelling = true;
@@ -306,6 +306,18 @@ public final class BotShoutTradeManager {
             }
             InventoryManipulator.removeFromSlot(bot.getClient(), InventoryType.EQUIP,
                     eq.getPosition(), (short) 1, true);
+            // addItem is model-only — the partner's window doesn't render the piece unless we push
+            // the item-add packet (parity with BotInventoryManager's manual-trade staging). Without
+            // this the buyer saw an empty preview yet still received the item on accept.
+            bot.sendPacket(tools.PacketCreator.getTradeItemAdd((byte) 0, staged));
+            if (trade.getPartner() != null) {
+                trade.getPartner().getChr().sendPacket(tools.PacketCreator.getTradeItemAdd((byte) 1, staged));
+            }
+            // Restate the price in the trade window: the shout line scrolls away fast, so the buyer
+            // needs the agreed number where they're about to type their meso.
+            String name = ItemInformationProvider.getInstance().getName(eq.getItemId());
+            trade.chat((name != null ? name : "this") + " - "
+                    + BotMarketGrammar.mesoShort(entry.shoutTradeOffer.priceMeso()));
             return true;
         }
         int price = entry.shoutTradeOffer.priceMeso();
@@ -424,7 +436,7 @@ public final class BotShoutTradeManager {
         if (ask <= 0) {
             return;
         }
-        ask = BotMarketMath.humanizeAsk(ask, bot.getId());
+        ask = BotMarketMath.humanizeAskRound(ask, bot.getId()); // shout prices read as clean k/m
         Offer offer = new Offer(Kind.SELL, eq.getItemId(), 1, (int) Math.min(Integer.MAX_VALUE, ask));
         BotMarketShoutBus.getInstance().publish(bot.getMapId(), bot.getId(), offer, now);
         BotMarketLedger.getInstance().append(EventKind.SHOUT, offer.itemId(), 0, 1,

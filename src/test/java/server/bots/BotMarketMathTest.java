@@ -256,4 +256,18 @@ class BotMarketMathTest {
         assertTrue(at120.contains(111_111L), "120k snaps to the pure repdigit");
         assertTrue(at150.contains(155_555L), "150k crosses to the d-then-5s landmark");
     }
+
+    @Test
+    void humanizeAskRoundAlwaysLandsOnACleanThousand() {
+        // Shout prices must read as k/m — never a charm-9s or repeated-digit tail. Every bot's style
+        // must land on a round thousand (mesoShort renders k/m) across a range of raw asks.
+        long[] raws = {123_456, 5_825_734, 999_999, 1_499_000, 47_500_000, 250_001};
+        for (int bot = 0; bot < 96; bot++) {
+            for (long raw : raws) {
+                long h = BotMarketMath.humanizeAskRound(raw, bot);
+                assertEquals(0, h % 1000, "humanizeAskRound must be a round thousand: " + raw + " -> " + h);
+                assertTrue(h > 0, "positive price");
+            }
+        }
+    }
 }

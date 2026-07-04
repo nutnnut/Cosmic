@@ -119,9 +119,11 @@ final class BotFreeMarketManager {
      *  trip whose whole point is to go stand and shout-sell — rarer on a break, common on a chill day
      *  (chill already always trips, so the exit-leg stand covers it). */
     private static final double SHOUT_SELL_BREAK_TRIP_CHANCE = 0.15;
-    /** Fidget cadence while standing: a small humanlike shuffle so the bot isn't a frozen statue. */
-    private static final long SHOUT_FIDGET_MIN_MS = 4_000L;
-    private static final long SHOUT_FIDGET_MAX_MS = 11_000L;
+    /** Reposition cadence while standing: every so often the bot ambles to a NEW random spot on the
+     *  entrance floor — humanlike "move around" and, more importantly, un-bunches bots that arrive on
+     *  the same portal (owner: don't stack; pick random spots and occasionally reposition). */
+    private static final long SHOUT_REPOSITION_MIN_MS = 12_000L;
+    private static final long SHOUT_REPOSITION_MAX_MS = 30_000L;
     /** Stall slot cap (HiredMerchant.addItem refuses past 16). */
     static final int STALL_SLOT_CAP = 16;
     /** Bounded bargain purchases per trip (wallet + WTP are the real limits; this bounds dwell). */
@@ -978,11 +980,12 @@ final class BotFreeMarketManager {
     }
 
     /**
-     * Stand still at the FM entrance advertising surplus gear (owner spec: a deliberate shout-sell
-     * state so shoppers can click-invite). Walk to an uncrowded spot on the entrance floor, then hold
-     * position for a break/chill-scaled dwell while {@link BotShoutTradeManager#emitAtStand} shouts on
-     * a fast cadence and answers walk-up buyers; the odd humanlike fidget keeps it from being a statue.
-     * A trade in progress freezes the dwell (never walk off mid-sale). Then exit to out00.
+     * Stand at the FM entrance advertising surplus gear (owner spec: a deliberate shout-sell state so
+     * shoppers can click-invite). Walk to a RANDOM spot on the entrance floor (bots that arrive on the
+     * same portal must not stack — owner), hold there while {@link BotShoutTradeManager#emitAtStand}
+     * shouts on a fast cadence and answers walk-up buyers, and every so often amble to a new random
+     * spot so it moves around instead of freezing. A trade in progress freezes the dwell (never walk
+     * off mid-sale). Then exit to out00.
      */
     private static boolean tickShout(BotEntry entry, Character bot, boolean runAiTick, long now) {
         if (bot.getMapId() != FM_ENTRANCE) {
@@ -1001,46 +1004,50 @@ final class BotFreeMarketManager {
             }
             return true;
         }
-        // Walk to the chosen uncrowded stand spot (same watchdog shape as the Fredrick/stall walk).
-        if (entry.fmStandSpot == null) {
-            entry.fmStandSpot = pickUncrowdedStandSpot(bot);
-            entry.fmStandBestDist = Integer.MAX_VALUE;
-            entry.fmStandStuckSinceMs = now;
-            entry.fmShoutUntilMs = 0L;
-        }
-        Point stand = entry.fmStandSpot;
-        if (stand != null) {
-            int dist = Math.abs(bot.getPosition().x - stand.x) + Math.abs(bot.getPosition().y - stand.y);
-            if (entry.inAir || entry.climbing || dist > 24) {
-                if (dist < entry.fmStandBestDist - 4) {
-                    entry.fmStandBestDist = dist;
-                    entry.fmStandStuckSinceMs = now;
-                }
-                if (now - entry.fmStandStuckSinceMs > PLACE_WALK_STUCK_MS) {
-                    entry.fmStandSpot = new Point(bot.getPosition()); // can't reach it — settle here
-                    stand = entry.fmStandSpot;             // (not null: avoids a re-pick loop next tick)
-                } else {
-                    BotTravelManager.pinMoveTarget(entry, stand);
-                    BotTravelManager.movementStep.step(entry, stand, runAiTick);
-                    entry.fmErrandProgress.touch(now);
-                    return true;
-                }
-            }
-        }
-        BotTravelManager.clearMoveTargetPin(entry);
-        // Settled: arm the dwell budget once (break short, chill lingers), and shout soon after.
+        // Arm the dwell budget + first spot ONCE (break short, chill lingers).
         if (entry.fmShoutUntilMs == 0L) {
             long base = BotManager.randMs((int) SHOUT_STAND_MIN_MS, (int) SHOUT_STAND_MAX_MS);
             long dwell = entry.chillSession ? (long) SHOUT_STAND_CHILL_FACTOR * base : base;
             entry.fmShoutUntilMs = now + dwell;
             entry.fmPhaseDeadlineAtMs = now + dwell + PHASE_DEADLINE_MS; // don't let the watchdog cut it short
             entry.nextShoutEmitMs = now + BotManager.randMs(2_000, 8_000); // first shout shortly after settling
-            entry.fmFidgetAtMs = now + BotManager.randMs((int) SHOUT_FIDGET_MIN_MS, (int) SHOUT_FIDGET_MAX_MS);
+            entry.fmFidgetAtMs = now + BotManager.randMs((int) SHOUT_REPOSITION_MIN_MS, (int) SHOUT_REPOSITION_MAX_MS);
+            entry.fmStandSpot = pickStandSpot(bot);
+            entry.fmStandBestDist = Integer.MAX_VALUE;
+            entry.fmStandStuckSinceMs = now;
             reply.accept(entry, "gonna hang around the market a bit, got some gear to sell");
         }
+        Point stand = entry.fmStandSpot;
+        boolean settled = stand != null && !entry.inAir && !entry.climbing
+                && Math.abs(bot.getPosition().x - stand.x) + Math.abs(bot.getPosition().y - stand.y) <= 24;
+        // Occasionally amble to a new random spot (move around + un-bunch), leaving time to settle.
+        if (settled && now >= entry.fmFidgetAtMs && now < entry.fmShoutUntilMs - 6_000L) {
+            entry.fmStandSpot = pickStandSpot(bot);
+            entry.fmStandBestDist = Integer.MAX_VALUE;
+            entry.fmStandStuckSinceMs = now;
+            entry.fmFidgetAtMs = now + BotManager.randMs((int) SHOUT_REPOSITION_MIN_MS, (int) SHOUT_REPOSITION_MAX_MS);
+            stand = entry.fmStandSpot;
+            settled = false;
+        }
+        // Walk toward the (possibly new) spot; give up and settle in place if it can't be reached.
+        if (stand != null && !settled) {
+            int dist = Math.abs(bot.getPosition().x - stand.x) + Math.abs(bot.getPosition().y - stand.y);
+            if (dist < entry.fmStandBestDist - 4) {
+                entry.fmStandBestDist = dist;
+                entry.fmStandStuckSinceMs = now;
+            }
+            if (now - entry.fmStandStuckSinceMs > PLACE_WALK_STUCK_MS) {
+                entry.fmStandSpot = new Point(bot.getPosition()); // can't reach it — settle here
+            } else {
+                BotTravelManager.pinMoveTarget(entry, stand);
+                BotTravelManager.movementStep.step(entry, stand, runAiTick);
+                entry.fmErrandProgress.touch(now);
+                return true;
+            }
+        }
+        BotTravelManager.clearMoveTargetPin(entry);
         entry.fmErrandProgress.touch(now);
         BotShoutTradeManager.emitAtStand(entry, bot, now);
-        maybeFidget(entry, bot, stand, now, runAiTick);
         if (now >= entry.fmShoutUntilMs) {
             entry.fmStandSpot = null;
             advancePhase(entry, PHASE_EXIT, now);
@@ -1048,58 +1055,35 @@ final class BotFreeMarketManager {
         return true;
     }
 
-    /** A small humanlike shuffle around the stand spot so the bot isn't a frozen statue (owner:
-     *  "random fidgets allowed"). Nudges relative to the FIXED stand point so it never drifts away. */
-    private static void maybeFidget(BotEntry entry, Character bot, Point stand, long now, boolean runAiTick) {
-        if (stand == null || now < entry.fmFidgetAtMs) {
-            return;
-        }
-        entry.fmFidgetAtMs = now + BotManager.randMs((int) SHOUT_FIDGET_MIN_MS, (int) SHOUT_FIDGET_MAX_MS);
-        int dx = ThreadLocalRandom.current().nextBoolean() ? 22 : -22;
-        Point nudge = BotPhysicsEngine.pointBelowIndexed(bot.getMap(), new Point(stand.x + dx, stand.y - 30));
-        if (nudge != null && Math.abs(nudge.y - stand.y) <= 40) {
-            BotTravelManager.movementStep.step(entry, nudge, runAiTick);
-        }
-    }
-
     /**
-     * An uncrowded ground spot on the entrance floor strip the bot is standing on: the slot column
-     * (every {@link #STALL_SPACING_PX}, same ground-snap + same-level guard as {@link #pickStallSpot})
-     * that maximizes distance to the nearest other player, kept clear of portals — so shoppers can
-     * actually click the bot without it overlapping the crowd. Falls back to standing put.
+     * A RANDOM reachable ground spot on the entrance floor strip (columns every
+     * {@link #STALL_SPACING_PX}, same ground-snap + same-level guard as {@link #pickStallSpot}, kept
+     * clear of portals). Random rather than a fixed "best" so bots arriving on the same portal spread
+     * out instead of all converging on one spot (owner). Falls back to a one-column step off the
+     * arrival point (never the portal itself), then to standing put.
      */
-    private static Point pickUncrowdedStandSpot(Character bot) {
+    private static Point pickStandSpot(Character bot) {
         server.maps.MapleMap map = bot.getMap();
-        if (map == null || map.getFootholds() == null) {
-            return bot.getPosition();
-        }
         Point pos = bot.getPosition();
-        List<Character> players = map.getAllPlayers();
-        Point best = null;
-        double bestScore = -1;
-        // (spots below are fresh Points from pointBelowIndexed; the fallback copies pos)
-        for (int step = 0; step <= MAX_STALL_SLOT_STEPS; step++) {
-            for (int side = 0; side < (step == 0 ? 1 : 2); side++) {
-                int dir = side == 0 ? 1 : -1;
+        if (map == null || map.getFootholds() == null) {
+            return new Point(pos);
+        }
+        List<Point> candidates = new ArrayList<>();
+        for (int step = 1; step <= MAX_STALL_SLOT_STEPS; step++) {
+            for (int dir : new int[] {1, -1}) {
                 Point spot = BotPhysicsEngine.pointBelowIndexed(map,
                         new Point(pos.x + dir * step * STALL_SPACING_PX, pos.y - 30));
-                if (spot == null || Math.abs(spot.y - pos.y) > 60 || nearAnyPortal(map, spot)) {
-                    continue; // off the floor strip, or a doorway to keep clear
-                }
-                double minDist = Double.MAX_VALUE;
-                for (Character c : players) {
-                    if (c.getId() != bot.getId()) {
-                        minDist = Math.min(minDist, c.getPosition().distance(spot));
-                    }
-                }
-                double score = minDist == Double.MAX_VALUE ? 1e9 : minDist;
-                if (score > bestScore) {
-                    bestScore = score;
-                    best = spot;
+                if (spot != null && Math.abs(spot.y - pos.y) <= 60 && !nearAnyPortal(map, spot)) {
+                    candidates.add(spot);
                 }
             }
         }
-        return best != null ? best : new Point(pos);
+        if (!candidates.isEmpty()) {
+            return candidates.get(ThreadLocalRandom.current().nextInt(candidates.size()));
+        }
+        int dir = ThreadLocalRandom.current().nextBoolean() ? 1 : -1; // no clear column: at least step off the portal
+        Point off = BotPhysicsEngine.pointBelowIndexed(map, new Point(pos.x + dir * STALL_SPACING_PX, pos.y - 30));
+        return off != null && Math.abs(off.y - pos.y) <= 60 ? off : new Point(pos);
     }
 
     /**

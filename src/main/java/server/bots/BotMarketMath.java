@@ -353,6 +353,34 @@ final class BotMarketMath {
     }
 
     /**
+     * Like {@link #humanizeAsk} but restricted to the styles that always land on a round thousand/
+     * million so the value renders as a clean {@code k}/{@code m} string ({@code BotMarketGrammar.
+     * mesoShort}) — no charm-9s, no repeated-digit tails. Shout trades speak prices out loud and the
+     * owner wants only k/m there. Keeps a per-bot deterministic style (2-sig / nice-half / nice-quarter)
+     * for coherence; sub-floor prices snap to the nearest thousand rather than passing through raw.
+     */
+    static long humanizeAskRound(long price, int botId) {
+        if (price < HUMANIZE_FLOOR) {
+            return Math.max(1000, Math.round(price / 1000.0) * 1000);
+        }
+        long step = 1;
+        int digits = 3;
+        while (price / step >= 1000) {
+            step *= 10;
+            digits++;
+        }
+        long t = price / step;
+        long twoSig = (t / 10) * 10 * step;
+        int style = (int) Math.floorMod(mix(botId, 0x505249434532L), 3L); // salt "PRICE2"
+        long rounded = switch (style) {
+            case 0 -> twoSig;                            // 2 sig figs (5,800,000)
+            case 1 -> Math.round(t / 50.0) * 50 * step;  // nice half (6,000,000 / 5,500,000)
+            default -> Math.round(t / 25.0) * 25 * step; // nice quarter (5,750,000)
+        };
+        return Math.max(1000, rounded);
+    }
+
+    /**
      * Nearest "repeated-digit" landmark to {@code price}: given its digit count and leading digit d,
      * the candidates are d-repeated (111,111), d-then-5s (155,555), and (d+1)-repeated (222,222).
      * Snapping to the nearest puts the switch-over midway (≈20% of value) — the owner's tolerance:
