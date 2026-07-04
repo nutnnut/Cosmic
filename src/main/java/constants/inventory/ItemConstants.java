@@ -161,6 +161,24 @@ public final class ItemConstants {
         return scrollId >= 2049100 && scrollId <= 2049103;
     }
 
+    /**
+     * Whether {@code scrollid} may be applied to {@code itemid} by the default category rule: the
+     * scroll's category digits {@code (scrollid/100)%100} match the equip's {@code (itemid/10000)%100}.
+     * Generic accessory scrolls ({@code scrollid/100 == 20492}) are the one special case — they map
+     * onto ring/pendant/belt via the STR-100 accessory scroll ids. Shared SSOT for the player
+     * {@code ScrollHandler} and the bot scroll planner (does NOT consult a scroll's req list).
+     */
+    public static boolean canScroll(int scrollid, int itemid) {
+        int sid = scrollid / 100;
+        switch (sid) {
+            case 20492: // scroll for accessory (pendant, belt, ring)
+                return canScroll(ItemId.RING_STR_100_SCROLL, itemid) || canScroll(ItemId.DRAGON_STONE_SCROLL, itemid)
+                        || canScroll(ItemId.BELT_STR_100_SCROLL, itemid);
+            default:
+                return (scrollid / 100) % 100 == (itemid / 10000) % 100;
+        }
+    }
+
     public static boolean isRateCoupon(int itemId) {
         int itemType = itemId / 1000;
         return itemType == 5211 || itemType == 5360;

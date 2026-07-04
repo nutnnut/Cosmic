@@ -1332,6 +1332,33 @@ final class BotFreeMarketManager {
                 return; // not wearable / no upgrade / priced above its combat worth to this bot
             }
             gearUpgrade = true;
+        } else if (psi.getItem().getItemId() / 10000 == BotScrollManager.SCROLL_ITEM_PREFIX) {
+            // Scroll demand: like the equip branch, a fresh scroll market can't clear on belief alone.
+            // Buy under a real willingness-to-pay ceiling = min over positive values of the combat-demand
+            // worth and the replacement (obtain) cost. When a belief exists it still vetoes overpaying via
+            // the margin check; with no belief the ceiling alone decides — which is what lets it clear.
+            int scrollId = psi.getItem().getItemId();
+            double ceiling = Double.POSITIVE_INFINITY;
+            double combat = BotScrollManager.scrollCombatCeilingMeso(scrollId);
+            if (combat > 0) {
+                ceiling = combat;
+            }
+            double replacement = BotScrollManager.scrollMarketValueMeso(bot, scrollId);
+            if (replacement > 0 && replacement < ceiling) {
+                ceiling = replacement;
+            }
+            // Ceiling is PER-UNIT; psi.getPrice() is the whole bundle — compare the unit ask
+            // (the wallet check below still pays the full bundle price).
+            if (!Double.isFinite(ceiling) || unitAsk > ceiling) {
+                return; // no ceiling, or priced above what the scroll is worth to this bot
+            }
+            double perceived = book.perceivedPrice(key, now);
+            if (perceived > 0) {
+                double margin = BotMarketMath.openingMargin(0.5, book.privateConfidence(key, now));
+                if (unitAsk > perceived * (1.0 - Math.min(0.5, margin))) {
+                    return; // belief still vetoes overpaying above the bot's own ask floor
+                }
+            }
         } else {
             double perceived = book.perceivedPrice(key, now);
             if (perceived <= 0) {

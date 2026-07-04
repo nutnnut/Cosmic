@@ -192,6 +192,15 @@ boot-log glove factor lands ≈2x weapon avg; if far off, tune REPLACEMENT_HORIZ
 
 ## Pending / next
 
+- **Scroll audit 2026-07-04** ([[kb_bot_scroll_special_scrolls_and_market_feedback]]): 8 ranked
+  gaps, **1-6 FIXED same day** (shared ItemConstants.canScroll for 20492xx accessory scrolls;
+  scrollPriceMeso blends live consensus for ALL scrolls — shop price caps, glut passes through;
+  belief-less scroll WTP in maybeBargainBuy via min(scrollCombatCeilingMeso, replacement) per-unit;
+  applyCostMeso zeroes opportunity cost for tradeBlocked scrolls at all 3 sites; marketStatValue
+  offense = bestRoleWorth not summed mains; scrollsByCategory obtainable-only). Still open:
+  reqRUC unenforced (gap 7), self-scroll DP gain axis offense-only so pure-defense specials never
+  fire (gap 8). Needs restart + live verify (scroll bargain-buys, consensus-priced apply costs).
+
 - **S2 live-verified (2026-07-03):** 8 stalls × 16 slots clustered, Fredrick collect→publish
   working, 31 banded equip listings + 3 real banded equip STALL_SALEs on the tape (prior session).
 - **DONE (2026-07-03): S2 follow-ups — live-stall restock/reprice service + stall-name corpus**

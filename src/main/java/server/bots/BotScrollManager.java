@@ -1013,7 +1013,7 @@ final class BotScrollManager {
             // already handles the CURSE outcome: item removed + unequipped).
             options.add(new BotScrollPlanner.ScrollOption(sid, scrollName(ii, sid),
                     effectiveSuccessPct(success) / 100.0,
-                    cursed / 100.0, gain, SCROLL_OPPORTUNITY_FRACTION * scrollPriceMeso(pc, sid)));
+                    cursed / 100.0, gain, applyCostMeso(pc, sid)));
         }
         return options;
     }
@@ -1023,7 +1023,9 @@ final class BotScrollManager {
         if (reqs != null && !reqs.isEmpty()) {
             return reqs.contains(equipId);
         }
-        return (scrollId / 100) % 100 == (equipId / 10000) % 100;
+        // Shared category rule (incl. the 20492xx accessory-scroll special case) — bots use the same
+        // applicability check ScrollHandler enforces for players.
+        return ItemConstants.canScroll(scrollId, equipId);
     }
 
     private static Item findScroll(Character bot, int itemId) {
@@ -1061,15 +1063,17 @@ final class BotScrollManager {
                 st.getOrDefault(statKey(ms[0]), 0), st.getOrDefault(statKey(ms[1]), 0));
     }
 
-    /** Job-agnostic best-buyer worth of the stats a scroll grants, for market/trade pricing: attack at
-     *  ATT_WEIGHT, magic attack at MATK_WEIGHT, every base stat at its main weight (so an INT scroll keeps
-     *  a mage's value even when a warrior bot holds it), plus the small survival terms. SSOT weights, no
-     *  job lookup — the counterpart to {@link #offenseValueFromStats} for a tradeable economy. */
+    /** Job-agnostic best-buyer worth of the stats a scroll grants, for market/trade pricing: the offense
+     *  is the BEST-USE worth across every class camp ({@link #bestRoleWorth}) — a multi-stat scroll is
+     *  priced at the single class that gains most from it, never the sum of all four mains (e.g. Dragon
+     *  Stone's +15 all stats scores ~19.5 at its best buyer, not 60). Single-stat scrolls are unchanged
+     *  (sum == max). Plus the small survival terms. SSOT weights, no bot lookup — the counterpart to
+     *  {@link #offenseValueFromStats} for a tradeable economy. */
     static double marketStatValue(Map<String, Integer> st) {
-        double offense = ATT_WEIGHT * st.getOrDefault("PAD", 0)
-                + MATK_WEIGHT * st.getOrDefault("MAD", 0)
-                + MAIN_STAT_WEIGHT * (st.getOrDefault("STR", 0) + st.getOrDefault("DEX", 0)
-                        + st.getOrDefault("INT", 0) + st.getOrDefault("LUK", 0));
+        double offense = bestRoleWorth(
+                st.getOrDefault("PAD", 0), st.getOrDefault("MAD", 0),
+                st.getOrDefault("STR", 0), st.getOrDefault("DEX", 0),
+                st.getOrDefault("INT", 0), st.getOrDefault("LUK", 0));
         return offense + survivalValueFromStats(st);
     }
 
@@ -1109,9 +1113,13 @@ final class BotScrollManager {
      *  slot count alone. */
     static final double SCROLL_HEADROOM_FRACTION = 0.5;
 
-    /** Usable catalog scrolls per equip category ((equipId/10000)%100), filtered by the same
-     *  rules {@link #buildOptions} applies to owned scrolls: no meta scrolls (clean slate /
-     *  modifier / white), no boom risk, positive success. Built once from the item catalog. */
+    /** Usable, OBTAINABLE catalog scrolls per equip category ((equipId/10000)%100), filtered by the
+     *  same rules {@link #buildOptions} applies to owned scrolls: no meta scrolls (clean slate /
+     *  modifier / white), no boom risk, positive success. Additionally obtainable-only — a scroll with
+     *  no legit shop row and no dropper is skipped, so an unbuyable/undroppable scroll (e.g. Dragon
+     *  Stone) never prices market reproduction curves at the fake {@link #DEFAULT_SCROLL_COST_MESO}
+     *  default and flattens a slot's band curve. Owned-scroll play ({@link #buildOptions}) is
+     *  unaffected: it scans the bag directly, not this index. Built once from the item catalog. */
     private static volatile Map<Integer, List<Integer>> scrollsByCategory;
 
     /** Boot warm hook (BotGrindAdvisor.warmGrindData): build the catalog-scroll index off-thread.
@@ -1140,6 +1148,11 @@ final class BotScrollManager {
             if (st == null || st.getOrDefault("success", 0) <= 0 || st.getOrDefault("cursed", 0) > 0) {
                 continue;
             }
+            // Obtainable-only: a scroll no shop legitimately sells and no mob drops can't set a real
+            // reproduction cost, so it must not seed the market curves (see field javadoc).
+            if (shopPrices().get(sid) == null && bestDropChance(sid) <= 0) {
+                continue;
+            }
             List<Integer> reqs = ii.getScrollReqs(sid);
             if (reqs != null && !reqs.isEmpty()) {
                 Set<Integer> cats = new HashSet<>();
@@ -1148,6 +1161,13 @@ final class BotScrollManager {
                 }
                 for (int cat : cats) {
                     m.computeIfAbsent(cat, k -> new ArrayList<>()).add(sid);
+                }
+            } else if (sid / 100 == 20492) {
+                // Generic accessory scrolls (no req list) apply to ring/pendant/belt — bucket into all
+                // three, derived from the same accessory-scroll ids ItemConstants.canScroll dispatches to.
+                for (int accScroll : new int[]{ItemId.RING_STR_100_SCROLL, ItemId.DRAGON_STONE_SCROLL,
+                        ItemId.BELT_STR_100_SCROLL}) {
+                    m.computeIfAbsent((accScroll / 100) % 100, k -> new ArrayList<>()).add(sid);
                 }
             } else {
                 m.computeIfAbsent((sid / 100) % 100, k -> new ArrayList<>()).add(sid);
@@ -1444,22 +1464,46 @@ final class BotScrollManager {
         return m;
     }
 
-    /** Meso price of a scroll = MIN over sources: cheapest NPC-shop price, else its drop-farm cost
-     *  (rarity→meso). Falls back to a flat default only when it is neither shop-sold nor dropped. */
+    /** Meso price of a scroll, blending the live market consensus so scroll USE-cost tracks the tape
+     *  (a glut lowers apply-cost → usage rises; scarcity raises it). Chaos/White: max(10M cold-market
+     *  floor, consensus). Shop-sold: min(NPC shop price, consensus) when there IS a consensus — the
+     *  NPC's infinite supply caps the price, but a glut trading below shop passes through; else the
+     *  shop price. Not shop-sold: the consensus when there is one, else the drop-farm cost (rarity→meso),
+     *  else a flat default. {@link BotMarketConsensus#consensus} returns 0 with no evidence — safe to
+     *  branch on. */
     private static double scrollPriceMeso(ProducerCombat pc, int scrollId) {
+        double consensus = BotMarketConsensus.getInstance().consensus(BotMarketMath.priceKey(scrollId, 0));
         // Chaos/White now have real consumption (chaos gambles, white protection), so the live
         // market consensus prices them; the old 10M stopgap survives only as a cold-market floor
         // until the tape has clearings.
         if (ItemConstants.isChaosScroll(scrollId) || scrollId == ItemId.WHITE_SCROLL) {
-            return Math.max(10_000_000.0,
-                    BotMarketConsensus.getInstance().consensus(BotMarketMath.priceKey(scrollId, 0)));
+            return Math.max(10_000_000.0, consensus);
         }
         Integer price = shopPrices().get(scrollId);
         if (price != null) {
-            return price;
+            return consensus > 0 ? Math.min(price, consensus) : price;
+        }
+        if (consensus > 0) {
+            return consensus;
         }
         double farm = farmingCostMeso(pc, scrollId);
         return Double.isFinite(farm) ? farm : DEFAULT_SCROLL_COST_MESO;
+    }
+
+    /** Per-apply opportunity cost of USING one scroll: {@link #SCROLL_OPPORTUNITY_FRACTION} of its
+     *  market price, EXCEPT a tradeBlocked scroll (e.g. Dragon Stone, [4yrAnniv]) forgoes no sale —
+     *  it can't be sold/listed/traded — so consuming one costs no opportunity. The reproduction/value
+     *  curves keep the FULL price (remaking one still costs effort); only this action cost is zeroed.
+     *  {@code isDropRestricted} is guarded for WZ-less unit tests (treat as tradeable on failure). */
+    private static double applyCostMeso(ProducerCombat pc, int sid) {
+        try {
+            if (ItemInformationProvider.getInstance().isDropRestricted(sid)) {
+                return 0.0;
+            }
+        } catch (RuntimeException e) {
+            // WZ unavailable (tests) — treat as tradeable, keep the normal opportunity cost.
+        }
+        return SCROLL_OPPORTUNITY_FRACTION * scrollPriceMeso(pc, sid);
     }
 
     /** USE-bag shelf valuation hook: kept scrolls should be protected by the same market/farm value
@@ -1852,7 +1896,7 @@ final class BotScrollManager {
         Map<String, Integer> st = ii.getEquipStats(chaos.getItemId());
         double p = effectiveSuccessPct(st == null ? 60 : st.getOrDefault("success", 60)) / 100.0;
         ProducerCombat pc = resolveProducerCombat(entry, bot);
-        double cost = SCROLL_OPPORTUNITY_FRACTION * scrollPriceMeso(pc, chaos.getItemId());
+        double cost = applyCostMeso(pc, chaos.getItemId());
         int range = YamlConfig.config.server.CHSCROLL_STAT_RANGE;
         double appetite = (bot.getId() * 2654435761L >>> 24 & 0xFF) / 255.0;
         double required = cost * (0.3 - 0.6 * appetite);
@@ -1995,7 +2039,7 @@ final class BotScrollManager {
                 - q.bandCurve().applyAsDouble(q.band());
         ProducerCombat pc = resolveProducerCombat(entry, bot);
         return (1.0 - p) * p * Math.max(0, marginal)
-                > SCROLL_OPPORTUNITY_FRACTION * scrollPriceMeso(pc, ItemId.WHITE_SCROLL);
+                > applyCostMeso(pc, ItemId.WHITE_SCROLL);
     }
 
     /**
