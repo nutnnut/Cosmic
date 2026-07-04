@@ -225,6 +225,13 @@ public class Trade {
             items.add(item);
         }
 
+        // Broadcast the staged item to both windows here, mirroring setMeso — so every caller (player
+        // handler and bot trade paths alike) shares one source of truth instead of re-sending the
+        // packet itself.
+        chr.sendPacket(PacketCreator.getTradeItemAdd((byte) 0, item));
+        if (partner != null) {
+            partner.getChr().sendPacket(PacketCreator.getTradeItemAdd((byte) 1, item));
+        }
         return true;
     }
 

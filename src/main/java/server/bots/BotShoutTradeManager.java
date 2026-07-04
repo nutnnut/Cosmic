@@ -305,14 +305,7 @@ public final class BotShoutTradeManager {
                 return false;
             }
             InventoryManipulator.removeFromSlot(bot.getClient(), InventoryType.EQUIP,
-                    eq.getPosition(), (short) 1, true);
-            // addItem is model-only — the partner's window doesn't render the piece unless we push
-            // the item-add packet (parity with BotInventoryManager's manual-trade staging). Without
-            // this the buyer saw an empty preview yet still received the item on accept.
-            bot.sendPacket(tools.PacketCreator.getTradeItemAdd((byte) 0, staged));
-            if (trade.getPartner() != null) {
-                trade.getPartner().getChr().sendPacket(tools.PacketCreator.getTradeItemAdd((byte) 1, staged));
-            }
+                    eq.getPosition(), (short) 1, true); // trade.addItem broadcasts the piece to both windows
             // Restate the price in the trade window: the shout line scrolls away fast, so the buyer
             // needs the agreed number where they're about to type their meso.
             String name = ItemInformationProvider.getInstance().getName(eq.getItemId());

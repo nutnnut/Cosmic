@@ -869,14 +869,10 @@ class BotInventoryManager {
                 tradeItem.setPosition((short) (idx + 1)); // trade-window slot 1-9
                 tradeItem.setQuantity(tradeQty);
 
-                if (trade.addItem(tradeItem)) {
+                if (trade.addItem(tradeItem)) { // addItem broadcasts to both windows
                     rememberTradeWindowItemForRestore(entry, item, tradeItem);
                     InventoryManipulator.removeFromSlot(bot.getClient(),
                             invType, item.getPosition(), tradeQty, false);
-                    bot.sendPacket(PacketCreator.getTradeItemAdd((byte) 0, tradeItem));
-                    if (trade.getPartner() != null) {
-                        trade.getPartner().getChr().sendPacket(PacketCreator.getTradeItemAdd((byte) 1, tradeItem));
-                    }
                 }
             } finally {
                 inv.unlockInventory();

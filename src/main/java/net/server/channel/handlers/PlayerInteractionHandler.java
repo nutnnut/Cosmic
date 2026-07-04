@@ -543,13 +543,8 @@ public final class PlayerInteractionHandler extends AbstractPacketHandler {
                             tradeItem.setQuantity(quantity);
                             tradeItem.setPosition(targetSlot);
 
-                            if (trade.addItem(tradeItem)) {
+                            if (trade.addItem(tradeItem)) { // addItem broadcasts to both windows
                                 InventoryManipulator.removeFromSlot(c, ivType, item.getPosition(), quantity, true);
-
-                                trade.getChr().sendPacket(PacketCreator.getTradeItemAdd((byte) 0, tradeItem));
-                                if (trade.getPartner() != null) {
-                                    trade.getPartner().getChr().sendPacket(PacketCreator.getTradeItemAdd((byte) 1, tradeItem));
-                                }
                             }
                         } catch (Exception e) {
                             log.warn("Chr {} tried to add {}x {} in trade (slot {}), then exception occurred", chr, ii.getName(item.getItemId()), item.getQuantity(), targetSlot, e);
