@@ -2039,6 +2039,7 @@ class BotInventoryManager {
         List<Item> ownAmmo = new ArrayList<>();
         List<Item> otherAmmo = new ArrayList<>();
         List<Item> buffs = new ArrayList<>();
+        List<Item> returnScrolls = new ArrayList<>();
         List<Item> shelf = new ArrayList<>(); // surplus ammo, misc -> kept unless cramped
 
         for (Item item : all) {
@@ -2058,6 +2059,8 @@ class BotInventoryManager {
                 allCure.add(item);
             } else if (isBuffConsumable(id)) {
                 buffs.add(item);
+            } else if (BotShopManager.isReturnScroll(id)) {
+                returnScrolls.add(item);
             } else {
                 shelf.add(item); // uncategorized -> kept unless cramped
             }
@@ -2065,6 +2068,7 @@ class BotInventoryManager {
 
         classifyRecoveryRunway(recovery, out, shelf);
         classifyOtherAmmoReserve(otherAmmo, out, shelf);
+        classifyReturnScrollRunway(returnScrolls, out, shelf);
 
         // RUNWAY: a little all-cure insurance; surplus to the shelf. (Not resupplied -> no buy loop.)
         allCure.sort(Comparator.comparingInt(Item::getQuantity).reversed());
@@ -2097,6 +2101,24 @@ class BotInventoryManager {
                 out.put(it, new UseClass(UseTier.RUNWAY, 0, 0, "recovery-runway"));
                 if (BotPotionManager.healsHp(fx)) hp += it.getQuantity();
                 if (BotPotionManager.healsMp(fx)) mp += it.getQuantity();
+            } else {
+                shelf.add(it);
+            }
+        }
+    }
+
+    // Town-return scrolls the bot resupplies at shops: reserve up to the buy target so a cramped
+    // trip never sheds scrolls the bot would immediately rebuy (buy/sell loop). Mirrors the
+    // recovery/ammo runways; the target is BotShopManager.returnScrollReserveTarget() (SSOT with the
+    // buy logic). Surplus beyond the target drops to the shelf and sells normally under pressure.
+    private static void classifyReturnScrollRunway(List<Item> returnScrolls, Map<Item, UseClass> out, List<Item> shelf) {
+        returnScrolls.sort(Comparator.comparingInt(Item::getQuantity).reversed());
+        int target = BotShopManager.returnScrollReserveTarget();
+        int kept = 0;
+        for (Item it : returnScrolls) {
+            if (kept < target) {
+                out.put(it, new UseClass(UseTier.RUNWAY, 0, 0, "return-scroll-runway"));
+                kept += it.getQuantity();
             } else {
                 shelf.add(it);
             }
