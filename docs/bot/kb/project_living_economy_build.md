@@ -177,6 +177,18 @@ boot-log glove factor lands ≈2x weapon avg; if far off, tune REPLACEMENT_HORIZ
   the band → curve). Scroll-gain valuation (`marketStatValue(Map)`) and the job-aware combat path
   (`offenseValue`) are untouched. Needs a restart to see live; 32 economy tests green (pure, can't
   exercise the WZ-backed quote — verify live that the Hall Staffs re-rank by matk).
+- **DONE (2026-07-04): UNIFIED per-role scorer + best-use market valuation.** Folded self- and market
+  valuation onto ONE weight table via `offenseCore(mage, watk, matk, main, sec)` = camp-attack (matk·1
+  for mages else watk·5) + main·1.0 + secondary·0.3, role ([main,sec],mage) from `mainSecondary(jobId)`
+  (the AP-build SSOT). `offenseValue`/`offenseValueFromStats` refactored onto it (self → bot's job).
+  Market `equipMarketWorth`: a WEAPON is camp-locked → role from `weaponRoleJob(weaponType)` (staff→
+  magician, bow→bowman, claw/dagger→thief, knuckle→brawler, gun→gunslinger, else warrior); ARMOR/
+  ACCESSORY is worn by all → `bestRoleWorth` = MAX over the 4 class camps {100/200/300/400}, so a
+  multi-job piece prices at the class it serves BEST, never a blend (owner spec: +10STR/+12DEX/+10INT/
+  +10LUK → bowman 12+10·0.3=15; +1watk/+4matk → physical 1·5=5, not 5+4=9). `bestRoleWorth`
+  package-visible + 2 pure tests (BotScrollManagerTest). Weights unchanged (matk 1.0 vs watk 5.0
+  asymmetry deliberate; ACC excluded — owned by the aspirational-DPS model). 40 tests green; restart to
+  verify live.
 
 ## Pending / next
 

@@ -42,4 +42,12 @@ class BotScrollManagerTest {
         assertTrue(BotScrollManager.marketStatValue(Map.of("PAD", 2))
                 > BotScrollManager.marketStatValue(Map.of("DEX", 2)));
     }
+
+    @Test
+    void bestRoleWorthValuesAMultiJobPieceAtItsBestClass() {
+        // Accessory +10STR/+12DEX/+10INT/+10LUK -> a bowman wears it best: DEX(12)*1 + STR(10)*0.3.
+        assertEquals(12 + 10 * 0.3, BotScrollManager.bestRoleWorth(0, 0, 10, 12, 10, 10), 1e-9);
+        // +1watk/+4matk -> a physical job wears it (1*5) over a mage (4*1); never summed to 9.
+        assertEquals(5.0, BotScrollManager.bestRoleWorth(1, 4, 0, 0, 0, 0), 1e-9);
+    }
 }

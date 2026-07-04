@@ -1007,23 +1007,28 @@ final class BotScrollManager {
 
     // ---- Transparent job-weighted offense value (v1 stand-in for the equip optimizer) ----
 
+    /** The one offense weighting shared by the bot's own keep/upgrade decisions AND market pricing:
+     *  the class camp's attack stat (matk for mages else watk) + main·{@link #MAIN_STAT_WEIGHT} +
+     *  secondary·{@link #SECONDARY_STAT_WEIGHT}. The role ([main, secondary], mage flag) is the only
+     *  input that differs — the bot's job for self-valuation, the item's implied job for the market. */
+    private static double offenseCore(boolean mage, int watk, int matk, int mainStat, int secondaryStat) {
+        return (mage ? MATK_WEIGHT * matk : ATT_WEIGHT * watk)
+                + MAIN_STAT_WEIGHT * mainStat
+                + SECONDARY_STAT_WEIGHT * secondaryStat;
+    }
+
     static double offenseValue(Character bot, Equip eq) {
         boolean[] mage = new boolean[1];
         char[] ms = mainSecondary(jobId(bot), mage);
-        double att = mage[0] ? MATK_WEIGHT * eq.getMatk() : ATT_WEIGHT * eq.getWatk();
-        return att
-                + MAIN_STAT_WEIGHT * statOfEquip(eq, ms[0])
-                + SECONDARY_STAT_WEIGHT * statOfEquip(eq, ms[1]);
+        return offenseCore(mage[0], eq.getWatk(), eq.getMatk(),
+                statOfEquip(eq, ms[0]), statOfEquip(eq, ms[1]));
     }
 
     static double offenseValueFromStats(Character bot, Map<String, Integer> st) {
         boolean[] mage = new boolean[1];
         char[] ms = mainSecondary(jobId(bot), mage);
-        double att = mage[0] ? MATK_WEIGHT * st.getOrDefault("MAD", 0)
-                : ATT_WEIGHT * st.getOrDefault("PAD", 0);
-        return att
-                + MAIN_STAT_WEIGHT * st.getOrDefault(statKey(ms[0]), 0)
-                + SECONDARY_STAT_WEIGHT * st.getOrDefault(statKey(ms[1]), 0);
+        return offenseCore(mage[0], st.getOrDefault("PAD", 0), st.getOrDefault("MAD", 0),
+                st.getOrDefault(statKey(ms[0]), 0), st.getOrDefault(statKey(ms[1]), 0));
     }
 
     /** Job-agnostic best-buyer worth of the stats a scroll grants, for market/trade pricing: attack at
@@ -1532,23 +1537,67 @@ final class BotScrollManager {
      *  band is never discounted; a clean base is fully fungible with a shop/drop copy. */
     static final double SECONDHAND_DISCOUNT = 0.6;
 
-    /** Market worth of an equip's stats, counting only what the piece's wielders actually use: a
-     *  magic weapon (wand/staff) by matk + INT, a physical weapon by watk + STR/DEX/LUK, anything
-     *  else (armor, accessory — worn by every class) by both attacks + all main stats. This is why
-     *  a Hall Staff is never priced up by its combat-irrelevant weapon attack or a stray STR roll —
-     *  a weapon's band must track the stat its buyers pay for. Preserves the deliberate matk weight
-     *  (a magic weapon is still cheaper per attack point than a physical one). */
+    /** Representative job for a weapon type so market pricing reuses the {@link #mainSecondary} role
+     *  SSOT — a staff prices as a magician's, a bow as a bowman's, etc. */
+    private static int weaponRoleJob(WeaponType wt) {
+        return switch (wt) {
+            case WAND, STAFF -> 200;         // magician:   INT / LUK
+            case BOW, CROSSBOW -> 300;       // bowman:     DEX / STR
+            case CLAW, DAGGER_OTHER -> 400;  // thief:      LUK / DEX
+            case KNUCKLE -> 510;             // brawler:    STR / DEX
+            case GUN -> 520;                 // gunslinger: DEX / STR
+            default -> 100;                  // warrior:    STR / DEX
+        };
+    }
+
+    private static int statByCode(char code, int str, int dex, int intel, int luk) {
+        return switch (code) {
+            case 's' -> str;
+            case 'd' -> dex;
+            case 'i' -> intel;
+            case 'l' -> luk;
+            default -> 0;
+        };
+    }
+
+    /** The four distinct class camps a wearable item could belong to (representative jobs feeding
+     *  {@link #mainSecondary}): warrior STR/DEX, mage INT/LUK, bowman DEX/STR, thief LUK/DEX
+     *  (gunslinger/brawler collapse onto bowman/warrior stat-wise). */
+    private static final int[] MARKET_ROLE_JOBS = {100, 200, 300, 400};
+
+    /** Best-use offense worth of raw stats across every class that could wear the item — the market
+     *  values a multi-job piece at the class it serves best, never a blend. E.g. +10STR/+12DEX/+10INT/
+     *  +10LUK scores as a bowman (12·1 + 10·0.3); +1watk/+4matk scores as a physical job (1·5 > 4·1),
+     *  since a warrior would wear it over a mage. */
+    static double bestRoleWorth(int watk, int matk, int str, int dex, int intel, int luk) {
+        double best = 0;
+        for (int job : MARKET_ROLE_JOBS) {
+            boolean[] mage = new boolean[1];
+            char[] ms = mainSecondary(job, mage);
+            best = Math.max(best, offenseCore(mage[0], watk, matk,
+                    statByCode(ms[0], str, dex, intel, luk),
+                    statByCode(ms[1], str, dex, intel, luk)));
+        }
+        return best;
+    }
+
+    /** Market worth of an equip's stats via the SAME {@link #offenseCore} + {@link #mainSecondary}
+     *  role table the bot uses for itself — only the role source differs. A WEAPON is camp-locked, so
+     *  it is scored for the class its type implies (a staff by matk + INT + LUK·secondary, a sword by
+     *  watk + STR + DEX). Armor/accessory is worn by every class, so it takes the best-use MAX over
+     *  all class camps ({@link #bestRoleWorth}). Either way survival is added on top. This is why a
+     *  piece is never priced up by a stat its actual buyers can't use. */
     private static double equipMarketWorth(int itemId, int watk, int matk,
             int str, int dex, int intel, int luk, double survival) {
         WeaponType wt = ItemInformationProvider.getInstance().getWeaponType(itemId);
-        if (wt == WeaponType.WAND || wt == WeaponType.STAFF) {
-            return MATK_WEIGHT * matk + MAIN_STAT_WEIGHT * intel + survival;
+        if (wt == WeaponType.NOT_A_WEAPON) {
+            return bestRoleWorth(watk, matk, str, dex, intel, luk) + survival;
         }
-        if (wt != WeaponType.NOT_A_WEAPON) {
-            return ATT_WEIGHT * watk + MAIN_STAT_WEIGHT * (str + dex + luk) + survival;
-        }
-        return ATT_WEIGHT * watk + MATK_WEIGHT * matk
-                + MAIN_STAT_WEIGHT * (str + dex + intel + luk) + survival;
+        boolean[] mage = new boolean[1];
+        char[] ms = mainSecondary(weaponRoleJob(wt), mage);
+        return offenseCore(mage[0], watk, matk,
+                statByCode(ms[0], str, dex, intel, luk),
+                statByCode(ms[1], str, dex, intel, luk)) + survival;
     }
 
     /** Market worth of an equip's ACTUAL rolled stats — the {@link Equip}-getter counterpart to
