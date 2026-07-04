@@ -643,6 +643,8 @@ public class BotEntry {
     Item pendingScrollScroll = null;
     // Next armed auto-scan time (0 = schedule on the next tick); declines push it out.
     volatile long nextSelfScrollScanAtMs = 0L;
+    volatile boolean scrollPlanQueued = false;
+    volatile boolean chaosPlanQueued = false;
     // Autocraft (Maker): armed by command, only proposes while a real owner is online (supervised).
     // pendingCraftPlan holds the proposal while a "craft_confirm" pendingAction is open.
     boolean craftEnabled = false;

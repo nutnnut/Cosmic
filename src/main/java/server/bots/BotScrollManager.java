@@ -31,9 +31,9 @@ import java.util.HashSet;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Locale;
-import java.util.concurrent.ThreadLocalRandom;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.DoubleUnaryOperator;
 
 /**
@@ -117,6 +117,9 @@ final class BotScrollManager {
 
     /** Lazily-loaded cheapest NPC-shop buy price per item id (populate-once cache; all shop items). */
     private static volatile Map<Integer, Integer> shopPrices;
+
+    private static final int REPRO_CURVE_CACHE_MAX = 4096;
+    private static final Map<ReproCurveKey, DoubleUnaryOperator> reproCurveCache = new ConcurrentHashMap<>();
 
     private BotScrollManager() {}
 
@@ -294,6 +297,12 @@ final class BotScrollManager {
      *  time ({@link #executeConfirmed}/{@link BotInventoryManager#hasItem}), so a stale off-thread read
      *  just yields a no-op and the next scan retries. */
     static void scheduleScrollPlan(BotEntry entry, Character bot, java.util.function.BiConsumer<BotEntry, Resolved> apply) {
+        if (entry == null || bot == null || apply == null) {
+            return;
+        }
+        if (!markScrollPlanQueued(entry)) {
+            return;
+        }
         BotGrindAdvisor.DECIDE_POOL.execute(() -> {
             Resolved resolved;
             // The plan walks the whole inventory with WZ lookups and shares the single DECIDE_POOL with
@@ -305,11 +314,32 @@ final class BotScrollManager {
             } catch (RuntimeException e) {
                 return; // WZ/inventory hiccup off-thread — skip this scan, the timer re-arms
             } finally {
+                entry.scrollPlanQueued = false;
                 BotPerformanceMonitor.recordSince("scroll-scan", t0);
             }
             final Resolved r = resolved; // may be null (no worthwhile play) — apply decides what to do
             BotManager.after(0, () -> apply.accept(entry, r));
         });
+    }
+
+    private static boolean markScrollPlanQueued(BotEntry entry) {
+        synchronized (entry) {
+            if (entry.scrollPlanQueued) {
+                return false;
+            }
+            entry.scrollPlanQueued = true;
+            return true;
+        }
+    }
+
+    private static boolean markChaosPlanQueued(BotEntry entry) {
+        synchronized (entry) {
+            if (entry.chaosPlanQueued) {
+                return false;
+            }
+            entry.chaosPlanQueued = true;
+            return true;
+        }
     }
 
     /** Apply an auto-scan plan on the scheduler thread. Re-checks the gating state (it may have changed
@@ -508,7 +538,7 @@ final class BotScrollManager {
             return 0.0;
         }
         double base = baseOffenseValue(bot, ii, itemId);
-        DoubleUnaryOperator vf = BotScrollValuer.reproductionValue(
+        DoubleUnaryOperator vf = cachedReproductionValue(
                 base, tuc, reproSpecs(pc, opts), cleanBaseCostMeso(pc, ii, itemId));
         // wornRivalValue 0 / not-dominated / no fallback: a fresh clean base valued on its own.
         BotScrollPlanner.EquipCandidate c = new BotScrollPlanner.EquipCandidate(
@@ -548,7 +578,7 @@ final class BotScrollManager {
             // how much this item is worth = cheapest expected meso to reproduce one this good. Built
             // from the item's clean-base score + total upgrade slots + the obtainable scroll set, with
             // a stubbed clean-base cost. This is what makes the DP snowball winners / abandon losers.
-            DoubleUnaryOperator valueFn = BotScrollValuer.reproductionValue(
+            DoubleUnaryOperator valueFn = cachedReproductionValue(
                     baseOffenseValue(bot, ii, eq.getItemId()), totalSlots(ii, eq.getItemId()),
                     reproSpecs(pc, options), cleanBaseCostMeso(pc, ii, eq.getItemId()));
             // Self-combat floor: value of the item the bot WEARS in this slot (no decay). For a worn
@@ -745,7 +775,7 @@ final class BotScrollManager {
 
     /** Reproduction value of an equip at its current offense score, using its own value curve. */
     private static double reproValueNow(ProducerCombat pc, Character bot, ItemInformationProvider ii, Equip eq) {
-        DoubleUnaryOperator vf = BotScrollValuer.reproductionValue(
+        DoubleUnaryOperator vf = cachedReproductionValue(
                 baseOffenseValue(bot, ii, eq.getItemId()), totalSlots(ii, eq.getItemId()),
                 reproSpecs(pc, buildOptions(pc, bot, ii, eq)), cleanBaseCostMeso(pc, ii, eq.getItemId()));
         return vf.applyAsDouble(offenseValue(bot, eq));
@@ -1220,6 +1250,48 @@ final class BotScrollManager {
         return specs;
     }
 
+    private record ReproSpecKey(long successRateBits, long statGainBits, long mesoCostBits) {}
+
+    private record ReproCurveKey(long baseScoreBits, int tuc, long cleanCostBits, List<ReproSpecKey> specs) {}
+
+    private static DoubleUnaryOperator cachedReproductionValue(double baseScore, int tuc,
+            List<BotScrollValuer.ScrollSpec> scrolls, double baseCostMeso) {
+        if (tuc <= 0 || scrolls == null || scrolls.isEmpty()) {
+            return BotScrollValuer.reproductionValue(baseScore, tuc, scrolls, baseCostMeso);
+        }
+        List<BotScrollValuer.ScrollSpec> normalized = new ArrayList<>(scrolls.size());
+        List<ReproSpecKey> specs = new ArrayList<>(scrolls.size());
+        for (BotScrollValuer.ScrollSpec sc : scrolls) {
+            if (sc == null) {
+                continue;
+            }
+            normalized.add(sc);
+            specs.add(new ReproSpecKey(
+                    Double.doubleToLongBits(sc.successRate()),
+                    Double.doubleToLongBits(sc.statGain()),
+                    Double.doubleToLongBits(sc.mesoCost())));
+        }
+        if (specs.isEmpty()) {
+            return BotScrollValuer.reproductionValue(baseScore, tuc, scrolls, baseCostMeso);
+        }
+        ReproCurveKey key = new ReproCurveKey(
+                Double.doubleToLongBits(baseScore),
+                tuc,
+                Double.doubleToLongBits(Math.max(0.0, baseCostMeso)),
+                List.copyOf(specs));
+        if (reproCurveCache.size() > REPRO_CURVE_CACHE_MAX) {
+            reproCurveCache.clear();
+        }
+        return reproCurveCache.computeIfAbsent(key, ignored -> {
+            long t0 = BotPerformanceMonitor.start();
+            try {
+                return BotScrollValuer.reproductionValue(baseScore, tuc, List.copyOf(normalized), baseCostMeso);
+            } finally {
+                BotPerformanceMonitor.recordSince("scroll-curve-build", t0);
+            }
+        });
+    }
+
     /** A boom is survivable when ANOTHER usable equip exists for the same slot (worn or bagged) —
      *  the destroy-scroll gate the planner enforces via {@code hasFallbackForSlot}. */
     private static boolean hasFallbackForSlot(List<Equip> all, Map<Equip, Short> slotOf, Equip eq, Short slot) {
@@ -1646,7 +1718,7 @@ final class BotScrollManager {
         int maxBand = maxBand(gains, unit, tuc);
         int band = equipQualityBand(ii, eq);
         double cleanCost = cleanBaseCostMeso(pc, ii, eq.getItemId());
-        java.util.function.DoubleUnaryOperator vf = BotScrollValuer.reproductionValue(
+        java.util.function.DoubleUnaryOperator vf = cachedReproductionValue(
                 baseScore, tuc, marketReproSpecs(pc, ii, eq.getItemId()), cleanCost);
         java.util.function.DoubleUnaryOperator bandCurve = b -> {
             if (b <= 0 || unit <= 0) {
@@ -1751,7 +1823,6 @@ final class BotScrollManager {
 
     // ---- chaos & white scroll consumption (S4, owner-specced) ----------------------------------
 
-    private static final int CHAOS_MC_SAMPLES = 128;
     /** A piece must sit at least this many bands above clean before a chaos gamble is considered —
      *  the convexity that makes the reroll EV-positive only exists on an already-scrolled piece. */
     private static final int CHAOS_MIN_BAND = 2;
@@ -1803,35 +1874,67 @@ final class BotScrollManager {
         return best;
     }
 
-    /** Mean post-chaos market value of {@code eq}: Monte-Carlo over the server's actual reroll
-     *  semantics (every positive stat moves uniform ±range, floored at 0), each sample read off
-     *  the piece's own band curve at the fractional band its score lands on. */
-    private static double chaosOutcomeMeanValue(Equip eq, EquipQuote q, int range) {
-        double sum = 0;
-        for (int i = 0; i < CHAOS_MC_SAMPLES; i++) {
-            double score = ATT_WEIGHT * chaosStat(eq.getWatk(), range)
-                    + MATK_WEIGHT * chaosStat(eq.getMatk(), range)
-                    + MAIN_STAT_WEIGHT * (chaosStat(eq.getStr(), range) + chaosStat(eq.getDex(), range)
-                            + chaosStat(eq.getInt(), range) + chaosStat(eq.getLuk(), range))
-                    + WDEF_WEIGHT * chaosStat(eq.getWdef(), range)
-                    + MDEF_WEIGHT * chaosStat(eq.getMdef(), range)
-                    + HP_WEIGHT * chaosStat(eq.getHp(), range) + MP_WEIGHT * chaosStat(eq.getMp(), range)
-                    + AVOID_WEIGHT * chaosStat(eq.getAvoid(), range)
-                    + MOVE_WEIGHT * (chaosStat(eq.getSpeed(), range) + chaosStat(eq.getJump(), range));
-            sum += q.bandCurve().applyAsDouble(Math.max(0, (score - q.baseScore()) / q.bandUnit()));
+    /** Mean post-chaos market value of {@code eq}: exact expectation over the server's actual reroll
+     *  semantics (every positive stat moves uniform +/-range, floored at 0), read off the piece's own
+     *  convex band curve. This deliberately keeps rare high-ATT tails visible instead of relying on
+     *  random samples to hit them. */
+    static double chaosOutcomeMeanValue(Equip eq, EquipQuote q, int range) {
+        Map<Long, Double> dist = new HashMap<>();
+        dist.put(0L, 1.0);
+        dist = convolveChaosStat(dist, eq.getWatk(), ATT_WEIGHT, range);
+        dist = convolveChaosStat(dist, eq.getMatk(), MATK_WEIGHT, range);
+        dist = convolveChaosStat(dist, eq.getStr(), MAIN_STAT_WEIGHT, range);
+        dist = convolveChaosStat(dist, eq.getDex(), MAIN_STAT_WEIGHT, range);
+        dist = convolveChaosStat(dist, eq.getInt(), MAIN_STAT_WEIGHT, range);
+        dist = convolveChaosStat(dist, eq.getLuk(), MAIN_STAT_WEIGHT, range);
+        dist = convolveChaosStat(dist, eq.getWdef(), WDEF_WEIGHT, range);
+        dist = convolveChaosStat(dist, eq.getMdef(), MDEF_WEIGHT, range);
+        dist = convolveChaosStat(dist, eq.getHp(), HP_WEIGHT, range);
+        dist = convolveChaosStat(dist, eq.getMp(), MP_WEIGHT, range);
+        dist = convolveChaosStat(dist, eq.getAvoid(), AVOID_WEIGHT, range);
+        dist = convolveChaosStat(dist, eq.getSpeed(), MOVE_WEIGHT, range);
+        dist = convolveChaosStat(dist, eq.getJump(), MOVE_WEIGHT, range);
+
+        double sum = 0.0;
+        for (Map.Entry<Long, Double> outcome : dist.entrySet()) {
+            double score = outcome.getKey() / 1000.0;
+            double band = Math.max(0.0, (score - q.baseScore()) / q.bandUnit());
+            sum += outcome.getValue() * q.bandCurve().applyAsDouble(band);
         }
-        return sum / CHAOS_MC_SAMPLES;
+        return sum;
     }
 
-    private static double chaosStat(short cur, int range) {
-        return cur <= 0 ? 0
-                : Math.max(0, cur + ThreadLocalRandom.current().nextInt(-range, range + 1));
+    private static Map<Long, Double> convolveChaosStat(Map<Long, Double> dist, short cur, double weight, int range) {
+        if (cur <= 0 || weight <= 0.0) {
+            return dist;
+        }
+        if (range <= 0) {
+            long score = Math.round(weight * cur * 1000.0);
+            Map<Long, Double> next = new HashMap<>(dist.size());
+            for (Map.Entry<Long, Double> base : dist.entrySet()) {
+                next.merge(base.getKey() + score, base.getValue(), Double::sum);
+            }
+            return next;
+        }
+        int outcomes = 2 * range + 1;
+        double p = 1.0 / outcomes;
+        Map<Long, Double> next = new HashMap<>(dist.size() * Math.min(outcomes, 8));
+        for (Map.Entry<Long, Double> base : dist.entrySet()) {
+            for (int delta = -range; delta <= range; delta++) {
+                long score = Math.round(weight * Math.max(0, cur + delta) * 1000.0);
+                next.merge(base.getKey() + score, base.getValue() * p, Double::sum);
+            }
+        }
+        return next;
     }
 
     /** No regular scroll play existed this scan: consider gambling a chaos reroll instead. The
      *  scan is as heavy as a plan build (quotes + MC per piece), so it runs on the decide pool
      *  and applies through the same pending/confirm flow as any scroll. */
     private static void maybeChaosPlay(BotEntry entry, Character bot) {
+        if (entry == null || bot == null || !markChaosPlanQueued(entry)) {
+            return;
+        }
         BotGrindAdvisor.DECIDE_POOL.execute(() -> {
             ChaosPlay play;
             long t0 = BotPerformanceMonitor.start();
@@ -1840,6 +1943,7 @@ final class BotScrollManager {
             } catch (RuntimeException e) {
                 return; // WZ/inventory hiccup off-thread — next scan retries
             } finally {
+                entry.chaosPlanQueued = false;
                 BotPerformanceMonitor.recordSince("chaos-scan", t0);
             }
             if (play == null) {

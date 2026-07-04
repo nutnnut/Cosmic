@@ -4,6 +4,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.DoubleUnaryOperator;
 
 /**
@@ -33,6 +34,8 @@ final class BotScrollValuer {
     /** Iterations for the restart fixed point; D converges geometrically so this is comfortably ample
      *  even for high-restart (low success-rate) targets where the contraction rate approaches 1. */
     private static final int RESTART_ITERS = 120;
+    /** Fixed-point convergence tolerance in meso; keeps the old cap for hard tails. */
+    private static final double RESTART_EPSILON_MESO = 1.0e-9;
 
     private BotScrollValuer() {}
 
@@ -54,7 +57,7 @@ final class BotScrollValuer {
         if (tuc <= 0 || scrolls == null || scrolls.isEmpty()) {
             return score -> base; // can't be improved -> worth exactly its base cost everywhere
         }
-        Map<Long, Double> curve = new HashMap<>();
+        Map<Long, Double> curve = new ConcurrentHashMap<>();
         return score -> curve.computeIfAbsent(Math.round(score * 1000.0),
                 k -> productionCost(score, baseScore, tuc, scrolls, base));
     }
@@ -68,7 +71,12 @@ final class BotScrollValuer {
         double restart = 0.0;
         for (int iter = 0; iter < RESTART_ITERS; iter++) {
             Map<Long, Double> memo = new HashMap<>();
-            restart = costFrom(tuc, baseScore, target, scrolls, baseCost, restart, memo);
+            double next = costFrom(tuc, baseScore, target, scrolls, baseCost, restart, memo);
+            if (Math.abs(next - restart) <= RESTART_EPSILON_MESO) {
+                restart = next;
+                break;
+            }
+            restart = next;
         }
         return baseCost + restart;
     }
@@ -111,7 +119,12 @@ final class BotScrollValuer {
         double restart = 0.0;
         for (int iter = 0; iter < RESTART_ITERS; iter++) {
             Map<Long, Double> memo = new HashMap<>();
-            restart = costFrom(tuc, baseScore, target, scrolls, baseCost, restart, memo);
+            double next = costFrom(tuc, baseScore, target, scrolls, baseCost, restart, memo);
+            if (Math.abs(next - restart) <= RESTART_EPSILON_MESO) {
+                restart = next;
+                break;
+            }
+            restart = next;
         }
         Map<Long, Double> memo = new HashMap<>();
         double best = baseCost + restart; // abandon+rebuy at the root
