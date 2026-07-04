@@ -398,6 +398,24 @@ Regression: `BotDeityRoomSharedGroundTest` (WZ-backed) — walk-through in both 
 overlap, VonLaugh-class travel progression past x=-1315, stale-route drop on goal flip, and
 teleport-guard (no phantom, escape preserved).
 
+## 16. Ground motor ignored last-region continuity on overlapped footholds (801010000, FIXED)
+
+Symptom (live 2026-07-04, pathlog-Clawer-2026-07-04T134904): multiple transit-follow bots parked at
+the exact same Ninja Castle pixel around `(1315,155)`. The target/owner/portal side was region 6, and
+the pathlog's nav state also preserved region 6, but a raw coordinate probe at the bot pixel resolved
+`below foothold=62 region=3` because two foothold chains overlap there. The bot then had navigation
+and ground physics disagreeing about which chain it was standing on.
+
+Root cause: #15 correctly made the nav layer preserve `BotEntry.lastRegionId` across shared ground,
+but `BotMovementManager.planGroundAction` still previewed the walk by re-running raw
+`findGroundFoothold`, and `BotPhysicsEngine.syncAndDetectGround` also started from raw `findBelow`.
+At an overlap this can switch the motor onto the foreign chain even while nav says "same region".
+
+Fix (runtime, no graph version bump): `syncAndDetectGround` first samples the ground covered by
+`entry.lastRegionId`; the motor's `canWalkGroundStep`/wall-block preview now uses the already-resolved
+standing foothold for that tick. Raw coordinate lookup remains the fallback when there is no live
+region continuity. Regression: `BotMovementSimulationLabTest.shouldMoveClawerTowardLeaderOnNinjaCastleSameRegionTransitFollow`.
+
 ## Not-a-bug
 `pathlog-fictionxD` "jumping back-forth" = a single clean walk-off DROP mid-descent (`Stuck:no`,
 `r=-1` is the normal airborne reading). No oscillation.

@@ -690,9 +690,9 @@ class BotMovementManager {
         if (stepX == 0) {
             return MoveAction.idle();
         }
-        boolean canWalkStep = BotPhysicsEngine.canWalkGroundStep(entry.bot.getMap(), botPos, stepX);
+        boolean canWalkStep = BotPhysicsEngine.canWalkGroundStep(entry.bot.getMap(), botPos, currentFh, stepX);
         if (!canWalkStep) {
-            boolean blockedByWall = BotPhysicsEngine.isGroundStepBlockedByWall(entry.bot.getMap(), botPos, stepX);
+            boolean blockedByWall = BotPhysicsEngine.isGroundStepBlockedByWall(entry.bot.getMap(), botPos, currentFh, stepX);
             // Swim maps bypass the nav graph (no JUMP/DROP edges), so a grounded bot blocked by a wall
             // toward its target has no authored way off the platform — it would idle forever. Launch into
             // the water ourselves; once airborne, tickSwimming steers it over the obstacle.

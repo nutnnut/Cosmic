@@ -358,11 +358,22 @@ final class BotPhysicsEngine {
      */
     static Foothold syncAndDetectGround(BotEntry entry, Character bot) {
         syncGroundPosition(entry, bot.getPosition().x);
-        Foothold fh = findGroundFoothold(bot.getMap(), bot.getPosition());
+        Foothold fh = findContinuityGroundFoothold(entry, bot.getMap(), bot.getPosition());
+        if (fh == null) {
+            fh = findGroundFoothold(bot.getMap(), bot.getPosition());
+        }
         if (fh == null) {
             beginFall(entry, bot, 0);
         }
         return fh;
+    }
+
+    private static Foothold findContinuityGroundFoothold(BotEntry entry, MapleMap map, Point position) {
+        if (entry == null || entry.lastRegionId < 0 || map == null || position == null) {
+            return null;
+        }
+        GroundRegionSample sample = findWalkRegionGroundSample(map, entry.lastRegionId, position.x, position.y);
+        return sample == null ? null : sample.foothold();
     }
 
     static Foothold findGroundFoothold(MapleMap map, Point position) {
@@ -525,11 +536,23 @@ final class BotPhysicsEngine {
         return sample == null ? null : sample.point();
     }
 
+    static Foothold findWalkRegionGroundFoothold(MapleMap map, int regionId, int x, int referenceY) {
+        GroundRegionSample sample = findWalkRegionGroundSample(map, regionId, x, referenceY);
+        return sample == null ? null : sample.foothold();
+    }
+
     static boolean canWalkGroundStep(MapleMap map, Point currentPos, int stepX) {
         if (map == null || currentPos == null) {
             return false;
         }
         Foothold foothold = findGroundFoothold(map, currentPos);
+        return canWalkGroundStep(map, currentPos, foothold, stepX);
+    }
+
+    static boolean canWalkGroundStep(MapleMap map, Point currentPos, Foothold foothold, int stepX) {
+        if (map == null || currentPos == null) {
+            return false;
+        }
         GroundStepPreview preview = previewGroundStep(map, currentPos, foothold, currentPos.x + stepX);
         return preview != null && !preview.lostGround() && !preview.blocked();
     }
@@ -539,6 +562,13 @@ final class BotPhysicsEngine {
             return false;
         }
         Foothold foothold = findGroundFoothold(map, currentPos);
+        return isGroundStepBlockedByWall(map, currentPos, foothold, stepX);
+    }
+
+    static boolean isGroundStepBlockedByWall(MapleMap map, Point currentPos, Foothold foothold, int stepX) {
+        if (map == null || currentPos == null || stepX == 0) {
+            return false;
+        }
         GroundStepPreview preview = previewGroundStep(map, currentPos, foothold, currentPos.x + stepX);
         return preview != null && preview.blocked();
     }
@@ -599,6 +629,22 @@ final class BotPhysicsEngine {
             return null;
         }
         int regionId = lookup.regionIdByFootholdId().getOrDefault(foothold.getId(), -1);
+        return findWalkRegionGroundSample(lookup, regionId, foothold, x, referenceY);
+    }
+
+    private static GroundRegionSample findWalkRegionGroundSample(MapleMap map, int regionId, int x, int referenceY) {
+        WalkRegionLookup lookup = resolveWalkRegionLookup(map);
+        if (lookup == null) {
+            return null;
+        }
+        return findWalkRegionGroundSample(lookup, regionId, null, x, referenceY);
+    }
+
+    private static GroundRegionSample findWalkRegionGroundSample(WalkRegionLookup lookup,
+                                                                 int regionId,
+                                                                 Foothold foothold,
+                                                                 int x,
+                                                                 int referenceY) {
         BotNavigationGraph.Region region = lookup.regionsById().get(regionId);
         if (region == null || region.isRopeRegion) {
             return null;
@@ -636,7 +682,7 @@ final class BotPhysicsEngine {
             // or its prev/next) always beats a non-chain segment; the dx/dy score only breaks ties
             // within the same chain class. Crossing footholds that share no chain link keep the old
             // behaviour, so a ramp crossing flat ground can still be walked down.
-            boolean chainStep = isChainStep(foothold, segment.footholdId);
+            boolean chainStep = foothold == null || isChainStep(foothold, segment.footholdId);
             int score = dx * 1000 + Math.abs(dy);
             boolean better = bestSegment == null
                     || (chainStep && !bestChainStep)

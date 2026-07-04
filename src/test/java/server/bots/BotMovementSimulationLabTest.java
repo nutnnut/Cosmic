@@ -49,6 +49,31 @@ class BotMovementSimulationLabTest {
     }
 
     @Test
+    void shouldMoveClawerTowardLeaderOnNinjaCastleSameRegionTransitFollow() {
+        MapleMap map = BotNavigationMapLoader.loadMapGeometry(801010000);
+        BotNavigationGraph graph = BotNavigationGraphProvider.rebuildGraph(map, new BotMovementProfile(140, 120));
+        BotMovementSimulationLab lab = BotMovementSimulationLab.fromMap(map);
+        lab.spawnActor("Bowgurl", 29, map, new Point(-899, 155));
+        BotEntry entry = lab.spawnBot("Clawer", 30, map, new Point(1315, 155));
+        entry.movementProfile = new BotMovementProfile(140, 120);
+        lab.setFollow("Clawer", "Bowgurl");
+        lab.setFollowOffset("Clawer", 60);
+        lab.setAiAccumulator("Clawer", 50);
+        int ownerRegion = graph.findRegionId(map, new Point(-899, 155));
+        int rawBotRegion = graph.findRegionId(map, new Point(1315, 155));
+        assertEquals(6, ownerRegion, "fixture should match pathlog owner/follow-target region");
+        assertEquals(3, rawBotRegion, "raw coordinate lookup should pick the overlapping upper chain");
+        entry.lastRegionId = ownerRegion;
+
+        BotMovementManager.tickGrounded(entry, new Point(-839, 155));
+
+        Point finalPos = lab.position("Clawer");
+        assertTrue(finalPos.x < 1315,
+                "pathlog-Clawer-2026-07-04T134904: movement must keep walking on lastRegionId=6 across overlap; trace="
+                        + lab.formatRecentTrace("Clawer", 20));
+    }
+
+    @Test
     void shouldReproduceIntermediateBumpLandingScenarioFromMovementManagerTest() {
         MapleMap map = new MapleMap(910000103, 0, 0, 910000103, 1.0f);
         server.maps.FootholdTree footholds = new server.maps.FootholdTree(new Point(-2000, -2000), new Point(2000, 2000));
