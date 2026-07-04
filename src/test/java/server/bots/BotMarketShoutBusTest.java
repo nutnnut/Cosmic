@@ -88,21 +88,6 @@ class BotMarketShoutBusTest {
     }
 
     @Test
-    void fourArgPublishCarriesNoEquip() {
-        bus.publish(MAP, 100, sell(1082002, 1_000_000), 0L);
-        assertEquals(null, bus.active(MAP, 999, 1_000L).get(0).equip(),
-                "a parsed/player shout carries only an itemId, no concrete piece");
-    }
-
-    @Test
-    void fiveArgPublishCarriesTheConcretePiece() {
-        client.inventory.Equip piece = org.mockito.Mockito.mock(client.inventory.Equip.class);
-        bus.publish(MAP, 100, sell(1082002, 1_000_000), piece, 0L);
-        Shout s = bus.active(MAP, 999, 1_000L).get(0);
-        assertTrue(s.equip() == piece, "a sibling's advertised equip rides the bus for SSOT valuation");
-    }
-
-    @Test
     void dropSpeakerRemovesTheirShouts() {
         bus.publish(MAP, 100, sell(1082002, 1_000_000), 0L);
         bus.publish(MAP, 200, sell(1332006, 300_000), 0L);

@@ -100,7 +100,7 @@ public final class BotShoutTradeManager {
             if (speaker == null || speaker.getTrade() != null) {
                 continue; // left the map, or already busy in a trade
             }
-            if (o.kind() == Kind.SELL && plausibleBuy(bot, o, s.equip())) {
+            if (o.kind() == Kind.SELL && plausibleBuy(bot, o)) {
                 if (!BotMarketShoutBus.getInstance().claim(bot.getMapId(), s.speakerId(), o)) {
                     continue; // another bot claimed it first
                 }
@@ -121,17 +121,12 @@ public final class BotShoutTradeManager {
         return false;
     }
 
-    /** Pre-filter: the bot can afford it and the piece is worth the ask. When a sibling attaches the
-     *  ACTUAL rolled equip ({@code offered}) the WTP is measured on its real stats (SSOT) and must
-     *  cover the ask; for a parsed player shout (no piece) a clean copy stands in as a coarse
-     *  "would this slot upgrade at all" gate. The strict per-roll check still re-runs at confirm on
-     *  the actual staged piece — this only avoids opening a window the bot obviously won't honor. */
-    private static boolean plausibleBuy(Character bot, Offer o, Equip offered) {
+    /** Coarse pre-filter: the bot can afford it and a clean copy of this equip would upgrade some
+     *  slot (empty or better than worn). The strict per-roll check runs at confirm on the actual
+     *  staged piece — this only avoids opening a window the bot obviously can't/won't honor. */
+    private static boolean plausibleBuy(Character bot, Offer o) {
         if (bot.getMeso() < o.priceMeso()) {
             return false;
-        }
-        if (offered != null) {
-            return BotScrollManager.equipBuyCeilingMeso(bot, offered) >= o.priceMeso();
         }
         Equip clean = cleanEquip(o.itemId());
         return clean != null && BotScrollManager.equipBuyCeilingMeso(bot, clean) > 0;
@@ -409,8 +404,11 @@ public final class BotShoutTradeManager {
     }
 
     /** Shout the bot's top surplus equip, re-arming the cooldown to a jittered {@code [min,max]}
-     *  regardless of whether this window actually speaks (chattiness roll). The concrete piece rides
-     *  the bus so sibling buyers value its real stats (SSOT). */
+     *  regardless of whether this window actually speaks (chattiness roll). The spoken line carries a
+     *  stat preview via the SAME formatter the sibling gear offers use
+     *  ({@link BotInventoryManager#describeAutoSellItem}, item-class perspective) so a shout reads
+     *  like "S&gt; +7 att Maple Sword 5m" instead of a bare name — bots still match off the
+     *  structured bus offer, so the preview is presentation-only. */
     private static void emit(BotEntry entry, Character bot, long now, int minMs, int maxMs) {
         BotPersonality p = entry.personality != null ? entry.personality : BotPersonality.defaults();
         entry.nextShoutEmitMs = now + BotManager.randMs(minMs, maxMs);
@@ -423,16 +421,17 @@ public final class BotShoutTradeManager {
         }
         Equip eq = stock.get(0); // the top valuable surplus piece
         long ask = BotScrollManager.equipMarketQuote(entry, bot, eq).curveQuoteMeso();
-        String name = ItemInformationProvider.getInstance().getName(eq.getItemId());
-        if (ask <= 0 || name == null) {
+        if (ask <= 0) {
             return;
         }
         ask = BotMarketMath.humanizeAsk(ask, bot.getId());
         Offer offer = new Offer(Kind.SELL, eq.getItemId(), 1, (int) Math.min(Integer.MAX_VALUE, ask));
-        BotMarketShoutBus.getInstance().publish(bot.getMapId(), bot.getId(), offer, eq, now);
+        BotMarketShoutBus.getInstance().publish(bot.getMapId(), bot.getId(), offer, now);
         BotMarketLedger.getInstance().append(EventKind.SHOUT, offer.itemId(), 0, 1,
                 offer.priceMeso(), bot.getId(), null, bot.getMapId());
-        BotManager.getInstance().botSay(bot, BotMarketGrammar.format(Kind.SELL, name, 1, offer.priceMeso()));
+        String preview = BotInventoryManager.describeAutoSellItem(
+                ItemInformationProvider.getInstance(), null, eq); // "+7 att <name>", item-class perspective
+        BotManager.getInstance().botSay(bot, BotMarketGrammar.format(Kind.SELL, preview, 1, offer.priceMeso()));
     }
 
     // ── helpers ───────────────────────────────────────────────────────────────

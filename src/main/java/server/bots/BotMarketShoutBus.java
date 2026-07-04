@@ -6,7 +6,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
-import client.inventory.Equip;
 import server.bots.BotMarketGrammar.Offer;
 
 /**
@@ -18,11 +17,8 @@ import server.bots.BotMarketGrammar.Offer;
  */
 public final class BotMarketShoutBus {
 
-    /** A live shout: who said it, what they offered, when it lapses. {@code equip} is the ACTUAL
-     *  rolled piece when a bot shouts one of its own equips (in-memory, same-server siblings), so a
-     *  listener values the real stats through the SSOT valuer instead of a clean stand-in; null for
-     *  parsed player shouts / stack offers (itemId only). */
-    public record Shout(int speakerId, Offer offer, Equip equip, long expiresAt) {}
+    /** A live shout: who said it, what they offered, when it lapses. */
+    public record Shout(int speakerId, Offer offer, long expiresAt) {}
 
     /** How long a shout stays live (minutes — design 8.4). Package-visible so tests can shorten it. */
     static long shoutTtlMs = 3 * 60_000L;
@@ -44,12 +40,6 @@ public final class BotMarketShoutBus {
      * same item + kind (a re-shout updates rather than stacks) and dropping expired entries.
      */
     public void publish(int mapId, int speakerId, Offer offer, long now) {
-        publish(mapId, speakerId, offer, null, now);
-    }
-
-    /** As {@link #publish(int, int, Offer, long)} but attaches the concrete {@link Equip} a bot is
-     *  advertising, so sibling listeners value the real rolled piece (SSOT), not a clean copy. */
-    public void publish(int mapId, int speakerId, Offer offer, Equip equip, long now) {
         List<Shout> feed = byMap.computeIfAbsent(mapId, k -> new ArrayList<>());
         synchronized (feed) {
             feed.removeIf(s -> s.expiresAt() <= now
@@ -59,7 +49,7 @@ public final class BotMarketShoutBus {
             if (feed.size() >= MAX_PER_MAP) {
                 feed.remove(0); // bounded bulletin — oldest out
             }
-            feed.add(new Shout(speakerId, offer, equip, now + shoutTtlMs));
+            feed.add(new Shout(speakerId, offer, now + shoutTtlMs));
         }
     }
 

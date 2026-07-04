@@ -198,13 +198,17 @@ boot-log glove factor lands ≈2x weapon avg; if far off, tune REPLACEMENT_HORIZ
 
 - **DONE (2026-07-04): shout-sell made a deliberate STAND STATE + sibling offers carry real stats
   (owner-directed, post-first-restart).** Two owner asks after watching S3 shout-sell live:
-  1. *Sibling gear offer specifies stats via SSOT.* A bot's `S>` emission priced a SPECIFIC rolled
-     piece, but a sibling buyer's match pre-filter (`plausibleBuy`) valued a CLEAN copy
-     (`cleanEquip(itemId)`) — a scrolled/high-roll piece got judged on base stats. Fix:
-     `BotMarketShoutBus.Shout` now carries the concrete `Equip` (new 5-arg `publish`; 4-arg → null
-     for parsed PLAYER shouts / stacks); `plausibleBuy(bot, offer, offeredEquip)` values the REAL
-     piece via `equipBuyCeilingMeso` (SSOT) and requires WTP ≥ ask — mirrors the confirm-time
-     `partnerMeetsTerms` on the same staged piece. In-memory, same-server siblings only.
+  1. *Free-market shout line carries a stat preview (SSOT reuse).* The `S>` line showed a bare name
+     ("S> Maple Sword 5m"); the sibling/owner gear offers already preview stats via
+     `BotOfferManager.formatItemSpecifier`. Fix: emit's spoken line now reuses that SSOT through
+     `BotInventoryManager.describeAutoSellItem(ii, null, eq)` (item-class perspective, like
+     `@autosell`) → "S> +7 att Maple Sword 5m". Presentation-only: bots match off the STRUCTURED bus
+     offer, not the chat text (they can't hear chat), so prepending stat tokens is safe.
+     NOTE (observation, NOT changed): the sibling BUYER pre-filter `plausibleBuy` values a CLEAN copy
+     (`cleanEquip`) as a coarse gate, then re-checks the real staged piece at confirm — so a rolled
+     piece whose clean base isn't an upgrade is never PURSUED even if the roll would be wanted. Left
+     as-is per owner scope (the confirm check keeps it safe); revisit if bot↔bot rolled-piece trades
+     look too sparse.
   2. *Shout-sell is its own state.* New `PHASE_SHOUT` in the FM errand: on the exit leg (after any
      Fredrick stop) the bot stands STILL at the FM ENTRANCE in an uncrowded spot
      (`pickUncrowdedStandSpot` = slot-column scan maximizing distance to nearest player, portal-clear)
@@ -225,11 +229,12 @@ boot-log glove factor lands ≈2x weapon avg; if far off, tune REPLACEMENT_HORIZ
      venue + audience — owner: "opportunistic shout also allowed during town break") STANDS DOWN
      while `isShoutStanding` so the fast stand cadence owns it. `nextShoutEmitMs` shared, mutually
      exclusive users.
-  - Files: `BotMarketShoutBus`, `BotShoutTradeManager`, `BotFreeMarketManager` (PHASE_SHOUT +
-     helpers + dedicated trip reason), `BotEntry` (fmShout* fields). 2 new BotMarketShoutBusTest
-     cases (equip carry). 96 economy tests green. NEEDS RESTART to live-verify: bots standing at FM
-     entrance shouting on a fast cadence; a human clicking a standing bot completes a priced sale;
-     siblings valuing the real rolled piece. Pure tests can't exercise the WZ/Character-backed stand.
+  - Files: `BotShoutTradeManager` (emission refactor + stat-preview line + walk-up buyer),
+     `BotFreeMarketManager` (PHASE_SHOUT + helpers + dedicated trip reason), `BotEntry` (fmShout*
+     fields). Reuses `describeAutoSellItem`/`formatItemSpecifier` SSOT (no new pricing/format).
+     Existing economy tests green (stand/shout paths are WZ/Character-backed — no pure unit surface).
+     NEEDS RESTART to live-verify: bots standing at the FM entrance shouting on a fast cadence with a
+     stat preview; a human clicking a standing bot completes a priced sale.
 
 - **Scroll audit 2026-07-04** ([[kb_bot_scroll_special_scrolls_and_market_feedback]]): 8 ranked
   gaps, **1-6 FIXED same day** (shared ItemConstants.canScroll for 20492xx accessory scrolls;
