@@ -284,6 +284,31 @@ final class BotPathLogger {
                 .append("  resupplyMap=").append(entry.autopilotErrandMapId)
                 .append("  returningFromErrand=").append(entry.autopilotReturningFromErrand)
                 .append("  shopVisitPending=").append(entry.shopVisitPending).append("\n");
+        // Inert-leak triage: when autopilot is OFF, spell out exactly what stops the self-heal
+        // (BotManager.maybeRecoverInertAutopilot) from re-deciding this bot. Reachability guards
+        // (tickIdleEntry/tickTownIdleDestack skip recovery) + the recovery gates themselves. Empty =
+        // ELIGIBLE (it should re-decide next idle tick — if it doesn't, the tick isn't reaching idle).
+        // See kb_bot_inert_autopilot_recovery.
+        if (!BotAutopilotManager.isActive(entry)) {
+            long now = System.currentTimeMillis();
+            java.util.List<String> blocks = new java.util.ArrayList<>();
+            if (entry.following) blocks.add("following");
+            if (entry.grinding) blocks.add("grinding");
+            if (entry.moveTarget != null) blocks.add("moveTarget");
+            if (entry.farmAnchor != null) blocks.add("farmAnchor");
+            if (entry.shopVisitPending) blocks.add("shopVisitPending");
+            if (entry.autopilotWaitAnchor != null) blocks.add("waitAnchor");
+            if (entry.operatorCmd != null) blocks.add("operatorCmd");
+            if (entry.deadUntil != 0L) blocks.add("dead");
+            if (entry.autopilotDecisionInFlight) blocks.add("decisionInFlight");
+            if (now < entry.autopilotNextDecisionAtMs) {
+                blocks.add("nextDecideIn=" + ((entry.autopilotNextDecisionAtMs - now) / 1000) + "s");
+            }
+            sb.append("Recovery:   ")
+                    .append(blocks.isEmpty() ? "ELIGIBLE (re-decides next idle tick)"
+                            : "BLOCKED by " + String.join(",", blocks))
+                    .append("\n");
+        }
         appendCohesionState(sb, entry);
         appendTravelState(sb, entry);
         if (entry.loggingOut || entry.breakUntilMs > 0L) {

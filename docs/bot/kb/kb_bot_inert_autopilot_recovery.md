@@ -95,6 +95,47 @@ once the inert pile is already large (all retrying).
 aborts the whole bot tick (`tick failed N/3`, 3 = bot removed). Only 1 bot hit it (FarmsEnding,
 map 541000000). A specific quest's data, not a mass cause — but a live tick-crash worth fixing.
 
+## 2026-07-04 (session 2) — live triage with the new `idle` roster split
+
+Watched a fresh-ish server (656 bots) with the roster split live. Findings:
+- **Most "possibly stuck" are TRANSIENT, not wedged.** Snapshot: 35 idle; 75s later 12 idle —
+  **28 of 32 recovered within 75s.** That's normal recovery churn (30–60s backoff). The instant
+  count is NOT the bug; the small set that PERSISTS across snapshots is.
+- **Two stuck classes, distinguished by the new `lastDecisionSuffix` on hover:**
+  - *never-decided* (`autopilotLastDecisionAtMs<=0`, no suffix) — recovery hasn't completed a
+    `start()→decide()` for them (a completed decide always records). Mostly the transient churn.
+  - *decided-then-leaked* (suffix "last decided Nm ago: grind …") — got a plan, then went inert.
+- Persistent set (idle across both snapshots) = the accumulation seeds. All solo self-owned
+  (party-size-1, apParty=false), `grinding=false`, autopilot off. One was **FarmsEnding** = the
+  quest-NPE tick-crash force-idle (isolated, see below), others were farm-item bots
+  (biggercoming/AdamsMaybe "farm Gold Surfboard from Slime") stuck in town 16 min.
+- **Formation offset is DEFINITIVELY a red herring:** a healthy GRINDING bot's pathlog also shows
+  `Formation: offsetX=60` + `Follow base [anchor + formation offset]`. It's a universal default
+  stagger, identical on grind and idle bots. Not the wedge.
+
+### Root-cause candidate found + fixed (partial): onDeathLoop stale decision clock
+`maybeRecoverInertAutopilot` reuses `autopilotNextDecisionAtMs` as its backoff gate
+(`if now < autopilotNextDecisionAtMs return`). But `nextDecisionAt() = now + DECISION_INTERVAL_MS`
+(**12 min**). `onDeathLoop` (BotAutopilotManager:206) sets `autopilotMapId=-1` — comment says
+"maybeRecoverInertAutopilot re-decides" — but left the clock at the last plan's `decide+12min`, so
+recovery was gated for up to 12 min after a death-loop. `clear()` (402) and `escapeTrappedRegion`
+(186) both zero it; onDeathLoop didn't. **Fix: onDeathLoop now sets `autopilotNextDecisionAtMs=0L`.**
+CAVEAT: the death caller (BotManager ~6287) calls `clearMode`→`clear()` (which already zeroes the
+clock + grinding) WHEN `onDeathLoop` returns a town (!= -1). So the fix is load-bearing mainly for
+the `town==-1` branch (no clearMode → also leaves `grinding=true`, which then trips tickIdleEntry's
+guard and skips recovery entirely). So this fix is correct but likely NOT the whole accumulation.
+
+### Still open — the real persistent wedge, now instrumented
+Recovery lives in `tickIdleEntry`/`tickTownIdleDestack`, which SKIP it if any leftover reachability
+state is set: `following | grinding | moveTarget!=null | farmAnchor!=null | shopVisitPending |
+autopilotWaitAnchor!=null`. A farm-item bot that goes inert with a stale `farmAnchor` (only
+`clearMode` clears it, not `clear()`/onDeathLoop) would never reach recovery → wedged. None of
+these fields were visible in any endpoint. **Added a `Recovery:` line to the pathlog** (BotPathLogger)
+that, for an inert bot, prints `ELIGIBLE` or `BLOCKED by <field(s)>` across ALL reachability guards
++ recovery gates (incl. `nextDecideIn=Ns`). Next step: after restart, pathlog a persistent-stuck
+bot and read the exact blocker — that pins it. The quest NPE (`ItemAction.check` extSelection null →
+tick-crash force-idle) is a separate, confirmed wedge for the one bot that hits it (FarmsEnding).
+
 ## Instrumentation added (2026-07-04) to watch it
 
 `activityCategory` now returns a distinct **`"idle"`** bucket for the true leak (autopilot off

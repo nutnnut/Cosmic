@@ -206,6 +206,12 @@ final class BotAutopilotManager {
         entry.autopilotMapId = -1;            // drop the pick; BotManager.maybeRecoverInertAutopilot re-decides
         entry.autopilotDestinationName = "";
         entry.autopilotErrandMapId = -1;
+        // Clear the 12-min grind-redecide clock: maybeRecoverInertAutopilot reuses it as its backoff
+        // gate, so leaving it at the last plan's `decide_time + DECISION_INTERVAL_MS` would block
+        // recovery for up to 12 min after a death-loop — the bot idles inert that whole window. Mirror
+        // escapeTrappedRegion/clear() which zero it to re-plan next tick. (Root cause of the town-idle
+        // pile-up: every death-loop = up to 12 min forced idle. See kb_bot_inert_autopilot_recovery.)
+        entry.autopilotNextDecisionAtMs = 0L;
         entry.autopilotDeathStreak = 0;       // gave it an escape; count fresh from here
         reply.accept(entry, "i keep dying getting there - heading to town to find somewhere safer");
         // Revive at the forced-return town, UNLESS that's itself in a region this bot is walled out of
