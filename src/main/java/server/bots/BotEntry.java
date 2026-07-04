@@ -521,6 +521,12 @@ public class BotEntry {
     boolean fmShoutedThisTrip = false;   // exit-leg stand already taken/decided this trip
     long fmFidgetAtMs = 0L;              // next allowed humanlike fidget while standing
     volatile boolean fmHasShoutSurplus = false; // cached off-thread: has marketable equips to shout-sell
+    // Browse loop: visit stalls one at a time as a real visitor (walk up, register, dwell, consider,
+    // leave) instead of reading the whole room in one instant tick.
+    long fmBrowseEndMs = 0L;             // overall browse budget for this room (0 = not yet armed)
+    int[] fmBrowseOwners = null;         // shuffled stall owner-ids still to visit this browse
+    int fmBrowseIdx = 0;                 // index into fmBrowseOwners
+    int fmVisitOwnerId = -1;             // stall owner-id we're registered as a visitor to (-1 = none)
 
     // Supervised-mode quest AUTO-SUGGEST (Feature A): when the owner is online and the bot is at
     // their side, the bot occasionally SUGGESTS a standout nearby quest in chat (it never wanders
@@ -881,7 +887,14 @@ public class BotEntry {
     boolean shoutTradeStaged;                           // my side of the window is staged
     boolean shoutTradeLocked;                           // I confirmed my side (completeTrade called)
     long shoutTradeDeadlineMs;                          // give-up wall clock
+    long shoutTradeConfirmAtMs;                         // human "beat" before locking once terms are met
     long nextShoutEmitMs;                               // emission cooldown
+    // Deliberation before acting on a heard shout (don't buy/sell the instant a match is seen —
+    // bank the candidate, "think about it" 2-6s, then re-validate + claim). One pending at a time.
+    long shoutBuyDecideAtMs;                            // 0 = nothing pending
+    int shoutBuySpeakerId = -1;                         // the shout speaker we're deliberating over
+    BotMarketGrammar.Offer shoutBuyOffer;               // the offer under consideration
+    boolean shoutBuySelling;                            // our role if we act: true = we'd sell to a B>
 
     boolean shoutTradeActive() {
         return shoutTradePartnerId != -1;

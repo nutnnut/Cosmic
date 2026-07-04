@@ -49,6 +49,19 @@ final class BotFreeMarketManager {
     static final int FM_ENTRANCE = constants.id.MapId.FM_ENTRANCE; // 910000000
 
     /**
+     * Store-permit SKINS a bot's stall can wear (WZ-verified hired-merchant permits: Mushroom Elf,
+     * Teddy Bear, Robot Stand, Coffeehouse, Granny's Stand; tiki torch 5030012 excluded like
+     * SoloMapling). Cosmetic only — the bot still holds/gates on {@link #PERMIT_ITEM}; the skin is
+     * never consumed or refunded (closeShop returns stock, not the permit). Picked deterministically
+     * per bot so its shop identity stays stable across restarts (same idea as humanizeAsk styles).
+     */
+    static final int[] STALL_SKINS = {5030000, 5030001, 5030002, 5030004, 5030008, 5030010};
+
+    static int stallSkin(Character bot) {
+        return STALL_SKINS[Math.floorMod(bot.getId(), STALL_SKINS.length)];
+    }
+
+    /**
      * Towns carrying the scripted market00 portal (grep of Map.wz portal scripts, 2026-07-02).
      * The errand travels to the TOWN via the normal graph, then walks the scripted portal itself
      * - zero BotWorldGraph changes (explorer-verified approach).
@@ -725,6 +738,7 @@ final class BotFreeMarketManager {
         if (entry.fmErrandProgress.stalled(now, ERRAND_TIMEOUT_MS) || now > entry.fmPhaseDeadlineAtMs) {
             trace(entry, "watchdog: " + (now > entry.fmPhaseDeadlineAtMs ? "phase deadline" : "no progress")
                     + " in " + FM_PHASE_NAMES[entry.fmPhase] + " at map " + bot.getMapId());
+            leaveVisitedStall(entry); // don't leak a merchant visitor slot if we fizzle mid-browse
             // NEVER release the errand while still inside the FM maps: they're off the world
             // graph, so a bot dropped here has no route anywhere and strands (live-observed).
             // A fizzle inside pivots to the exit walk; a wedged exit walk falls back to the
@@ -795,19 +809,7 @@ final class BotFreeMarketManager {
                 return tickShout(entry, bot, runAiTick, now);
             }
             case PHASE_BROWSE -> {
-                if (entry.fmBrowseUntilMs == 0L) {
-                    int others = browseStalls(entry, bot, now);
-                    int dwellFactor = entry.chillSession ? CHILL_DWELL_FACTOR : 1; // market day lingers
-                    entry.fmBrowseUntilMs = now + (others == 0
-                            ? BotManager.randMs(3_000, 8_000) // empty room: glance around and go
-                            : (long) dwellFactor * BotManager.randMs((int) BROWSE_MIN_MS, (int) BROWSE_MAX_MS));
-                }
-                entry.fmErrandProgress.touch(now);
-                if (now < entry.fmBrowseUntilMs) {
-                    return true; // lingering between the stalls, humanlike
-                }
-                advancePhase(entry, PHASE_EXIT, now);
-                return true;
+                return tickBrowse(entry, bot, runAiTick, now);
             }
             case PHASE_EXIT -> {
                 if (!isFmMap(bot.getMapId())) {
@@ -1351,7 +1353,7 @@ final class BotFreeMarketManager {
     private static void openAndStockStall(BotEntry entry, Character bot, List<ListingPlan> listings, long now) {
         entry.marketBusy = true;
         try {
-            HiredMerchant merchant = HiredMerchant.createFor(bot, stallName(bot), PERMIT_ITEM);
+            HiredMerchant merchant = HiredMerchant.createFor(bot, stallName(bot), stallSkin(bot));
             int listed = 0;
             for (ListingPlan plan : listings) {
                 Item staged = plan.item().copy();
@@ -1461,30 +1463,144 @@ final class BotFreeMarketManager {
 
     /** Browse every other stall on this room map: observations always, bargains sparingly.
      *  Returns how many other stalls there were (0 = empty room, the caller cuts the dwell). */
-    private static int browseStalls(BotEntry entry, Character bot, long now) {
-        int others = 0;
-        BotMarketBook book = BotMarketBook.of(entry, bot);
-        List<MapObject> stalls = bot.getMap().getMapObjectsInRange(bot.getPosition(),
-                Double.POSITIVE_INFINITY, List.of(MapObjectType.HIRED_MERCHANT));
-        for (MapObject obj : stalls) {
-            if (!(obj instanceof HiredMerchant merchant) || merchant.getOwnerId() == bot.getId()) {
-                continue;
-            }
-            others++;
-            List<PlayerShopItem> items = merchant.getItems();
-            for (int slot = 0; slot < items.size(); slot++) {
-                PlayerShopItem psi = items.get(slot);
-                if (!psi.isExist() || psi.getBundles() <= 0) {
-                    continue;
+    /**
+     * Browse the room like a shopper (owner spec, SoloMapling borrow): walk up to each stall with a
+     * ±50px approach jitter (don't pile on the marker), register as a VISIBLE visitor, dwell a beat
+     * while reading it + maybe buying, then move on — until the browse budget runs out. Replaces the
+     * old instant one-tick sweep so browsing takes time and shows up in the merchant.
+     */
+    private static boolean tickBrowse(BotEntry entry, Character bot, boolean runAiTick, long now) {
+        // Arm the browse plan once: snapshot the room's other OPEN stalls, shuffle, set the budget.
+        if (entry.fmBrowseEndMs == 0L) {
+            List<Integer> owners = new ArrayList<>();
+            for (MapObject o : bot.getMap().getMapObjectsInRange(bot.getPosition(),
+                    Double.POSITIVE_INFINITY, List.of(MapObjectType.HIRED_MERCHANT))) {
+                if (o instanceof HiredMerchant hm && hm.getOwnerId() != bot.getId() && hm.isOpen()) {
+                    owners.add(hm.getOwnerId());
                 }
-                int perBundle = Math.max(1, psi.getItem().getQuantity());
-                double unit = (double) psi.getPrice() / perBundle;
-                long key = BotMarketMath.priceKey(psi.getItem().getItemId(), bandOf(psi.getItem()));
-                book.observe(key, unit, BotMarketMath.W_ASK, now);
-                maybeBargainBuy(entry, bot, book, merchant, slot, psi, unit, key, now);
+            }
+            java.util.Collections.shuffle(owners, ThreadLocalRandom.current());
+            entry.fmBrowseOwners = owners.stream().mapToInt(Integer::intValue).toArray();
+            entry.fmBrowseIdx = 0;
+            entry.fmVisitOwnerId = -1;
+            entry.fmStandSpot = null;
+            entry.fmBrowseUntilMs = 0L;
+            int factor = entry.chillSession ? CHILL_DWELL_FACTOR : 1; // market day lingers
+            entry.fmBrowseEndMs = now + (owners.isEmpty()
+                    ? BotManager.randMs(3_000, 8_000) // empty room: glance around and go
+                    : (long) factor * BotManager.randMs((int) BROWSE_MIN_MS, (int) BROWSE_MAX_MS));
+        }
+        entry.fmErrandProgress.touch(now);
+
+        // Dwelling inside a stall we've registered at: leave once the dwell ends.
+        if (entry.fmVisitOwnerId != -1) {
+            if (now < entry.fmBrowseUntilMs) {
+                return true; // looking over the wares
+            }
+            leaveVisitedStall(entry);
+            entry.fmBrowseIdx++;
+            entry.fmStandSpot = null;
+        }
+
+        // Empty room: just glance around for the short budget, then go.
+        if (entry.fmBrowseOwners.length == 0) {
+            if (now < entry.fmBrowseEndMs) {
+                return true;
+            }
+            advancePhase(entry, PHASE_EXIT, now);
+            return true;
+        }
+        // Budget spent or every stall seen -> head out.
+        if (now >= entry.fmBrowseEndMs || entry.fmBrowseIdx >= entry.fmBrowseOwners.length) {
+            advancePhase(entry, PHASE_EXIT, now);
+            return true;
+        }
+
+        HiredMerchant target = openStallOf(bot, entry.fmBrowseOwners[entry.fmBrowseIdx]);
+        if (target == null) {
+            entry.fmBrowseIdx++; // stall closed/left since the snapshot — skip it
+            entry.fmStandSpot = null;
+            return true;
+        }
+        if (entry.fmStandSpot == null) {
+            entry.fmStandSpot = approachSpot(bot, target.getPosition());
+            entry.fmStandBestDist = Integer.MAX_VALUE;
+            entry.fmStandStuckSinceMs = now;
+        }
+        Point stand = entry.fmStandSpot;
+        int dist = Math.abs(bot.getPosition().x - stand.x) + Math.abs(bot.getPosition().y - stand.y);
+        if (!entry.inAir && !entry.climbing && dist <= 40) {
+            // Arrived: register as a visible visitor (may fail if the 3 slots are full — still browse),
+            // read the stall + maybe buy, and linger a beat.
+            BotTravelManager.clearMoveTargetPin(entry);
+            target.addVisitor(bot);
+            entry.fmVisitOwnerId = target.getOwnerId();
+            observeStall(entry, bot, BotMarketBook.of(entry, bot), target, now);
+            entry.fmBrowseUntilMs = now + BotManager.randMs(1_000, 2_500);
+            return true;
+        }
+        // Still walking up, with the same stuck watchdog as the other FM walks.
+        if (dist < entry.fmStandBestDist - 4) {
+            entry.fmStandBestDist = dist;
+            entry.fmStandStuckSinceMs = now;
+        }
+        if (now - entry.fmStandStuckSinceMs > PLACE_WALK_STUCK_MS) {
+            entry.fmBrowseIdx++; // can't reach this stall — skip it
+            entry.fmStandSpot = null;
+            return true;
+        }
+        BotTravelManager.pinMoveTarget(entry, stand);
+        BotTravelManager.movementStep.step(entry, stand, runAiTick);
+        return true;
+    }
+
+    /** The bot's currently-OPEN target stall by owner id in this room (null if it closed/left). */
+    private static HiredMerchant openStallOf(Character bot, int ownerId) {
+        HiredMerchant hm = bot.getWorldServer().getHiredMerchant(ownerId);
+        return hm != null && hm.isOpen() && hm.getMapId() == bot.getMapId() ? hm : null;
+    }
+
+    /** Release our visitor slot on the stall we were browsing (safe if it already closed/removed us).
+     *  Uses {@code entry.bot} so cleanup paths without a Character in hand (clearFmErrand) can call it. */
+    private static void leaveVisitedStall(BotEntry entry) {
+        if (entry.fmVisitOwnerId == -1) {
+            return;
+        }
+        Character bot = entry.bot;
+        if (bot != null && bot.getWorldServer() != null) {
+            HiredMerchant hm = bot.getWorldServer().getHiredMerchant(entry.fmVisitOwnerId);
+            if (hm != null) {
+                hm.removeVisitor(bot);
             }
         }
-        return others;
+        entry.fmVisitOwnerId = -1;
+    }
+
+    /** A ground point beside a stall to walk to — same-floor snap with a ±50px jitter so bots don't
+     *  pile onto the exact stall marker (SoloMapling's randomized-approach-point borrow). */
+    private static Point approachSpot(Character bot, Point stallPos) {
+        int dx = ThreadLocalRandom.current().nextInt(-50, 51);
+        Point snapped = BotPhysicsEngine.pointBelowIndexed(bot.getMap(),
+                new Point(stallPos.x + dx, stallPos.y - 30));
+        return snapped != null ? snapped : new Point(stallPos);
+    }
+
+    /** Read one stall's listings into the book and maybe grab a bargain — the per-stall body the
+     *  browse loop runs on arrival at each merchant (was the inner loop of the old instant sweep). */
+    private static void observeStall(BotEntry entry, Character bot, BotMarketBook book,
+                                     HiredMerchant merchant, long now) {
+        List<PlayerShopItem> items = merchant.getItems();
+        for (int slot = 0; slot < items.size(); slot++) {
+            PlayerShopItem psi = items.get(slot);
+            if (!psi.isExist() || psi.getBundles() <= 0) {
+                continue;
+            }
+            int perBundle = Math.max(1, psi.getItem().getQuantity());
+            double unit = (double) psi.getPrice() / perBundle;
+            long key = BotMarketMath.priceKey(psi.getItem().getItemId(), bandOf(psi.getItem()));
+            book.observe(key, unit, BotMarketMath.W_ASK, now);
+            maybeBargainBuy(entry, bot, book, merchant, slot, psi, unit, key, now);
+        }
     }
 
     /**
@@ -1608,6 +1724,10 @@ final class BotFreeMarketManager {
 
     static void clearFmErrand(BotEntry entry) {
         BotTravelManager.clearMoveTargetPin(entry);
+        leaveVisitedStall(entry); // release any merchant visitor slot before tearing down the errand
+        entry.fmBrowseEndMs = 0L;
+        entry.fmBrowseOwners = null;
+        entry.fmBrowseIdx = 0;
         entry.fmErrandMapId = -1;
         entry.fmRoomMapId = -1;
         entry.fmPhase = PHASE_TRAVEL;

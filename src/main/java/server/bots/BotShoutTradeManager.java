@@ -67,10 +67,68 @@ public final class BotShoutTradeManager {
         if (!runAiTick || entry.marketBusy) {
             return;
         }
+        if (handlePendingShoutBuy(entry, bot, now)) {
+            return; // deliberating over / acting on a shout we already noticed
+        }
         if (tryMatchHeardShout(entry, bot, now)) {
             return;
         }
         maybeEmitShout(entry, bot, now);
+    }
+
+    private static final int DELIBERATE_MIN_MS = 2_000;  // "think about it" before acting on a shout
+    private static final int DELIBERATE_MAX_MS = 6_000;
+
+    /** Bank a heard shout as the pending decision — the bot mulls it over for a couple seconds rather
+     *  than pouncing the same tick (SoloMapling human-pacing borrow). One at a time. */
+    private static void bankShoutDecision(BotEntry entry, int speakerId, Offer o, boolean selling, long now) {
+        entry.shoutBuyDecideAtMs = now + BotManager.randMs(DELIBERATE_MIN_MS, DELIBERATE_MAX_MS);
+        entry.shoutBuySpeakerId = speakerId;
+        entry.shoutBuyOffer = o;
+        entry.shoutBuySelling = selling;
+    }
+
+    private static void clearShoutDecision(BotEntry entry) {
+        entry.shoutBuyDecideAtMs = 0L;
+        entry.shoutBuySpeakerId = -1;
+        entry.shoutBuyOffer = null;
+        entry.shoutBuySelling = false;
+    }
+
+    /** Drive a pending shout decision: keep mulling until the timer, then RE-VALIDATE (speaker still
+     *  present, still want it, still affordable) and claim+commit; if it lapsed or was taken, drop it.
+     *  Returns true while a decision is pending (consumes the tick so no new match is banked meanwhile). */
+    private static boolean handlePendingShoutBuy(BotEntry entry, Character bot, long now) {
+        if (entry.shoutBuyDecideAtMs == 0L) {
+            return false;
+        }
+        if (now < entry.shoutBuyDecideAtMs) {
+            return true; // still thinking it over
+        }
+        Offer o = entry.shoutBuyOffer;
+        int speakerId = entry.shoutBuySpeakerId;
+        boolean selling = entry.shoutBuySelling;
+        clearShoutDecision(entry); // consume the pending decision regardless of outcome
+        if (o == null || bot.getMap() == null) {
+            return true;
+        }
+        Character speaker = bot.getMap().getCharacterById(speakerId);
+        if (speaker == null || speaker.getTrade() != null) {
+            return true; // walked off / busy — the moment passed
+        }
+        if (selling) {
+            Equip mine = findSellableEquip(entry, bot, o);
+            if (mine == null || !BotMarketShoutBus.getInstance().claim(bot.getMapId(), speakerId, o)) {
+                return true; // no longer have it, or someone else took the shout
+            }
+            commit(entry, bot, speaker, o, true, mine, now);
+        } else {
+            if (!plausibleBuy(bot, o) || !BotMarketShoutBus.getInstance().claim(bot.getMapId(), speakerId, o)) {
+                return true; // no longer worth it, or claimed by another bot
+            }
+            commit(entry, bot, speaker, o, false, null, now);
+        }
+        return true;
     }
 
     /** Drop any pending shout-deal awaiting a departing/despawning character (map-leave or logout). */
@@ -100,22 +158,16 @@ public final class BotShoutTradeManager {
             if (speaker == null || speaker.getTrade() != null) {
                 continue; // left the map, or already busy in a trade
             }
+            // Don't pounce the instant a match is heard — bank it and mull it over for a couple
+            // seconds (handlePendingShoutBuy claims + commits when the timer elapses). Leave the
+            // shout on the bus during deliberation; the claim at commit still guarantees one buyer.
             if (o.kind() == Kind.SELL && plausibleBuy(bot, o)) {
-                if (!BotMarketShoutBus.getInstance().claim(bot.getMapId(), s.speakerId(), o)) {
-                    continue; // another bot claimed it first
-                }
-                commit(entry, bot, speaker, o, false, null, now); // I buy
+                bankShoutDecision(entry, s.speakerId(), o, false, now); // I'd buy
                 return true;
             }
-            if (o.kind() == Kind.BUY) {
-                Equip mine = findSellableEquip(entry, bot, o);
-                if (mine != null) {
-                    if (!BotMarketShoutBus.getInstance().claim(bot.getMapId(), s.speakerId(), o)) {
-                        continue; // another bot claimed it first
-                    }
-                    commit(entry, bot, speaker, o, true, mine, now); // I sell
-                    return true;
-                }
+            if (o.kind() == Kind.BUY && findSellableEquip(entry, bot, o) != null) {
+                bankShoutDecision(entry, s.speakerId(), o, true, now); // I'd sell
+                return true;
             }
         }
         return false;
@@ -281,6 +333,14 @@ public final class BotShoutTradeManager {
             return;
         }
         if (partnerMeetsTerms(entry, bot, trade)) {
+            if (entry.shoutTradeConfirmAtMs == 0L) {
+                entry.shoutTradeConfirmAtMs = now + BotManager.randMs(1_500, 3_000); // a human beat
+                trade.chat("looks good, locking it in");
+                return;
+            }
+            if (now < entry.shoutTradeConfirmAtMs) {
+                return; // pause a moment before committing, like a person double-checking
+            }
             Trade.completeTrade(bot); // locks my side; the exchange fires once both sides are locked
             entry.shoutTradeLocked = true;
             if (bot.getTrade() == null) {
@@ -288,6 +348,7 @@ public final class BotShoutTradeManager {
             }
             return;
         }
+        entry.shoutTradeConfirmAtMs = 0L; // terms slipped (partner un-staged) — restart the beat
         if (trade.isPartnerConfirmed()) {
             abort(entry, bot); // partner locked terms that don't meet the deal
         }
@@ -373,6 +434,7 @@ public final class BotShoutTradeManager {
         entry.shoutTradeInvited = false;
         entry.shoutTradeStaged = false;
         entry.shoutTradeLocked = false;
+        entry.shoutTradeConfirmAtMs = 0L;
     }
 
     // ── emission (bot advertises a surplus equip) ─────────────────────────────

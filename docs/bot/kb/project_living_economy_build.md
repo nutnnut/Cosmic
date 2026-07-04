@@ -196,6 +196,30 @@ boot-log glove factor lands ≈2x weapon avg; if far off, tune REPLACEMENT_HORIZ
 
 ## Pending / next
 
+- **DONE (2026-07-04): SoloMapling behavior borrows — easy set (steal-list items 1,3,4,5,6 in
+  [[kb_bot_solomapling_trade_behavior]]).** Behavior only; pricing stays SSOT.
+  1. **Delayed/considered buying (#1):** `BotShoutTradeManager` no longer pounces the tick a shout
+     matches — `bankShoutDecision` mulls 2-6s then `handlePendingShoutBuy` RE-VALIDATES (speaker
+     present, still wanted/affordable) + claims + commits. One pending at a time; leaves the shout on
+     the bus during deliberation (claim-at-commit still guarantees one buyer). NOTE: true cheapest-of-N
+     comparison (steal #2) NOT built — neither SoloMapling model has it; deferred.
+  3. **Merchant skin variety (#3):** `STALL_SKINS` pool {5030000,5030001,5030002,5030004,5030008,
+     5030010} (WZ-verified permits, tiki 5030012 excluded), picked per-bot (`stallSkin` mod botId) and
+     passed to `createFor` as the cosmetic itemId — bot still gates on/owns PERMIT_ITEM; skin never
+     consumed/refunded (closeShop returns stock, not the permit).
+  4. **Trade confirm beat (#4):** `driveTrade` waits a 1.5-3s human beat + `trade.chat("looks good,
+     locking it in")` before `completeTrade`; resets if terms slip.
+  5+6. **Browse-visit loop (#5+#6):** `tickBrowse` replaces the instant one-tick sweep — walk to each
+     stall via a ±50px `approachSpot` jitter, `addVisitor` (VISIBLE to other clients; may fail at the
+     3-slot cap, still browses), dwell 1-2.5s reading + `maybeBargainBuy`, `removeVisitor`, next; budget
+     = chill×browse dwell. Robust cleanup: `leaveVisitedStall` on dwell-end, watchdog, and clearFmErrand
+     (uses entry.bot). Uses low-level addVisitor/removeVisitor, NOT visitShop, to avoid setting
+     bot.getHiredMerchant() (which `BotAssetView.liveMerchant` reads as the bot's OWN stall). 55 tests
+     green; needs restart. Not done: #2 buy-comparison (build fresh), #7 haggle (S4 BotTradeNegotiator),
+     #8 chatter pools.
+
+
+
 - **DONE (2026-07-04): shout-sell made a deliberate STAND STATE + sibling offers carry real stats
   (owner-directed, post-first-restart).** Two owner asks after watching S3 shout-sell live:
   1. *Free-market shout line carries a stat preview (SSOT reuse).* The `S>` line showed a bare name
