@@ -128,9 +128,9 @@
   <table>
     <tr><th>Check</th><th>Rule</th></tr>
     <tr><td>Is a stat scroll</td><td>Item is in the scroll range and is <b>not</b> a Clean Slate, stat-modifier, or White Scroll.</td></tr>
-    <tr><td>Applies to this item</td><td>The scroll's explicit item list contains this equip, or (no list) the scroll category matches the equip category.</td></tr>
+    <tr><td>Applies to this item</td><td>The scroll's explicit <code>req</code> item list contains this equip (req wins), or (no list) it passes the shared <code>ItemConstants.canScroll</code> category check — the same path the player's <code>ScrollHandler</code> uses, so accessory scrolls (20492xx pendant/ring/belt) now apply too.</td></tr>
     <tr><td>Has upside</td><td>Listed success chance &gt; 0 and it adds stats the bot's class actually values.</td></tr>
-    <tr><td class="muted">Won't destroy gear <span class="pill bad">v1</span></td><td class="muted">Any scroll with a boom (<code>cursed</code>) chance is currently skipped by the scanner — see §8.</td></tr>
+    <tr><td>Boom-capable is allowed <span class="pill acc">now planned</span></td><td>A scroll with a boom (<code>cursed</code>) chance is planned with its real boom rate — gated on a usable fallback item for the slot + positive EV after the boom-loss term (see §6.4).</td></tr>
   </table>
 
   <!-- ============================================================= -->
@@ -177,14 +177,14 @@
 
   <h3>6.3 &nbsp;Cost &amp; rarity → meso <span class="pill acc">how prices are derived</span></h3>
   <p>Both the value curve and the scroll cost need a meso figure for every scroll and base. The intended model is <b>rarity → meso</b>: how hard a thing is to pull out of the world (drop-rate × farming effort). Here is what is <b>actually computed today</b> vs. what is still designed:</p>
-  <p>Cost for both scrolls and bases is the <b>minimum over sources</b> (cheapest source wins; pricier ones are irrelevant):</p>
+  <p>Cost for both scrolls and bases is the cheapest legit source, now <b>blended with the live market tape</b> (<code>scrollPriceMeso</code>) so the value curve breathes with supply and demand instead of sitting on a static shop/farm figure:</p>
   <table>
     <tr><th>Source</th><th>Cost</th><th>Notes</th></tr>
-    <tr><td><b>NPC shop</b></td><td>Cheapest <i>legitimate</i> buy price (<code>shopitems</code>).</td><td>GM/junk listings excluded (below). Used for both scrolls and bases.</td></tr>
-    <tr><td><b>Farming a drop</b></td><td><code>rarity_meso</code> (below) if any mob drops it.</td><td>Real drop-rate rarity — now implemented.</td></tr>
-    <tr><td class="muted">Fallback</td><td class="muted">Flat 1M (scroll) / <code>max(100k, reqLevel×10k)</code> (base).</td><td class="muted">Only when an item is neither shop-sold nor dropped.</td></tr>
+    <tr><td><b>NPC shop</b></td><td>Shop-sold scroll → <code>min(shop price, consensus)</code> when the tape has evidence, else the shop price.</td><td>The NPC's infinite supply is a hard cap, but a glut trading below shop passes through. GM/junk listings excluded (below).</td></tr>
+    <tr><td><b>Farming a drop</b></td><td>Drop-only scroll → the market <b>consensus</b> when the tape has clearings, else <code>rarity_meso</code> (below).</td><td>Real drop-rate rarity is the empty-market prior; a live price supersedes it.</td></tr>
+    <tr><td class="muted">Chaos / White</td><td class="muted"><code>max(10M cold floor, consensus)</code>.</td><td class="muted">Now that chaos gambles and whites protect, the market prices them; 10M is only a floor until the tape has clearings.</td></tr>
   </table>
-  <p class="muted">The full price feeds the value curve (an item is worth what it costs to remake); the per-apply cost of <i>using</i> an owned scroll is <b>0.9 ×</b> price (scrolls are liquid, so using one forgoes nearly its resale).</p>
+  <p class="muted">The full price feeds the value curve (an item is worth what it costs to remake). The per-apply cost of <i>using</i> an owned scroll is <b>0.9 ×</b> price (<code>applyCostMeso</code>) — scrolls are liquid, so using one forgoes nearly its resale. <b>Exception:</b> a <code>tradeBlock</code>ed scroll (<code>[4yrAnniv]</code>, Dragon Stone) can't be sold/listed/traded, so using one forgoes no sale — its apply cost is <b>0</b> (the reproduction curve still keeps the full price; remaking one still costs effort).</p>
   <div class="formula">
     rarity_meso = expectedKills × (secondsPerKill + seekOverhead) × mesoPerSecond<br>
     &nbsp;&nbsp; expectedKills &nbsp;= 1 / baseDropRate &nbsp;<span class="muted">(drop_data chance ÷ 1,000,000; capped)</span><br>
@@ -204,7 +204,7 @@
   </div>
 
   <h3>6.4 &nbsp;Extra gate for boom-capable scrolls</h3>
-  <p>A destroy-capable scroll is allowed only when <b>both</b>: a usable fallback item exists for the slot (so a boom is recoverable), <b>and</b> the expected gain stays positive after the boom-loss term. <span class="muted">(Logic is built and unit-tested; the scanner just doesn't feed boom scrolls yet — §8.)</span></p>
+  <p>A destroy-capable scroll is allowed only when <b>both</b>: a usable fallback item exists for the slot (so a boom is recoverable), <b>and</b> the expected gain stays positive after the boom-loss term. <span class="muted">(Live for owned scrolls: <code>buildOptions</code> carries each scroll's boom rate and the planner gates on <code>hasFallbackForSlot</code> + EV over the destroyed branch.)</span></p>
 
   <h3>6.5 &nbsp;Worked example — Oaker Garner glove (reqLevel 60, 5 slots)</h3>
   <p>Reproduction-cost table at a 500k clean base, with the two obtainable ATT scrolls (60%/+2 and 10%/+3). Cost climbs convexly; the recipe is mostly the cheap 60%, with the 10% gamble only in the extreme tail:</p>
@@ -245,16 +245,16 @@
   <!-- ============================================================= -->
   <h2>9. Current limits &amp; what's next</h2>
   <div class="grid g2">
-    <div class="note">
-      <b>v1 safety cut.</b> The scanner only proposes non-destroying scrolls, so this build <b>cannot</b> destroy the bot's gear. The boom-scroll decision logic exists and is tested; wiring it in (with fallback-slot detection) is a later increment.
+    <div class="ok">
+      <b>Now wired to a live market.</b> The value curve no longer sits on static NPC/farm prices — <code>scrollPriceMeso</code> blends the live consensus tape (§6.3), and boom scrolls are planned with their real rate (§6.4). The bot-driven supply/demand economy is documented on its own page: <a href="living-economy.html">living-economy.html</a>.
     </div>
     <div class="panel">
-      <h3>Known gaps</h3>
+      <h3>Known gaps (open)</h3>
       <ul style="margin:6px 0 0;padding-left:18px">
-        <li><b>Rarity kill-time is coarse</b> — drop-rate × kill-time is implemented (§6.3), but attack timing is a flat 0.72s and mob commonness (spawn density) is a flat overhead pending the Map-WZ spawn cache.</li>
-        <li><b>Offense-only value</b> — HP/DEF/avoid/accuracy/utility score 0, so defensive scrolls are never used. (Producer farming DPS now uses the combat SSOT, so mages are valued off magic damage correctly.)</li>
-        <li><b>No live market</b> — the value curve uses owned scrolls + NPC prices, not bot-driven supply/demand prices (the economy capstone).</li>
-        <li><b>No periodic re-scan</b> — when armed it only chains after a confirmed scroll, not on a timer as it farms new scrolls.</li>
+        <li><b>Offense-only gain axis</b> — the self-scroll DP scores gain by <code>offenseValueFromStats</code>, so pure-defense scrolls (shield DEF/HP, a Dragon Stone's +avoid) never fire even though the equip keep/market axes do count survival. Closing it means moving the DP axis to <code>equipValue</code>-style scoring (base, gain, rival together).</li>
+        <li><b><code>reqRUC</code> unenforced</b> — read nowhere server-side (only the client enforces it), so a bot could apply Dragon Stone with fewer free slots than a real client allows.</li>
+        <li><b>Accessory band curves stay flat</b> — accessory scrolls (20492xx) now apply, but every obtainable one is <code>cursed</code>, and boom scrolls are excluded from the market catalog index by design; the curves stay flat until a non-boom accessory scroll exists.</li>
+        <li><b>Rarity kill-time is coarse</b> — drop-rate × kill-time is implemented (§6.3); mob commonness (spawn density) is a flat overhead pending the Map-WZ spawn cache.</li>
         <li><b>Toggle not persisted</b> across relog.</li>
       </ul>
     </div>
