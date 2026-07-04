@@ -68,6 +68,7 @@ final class BotFreeMarketManager {
     static final int PHASE_BROWSE = 4;   // read the other stalls, maybe grab a bargain
     static final int PHASE_EXIT = 5;     // walk back out to the saved town
     static final int PHASE_FREDRICK = 6; // at the entrance: reclaim closed-stall proceeds
+    static final int PHASE_SHOUT = 7;    // at the entrance: stand still + advertise surplus gear (shout-sell)
 
     /** Fredrick, Hired-Merchant Union chief — stands in the FM entrance (WZ life, verified). */
     static final int FREDRICK_NPC = 9030000;
@@ -105,6 +106,22 @@ final class BotFreeMarketManager {
     static final double FM_BREAK_DETOUR_BUDGET_SECONDS = 45.0;
     /** Chill-session browse dwell multiplier: a "market day" lingers instead of a quick loop. */
     private static final int CHILL_DWELL_FACTOR = 8;
+    /** Shout-sell stand (PHASE_SHOUT): how long the bot stands at the entrance advertising per stint,
+     *  and how much longer a chill "market day" lingers (not much else to do). */
+    private static final long SHOUT_STAND_MIN_MS = 60_000L;
+    private static final long SHOUT_STAND_MAX_MS = 150_000L;
+    private static final int SHOUT_STAND_CHILL_FACTOR = 4;
+    /** Chance a bot with surplus gear stands to shout-sell on the way out of an FM trip: high on a
+     *  normal break (owner: "high chance to stand a bit on exit leg"), near-certain on a chill day. */
+    private static final double SHOUT_STAND_BREAK_CHANCE = 0.75;
+    private static final double SHOUT_STAND_CHILL_CHANCE = 0.95;
+    /** Chance a normal break with sellable gear (but no other market reason) becomes a DEDICATED
+     *  trip whose whole point is to go stand and shout-sell — rarer on a break, common on a chill day
+     *  (chill already always trips, so the exit-leg stand covers it). */
+    private static final double SHOUT_SELL_BREAK_TRIP_CHANCE = 0.15;
+    /** Fidget cadence while standing: a small humanlike shuffle so the bot isn't a frozen statue. */
+    private static final long SHOUT_FIDGET_MIN_MS = 4_000L;
+    private static final long SHOUT_FIDGET_MAX_MS = 11_000L;
     /** Stall slot cap (HiredMerchant.addItem refuses past 16). */
     static final int STALL_SLOT_CAP = 16;
     /** Bounded bargain purchases per trip (wallet + WTP are the real limits; this bounds dwell). */
@@ -491,6 +508,7 @@ final class BotFreeMarketManager {
                 stallServiceDue = entry.nextStallServiceAtMs > 0 && planNow >= entry.nextStallServiceAtMs;
                 fredrickDue = fredrickPickupDue(entry, bot, planNow);
                 listable = selectListings(entry, bot, planNow);
+                entry.fmHasShoutSurplus = !BotInventoryManager.collectMarketableEquips(entry, bot).isEmpty();
             } catch (RuntimeException e) {
                 entry.fmPlanPending = false;
                 return; // WZ/inventory hiccup off-thread — the next scan retries
@@ -532,8 +550,13 @@ final class BotFreeMarketManager {
         // still learns from browsing (satiation gates repeats).
         boolean social = !chilling
                 && ThreadLocalRandom.current().nextDouble() < BotManager.cfg.FM_SOCIAL_BREAK_CHANCE;
+        // A dedicated shout-sell trip: a break bot with sellable gear but no other market reason goes
+        // to stand at the entrance and hawk it — rare on a break, but chill days always trip anyway
+        // (owner spec). The exit-leg shout stand then does the actual selling.
+        boolean shoutTrip = !chilling && entry.fmHasShoutSurplus
+                && ThreadLocalRandom.current().nextDouble() < SHOUT_SELL_BREAK_TRIP_CHANCE;
         if (!stallServiceDue && !fredrickDue && tripWorthyCount(listable) < MIN_LISTINGS_TO_TRIP
-                && !chilling && !social) {
+                && !chilling && !social && !shoutTrip) {
             return; // nothing worth the walk. ponytail: S4 adds the own-income-rate travel gate
         }
 
@@ -550,6 +573,8 @@ final class BotFreeMarketManager {
         entry.fmBrowseUntilMs = 0L;
         entry.fmStandSpot = null;
         entry.fmVisitedMarket = false;
+        entry.fmShoutedThisTrip = false;
+        entry.fmShoutUntilMs = 0L;
         entry.fmPlannedListings = listable; // staged at the stall without re-pricing on-tick
         entry.fmErrandProgress.begin(now);
         entry.fmPhaseDeadlineAtMs = now + ERRAND_TIMEOUT_MS;
@@ -764,6 +789,9 @@ final class BotFreeMarketManager {
             case PHASE_FREDRICK -> {
                 return tickFredrick(entry, bot, runAiTick, now);
             }
+            case PHASE_SHOUT -> {
+                return tickShout(entry, bot, runAiTick, now);
+            }
             case PHASE_BROWSE -> {
                 if (entry.fmBrowseUntilMs == 0L) {
                     int others = browseStalls(entry, bot, now);
@@ -794,6 +822,17 @@ final class BotFreeMarketManager {
                     int next = nextFromEntrance(entry, bot, true);
                     if (next != PHASE_EXIT) {
                         advancePhase(entry, next, now);
+                        return true;
+                    }
+                }
+                // Before walking out, maybe stand a while at the entrance to shout-sell surplus gear
+                // so shoppers can click-invite (owner spec). Decided once per trip (banked via
+                // fmShoutedThisTrip); runs after any Fredrick stop since that resumes to PHASE_EXIT.
+                if (bot.getMapId() == FM_ENTRANCE && !entry.fmShoutedThisTrip) {
+                    entry.fmShoutedThisTrip = true;
+                    if (shoutWorthy(entry, bot)) {
+                        entry.fmStandSpot = null;
+                        advancePhase(entry, PHASE_SHOUT, now);
                         return true;
                     }
                 }
@@ -910,6 +949,159 @@ final class BotFreeMarketManager {
         return true;
     }
 
+    /** True while the bot is actively standing at the entrance to shout-sell (PHASE_SHOUT of a live
+     *  FM errand). {@link BotShoutTradeManager} reads this to drive the fast emission cadence and to
+     *  accept walk-up buyers — and to stand its opportunistic emission down while the stand owns it. */
+    static boolean isShoutStanding(BotEntry entry) {
+        return entry.fmErrandMapId != -1 && entry.fmPhase == PHASE_SHOUT;
+    }
+
+    /** Would this bot bother to stand and shout-sell right now? Needs surplus gear to advertise and
+     *  (unless it's a chill "market day") an audience that could click-invite; then a high/near-certain
+     *  roll (break/chill). Rolled ONCE at the exit transition, not per tick. */
+    private static boolean shoutWorthy(BotEntry entry, Character bot) {
+        if (!BotManager.cfg.FM_MARKET_ENABLED || bot.getMap() == null) {
+            return false;
+        }
+        boolean chill = entry.chillSession;
+        if (!chill && bot.getMap().getAllPlayers().size() < 2) {
+            return false; // nobody around to sell to
+        }
+        if (BotInventoryManager.collectMarketableEquips(entry, bot).isEmpty()) {
+            return false; // nothing worth advertising
+        }
+        BotPersonality p = entry.personality != null ? entry.personality : BotPersonality.defaults();
+        double chance = chill
+                ? SHOUT_STAND_CHILL_CHANCE
+                : SHOUT_STAND_BREAK_CHANCE * (0.4 + 0.6 * p.chattiness());
+        return ThreadLocalRandom.current().nextDouble() < chance;
+    }
+
+    /**
+     * Stand still at the FM entrance advertising surplus gear (owner spec: a deliberate shout-sell
+     * state so shoppers can click-invite). Walk to an uncrowded spot on the entrance floor, then hold
+     * position for a break/chill-scaled dwell while {@link BotShoutTradeManager#emitAtStand} shouts on
+     * a fast cadence and answers walk-up buyers; the odd humanlike fidget keeps it from being a statue.
+     * A trade in progress freezes the dwell (never walk off mid-sale). Then exit to out00.
+     */
+    private static boolean tickShout(BotEntry entry, Character bot, boolean runAiTick, long now) {
+        if (bot.getMapId() != FM_ENTRANCE) {
+            entry.fmStandSpot = null; // bumped off the entrance — just head out
+            advancePhase(entry, PHASE_EXIT, now);
+            return true;
+        }
+        // A shopper's trade window owns the bot now: hold still, keep the stand + watchdog alive, and
+        // linger a touch after so a quick follow-up sale can happen.
+        if (entry.shoutTradeActive() || bot.getTrade() != null) {
+            BotTravelManager.clearMoveTargetPin(entry);
+            entry.fmErrandProgress.touch(now);
+            entry.fmPhaseDeadlineAtMs = Math.max(entry.fmPhaseDeadlineAtMs, now + PHASE_DEADLINE_MS);
+            if (entry.fmShoutUntilMs > 0) {
+                entry.fmShoutUntilMs = Math.max(entry.fmShoutUntilMs, now + 15_000L);
+            }
+            return true;
+        }
+        // Walk to the chosen uncrowded stand spot (same watchdog shape as the Fredrick/stall walk).
+        if (entry.fmStandSpot == null) {
+            entry.fmStandSpot = pickUncrowdedStandSpot(bot);
+            entry.fmStandBestDist = Integer.MAX_VALUE;
+            entry.fmStandStuckSinceMs = now;
+            entry.fmShoutUntilMs = 0L;
+        }
+        Point stand = entry.fmStandSpot;
+        if (stand != null) {
+            int dist = Math.abs(bot.getPosition().x - stand.x) + Math.abs(bot.getPosition().y - stand.y);
+            if (entry.inAir || entry.climbing || dist > 24) {
+                if (dist < entry.fmStandBestDist - 4) {
+                    entry.fmStandBestDist = dist;
+                    entry.fmStandStuckSinceMs = now;
+                }
+                if (now - entry.fmStandStuckSinceMs > PLACE_WALK_STUCK_MS) {
+                    entry.fmStandSpot = new Point(bot.getPosition()); // can't reach it — settle here
+                    stand = entry.fmStandSpot;             // (not null: avoids a re-pick loop next tick)
+                } else {
+                    BotTravelManager.pinMoveTarget(entry, stand);
+                    BotTravelManager.movementStep.step(entry, stand, runAiTick);
+                    entry.fmErrandProgress.touch(now);
+                    return true;
+                }
+            }
+        }
+        BotTravelManager.clearMoveTargetPin(entry);
+        // Settled: arm the dwell budget once (break short, chill lingers), and shout soon after.
+        if (entry.fmShoutUntilMs == 0L) {
+            long base = BotManager.randMs((int) SHOUT_STAND_MIN_MS, (int) SHOUT_STAND_MAX_MS);
+            long dwell = entry.chillSession ? (long) SHOUT_STAND_CHILL_FACTOR * base : base;
+            entry.fmShoutUntilMs = now + dwell;
+            entry.fmPhaseDeadlineAtMs = now + dwell + PHASE_DEADLINE_MS; // don't let the watchdog cut it short
+            entry.nextShoutEmitMs = now + BotManager.randMs(2_000, 8_000); // first shout shortly after settling
+            entry.fmFidgetAtMs = now + BotManager.randMs((int) SHOUT_FIDGET_MIN_MS, (int) SHOUT_FIDGET_MAX_MS);
+            reply.accept(entry, "gonna hang around the market a bit, got some gear to sell");
+        }
+        entry.fmErrandProgress.touch(now);
+        BotShoutTradeManager.emitAtStand(entry, bot, now);
+        maybeFidget(entry, bot, stand, now, runAiTick);
+        if (now >= entry.fmShoutUntilMs) {
+            entry.fmStandSpot = null;
+            advancePhase(entry, PHASE_EXIT, now);
+        }
+        return true;
+    }
+
+    /** A small humanlike shuffle around the stand spot so the bot isn't a frozen statue (owner:
+     *  "random fidgets allowed"). Nudges relative to the FIXED stand point so it never drifts away. */
+    private static void maybeFidget(BotEntry entry, Character bot, Point stand, long now, boolean runAiTick) {
+        if (stand == null || now < entry.fmFidgetAtMs) {
+            return;
+        }
+        entry.fmFidgetAtMs = now + BotManager.randMs((int) SHOUT_FIDGET_MIN_MS, (int) SHOUT_FIDGET_MAX_MS);
+        int dx = ThreadLocalRandom.current().nextBoolean() ? 22 : -22;
+        Point nudge = BotPhysicsEngine.pointBelowIndexed(bot.getMap(), new Point(stand.x + dx, stand.y - 30));
+        if (nudge != null && Math.abs(nudge.y - stand.y) <= 40) {
+            BotTravelManager.movementStep.step(entry, nudge, runAiTick);
+        }
+    }
+
+    /**
+     * An uncrowded ground spot on the entrance floor strip the bot is standing on: the slot column
+     * (every {@link #STALL_SPACING_PX}, same ground-snap + same-level guard as {@link #pickStallSpot})
+     * that maximizes distance to the nearest other player, kept clear of portals — so shoppers can
+     * actually click the bot without it overlapping the crowd. Falls back to standing put.
+     */
+    private static Point pickUncrowdedStandSpot(Character bot) {
+        server.maps.MapleMap map = bot.getMap();
+        if (map == null || map.getFootholds() == null) {
+            return bot.getPosition();
+        }
+        Point pos = bot.getPosition();
+        List<Character> players = map.getAllPlayers();
+        Point best = null;
+        double bestScore = -1;
+        // (spots below are fresh Points from pointBelowIndexed; the fallback copies pos)
+        for (int step = 0; step <= MAX_STALL_SLOT_STEPS; step++) {
+            for (int side = 0; side < (step == 0 ? 1 : 2); side++) {
+                int dir = side == 0 ? 1 : -1;
+                Point spot = BotPhysicsEngine.pointBelowIndexed(map,
+                        new Point(pos.x + dir * step * STALL_SPACING_PX, pos.y - 30));
+                if (spot == null || Math.abs(spot.y - pos.y) > 60 || nearAnyPortal(map, spot)) {
+                    continue; // off the floor strip, or a doorway to keep clear
+                }
+                double minDist = Double.MAX_VALUE;
+                for (Character c : players) {
+                    if (c.getId() != bot.getId()) {
+                        minDist = Math.min(minDist, c.getPosition().distance(spot));
+                    }
+                }
+                double score = minDist == Double.MAX_VALUE ? 1e9 : minDist;
+                if (score > bestScore) {
+                    bestScore = score;
+                    best = spot;
+                }
+            }
+        }
+        return best != null ? best : new Point(pos);
+    }
+
     /**
      * The town this bot's market session returns to: the FREE_MARKET saved location the town
      * portal script stamped on the way in (non-destructive peek — {@code getSavedLocation}
@@ -932,7 +1124,7 @@ final class BotFreeMarketManager {
     }
 
     private static final String[] FM_PHASE_NAMES =
-            {"TRAVEL", "ENTER", "TO_ROOM", "SETUP", "BROWSE", "EXIT", "FREDRICK"};
+            {"TRAVEL", "ENTER", "TO_ROOM", "SETUP", "BROWSE", "EXIT", "FREDRICK", "SHOUT"};
 
     /** Trip trace on the MARKET_TX_CONSOLE flag: a handful of lines per trip, invaluable when a
      *  live funnel stalls somewhere between the town portal and a published stall. */
@@ -1445,6 +1637,9 @@ final class BotFreeMarketManager {
         entry.fmFredrickState = 0;
         entry.fmFredrickOnExit = false;
         entry.fmVisitedMarket = false;
+        entry.fmShoutUntilMs = 0L;
+        entry.fmShoutedThisTrip = false;
+        entry.fmFidgetAtMs = 0L;
         entry.fmPlannedListings = List.of();
         entry.fmErrandProgress.clear();
         entry.marketBusy = false;

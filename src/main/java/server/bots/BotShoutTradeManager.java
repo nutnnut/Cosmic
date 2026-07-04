@@ -43,8 +43,10 @@ public final class BotShoutTradeManager {
 
     private static final long TRADE_DEADLINE_MS = 20_000L;   // give up on a stalled window
     private static final long DEAL_TTL_MS = 15_000L;         // responder must be invited within this
-    private static final int EMIT_MIN_MS = 4 * 60_000;       // per-bot shout cooldown (minutes)
+    private static final int EMIT_MIN_MS = 4 * 60_000;       // opportunistic (browsing) shout cooldown
     private static final int EMIT_MAX_MS = 9 * 60_000;
+    private static final int STAND_EMIT_MIN_MS = 20_000;     // fast cadence while standing to shout-sell
+    private static final int STAND_EMIT_MAX_MS = 60_000;
 
     private BotShoutTradeManager() {}
 
@@ -55,7 +57,11 @@ public final class BotShoutTradeManager {
             return;
         }
         if (bot.getTrade() != null) {
-            tryClaimResponder(entry, bot, now); // an incoming invite may be a deal for us to answer
+            // An incoming invite may be a sibling's negotiated deal; else, while standing to
+            // shout-sell, a walk-up buyer (human or bot) clicking to invite us for our ad.
+            if (!tryClaimResponder(entry, bot, now)) {
+                tryAnswerWalkupBuyer(entry, bot, now);
+            }
             return;
         }
         if (!runAiTick || entry.marketBusy) {
@@ -94,7 +100,7 @@ public final class BotShoutTradeManager {
             if (speaker == null || speaker.getTrade() != null) {
                 continue; // left the map, or already busy in a trade
             }
-            if (o.kind() == Kind.SELL && plausibleBuy(bot, o)) {
+            if (o.kind() == Kind.SELL && plausibleBuy(bot, o, s.equip())) {
                 if (!BotMarketShoutBus.getInstance().claim(bot.getMapId(), s.speakerId(), o)) {
                     continue; // another bot claimed it first
                 }
@@ -115,12 +121,17 @@ public final class BotShoutTradeManager {
         return false;
     }
 
-    /** Coarse pre-filter: the bot can afford it and a clean copy of this equip would upgrade some
-     *  slot (empty or better than worn). The strict per-roll check runs at confirm on the actual
-     *  staged piece — this only avoids opening a window the bot obviously can't/won't honor. */
-    private static boolean plausibleBuy(Character bot, Offer o) {
+    /** Pre-filter: the bot can afford it and the piece is worth the ask. When a sibling attaches the
+     *  ACTUAL rolled equip ({@code offered}) the WTP is measured on its real stats (SSOT) and must
+     *  cover the ask; for a parsed player shout (no piece) a clean copy stands in as a coarse
+     *  "would this slot upgrade at all" gate. The strict per-roll check still re-runs at confirm on
+     *  the actual staged piece — this only avoids opening a window the bot obviously won't honor. */
+    private static boolean plausibleBuy(Character bot, Offer o, Equip offered) {
         if (bot.getMeso() < o.priceMeso()) {
             return false;
+        }
+        if (offered != null) {
+            return BotScrollManager.equipBuyCeilingMeso(bot, offered) >= o.priceMeso();
         }
         Equip clean = cleanEquip(o.itemId());
         return clean != null && BotScrollManager.equipBuyCeilingMeso(bot, clean) > 0;
@@ -161,24 +172,24 @@ public final class BotShoutTradeManager {
 
     // ── responder (the shout speaker being invited) ───────────────────────────
 
-    private static void tryClaimResponder(BotEntry entry, Character bot, long now) {
+    private static boolean tryClaimResponder(BotEntry entry, Character bot, long now) {
         Trade trade = bot.getTrade();
         if (trade == null || trade.getPartner() == null || trade.getNumber() != 1) {
-            return; // not an incoming invite (slot 1) — leave it to the manual/peer trade tick
+            return false; // not an incoming invite (slot 1) — leave it to the manual/peer trade tick
         }
         Deal d = dealsByResponder.get(bot.getId());
         if (d == null || d.expiresAt() <= now) {
-            return;
+            return false;
         }
         int otherId = d.sellerId() == bot.getId() ? d.buyerId() : d.sellerId();
         Character partner = trade.getPartner().getChr();
         if (partner.getId() != otherId) {
-            return; // invite from someone unrelated to our deal
+            return false; // invite from someone unrelated to our deal
         }
         boolean selling = d.sellerId() == bot.getId();
         Equip sell = selling ? findSellableEquip(entry, bot, d.offer()) : null;
         if (selling && sell == null) {
-            return; // no longer have the piece — let the invite lapse/cancel on the initiator's clock
+            return false; // no longer have the piece — let the invite lapse/cancel on the initiator's clock
         }
         dealsByResponder.remove(bot.getId());
         entry.shoutTradePartnerId = partner.getId();
@@ -190,6 +201,50 @@ public final class BotShoutTradeManager {
         entry.shoutTradeStaged = false;
         entry.shoutTradeDeadlineMs = now + TRADE_DEADLINE_MS;
         Trade.visitTrade(bot, partner); // accept the invite → full window
+        return true;
+    }
+
+    /**
+     * A walk-up buyer (human or bot) clicked the bot to invite it while it stands at the FM entrance
+     * advertising its wares (design: shout-sell state). If the bot is actively shout-standing and
+     * still holds a marketable surplus piece, accept the invite as SELLER and offer that piece at its
+     * current ask; {@link #driveTrade} then stages the equip and completes only once the buyer stages
+     * at least the ask (its own escrow refunds anything on a decline/timeout — no dupe/loss). Owner /
+     * commander invites are left to the manual-trade tick; a bot NOT standing to sell never auto-sells
+     * to a random inviter.
+     */
+    private static void tryAnswerWalkupBuyer(BotEntry entry, Character bot, long now) {
+        if (entry.pendingTradeCategory != null || !BotFreeMarketManager.isShoutStanding(entry)) {
+            return;
+        }
+        Trade trade = bot.getTrade();
+        if (trade == null || trade.getPartner() == null || trade.getNumber() != 1) {
+            return; // incoming invite (slot 1) only
+        }
+        Character partner = trade.getPartner().getChr();
+        Character commander = BotManager.getInstance().commanderOrOwner(entry);
+        if (commander != null && partner.getId() == commander.getId()) {
+            return; // an owner/commander trade is the manual tick's business, not a sale
+        }
+        List<Equip> stock = BotInventoryManager.collectMarketableEquips(entry, bot);
+        if (stock.isEmpty()) {
+            return; // nothing to sell after all — let the invite lapse
+        }
+        Equip eq = stock.get(0); // the very piece the stand advertises (top surplus)
+        long ask = BotScrollManager.equipMarketQuote(entry, bot, eq).curveQuoteMeso();
+        if (ask <= 0) {
+            return;
+        }
+        ask = BotMarketMath.humanizeAsk(ask, bot.getId());
+        entry.shoutTradePartnerId = partner.getId();
+        entry.shoutTradeOffer = new Offer(Kind.SELL, eq.getItemId(), 1, (int) Math.min(Integer.MAX_VALUE, ask));
+        entry.shoutTradeSelling = true;
+        entry.shoutTradeInitiator = true; // no sibling to log it — the bot tapes this clearing itself
+        entry.shoutTradeSellEquip = eq;
+        entry.shoutTradeInvited = true;   // window already exists
+        entry.shoutTradeStaged = false;
+        entry.shoutTradeDeadlineMs = now + TRADE_DEADLINE_MS;
+        Trade.visitTrade(bot, partner); // accept → full window
     }
 
     // ── the shared window state machine (both initiator and responder) ────────
@@ -322,16 +377,43 @@ public final class BotShoutTradeManager {
 
     // ── emission (bot advertises a surplus equip) ─────────────────────────────
 
+    /** Opportunistic emission while the bot happens to be in an FM map with an audience (e.g. browsing
+     *  a room). The deliberate entrance shout-stand ({@link #emitAtStand}) owns emission at its own
+     *  fast cadence while active, so this stands down then. */
     private static void maybeEmitShout(BotEntry entry, Character bot, long now) {
+        if (BotFreeMarketManager.isShoutStanding(entry)) {
+            return; // the entrance shout-stand is driving emission at the fast cadence
+        }
         if (now < entry.nextShoutEmitMs) {
             return;
         }
-        if (!BotFreeMarketManager.isFmMap(bot.getMapId()) || bot.getMap().getAllPlayers().size() < 2) {
+        // A social spot with an audience: an FM map, or a town the bot is resting in on a break
+        // (owner: opportunistic shouts are welcome there too, not only at the market).
+        boolean venue = BotFreeMarketManager.isFmMap(bot.getMapId())
+                || BotBreakManager.onRestBreak(entry, bot, now);
+        if (!venue || bot.getMap().getAllPlayers().size() < 2) {
             entry.nextShoutEmitMs = now + EMIT_MIN_MS; // not a social spot / no audience — check back later
             return;
         }
+        emit(entry, bot, now, EMIT_MIN_MS, EMIT_MAX_MS);
+    }
+
+    /** Fast-cadence emission driven by the FM-entrance shout-stand state (design: a deliberate
+     *  stand-still-and-advertise activity). Location + audience are guaranteed by the stand phase,
+     *  so the FM-map/audience gates are skipped here. */
+    static void emitAtStand(BotEntry entry, Character bot, long now) {
+        if (now < entry.nextShoutEmitMs) {
+            return;
+        }
+        emit(entry, bot, now, STAND_EMIT_MIN_MS, STAND_EMIT_MAX_MS);
+    }
+
+    /** Shout the bot's top surplus equip, re-arming the cooldown to a jittered {@code [min,max]}
+     *  regardless of whether this window actually speaks (chattiness roll). The concrete piece rides
+     *  the bus so sibling buyers value its real stats (SSOT). */
+    private static void emit(BotEntry entry, Character bot, long now, int minMs, int maxMs) {
         BotPersonality p = entry.personality != null ? entry.personality : BotPersonality.defaults();
-        entry.nextShoutEmitMs = now + BotManager.randMs(EMIT_MIN_MS, EMIT_MAX_MS);
+        entry.nextShoutEmitMs = now + BotManager.randMs(minMs, maxMs);
         if (ThreadLocalRandom.current().nextDouble() > p.chattiness()) {
             return;
         }
@@ -347,7 +429,7 @@ public final class BotShoutTradeManager {
         }
         ask = BotMarketMath.humanizeAsk(ask, bot.getId());
         Offer offer = new Offer(Kind.SELL, eq.getItemId(), 1, (int) Math.min(Integer.MAX_VALUE, ask));
-        BotMarketShoutBus.getInstance().publish(bot.getMapId(), bot.getId(), offer, now);
+        BotMarketShoutBus.getInstance().publish(bot.getMapId(), bot.getId(), offer, eq, now);
         BotMarketLedger.getInstance().append(EventKind.SHOUT, offer.itemId(), 0, 1,
                 offer.priceMeso(), bot.getId(), null, bot.getMapId());
         BotManager.getInstance().botSay(bot, BotMarketGrammar.format(Kind.SELL, name, 1, offer.priceMeso()));

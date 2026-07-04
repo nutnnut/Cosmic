@@ -515,6 +515,12 @@ public class BotEntry {
     volatile java.util.List<BotFreeMarketManager.ListingPlan> fmPlannedListings = java.util.List.of();
     volatile boolean fmLastTripWorthy = false; // cached off-thread verdict for cheap intent checks
     boolean fmVisitedMarket = false;     // trip reached the FM entrance (fizzles skip satiation)
+    // Shout-sell stand (PHASE_SHOUT): the bot stands still at the FM entrance advertising surplus gear
+    // so shoppers (human or bot) can click-invite to buy. Budget rides the break/chill session.
+    long fmShoutUntilMs = 0L;            // when the stand dwell ends (0 = not yet armed)
+    boolean fmShoutedThisTrip = false;   // exit-leg stand already taken/decided this trip
+    long fmFidgetAtMs = 0L;              // next allowed humanlike fidget while standing
+    volatile boolean fmHasShoutSurplus = false; // cached off-thread: has marketable equips to shout-sell
 
     // Supervised-mode quest AUTO-SUGGEST (Feature A): when the owner is online and the bot is at
     // their side, the bot occasionally SUGGESTS a standout nearby quest in chat (it never wanders

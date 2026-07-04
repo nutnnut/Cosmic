@@ -196,6 +196,41 @@ boot-log glove factor lands ≈2x weapon avg; if far off, tune REPLACEMENT_HORIZ
 
 ## Pending / next
 
+- **DONE (2026-07-04): shout-sell made a deliberate STAND STATE + sibling offers carry real stats
+  (owner-directed, post-first-restart).** Two owner asks after watching S3 shout-sell live:
+  1. *Sibling gear offer specifies stats via SSOT.* A bot's `S>` emission priced a SPECIFIC rolled
+     piece, but a sibling buyer's match pre-filter (`plausibleBuy`) valued a CLEAN copy
+     (`cleanEquip(itemId)`) — a scrolled/high-roll piece got judged on base stats. Fix:
+     `BotMarketShoutBus.Shout` now carries the concrete `Equip` (new 5-arg `publish`; 4-arg → null
+     for parsed PLAYER shouts / stacks); `plausibleBuy(bot, offer, offeredEquip)` values the REAL
+     piece via `equipBuyCeilingMeso` (SSOT) and requires WTP ≥ ask — mirrors the confirm-time
+     `partnerMeetsTerms` on the same staged piece. In-memory, same-server siblings only.
+  2. *Shout-sell is its own state.* New `PHASE_SHOUT` in the FM errand: on the exit leg (after any
+     Fredrick stop) the bot stands STILL at the FM ENTRANCE in an uncrowded spot
+     (`pickUncrowdedStandSpot` = slot-column scan maximizing distance to nearest player, portal-clear)
+     so shoppers can click-invite; emits every 20-60s (`emitAtStand`), light humanlike fidget
+     (`maybeFidget`, ±22px around a FIXED spot so no drift), dwell scaled by session (break
+     60-150s, chill ×4). Entry chance: break 0.75×chattiness-scaled, chill 0.95. A DEDICATED
+     shout-sell trip (go to FM just to hawk) is rare on a break (`SHOUT_SELL_BREAK_TRIP_CHANCE`=0.15,
+     gated on off-thread-cached `fmHasShoutSurplus`), common on chill (chill always trips → exit-leg
+     stand covers it). Budget rides the break/chill session (owner spec).
+  - **Walk-up buyer acceptance (required for #2 to function):** `tickManualTrade` only accepts
+     owner/commander/peer-bot invites — a random HUMAN clicking the standing bot was ignored/timed
+     out, so standing was cosmetic. `BotShoutTradeManager.tryAnswerWalkupBuyer`: while
+     `isShoutStanding`, an unsolicited slot-1 invite (not owner) is accepted as SELLER offering the
+     top surplus piece at its humanized ask; the existing refund-safe `driveTrade` stages the equip
+     and completes only once the buyer stages ≥ ask (tapes TRADE itself — no sibling to log it).
+     `tryClaimResponder` now returns boolean so the walk-up path is the fallback.
+  - **Emission model:** `emit(min,max)` core; opportunistic path (4-9min, FM map OR town-break
+     venue + audience — owner: "opportunistic shout also allowed during town break") STANDS DOWN
+     while `isShoutStanding` so the fast stand cadence owns it. `nextShoutEmitMs` shared, mutually
+     exclusive users.
+  - Files: `BotMarketShoutBus`, `BotShoutTradeManager`, `BotFreeMarketManager` (PHASE_SHOUT +
+     helpers + dedicated trip reason), `BotEntry` (fmShout* fields). 2 new BotMarketShoutBusTest
+     cases (equip carry). 96 economy tests green. NEEDS RESTART to live-verify: bots standing at FM
+     entrance shouting on a fast cadence; a human clicking a standing bot completes a priced sale;
+     siblings valuing the real rolled piece. Pure tests can't exercise the WZ/Character-backed stand.
+
 - **Scroll audit 2026-07-04** ([[kb_bot_scroll_special_scrolls_and_market_feedback]]): 8 ranked
   gaps, **1-6 FIXED same day** (shared ItemConstants.canScroll for 20492xx accessory scrolls;
   scrollPriceMeso blends live consensus for ALL scrolls — shop price caps, glut passes through;
