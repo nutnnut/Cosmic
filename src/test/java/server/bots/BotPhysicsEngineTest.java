@@ -1152,14 +1152,26 @@ class BotPhysicsEngineTest {
     @Test
     void shouldTreatMap193000000BottomAnchoredWallsAsCollidable() {
         MapleMap map = BotNavigationMapLoader.loadMapGeometry(193000000);
-        BotNavigationGraphProvider.rebuildGraph(map);
+        BotNavigationGraph graph = BotNavigationGraphProvider.rebuildGraph(map);
 
-        java.util.Set<Integer> collidableWallIds = BotNavigationGraphProvider.getCachedCollidableWallIds(map.getId());
-
-        assertNotNull(collidableWallIds);
-        assertTrue(collidableWallIds.contains(2), "top-right shaft wall should be collidable");
-        assertTrue(collidableWallIds.contains(10), "left lower wall should be collidable");
-        assertTrue(collidableWallIds.contains(13), "bottom platform right wall should be collidable");
+        // Client zMass rule: a wall collides for movers whose group matches the wall's group (or
+        // the map base group). These bottom-anchored shaft walls belong to the same structure as
+        // the ground at their feet, so a mover launching from that ground must collide with them.
+        java.util.Map<Integer, Foothold> byId = BotPhysicsEngine.footholdsByIdFor(map);
+        for (int wallId : new int[]{2, 10, 13}) {
+            Foothold wall = byId.get(wallId);
+            assertNotNull(wall, "fixture drifted: wall " + wallId + " missing");
+            assertTrue(wall.isWall(), "fixture drifted: foothold " + wallId + " is not a wall");
+            Foothold prev = byId.get(wall.getPrev());
+            Foothold next = byId.get(wall.getNext());
+            Foothold anyGround = prev != null && !prev.isWall() ? prev
+                    : next != null && !next.isWall() ? next : null;
+            assertNotNull(anyGround, "fixture drifted: wall " + wallId + " has no chained ground");
+            int regionId = graph.regionIdByFootholdId.getOrDefault(anyGround.getId(), -1);
+            assertTrue(regionId >= 0, "fixture drifted: no region for ground chained to wall " + wallId);
+            assertTrue(BotPhysicsEngine.wallCollidesForLaunch(map, wall, graph.getRegion(regionId)),
+                    "wall " + wallId + " should collide for a mover of its own structure group");
+        }
     }
 
     @Test

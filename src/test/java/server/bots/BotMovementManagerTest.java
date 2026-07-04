@@ -880,7 +880,10 @@ class BotMovementManagerTest {
 
     @Test
     void shouldSpamSidewaysDuringFidgetWithoutDroppingFollowMode() {
-        MapleMap map = new MapleMap(910000043, 0, 0, 910000043, 1.0f);
+        // 910000066: unique synthetic id — BotDirectionalDropNavigationTest builds a GRAPH for
+        // 910000043, and sharing its id makes peekGraph resolve THAT map's regions here, so
+        // previewGroundStep's region-constrained sampling rejects every step (bot frozen).
+        MapleMap map = new MapleMap(910000066, 0, 0, 910000066, 1.0f);
         server.maps.FootholdTree footholds = new server.maps.FootholdTree(new Point(-2000, -2000), new Point(2000, 2000));
         footholds.insert(new Foothold(new Point(0, 100), new Point(300, 100), 1));
         map.setFootholds(footholds);

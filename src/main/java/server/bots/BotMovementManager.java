@@ -210,7 +210,12 @@ class BotMovementManager {
         entry.navFootholdDetourEdge = null;
         entry.navFootholdDetourTarget = null;
         entry.navPreciseTarget = false;
-        entry.navBlockedPosTicks = 0;
+        // NOTE: navBlockedPosTicks is deliberately NOT reset here, for the same reason as
+        // committedRoute below: incidental clears between AI ticks were zeroing the blocked-pos
+        // counter every ~2 ticks while the committed route kept re-serving the same unexecutable
+        // hop, so the ~300-500ms give-up never fired (12min freeze, KB oscillation ledger #15).
+        // The counter self-resets in trackBlockedPositionGate on any non-blocked tick or on
+        // leaving the drift radius, and is consumed by the give-up itself.
         // NOTE: committedRoute is deliberately NOT cleared here. clearNavigationState fires on many
         // incidental ticks — notably tryExecuteCommittedEdgeAfterGroundMovement the instant a jump
         // completes on landing — and wiping the route there degraded "commit one route and follow it"

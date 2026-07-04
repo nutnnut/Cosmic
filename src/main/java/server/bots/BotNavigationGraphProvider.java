@@ -45,7 +45,7 @@ final class BotNavigationGraphProvider {
     //     inside an 8.93 x fs px/s band (no walkSpeed air cap; counter-strafe pins at the
     //     band edge) and no-input flight drags 1 x fs (100 x fs at terminal fall). Committed
     //     arcs still fly the launch key held, so constant-stepX arc sims stay exact.
-    private static final int GRAPH_VERSION = 69; // 51: kinetic slippery model + snowshoes; 52: brake-to-stop landings; 53: glide-unless-edge stop policy (slipperyStopDir); 56: uncap straight-drop launch windows (full droppable span, no +/-20 fragmentation); 57: remove the (empirically wrong) 300px down-jump drop cap - down-jumps fall until landing; 58: rope-grab reach counts descent below the ledge (mid-rope jump-grabs from adjacent platforms); 59: fall-sim caps to map height not 1500ms - long single-fall descents (tall shafts: Ellinia tree, Perion) now generate DROP/JUMP/ROPE edges; 60: teleport (mage) + flash-jump (thief) skill edges; 61: teleport snap = physics SSOT intent (BotPhysicsEngine.teleportLanding — horizontal same-level priority, blocked-if-none); 62: rope-exit/transfer CLIMB edges carry a Y launch window [launchMinY,launchMaxY] (collapses ~anchorYs×3 near-duplicate same-region jump-offs into one windowed edge, mirroring ground-jump X windows); 63: serialized source-bucketed routes from every region to every portal region; 64: flash-jump edges carry an X launch window (same expand/boundary treatment as ground JUMP) — collapses ~per-anchor FJ point-edges into one windowed edge, mirroring JUMP/DROP/rope windows; 65: teleport edges carry an X launch window too (same treatment; exec computes the blink dest live from the bot's position via the physics SSOT) + down-teleport snaps to FURTHEST platform within range + horizontal y-snap band 70→75; 66: ground-walk follows the standing foothold's prev/next chain across a joined fork (client SN model) instead of snapping down onto the lower overlapping arm — fixes the region-11 (100040000) fork walk-trap that stranded/oscillated bots on the dead-end spur; 67: skip phantom cross-region JUMP/FLASH_JUMP edges whose landing is on ground the SOURCE region already covers (overlapping/coincident chains, e.g. map 600020100 r73 ramp-foot over r97 flat) — such an edge can never change region (client tracks the standing-foothold chain) and trapped bots oscillating against an unexecutable jump-pos gate (NOTE: 67 was documented but the version constant was never bumped — 68 finally regenerates those stale caches too); 68: directional walk-off DROP landings authored via simulateWalkOffLanding from the runway anchor (execution SSOT) — a real dismount leaves the ground up to a sub-tick walk step PAST the lip and can land on a different platform than a lip-pixel fall (100000102: the r18 walk-off lands the y=120 bookshelf, not the floor), so lip-authored edges were unexecutable as committed and parked bots at the runway anchor; 69: directional walk-off DROP edges are authored only when the landing REGION is stable across live launch-state variance (fractional physX phase, carryMs, arrival hspeed — walkOffLandingVariants) — a knife-edge landing authored from the single baseline sim was a planner lie the executor could never reproduce (910000000: DROP r4->r5 landed r6 live, replanning through the same edge in a loop)
+    private static final int GRAPH_VERSION = 70; // 51: kinetic slippery model + snowshoes; 52: brake-to-stop landings; 53: glide-unless-edge stop policy (slipperyStopDir); 56: uncap straight-drop launch windows (full droppable span, no +/-20 fragmentation); 57: remove the (empirically wrong) 300px down-jump drop cap - down-jumps fall until landing; 58: rope-grab reach counts descent below the ledge (mid-rope jump-grabs from adjacent platforms); 59: fall-sim caps to map height not 1500ms - long single-fall descents (tall shafts: Ellinia tree, Perion) now generate DROP/JUMP/ROPE edges; 60: teleport (mage) + flash-jump (thief) skill edges; 61: teleport snap = physics SSOT intent (BotPhysicsEngine.teleportLanding — horizontal same-level priority, blocked-if-none); 62: rope-exit/transfer CLIMB edges carry a Y launch window [launchMinY,launchMaxY] (collapses ~anchorYs×3 near-duplicate same-region jump-offs into one windowed edge, mirroring ground-jump X windows); 63: serialized source-bucketed routes from every region to every portal region; 64: flash-jump edges carry an X launch window (same expand/boundary treatment as ground JUMP) — collapses ~per-anchor FJ point-edges into one windowed edge, mirroring JUMP/DROP/rope windows; 65: teleport edges carry an X launch window too (same treatment; exec computes the blink dest live from the bot's position via the physics SSOT) + down-teleport snaps to FURTHEST platform within range + horizontal y-snap band 70→75; 66: ground-walk follows the standing foothold's prev/next chain across a joined fork (client SN model) instead of snapping down onto the lower overlapping arm — fixes the region-11 (100040000) fork walk-trap that stranded/oscillated bots on the dead-end spur; 67: skip phantom cross-region JUMP/FLASH_JUMP edges whose landing is on ground the SOURCE region already covers (overlapping/coincident chains, e.g. map 600020100 r73 ramp-foot over r97 flat) — such an edge can never change region (client tracks the standing-foothold chain) and trapped bots oscillating against an unexecutable jump-pos gate (NOTE: 67 was documented but the version constant was never bumped — 68 finally regenerates those stale caches too); 68: directional walk-off DROP landings authored via simulateWalkOffLanding from the runway anchor (execution SSOT) — a real dismount leaves the ground up to a sub-tick walk step PAST the lip and can land on a different platform than a lip-pixel fall (100000102: the r18 walk-off lands the y=120 bookshelf, not the floor), so lip-authored edges were unexecutable as committed and parked bots at the runway anchor; 69: directional walk-off DROP edges are authored only when the landing REGION is stable across live launch-state variance (fractional physX phase, carryMs, arrival hspeed — walkOffLandingVariants) — a knife-edge landing authored from the single baseline sim was a planner lie the executor could never reproduce (910000000: DROP r4->r5 landed r6 live, replanning through the same edge in a loop); 70: (a) client-true wall collidability (v95 PDB + v83 CollisionDetectFloat @0x9b36bc): ground walking scans NO walls at all (CVecCtrl::CalcWalk is chain-only; the region model IS the chain, so region-constrained sampling is the junction stop; live-verified both directions on 600020100 x=-1315), and airborne wall collision is scoped by WZ zMass group (a wall collides only for movers of its own structure group or the map base group — Foothold.isCollidableWall chain heuristic deleted), so walk-off/runway/arc sims across foreign-structure walls all change; (b) the v67 phantom shared-ground landing guard now also covers TELEPORT edges (600020100 TELEPORT r97->r73 landed the shared foot — unexecutable tele-pos park)
     /** The nav-graph cache version. The partition cache derives from these graphs, so it keys its own
      *  on-disk cache by this number — a graph-version bump invalidates persisted partitions too. */
     static int graphVersion() {
@@ -83,7 +83,6 @@ final class BotNavigationGraphProvider {
     private static final Map<GraphCacheKey, BotNavigationGraph> GRAPHS = new ConcurrentHashMap<>();
     private static final Map<GraphCacheKey, CompletableFuture<BotNavigationGraph>> PENDING_GRAPHS = new ConcurrentHashMap<>();
     private static final Map<GraphCacheKey, GraphBuildReport> LAST_BUILD_REPORTS = new ConcurrentHashMap<>();
-    private static final Map<Integer, Set<Integer>> COLLIDABLE_WALL_IDS_BY_MAP_ID = new ConcurrentHashMap<>();
     private static final Map<Integer, Set<Integer>> COLLIDABLE_FROM_BELOW_IDS_BY_MAP_ID = new ConcurrentHashMap<>();
     /** Last time any bot was present in / committed to a map, refreshed each eviction sweep. Drives
      *  {@link #evictIdleGraphs}: a map idle past the grace window has its in-memory graph dropped. */
@@ -485,7 +484,6 @@ final class BotNavigationGraphProvider {
             }
             GRAPHS.remove(key);
             LAST_BUILD_REPORTS.remove(key);
-            COLLIDABLE_WALL_IDS_BY_MAP_ID.remove(key.mapId());
             COLLIDABLE_FROM_BELOW_IDS_BY_MAP_ID.remove(key.mapId());
             MAP_LAST_ACTIVE_MS.remove(key.mapId());
             evicted++;
@@ -657,7 +655,9 @@ final class BotNavigationGraphProvider {
             Map<Integer, Foothold> footholdsById = new HashMap<>();
             List<Foothold> walkableFootholds = new ArrayList<>();
             long phaseStartedAt = System.nanoTime();
-            Set<Integer> collidableWallIds = new HashSet<>();
+            // Wall collidability is no longer a per-wall classification: the client scopes it per
+            // MOVER by zMass group (BotPhysicsEngine.wallCollidesForMover), so there is no single
+            // "collidable walls" set to precompute.
             Set<Integer> collidableFromBelowIds;
             for (Foothold foothold : footholds) {
                 footholdsById.put(foothold.getId(), foothold);
@@ -666,16 +666,10 @@ final class BotNavigationGraphProvider {
                 }
             }
             collidableFromBelowIds = classifyCollidableFromBelowFootholds(footholdsById);
-            for (Foothold foothold : footholds) {
-                if (Foothold.isCollidableWall(foothold, footholdsById)) {
-                    collidableWallIds.add(foothold.getId());
-                }
-            }
             buildProfile.collectFootholdsNs = System.nanoTime() - phaseStartedAt;
             buildProfile.footholdCount = footholds.size();
             buildProfile.walkableFootholdCount = walkableFootholds.size();
             buildProfile.ropeCount = map.getRopes().size();
-            COLLIDABLE_WALL_IDS_BY_MAP_ID.put(map.getId(), new HashSet<>(collidableWallIds));
             COLLIDABLE_FROM_BELOW_IDS_BY_MAP_ID.put(map.getId(), new HashSet<>(collidableFromBelowIds));
 
             List<BotNavigationGraph.Region> regions = new ArrayList<>();
@@ -771,7 +765,7 @@ final class BotNavigationGraphProvider {
 
             BotNavigationGraph graph = new BotNavigationGraph(
                     map.getId(), GRAPH_VERSION, movementProfile, regions, regionsById, regionIdByFootholdId, outgoing,
-                    collidableWallIds, collidableFromBelowIds);
+                    Set.of(), collidableFromBelowIds);
             GraphBuildReport report = buildProfile.finish();
             LAST_BUILD_REPORTS.put(GraphCacheKey.from(map.getId(), movementProfile), report);
             log.debug("Built bot nav graph map {} speed={} jump={} in {} ms (regions={}, edges={}, drop={} ms, jump={} ms, jumpSamples={}, cacheHits={})",
@@ -800,10 +794,6 @@ final class BotNavigationGraphProvider {
         return LAST_BUILD_REPORTS.get(GraphCacheKey.from(mapId, movementProfile));
     }
 
-    static Set<Integer> getCachedCollidableWallIds(int mapId) {
-        return COLLIDABLE_WALL_IDS_BY_MAP_ID.get(mapId);
-    }
-
     static Set<Integer> getCachedCollidableFromBelowIds(int mapId) {
         return COLLIDABLE_FROM_BELOW_IDS_BY_MAP_ID.get(mapId);
     }
@@ -826,7 +816,6 @@ final class BotNavigationGraphProvider {
     }
 
     private static void seedCachedFootholdCollisionIds(BotNavigationGraph graph) {
-        COLLIDABLE_WALL_IDS_BY_MAP_ID.put(graph.mapId, new HashSet<>(graph.collidableWallIds));
         COLLIDABLE_FROM_BELOW_IDS_BY_MAP_ID.put(graph.mapId, new HashSet<>(graph.collidableFromBelowIds));
     }
 
@@ -1371,6 +1360,15 @@ final class BotNavigationGraphProvider {
         JumpLaunchWindow launchWindow = expandTeleportLaunchWindow(from, map, regionsById, regionIdByFootholdId,
                 anchor.x, dirX, dirY, to.id);
         if (launchWindow == null) {
+            return;
+        }
+        // Phantom cross-region teleport — same class as the jump guard in addJumpEdges: the landing
+        // sits on ground the SOURCE region also covers (overlapping foothold chains at the same
+        // height), so the post-teleport ground attach cannot be guaranteed to switch chains and the
+        // edge may never change region (600020100 TELEPORT r97->r73 landing (-1241,156) on the shared
+        // foot: A* committed it, the bot parked on tele-pos forever — KB oscillation ledger #15).
+        if (from.surfaceCoversPoint(launchWindow.endPoint().x, launchWindow.endPoint().y,
+                BotNavigationGraph.SHARED_GROUND_Y_PX)) {
             return;
         }
 
@@ -1970,7 +1968,7 @@ final class BotNavigationGraphProvider {
             return null;
         }
         Point launchPoint = from.pointAt(launchX);
-        if (isBlockedWallBoundaryLaunch(map, launchPoint)) {
+        if (isBlockedWallBoundaryLaunch(from, map, launchPoint)) {
             return null;
         }
         if (!BotPhysicsEngine.canStartDownJump(map, launchPoint)
@@ -1999,7 +1997,7 @@ final class BotNavigationGraphProvider {
             return false;
         }
         Point launchPoint = from.pointAt(launchX);
-        if (isBlockedWallBoundaryLaunch(map, launchPoint)) {
+        if (isBlockedWallBoundaryLaunch(from, map, launchPoint)) {
             return false;
         }
         if (launchX > from.minX && canWalkToLaunchX(from, map, launchX - 1, launchX)) {
@@ -2099,20 +2097,18 @@ final class BotNavigationGraphProvider {
         return grab != null;
     }
 
-    private static boolean isBlockedWallBoundaryLaunch(MapleMap map, Point launchPoint) {
+    /** True when the launch pixel sits pinned against a wall face that actually collides for a
+     *  mover launching from {@code from} (client zMass rule — walls of unrelated structures are
+     *  invisible and must not suppress the launch). */
+    private static boolean isBlockedWallBoundaryLaunch(BotNavigationGraph.Region from, MapleMap map, Point launchPoint) {
         if (map == null || map.getFootholds() == null || launchPoint == null) {
-            return false;
-        }
-
-        Set<Integer> collidableWallIds = getCachedCollidableWallIds(map.getId());
-        if (collidableWallIds == null || collidableWallIds.isEmpty()) {
             return false;
         }
 
         for (Foothold foothold : map.getFootholds().getAllFootholds()) {
             if (!foothold.isWall()
-                    || !collidableWallIds.contains(foothold.getId())
-                    || foothold.getX1() != launchPoint.x) {
+                    || foothold.getX1() != launchPoint.x
+                    || !BotPhysicsEngine.wallCollidesForLaunch(map, foothold, from)) {
                 continue;
             }
 
