@@ -596,12 +596,12 @@ final class BotFreeMarketManager {
         trace(entry, "trip armed: town=" + town + " listable=" + listable.size()
                 + " tripworthy=" + tripWorthyCount(listable)
                 + " stallService=" + stallServiceDue + " fredrick=" + fredrickDue);
-        reply.accept(entry, stallServiceDue ? "gonna check on my shop at the fm"
+        reply.accept(entry, stallServiceDue ? BotMarketChatter.tripService()
                 : fredrickDue && tripWorthyCount(listable) < MIN_LISTINGS_TO_TRIP
-                        ? "gonna collect my earnings from fredrick"
+                        ? BotMarketChatter.tripFredrick()
                 : tripWorthyCount(listable) >= MIN_LISTINGS_TO_TRIP
-                        ? "got some stuff to sell, heading to the free market"
-                        : "gonna go window-shop at the free market");
+                        ? BotMarketChatter.tripSell()
+                        : BotMarketChatter.tripWindow());
     }
 
     /**
@@ -729,11 +729,22 @@ final class BotFreeMarketManager {
 
     // ---- errand tick ---------------------------------------------------------------------------
 
-    /** Drives an active market session; true when the tick is consumed. */
+    /** Drives an active market session; true when the tick is consumed. Wrapped so the FM errand
+     *  state machine (travel/browse/stall/fredrick/shout-stand) reports as its own
+     *  {@code common-fm-errand} perf section instead of hiding inside the grind dispatch. */
     static boolean tickErrand(BotEntry entry, Character bot, boolean runAiTick) {
         if (entry.fmErrandMapId == -1) {
             return false;
         }
+        long perfStart = BotPerformanceMonitor.start();
+        try {
+            return tickErrandBody(entry, bot, runAiTick);
+        } finally {
+            BotPerformanceMonitor.recordSince("common-fm-errand", perfStart);
+        }
+    }
+
+    private static boolean tickErrandBody(BotEntry entry, Character bot, boolean runAiTick) {
         long now = System.currentTimeMillis();
         if (entry.fmErrandProgress.stalled(now, ERRAND_TIMEOUT_MS) || now > entry.fmPhaseDeadlineAtMs) {
             trace(entry, "watchdog: " + (now > entry.fmPhaseDeadlineAtMs ? "phase deadline" : "no progress")
@@ -744,7 +755,7 @@ final class BotFreeMarketManager {
             // A fizzle inside pivots to the exit walk; a wedged exit walk falls back to the
             // exact thing the exit portal script (market00.js) does — warp to the saved town.
             if (!isFmMap(bot.getMapId())) {
-                finishErrand(entry, bot, "market trip fizzled, heading back to it later");
+                finishErrand(entry, bot, BotMarketChatter.tripFizzled());
                 return false;
             }
             if (entry.fmPhase == PHASE_EXIT) {
@@ -752,7 +763,7 @@ final class BotFreeMarketManager {
                 finishErrand(entry, bot, null);
                 return false;
             }
-            reply.accept(entry, "market trip fizzled, heading out");
+            reply.accept(entry, BotMarketChatter.tripFizzled());
             advancePhase(entry, PHASE_EXIT, now);
             entry.fmErrandProgress.begin(now); // fresh progress clock for the exit legs
             return true;
@@ -775,7 +786,7 @@ final class BotFreeMarketManager {
                 }
                 Portal market = bot.getMap() != null ? bot.getMap().getPortal("market00") : null;
                 if (market == null) {
-                    finishErrand(entry, bot, "huh, no market entrance here, never mind");
+                    finishErrand(entry, bot, BotMarketChatter.noEntrance());
                     return false;
                 }
                 entry.fmErrandProgress.touch(now);
@@ -793,7 +804,7 @@ final class BotFreeMarketManager {
                 }
                 Portal roomPortal = pickRoomPortal(entry, bot);
                 if (roomPortal == null) {
-                    finishErrand(entry, bot, "market looks packed, another time");
+                    finishErrand(entry, bot, BotMarketChatter.marketPacked());
                     return false;
                 }
                 entry.fmErrandProgress.touch(now);
@@ -942,12 +953,12 @@ final class BotFreeMarketManager {
         if (!hasFredrickHoldings(bot)) {
             entry.fmFredrickState = 2;
             entry.fredrickPickupPending = false;
-            reply.accept(entry, "picked up my stall proceeds from fredrick");
+            reply.accept(entry, BotMarketChatter.fredrickCollected());
         } else if (!entry.fmFredrickOnExit) {
             entry.fmFredrickState = 1; // bag too full — retry on the way out
         } else {
             entry.fmFredrickState = 2;
-            reply.accept(entry, "fredricks still holding some of my stuff, no room in my bag");
+            reply.accept(entry, BotMarketChatter.fredrickPartial());
         }
         advancePhase(entry, resumePhase, now);
         return true;
@@ -1017,7 +1028,7 @@ final class BotFreeMarketManager {
             entry.fmStandSpot = pickStandSpot(bot);
             entry.fmStandBestDist = Integer.MAX_VALUE;
             entry.fmStandStuckSinceMs = now;
-            reply.accept(entry, "gonna hang around the market a bit, got some gear to sell");
+            reply.accept(entry, BotMarketChatter.shoutStand());
         }
         Point stand = entry.fmStandSpot;
         boolean settled = stand != null && !entry.inAir && !entry.climbing
@@ -1345,7 +1356,7 @@ final class BotFreeMarketManager {
         }
         nxCharge.charge(bot, price);
         InventoryManipulator.addById(bot.getClient(), PERMIT_ITEM, (short) 1);
-        reply.accept(entry, "bought a store permit, time to set up shop");
+        reply.accept(entry, BotMarketChatter.permitBought());
         return true;
     }
 
@@ -1384,7 +1395,7 @@ final class BotFreeMarketManager {
             merchant.publish(bot);
             entry.nextStallServiceAtMs = now + BotManager.randMs(STALL_SERVICE_MIN_MS, STALL_SERVICE_MAX_MS);
             trace(entry, "stall published: " + listed + " slots at map " + bot.getMapId());
-            reply.accept(entry, "shop's up, " + listed + " things listed");
+            reply.accept(entry, BotMarketChatter.stallOpened(listed));
         } catch (RuntimeException e) {
             log.warn("stall setup failed for {}: {}", bot.getName(), e.toString());
         } finally {
@@ -1433,7 +1444,7 @@ final class BotFreeMarketManager {
             entry.nextStallServiceAtMs = now + BotManager.randMs(STALL_SERVICE_MIN_MS, STALL_SERVICE_MAX_MS);
             trace(entry, "stall serviced: restocked " + restocked + " of " + free + " free slots");
             if (restocked > 0) {
-                reply.accept(entry, "restocked my shop, " + restocked + " more up");
+                reply.accept(entry, BotMarketChatter.stallRestocked(restocked));
             }
         } finally {
             entry.marketBusy = false;
@@ -1672,8 +1683,7 @@ final class BotFreeMarketManager {
         try {
             merchant.buy(bot.getClient(), slot, (short) 1); // book learns via notifyStallSale
             entry.fmBargainBuys++;
-            reply.accept(entry, gearUpgrade ? "found a gear upgrade at someone's shop"
-                    : "grabbed a deal at someone's shop");
+            reply.accept(entry, BotMarketChatter.bargainBuy(gearUpgrade));
         } catch (RuntimeException e) {
             log.warn("bargain buy failed for {}: {}", bot.getName(), e.toString());
         } finally {
