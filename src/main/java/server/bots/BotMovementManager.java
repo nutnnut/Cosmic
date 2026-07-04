@@ -1143,13 +1143,16 @@ class BotMovementManager {
     }
 
     /** Broadcast a teleport so other clients render a BLINK instead of a glide. Captured client
-     *  teleport packets (logs/monitored-packets-teleport*) carry 4@origin then 3@dest, followed by
-     *  an ordinary absolute landing fragment so observers settle at the arrival side immediately. */
+     *  teleport packets (logs/monitored-packets-teleport*) carry 4@origin (with the origin foothold)
+     *  then 3@dest (fh 0 — arrival is treated as airborne until the settle), followed by an ordinary
+     *  absolute landing fragment so observers settle at the arrival side immediately. */
     static void broadcastTeleport(BotEntry entry, Point origin, Point dest) {
         Character bot = entry.bot;
         BotPhysicsEngine.MovementSnapshot snapshot = BotPhysicsEngine.movementSnapshot(entry);
-        int fhId = resolveBroadcastFhId(entry, bot);
-        byte[] data = buildTeleportMovementData(origin, dest, snapshot, fhId);
+        int fhId = resolveBroadcastFhId(entry, bot); // bot already stands at dest here
+        Foothold originFh = BotPhysicsEngine.findGroundFoothold(bot.getMap(), origin);
+        int originFhId = originFh != null ? originFh.getId() : fhId;
+        byte[] data = buildTeleportMovementData(origin, dest, snapshot, originFhId, fhId);
         InPacket packet = new ByteBufInPacket(Unpooled.wrappedBuffer(data));
         Packet movePacket = PacketCreator.movePlayer(bot.getId(), packet, data.length);
         bot.getMap().broadcastMessage(bot, movePacket, false);
@@ -1167,27 +1170,33 @@ class BotMovementManager {
     static byte[] buildTeleportMovementData(Point origin,
                                             Point dest,
                                             BotPhysicsEngine.MovementSnapshot snapshot,
-                                            int fhId) {
+                                            int originFhId,
+                                            int destFhId) {
         byte[] data = new byte[35];
         int i = 0;
         data[i++] = 3; // teleport origin, teleport destination, landing settle
-        i = putTeleportFrag(data, i, (byte) 4, origin.x, origin.y, snapshot.stance());
-        i = putTeleportFrag(data, i, (byte) 3, dest.x, dest.y, snapshot.stance());
-        putAbsoluteFrag(data, i, dest.x, dest.y, snapshot.velX(), snapshot.velY(), fhId, snapshot.stance());
+        i = putTeleportFrag(data, i, (byte) 4, origin.x, origin.y, originFhId, snapshot.stance());
+        i = putTeleportFrag(data, i, (byte) 3, dest.x, dest.y, 0, snapshot.stance());
+        putAbsoluteFrag(data, i, dest.x, dest.y, snapshot.velX(), snapshot.velY(), destFhId, snapshot.stance());
         return data;
     }
 
-    private static int putTeleportFrag(byte[] data, int i, byte cmd, int x, int y, int stance) {
+    /** Client-true teleport fragment. CMovePath::Decode (v83 @ 0x68a463, cases 3/4) reads
+     *  x, y, fh, stance, elapse — NOT the server-parse layout (x, y, xwobble, ywobble, stance).
+     *  Writing stance as the last byte made observer clients read elapse = stance<<8 ms
+     *  (stance 4 -> ~1s), which kept the teleport frame lingering/stuttering. Real captures
+     *  (logs/monitored-packets-teleport*) always carry elapse 0: the blink is instantaneous. */
+    private static int putTeleportFrag(byte[] data, int i, byte cmd, int x, int y, int fh, int stance) {
         data[i++] = cmd;
         data[i++] = (byte) (x & 0xFF);
         data[i++] = (byte) (x >> 8);
         data[i++] = (byte) (y & 0xFF);
         data[i++] = (byte) (y >> 8);
-        data[i++] = 0; // xwobble
-        data[i++] = 0;
-        data[i++] = 0; // ywobble
-        data[i++] = 0;
+        data[i++] = (byte) (fh & 0xFF);
+        data[i++] = (byte) (fh >> 8);
         data[i++] = (byte) stance;
+        data[i++] = 0; // elapse
+        data[i++] = 0;
         return i;
     }
 

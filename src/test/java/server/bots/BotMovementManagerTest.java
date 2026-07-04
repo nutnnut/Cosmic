@@ -32,20 +32,26 @@ class BotMovementManagerTest {
                 new Point(100, 200),
                 new Point(250, 200),
                 new BotPhysicsEngine.MovementSnapshot(0, 0, CharacterStance.STAND_RIGHT_STANCE),
+                77,
                 321);
 
         assertEquals(35, data.length);
         assertEquals(3, u8(data[0]));
 
+        // Client layout for teleport frags (CMovePath::Decode cases 3/4): x, y, fh, stance, elapse.
         assertEquals(4, u8(data[1]));
         assertEquals(100, i16(data, 2));
         assertEquals(200, i16(data, 4));
-        assertEquals(CharacterStance.STAND_RIGHT_STANCE, u8(data[10]));
+        assertEquals(77, i16(data, 6));
+        assertEquals(CharacterStance.STAND_RIGHT_STANCE, u8(data[8]));
+        assertEquals(0, i16(data, 9), "teleport frame must not linger: elapse must be 0");
 
         assertEquals(3, u8(data[11]));
         assertEquals(250, i16(data, 12));
         assertEquals(200, i16(data, 14));
-        assertEquals(CharacterStance.STAND_RIGHT_STANCE, u8(data[20]));
+        assertEquals(0, i16(data, 16), "arrival frag carries fh 0 until the settle, matching captures");
+        assertEquals(CharacterStance.STAND_RIGHT_STANCE, u8(data[18]));
+        assertEquals(0, i16(data, 19), "teleport frame must not linger: elapse must be 0");
 
         assertEquals(0, u8(data[21]));
         assertEquals(250, i16(data, 22));
