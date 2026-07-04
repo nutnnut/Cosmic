@@ -134,7 +134,11 @@ final class BotTravelManager {
     }
 
     static MovementStep movementStep =
-            (entry, targetPos, runAiTick) -> BotManager.getInstance().stepMovementCore(entry, targetPos, runAiTick);
+            (entry, targetPos, runAiTick) -> {
+                if (!BotManager.getInstance().recoverTeleportDistance(entry, entry.bot, targetPos)) {
+                    BotManager.getInstance().stepMovementCore(entry, targetPos, runAiTick);
+                }
+            };
     static EnRouteAttack enRouteAttack =
             (entry, bot) -> BotManager.getInstance().tryEnRouteOpportunityAttack(entry, bot);
     static RouteLookup routeLookup = BotWorldGraph::route;

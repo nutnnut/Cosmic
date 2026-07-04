@@ -334,6 +334,28 @@ class BotManagerTest {
     }
 
     @Test
+    void shouldRecoverTravelPinnedBotBeforeOffGraphFallConsumesTravelTick() {
+        MapleMap map = createEmptyTestMap(910000055);
+        map.setMapLineBoundings(-500, 500, -500, 500);
+        Point travelTarget = new Point(-700, -898);
+        map.getFootholds().insert(new Foothold(new Point(-800, -898), new Point(-600, -898), 1));
+        Character bot = mockMovingBot(new Point(100, 1700), map);
+        BotEntry entry = new BotEntry(bot, bot, null);
+        entry.lastMapId = map.getId();
+        entry.grinding = true;
+        entry.inAir = true;
+        entry.moveTarget = new Point(travelTarget);
+        entry.moveTargetPrecise = true;
+        entry.moveTargetSource = "travel-pin";
+
+        BotTravelManager.movementStep.step(entry, travelTarget, true);
+
+        assertEquals(travelTarget, bot.getPosition());
+        assertFalse(entry.inAir);
+        assertFalse(entry.climbing);
+    }
+
+    @Test
     void shouldRespawnDeadBotEvenWhenOwnerIsUnavailable() throws Exception {
         MapleMap map = createEmptyTestMap(910000053);
         Character bot = mockMovingBot(new Point(100, 100), map);

@@ -5794,7 +5794,7 @@ public class BotManager {
         return true;
     }
 
-    private boolean recoverTeleportDistance(BotEntry entry, Character bot, Point targetPos) {
+    boolean recoverTeleportDistance(BotEntry entry, Character bot, Point targetPos) {
         Point botPos = bot.getPosition();
         int manhattan = Math.abs(botPos.x - targetPos.x) + Math.abs(botPos.y - targetPos.y);
         if (manhattan > BotMovementManager.cfg.TELEPORT_DIST) {
