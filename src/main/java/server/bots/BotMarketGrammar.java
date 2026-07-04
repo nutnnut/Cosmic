@@ -31,9 +31,12 @@ public final class BotMarketGrammar {
     /** A parsed, resolved shout. {@code priceMeso} is 0 for {@link Kind#PRICE_CHECK}. */
     public record Offer(Kind kind, int itemId, int quantity, int priceMeso) {}
 
+    // Accept the styled prefixes bots emit and humans type — S>/SELL>/Selling> and B>/BUY>/Buying>
+    // (the leading letter still decides the kind), plus PC>/PRICE>.
     private static final Pattern OFFER = Pattern.compile(
-            "(?i)^\\s*([sb])>\\s*(.+?)(?:\\s+x\\s*(\\d+))?\\s+(" + BotChatManager.MESO_AMOUNT_TOKEN + ")\\s*$");
-    private static final Pattern PRICE_CHECK = Pattern.compile("(?i)^\\s*pc>\\s*(.+?)\\s*$");
+            "(?i)^\\s*(s(?:ell(?:ing)?)?|b(?:uy(?:ing)?)?)>\\s*(.+?)(?:\\s+x\\s*(\\d+))?\\s+("
+                    + BotChatManager.MESO_AMOUNT_TOKEN + ")\\s*$");
+    private static final Pattern PRICE_CHECK = Pattern.compile("(?i)^\\s*(?:pc|price)>\\s*(.+?)\\s*$");
 
     /** Item NAME -&gt; itemId, or -1 if unresolved/ambiguous. Default: exact-match-wins over the same
      *  ItemInformationProvider search the farm/trade commands use; tests swap this. */
@@ -47,9 +50,14 @@ public final class BotMarketGrammar {
             return false;
         }
         String s = line.stripLeading();
-        return s.regionMatches(true, 0, "s>", 0, 2)
-                || s.regionMatches(true, 0, "b>", 0, 2)
-                || s.regionMatches(true, 0, "pc>", 0, 3);
+        int gt = s.indexOf('>');
+        if (gt <= 0 || gt > 8) {
+            return false; // a shout prefix is short; anything else isn't one
+        }
+        return switch (s.substring(0, gt).toLowerCase(java.util.Locale.ROOT)) {
+            case "s", "sell", "selling", "b", "buy", "buying", "pc", "price" -> true;
+            default -> false;
+        };
     }
 
     /** Parse + resolve one line into an {@link Offer}, or null if it isn't a well-formed shout. */
@@ -75,7 +83,7 @@ public final class BotMarketGrammar {
         if (price <= 0) {
             return null;
         }
-        Kind kind = "s".equalsIgnoreCase(m.group(1)) ? Kind.SELL : Kind.BUY;
+        Kind kind = Character.toLowerCase(m.group(1).charAt(0)) == 's' ? Kind.SELL : Kind.BUY;
         return new Offer(kind, id, qty, price);
     }
 

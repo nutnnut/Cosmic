@@ -215,8 +215,13 @@ boot-log glove factor lands ≈2x weapon avg; if far off, tune REPLACEMENT_HORIZ
      = chill×browse dwell. Robust cleanup: `leaveVisitedStall` on dwell-end, watchdog, and clearFmErrand
      (uses entry.bot). Uses low-level addVisitor/removeVisitor, NOT visitShop, to avoid setting
      bot.getHiredMerchant() (which `BotAssetView.liveMerchant` reads as the bot's OWN stall). 55 tests
-     green; needs restart. Not done: #2 buy-comparison (build fresh), #7 haggle (S4 BotTradeNegotiator),
-     #8 chatter pools.
+     green; needs restart. Not done: #2 buy-comparison (build fresh), #7 haggle (S4 BotTradeNegotiator).
+  8. **Chatter pools + shout styling (#8):** `BotMarketChatter` (new) holds small randomized pools for
+     the sell-shout line (per-bot prefix S>/SELL>/Selling>, occasional suffix "no lowball"/"pm me"/…,
+     rare full-uppercase) and the trade-window lines (restate/confirm/thanks). `BotMarketGrammar`
+     parser extended to accept the styled prefixes (S>/SELL>/Selling>/B>/BUY>/Buying>/PC>/PRICE>) so
+     lines round-trip and humans can type them; `looksLikeShout` widened to match. Presentation-only
+     (bots match off the structured bus). 50 tests green (+2 grammar cases).
 
 
 

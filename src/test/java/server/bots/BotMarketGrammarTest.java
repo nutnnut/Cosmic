@@ -92,6 +92,27 @@ class BotMarketGrammarTest {
     }
 
     @Test
+    void parsesStyledPrefixVariants() {
+        assertEquals(new Offer(Kind.SELL, 1332006, 1, 300_000), BotMarketGrammar.parse("SELL> ilbis 300k"));
+        assertEquals(new Offer(Kind.SELL, 1332006, 1, 300_000), BotMarketGrammar.parse("Selling> ilbis 300k"));
+        assertEquals(new Offer(Kind.BUY, 1332006, 1, 300_000), BotMarketGrammar.parse("BUY> ilbis 300k"));
+        assertEquals(new Offer(Kind.BUY, 1332006, 1, 300_000), BotMarketGrammar.parse("Buying> ilbis 300k"));
+        assertEquals(new Offer(Kind.PRICE_CHECK, 1442003, 1, 0), BotMarketGrammar.parse("price> fish spear"));
+        assertTrue(BotMarketGrammar.looksLikeShout("SELL> x 1m"));
+        assertTrue(BotMarketGrammar.looksLikeShout("Buying> y 1m"));
+        assertTrue(!BotMarketGrammar.looksLikeShout("selling stuff")); // no '>' -> not a shout
+    }
+
+    @Test
+    void styledSellShoutsStayRecognizableShouts() {
+        // Every styled chatter line (varied prefix/suffix/case) must still read as a shout.
+        for (int bot = 0; bot < 200; bot++) {
+            String line = BotMarketChatter.sellShout("red whip", 5_000_000, bot);
+            assertTrue(BotMarketGrammar.looksLikeShout(line), "not a recognizable shout: " + line);
+        }
+    }
+
+    @Test
     void formatRoundTripsAndStaysAscii() {
         String sell = BotMarketGrammar.format(Kind.SELL, "red whip", 1, 5_000_000);
         assertEquals("S> red whip 5m", sell);

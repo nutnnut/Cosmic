@@ -335,7 +335,7 @@ public final class BotShoutTradeManager {
         if (partnerMeetsTerms(entry, bot, trade)) {
             if (entry.shoutTradeConfirmAtMs == 0L) {
                 entry.shoutTradeConfirmAtMs = now + BotManager.randMs(1_500, 3_000); // a human beat
-                trade.chat("looks good, locking it in");
+                trade.chat(BotMarketChatter.confirm());
                 return;
             }
             if (now < entry.shoutTradeConfirmAtMs) {
@@ -370,8 +370,7 @@ public final class BotShoutTradeManager {
             // Restate the price in the trade window: the shout line scrolls away fast, so the buyer
             // needs the agreed number where they're about to type their meso.
             String name = ItemInformationProvider.getInstance().getName(eq.getItemId());
-            trade.chat((name != null ? name : "this") + " - "
-                    + BotMarketGrammar.mesoShort(entry.shoutTradeOffer.priceMeso()));
+            trade.chat(BotMarketChatter.restate(name != null ? name : "this", entry.shoutTradeOffer.priceMeso()));
             return true;
         }
         int price = entry.shoutTradeOffer.priceMeso();
@@ -407,8 +406,7 @@ public final class BotShoutTradeManager {
         }
         BotMarketBook.of(entry, bot).observe(BotMarketMath.priceKey(o.itemId(), 0),
                 o.priceMeso(), BotMarketMath.W_TRADE, now);
-        BotManager.getInstance().botSay(bot, entry.shoutTradeSelling ? "thanks, pleasure doing business"
-                : "thanks!");
+        BotManager.getInstance().botSay(bot, BotMarketChatter.thanks(entry.shoutTradeSelling));
         clear(entry);
     }
 
@@ -498,7 +496,7 @@ public final class BotShoutTradeManager {
                 offer.priceMeso(), bot.getId(), null, bot.getMapId());
         String preview = BotInventoryManager.describeAutoSellItem(
                 ItemInformationProvider.getInstance(), null, eq); // "+7 att <name>", item-class perspective
-        BotManager.getInstance().botSay(bot, BotMarketGrammar.format(Kind.SELL, preview, 1, offer.priceMeso()));
+        BotManager.getInstance().botSay(bot, BotMarketChatter.sellShout(preview, offer.priceMeso(), bot.getId()));
     }
 
     // ── helpers ───────────────────────────────────────────────────────────────
