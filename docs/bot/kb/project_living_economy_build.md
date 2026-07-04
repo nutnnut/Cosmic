@@ -5,7 +5,11 @@ metadata:
   type: project
 ---
 
-# Living economy — build state (2026-07-03)
+# Living economy — build state (2026-07-04)
+
+**HANDOFF: `docs/bot/economy-handoff-2026-07-04.md`** — fresh-session continuation instructions
+(reading order, live-verify checklist for the not-yet-restarted 2026-07-04 fixes, S4-second-half
+work breakdown, distilled working rules). Start there.
 
 **Design of record: `docs/bot/living-economy-design.md`** (rev 2: consensus statistic + noisy
 per-bot perception; structured priors for cross-item coherence; travel-frugality owner rules in
