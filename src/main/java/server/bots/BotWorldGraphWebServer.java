@@ -299,44 +299,61 @@ public final class BotWorldGraphWebServer {
         Map<String, String> wmParent = new HashMap<>(); // child worldmap id -> parent (overview) worldmap id
         Map<String, Set<Integer>> wmMaps = new HashMap<>(); // worldmap id -> the maps it shows
         for (String id : worldMapIds()) {
-            Data wm = dp.getData("WorldMap/WorldMap" + id + ".img");
+            Data wm;
+            try {
+                wm = dp.getData("WorldMap/WorldMap" + id + ".img");
+            } catch (RuntimeException e) {
+                log.warn("Bot world-graph web view: skipping unreadable WorldMap{}: {}", id, e.toString());
+                continue;
+            }
             if (wm == null) {
                 continue;
             }
-            Point origin = DataTool.getPoint("BaseImg/0/origin", wm, new Point(0, 0)); // canvas is named "0"
-            Data mapList = wm.getChildByPath("MapList");
-            if (mapList == null) {
-                continue;
-            }
-            String pm = DataTool.getString("parentMap", wm, null); // detail worldmaps point at their overview
-            if (pm != null && pm.startsWith("WorldMap")) {
-                wmParent.put(id, pm.substring("WorldMap".length()));
-            }
-            List<WorldSpot> spots = new ArrayList<>();
-            Set<Integer> primaries = new HashSet<>();  // dedup repeated entries within this worldmap
-            Set<Integer> onThisWm = new HashSet<>();    // distinct maps on this worldmap
-            for (Data entry : mapList.getChildren()) {
-                Point spot = DataTool.getPoint("spot", entry, null);
-                Data mapNo = entry.getChildByPath("mapNo");
-                if (spot == null || mapNo == null) {
+            try {
+                Point origin = safePoint("BaseImg/0/origin", wm, new Point(0, 0)); // canvas is named "0"
+                Data mapList = wm.getChildByPath("MapList");
+                if (mapList == null) {
                     continue;
                 }
-                List<Integer> maps = new ArrayList<>();
-                for (Data mn : mapNo.getChildren()) {
-                    int mapId = DataTool.getInt(mn, -1);
-                    if (mapId >= 0 && !maps.contains(mapId)) {
-                        maps.add(mapId);
+                String pm = DataTool.getString("parentMap", wm, null); // detail worldmaps point at their overview
+                if (pm != null && pm.startsWith("WorldMap")) {
+                    wmParent.put(id, pm.substring("WorldMap".length()));
+                }
+                List<WorldSpot> spots = new ArrayList<>();
+                Set<Integer> primaries = new HashSet<>();  // dedup repeated entries within this worldmap
+                Set<Integer> onThisWm = new HashSet<>();    // distinct maps on this worldmap
+                for (Data entry : mapList.getChildren()) {
+                    try {
+                        Point spot = safePoint("spot", entry, null);
+                        Data mapNo = entry.getChildByPath("mapNo");
+                        if (spot == null || mapNo == null) {
+                            continue;
+                        }
+                        List<Integer> maps = new ArrayList<>();
+                        for (Data mn : mapNo.getChildren()) {
+                            int mapId = safeInt(mn, -1);
+                            if (mapId >= 0 && !maps.contains(mapId)) {
+                                maps.add(mapId);
+                            }
+                        }
+                        if (maps.isEmpty() || !primaries.add(maps.get(0))) {
+                            continue;
+                        }
+                        spots.add(new WorldSpot(List.copyOf(maps), origin.x + spot.x, origin.y + spot.y));
+                        onThisWm.addAll(maps);
+                    } catch (RuntimeException e) {
+                        log.warn("Bot world-graph web view: skipping bad WorldMap{} MapList entry {}: {}",
+                                id, entry.getName(), e.toString());
+                        continue;
                     }
                 }
-                if (maps.isEmpty() || !primaries.add(maps.get(0))) {
-                    continue;
-                }
-                spots.add(new WorldSpot(List.copyOf(maps), origin.x + spot.x, origin.y + spot.y));
-                onThisWm.addAll(maps);
+                wmIds.add(id);
+                byWm.put(id, spots);
+                wmMaps.put(id, onThisWm);
+            } catch (RuntimeException e) {
+                log.warn("Bot world-graph web view: skipping bad WorldMap{}: {}", id, e.toString());
+                continue;
             }
-            wmIds.add(id);
-            byWm.put(id, spots);
-            wmMaps.put(id, onThisWm);
         }
         // dup = a map shown on more than one INDEPENDENT worldmap; an overview and its zoomed detail
         // (linked by parentMap) collapse to a single root, so they don't count as duplicates.
@@ -355,6 +372,22 @@ public final class BotWorldGraphWebServer {
             spotMaps.addAll(ms);
         }
         return new WorldSpots(wmIds, byWm, occur, spotMaps);
+    }
+
+    private static Point safePoint(String path, Data data, Point def) {
+        try {
+            return DataTool.getPoint(path, data, def);
+        } catch (RuntimeException e) {
+            return def;
+        }
+    }
+
+    private static int safeInt(Data data, int def) {
+        try {
+            return DataTool.getInt(data, def);
+        } catch (RuntimeException e) {
+            return def;
+        }
     }
 
     /**
@@ -623,18 +656,35 @@ public final class BotWorldGraphWebServer {
     private static List<String> worldMapIds() {
         List<String> ids = new ArrayList<>();
         java.util.regex.Pattern pat = java.util.regex.Pattern.compile("^WorldMap(\\d+)\\.img\\.xml$");
+        int missingImages = 0;
         try (var files = Files.list(Path.of(WZFiles.MAP.getFilePath(), "WorldMap"))) {
             for (Path p : (Iterable<Path>) files::iterator) {
                 java.util.regex.Matcher m = pat.matcher(p.getFileName().toString());
                 if (m.matches()) {
-                    ids.add(m.group(1));
+                    if (hasWorldMapImage(m.group(1))) {
+                        ids.add(m.group(1));
+                    } else {
+                        missingImages++;
+                    }
                 }
             }
         } catch (IOException e) {
             log.warn("Bot world-graph web view: can't list WorldMap dir: {}", e.toString());
         }
+        if (missingImages > 0) {
+            log.warn("Bot world-graph web view: skipped {} WorldMap XML file(s) without wz-WorldMap PNG exports",
+                    missingImages);
+        }
         Collections.sort(ids);
         return ids;
+    }
+
+    static boolean hasWorldMapImage(String id) {
+        return Files.isRegularFile(worldMapImagePath(id));
+    }
+
+    private static Path worldMapImagePath(String id) {
+        return Path.of("wz-WorldMap", id + ".png");
     }
 
     /** Serve a worldmap's BaseImg PNG from {@code wz-WorldMap/<id>.png} (committed, sibling to wz/). */
@@ -645,7 +695,7 @@ public final class BotWorldGraphWebServer {
             send(ex, 404, "text/plain", "bad id".getBytes(StandardCharsets.UTF_8));
             return;
         }
-        Path file = Path.of("wz-WorldMap", id + ".png");
+        Path file = worldMapImagePath(id);
         if (!Files.isRegularFile(file)) {
             send(ex, 404, "text/plain", "no image".getBytes(StandardCharsets.UTF_8));
             return;
