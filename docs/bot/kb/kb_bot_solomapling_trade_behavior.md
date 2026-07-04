@@ -91,6 +91,11 @@ Fires when a HUMAN types a price into a bot's shop chat. Separate from `BotTrade
 
 ## Steal-list for our economy update (ranked)
 
+**STATUS 2026-07-04: items 1, 3, 4, 5, 6 LANDED** (commit on dev-economy; see
+[[project_living_economy_build]] DONE entry). Still open: #2 buy-comparison (build fresh — neither
+fork has true best-of-N), #7 haggle (S4 `BotTradeNegotiator`), #8 chatter pools.
+
+
 Maps onto our code: `BotShoutTradeManager` (shout emit/match/trade SM), `BotFreeMarketManager`
 (browse/stand/stall), a future `BotTradeNegotiator` (S4 haggle), `BotPersonality` (traits).
 
