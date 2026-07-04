@@ -555,6 +555,9 @@ final class BotAutopilotManager {
         if (BotBreakManager.onBreak(entry, now) || entry.restErrand || now < entry.nextBreakRollAtMs) {
             return true; // a group break is already running / just rolled
         }
+        if (cohortTransitActive(cohort)) {
+            return true; // do not strand portal waiters by starting a break mid-cohort travel
+        }
         entry.nextBreakRollAtMs = now + 60_000L;
         double avgFreq = 0, avgIdle = 0;
         for (BotEntry m : cohort) {
@@ -585,6 +588,24 @@ final class BotAutopilotManager {
             }
         }
         return true;
+    }
+
+    static boolean cohortTransitActive(List<BotEntry> cohort) {
+        if (cohort == null) {
+            return false;
+        }
+        for (BotEntry m : cohort) {
+            if (m == null) {
+                continue;
+            }
+            if (m.followTravelTargetMapId != -1
+                    || m.autopilotTransitFollow
+                    || m.autopilotWaitAnchor != null
+                    || m.autopilotWaitingForStragglers) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** Owner ordered "farm <item>": same autopilot, objective pinned to the item. */

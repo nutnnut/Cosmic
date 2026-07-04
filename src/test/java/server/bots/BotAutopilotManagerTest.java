@@ -365,6 +365,33 @@ class BotAutopilotManagerTest {
     }
 
     @Test
+    void shouldNotStartGroupBreakWhileCohortIsInTransit() {
+        Fixture leader = fixture(104000000, onlineOwner());
+        Fixture follower = fixture(TOWN, onlineOwner());
+        for (Fixture f : List.of(leader, follower)) {
+            f.entry().autopilotParty = true;
+            f.entry().grinding = true;
+        }
+        leader.entry().autopilotWaitAnchor = new Point(228, 640);
+        leader.entry().autopilotWaitAnchorMapId = 104000000;
+        leader.entry().autopilotWaitingForStragglers = true;
+        follower.entry().autopilotTransitFollow = true;
+        follower.entry().followTravelTargetMapId = HUNTING_GROUND;
+
+        try (Seams seams = new Seams(null)) {
+            BotAutopilotManager.partyMembers = entry -> List.of(leader.entry(), follower.entry());
+
+            assertTrue(BotAutopilotManager.maybeStartGroupBreak(leader.entry(), leader.bot()));
+            assertEquals(0L, leader.entry().nextBreakRollAtMs,
+                    "skipping during transit should not consume the next break roll");
+            assertEquals(0L, leader.entry().breakUntilMs);
+            assertFalse(leader.entry().restErrand);
+            assertEquals(0L, follower.entry().breakUntilMs);
+            assertFalse(follower.entry().restErrand);
+        }
+    }
+
+    @Test
     void shouldRestoreGrindWhenTransitFollowerArrivesAtDestination() {
         Fixture follower = fixture(HUNTING_GROUND, onlineOwner());
         follower.entry().autopilotMapId = HUNTING_GROUND;

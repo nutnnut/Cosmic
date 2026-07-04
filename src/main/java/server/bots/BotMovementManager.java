@@ -732,7 +732,13 @@ class BotMovementManager {
         // ground walking toward a region exit, so dodging across it is safe: simulatedJumpLandsInCurrentRegion
         // below guarantees the bot lands in the same region and does not derail the path.
         boolean traveling = entry.followTravelTargetMapId != -1;
+        boolean parkingIdle = entry.idleLeech
+                || entry.hpResting
+                || System.currentTimeMillis() < entry.breakUntilMs;
         if (!dodgeModeAllowed(entry.following, entry.grinding, traveling, entry.navEdge, entry.navPreciseTarget)) {
+            return false;
+        }
+        if (parkingIdle) {
             return false;
         }
 

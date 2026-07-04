@@ -402,6 +402,23 @@ teleport-guard (no phantom, escape preserved).
 `pathlog-fictionxD` "jumping back-forth" = a single clean walk-off DROP mid-descent (`Stuck:no`,
 `r=-1` is the normal airborne reading). No oscillation.
 
+## 16. Break parking misclassified as locomotion, mob-dodge jump loop (551020000, FIXED)
+
+Symptom (live 2026-07-04, `pathlog-KatieRon9000-2026-07-04T082221`): exact graph v70, no
+committed edge, `Last nav decision: no-ai (AI step suppressed: on break)`, but the bot loops
+between roughly x=-49 and x=71 on region 5. Tick history alternates grounded `nav=same-region`
+ticks to local `nav-input` anchors and airborne arcs with `airVelX` flipping sign; the follow /
+travel target is region 14 but the active movement target is the held break idle anchor.
+
+Root cause: in-session break parking runs inside grind mode (`entry.grinding` stays true), so
+`shouldJumpToAvoidMob` treated walking to the break idle anchor as normal grind/follow/travel
+locomotion. With a mob in the walk lane and the simulated landing still in the current region,
+the motor repeatedly launched dodge jumps over the idle anchor, then steered back the other way.
+
+Fix: mob-avoid dodge is suppressed while explicitly parking for break, idle-leech, or HP-rest
+(`breakUntilMs`, `idleLeech`, `hpResting`). Normal grind/follow/travel ground movement still
+keeps dodge behavior. Regression: `BotMovementManagerTest.shouldNotMobDodgeWhileParkingOnBreak`.
+
 ## Files
 - `BotNavigationGraph.java` — `Region.surfaceCoversPoint` + `SHARED_GROUND_Y_PX` (#8)
 - `BotNavigationGraphProvider.java` — `addJumpEdges`/`addFlashJumpEdges` shared-ground guard,

@@ -430,6 +430,27 @@ class BotMovementManagerTest {
     }
 
     @Test
+    void shouldNotMobDodgeWhileParkingOnBreak() {
+        MapleMap realMap = new MapleMap(910009050, 0, 0, 910009050, 1.0f);
+        server.maps.FootholdTree footholds = new server.maps.FootholdTree(new Point(-2000, -2000), new Point(2000, 2000));
+        footholds.insert(new Foothold(new Point(0, 100), new Point(300, 100), 1));
+        realMap.setFootholds(footholds);
+        BotNavigationGraphProvider.rebuildGraph(realMap);
+        MapleMap map = spy(realMap);
+        doReturn(List.of(mockMob(new Point(130, 100), 100100))).when(map).getAllMonsters();
+
+        Character bot = mockBot(new Point(100, 100), map);
+        BotEntry entry = new BotEntry(bot, null, null);
+        entry.grinding = true;
+        entry.breakUntilMs = System.currentTimeMillis() + 60_000L;
+        BotMovementManager.cfg.MOB_AVOID_REACTION_CHANCE = 1.0;
+
+        BotMovementManager.tickGrounded(entry, new Point(250, 100));
+
+        assertFalse(entry.inAir, "break parking should walk to its held anchor instead of mob-dodge looping");
+    }
+
+    @Test
     void shouldNotJumpOverBlockingMobWhenSimulatedLandingLeavesCurrentRegion() {
         // Build on the bare map before spying — see shouldJumpForwardWhenMobBlocksWalkLaneAndLandingStaysInCurrentRegion
         // for why rebuildGraph through a spy OOMs.
