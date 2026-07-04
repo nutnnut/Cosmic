@@ -162,6 +162,22 @@ boot-log glove factor lands ≈2x weapon avg; if far off, tune REPLACEMENT_HORIZ
   Owner-raised as a side-task next to the S4 mesoFocus/haggle trait wiring — humanizeAsk STYLE is a
   natural future BotPersonality field (currently keyed off id).
 
+- **DONE (2026-07-04): magic-weapon mispricing root fix.** Live stall showed 3 Hall Staffs (same id)
+  priced 96.9/95.9/94.9M with a 53-matt piece ABOVE a 60-matt one — the band didn't track the
+  mage-relevant stat. Root cause: `marketStatValueOf`/`marketStatValue(clean)` (the band axis) summed
+  BOTH attacks + all four main stats job-neutrally, so a staff's band was dominated by watk (×ATT_WEIGHT
+  5.0, combat-useless to a mage) and stray STR/DEX/LUK (×1), not its matk (×MATK_WEIGHT 1.0, deliberately
+  low). Fix (SSOT `equipMarketWorth(itemId, …)`, weapon-type-aware via `ItemInformationProvider.getWeaponType`):
+  a WEAPON is valued only by what its wielders use — magic weapon (WAND/STAFF) by matk + INT, physical
+  weapon by watk + STR/DEX/LUK; armor/accessory keep both attacks + all mains (any class wears them).
+  Applied to `marketStatValueOf` and a new `marketStatValueOfClean` used for the band BASELINE in
+  `equipMarketQuote` (baseScore) + `equipQualityBand`, so surplus is measured on the same axis. The
+  deliberate matk-per-point weight (line 54-55) is PRESERVED — this is about WHICH stats a weapon's band
+  counts, not their per-point value. Also collapses the inflated ~97M magnitude (watk×5 no longer pumps
+  the band → curve). Scroll-gain valuation (`marketStatValue(Map)`) and the job-aware combat path
+  (`offenseValue`) are untouched. Needs a restart to see live; 32 economy tests green (pure, can't
+  exercise the WZ-backed quote — verify live that the Hall Staffs re-rank by matk).
+
 ## Pending / next
 
 - **S2 live-verified (2026-07-03):** 8 stalls × 16 slots clustered, Fredrick collect→publish

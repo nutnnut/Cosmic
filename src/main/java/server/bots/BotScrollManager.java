@@ -7,6 +7,7 @@ import client.inventory.Equip.ScrollResult;
 import client.inventory.Inventory;
 import client.inventory.InventoryType;
 import client.inventory.Item;
+import client.inventory.WeaponType;
 import client.inventory.ModifyInventory;
 import client.inventory.manipulator.InventoryManipulator;
 import config.YamlConfig;
@@ -1531,12 +1532,40 @@ final class BotScrollManager {
      *  band is never discounted; a clean base is fully fungible with a shop/drop copy. */
     static final double SECONDHAND_DISCOUNT = 0.6;
 
-    /** Job-agnostic market worth of an equip's ACTUAL rolled stats — the {@link Equip}-getter
-     *  counterpart to {@link #marketStatValue}, for pricing a specific rolled piece. */
+    /** Market worth of an equip's stats, counting only what the piece's wielders actually use: a
+     *  magic weapon (wand/staff) by matk + INT, a physical weapon by watk + STR/DEX/LUK, anything
+     *  else (armor, accessory — worn by every class) by both attacks + all main stats. This is why
+     *  a Hall Staff is never priced up by its combat-irrelevant weapon attack or a stray STR roll —
+     *  a weapon's band must track the stat its buyers pay for. Preserves the deliberate matk weight
+     *  (a magic weapon is still cheaper per attack point than a physical one). */
+    private static double equipMarketWorth(int itemId, int watk, int matk,
+            int str, int dex, int intel, int luk, double survival) {
+        WeaponType wt = ItemInformationProvider.getInstance().getWeaponType(itemId);
+        if (wt == WeaponType.WAND || wt == WeaponType.STAFF) {
+            return MATK_WEIGHT * matk + MAIN_STAT_WEIGHT * intel + survival;
+        }
+        if (wt != WeaponType.NOT_A_WEAPON) {
+            return ATT_WEIGHT * watk + MAIN_STAT_WEIGHT * (str + dex + luk) + survival;
+        }
+        return ATT_WEIGHT * watk + MATK_WEIGHT * matk
+                + MAIN_STAT_WEIGHT * (str + dex + intel + luk) + survival;
+    }
+
+    /** Market worth of an equip's ACTUAL rolled stats — the {@link Equip}-getter counterpart to
+     *  {@link #marketStatValue}, for pricing a specific rolled piece (see {@link #equipMarketWorth}). */
     static double marketStatValueOf(Equip eq) {
-        return ATT_WEIGHT * eq.getWatk() + MATK_WEIGHT * eq.getMatk()
-                + MAIN_STAT_WEIGHT * (eq.getStr() + eq.getDex() + eq.getInt() + eq.getLuk())
-                + survivalValue(eq);
+        return equipMarketWorth(eq.getItemId(), eq.getWatk(), eq.getMatk(),
+                eq.getStr(), eq.getDex(), eq.getInt(), eq.getLuk(), survivalValue(eq));
+    }
+
+    /** Same worth as {@link #marketStatValueOf} for an equip's CLEAN catalog stats — used as the band
+     *  baseline so the surplus (rolled − clean) is measured on the same weapon-aware axis. */
+    static double marketStatValueOfClean(int itemId, Map<String, Integer> st) {
+        return equipMarketWorth(itemId,
+                st.getOrDefault("PAD", 0), st.getOrDefault("MAD", 0),
+                st.getOrDefault("STR", 0), st.getOrDefault("DEX", 0),
+                st.getOrDefault("INT", 0), st.getOrDefault("LUK", 0),
+                survivalValueFromStats(st));
     }
 
     /**
@@ -1561,7 +1590,7 @@ final class BotScrollManager {
             return null;
         }
         ProducerCombat pc = resolveProducerCombat(entry, bot);
-        double baseScore = marketStatValue(clean);
+        double baseScore = marketStatValueOfClean(eq.getItemId(), clean);
         int tuc = clean.getOrDefault("tuc", 0);
         double[] gains = catalogGains(ii, eq.getItemId());
         double unit = bandUnit(gains);
@@ -1614,7 +1643,7 @@ final class BotScrollManager {
         }
         double[] gains = catalogGains(ii, eq.getItemId());
         double unit = bandUnit(gains);
-        int band = BotMarketMath.qualityBand(marketStatValueOf(eq) - marketStatValue(clean), unit);
+        int band = BotMarketMath.qualityBand(marketStatValueOf(eq) - marketStatValueOfClean(eq.getItemId(), clean), unit);
         return Math.min(band, maxBand(gains, unit, clean.getOrDefault("tuc", 0)));
     }
 
