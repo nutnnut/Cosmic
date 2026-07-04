@@ -1081,9 +1081,11 @@ final class BotAutopilotManager {
     }
 
     /** Coarse activity bucket for the roster summary: {@code "chill"} for a whole-session chill login;
-     *  {@code "break"} when otherwise resting and not working (in-session break, gachapon trip,
-     *  idle/idle-leech, or winding down to log off); else {@code "grind"} for everything productive
-     *  (grinding, traveling there, resupplying, quest/job errands). Mirrors {@link #statusReport}. */
+     *  {@code "break"} when otherwise resting/on a chore (in-session break, gacha/FM/quest/job/rest
+     *  errand, idle-leech, or winding down to log off); {@code "idle"} for the inert-autopilot LEAK
+     *  (autopilot off with NO rest reason — status "idle rn", a bug, NOT a break; see
+     *  {@link #statusReport} and kb_bot_inert_autopilot_recovery); else {@code "grind"} (productive).
+     *  The {@code idle} split lets the roster surface and filter to genuinely-stuck bots. */
     static String activityCategory(BotEntry entry, Character bot) {
         if (entry == null || bot == null) {
             return "grind";
@@ -1091,10 +1093,16 @@ final class BotAutopilotManager {
         if (entry.chillSession) {
             return "chill";
         }
+        // Explained non-grind states -> "break" (resting or travelling on a chore, not stuck). Mirror
+        // statusReport's gating so an errand-bound bot is never mislabelled as the leak.
         if (entry.loggingOut || entry.gachaErrandMapId != -1 || entry.fmErrandMapId != -1
-                || System.currentTimeMillis() < entry.breakUntilMs
-                || entry.idleLeech || !isActive(entry)) {
+                || entry.questErrandMapId != -1 || entry.jobErrandMapId != -1 || entry.restErrand
+                || System.currentTimeMillis() < entry.breakUntilMs || entry.idleLeech) {
             return "break";
+        }
+        // Autopilot leaked OFF with no reason above = the inert-leak bug (status "idle rn").
+        if (!isActive(entry)) {
+            return "idle";
         }
         return "grind";
     }
@@ -1388,8 +1396,14 @@ final class BotAutopilotManager {
             return new Decision(local, ferryTeaser(local, recommendOnce(entry, bot, true)));
         } catch (RuntimeException e) {
             // Visible, not swallowed: distinguishes a real failure here from a legitimate null rec
-            // (no reachable worthwhile spot), which returns a non-null Decision below.
-            log.warn("bot decide failed for {}", bot != null ? bot.getName() : "?", e);
+            // (no reachable worthwhile spot), which returns a non-null Decision below. Each such throw
+            // fails a recovery (null decide -> no plan), so the bot stays inert-leaked -> the whole
+            // grind:idle ratio degrades over hours (see kb_bot_inert_autopilot_recovery). Log the map so
+            // the failing site is narrowable even when the JVM strips the stack (fast-throw NPEs come
+            // back stackless; relaunch with -XX:-OmitStackTraceInFastThrow for the exact line).
+            log.warn("bot decide failed for {} (map {}){}", bot != null ? bot.getName() : "?",
+                    bot != null ? bot.getMapId() : -1,
+                    e.getStackTrace().length == 0 ? " [stackless fast-throw]" : "", e);
             return null;
         }
     }

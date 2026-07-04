@@ -167,6 +167,8 @@ const edgesByWm = {};   // wmId -> [edgeLine,...]
 let edgeLines = [];     // {ia, ib, line}  — one drawn line per connected instance pair
 let live = {};          // mapId -> {players:[{id,n,l,j,c}], bots:[...]}  (c=1 -> managed/commandable)
 let query = '';
+let stuckOnly = false;    // roster filter: show only the inert-leak ("idle" bucket, a.k.a. possibly stuck) bots
+function toggleStuck(){ stuckOnly = !stuckOnly; applyStyle(); renderRoster(); }
 let rtsMode = false, moveArmed = false, moveCmd = 'move';   // RTS mode + "click a destination" arming (quiet vs attack)
 let followArm = false;    // "pick a follow target" mode: next node/roster click chooses whom to follow
 let sortMode = 'name';    // roster sort within each type: 'name' (A-Z) or 'level' (high->low)
@@ -516,20 +518,25 @@ function renderRoster(){
     for(const c of o.players) items.push({c, map:+map, bot:false});
     for(const c of o.bots)    items.push({c, map:+map, bot:true});
   }
-  const filt = query ? items.filter(it => it.c.n.toLowerCase().includes(query)) : items;
+  let filt = items;
+  if(stuckOnly) filt = filt.filter(it => it.bot && it.c.a==='idle');   // click "possibly stuck" -> only leaked bots
+  if(query) filt = filt.filter(it => it.c.n.toLowerCase().includes(query));
   // managed = self-owned/ownerless bots (commandable, c=1); companion = bots following an online owner
-  let players=0, managed=0, companion=0, grinding=0, onBreak=0, chilling=0;
+  let players=0, managed=0, companion=0, grinding=0, onBreak=0, chilling=0, stuck=0;
   for(const it of items){
     if(!it.bot){ players++; continue; }
     if(it.c.c) managed++; else companion++;
-    if(it.c.a==='chill') chilling++; else if(it.c.a==='break') onBreak++; else grinding++;   // tally over all bots
+    // tally over all bots; 'idle' = inert-autopilot leak (bug), split out from real breaks
+    if(it.c.a==='chill') chilling++; else if(it.c.a==='idle') stuck++; else if(it.c.a==='break') onBreak++; else grinding++;
   }
-  const head = (query ? filt.length+' shown · ' : '') + players + ' online + ' + managed + ' managed + ' + companion + ' companion';
+  const head = ((query||stuckOnly) ? filt.length+' shown · ' : '') + players + ' online + ' + managed + ' managed + ' + companion + ' companion';
+  const stuckHtml = '<span onclick="toggleStuck()" title="autopilot leaked off — click to filter roster to these bots (hover a row for its last decision)" style="cursor:pointer;text-decoration:underline;color:'
+    + (stuck?'#ff6b6b':'#8a94a6') + (stuckOnly?';font-weight:bold':'') + '">' + stuck + ' possibly stuck</span>';
   const breakdown = (managed+companion)
-    ? grinding+' grinding · '+onBreak+' taking a break · '+chilling+' just chilling' : '';
+    ? grinding+' grinding · '+onBreak+' taking a break · '+chilling+' just chilling · '+stuckHtml : '';
   document.getElementById('rosterHead').innerHTML = head + (breakdown ? '<br>'+breakdown : '');
   const mapHits = query ? getMapNameIndex().filter(m => m.lower.includes(query)) : [];
-  const sig = query+'#'+rtsMode+'#'+sortMode+'#'+[...selected].join(',')+'#'
+  const sig = query+'#'+stuckOnly+'#'+rtsMode+'#'+sortMode+'#'+[...selected].join(',')+'#'
     + filt.map(it => it.c.n+'@'+it.map+'/'+it.c.l+'/'+(it.c.p||0)+'/'+(it.c.g||0)).join('|')
     + '#M'+mapHits.map(m=>m.id).join(',');
   if(sig === rosterSig) return;               // unchanged -> skip rebuild (keeps scroll position, saves work)
