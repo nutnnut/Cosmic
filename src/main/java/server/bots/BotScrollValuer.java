@@ -61,7 +61,14 @@ final class BotScrollValuer {
         }
         Map<Long, Double> curve = new ConcurrentHashMap<>();
         return score -> curve.computeIfAbsent(Math.round(score * 1000.0),
-                k -> productionCost(score, baseScore, tuc, scrolls, base));
+                k -> {
+                    long t0 = BotPerformanceMonitor.start(); // perf: lazy reproduction-cost DP
+                    try {
+                        return productionCost(score, baseScore, tuc, scrolls, base);
+                    } finally {
+                        BotPerformanceMonitor.recordSince("scroll-dp", t0);
+                    }
+                });
     }
 
     /** Cheapest expected meso to produce an item reaching {@code >= target} (restart-on-ruin DP). */
@@ -155,7 +162,11 @@ final class BotScrollValuer {
         if (s <= 0) {
             return baseCost + D; // ruined: rebuy a fresh base and start over
         }
-        long key = s * 100000007L + Math.round(a * 1000.0);
+        // Memoize score at 0.1-stat resolution, not 0.001: fractional weighted-stat gains make the
+        // reachable-score set combinatorially dense, and at 0.001 nearly every (s,a) is a distinct memo
+        // entry — the DP was ~156ms/call. The curve feeds million-meso valuations sampled at integer
+        // bands, so 0.1-score merging is far below any decision-relevant precision.
+        long key = s * 100000007L + Math.round(a * 10.0);
         Double cached = memo.get(key);
         if (cached != null) {
             return cached;
