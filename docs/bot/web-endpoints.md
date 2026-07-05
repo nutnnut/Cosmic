@@ -89,8 +89,9 @@ Read-only per-bot autopilot internals for live debugging (party cohesion, follow
   "id","n","map","lvl",
   "party","crew","owner",          // owner: "null" | "self" | <human name>
   "apParty","dst","errand",        // apParty = party-autopilot on; dst = travel target map; errand = resupply map (-1 none)
-  "grinding","following","followTo","transit","waiting",
+  "grinding","lod","following","followTo","transit","waiting",
   "op",                            // operator override command name ("" = none)
+                                   // lod: unobserved-map level of detail "LOD0" (full fidelity) | "LOD1" (unobserved/coarse)
   "wt","atk","aoe","noAmmo",       // combat-readiness: weapon type; resolved single-target/aoe skill ids (atk=0 => no offensive skill => basic swing only); ammo gate
   "status",                        // the @botstatus line
   "detail":{                       // only when ?id= given
@@ -104,6 +105,17 @@ Read-only per-bot autopilot internals for live debugging (party cohesion, follow
   }
 }, ...],
 "routeCache":{"hits","misses","rate"}}             // region-route cache effectiveness, cumulative since server start (rate = hits/(hits+misses)); A/B vs pathfind count in bot-perf CSV
+```
+
+### `/api/killcalib`
+Read-only Stage 0 kill-rate calibration summary (unobserved-map LOD, `docs/bot/unobserved-lod-design.md` §5.0):
+the aggregate measured-vs-predicted kill-rate ratio bucketed by `(jobId, level band)`, plus tracked-bot/sample
+totals. The durable store is `logs/bot-kill-calibration.tsv` (flushed every 60s, loaded on boot). `ratio` < 1
+means the advisor over-predicts kills/hr for that bucket; Stage 3 uses it as the correction factor.
+```
+{"enabled":bool,
+ "trackedBots","trackedRates","rateSamples",       // per-(bot,map,mob) EMA store size + total rate samples
+ "buckets":[{"jobId","levelBand","ratio","samples"}, ...]}   // ratio = measured/predicted EMA (1.0 default = no data)
 ```
 
 ### `/market` (page)
@@ -247,7 +259,7 @@ Live admin/tuning surface behind `/admin`. Same SSOT as the GM commands: `BotCon
 
 **GET** — snapshot of every tunable group:
 ```
-{"manager":[{"name","value","type"}, ...],   // BotManager.cfg public fields (POPULATION_MULTIPLIER, break/loot/autopilot/party knobs)
+{"manager":[{"name","value","type"}, ...],   // BotManager.cfg public fields (POPULATION_MULTIPLIER, break/loot/autopilot/party knobs, SIMPLIFY_UNOBSERVED_BOTS_* LOD toggles)
  "combat":[{"name","value","type"}, ...],     // BotCombatManager.cfg public fields (the !botcfg set)
  "pop":{"enabled":bool,"multiplier":num,"status":[lines...]},
  "llm":{"enabled":bool,"debug":bool}}

@@ -189,6 +189,19 @@ public class BotManager {
         public int POPULATION_NOISE = 2;                   // +/- jitter on the hourly target
         public double POPULATION_MULTIPLIER = 10.0;        // scales the whole online target up/down, so bot
                                                            // count is adjustable without editing the curve/noise
+
+        // Unobserved-map LOD (docs/bot/unobserved-lod-design.md): when no real player can observe a bot,
+        // simplify its simulation. Each subsystem's simplification is an independent boolean so any one
+        // can be bisected/disabled live (all default true; all false => bit-for-bit today's behavior).
+        // NOTE (Stage 1): only _CADENCE is consumed yet, and it is still inert until Stage 2 supplies the
+        // coarse-tick physics path (see cadenceForLod). _PHYSICS/_TRAVEL/_GRIND are declared now, wired later.
+        public boolean SIMPLIFY_UNOBSERVED_BOTS_PHYSICS = true;  // §2.1 motion-plan movement instead of physics/nav
+        public boolean SIMPLIFY_UNOBSERVED_BOTS_TRAVEL = true;   // §2.2 timed warps instead of executed hops
+        public boolean SIMPLIFY_UNOBSERVED_BOTS_GRIND = true;    // §2.3 abstract kill events instead of real combat
+        public boolean SIMPLIFY_UNOBSERVED_BOTS_CADENCE = true;  // the 50ms->500ms tick retask itself
+        // LOD1 coarse tick interval (ms) and the player-free hysteresis before a LOD0->LOD1 downgrade.
+        public int LOD1_TICK_MS = 500;
+        public long LOD_DOWNGRADE_HYSTERESIS_MS = 10_000L;
         public boolean CHILL_SESSION_ENABLED = true;       // bots can "log in to chill": spend a half-length
                                                            // session lingering in town instead of grinding
         public double CHILL_SESSION_MULTIPLIER = 1.0;      // scales the per-login chill chance (0 = never chill)
@@ -821,6 +834,115 @@ public class BotManager {
         return false;
     }
 
+    // === Unobserved-map LOD (docs/bot/unobserved-lod-design.md §1, Stage 1 substrate) ===
+
+    // Per-mapId cache of portal-neighbor map ids (BotWorldGraph portal adjacency, resolved once).
+    private static final Map<Integer, int[]> lodNeighborCache = new ConcurrentHashMap<>();
+
+    /**
+     * A map is "effectively observed" if it — or any of its 1-portal-edge neighbor maps — is observed
+     * by a real player. Observer SSOT is {@link MapleMap#isObservedByPlayer()} (counts hidden {@code
+     * !hide} GMs, excludes bots and {@code !hidebot} GMs). The 1-edge pre-warm keeps a bot at full
+     * fidelity BEFORE a player can walk through a portal onto its map. Neighbor maps that aren't loaded
+     * hold no players, so they're skipped without being built.
+     */
+    static boolean effectivelyObserved(MapleMap map) {
+        if (map == null) {
+            return false;
+        }
+        if (map.isObservedByPlayer()) {
+            return true;
+        }
+        int[] neighbors = lodNeighborCache.computeIfAbsent(map.getId(), k -> BotWorldGraph.get().neighbors(k));
+        if (neighbors.length == 0) {
+            return false;
+        }
+        var mapFactory = map.getChannelServer().getMapFactory();
+        for (int neighborId : neighbors) {
+            if (mapFactory.isMapLoaded(neighborId) && mapFactory.getMap(neighborId).isObservedByPlayer()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Recompute a bot's LOD for this tick. LOD0 (full fidelity) when its map is effectively observed,
+     * its party has a real player, or it is in an active trade. Otherwise LOD1, but only after the map +
+     * neighborhood has been player-free for the downgrade hysteresis window (no thrash on map-hoppers).
+     */
+    private void updateLod(BotEntry entry, Character bot) {
+        boolean lod0Now = effectivelyObserved(bot.getMap())
+                || partyHasRealPlayer(bot)
+                || bot.getTrade() != null;
+        LodDecision d = decideLod(entry.lod, entry.lodUnobservedSinceMs, lod0Now,
+                System.currentTimeMillis(), cfg.LOD_DOWNGRADE_HYSTERESIS_MS);
+        entry.lod = d.lod();
+        entry.lodUnobservedSinceMs = d.unobservedSinceMs();
+    }
+
+    record LodDecision(BotEntry.Lod lod, long unobservedSinceMs) {}
+
+    /**
+     * Pure LOD hysteresis decision. Observed now => immediate LOD0 and reset the player-free clock.
+     * Otherwise start (or keep) the clock and only downgrade to LOD1 once it has held for {@code
+     * hysteresisMs}; until then the current LOD (normally LOD0) sticks, so a player hopping across the
+     * map's neighborhood can't thrash a bot's fidelity.
+     */
+    static LodDecision decideLod(BotEntry.Lod current, long unobservedSinceMs, boolean lod0Now,
+                                 long now, long hysteresisMs) {
+        if (lod0Now) {
+            return new LodDecision(BotEntry.Lod.LOD0, 0L);
+        }
+        long since = unobservedSinceMs == 0L ? now : unobservedSinceMs;
+        BotEntry.Lod lod = now - since >= hysteresisMs ? BotEntry.Lod.LOD1 : current;
+        return new LodDecision(lod, since);
+    }
+
+    /**
+     * The tick interval (ms) a bot should run at for its current LOD. Stage 1 deliberately returns the
+     * full-fidelity {@code TICK_MS} unconditionally: a LOD1 bot still runs the FULL tick body (physics
+     * expects ~50ms steps), so retasking to 500ms now would break its movement. Stage 2 supplies the
+     * coarse-tick physics path and flips {@code stage2CoarseTickReady} to true, at which point a LOD1 bot
+     * with {@code SIMPLIFY_UNOBSERVED_BOTS_CADENCE} (and the physics simplification) drops to LOD1_TICK_MS.
+     */
+    private int cadenceForLod(BotEntry entry) {
+        final boolean stage2CoarseTickReady = false; // <-- Stage 2 flips this on
+        if (stage2CoarseTickReady && entry.lod == BotEntry.Lod.LOD1
+                && cfg.SIMPLIFY_UNOBSERVED_BOTS_CADENCE && cfg.SIMPLIFY_UNOBSERVED_BOTS_PHYSICS) {
+            return cfg.LOD1_TICK_MS;
+        }
+        return BotMovementManager.cfg.TICK_MS;
+    }
+
+    /** Retask the bot iff its desired LOD cadence differs from its current tick interval. */
+    private void maybeAdjustCadence(BotEntry entry, int ownerCharId, int botCharId) {
+        int desired = cadenceForLod(entry);
+        if (desired != entry.tickIntervalMs) {
+            retask(entry, ownerCharId, botCharId, desired);
+        }
+    }
+
+    /**
+     * Cancel the bot's tick task and re-register it at {@code intervalMs}. Reuses the registry-lock
+     * discipline ({@code kb_bot_double_register_botpop_race}) so a concurrent register/replace of the
+     * same bot can't leave two live tick tasks. No-op if the entry was replaced/removed since (its task
+     * is already cancelled) — re-registering would resurrect a dead entry.
+     */
+    private void retask(BotEntry entry, int ownerCharId, int botCharId, int intervalMs) {
+        synchronized (registryLock) {
+            if (botsByCharId.get(botCharId) != entry) {
+                return;
+            }
+            if (entry.task != null) {
+                entry.task.cancel(false);
+            }
+            entry.task = TimerManager.getInstance().register(
+                    () -> tick(entry, ownerCharId, botCharId), intervalMs);
+            entry.tickIntervalMs = intervalMs;
+        }
+    }
+
     public Character loadOfflineBot(int charId, int world, int channel) throws SQLException {
         BotClient botClient = new BotClient(world, channel);
         Character botChar = Character.loadCharFromDB(charId, botClient, true);
@@ -904,6 +1026,7 @@ public class BotManager {
                 () -> tick(ref[0], ownerCharId, botCharId), BotMovementManager.cfg.TICK_MS);
         BotEntry entry = new BotEntry(bot, owner, task);
         ref[0] = entry;
+        entry.tickIntervalMs = BotMovementManager.cfg.TICK_MS; // matches the interval the task registered at
         entry.movementProfile = BotMovementProfile.fromCharacter(bot);
         entry.selfScrollEnabled = BotPrefsStore.loadSelfScroll(bot.getId());
         entry.personality = BotPersonality.loadOrCreate(botCharId);
@@ -3691,6 +3814,12 @@ public class BotManager {
             bot.getClient().updateLastPacket();
             BotMovementManager.broadcastMovement(entry);
         }
+
+        // Unobserved-map LOD (Stage 1): compute the fidelity level + apply its tick cadence. Inert in
+        // Stage 1 — cadenceForLod always returns TICK_MS until Stage 2's coarse-tick path exists, so this
+        // never actually retasks and changes no behavior; only entry.lod is populated (surfaced in debug).
+        updateLod(entry, bot);
+        maybeAdjustCadence(entry, ownerCharId, botCharId);
 
         BotOfferManager.expirePendingOffer(entry);
         boolean runAiTick = consumeAiTick(entry);

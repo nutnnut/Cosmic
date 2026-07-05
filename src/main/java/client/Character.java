@@ -239,6 +239,9 @@ public class Character extends AbstractCharacterObject {
     private transient int equipmaxhp, equipmaxmp, equipstr, equipdex, equipluk, equipint_, equipmagic, equipwatk, equipwdef, equipmdef, localchairhp, localchairmp;
     private int localchairrate;
     private boolean hidden, equipchanged = true, berserk, hasMerchant, hasSandboxItem = false, whiteChat = false, canRecvPartySearchInvite = true;
+    // !hidebot (bot LOD debugging): when set this GM does not count as an observer inside
+    // MapleMap.isObservedByPlayer(), so bots near them stay in their unobserved (LOD1) simulation.
+    private boolean hiddenFromBots = false;
     private boolean equippedMesoMagnet = false, equippedItemPouch = false, equippedPetItemIgnore = false;
     private boolean usedSafetyCharm = false;
     private float autopotHpAlert, autopotMpAlert;
@@ -6590,6 +6593,14 @@ public class Character extends AbstractCharacterObject {
 
     public boolean isHidden() {
         return hidden;
+    }
+
+    public boolean isHiddenFromBots() {
+        return hiddenFromBots;
+    }
+
+    public void setHiddenFromBots(boolean hiddenFromBots) {
+        this.hiddenFromBots = hiddenFromBots;
     }
 
     public boolean isMapObjectVisible(MapObject mo) {

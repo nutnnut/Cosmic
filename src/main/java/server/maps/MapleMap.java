@@ -3135,7 +3135,7 @@ public class MapleMap {
         chrRLock.lock();
         try {
             for (Character chr : characters) {
-                if (!(chr.getClient() instanceof BotClient)) {
+                if (!(chr.getClient() instanceof BotClient) && !chr.isHiddenFromBots()) {
                     return true;
                 }
             }

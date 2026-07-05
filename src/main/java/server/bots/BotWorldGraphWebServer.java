@@ -174,6 +174,7 @@ public final class BotWorldGraphWebServer {
             s.createContext("/api/mapinfo", BotWorldGraphWebServer::serveMapInfo);
             s.createContext("/api/command", BotWorldGraphWebServer::serveCommand);
             s.createContext("/api/botdebug", BotWorldGraphWebServer::serveBotDebug);
+            s.createContext("/api/killcalib", BotWorldGraphWebServer::serveKillCalib);
             s.createContext("/api/market/stalls", BotWorldGraphWebServer::serveMarketStalls);
             s.createContext("/api/market/bot", BotWorldGraphWebServer::serveMarketBot);
             s.createContext("/api/market/items", BotWorldGraphWebServer::serveMarketItems);
@@ -1146,6 +1147,13 @@ public final class BotWorldGraphWebServer {
         }
     }
 
+    /** Stage 0 kill-rate calibration summary (docs/bot/unobserved-lod-design.md §5.0): the aggregate
+     *  measured/predicted ratio buckets by (jobId, level band) plus tracked-bot/sample totals. Read-only
+     *  JSON; the durable store lives in {@code logs/bot-kill-calibration.tsv}. */
+    private static void serveKillCalib(HttpExchange ex) throws IOException {
+        send(ex, 200, "application/json", BotKillCalibration.summaryJson().getBytes(StandardCharsets.UTF_8));
+    }
+
     private static void serveBotDebug(HttpExchange ex) throws IOException {
         int filterId = 0;
         try {
@@ -1189,6 +1197,7 @@ public final class BotWorldGraphWebServer {
                     .append(",\"dst\":").append(e.autopilotMapId)
                     .append(",\"errand\":").append(e.autopilotErrandMapId)
                     .append(",\"grinding\":").append(e.grinding)
+                    .append(",\"lod\":").append(jsonStr(e.lod.name()))
                     .append(",\"following\":").append(e.following)
                     .append(",\"followTo\":").append(e.followTargetId)
                     .append(",\"transit\":").append(e.autopilotTransitFollow)

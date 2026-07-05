@@ -1617,7 +1617,11 @@ class BotCombatManager {
         int hpBefore = primaryHp(primary);
         int mpBefore = botMp(bot);
         int plannedDamage = plannedAttackDamage(attack.targets);
+        // Stage 0 kill-rate calibration: snapshot which targets are alive, then after the attack any
+        // that died were killed by this bot (BotKillCalibration observes real full-fidelity grind kills).
+        List<Monster> preAliveTargets = BotKillCalibration.aliveTargets(entry, attackPlan.targets);
         BotAttackExecutionProvider.applyAttackRoute(attackPlan.route, attack, bot);
+        BotKillCalibration.observeKills(entry, bot, preAliveTargets);
         int hpAfter = primaryHp(primary);
         int mpAfter = botMp(bot);
         entry.attackCooldownMs = Math.max(entry.attackCooldownMs, attackPlan.cooldownMs);

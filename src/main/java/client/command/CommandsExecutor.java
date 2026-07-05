@@ -74,6 +74,7 @@ import client.command.commands.gm2.ExpDebugCommand;
 import client.command.commands.gm2.GachaListCommand;
 import client.command.commands.gm2.GmShopCommand;
 import client.command.commands.gm2.HealCommand;
+import client.command.commands.gm2.HideBotCommand;
 import client.command.commands.gm2.HideCommand;
 import client.command.commands.gm2.IdCommand;
 import client.command.commands.gm2.ItemCommand;
@@ -417,6 +418,7 @@ public class CommandsExecutor {
         addCommand("recharge", 2, RechargeCommand.class);
         addCommand("whereami", 2, WhereaMiCommand.class);
         addCommand("hide", 2, HideCommand.class);
+        addCommand("hidebot", 2, HideBotCommand.class);
         addCommand("unhide", 2, UnHideCommand.class);
         addCommand("sp", 2, SpCommand.class);
         addCommand("ap", 2, ApCommand.class);
