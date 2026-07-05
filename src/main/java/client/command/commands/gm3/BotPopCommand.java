@@ -175,25 +175,30 @@ public class BotPopCommand extends Command {
         boolean confirm = params.length >= 2 && params[1].equalsIgnoreCase("confirm");
         if (!confirm) {
             player.yellowMessage("Managed bots to wipe (" + roster.size() + "), Lv low->high:");
-            for (BotAdminOps.BotRow r : roster) {
-                player.yellowMessage("  " + BotAdminOps.describe(r));
-            }
+            print(player, roster.stream().map(BotAdminOps::describe).toList());
             player.yellowMessage("This permanently DELETES them (chars + inventory + bot accounts).");
             player.yellowMessage("Run: @botpop wipe confirm");
             return;
         }
         BotAdminOps.WipeResult res = BotAdminOps.wipeManagedBots();
-        for (String line : res.lines()) {
-            player.yellowMessage("  " + line);
-        }
+        print(player, res.lines());
         player.yellowMessage("Wiped " + res.wiped() + " managed bot(s)"
                 + (res.skipped() > 0 ? " (" + res.skipped() + " skipped)" : "") + ".");
         player.yellowMessage("Repopulate fresh Lv1 with: @spawnbot generate confirm");
     }
 
+    /** Cap on per-bot lines dumped to a client at once. At 1000+ bots an uncapped list/wipe preview
+     *  floods yellowMessages fast enough to crash the client, so truncate and summarize the rest. */
+    private static final int MAX_LIST_LINES = 30;
+
     private static void print(Character player, List<String> lines) {
-        for (String line : lines) {
-            player.yellowMessage("  " + line);
+        int shown = Math.min(lines.size(), MAX_LIST_LINES);
+        for (int i = 0; i < shown; i++) {
+            player.yellowMessage("  " + lines.get(i));
+        }
+        if (lines.size() > shown) {
+            player.yellowMessage("  ... and " + (lines.size() - shown) + " more (showing first "
+                    + shown + " to avoid flooding the client).");
         }
     }
 }

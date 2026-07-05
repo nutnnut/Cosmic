@@ -754,6 +754,7 @@ public class BotManager {
         c.disconnect(false, false);
 
         BotEntry entry = registerSpawnedBot(player.getId(), player, player); // self-owned
+        entry.commandAutopilot = true; // real player's own char on autopilot via @botme/@botparty
         startTakeoverAutopilot(entry, player);
     }
 
@@ -2292,6 +2293,17 @@ public class BotManager {
                 && (entry.owner == null || entry.owner == entry.bot || ownerIsBot(entry));
     }
 
+    /** A REAL player's character running on autopilot with no live human present: the char a player
+     *  put on autopilot via @botme/@botparty (explicit {@code commandAutopilot} flag), or a companion
+     *  swept along when its owner botified ({@link #ownerIsBot}, which auto-reverts on reclaim). This is
+     *  NOT any self-owned bot — disposable population/botpop bots are ALSO {@code owner==bot}, so the
+     *  flag (not ownership) is the SSOT. These run the player's real gear & meso with no human present,
+     *  so they stay grind-focused: no breaks/gacha/chill/FM/auto-scroll, only grind + grind-essential
+     *  resupply/sell. */
+    static boolean isRealPlayerTakeover(BotEntry entry) {
+        return entry != null && (entry.commandAutopilot || ownerIsBot(entry));
+    }
+
     static void bindDebugCommander(BotEntry entry, Character commander) {
         if (entry == null || commander == null) {
             return;
@@ -3588,8 +3600,12 @@ public class BotManager {
             return;
         }
 
-        BotScrollManager.tickAutoScroll(entry, bot, nowMs);
-        BotMakerManager.tickAutoCraft(entry, bot, nowMs);
+        // Real-player takeover (@botme/@botparty) stays grind-focused: never auto-scroll real gear or
+        // auto-craft with real materials without the human present. Population bots do both freely.
+        if (!isRealPlayerTakeover(entry)) {
+            BotScrollManager.tickAutoScroll(entry, bot, nowMs);
+            BotMakerManager.tickAutoCraft(entry, bot, nowMs);
+        }
 
         // Operator RTS command (BotWorldGraphWebServer console): for its window this overrides
         // autopilot/idle/follow. Placed before the owner-null and idle fast-paths so it intercepts
@@ -3975,7 +3991,8 @@ public class BotManager {
         // 24/7. Pots/heals still run (potion tick); no attack/target search while on break.
         long breakNow = System.currentTimeMillis();
         // A party cohort breaks together (leader-driven, avg traits); only a solo bot self-rolls.
-        if (!BotAutopilotManager.maybeStartGroupBreak(entry, bot)) {
+        // Real-player takeover (@botme/@botparty) grinds all the time — no personality break/chill.
+        if (!isRealPlayerTakeover(entry) && !BotAutopilotManager.maybeStartGroupBreak(entry, bot)) {
             BotBreakManager.maybeStartBreak(entry, bot, breakNow);
         }
         if (BotBreakManager.onBreak(entry, breakNow)) {
@@ -5585,7 +5602,11 @@ public class BotManager {
             BotChatManager.tickAfkCheck(entry, owner);
         }
         if (perf) BotPerformanceMonitor.record("common-afk-check", System.nanoTime() - t);
-        if (runSlowScans) {
+        // Real-player takeover (@botme/@botparty) grinds all the time: skip the recreational / economy
+        // detours (quest piggyback, gachapon, free-market, shout trades). Grind-essential logistics
+        // (resupply/sell visits, level-up, deaths, follow) still run. Population bots do it all.
+        boolean realTakeover = isRealPlayerTakeover(entry);
+        if (runSlowScans && !realTakeover) {
             if (perf) t = System.nanoTime();
             BotQuestManager.tickScan(entry, bot);
             if (perf) BotPerformanceMonitor.record("common-quest-scan", System.nanoTime() - t);
@@ -5600,13 +5621,13 @@ public class BotManager {
         BotSocialManager.tick(entry, bot);
         if (perf) BotPerformanceMonitor.record("common-social", System.nanoTime() - t);
         if (perf) t = System.nanoTime();
-        BotGachaponManager.tickScan(entry, bot);
+        if (!realTakeover) BotGachaponManager.tickScan(entry, bot);
         if (perf) BotPerformanceMonitor.record("common-gacha-scan", System.nanoTime() - t);
         if (perf) t = System.nanoTime();
-        BotFreeMarketManager.tickScan(entry, bot);
+        if (!realTakeover) BotFreeMarketManager.tickScan(entry, bot);
         if (perf) BotPerformanceMonitor.record("common-fm-scan", System.nanoTime() - t);
         if (perf) t = System.nanoTime();
-        BotShoutTradeManager.tick(entry, bot, runAiTick);
+        if (!realTakeover) BotShoutTradeManager.tick(entry, bot, runAiTick);
         if (perf) BotPerformanceMonitor.record("common-shout-trade", System.nanoTime() - t);
         if (perf) t = System.nanoTime();
         BotInventoryManager.tickTrade(entry, bot);

@@ -89,3 +89,24 @@ see [[kb_bot_inert_autopilot_recovery]].
 
 Related: [[kb_bot_inert_autopilot_recovery]] (the leak + self-heal),
 [[kb_bot_perf_stress_hotpaths]] (DECIDE_POOL is the recovery bottleneck at scale).
+
+## 2026-07-05 — @botme/@botparty run a REAL char: grind-only, no recreation/economy
+
+A player who `@botme`/`@botparty`s is autopiloting their OWN character (real gear, meso, NX). These
+must NOT be confused with disposable `!botpop` population bots — **both are self-owned (`owner==bot`)**,
+so ownership can't tell them apart. SSOT is an explicit flag: `BotEntry.commandAutopilot`, set true in
+`swapToBotInPlace` (the single @botme/@botparty takeover site). `BotManager.isRealPlayerTakeover(entry)`
+= `commandAutopilot || ownerIsBot(entry)` — the second term sweeps in a botified owner's companions
+(the @botparty party) and auto-reverts when the owner reclaims (client flips back to a real `Client`).
+
+Policy for `isRealPlayerTakeover` bots — **grind all the time, only grind-essential logistics**:
+- OFF: personality break/chill (`tickGrindMode` break roll), gachapon (`common-gacha-scan`),
+  free-market buy/sell (`common-fm-scan`), shout trades (`common-shout-trade`), quest piggyback
+  (`common-quest-scan`), auto-scroll (real gear) + auto-craft (real mats) at `BotManager` ~3603.
+- ON (unchanged): grind, resupply/sell shop visits (`shopVisitPending`), level-up, job advance,
+  death/respawn, follow, HP-rest survival, party-up social. All gated in ONE place —
+  `BotManager` common section (~5600) + `tickGrindMode` break roll — behind `isRealPlayerTakeover`.
+
+Rationale: no human is present to approve risk to real assets, and the intent of "put my char on
+autopilot" is to keep leveling, not to run the living-economy sim (that's the population bots' job).
+Population bots (`owner==bot` but NOT `commandAutopilot`) keep doing everything.

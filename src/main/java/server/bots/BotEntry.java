@@ -591,6 +591,12 @@ public class BotEntry {
     // NOT hijack the bot's existing follow anchor - it keeps following its leader and just replies.
     volatile boolean debugCommanderFollow = false;
 
+    // Set true when a REAL player put THIS character on autopilot via @botme / @botparty (never for
+    // disposable population/botpop bots, which are also self-owned). These run the player's real gear
+    // & meso with no human present, so they stay grind-focused: no breaks/gacha/chill/FM/auto-scroll,
+    // only grind + grind-essential resupply/sell. See BotManager.isRealPlayerTakeover.
+    volatile boolean commandAutopilot = false;
+
     // Most recent command the owner issued that handleChat actually matched.
     // Used by SituationBuilder to give the LLM context like "owner told you to
     // farm here 3 min ago" so 'what are you doing' answers stay coherent.
