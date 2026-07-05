@@ -2053,10 +2053,20 @@ class BotCombatManager {
 
     private static boolean isBasicAttackInRange(Point botPos, Point targetPos) {
         int dx = Math.abs(targetPos.x - botPos.x);
-        int dy = botPos.y - targetPos.y;
         boolean inHRange = dx <= BotCombatManager.cfg.ATTACK_RANGE_X;
-        boolean inVRange = dy >= -BotCombatManager.cfg.ATTACK_DOWN_MAX && dy <= BotCombatManager.cfg.ATTACK_RANGE_Y;
-        return inHRange && inVRange;
+        return inHRange && withinAttackYReach(botPos, targetPos);
+    }
+
+    /**
+     * True when {@code targetPos} is within the bot's basic-attack VERTICAL reach of {@code botPos}
+     * (ignoring X): up to {@code ATTACK_RANGE_Y} above and {@code ATTACK_DOWN_MAX} below. SSOT for the
+     * vertical half of {@link #isBasicAttackInRange}; also the LOD1 motion-plan Y-band gate — a same-Y
+     * glide keeps combat fidelity because the frozen Y still lands the attack, while a target beyond
+     * this band needs a real level change (fall through to physics).
+     */
+    static boolean withinAttackYReach(Point botPos, Point targetPos) {
+        int dy = botPos.y - targetPos.y;
+        return dy >= -BotCombatManager.cfg.ATTACK_DOWN_MAX && dy <= BotCombatManager.cfg.ATTACK_RANGE_Y;
     }
 
     /**

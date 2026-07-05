@@ -407,6 +407,13 @@ final class BotTravelManager {
     }
 
     static boolean walkToPortalAndEnter(BotEntry entry, Character bot, Portal portal, long now, boolean runAiTick) {
+        // LOD1 (unobserved) travel (design §2.2): don't walk to the portal — dwell the modeled hop
+        // seconds, then warp through the real portal. Hop planning (which portal) is unchanged upstream;
+        // only execution is abstracted. The dwell uses the SSOT travel price so abstract time matches
+        // what the planner charged.
+        if (entry.lod == BotEntry.Lod.LOD1 && BotManager.cfg.SIMPLIFY_UNOBSERVED_BOTS_TRAVEL) {
+            return lod1TimedWarp(entry, bot, portal, now, BotTravelCost.PORTAL_HOP_SECONDS);
+        }
         Point portalPos = portalApproachTarget(bot.getMap(), portal);
         Point botPos = bot.getPosition();
         // A portal at the top of (or on) a rope is only reachable by climbing - the bot arrives in the
@@ -453,6 +460,37 @@ final class BotTravelManager {
             enRouteAttack.attack(entry, bot);
         }
         movementStep.step(entry, portalPos, runAiTick);
+        return true;
+    }
+
+    /**
+     * LOD1 timed-warp of one hop (design §2.2): dwell {@code hopSeconds} (±20% jitter) then fire the
+     * REAL {@link Portal#enterPortal} so destination addPlayer, portal scripts and map-change bookkeeping
+     * all still run — only the walk is skipped. Mirrors the enter block of {@link #walkToPortalAndEnter}.
+     */
+    private static boolean lod1TimedWarp(BotEntry entry, Character bot, Portal portal, long now, double hopSeconds) {
+        if (now < entry.portalUseCooldownUntilMs) {
+            return true; // brief breather between portals
+        }
+        if (entry.lod1TravelDwellUntilMs == 0L) {
+            double jitter = 0.8 + ThreadLocalRandom.current().nextDouble() * 0.4; // ±20%
+            entry.lod1TravelDwellUntilMs = now + Math.max(1L, (long) (hopSeconds * 1000.0 * jitter));
+            return true; // start the dwell
+        }
+        if (now < entry.lod1TravelDwellUntilMs) {
+            return true; // still dwelling out the modeled hop time
+        }
+        entry.lod1TravelDwellUntilMs = 0L;
+        int beforeMapId = bot.getMapId();
+        String script = portal.getScriptName();
+        boolean scripted = script != null && !script.isEmpty();
+        entry.followTravelEnteredAtMs = now;
+        entry.portalUseCooldownUntilMs = now + PORTAL_USE_COOLDOWN_MS;
+        portal.enterPortal(bot.getClient());
+        if (scripted && bot.getMapId() == beforeMapId) {
+            giveUp(entry, now, "script-no-land");
+            return false;
+        }
         return true;
     }
 

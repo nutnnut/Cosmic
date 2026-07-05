@@ -193,8 +193,10 @@ public class BotManager {
         // Unobserved-map LOD (docs/bot/unobserved-lod-design.md): when no real player can observe a bot,
         // simplify its simulation. Each subsystem's simplification is an independent boolean so any one
         // can be bisected/disabled live (all default true; all false => bit-for-bit today's behavior).
-        // NOTE (Stage 1): only _CADENCE is consumed yet, and it is still inert until Stage 2 supplies the
-        // coarse-tick physics path (see cadenceForLod). _PHYSICS/_TRAVEL/_GRIND are declared now, wired later.
+        // NOTE (through Stage 2): _PHYSICS (§2.1 motion-plan movement) and _TRAVEL (§2.2 timed warps) are
+        // live. _GRIND (§2.3 abstract combat) is Stage 3. _CADENCE (the 50ms->500ms retask) stays gated OFF
+        // until Stage 3: LOD1 bots still fight for real in Stage 2, so 500ms would 10x-slow their combat
+        // (see cadenceForLod).
         public boolean SIMPLIFY_UNOBSERVED_BOTS_PHYSICS = true;  // §2.1 motion-plan movement instead of physics/nav
         public boolean SIMPLIFY_UNOBSERVED_BOTS_TRAVEL = true;   // §2.2 timed warps instead of executed hops
         public boolean SIMPLIFY_UNOBSERVED_BOTS_GRIND = true;    // §2.3 abstract kill events instead of real combat
@@ -872,6 +874,7 @@ public class BotManager {
      * neighborhood has been player-free for the downgrade hysteresis window (no thrash on map-hoppers).
      */
     private void updateLod(BotEntry entry, Character bot) {
+        BotEntry.Lod prev = entry.lod;
         boolean lod0Now = effectivelyObserved(bot.getMap())
                 || partyHasRealPlayer(bot)
                 || bot.getTrade() != null;
@@ -879,6 +882,74 @@ public class BotManager {
                 System.currentTimeMillis(), cfg.LOD_DOWNGRADE_HYSTERESIS_MS);
         entry.lod = d.lod();
         entry.lodUnobservedSinceMs = d.unobservedSinceMs();
+        if (prev == BotEntry.Lod.LOD0 && entry.lod == BotEntry.Lod.LOD1) {
+            freezeIntoMotionPlan(entry, bot);         // §4 LOD0->LOD1: freeze physics into a plan
+        } else if (prev == BotEntry.Lod.LOD1 && entry.lod == BotEntry.Lod.LOD0) {
+            materializeBotToLod0(entry);              // §4 LOD1->LOD0: resume physics from the lerp pos
+        }
+    }
+
+    /** LOD0->LOD1 (design §4): freeze the bot's current position as the motion-plan origin and drop any
+     *  stale plan; the next covered movement tick builds a fresh plan. Y is remembered as the hold-Y. */
+    private void freezeIntoMotionPlan(BotEntry entry, Character bot) {
+        Point pos = bot.getPosition();
+        entry.motionFrom = new Point(pos.x, pos.y);
+        entry.motionTo = null;
+        entry.motionHoldY = pos.y;
+    }
+
+    /**
+     * LOD1->LOD0 (design §4): materialize the bot from its motion plan back onto real physics —
+     * finalize the lerp position, clear the plan, snap to the foothold below (spawnIntoMap settles it),
+     * mark LOD0, and (once Stage 3's cadence flip is live) retask to 50ms. Called from the bot's own
+     * tick (updateLod) and synchronously from {@link #materializeBotsForObserver} at addPlayer.
+     */
+    private void materializeBotToLod0(BotEntry entry) {
+        Character bot = entry.bot;
+        if (bot == null || bot.getMap() == null) {
+            return;
+        }
+        long now = System.currentTimeMillis();
+        Point pos = BotPhysicsEngine.motionLerp(entry.motionFrom, entry.motionTo,
+                entry.motionDepartMs, entry.motionArriveMs, entry.motionHoldY, now);
+        if (pos != null) {
+            bot.setPosition(pos);
+        }
+        entry.motionFrom = null;
+        entry.motionTo = null;
+        BotPhysicsEngine.spawnIntoMap(entry, bot);            // snap to foothold below / settle under gravity
+        BotMovementManager.resetEntryStateAfterTeleport(entry);
+        entry.lod = BotEntry.Lod.LOD0;
+        entry.lodUnobservedSinceMs = 0L;
+        retaskToFullFidelity(entry);                          // no-op until the Stage 3 cadence flip
+        BotMovementManager.broadcastMovement(entry);          // now observed — push the settled position
+    }
+
+    /**
+     * Synchronous LOD1->LOD0 snap for every bot on {@code map}, invoked from {@link server.maps.MapleMap#addPlayer}
+     * BEFORE the entering player's spawn packets are built (design §4) so no bot is seen floating/underground
+     * on entry. Backstops the 1-portal-edge pre-warm for teleport/scroll entries that skip adjacency.
+     */
+    public void materializeBotsForObserver(server.maps.MapleMap map) {
+        if (map == null) {
+            return;
+        }
+        for (BotEntry entry : botsByCharId.values()) {
+            Character bot = entry.bot;
+            if (bot != null && bot.getMap() == map && entry.lod == BotEntry.Lod.LOD1) {
+                materializeBotToLod0(entry);
+            }
+        }
+    }
+
+    /** Retask a bot back to the full-fidelity 50ms cadence (LOD0 upgrade). Registry-lock-safe. */
+    private void retaskToFullFidelity(BotEntry entry) {
+        if (entry == null || entry.bot == null) {
+            return;
+        }
+        int botCharId = entry.bot.getId();
+        int ownerCharId = entry.owner != null ? entry.owner.getId() : botCharId;
+        retask(entry, ownerCharId, botCharId, BotMovementManager.cfg.TICK_MS);
     }
 
     record LodDecision(BotEntry.Lod lod, long unobservedSinceMs) {}
@@ -900,16 +971,21 @@ public class BotManager {
     }
 
     /**
-     * The tick interval (ms) a bot should run at for its current LOD. Stage 1 deliberately returns the
-     * full-fidelity {@code TICK_MS} unconditionally: a LOD1 bot still runs the FULL tick body (physics
-     * expects ~50ms steps), so retasking to 500ms now would break its movement. Stage 2 supplies the
-     * coarse-tick physics path and flips {@code stage2CoarseTickReady} to true, at which point a LOD1 bot
-     * with {@code SIMPLIFY_UNOBSERVED_BOTS_CADENCE} (and the physics simplification) drops to LOD1_TICK_MS.
+     * The tick interval (ms) a bot should run at for its current LOD. Returns the full-fidelity
+     * {@code TICK_MS} unconditionally through Stage 2. Movement (§2.1) and travel (§2.2) are now
+     * time-based and cadence-independent, but Stage 2 LOD1 bots still run REAL combat (abstract grind
+     * is Stage 3) — dropping a grinding bot to 500ms would make it attack ~10x slower and wreck its
+     * kill/exp/loot rates. So the 500ms retask stays gated OFF until Stage 3's abstract grind makes the
+     * coarse tick safe: {@code stage3AbstractGrindReady} is flipped there, and only then does a LOD1 bot
+     * with {@code SIMPLIFY_UNOBSERVED_BOTS_CADENCE} (and the physics simplification) drop to LOD1_TICK_MS.
+     * Stage 3 must ALSO exclude bots on a real-walking travel leg (taxi/ferry) and any uncovered state
+     * (see {@link #lod1MotionPlanCovered}) so no raw physics integrator ever runs at 500ms.
      */
     private int cadenceForLod(BotEntry entry) {
-        final boolean stage2CoarseTickReady = false; // <-- Stage 2 flips this on
-        if (stage2CoarseTickReady && entry.lod == BotEntry.Lod.LOD1
-                && cfg.SIMPLIFY_UNOBSERVED_BOTS_CADENCE && cfg.SIMPLIFY_UNOBSERVED_BOTS_PHYSICS) {
+        final boolean stage3AbstractGrindReady = false; // <-- Stage 3 flips this on (NOT Stage 2)
+        if (stage3AbstractGrindReady && entry.lod == BotEntry.Lod.LOD1
+                && cfg.SIMPLIFY_UNOBSERVED_BOTS_CADENCE && cfg.SIMPLIFY_UNOBSERVED_BOTS_PHYSICS
+                && lod1MotionPlanCovered(entry)) {
             return cfg.LOD1_TICK_MS;
         }
         return BotMovementManager.cfg.TICK_MS;
@@ -6346,9 +6422,91 @@ public class BotManager {
                 && Math.abs(targetPos.y - botPos.y) <= BotMovementManager.cfg.STOP_DIST;
     }
 
+    // LOD1 motion-plan tuning: re-plan when the goal shifts more than this, and reuse a committed
+    // route's baked length only when its target ~= the current goal (else straight-line).
+    private static final int MOTION_REPLAN_DIST = 40;
+    private static final int MOTION_ROUTE_MATCH_DIST = 60;
+
+    /**
+     * True when an unobserved (LOD1) bot's in-map movement can be abstracted to a motion plan this
+     * tick: it is grounded and in no state that runs a raw physics integrator (air/climb/swim/fidget)
+     * or a separate movement path (trade/market/ferry/FM/gacha errand, operator command). Those stay
+     * on real physics so the lerp never corrupts them — and, in Stage 2's cadence gate, keep the bot at
+     * 50ms. (docs/bot/unobserved-lod-design.md §2.1.)
+     */
+    private boolean lod1MotionPlanCovered(BotEntry entry) {
+        if (entry == null || entry.lod != BotEntry.Lod.LOD1) {
+            return false;
+        }
+        Character bot = entry.bot;
+        if (bot == null || bot.getMap() == null) {
+            return false;
+        }
+        return !entry.inAir && !entry.climbing && !entry.swimming
+                && entry.fidgetMode == BotFidgetMode.NONE
+                && bot.getTrade() == null && !entry.marketBusy
+                && entry.fmErrandMapId == -1 && entry.gachaErrandMapId == -1
+                && entry.operatorCmd == null;
+    }
+
+    /**
+     * LOD1 in-map movement (design §2.1): no physics/nav/collision. The bot lerps along a motion plan
+     * (from,to,depart,arrive) toward {@code targetPos} at its real ground speed. Distance comes from the
+     * committed-route edge chain when one matches the goal (no live A*), else straight-line ×1.3. Y is
+     * held at the frozen foothold Y until arrival; the exact Y is reconciled only at the LOD0 snap (§4).
+     */
+    private void tickMotionPlan(BotEntry entry, Point targetPos) {
+        Character bot = entry.bot;
+        long now = System.currentTimeMillis();
+        Point botPos = bot.getPosition();
+        if (targetPos == null) {
+            entry.motionTo = null; // no goal — idle in place, stay grounded/synced
+            BotPhysicsEngine.teleportTo(entry, bot, botPos);
+            entry.lastNavDecision = "lod1-idle";
+            return;
+        }
+        Point dest = new Point(targetPos.x, targetPos.y);
+        if (entry.motionTo == null || entry.motionTo.distance(dest) > MOTION_REPLAN_DIST) {
+            double dist;
+            if (entry.committedRoute != null && !entry.committedRoute.isEmpty()
+                    && entry.committedRouteTargetPos != null
+                    && entry.committedRouteTargetPos.distance(dest) <= MOTION_ROUTE_MATCH_DIST) {
+                dist = BotPhysicsEngine.routePixelLength(entry.committedRoute);
+            } else {
+                dist = BotPhysicsEngine.straightLinePixelLength(botPos, dest);
+            }
+            entry.motionFrom = new Point(botPos.x, botPos.y);
+            entry.motionTo = dest;
+            entry.motionHoldY = botPos.y;
+            entry.motionDepartMs = now;
+            long dur = BotPhysicsEngine.motionDurationMs(dist,
+                    entry.movementProfile.walkVelocityPxs(), ThreadLocalRandom.current());
+            entry.motionArriveMs = now + dur;
+        }
+        Point pos = BotPhysicsEngine.motionLerp(entry.motionFrom, entry.motionTo,
+                entry.motionDepartMs, entry.motionArriveMs, entry.motionHoldY, now);
+        if (pos != null) {
+            BotPhysicsEngine.teleportTo(entry, bot, pos);
+        }
+        entry.lastNavDecision = "lod1-motion";
+    }
+
     void stepMovementCore(BotEntry entry,
                           Point targetPos,
                           boolean runAiTick) {
+        // LOD1 (unobserved) movement: replace nav-resolve + physics with a motion-plan lerp. Gated to
+        // covered states so airborne/special-state bots keep real physics. This zeroes the move/nav
+        // tick cost for the unobserved population (design §3).
+        // Y-band gate: only motion-plan when the goal is within the bot's REAL basic-attack vertical
+        // reach (BotCombatManager.withinAttackYReach, the same box combat targeting uses). The motion
+        // plan freezes Y, so a cross-level target would be un-hittable at the frozen Y and the bot would
+        // farm only its own platform — a combat-fidelity loss. Beyond the band we fall through to real
+        // physics, which navigates the level change (original fidelity). A null goal = idle in place.
+        if (cfg.SIMPLIFY_UNOBSERVED_BOTS_PHYSICS && lod1MotionPlanCovered(entry)
+                && (targetPos == null || BotCombatManager.withinAttackYReach(entry.bot.getPosition(), targetPos))) {
+            tickMotionPlan(entry, targetPos);
+            return;
+        }
         BotNavigationManager.NavigationDirective navDirective = BotNavigationManager.resolveTarget(entry, targetPos, runAiTick);
         if (navDirective.consumedTick) {
             return;
@@ -6779,7 +6937,12 @@ public class BotManager {
     }
 
     private boolean consumeAiTick(BotEntry entry) {
-        entry.aiTickAccumulatorMs += BotMovementManager.cfg.TICK_MS;
+        // Accumulate the REAL elapsed interval, not a constant: a LOD1 bot ticks at LOD1_TICK_MS
+        // (500ms) via retask, so adding a fixed TICK_MS would make its AI ticks fire 10x too slowly.
+        // tickIntervalMs is the SSOT for the bot's live cadence (set at registration + by retask);
+        // fall back to TICK_MS for entries built outside registerBotInternal (unit-test harnesses).
+        int elapsed = entry.tickIntervalMs > 0 ? entry.tickIntervalMs : BotMovementManager.cfg.TICK_MS;
+        entry.aiTickAccumulatorMs += elapsed;
         if (entry.aiTickAccumulatorMs < cfg.AI_TICK_MS) {
             return false;
         }

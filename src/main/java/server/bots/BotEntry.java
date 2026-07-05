@@ -54,6 +54,19 @@ public class BotEntry {
     // Current TimerManager tick interval (ms). Set at registration; retask() compares against the
     // desired cadence so a no-op retask is skipped.
     int tickIntervalMs = 0;
+    // LOD1 motion plan (unobserved-map movement, docs/bot/unobserved-lod-design.md §2.1). While
+    // unobserved the bot's in-map position is NOT physics-integrated; it lerps along (from->to) by
+    // wall clock. motionTo == null means no active plan (idle in place at the current spot). Frozen
+    // when a bot drops to LOD1; cleared/re-materialized when a real player observes it (§4).
+    Point motionFrom = null;
+    Point motionTo = null;
+    long motionDepartMs = 0L;
+    long motionArriveMs = 0L;
+    int motionHoldY = 0; // last-known foothold Y, held for Y until arrival (exact Y only matters at the LOD0 transition)
+    // LOD1 cross-map travel (design §2.2): a hop's execution becomes "dwell the modeled hop seconds,
+    // then warp" instead of walking to the portal. This is the dwell deadline for the current hop
+    // (0 = not armed / between hops). Distinct from portalEnterDwellUntilMs (the observed pre-warp pause).
+    long lod1TravelDwellUntilMs = 0L;
     BotMovementProfile movementProfile = BotMovementProfile.base();
 
     // Physics
