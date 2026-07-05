@@ -6497,7 +6497,13 @@ public class BotManager {
         // LOD1 (unobserved) movement: replace nav-resolve + physics with a motion-plan lerp. Gated to
         // covered states so airborne/special-state bots keep real physics. This zeroes the move/nav
         // tick cost for the unobserved population (design §3).
-        if (cfg.SIMPLIFY_UNOBSERVED_BOTS_PHYSICS && lod1MotionPlanCovered(entry)) {
+        // Y-band gate: only motion-plan when the goal is within the bot's REAL basic-attack vertical
+        // reach (BotCombatManager.withinAttackYReach, the same box combat targeting uses). The motion
+        // plan freezes Y, so a cross-level target would be un-hittable at the frozen Y and the bot would
+        // farm only its own platform — a combat-fidelity loss. Beyond the band we fall through to real
+        // physics, which navigates the level change (original fidelity). A null goal = idle in place.
+        if (cfg.SIMPLIFY_UNOBSERVED_BOTS_PHYSICS && lod1MotionPlanCovered(entry)
+                && (targetPos == null || BotCombatManager.withinAttackYReach(entry.bot.getPosition(), targetPos))) {
             tickMotionPlan(entry, targetPos);
             return;
         }

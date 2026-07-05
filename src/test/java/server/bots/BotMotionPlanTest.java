@@ -6,7 +6,9 @@ import java.awt.Point;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /** Stage 2 LOD1 motion-plan pure math (docs/bot/unobserved-lod-design.md §2.1). */
 class BotMotionPlanTest {
@@ -69,5 +71,26 @@ class BotMotionPlanTest {
         assertNull(BotPhysicsEngine.motionLerp(null, null, 0, 0, 0, 0));
         assertEquals(new Point(5, 100), BotPhysicsEngine.motionLerp(null, new Point(5, 0), 0, 10, 100, 5));
         assertEquals(new Point(9, 100), BotPhysicsEngine.motionLerp(new Point(9, 0), null, 0, 10, 100, 5));
+    }
+
+    // --- LOD1 motion-plan Y-band gate: only same-level glides are abstracted; cross-level targets
+    // fall through to real physics so the bot navigates the level change (design fidelity). Uses the
+    // REAL basic-attack vertical reach (ATTACK_RANGE_Y=50 up / ATTACK_DOWN_MAX=20 down) as SSOT. ---
+
+    @Test
+    void yBandGateCoversSameLevelTargets() {
+        Point bot = new Point(500, 300);
+        assertTrue(BotCombatManager.withinAttackYReach(bot, new Point(900, 300)));   // exactly level
+        assertTrue(BotCombatManager.withinAttackYReach(bot, new Point(900, 251)));   // 49 above (< 50)
+        assertTrue(BotCombatManager.withinAttackYReach(bot, new Point(900, 250)));   // 50 above (== ATTACK_RANGE_Y)
+        assertTrue(BotCombatManager.withinAttackYReach(bot, new Point(900, 320)));   // 20 below (== ATTACK_DOWN_MAX)
+    }
+
+    @Test
+    void yBandGateFallsThroughBeyondAttackReach() {
+        Point bot = new Point(500, 300);
+        assertFalse(BotCombatManager.withinAttackYReach(bot, new Point(900, 249)));  // 51 above (> ATTACK_RANGE_Y)
+        assertFalse(BotCombatManager.withinAttackYReach(bot, new Point(900, 321)));  // 21 below (> ATTACK_DOWN_MAX)
+        assertFalse(BotCombatManager.withinAttackYReach(bot, new Point(900, 150)));  // a platform well above
     }
 }
