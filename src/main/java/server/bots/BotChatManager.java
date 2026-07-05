@@ -896,6 +896,8 @@ public class BotChatManager {
         if (SUPPORT_ON_PATTERN.matcher(message).find()) {
             BotManager.after(BotManager.randMs(500, 700), () -> {
                 entry.skillBuffsEnabled = true;
+                entry.nextBuffCheckAtMs = 0L;       // re-evaluate buffs at once, don't honor a stale deadline
+                entry.nextMagicGuardCheckMs = 0L;
                 BotManager.getInstance().botReply(entry, "ok, skill buffs on");
             });
             return;

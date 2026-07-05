@@ -78,8 +78,61 @@ final class BotNavigationGraphProvider {
     // Base dir is overridable so tests never persist their (often trimmed) graphs into the live
     // production cache — a trimmed map at base profile would otherwise overwrite the real graph and
     // strand bots with region=-1. Tests point -Dbot.nav.cacheDir at cache/bot-nav-test; prod uses the default.
-    private static final Path CACHE_DIR =
-            Path.of(System.getProperty("bot.nav.cacheDir", "cache/bot-nav"), "v" + GRAPH_VERSION);
+    private static final Path CACHE_BASE_DIR = Path.of(System.getProperty("bot.nav.cacheDir", "cache/bot-nav"));
+    private static final Path CACHE_DIR = CACHE_BASE_DIR.resolve("v" + GRAPH_VERSION);
+
+    static {
+        deleteStaleVersionCaches();
+    }
+
+    // Each GRAPH_VERSION bump leaves the prior version's on-disk cache dir behind as dead weight
+    // (v10..v70 accumulated ~3.9GB). Delete every sibling version dir once at class load. Uses
+    // Files.walkFileTree, which does not follow symlinks/junctions by default, so a wz/ reparse
+    // point placed under the cache base dir is never traversed into.
+    private static void deleteStaleVersionCaches() {
+        if (!Files.isDirectory(CACHE_BASE_DIR)) {
+            return;
+        }
+        String currentVersionDir = CACHE_DIR.getFileName().toString();
+        int deletedDirs = 0;
+        try (java.util.stream.Stream<Path> children = Files.list(CACHE_BASE_DIR)) {
+            for (Path child : (Iterable<Path>) children::iterator) {
+                if (!Files.isDirectory(child) || child.getFileName().toString().equals(currentVersionDir)) {
+                    continue;
+                }
+                deleteRecursively(child);
+                deletedDirs++;
+            }
+        } catch (IOException e) {
+            log.debug("Failed to scan bot nav cache dir for stale versions", e);
+            return;
+        }
+        if (deletedDirs > 0) {
+            log.info("Deleted {} stale bot-nav graph cache version dir(s) under {}", deletedDirs, CACHE_BASE_DIR);
+        }
+    }
+
+    private static void deleteRecursively(Path dir) {
+        try {
+            Files.walkFileTree(dir, new java.nio.file.SimpleFileVisitor<>() {
+                @Override
+                public java.nio.file.FileVisitResult visitFile(Path file, java.nio.file.attribute.BasicFileAttributes attrs)
+                        throws IOException {
+                    Files.delete(file);
+                    return java.nio.file.FileVisitResult.CONTINUE;
+                }
+
+                @Override
+                public java.nio.file.FileVisitResult postVisitDirectory(Path d, IOException exc) throws IOException {
+                    Files.delete(d);
+                    return java.nio.file.FileVisitResult.CONTINUE;
+                }
+            });
+        } catch (IOException e) {
+            log.debug("Failed to delete stale bot nav cache dir {}", dir, e);
+        }
+    }
+
     private static final Map<GraphCacheKey, BotNavigationGraph> GRAPHS = new ConcurrentHashMap<>();
     private static final Map<GraphCacheKey, CompletableFuture<BotNavigationGraph>> PENDING_GRAPHS = new ConcurrentHashMap<>();
     private static final Map<GraphCacheKey, GraphBuildReport> LAST_BUILD_REPORTS = new ConcurrentHashMap<>();

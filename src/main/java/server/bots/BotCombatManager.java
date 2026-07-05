@@ -384,8 +384,8 @@ class BotCombatManager {
             entry.mobHitCooldownMs = BotMovementManager.tickDown(entry.mobHitCooldownMs);
             return;
         }
+        if (!runSweep) return;       // no contact sweep this tick: skip the statRlock HP read too
         if (bot.getHp() <= 0) return;
-        if (!runSweep) return;
 
         Point botPos = bot.getPosition();
         try {
@@ -643,6 +643,16 @@ class BotCombatManager {
             entry.buffSkillIds.add(skill.getId());
             entry.nextBuffAt.putIfAbsent(skill.getId(), 0L);
         }
+
+        entry.hasCriticalSurvivalBuff = false;
+        entry.hasPartySupportBuff = false;
+        for (int skillId : entry.buffSkillIds) {
+            if (CRITICAL_SURVIVAL_BUFFS.contains(skillId)) entry.hasCriticalSurvivalBuff = true;
+            if (isPartySupportSkill(skillId)) entry.hasPartySupportBuff = true;
+        }
+        // Skill set changed: re-evaluate buffs next tick instead of honoring a now-stale deadline.
+        entry.nextBuffCheckAtMs = 0L;
+        entry.nextMagicGuardCheckMs = 0L;
     }
 
     private static int skillCacheSignature(Character bot) {
@@ -673,13 +683,15 @@ class BotCombatManager {
             return;
         }
 
-        // Throttle the (re)buff evaluation. Casting is already gated by the per-skill nextBuffAt /
-        // nextSupportBuffAt timers, so the monster-liveness scan + party-support scan below only need
-        // to run a few times a second, not every tick. Mirrors BotBuffManager.tick's TICK_MS throttle;
-        // without it this scan was ~33% of all bot CPU. A sub-second delay to a rebuff is invisible.
+        // Deadline-driven (re)buff evaluation. Every cast is gated by a per-skill nextBuffAt /
+        // nextSupportBuffAt timer, so between the nearest of those there is nothing to do — sleep the whole
+        // scan (incl. the O(monsters) liveness check that was ~33% of all bot CPU when run per tick) until
+        // then. Casting a buff drops the deadline back to the poll floor so the rest are picked up promptly.
         long now = System.currentTimeMillis();
-        if (now - entry.lastSkillBuffScanMs < SKILL_BUFF_SCAN_MS) return;
+        if (now < entry.nextBuffCheckAtMs) return;
         entry.lastSkillBuffScanMs = now;
+        // Default: re-poll at the fixed cadence; refined to the nearest rebuff deadline at the clean exit.
+        entry.nextBuffCheckAtMs = now + SKILL_BUFF_SCAN_MS;
 
         if (bot.getMap().getAllMonsters().stream().noneMatch(Monster::isAlive)) return;
 
@@ -725,7 +737,29 @@ class BotCombatManager {
                 return;
             }
         }
+        // Nothing due right now: sleep until the nearest self-buff rebuff window (party-support bots keep
+        // the poll floor since a teammate can lose a buff at any time, off any deadline we track).
+        entry.nextBuffCheckAtMs = nextBuffDeadline(entry, now);
         noteSkillBuffDecision(entry, "all skill buffs active or on cooldown");
+    }
+
+    /** Earliest epoch-ms a self-buff rebuff can next fire (min over {@code nextBuffAt}), floored by the
+     *  poll cadence for support bots and for any buff already due but not cast this pass. */
+    private static long nextBuffDeadline(BotEntry entry, long now) {
+        long deadline = Long.MAX_VALUE;
+        boolean dueButUncast = false;
+        for (int skillId : entry.buffSkillIds) {
+            long at = entry.nextBuffAt.getOrDefault(skillId, 0L);
+            if (at <= now) {
+                dueButUncast = true;      // due but skipped (cost/rock/not-worth): retry next cadence
+            } else if (at < deadline) {
+                deadline = at;
+            }
+        }
+        if (dueButUncast || entry.hasPartySupportBuff) {
+            deadline = Math.min(deadline, now + SKILL_BUFF_SCAN_MS);
+        }
+        return deadline == Long.MAX_VALUE ? now + SKILL_BUFF_SCAN_MS : deadline;
     }
 
     /**
@@ -2450,7 +2484,7 @@ class BotCombatManager {
         if (bot.getMaxHp() <= cfg.TOUCH_FRAGILE_MAXHP) {
             return true;
         }
-        return BotPotionManager.countPotions(bot)[0] < BotManager.cfg.POT_STOP;
+        return BotPotionManager.countPotionsCached(bot)[0] < BotManager.cfg.POT_STOP;
     }
 
     private static long aoeClusterBonus(BotEntry entry, Monster target, List<Monster> candidates) {
@@ -3142,10 +3176,18 @@ class BotCombatManager {
     }
 
     static boolean tryCastMagicGuard(BotEntry entry, Character bot) {
+        if (!entry.hasCriticalSurvivalBuff) return false; // no Magic-Guard-class skill: never probe buff state
         if (entry.attackCooldownMs > 0) return false;
         if (entry.inAir || entry.climbing) return false;
         if (!entry.skillBuffsEnabled) return false;
         if (bot == null || !bot.isAlive()) return false;
+
+        // Throttle the buff-state probe to ~1s. getBuffedValue takes two fair ReentrantLocks; at hundreds
+        // of bots that per-tick lock acquisition, not the cast, was the cost. A dispel/expiry is still
+        // caught within one scan interval, well inside Magic Guard's 10% rebuff buffer.
+        long now = System.currentTimeMillis();
+        if (now < entry.nextMagicGuardCheckMs) return false;
+        entry.nextMagicGuardCheckMs = now + SKILL_BUFF_SCAN_MS;
         if (bot.getBuffedValue(BuffStat.MAGIC_GUARD) != null) return false;
 
         for (int skillId : CRITICAL_SURVIVAL_BUFFS) {

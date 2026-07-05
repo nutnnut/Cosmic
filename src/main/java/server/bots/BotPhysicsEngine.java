@@ -2791,15 +2791,25 @@ final class BotPhysicsEngine {
         return new Point(initial.x, dropY);
     }
 
+    // cos(alpha)/cos(beta) depend only on the foothold's endpoints, not the query x — cache them
+    // per foothold instead of recomputing atan/cos on every probe (graphgen + the airborne
+    // integrator issue tens of millions of these). Footholds never override equals/hashCode, so
+    // identity keying is correct; WeakHashMap mirrors the COLLISION_INDEX lifetime pattern above.
+    private static final java.util.Map<Foothold, double[]> SLOPE_COS_CACHE =
+            java.util.Collections.synchronizedMap(new java.util.WeakHashMap<>());
+
     // Verbatim port of the foothold tree's slope interpolation — the trig chain reduces to
     // linear interpolation but is kept as-is so int truncation matches to the pixel.
     private static int slopeYAt(Foothold fh, int x) {
-        double s1 = Math.abs(fh.getY2() - fh.getY1());
-        double s2 = Math.abs(fh.getX2() - fh.getX1());
         double s4 = Math.abs(x - fh.getX1());
-        double alpha = Math.atan(s2 / s1);
-        double beta = Math.atan(s1 / s2);
-        double s5 = Math.cos(alpha) * (s4 / Math.cos(beta));
+        double[] cosAlphaBeta = SLOPE_COS_CACHE.computeIfAbsent(fh, f -> {
+            double s1 = Math.abs(f.getY2() - f.getY1());
+            double s2 = Math.abs(f.getX2() - f.getX1());
+            double alpha = Math.atan(s2 / s1);
+            double beta = Math.atan(s1 / s2);
+            return new double[] { Math.cos(alpha), Math.cos(beta) };
+        });
+        double s5 = cosAlphaBeta[0] * (s4 / cosAlphaBeta[1]);
         return fh.getY2() < fh.getY1() ? fh.getY1() - (int) s5 : fh.getY1() + (int) s5;
     }
 

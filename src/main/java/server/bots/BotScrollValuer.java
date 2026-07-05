@@ -34,8 +34,10 @@ final class BotScrollValuer {
     /** Iterations for the restart fixed point; D converges geometrically so this is comfortably ample
      *  even for high-restart (low success-rate) targets where the contraction rate approaches 1. */
     private static final int RESTART_ITERS = 120;
-    /** Fixed-point convergence tolerance in meso; keeps the old cap for hard tails. */
-    private static final double RESTART_EPSILON_MESO = 1.0e-9;
+    /** Fixed-point convergence tolerance in meso: D converges geometrically toward values in the
+     *  millions, so a sub-meso residual is numerically indistinguishable from the converged answer
+     *  while landing in ~5-15 iterations instead of the full {@link #RESTART_ITERS} cap. */
+    private static final double RESTART_EPSILON_MESO = 1.0;
 
     private BotScrollValuer() {}
 

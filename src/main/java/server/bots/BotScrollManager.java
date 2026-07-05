@@ -1270,9 +1270,23 @@ final class BotScrollManager {
         return specs;
     }
 
-    private record ReproSpecKey(long successRateBits, long statGainBits, long mesoCostBits) {}
+    private record ReproSpecKey(long successRateBits, long statGainBits, long mesoCostBucket) {}
 
-    private record ReproCurveKey(long baseScoreBits, int tuc, long cleanCostBits, List<ReproSpecKey> specs) {}
+    private record ReproCurveKey(long baseScoreBits, int tuc, long cleanCostBucket, List<ReproSpecKey> specs) {}
+
+    private static final double LOG_1_1 = Math.log(1.1);
+
+    /** Coarse geometric price bucket (~10% steps) for the curve cache key. Scroll and clean-base meso
+     *  come from the live market consensus ({@link #scrollPriceMeso}), which drifts continuously — keying
+     *  on the exact price would miss the cache on every meso of drift and rebuild the whole DP. Bucketing
+     *  lets a curve serve until its inputs move a full 10%, at which point the next price naturally lands
+     *  in a new bucket and refreshes it. Lossy by <10% on inputs feeding a valuation of millions. */
+    private static long priceBucket(double meso) {
+        if (!(meso > 0.0)) {
+            return 0L;
+        }
+        return Math.round(Math.log(meso) / LOG_1_1);
+    }
 
     private static DoubleUnaryOperator cachedReproductionValue(double baseScore, int tuc,
             List<BotScrollValuer.ScrollSpec> scrolls, double baseCostMeso) {
@@ -1289,7 +1303,7 @@ final class BotScrollManager {
             specs.add(new ReproSpecKey(
                     Double.doubleToLongBits(sc.successRate()),
                     Double.doubleToLongBits(sc.statGain()),
-                    Double.doubleToLongBits(sc.mesoCost())));
+                    priceBucket(sc.mesoCost())));
         }
         if (specs.isEmpty()) {
             return BotScrollValuer.reproductionValue(baseScore, tuc, scrolls, baseCostMeso);
@@ -1297,7 +1311,7 @@ final class BotScrollManager {
         ReproCurveKey key = new ReproCurveKey(
                 Double.doubleToLongBits(baseScore),
                 tuc,
-                Double.doubleToLongBits(Math.max(0.0, baseCostMeso)),
+                priceBucket(Math.max(0.0, baseCostMeso)),
                 List.copyOf(specs));
         if (reproCurveCache.size() > REPRO_CURVE_CACHE_MAX) {
             reproCurveCache.clear();

@@ -1,7 +1,9 @@
 # Bot perf optimization plan — 615-bot stress capture (2026-07-04)
 
-Status: **MEASURED, NOT IMPLEMENTED.** This doc is the plan of record for the follow-up
-implementation session. KB summary: `docs/bot/kb/kb_bot_perf_stress_hotpaths.md`.
+Status: **P0, P1.1, P1.6, P3, P4 IMPLEMENTED 2026-07-05 (uncommitted, not live-verified)
+— see `docs/bot/perf-2026-07-05-handoff.md` for what changed and next steps. P1.2-1.5,
+P2, P5, P6 still open; the P2 lossy lever is now a full design:
+`docs/bot/unobserved-lod-design.md`.** KB summary: `docs/bot/kb/kb_bot_perf_stress_hotpaths.md`.
 Owner directive: **assume warm caches everywhere except the nav-graph build** (the only cold
 cache worth optimizing — long builds × many map/stat variants). Prefer lossless / no-behavior-change
 optimizations; lossy simplifications are acceptable when nobody observes the bot and the win is big.

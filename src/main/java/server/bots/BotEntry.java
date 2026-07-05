@@ -40,7 +40,20 @@ public class BotEntry {
     volatile int followTargetId = 0; // 0 = owner
     volatile boolean airshowActive = false;
     volatile long airshowLastTrailAtMs = 0L;
-    final ScheduledFuture<?> task;
+    // Reassignable so the unobserved-LOD cadence switch (BotManager.retask) can cancel this task and
+    // re-register at a coarser interval. Every register/removal path treats it as the one live task.
+    ScheduledFuture<?> task;
+    // Level-of-detail (unobserved-map LOD, docs/bot/unobserved-lod-design.md). LOD0 = today's full
+    // 50ms fidelity; LOD1 = coarse/unobserved. Computed per tick in BotManager.updateLod. Stage 1
+    // wires the field + hysteresis but does NOT change behavior (cadence stays 50ms; §5 stage 1).
+    enum Lod { LOD0, LOD1 }
+    volatile Lod lod = Lod.LOD0;
+    // Wall clock when the bot's map + 1-portal neighborhood first became player-free (0 = observed now).
+    // LOD0->LOD1 only after this has held for the hysteresis window; avoids thrash on map-hopping players.
+    long lodUnobservedSinceMs = 0L;
+    // Current TimerManager tick interval (ms). Set at registration; retask() compares against the
+    // desired cadence so a no-op retask is skipped.
+    int tickIntervalMs = 0;
     BotMovementProfile movementProfile = BotMovementProfile.base();
 
     // Physics
@@ -170,6 +183,11 @@ public class BotEntry {
     long nextSupportHealAt = 0L;
     boolean supportHealsEnabled = true;
     boolean skillBuffsEnabled = true;
+    // Precomputed from buffSkillIds (BotCombatManager.rebuildSkillCacheIfNeeded): true iff the bot owns
+    // any Magic-Guard-class survival buff / party-support buff. Lets the per-tick buff casters skip the
+    // fair-lock buff-state probe (Character.getBuffedValue) for the majority of bots that own neither.
+    boolean hasCriticalSurvivalBuff = false;
+    boolean hasPartySupportBuff = false;
 
     // Ammo
     boolean noAmmo = false;
@@ -767,6 +785,11 @@ public class BotEntry {
 
     // Skill buff tracking (always enabled; tracks last decision for debug)
     long   lastSkillBuffScanMs        = 0L;
+    // Deadline gates (epoch ms) for the per-tick buff casters: skip the buff-state scan until due.
+    // tickBuffs sleeps until the nearest rebuff window; tryCastMagicGuard throttles its getBuffedValue
+    // probe. Reset to 0 when the skill set changes or skill buffs are re-enabled (re-evaluate at once).
+    long   nextBuffCheckAtMs          = 0L;
+    long   nextMagicGuardCheckMs      = 0L;
     long   lastSkillBuffActionAtMs    = 0L;
     String lastSkillBuffActionSummary = "no skill buff checks yet";
 
