@@ -301,6 +301,23 @@ public class ItemAction extends AbstractQuestAction {
         return true;
     }
 
+    /**
+     * The player's-CHOICE reward item IDs (those with {@code prop < 0}, which {@link #check} collects
+     * into {@code selectList}), in the exact order and with the exact {@link #canGetItem} filtering that
+     * {@code check} uses — so an index into the returned list is a valid {@code extSelection} for
+     * {@link server.quest.Quest#complete}. Empty when this completion has no choice reward. Lets a bot
+     * pick a reward deliberately instead of NPE-ing on a null selection at {@code selectList.get(null)}.
+     */
+    public List<Integer> selectableRewardItemIds(Character chr) {
+        List<Integer> out = new LinkedList<>();
+        for (ItemData item : items) {
+            if (item.getProp() != null && item.getProp() < 0 && canGetItem(item, chr)) {
+                out.add(item.getId());
+            }
+        }
+        return out;
+    }
+
     private void announceInventoryLimit(List<Integer> itemids, Character chr) {
         for (Integer id : itemids) {
             if (ItemInformationProvider.getInstance().isPickupRestricted(id) && chr.haveItemWithId(id, true)) {

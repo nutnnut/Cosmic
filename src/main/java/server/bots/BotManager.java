@@ -25,12 +25,14 @@ import org.slf4j.LoggerFactory;
 import server.ItemInformationProvider;
 import server.StatEffect;
 import server.TimerManager;
+import server.bots.combat.BotMobHitboxProvider;
 import server.bots.pq.BotPqHooks;
 import server.life.Monster;
 import server.life.MobSkill;
 import server.maps.Foothold;
 import server.maps.MapItem;
 import server.maps.MapleMap;
+import server.maps.Rope;
 import server.quest.Quest;
 import tools.PacketCreator;
 import tools.Pair;
@@ -3216,6 +3218,9 @@ public class BotManager {
     private static final int IDLE_REGION_Y_BAND = 60;
     /** Random idle-spot samples to pick the least-crowded from (break/leech destack). */
     private static final int IDLE_DESTACK_SAMPLES = 8;
+    private static final int IDLE_ROPE_HEAD_CLEARANCE = 50;
+    private static final int IDLE_FALLBACK_MOB_HALF_WIDTH = 24;
+    private static final int IDLE_FALLBACK_MOB_LOWER_HEIGHT = 30;
 
     /**
      * Safe idle/rest region on the bot's CURRENT map — SSOT for all three idle states (out-of-pot
@@ -3240,10 +3245,12 @@ public class BotManager {
         var defense = server.bots.combat.BotDefenseDataProvider.getInstance();
         Map<Integer, Double> dangerByRegion = new java.util.HashMap<>();
         List<Point> mobPts = new ArrayList<>();
+        List<Monster> liveMobs = new ArrayList<>();
         for (Monster m : map.getAllMonsters()) {
             if (m == null || !m.isAlive()) {
                 continue;
             }
+            liveMobs.add(m);
             mobPts.add(m.getPosition());
             BotNavigationGraph.Region r = idleRegionAt(graph, m.getPosition());
             if (r != null) {
@@ -3257,11 +3264,18 @@ public class BotManager {
             }
         }
         if (ground.isEmpty()) {
-            return resolveNoGrindTargetPosition(entry, botPos, map);
+            Point ropeSpot = resolveSafeIdleRopeSpot(map, liveMobs);
+            return ropeSpot != null ? ropeSpot : resolveNoGrindTargetPosition(entry, botPos, map);
         }
         double minDanger = Double.MAX_VALUE;
         for (BotNavigationGraph.Region r : ground) {
             minDanger = Math.min(minDanger, dangerByRegion.getOrDefault(r.id, 0.0));
+        }
+        if (minDanger > 1e-9) {
+            Point ropeSpot = resolveSafeIdleRopeSpot(map, liveMobs);
+            if (ropeSpot != null) {
+                return ropeSpot;
+            }
         }
         List<BotNavigationGraph.Region> safest = new ArrayList<>();
         for (BotNavigationGraph.Region r : ground) {
@@ -3312,6 +3326,101 @@ public class BotManager {
             return resolveSafeIdleRegion(entry, bot, botPos, true); // mobs near -> danger-aware spread
         }
         return pickTownLoiterAnchor(entry, bot, botPos); // safe map -> NPC-cluster destack
+    }
+
+    private static Point resolveSafeIdleRopeSpot(MapleMap map, List<Monster> liveMobs) {
+        if (map == null || map.getRopes().isEmpty()) {
+            return null;
+        }
+        List<RopeIdleWindow> safeWindows = new ArrayList<>();
+        for (Rope rope : map.getRopes()) {
+            RopeIdleWindow window = safestIdleWindowOnRope(rope, liveMobs);
+            if (window != null) {
+                safeWindows.add(window);
+            }
+        }
+        if (safeWindows.isEmpty()) {
+            return null;
+        }
+        RopeIdleWindow pick = safeWindows.get(ThreadLocalRandom.current().nextInt(safeWindows.size()));
+        return pick.randomPoint();
+    }
+
+    static RopeIdleWindow safestIdleWindowOnRope(Rope rope, List<Monster> liveMobs) {
+        if (rope == null) {
+            return null;
+        }
+        int minY = Math.max(BotPhysicsEngine.firstClimbableY(rope), rope.topY() + IDLE_ROPE_HEAD_CLEARANCE);
+        int maxY = rope.bottomY();
+        if (minY > maxY) {
+            return null;
+        }
+
+        List<RopeIdleWindow> windows = new ArrayList<>();
+        windows.add(new RopeIdleWindow(rope.x(), minY, maxY));
+        for (Monster mob : liveMobs) {
+            Rectangle lower = idleMobLowerTouchBounds(mob);
+            if (lower == null || rope.x() < lower.x || rope.x() > lower.x + lower.width) {
+                continue;
+            }
+            int unsafeMinY = lower.y;
+            int unsafeMaxY = lower.y + lower.height + BotCombatManager.cfg.MOB_TOUCH_SWEEP_HEIGHT;
+            List<RopeIdleWindow> next = new ArrayList<>();
+            for (RopeIdleWindow window : windows) {
+                next.addAll(window.without(unsafeMinY, unsafeMaxY));
+            }
+            windows = next;
+            if (windows.isEmpty()) {
+                return null;
+            }
+        }
+
+        RopeIdleWindow best = null;
+        for (RopeIdleWindow window : windows) {
+            if (best == null || window.height() > best.height()) {
+                best = window;
+            }
+        }
+        return best;
+    }
+
+    private static Rectangle idleMobLowerTouchBounds(Monster mob) {
+        if (mob == null || mob.getPosition() == null) {
+            return null;
+        }
+        Rectangle bounds = BotMobHitboxProvider.getInstance().getMobBounds(mob);
+        if (bounds == null) {
+            Point p = mob.getPosition();
+            return new Rectangle(p.x - IDLE_FALLBACK_MOB_HALF_WIDTH, p.y - IDLE_FALLBACK_MOB_LOWER_HEIGHT,
+                    IDLE_FALLBACK_MOB_HALF_WIDTH * 2 + 1, IDLE_FALLBACK_MOB_LOWER_HEIGHT + 1);
+        }
+        int lowerHeight = Math.max(1, bounds.height / 2);
+        return new Rectangle(bounds.x, bounds.y + bounds.height - lowerHeight, bounds.width, lowerHeight);
+    }
+
+    record RopeIdleWindow(int x, int minY, int maxY) {
+        int height() {
+            return maxY - minY;
+        }
+
+        Point randomPoint() {
+            int y = minY == maxY ? minY : ThreadLocalRandom.current().nextInt(minY, maxY + 1);
+            return new Point(x, y);
+        }
+
+        List<RopeIdleWindow> without(int unsafeMinY, int unsafeMaxY) {
+            if (unsafeMaxY < minY || unsafeMinY > maxY) {
+                return List.of(this);
+            }
+            List<RopeIdleWindow> kept = new ArrayList<>(2);
+            if (unsafeMinY > minY) {
+                kept.add(new RopeIdleWindow(x, minY, unsafeMinY - 1));
+            }
+            if (unsafeMaxY < maxY) {
+                kept.add(new RopeIdleWindow(x, unsafeMaxY + 1, maxY));
+            }
+            return kept;
+        }
     }
 
     /** The ground region a mob is standing in (x within span, foothold y within {@link #IDLE_REGION_Y_BAND}),
@@ -3903,6 +4012,22 @@ public class BotManager {
             entry.autopilotWaitAnchorMapId = -1;
         }
 
+        // Inert+grinding wedge guard: a self-driving bot (no live human owner) that is grinding=true but
+        // has NO autopilot destination (autopilotMapId=-1) is local-grinding with nowhere to be — e.g. an
+        // @botparty member that lost its party plan after a death and never rejoined, left standing in a
+        // town "grinding here" forever. maybeRecoverInertAutopilot can't save it: it only runs for IDLE
+        // bots, so grinding=true blocks it (the "Recovery: BLOCKED by grinding" pathlog line). For an
+        // owner-less / self-owned / botified-owner bot there is no legitimate local grind (that's an owner
+        // "grind here" concept), so reconcile the inconsistent state to idle — exactly what the death-loop
+        // escape does in respawnBot — and the next idle tick re-decides / rejoins the party.
+        if (entry.grinding && !BotAutopilotManager.isActive(entry) && isSelfDrivingBot(entry)
+                && !entry.following && entry.operatorCmd == null && entry.farmAnchor == null) {
+            log.warn("bot {} wedged (grinding with no autopilot dest, map {}) - resetting to idle so"
+                    + " recovery can re-decide/rejoin", bot.getName(), bot.getMapId());
+            clearMode(entry);
+            return; // idle now; maybeRecoverInertAutopilot runs on the next idle tick
+        }
+
         // Grind mode: navigate toward nearest monster, attack when in range
         if (entry.grinding) {
             LocalOpportunityAttackResult grindResult;
@@ -3946,7 +4071,11 @@ public class BotManager {
     private LocalOpportunityAttackResult walkToOrIdleAt(BotEntry entry, Character bot, Point botPos,
             Point anchor, boolean runAiTick) {
         if (anchor == null || isNear(botPos, anchor, BotMovementManager.cfg.STOP_DIST)) {
-            BotPhysicsEngine.idleOnGround(entry, bot);
+            if (entry.climbing && BotPhysicsEngine.climbableAtPoint(bot.getMap(), botPos) != null) {
+                BotPhysicsEngine.holdClimb(entry, bot);
+            } else {
+                BotPhysicsEngine.idleOnGround(entry, bot);
+            }
             BotMovementManager.broadcastMovement(entry);
             return new LocalOpportunityAttackResult(true, botPos);
         }
@@ -4881,6 +5010,18 @@ public class BotManager {
         if (entry == null) {
             return;
         }
+        Character owner = entry.owner;
+        int desiredTargetId = owner != null && target != null && owner.getId() != target.getId()
+                ? target.getId() : 0;
+        // Idempotent re-assert: already cleanly following this exact target -> no-op. The combat/pot
+        // "resume follow" hooks call this every time they hand control back; re-running clearScriptTasks
+        // (which bumps activityEpoch) on each of those would spuriously read as a NEW directive and drop
+        // an in-flight party-autopilot decide (the "epoch changed mid-decide" silent failure) or
+        // self-interrupt a Maker batch. Only actually re-enter follow when some state needs resetting.
+        if (entry.following && entry.followTargetId == desiredTargetId && !entry.grinding
+                && entry.moveTarget == null && entry.farmAnchor == null && !entry.shopVisitPending) {
+            return;
+        }
         clearScriptTasks(entry);
         BotShopManager.cancelShopVisit(entry);
         startFollow(entry, target);
@@ -5603,10 +5744,11 @@ public class BotManager {
         }
         if (perf) BotPerformanceMonitor.record("common-afk-check", System.nanoTime() - t);
         // Real-player takeover (@botme/@botparty) grinds all the time: skip the recreational / economy
-        // detours (quest piggyback, gachapon, free-market, shout trades). Grind-essential logistics
-        // (resupply/sell visits, level-up, deaths, follow) still run. Population bots do it all.
+        // detours (gachapon, free-market, shout trades). Questing IS allowed (it's progression, and the
+        // reward pick is asset-safe). Grind-essential logistics (resupply/sell, level-up, deaths, follow,
+        // job advance) still run. Population bots do it all.
         boolean realTakeover = isRealPlayerTakeover(entry);
-        if (runSlowScans && !realTakeover) {
+        if (runSlowScans) {
             if (perf) t = System.nanoTime();
             BotQuestManager.tickScan(entry, bot);
             if (perf) BotPerformanceMonitor.record("common-quest-scan", System.nanoTime() - t);

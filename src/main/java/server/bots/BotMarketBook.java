@@ -134,6 +134,17 @@ final class BotMarketBook {
         return BotMarketMath.blendWithConsensus(priv, sampled, consensus.volume(priceKey));
     }
 
+    /**
+     * The economy "market value" of an item as a single number: the {@link #perceivedPrice} when this
+     * bot has any read (private belief and/or consensus), else the caller's structural {@code npcFallback}
+     * (NPC resale). SSOT for consumers that just need "what's item X worth on the bot market" — e.g.
+     * ranking quest-reward choices — as opposed to ask/bid formation, which reads the layers separately.
+     */
+    double marketValue(long priceKey, double npcFallback, long nowMs) {
+        double p = perceivedPrice(priceKey, nowMs);
+        return p > 0 ? p : Math.max(0, npcFallback);
+    }
+
     /** Private-layer confidence (post-decay) — margin/ask formation reads this. */
     double privateConfidence(long priceKey, long nowMs) {
         return decayedPrivate(priceKey, nowMs).confidence();

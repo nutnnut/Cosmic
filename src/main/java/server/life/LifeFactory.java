@@ -271,8 +271,11 @@ public class LifeFactory {
             }
             return new Monster(mid, stats);
         } catch (NullPointerException npe) {
+            // Benign + expected: a stale dropper id (drop_data / bot farm-item lookup) with no WZ mob
+            // entry. Caught, cached in failedMonsterLoads (logs ONCE per id), callers handle null. A
+            // one-line WARN, no stack — it isn't a fault to investigate, just a missing WZ row.
             failedMonsterLoads.add(mid);
-            log.error("[SEVERE] MOB {} failed to load.", mid, npe);
+            log.warn("MOB {} has no loadable WZ stats (stale dropper id?) - ignoring it from now on.", mid);
             return null;
         }
     }

@@ -719,6 +719,17 @@ public class Quest {
         return true;
     }
 
+    /**
+     * Item IDs a completing player would CHOOSE between at turn-in (empty when the completion has no
+     * choice reward), in valid {@code extSelection} order for {@link #complete(Character, int, Integer)}.
+     * A bot uses this to pick a reward deliberately instead of completing with a {@code null} selection,
+     * which NPEs on a choice-reward quest (ItemAction.check {@code selectList.get(null)}).
+     */
+    public List<Integer> completeSelectableRewardItemIds(Character chr) {
+        AbstractQuestAction act = completeActs.get(QuestActionType.ITEM);
+        return act instanceof ItemAction ia ? ia.selectableRewardItemIds(chr) : List.of();
+    }
+
     public boolean hasNextQuestAction() {
         Map<QuestActionType, AbstractQuestAction> acts = completeActs;
         AbstractQuestAction mqa = acts.get(QuestActionType.NEXTQUEST);

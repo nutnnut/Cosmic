@@ -490,7 +490,17 @@ final class BotAutopilotManager {
             return;
         }
         int[] epochs = members.stream().mapToInt(m -> m.activityEpoch).toArray();
+        // Quiesce every member while the shared decide runs off-thread: without this, a member's own
+        // per-bot recovery/redecide (maybeRecoverInertAutopilot / maybeRedecide, both gated on this flag)
+        // could fire mid-decide, call issueGrind, bump activityEpoch, and drop the whole party plan
+        // (epoch-changed-mid-decide). Mirrors redecideParty. Cleared first thing in the callback below.
+        for (BotEntry m : members) {
+            m.autopilotDecisionInFlight = true;
+        }
         decisionRunner.run(() -> decideParty(members), result -> {
+            for (BotEntry m : members) {
+                m.autopilotDecisionInFlight = false;
+            }
             PartyPlan plan = (PartyPlan) result;
             for (int i = 0; i < members.size(); i++) {
                 if (members.get(i).activityEpoch != epochs[i]) {

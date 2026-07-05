@@ -817,6 +817,42 @@ class BotManagerTest {
     }
 
     @Test
+    void shouldTrimRopeIdleWindowAboveMobTouchReachAndBelowTopHeadClearance() {
+        Rope rope = new Rope(100, 0, 200, false);
+        Monster lowerMob = mockMob(new Point(100, 200), 9999999);
+
+        BotManager.RopeIdleWindow window = BotManager.safestIdleWindowOnRope(rope, List.of(lowerMob));
+
+        assertNotNull(window);
+        assertEquals(100, window.x());
+        assertEquals(50, window.minY());
+        assertEquals(169, window.maxY());
+    }
+
+    @Test
+    void shouldUseSafeRopeSpotWhenEveryGroundRegionHasTouchDanger() {
+        MapleMap realMap = createEmptyTestMap(910000136);
+        realMap.getFootholds().insert(new Foothold(new Point(0, 200), new Point(200, 200), 1));
+        realMap.addRope(new Rope(100, 0, 200, false));
+        BotNavigationGraphProvider.rebuildGraph(realMap);
+        MapleMap map = spy(realMap);
+        Monster lowerMob = mockMob(new Point(100, 200), 9999999);
+        when(lowerMob.getPADamage()).thenReturn(100);
+        when(lowerMob.getLevel()).thenReturn(1);
+        when(lowerMob.getAccuracy()).thenReturn(999);
+        doReturn(List.of(lowerMob)).when(map).getAllMonsters();
+        Character bot = mockMovingBot(new Point(10, 200), map);
+        when(bot.getLevel()).thenReturn(1);
+        when(bot.getCurrentMaxHp()).thenReturn(100);
+        BotEntry entry = new BotEntry(bot, bot, null);
+
+        Point spot = BotManager.resolveSafeIdleRegion(entry, bot, bot.getPosition(), true);
+
+        assertEquals(100, spot.x);
+        assertTrue(spot.y >= 50 && spot.y <= 169, "expected rope y inside safe window, got " + spot);
+    }
+
+    @Test
     void shouldReuseWanderDirectionWhenGrindHasNoTarget() {
         Character bot = mockMovingBot(new Point(100, 100), createEmptyTestMap(910000030));
         BotEntry entry = new BotEntry(bot, mock(Character.class), null);

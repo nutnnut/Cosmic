@@ -176,3 +176,35 @@ Fix: `decideParty` now `log.warn`s the exception (leader name + map + members + 
 mirroring `decide()`); the epoch-drop and no-spot paths now `log.debug`. Next `@botparty` that
 fails will name the cause in the log. The shared decide-NPE is STILL unpinned (needs
 `-XX:-OmitStackTraceInFastThrow` or code-inspection of the market/valuation null holes).
+
+## 2026-07-05 (session 2) — the logging paid off: THREE distinct causes
+
+The `party plan dropped` / `party decide failed` logs (above) plus a live pathlog nailed three
+separate bugs behind "party autopilot silently fails" and "bots stuck grinding a town":
+
+1. **Party-autopilot silently no-ops = EPOCH RACE (the big one).** Log filled with `party plan
+   dropped: X epoch changed mid-decide`. `startParty` snapshots each member's `activityEpoch`, runs
+   `decideParty` off-thread, and drops the plan if any epoch changed meanwhile. `activityEpoch` is
+   bumped ONLY by `clearScriptTasks` (BotManager) — which `issueFollow`/`issueGrind`/`issueStop` all
+   call. A **following** cohort (the exact pre-`@botparty` state) re-asserts follow via the combat/pot
+   `issueFollowOwner` hooks, and each redundant re-assert bumped the epoch → EVERY decide dropped →
+   the command "didn't register", bots kept following. Same race from per-bot recovery/redecide firing
+   mid-decide. Two fixes: (a) `issueFollow` is now **idempotent** — already cleanly following the same
+   target → no-op, no `clearScriptTasks`, no epoch bump; (b) `startParty` sets
+   `autopilotDecisionInFlight=true` on all members during the decide (mirrors `redecideParty`), cleared
+   first thing in the callback, so recovery/redecide can't race it.
+2. **Stuck "grinding" a town = the inert+grinding WEDGE.** Live pathlog of an @botparty member
+   (Clawer, owner=Bowgurl-the-bot): `Mode: grind`, `Autopilot: off destMap=-1`, at Mushroom Shrine
+   (a town), `Recovery: BLOCKED by grinding`. A self-driving bot with `grinding=true` but
+   `autopilotMapId=-1` local-grinds forever, and `maybeRecoverInertAutopilot` only runs for IDLE bots
+   so `grinding=true` blocks it. Producer not fully pinned (the death path's own `clearMode` at
+   respawnBot clears grinding; likely a race between a party re-plan and a death), so fixed at the
+   invariant layer: `tickCore` now detects a self-driving bot (`isSelfDrivingBot`) that is grinding
+   with no autopilot dest (and not following/errand/operator) and `clearMode`s it to idle — same
+   remedy the death-loop escape uses — so the next idle tick recovers it. Logs a WARN naming the bot so
+   the producer can still be traced.
+3. **The scary `[SEVERE] MOB X failed to load` NPE is a RED HERRING** (`mobStats is null` →
+   `Pair.getLeft()`), CAUGHT in `LifeFactory.getMonster` (cached in `failedMonsterLoads`, logged once,
+   callers handle null). It is NOT the decide crash. Downgraded to a one-line WARN, no stack — it's a
+   stale dropper id with no WZ row, not a fault. The real decide-NPE (bare stackless
+   `NullPointerException` on `bot-grind-advisor`) is still unpinned.
