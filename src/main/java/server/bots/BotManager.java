@@ -2274,6 +2274,24 @@ public class BotManager {
         return entry != null && entry.debugCommanderFollow && isDebugCommanderFresh(entry);
     }
 
+    /** The bot's owner is itself a bot: an @botparty/@botme owner that botified in place, so its
+     *  companions now have a bot for an "owner" and no live human is supervising them. SSOT for the
+     *  intermediate state — treat these like self-owned managed bots (RTS-commandable + eligible for the
+     *  inert-autopilot self-heal) until the owner reclaims (client flips back to a real Client). Without
+     *  this a botified owner's companions linger mis-classified as companions-of-a-logged-in-player. */
+    static boolean ownerIsBot(BotEntry entry) {
+        return entry != null && entry.owner != null && entry.owner != entry.bot
+                && entry.owner.getClient() instanceof BotClient;
+    }
+
+    /** A self-driving managed bot: no live human owner steering it — ownerless population bot, a
+     *  self-owned takeover (owner == bot), or a companion whose owner botified ({@link #ownerIsBot}).
+     *  SSOT for "self-owned" across the inert-autopilot self-heal and the web RTS-commandable check. */
+    static boolean isSelfDrivingBot(BotEntry entry) {
+        return entry != null
+                && (entry.owner == null || entry.owner == entry.bot || ownerIsBot(entry));
+    }
+
     static void bindDebugCommander(BotEntry entry, Character commander) {
         if (entry == null || commander == null) {
             return;
@@ -5670,7 +5688,7 @@ public class BotManager {
                 || entry.autopilotErrandMapId != -1) {
             return false;
         }
-        boolean selfOwned = entry.owner == null || entry.owner == entry.bot;
+        boolean selfOwned = isSelfDrivingBot(entry);
         if (!selfOwned || entry.inAir || entry.climbing || bot.getMap() == null
                 || operatorMapHasMobs(bot.getMapId())) {
             return false; // owned companions idle by their owner; grind maps use the danger-aware idle
@@ -5738,7 +5756,7 @@ public class BotManager {
         if (entry.operatorCmd != null || isAdminFollowActive(entry)) {
             return; // an operator command (IDLE/FIDGET) or an admin hijack-follow deliberately holds the bot off autopilot
         }
-        boolean selfOwned = entry.owner == null || entry.owner == entry.bot;
+        boolean selfOwned = isSelfDrivingBot(entry);
         if (!selfOwned || entry.loggingOut || entry.deadUntil != 0
                 || entry.autopilotDecisionInFlight || BotAutopilotManager.isActive(entry)) {
             return;

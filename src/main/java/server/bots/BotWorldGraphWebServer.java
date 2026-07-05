@@ -2214,10 +2214,13 @@ public final class BotWorldGraphWebServer {
         }
     }
 
-    /** A managed (RTS-commandable) bot: ownerless, self-owned, or whose player owner is offline. */
+    /** A managed (RTS-commandable) bot: ownerless, self-owned, whose player owner is offline, or whose
+     *  owner is itself a bot (an @botparty owner that botified — its companions self-drive until it
+     *  reclaims; {@link BotManager#ownerIsBot}). Without the last case those companions lingered
+     *  mis-classified as companions of a "logged-in" owner that is actually a bot. */
     private static boolean commandableEntry(BotEntry e) {
         Character o = e.owner;
-        return o == null || o == e.bot || !o.isLoggedin();
+        return o == null || o == e.bot || !o.isLoggedin() || BotManager.ownerIsBot(e);
     }
 
     // --- RTS command endpoint (write) ---

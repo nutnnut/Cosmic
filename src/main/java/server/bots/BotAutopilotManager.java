@@ -494,10 +494,19 @@ final class BotAutopilotManager {
             PartyPlan plan = (PartyPlan) result;
             for (int i = 0; i < members.size(); i++) {
                 if (members.get(i).activityEpoch != epochs[i]) {
+                    // Silent drop -> the party never engaged and stayed idle. Surface it so a
+                    // command that keeps "not working" is diagnosable (see kb_bot_inert_autopilot_recovery).
+                    Character mb = members.get(i).bot;
+                    log.debug("party plan dropped: {} epoch changed mid-decide ({} members)",
+                            mb != null ? mb.getName() : "?", members.size());
                     return; // somebody got a newer directive mid-decision — drop the stale plan
                 }
             }
             if (plan == null) {
+                // decideParty already logs the exception case; this covers a genuine no-reachable-spot.
+                Character lb = members.get(0).bot;
+                log.debug("party autopilot found no shared spot for {} ({} members)",
+                        lb != null ? lb.getName() : "?", members.size());
                 reply.accept(members.get(0), "can't find a spot we can all reach that's worth it");
                 return;
             }
@@ -1993,6 +2002,17 @@ final class BotAutopilotManager {
         try {
             return partyDecider.decide(members);
         } catch (RuntimeException e) {
+            // Was silently swallowed -> a party-decide NPE turned "grind together" into a no-op and the
+            // whole cohort sat idle with no visible reason. Log it like decide() does (same fast-throw
+            // caveat: relaunch with -XX:-OmitStackTraceInFastThrow for the exact line). The party leader
+            // names the cohort; see kb_bot_inert_autopilot_recovery.
+            BotEntry lead = members != null && !members.isEmpty() ? members.get(0) : null;
+            Character leadBot = lead != null ? lead.bot : null;
+            log.warn("party decide failed for {} (leader map {}, {} members){}",
+                    leadBot != null ? leadBot.getName() : "?",
+                    leadBot != null ? leadBot.getMapId() : -1,
+                    members != null ? members.size() : 0,
+                    e.getStackTrace().length == 0 ? " [stackless fast-throw]" : "", e);
             return null;
         }
     }

@@ -144,3 +144,35 @@ worldmap roster shows a clickable **"N possibly stuck"** count that filters the 
 the leaked bots; hovering a row shows its `statusReport` incl. `lastDecisionSuffix` = the last
 decide reason ("decide failed …" vs "no reachable grind spot …"), so the two failure modes are
 distinguishable live. See [[kb_bot_break_and_session_state_machine]].
+
+## 2026-07-05 — @botparty ownership seam + SILENT party-decide failure
+
+Live report: `@botparty` on a player (Bowgurl) who OWNS 5 companion bots → whole party fell idle,
+and the web view showed **5 companions online** (not 0 or 6). Two distinct bugs, one shared root
+(the same decide-NPE), found by pathlogging Bowgurl (`Recovery: BLOCKED by nextDecideIn=52s`,
+`AdminBind: commanderId=2`).
+
+**(1) Ownership SSOT seam — "owner is a bot" was unmodeled.** Bots key by ownerCharId; "self-owned"
+= `owner==null || owner==bot`. When Bowgurl `@botparty`-botifies: its OWN entry is `owner==bot`
+(managed ✓), but its 5 companions keep `owner==Bowgurl` — now a bot. `owner!=bot` and
+`owner.isLoggedin()==true` (online AS a bot) → they fail every managed test → linger as
+"companions of a logged-in owner" that is actually a bot. Consequences beyond the cosmetic count:
+they were **excluded from `maybeRecoverInertAutopilot`** (`selfOwned` check) so they could never
+self-heal, and RTS couldn't command them. Fix: `BotManager.ownerIsBot(entry)` +
+`isSelfDrivingBot(entry)` (= `owner==null || owner==bot || ownerIsBot`) as the SSOT, used by both
+recovery (`tickIdleEntry`/`tickTownIdleDestack` selfOwned) and web `commandableEntry`. The
+companions self-drive while the owner is a bot and revert to companions when it reclaims (client
+flips back to a real `Client`) — no re-parenting, so reclaim stays seamless. Did NOT touch the FM
+gate (`owner!=null && owner!=bot && owner.isLoggedin()` still parks them — no new economy risk) or
+the scroll gate. Tests: BotManagerTest 86/0, BotAutopilotManagerTest 53/0 still green.
+
+**(2) `startParty`/`decideParty` failed SILENTLY.** `@botparty` → `startTakeoverAutopilot` →
+`startParty(owner, all 6)` → `decideParty` which had `catch (RuntimeException e) { return null; }`
+with **no log** (unlike `decide()`). So a party-decide NPE (almost certainly the same unpinned
+NPE as the solo leak — solo `bot decide failed … NPE` was streaming in the same log) → null plan →
+"can't find a spot we can all reach" → all 6 idle, and (bug 1) the 5 couldn't self-recover → stuck.
+`startParty` had TWO more silent exits: a stale-`activityEpoch` drop and the genuine no-spot reply.
+Fix: `decideParty` now `log.warn`s the exception (leader name + map + members + stackless marker,
+mirroring `decide()`); the epoch-drop and no-spot paths now `log.debug`. Next `@botparty` that
+fails will name the cause in the log. The shared decide-NPE is STILL unpinned (needs
+`-XX:-OmitStackTraceInFastThrow` or code-inspection of the market/valuation null holes).
