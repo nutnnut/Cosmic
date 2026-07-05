@@ -407,7 +407,7 @@ final class BotGachaponManager {
         if (!BotBreakManager.onRestBreak(entry, bot, now)) {
             return;
         }
-        if (entry.gachaErrandMapId != -1 || entry.questErrandMapId != -1) {
+        if (entry.gachaErrandMapId != -1 || entry.questErrandMapId != -1 || entry.fmErrandMapId != -1) {
             return; // one errand at a time
         }
         // Spend only spare NX above the reserve, enough for at least one ticket.

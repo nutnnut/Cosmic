@@ -499,7 +499,8 @@ final class BotNavigationGraph implements Serializable {
     private transient volatile Map<Integer, Map<Integer, List<Edge>>> outgoingBySkillMask;
 
     List<Edge> getOutgoing(int regionId, int skillMask) {
-        if ((skillMask & (SKILL_TELEPORT | SKILL_FLASH_JUMP)) == (SKILL_TELEPORT | SKILL_FLASH_JUMP)) {
+        if ((skillMask & (SKILL_TELEPORT | SKILL_FLASH_JUMP)) == (SKILL_TELEPORT | SKILL_FLASH_JUMP)
+                && (skillMask & EXCLUDE_JUMP_ARCS) == 0) {
             return getOutgoing(regionId);
         }
         Map<Integer, Map<Integer, List<Edge>>> byMask = outgoingBySkillMask;
@@ -615,6 +616,13 @@ final class BotNavigationGraph implements Serializable {
     // ever get numerous enough to matter.
     static final int SKILL_TELEPORT = 1;
     static final int SKILL_FLASH_JUMP = 1 << 1;
+    /** EXCLUSION bit (set = ground JUMP edges unusable), unlike the capability bits above.
+     *  Set by the planner when the serving graph's movement profile doesn't match the bot's live
+     *  physics (closest-profile fallback while the exact graph builds): JUMP arcs are authored by
+     *  per-x simulation of the GRAPH profile, and flying them with different speed/jump stats can
+     *  overshoot the landing and loop (pathlog-TeensDusk-2026-07-03). Exclusion semantics keep
+     *  every existing mask caller's behavior unchanged by default. */
+    static final int EXCLUDE_JUMP_ARCS = 1 << 2;
     private transient volatile Map<Integer, Map<Integer, Set<Integer>>> reachableByMaskAndStart;
 
     /** True unless {@code targetRegionId} is provably NOT forward-reachable from {@code startRegionId}
@@ -668,7 +676,8 @@ final class BotNavigationGraph implements Serializable {
 
     private static boolean reachEdgeUsable(Edge edge, int skillMask) {
         return switch (edge.type) {
-            case WALK, JUMP, DROP, CLIMB, PORTAL -> true;
+            case WALK, DROP, CLIMB, PORTAL -> true;
+            case JUMP -> (skillMask & EXCLUDE_JUMP_ARCS) == 0;
             case TELEPORT -> (skillMask & SKILL_TELEPORT) != 0;
             case FLASH_JUMP -> (skillMask & SKILL_FLASH_JUMP) != 0;
         };

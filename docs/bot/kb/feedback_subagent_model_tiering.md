@@ -22,3 +22,8 @@ need them; the user also hit session limits twice from heavy agents.
 plausibly outweighs the risk of a weaker model (e.g. a botched commit costing a redo), picking
 a stronger tier is fine - just do not overkill routine work. When a cheap-model agent returns
 weak results, escalate the retry one tier instead of iterating at the same tier.
+
+**Gotcha (2026-07-02, re-flagged by user):** omitting `model` makes the subagent INHERIT the
+session model - on a Fable session that silently runs every Explore/search agent at the top
+tier. Always pass `model` explicitly when spawning; read-only exploration/report agents are
+sonnet (or opus when the report must synthesize across many systems), never inherited fable.

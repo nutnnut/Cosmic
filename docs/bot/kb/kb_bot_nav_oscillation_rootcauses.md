@@ -168,6 +168,11 @@ same-region flat fight; cross-region (climb/drop-away) loot is collected when th
 naturally. Graph-unavailable falls back to prior behavior (detour allowed).
 
 ## 8. Phantom cross-region JUMP onto SHARED ground (overlapping foothold chains)
+> CORRECTION (2026-07-04, see #15): the floor IS contiguous in the client — the "wall" at
+> x=-1315 belongs to another structure's zMass group and never collides for floor movers; the
+> SERVER's invented wall collision froze the walk (fixed in #15/GRAPH_VERSION 70). The portal
+> tour was still rational for the far target (cost economics below hold). The fix below
+> (guard + continuity) remains correct and needed.
 Symptom (`pathlog-SuseRug-2026-06-29T141220`, map 600020100): bot frozen/oscillating at (-1318,156)
 on r97, committed `JUMP r97->r73` with `blocked: jump-pos`, give-up→replan-same-edge forever. The
 goal (541,155) is on the SAME flat r97 platform (`x[-1475..865] y156`, contiguous — a plain walk
@@ -194,9 +199,243 @@ point is shared with it (the chain we walked in on), reset on graph swap. Regres
 `BotSharedGroundPhantomJumpTest` (synthetic ramp-foot-over-flat; reproduces the phantom with the guard
 disabled, and asserts a genuine same-height gap jump is NOT over-pruned).
 
+## 9. Directional walk-off DROP: lip-authored landing vs real dismount overshoot (anchor park)
+Symptom (live 2026-07-03, Henesys department store 100000102): bots "resupplied and omw back"
+never left — parked/oscillating on the small shelves r17/r18 above the ground floor, travel
+re-running the r17→r24 plan every tick (perf stalls 280ms–2.3s under load). `/api/pathfind`
+17→24 succeeded — planner fine; execution wedged.
+
+Root cause (physics disagreement between builder and executor): `addDirectionalDropEdge`
+authored the landing with `simulateFallLanding` from the EXACT lip pixel, but a real dismount
+(`simulateWalkOffLanding` — the sim the bot's ground motion actually runs) leaves the ground up
+to one sub-tick walk step PAST the lip. Those few px can change which platform catches the fall
+(r18's walk-off really lands the y=120 bookshelf, not the floor the lip-fall predicted; r17's
+landing flips r18↔r23 on a **1px** launch difference — knife-edge). The 2026-07-02 NLC gate
+(`matchesDirectionalDrop`) then required the landing REGION to equal the authored `toRegionId`,
+mismatched every tick, and steered back to the runway anchor forever — a permanent park the
+blocked-pos watchdog missed (position kept changing by ±walkStep).
+
+Fix (rule #9, three parts, all nav/physics):
+- **Builder** — `addDirectionalDropEdge` authors the landing via `simulateWalkOffLanding` from
+  the runway anchor (execution SSOT). `GRAPH_VERSION 66→68` (67 was documented in #8 but the
+  constant was never bumped — 68 also finally regenerates those stale caches).
+- **Executor gate** — `matchesDirectionalDrop` no longer matches the exact landing region
+  (knife-edge); it requires a real dismount that DESCENDS off the source region and launches
+  before the steering stop (the wrong-ledge park check stays). The route replans from wherever
+  it touches down.
+- **Watchdog** — `trackBlockedPositionGate` resets on leaving a 16px drift radius
+  (`BLOCKED_POS_DRIFT_PX`) instead of on any 1px move, so a bounce against an unexecutable gate
+  now trips the ~300-500ms give-up.
+
+Regression: `BotHenesysDeptStoreDescentTest` (WZ-backed — 12 start stances incl. the live stuck
+ones must reach the exit portal; every authored directional DROP must land where the walk-off
+sim lands).
+
+## 10. 1px JUMP launch window is unhittable by quantized steps (jump-pos bounce)
+Symptom (same map, surfaced by #9's regression sweep): committed `JUMP r12→r19` with launch
+window `[108,108]`; the bot's integer positions phase-skip x=108 (±6px steps), so
+`isWithinJumpLaunchWindow`'s exact `containsLaunchX` never passed — `jump-pos` forever while the
+±6 bounce defeated the exact-position watchdog. Some windows are legitimately 1px (the arc only
+lands the target region from one column, e.g. an overhead shelf clips wider launches) — but a
+1px window is below the bot's motor precision.
+
+Fix: `isWithinJumpLaunchWindow` gained a `minAcceptSpanPx` overload —
+`canExecuteSelectedJumpFromCurrentPosition` passes the walk step, widening acceptance
+symmetrically only when the window is narrower than one step (wide windows keep exact
+containment; the existing `selectedJumpLaunchX` ±walkStep check still applies). An off-column
+launch lands a few px off-plan and simply replans — strictly better than the infinite park.
+Plus the #9 watchdog drift radius as the systemic backstop.
+
+## 11. #10's widened acceptance fired physically impossible launches (jump-in-place loop) — REVERTED
+Symptom (live 2026-07-03, NLC 600000000, pathlog-CheatSTanK): vertical `JUMP r68→r62`, window
+`[1620,1623]`, bot parked at x=1624 jumping straight up forever — the r62 slope rises ~4.9px per
+x, so the floor at 1624 (y≈170) sits above the jump apex (y=174) while at 1621 (y≈185) it clears.
+Neither watchdog fired: the gate *accepted* the launch (no `jump-pos` ticks) and the arc kept the
+bot "moving".
+
+Root cause: the #10 `minAcceptSpanPx` widening let the executor fire from OUTSIDE the authored
+window. But `expandJumpLaunchWindow` authors the **maximal per-x-simulated valid span** — every
+x outside it is a proven miss, so any runtime widening launches an invalid arc by construction.
+Narrow windows exist precisely where the physics are knife-edge (steep target slopes).
+
+Fix: widening reverted — `isWithinJumpLaunchWindow` is strictly the authored window again; the
+graph is the SSOT, the runtime only checks it. Unhittable 1px windows fall to the #9/#10
+blocked-pos watchdog (`jump-pos` give-up + replan), which the descent regression confirms still
+clears 100000102. **Rule: never "help" an authored launch window at runtime — if a window looks
+wrong, fix the builder.**
+
+## 12. Closest-profile fallback graph flies arcs with the wrong physics (overshoot loop)
+Symptom (live 2026-07-03, Kerning 103000000, pathlog-TeensDusk): Haste bot (speed 140 / jump
+120) navigating the base 100/100 graph (`Fallback: closestGraph=yes` — its exact-profile graph
+not built yet after the v68 cache invalidation). Committed `JUMP r127→r122` launched correctly
+in-window, but with jumpForce 666 and airVelX ±9 the arc flew ~50% farther than authored,
+overshot the target platform entirely and landed back on r127 → walk back, jump, repeat ~2.5s
+per cycle. No watchdog: execution "succeeds" every time.
+
+Fix: `runSearch` clears arc edges from the plan when the serving graph's profile ≠ the bot's
+live profile (`graphMatchesLiveProfile`): new `BotNavigationGraph.EXCLUDE_JUMP_ARCS` mask bit
+(exclusion semantics — default callers unchanged) drops ground JUMPs, and `SKILL_FLASH_JUMP` is
+cleared too. WALK/PORTAL/CLIMB/DROP/TELEPORT stay (profile-safe: teleport dest is computed live,
+directional walk-off drops live-sim with the entry profile). `canReach`/`costToGoal`/
+`nearestReachableRegion` share the mask, so reachability verdicts match what the executor can
+actually fly; the exact-profile graph warms in the background and the plan upgrades on swap.
+
+## 13. Heuristic-fallback rope-top dismount loop (no-graph maps)
+Symptom (live 2026-07-03, NLC-mall-town 551000000, pathlog-BishopDemo): no graph at all
+(`graph-warmup` after the v68 invalidation), heuristic fallback walking. Target ~500px below;
+fallback correctly steers to a rope to descend, attaches at the rope TOP — and `tickClimbing`'s
+non-nav dismount rule ("target far horizontally AND below the rope bottom → jump off") fired
+immediately, launching the bot back onto the entry platform for zero descent; fallback walks it
+back to the rope, ~1.6s loop.
+
+Fix: the dismount now also requires the bot to be near the rope BOTTOM
+(`botPos.y >= bottomY - STOP_DIST`) — climb the descent out first, then jump off toward the
+target.
+
+## 14. Knife-edge walk-off DROP authored from ONE launch state — planner lie, replan loop (v69)
+
+Symptom (live 2026-07-03, FM entrance 910000000, pathlog-CabinOpened): exact-profile graph,
+`DROP r4->r5` authored landing (353,-176) on the r5 portal ledge. Live, the bot crossed r5's
+height at x=370 and fell through to the r6 floor — the only route from r6 leads back through
+r7 -> portal -> r4, so travel replanned through the same edge forever (~3.3s loop, `Stuck: no`
+since the bot keeps moving). A second edge on the same map (`DROP r1->r5`) failed identically.
+
+Root cause: `addDirectionalDropEdge` authored the landing from a SINGLE walk-off sim (runway
+anchor, fractional physX phase 0, standing start). The live launch state is not unique — the bot
+arrives with arbitrary fractional physX, sub-step `carryMs`, and hspeed, which shifts the
+dismount pixel and the seeded air drift by one rounding step (6 vs 7 px/tick at 105% speed).
+Near a platform edge, that flips which region catches the fall. The #9 `matchesDirectionalDrop`
+relaxation ("dismount anywhere that descends, replan from touchdown") then converts the wrong
+landing into a silent infinite replan loop whenever the touchdown region routes back through the
+source region.
+
+Fix (build time, GRAPH_VERSION 68→69): `BotPhysicsEngine.walkOffLandingVariants` sims the
+walk-off across the live launch-state spread (physX phase, carryMs, standing vs full-speed
+arrival); `addDirectionalDropEdge` authors the edge only when EVERY variant lands the same
+region. Knife-edge drops are simply not authored — the planner uses committed JUMP edges or
+portal routes instead (both deterministic).
+
+Rule: an edge whose outcome depends on live launch state the graph doesn't encode must be
+authored for its WHOLE outcome envelope or not at all — one sampled outcome is a planner lie.
+
+## 15. Server-invented wall collision froze floor walkers — plus stale same-region routes and a blind watchdog (600020100, FIXED)
+
+Symptom (live 2026-07-04, map 600020100, pathlog-VonLaugh-2026-07-04T041519 +
+pathlog-MAGEFUNNY-2026-07-04T043204 — same spot as #8): VonLaugh oscillated [-1331,-1319] for
+its whole travel budget (deadline give-up, `bestDist=1861` = it NEVER progressed toward the
+st01 portal), then kept oscillating against the wander-escape pin at st00; committed
+`JUMP r97->r93 window=[-1314,-1285]`, `blocked: jump-pos`, `Stuck: no`. MAGEFUNNY (cleric)
+frozen 731s at (-1313,156), committed `TELEPORT r97->r73 (-1391,156)->(-1241,156)`,
+`blocked: tele-pos`, nav=`route` every AI tick, watchdog silent.
+
+Root cause is FOUR stacked defects. NOTE: the first diagnosis of (a) ("a 420px wall at x=-1315
+physically splits the floor; split regions at walls") was WRONG — the owner walked past that
+wall in the real client in BOTH directions, walking AND airborne. The wall only exists in the
+SERVER's physics; the r97 floor really is contiguous and the direct walk really does reach st01.
+
+(a) **The server invented wall collision the client doesn't have — two divergences.**
+Client truth (v83 Angel.idb disasm `CVecCtrl::CalcWalk` @0x9b23f2 / `CollisionDetectWalk`
+@0x9b3fd1 / `CollisionDetectFloat` @0x9b34c8+0x210, field names from the v95 PDB
+`MapleStory.pdb`):
+  - **Ground walking scans NO walls at all.** CalcWalk follows the standing foothold's
+    prev/next chain; the only stop is the chain itself ending (junction). The server's
+    `previewGroundStep` ran the global wall scan on every ground step, so floor walkers froze
+    at x≈-1316 heading right (probe: `walkR=false(wall)` on fh396) — a wall the client walks
+    straight past.
+  - **Airborne wall collision is scoped by WZ zMass group.** CollisionDetectFloat tests a wall
+    only when `fh.m_lZMass == map.m_nBaseZMass` (smallest group in the map) or
+    `== mover.m_lZMass` (group of the foothold last stood on, `CVecCtrl+0x1c4` v95 /
+    `+0x134` v83, maintained by `OnAttachedObjectChanged`). The x=-1315 tower wall belongs to
+    the r73 structure's group (WZ path `foothold/3/4/...`) while the floor is `foothold/5/0/...`,
+    so floor movers pass it airborne too. The server's `Foothold.isCollidableWall`
+    ("chain-reaches-ground ⇒ collidable for everyone") was a heuristic with no client
+    counterpart — deleted.
+Fix (GRAPH_VERSION 70): `MapFactory`/`BotNavigationMapLoader` parse the WZ foothold path
+layer/group into `Foothold.layer`/`zMass`; `BotPhysicsEngine.wallCollidesForMover` implements
+the client rule (unknown group = synthetic test maps ⇒ collide for everyone);
+`previewGroundStep` drops the ground wall scan on region-model maps (the region-constrained
+sampling IS the chain-traversal junction stop; mock-tree maps keep the legacy any-wall stop);
+`isGroundRunwayBlockedByWall`/`isBlockedWallBoundaryLaunch` follow the same rule. The A* portal
+tour VonLaugh committed was still LEGIT for its ORIGINAL far target (0-cost portal chain beats
+a 10.6k walk — #8's cost economics); it only became a trap when the goal flipped, which is (b).
+
+(b) **`nextCommittedRouteEdge` staleness check was target-REGION-only.** The tour toward st01
+(541,155) and the give-up wander-escape pin at st00 (-1392,155) BOTH resolve region 97, so
+when travel deadlines and the goal flips 1933px to the opposite portal, the stale tour kept
+being served. Fixed: `committedRouteTargetPosMatches` (within `COMMITTED_ROUTE_TARGET_REPLAN_PX`)
+is now part of `nextCommittedRouteEdge`'s validity check.
+
+(c) **Blocked-pos watchdog was blind on route-follow ticks.** `trackBlockedPositionGate`
+counted only `edgeReused` ticks; MAGEFUNNY's `route`-served TELEPORT block (`tele-pos`, 12min)
+never accumulated. Also every `clearNavigationState` zeroed `navBlockedPosTicks` (~2-tick
+laps), so the give-up never fired. Fixed: the gate counts any held/served edge blocked on
+`*-pos`, and `clearNavigationState` no longer resets the counter.
+
+(d) **Phantom cross-chain TELEPORT edges (the #8 defect class, unguarded type).** The builder
+authored `TELEPORT r97->r73 (-1391,156)->(-1241,156)` whose landing lies on ground the source
+region also covers (overlap span [-1315,-1260]). #8's `surfaceCoversPoint` guard covered only
+`addJumpEdges`/`addFlashJumpEdges`. Fixed: `addTeleportEdgeForIntent` applies the same guard
+(the legitimate r73→r97 escape teleport to r97-only ground survives).
+
+Verdict on #8's fix (59c5288, reviewed per owner note "remove if duplicate/useless"): KEEP
+BOTH PARTS. The JUMP/FJ landing guard and `lastRegionId` chain continuity are correct and still
+load-bearing (shared ground is real; the phantom-jump class persists). `lastRegionId` also now
+feeds `moverZMassFor` — the airborne wall scope reuses the chain-continuity region.
+
+Client-truth audit notes (v95 PDB `D:\ReverseEngineer\MapleStoryV95-PDB-IncludeDllAndOther`,
+struct dump tool `D:\ReverseEngineer\pdb_types.py`):
+- `CStaticFoothold`: +0x2c `m_lPage` (WZ layer), +0x30 `m_lZMass` (WZ group), +0x40 `m_uvx`,
+  +0x50 `m_len`, +0x64/+0x68 prev/next. `CWvsPhysicalSpace2D`: +0x40 `m_nBaseZMass` = smallest
+  group value in the map (computed in `Load` @v83 0xa44c7c).
+- `CONSTANTS` (walk/slip/float/swim/fly/gravity/fall/jump/friction doubles) == WZ
+  `Map.wz/Physics.img` values; server cfg already matches (gravity 2000, jump 555, fall 670,
+  swim 140 — annotated in `BotPhysicsEngine.cfg`).
+- Unmodeled, deliberately: the `m_lPage` comparison in CollisionDetectFloat applies only to
+  owner-type-7 movers (drops/CDropPool), not characters; `CAttrFoothold` per-foothold
+  walk/drag/force overrides (rarely present in WZ) — ledger here if a map ever needs them.
+
+Regression: `BotDeityRoomSharedGroundTest` (WZ-backed) — walk-through in both directions at the
+overlap, VonLaugh-class travel progression past x=-1315, stale-route drop on goal flip, and
+teleport-guard (no phantom, escape preserved).
+
+## 16. Ground motor ignored last-region continuity on overlapped footholds (801010000, FIXED)
+
+Symptom (live 2026-07-04, pathlog-Clawer-2026-07-04T134904): multiple transit-follow bots parked at
+the exact same Ninja Castle pixel around `(1315,155)`. The target/owner/portal side was region 6, and
+the pathlog's nav state also preserved region 6, but a raw coordinate probe at the bot pixel resolved
+`below foothold=62 region=3` because two foothold chains overlap there. The bot then had navigation
+and ground physics disagreeing about which chain it was standing on.
+
+Root cause: #15 correctly made the nav layer preserve `BotEntry.lastRegionId` across shared ground,
+but `BotMovementManager.planGroundAction` still previewed the walk by re-running raw
+`findGroundFoothold`, and `BotPhysicsEngine.syncAndDetectGround` also started from raw `findBelow`.
+At an overlap this can switch the motor onto the foreign chain even while nav says "same region".
+
+Fix (runtime, no graph version bump): `syncAndDetectGround` first samples the ground covered by
+`entry.lastRegionId`; the motor's `canWalkGroundStep`/wall-block preview now uses the already-resolved
+standing foothold for that tick. Raw coordinate lookup remains the fallback when there is no live
+region continuity. Regression: `BotMovementSimulationLabTest.shouldMoveClawerTowardLeaderOnNinjaCastleSameRegionTransitFollow`.
+
 ## Not-a-bug
 `pathlog-fictionxD` "jumping back-forth" = a single clean walk-off DROP mid-descent (`Stuck:no`,
 `r=-1` is the normal airborne reading). No oscillation.
+
+## 16. Break parking misclassified as locomotion, mob-dodge jump loop (551020000, FIXED)
+
+Symptom (live 2026-07-04, `pathlog-KatieRon9000-2026-07-04T082221`): exact graph v70, no
+committed edge, `Last nav decision: no-ai (AI step suppressed: on break)`, but the bot loops
+between roughly x=-49 and x=71 on region 5. Tick history alternates grounded `nav=same-region`
+ticks to local `nav-input` anchors and airborne arcs with `airVelX` flipping sign; the follow /
+travel target is region 14 but the active movement target is the held break idle anchor.
+
+Root cause: in-session break parking runs inside grind mode (`entry.grinding` stays true), so
+`shouldJumpToAvoidMob` treated walking to the break idle anchor as normal grind/follow/travel
+locomotion. With a mob in the walk lane and the simulated landing still in the current region,
+the motor repeatedly launched dodge jumps over the idle anchor, then steered back the other way.
+
+Fix: mob-avoid dodge is suppressed while explicitly parking for break, idle-leech, or HP-rest
+(`breakUntilMs`, `idleLeech`, `hpResting`). Normal grind/follow/travel ground movement still
+keeps dodge behavior. Regression: `BotMovementManagerTest.shouldNotMobDodgeWhileParkingOnBreak`.
 
 ## Files
 - `BotNavigationGraph.java` — `Region.surfaceCoversPoint` + `SHARED_GROUND_Y_PX` (#8)
@@ -209,8 +448,24 @@ disabled, and asserts a genuine same-height gap jump is NOT over-pruned).
 - `BotEntry.java`, `BotMovementManager.clearNavigationState` — committed-route state (#3)
 - `BotPhysicsEngine.findWalkRegionGroundSample` + `isChainStep` — chain-step preference at joined
   forks (#5b); `BotNavigationGraphProvider.GRAPH_VERSION` 65→66
+- `BotNavigationGraphProvider.addDirectionalDropEdge` — walk-off-sim landing authoring,
+  `GRAPH_VERSION` 66→68 (#9); `BotNavigationManager.matchesDirectionalDrop` (#9),
+  `trackBlockedPositionGate` + `BLOCKED_POS_DRIFT_PX` (#9/#10),
+  `isWithinJumpLaunchWindow(minAcceptSpanPx)` (#10; reverted to strict in #11)
+- `BotNavigationManager.isWithinJumpLaunchWindow` strict window (#11),
+  `runSearch` profile-mismatch arc mask + `graphMatchesLiveProfile` (#12);
+  `BotNavigationGraph.EXCLUDE_JUMP_ARCS` (#12);
+  `BotMovementManager.tickClimbing` rope-bottom dismount gate (#13)
+- `Foothold.layer`/`zMass` + `MapFactory`/`BotNavigationMapLoader` WZ path parse,
+  `BotPhysicsEngine.wallCollidesForMover`/`moverZMassFor`/`previewGroundStep` no-ground-wall-scan,
+  `BotNavigationGraphProvider.addTeleportEdgeForIntent` shared-ground guard,
+  `GRAPH_VERSION` 69→70 (#15); `BotNavigationManager.nextCommittedRouteEdge` target-pos
+  staleness + `trackBlockedPositionGate` route-served `*-pos` (#15)
+- `BotPhysicsEngine.walkOffLandingVariants` + `addDirectionalDropEdge` variant-stability guard,
+  `GRAPH_VERSION` 68→69 (#14); `BotFreeMarketEntranceDescentTest` (WZ-backed 910000000, #14)
 - Tests in `BotNavigationGraphProviderTest` (fast synthetic + Henesys WZ graph),
-  `BotRegion11ForkOscillationTest` (synthetic region-11 fork, #5/#5b).
+  `BotRegion11ForkOscillationTest` (synthetic region-11 fork, #5/#5b),
+  `BotHenesysDeptStoreDescentTest` (WZ-backed 100000102 descent, #9/#10).
 
 Related: [[kb_bot_nav_costs_and_anchors]], [[kb_bot_downjump_eligibility]],
 [[kb_bot_town_nav_airborne_target]], [[kb_bot_navigation_architecture]].

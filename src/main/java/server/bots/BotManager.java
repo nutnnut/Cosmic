@@ -252,6 +252,17 @@ public class BotManager {
         // Gachapon (BotGachaponManager): autopilot bots spend NX earned from looted NX cards on
         // gachapon, chasing uniques by expected value. Kill switch + the spend knobs, all visible.
         public boolean GACHAPON_ENABLED = true;
+        // Living-economy free-market sessions: autopilot bots with sellable surplus open real
+        // hired-merchant stalls in FM rooms and browse others' (docs/bot/living-economy-design.md).
+        public boolean FM_MARKET_ENABLED = true;
+        // Chance a townside rest break pops into the free market to browse/hang out even with nothing
+        // to sell - the FM is ~1 hop from most towns, so idle bots congregating there make the market
+        // feel alive (more foot traffic = more browsing + shout-trade chances). Satiation still gates
+        // repeats, so this is a per-break bias, not a treadmill.
+        public double FM_SOCIAL_BREAK_CHANCE = 0.4;
+        // Console line per market-tape event (list/sale/trade/...) - the live debugging feed for
+        // the economy; the tape itself (bot_market_event) is always written regardless.
+        public boolean MARKET_TX_CONSOLE = true;
         // Keep at least this much account NX in reserve - bots gamble only the surplus above it.
         public int GACHA_NX_RESERVE = 1_000;
         // EV planning horizon: how many rolls a trip is assumed to do when ranking towns (plannedRolls,
@@ -743,6 +754,7 @@ public class BotManager {
         c.disconnect(false, false);
 
         BotEntry entry = registerSpawnedBot(player.getId(), player, player); // self-owned
+        entry.commandAutopilot = true; // real player's own char on autopilot via @botme/@botparty
         startTakeoverAutopilot(entry, player);
     }
 
@@ -993,6 +1005,8 @@ public class BotManager {
                 if (e.bot.getId() == botCharId) {
                     cancelBotTask(e);
                     unindexBotEntry(e);
+                    BotShoutTradeManager.forget(botCharId); // drop any pending shout-deal awaiting this bot
+                    BotMarketShoutBus.getInstance().dropSpeaker(botCharId); // and its live shouts
                     return true;
                 }
                 return false;
@@ -1137,7 +1151,7 @@ public class BotManager {
         }
         // In a safe map: walk to a random nearby spot once, then idle there until the deadline.
         if (entry.logoutAnchor == null) {
-            entry.logoutAnchor = pickTownLoiterAnchor(entry, bot, botPos);
+            entry.logoutAnchor = resolveIdleSpot(entry, bot, botPos);
             BotMovementManager.resetEntryState(entry);
         }
         loiterAtAnchor(entry, bot, botPos, entry.logoutAnchor, runAiTick);
@@ -1563,6 +1577,38 @@ public class BotManager {
         notifyOwnerGainedItem(recipient, item);
     }
 
+    /**
+     * A hired-merchant stall sold something (any owner species — player stalls are market signal
+     * too): append to the living-economy tape, count the fee as a meso sink, and let bot
+     * participants' price books learn the clearing. Best-effort — must never break a sale.
+     * The sold item itself is passed so equips band by their rolled quality (design sec 3).
+     */
+    public void notifyStallSale(int ownerId, Character buyer, Item sold, int units, long paidTotal, int mapId) {
+        try {
+            int itemId = sold.getItemId();
+            int band = BotFreeMarketManager.bandOf(sold);
+            long unitPrice = units > 0 ? Math.max(1, paidTotal / units) : paidTotal;
+            BotMarketLedger.getInstance().append(BotMarketLedger.EventKind.STALL_SALE, itemId, band,
+                    Math.max(1, units), unitPrice, ownerId, buyer != null ? buyer.getId() : null, mapId);
+            BotMarketLedger.getInstance().recordFlow("trade-tax", server.Trade.getFee(paidTotal), false);
+            long now = System.currentTimeMillis();
+            long key = BotMarketMath.priceKey(itemId, band);
+            BotEntry seller = getEntryByBotCharId(ownerId);
+            if (seller != null && seller.bot != null) {
+                BotMarketBook.of(seller, seller.bot).observe(key, unitPrice, BotMarketMath.W_TRADE, now);
+            }
+            if (buyer != null) {
+                BotEntry buyerEntry = getEntryByBotCharId(buyer.getId());
+                if (buyerEntry != null && buyerEntry.bot != null) {
+                    BotMarketBook.of(buyerEntry, buyerEntry.bot).observe(key, unitPrice, BotMarketMath.W_TRADE, now);
+                }
+            }
+        } catch (RuntimeException e) {
+            log.warn("notifyStallSale bookkeeping failed for item {}: {}",
+                    sold != null ? sold.getItemId() : -1, e.toString());
+        }
+    }
+
     private boolean isItemFromOwnedBot(Character owner, Character source) {
         if (owner == null || source == null || !(source.getClient() instanceof BotClient)) {
             return false;
@@ -1761,6 +1807,18 @@ public class BotManager {
     public void handleChat(Character owner, String message, ReplyChannel channel) {
         if (handlePendingLootOfferResponse(owner, message)) {
             return;
+        }
+
+        // Market shout (S>/B>/PC>): parse and post to the map's shout bus so nearby bots can match
+        // it (design 8.4). The chat line itself was already broadcast by the general-chat handler;
+        // a well-formed shout is consumed here, a malformed one falls through to normal handling.
+        if (channel == ReplyChannel.MAP && BotMarketGrammar.looksLikeShout(message)) {
+            BotMarketGrammar.Offer offer = BotMarketGrammar.parse(message);
+            if (offer != null) {
+                BotMarketShoutBus.getInstance().publish(owner.getMapId(), owner.getId(), offer,
+                        System.currentTimeMillis());
+                return;
+            }
         }
 
         // Recruit must work even when owner has no bots yet
@@ -2217,6 +2275,35 @@ public class BotManager {
         return entry != null && entry.debugCommanderFollow && isDebugCommanderFresh(entry);
     }
 
+    /** The bot's owner is itself a bot: an @botparty/@botme owner that botified in place, so its
+     *  companions now have a bot for an "owner" and no live human is supervising them. SSOT for the
+     *  intermediate state — treat these like self-owned managed bots (RTS-commandable + eligible for the
+     *  inert-autopilot self-heal) until the owner reclaims (client flips back to a real Client). Without
+     *  this a botified owner's companions linger mis-classified as companions-of-a-logged-in-player. */
+    static boolean ownerIsBot(BotEntry entry) {
+        return entry != null && entry.owner != null && entry.owner != entry.bot
+                && entry.owner.getClient() instanceof BotClient;
+    }
+
+    /** A self-driving managed bot: no live human owner steering it — ownerless population bot, a
+     *  self-owned takeover (owner == bot), or a companion whose owner botified ({@link #ownerIsBot}).
+     *  SSOT for "self-owned" across the inert-autopilot self-heal and the web RTS-commandable check. */
+    static boolean isSelfDrivingBot(BotEntry entry) {
+        return entry != null
+                && (entry.owner == null || entry.owner == entry.bot || ownerIsBot(entry));
+    }
+
+    /** A REAL player's character running on autopilot with no live human present: the char a player
+     *  put on autopilot via @botme/@botparty (explicit {@code commandAutopilot} flag), or a companion
+     *  swept along when its owner botified ({@link #ownerIsBot}, which auto-reverts on reclaim). This is
+     *  NOT any self-owned bot — disposable population/botpop bots are ALSO {@code owner==bot}, so the
+     *  flag (not ownership) is the SSOT. These run the player's real gear & meso with no human present,
+     *  so they stay grind-focused: no breaks/gacha/chill/FM/auto-scroll, only grind + grind-essential
+     *  resupply/sell. */
+    static boolean isRealPlayerTakeover(BotEntry entry) {
+        return entry != null && (entry.commandAutopilot || ownerIsBot(entry));
+    }
+
     static void bindDebugCommander(BotEntry entry, Character commander) {
         if (entry == null || commander == null) {
             return;
@@ -2232,8 +2319,8 @@ public class BotManager {
             entry.debugCommanderId = 0;
             entry.debugCommanderUntilMs = 0L;
             entry.debugCommanderFollow = false;
-            entry.followOffsetX = 0;                       // drop this bot's own formation slot
             if (wasFollowing && formerGm > 0) {
+                entry.followOffsetX = 0;                       // drop this bot's debug-follow formation slot
                 getInstance().assignDebugFollowFormation(formerGm); // re-stagger the bots still following
             }
         }
@@ -2256,6 +2343,14 @@ public class BotManager {
         for (int i = 0; i < cohort.size(); i++) {
             cohort.get(i).followOffsetX = fs.offsetFor(i, cohort.size());
         }
+    }
+
+    void activateDebugFollowFormation(BotEntry entry) {
+        if (entry == null || !isDebugCommanderFresh(entry)) {
+            return;
+        }
+        entry.debugCommanderFollow = true;
+        assignDebugFollowFormation(entry.debugCommanderId);
     }
 
     /** The bound admin commander while the binding is fresh, else null. Resolved world-wide (not just
@@ -3119,6 +3214,8 @@ public class BotManager {
     /** Max |y| gap (px) between a mob and a ground region's foothold to count the mob as standing
      *  IN that region — beyond this it's airborne / on another platform and isn't attributed. */
     private static final int IDLE_REGION_Y_BAND = 60;
+    /** Random idle-spot samples to pick the least-crowded from (break/leech destack). */
+    private static final int IDLE_DESTACK_SAMPLES = 8;
 
     /**
      * Safe idle/rest region on the bot's CURRENT map — SSOT for all three idle states (out-of-pot
@@ -3172,12 +3269,26 @@ public class BotManager {
                 safest.add(r);
             }
         }
-        BotNavigationGraph.Region pick = spread
-                ? safest.get(ThreadLocalRandom.current().nextInt(safest.size()))
-                : safest.get(0);
         if (spread) {
-            return pick.pointAt(ThreadLocalRandom.current().nextInt(pick.minX, pick.maxX + 1));
+            // Destack (owner rule: idle-spot picks should spread like the NPC-approach SSOT). Sample
+            // several random spots across the safest regions and take the one farthest from other
+            // characters, so idlers fan out instead of piling on one x - a bare random x destacks only
+            // by luck and left break/chill bots stacked on the same spot in town.
+            List<Point> others = new ArrayList<>();
+            for (Character c : map.getAllPlayers()) {
+                if (c != bot && c.getPosition() != null) {
+                    others.add(c.getPosition());
+                }
+            }
+            List<Point> candidates = new ArrayList<>();
+            for (int i = 0; i < IDLE_DESTACK_SAMPLES; i++) {
+                BotNavigationGraph.Region r = safest.get(ThreadLocalRandom.current().nextInt(safest.size()));
+                candidates.add(r.pointAt(ThreadLocalRandom.current().nextInt(r.minX, r.maxX + 1)));
+            }
+            Point spot = pickFarthestFromMobs(candidates, others);
+            return spot != null ? spot : candidates.get(0);
         }
+        BotNavigationGraph.Region pick = safest.get(0);
         int span = pick.width();
         int samples = Math.min(12, Math.max(2, span / 50 + 1));
         List<Point> candidates = new ArrayList<>(samples);
@@ -3186,6 +3297,21 @@ public class BotManager {
         }
         Point safe = pickFarthestFromMobs(candidates, mobPts);
         return safe != null ? safe : pick.centerPoint();
+    }
+
+    /**
+     * SSOT for "pick a random spot to idle" across every park path (logout, operator-idle, break,
+     * idle-leech, inert-town-idle). One behavior: near a town NPC/character when the map is safe -
+     * the destack loiter that makes idlers fan out and look alive ({@link #pickTownLoiterAnchor}) -
+     * or the danger-aware safe-region spread ({@link #resolveSafeIdleRegion}) when live mobs are
+     * around (a break taken mid-grind). Both destack; callers just hold the returned spot and drive
+     * {@link #loiterAtAnchor}/{@link #walkToOrIdleAt} to it.
+     */
+    Point resolveIdleSpot(BotEntry entry, Character bot, Point botPos) {
+        if (bot != null && bot.getMap() != null && !bot.getMap().getAllMonsters().isEmpty()) {
+            return resolveSafeIdleRegion(entry, bot, botPos, true); // mobs near -> danger-aware spread
+        }
+        return pickTownLoiterAnchor(entry, bot, botPos); // safe map -> NPC-cluster destack
     }
 
     /** The ground region a mob is standing in (x within span, foothold y within {@link #IDLE_REGION_Y_BAND}),
@@ -3474,8 +3600,12 @@ public class BotManager {
             return;
         }
 
-        BotScrollManager.tickAutoScroll(entry, bot, nowMs);
-        BotMakerManager.tickAutoCraft(entry, bot, nowMs);
+        // Real-player takeover (@botme/@botparty) stays grind-focused: never auto-scroll real gear or
+        // auto-craft with real materials without the human present. Population bots do both freely.
+        if (!isRealPlayerTakeover(entry)) {
+            BotScrollManager.tickAutoScroll(entry, bot, nowMs);
+            BotMakerManager.tickAutoCraft(entry, bot, nowMs);
+        }
 
         // Operator RTS command (BotWorldGraphWebServer console): for its window this overrides
         // autopilot/idle/follow. Placed before the owner-null and idle fast-paths so it intercepts
@@ -3552,10 +3682,11 @@ public class BotManager {
         }
         BotPerformanceMonitor.recordStallPhase("tick-common-systems", tCommonTrace);
 
-        // Trade window open: keep physics consistent (gravity / swim / idle stance) but
-        // do not issue any movement input — no follow, grind, attack, teleport, or shop visit.
-        // Prevents the bot from wandering away or auto-equipping while the player is mid-trade.
-        if (bot.getTrade() != null) {
+        // Trade window open (or non-Trade market work staging inventory, e.g. stall stocking /
+        // merchant buys — entry.marketBusy): keep physics consistent (gravity / swim / idle
+        // stance) but do not issue any movement input — no follow, grind, attack, teleport, or
+        // shop visit. Prevents the bot from wandering away or auto-equipping mid-exchange.
+        if (bot.getTrade() != null || entry.marketBusy) {
             if (!perf) {
                 tickTradePhysicsOnly(entry, bot);
             } else {
@@ -3571,6 +3702,9 @@ public class BotManager {
         // bot that has gone idle (e.g. arrived in town between autopilot decisions) never runs the
         // linger/disconnect and stands online forever past its deadline.
         if (!entry.loggingOut) {
+            if (tickTownIdleDestack(entry, bot, runAiTick)) {
+                return; // walking to / holding at a spread town-idle spot instead of stacking in place
+            }
             boolean idleConsumed;
             if (!perf) {
                 idleConsumed = tickIdleEntry(entry, bot);
@@ -3847,7 +3981,7 @@ public class BotManager {
             // Pick a personal idle spot ONCE and hold it: re-resolving every tick made leechers drift
             // and pile onto the same point. Independent one-shot in-region picks spread them out.
             if (entry.leechIdleAnchor == null) {
-                entry.leechIdleAnchor = resolveSafeIdleRegion(entry, bot, botPos, true); // spread among safe regions
+                entry.leechIdleAnchor = resolveIdleSpot(entry, bot, botPos); // SSOT idle-spot destack
                 entry.idleAnchorHp = bot.getHp(); // snapshot at the fresh spot; a later drop => got hit
             }
             return walkToOrIdleAt(entry, bot, botPos, entry.leechIdleAnchor, runAiTick);
@@ -3857,13 +3991,14 @@ public class BotManager {
         // 24/7. Pots/heals still run (potion tick); no attack/target search while on break.
         long breakNow = System.currentTimeMillis();
         // A party cohort breaks together (leader-driven, avg traits); only a solo bot self-rolls.
-        if (!BotAutopilotManager.maybeStartGroupBreak(entry, bot)) {
+        // Real-player takeover (@botme/@botparty) grinds all the time — no personality break/chill.
+        if (!isRealPlayerTakeover(entry) && !BotAutopilotManager.maybeStartGroupBreak(entry, bot)) {
             BotBreakManager.maybeStartBreak(entry, bot, breakNow);
         }
         if (BotBreakManager.onBreak(entry, breakNow)) {
             entry.grindTarget = null;
             if (entry.breakIdleAnchor == null) {
-                entry.breakIdleAnchor = resolveSafeIdleRegion(entry, bot, botPos, true); // spread among safe regions
+                entry.breakIdleAnchor = resolveIdleSpot(entry, bot, botPos); // SSOT idle-spot destack
             }
             return walkToOrIdleAt(entry, bot, botPos, entry.breakIdleAnchor, runAiTick);
         } else if (entry.breakUntilMs != 0L) {
@@ -4999,7 +5134,7 @@ public class BotManager {
     private boolean tickOperatorIdleAtSpot(BotEntry entry, Character bot, Point botPos, long now,
                                            boolean runAiTick, BotFidgetMode forced) {
         if (entry.operatorSpot == null || entry.operatorSpotMapId != bot.getMapId()) {
-            entry.operatorSpot = pickTownLoiterAnchor(entry, bot, botPos);
+            entry.operatorSpot = resolveIdleSpot(entry, bot, botPos);
             entry.operatorSpotMapId = bot.getMapId();
         }
         Point spot = entry.operatorSpot != null ? entry.operatorSpot : botPos;
@@ -5432,8 +5567,9 @@ public class BotManager {
         // this scheduler thread and races Trade.completeTrade()'s addFromDrop on the packet
         // thread: fitsInInventory() can pass, then this fills the last slot before addFromDrop
         // runs, and the silently-ignored false return loses the partner's item.
-        // See memory/kb_bot_trade_dupe_loss_audit.md.
-        if (bot.getTrade() == null && runSlowScans) {
+        // See memory/kb_bot_trade_dupe_loss_audit.md. marketBusy extends the same protection
+        // to non-Trade inventory staging (stall stocking / merchant buys).
+        if (bot.getTrade() == null && !entry.marketBusy && runSlowScans) {
             if (perf) t = System.nanoTime();
             BotInventoryManager.tickPassiveLoot(entry, bot);
             if (perf) BotPerformanceMonitor.record("common-passive-loot", System.nanoTime() - t);
@@ -5446,6 +5582,9 @@ public class BotManager {
         if (perf) t = System.nanoTime();
         BotPotionManager.tickPassiveRecovery(entry, bot);
         if (perf) BotPerformanceMonitor.record("common-passive-recovery", System.nanoTime() - t);
+        // Living economy: persist this bot's dirty price beliefs every few minutes, on its own
+        // tick thread (books are tick-thread-owned by design).
+        BotMarketBook.maybeFlush(entry, bot);
         if (perf) t = System.nanoTime();
         BotCombatManager.tryCastMagicGuard(entry, bot);
         if (perf) BotPerformanceMonitor.record("common-magic-guard", System.nanoTime() - t);
@@ -5463,7 +5602,11 @@ public class BotManager {
             BotChatManager.tickAfkCheck(entry, owner);
         }
         if (perf) BotPerformanceMonitor.record("common-afk-check", System.nanoTime() - t);
-        if (runSlowScans) {
+        // Real-player takeover (@botme/@botparty) grinds all the time: skip the recreational / economy
+        // detours (quest piggyback, gachapon, free-market, shout trades). Grind-essential logistics
+        // (resupply/sell visits, level-up, deaths, follow) still run. Population bots do it all.
+        boolean realTakeover = isRealPlayerTakeover(entry);
+        if (runSlowScans && !realTakeover) {
             if (perf) t = System.nanoTime();
             BotQuestManager.tickScan(entry, bot);
             if (perf) BotPerformanceMonitor.record("common-quest-scan", System.nanoTime() - t);
@@ -5478,8 +5621,14 @@ public class BotManager {
         BotSocialManager.tick(entry, bot);
         if (perf) BotPerformanceMonitor.record("common-social", System.nanoTime() - t);
         if (perf) t = System.nanoTime();
-        BotGachaponManager.tickScan(entry, bot);
+        if (!realTakeover) BotGachaponManager.tickScan(entry, bot);
         if (perf) BotPerformanceMonitor.record("common-gacha-scan", System.nanoTime() - t);
+        if (perf) t = System.nanoTime();
+        if (!realTakeover) BotFreeMarketManager.tickScan(entry, bot);
+        if (perf) BotPerformanceMonitor.record("common-fm-scan", System.nanoTime() - t);
+        if (perf) t = System.nanoTime();
+        if (!realTakeover) BotShoutTradeManager.tick(entry, bot, runAiTick);
+        if (perf) BotPerformanceMonitor.record("common-shout-trade", System.nanoTime() - t);
         if (perf) t = System.nanoTime();
         BotInventoryManager.tickTrade(entry, bot);
         if (perf) BotPerformanceMonitor.record("common-trade", System.nanoTime() - t);
@@ -5542,6 +5691,50 @@ public class BotManager {
         }
     }
 
+    /**
+     * A self-owned/managed bot whose autopilot has gone inert (between decides, or a chill session)
+     * would otherwise stand still via {@link #tickIdleEntry} and pile onto the spawn portal with every
+     * other idle bot. Instead park it at a spread spot near a town NPC/character - the same AFK/town-
+     * idle destack SSOT the operator "idle" command uses ({@link #pickTownLoiterAnchor}) - so idlers
+     * fan out. Only genuinely-idle bots on a SAFE (mob-free) map; grind maps keep the danger-aware
+     * break-idle, errand/trade/follow bots are left alone, and the autopilot self-heal still runs so
+     * the bot re-decides back into grinding. Returns true when it drove the tick.
+     */
+    private boolean tickTownIdleDestack(BotEntry entry, Character bot, boolean runAiTick) {
+        // Mirror tickIdleEntry's "genuinely idle" guard, plus: no errand in flight, no operator hold.
+        if (entry.following || entry.grinding || entry.farmAnchor != null || entry.shopVisitPending
+                || entry.autopilotWaitAnchor != null || entry.operatorCmd != null
+                || entry.fmErrandMapId != -1 || entry.gachaErrandMapId != -1
+                || entry.questErrandMapId != -1 || entry.jobErrandMapId != -1
+                || entry.autopilotErrandMapId != -1) {
+            return false;
+        }
+        boolean selfOwned = isSelfDrivingBot(entry);
+        if (!selfOwned || entry.inAir || entry.climbing || bot.getMap() == null
+                || operatorMapHasMobs(bot.getMapId())) {
+            return false; // owned companions idle by their owner; grind maps use the danger-aware idle
+        }
+        // Keep the self-heal alive (it lives in tickIdleEntry, which we are about to preempt): a bot
+        // whose autopilot leaked to inert must still re-decide back out to grinding.
+        maybeRecoverInertAutopilot(entry, bot);
+        if (entry.grinding || BotAutopilotManager.isActive(entry)) {
+            return false; // recovery kicked it back out this tick -> don't park
+        }
+        Point botPos = bot.getPosition();
+        if (botPos == null) {
+            return false;
+        }
+        if (entry.idleDestackSpot == null || entry.idleDestackMapId != bot.getMapId()) {
+            entry.idleDestackSpot = resolveIdleSpot(entry, bot, botPos);
+            entry.idleDestackMapId = bot.getMapId();
+        }
+        if (entry.idleDestackSpot == null) {
+            return false;
+        }
+        loiterAtAnchor(entry, bot, botPos, entry.idleDestackSpot, runAiTick); // walk-near + settle SSOT
+        return true;
+    }
+
     private boolean tickIdleEntry(BotEntry entry, Character bot) {
         if (entry.following || entry.grinding || entry.moveTarget != null
                 || entry.farmAnchor != null || entry.shopVisitPending
@@ -5584,7 +5777,7 @@ public class BotManager {
         if (entry.operatorCmd != null || isAdminFollowActive(entry)) {
             return; // an operator command (IDLE/FIDGET) or an admin hijack-follow deliberately holds the bot off autopilot
         }
-        boolean selfOwned = entry.owner == null || entry.owner == entry.bot;
+        boolean selfOwned = isSelfDrivingBot(entry);
         if (!selfOwned || entry.loggingOut || entry.deadUntil != 0
                 || entry.autopilotDecisionInFlight || BotAutopilotManager.isActive(entry)) {
             return;
@@ -5648,7 +5841,7 @@ public class BotManager {
         return true;
     }
 
-    private boolean recoverTeleportDistance(BotEntry entry, Character bot, Point targetPos) {
+    boolean recoverTeleportDistance(BotEntry entry, Character bot, Point targetPos) {
         Point botPos = bot.getPosition();
         int manhattan = Math.abs(botPos.x - targetPos.x) + Math.abs(botPos.y - targetPos.y);
         if (manhattan > BotMovementManager.cfg.TELEPORT_DIST) {

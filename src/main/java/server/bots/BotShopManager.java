@@ -920,6 +920,18 @@ final class BotShopManager {
         return ammoTargetThreshold();
     }
 
+    /** The town-return scroll the bot keeps stocked (SSOT with the buy logic). Exposed so the USE
+     *  runway can reserve it and never auto-sell scrolls it would immediately rebuy. */
+    static boolean isReturnScroll(int itemId) {
+        return itemId == RETURN_SCROLL_NEAREST_TOWN;
+    }
+
+    /** Quantity the return-scroll resupply tops up to; the USE runway protects at least this much so
+     *  a cramped sell trip never sheds return scrolls the bot would immediately rebuy. */
+    static int returnScrollReserveTarget() {
+        return RETURN_SCROLL_TARGET_QTY;
+    }
+
     private static boolean needsFixedAmmoForShop(Character bot, Shop shop, WeaponType wt, int threshold) {
         if (!needsAmmo(bot, wt) || BotCombatManager.countAmmo(bot, wt) >= threshold) {
             return false;

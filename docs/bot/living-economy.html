@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Living Bot Economy — How It Works</title>
+<style>
+  :root{
+    --bg:#0f1115; --panel:#171a21; --panel2:#1e222b; --ink:#e6e9ef; --mut:#9aa4b2;
+    --acc:#6ea8fe; --good:#54d18c; --warn:#e6b860; --bad:#e57373; --line:#2a2f3a;
+    --code:#0b0d11;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:15px/1.6 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
+  .wrap{max-width:960px;margin:0 auto;padding:40px 22px 80px}
+  h1{font-size:30px;margin:0 0 6px}
+  h2{font-size:21px;margin:42px 0 14px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+  h3{font-size:16px;margin:24px 0 8px;color:var(--acc)}
+  .sub{color:var(--mut);margin:0 0 8px}
+  p{margin:10px 0}
+  code,kbd{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:.92em}
+  code{background:var(--code);border:1px solid var(--line);border-radius:5px;padding:1px 6px;color:#cfe3ff}
+  kbd{background:#272c36;border:1px solid var(--line);border-bottom-width:2px;border-radius:5px;padding:1px 7px}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px 20px;margin:14px 0}
+  .grid{display:grid;gap:12px}
+  .g2{grid-template-columns:1fr 1fr}
+  .g3{grid-template-columns:1fr 1fr 1fr}
+  @media(max-width:680px){.g2,.g3{grid-template-columns:1fr}}
+  table{width:100%;border-collapse:collapse;margin:12px 0;font-size:14px}
+  th,td{text-align:left;padding:9px 11px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{color:var(--mut);font-weight:600;background:var(--panel2)}
+  tr:last-child td{border-bottom:none}
+  .pill{display:inline-block;font-size:12px;padding:2px 9px;border-radius:999px;border:1px solid var(--line)}
+  .pill.good{color:var(--good);border-color:#2e6b4a;background:#11241a}
+  .pill.warn{color:var(--warn);border-color:#6b5a2e;background:#241f11}
+  .pill.bad{color:var(--bad);border-color:#6b3030;background:#241313}
+  .pill.acc{color:var(--acc);border-color:#2e4a6b;background:#111b24}
+  .flow{display:flex;flex-direction:column;gap:0}
+  .step{display:flex;gap:14px;align-items:flex-start;padding:14px 0;border-bottom:1px dashed var(--line)}
+  .step:last-child{border-bottom:none}
+  .num{flex:0 0 30px;height:30px;border-radius:50%;background:var(--panel2);border:1px solid var(--line);
+    display:flex;align-items:center;justify-content:center;font-weight:700;color:var(--acc)}
+  .step .body{flex:1}
+  .step .body b{color:var(--ink)}
+  pre{background:var(--code);border:1px solid var(--line);border-radius:10px;padding:14px 16px;
+    overflow:auto;margin:12px 0}
+  pre code{background:none;border:none;padding:0;color:#d7e4ff}
+  .formula{font-family:ui-monospace,Consolas,monospace;background:var(--code);border:1px solid var(--line);
+    border-left:3px solid var(--acc);border-radius:8px;padding:12px 16px;margin:12px 0;color:#dbe7ff}
+  .note{border-left:3px solid var(--warn);background:#1c1a12;border-radius:8px;padding:10px 14px;margin:12px 0;color:#f0e3c4}
+  .ok{border-left:3px solid var(--good);background:#11201a;border-radius:8px;padding:10px 14px;margin:12px 0;color:#cdeedd}
+  .muted{color:var(--mut)}
+  .legend{font-size:13px;color:var(--mut);margin-top:6px}
+  .files code{display:inline-block;margin:2px 0}
+  hr{border:none;border-top:1px solid var(--line);margin:34px 0}
+  .layers{display:flex;flex-direction:column;gap:10px;font-size:14px}
+  .layer{background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:12px 14px}
+  .layer b{color:var(--ink)}
+  .layer .tag{font-size:12px;color:var(--acc)}
+  .arrow{text-align:center;color:var(--mut);font-size:18px;line-height:1;margin:-4px 0}
+  .loop{display:grid;gap:10px;grid-template-columns:1fr;font-size:14px}
+  .loopcard{border:1px solid var(--line);border-radius:10px;padding:12px 14px;background:var(--panel2)}
+  .loopcard .h{font-weight:700;margin-bottom:6px}
+  .chain{font-family:ui-monospace,Consolas,monospace;font-size:13px;color:#dbe7ff;line-height:1.9}
+  .chain .n{color:var(--bad)} .chain .p{color:var(--good)} .chain .s{color:var(--acc)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>Living Bot Economy</h1>
+  <p class="sub">How companion bots <b>discover prices by trading</b> — no central price-setter, no authored price tables, no rate caps. Just agents that farm, scroll, list, buy, and re-price.</p>
+  <p class="muted">This is the shipped behavior on branch <code>dev-economy</code> (slices S0–S4 plus the 2026-07-04 scroll/market audit fixes). The full design of record is <code>docs/bot/living-economy-design.md</code>; the math reference is <code>docs/bot/economy-design.md</code>. This page explains what actually runs and why, every claim tied to a real class/method.</p>
+
+  <!-- ============================================================= -->
+  <h2>1. Big picture — a decentralized, belief-based market</h2>
+  <p>There is <b>no server that decides prices</b>. Every bot privately values goods, privately believes what the market pays, and acts on those beliefs. The clearing price is whatever their trades settle at. The only shared piece of machinery is a damped <i>statistic</i> — a per-item consensus computed from the trade tape — and even that never places an order or clamps anyone. It just gives everyone a rough shared idea that individual perception then distorts and personal experience then corrects.</p>
+
+  <div class="panel">
+    <div class="layers">
+      <div class="layer">
+        <div class="tag">SHARED — MySQL tape</div>
+        <b>BotMarketLedger</b> → <code>bot_market_event</code>. Append-only record of every arms-length event: TRADE, STALL_SALE, LIST, SHOUT, NPC_SELL/BUY, faucet/sink counters. It <i>records</i>; it never creates meso or items.
+      </div>
+      <div class="arrow">▼ &nbsp;3-minute off-tick sweep</div>
+      <div class="layer">
+        <div class="tag">SHARED — the stabilizer</div>
+        <b>BotMarketConsensus</b>. Per <code>priceKey</code>, a <b>recency-weighted median</b> of clearing prices, damped by decayed event volume. One odd trade barely moves a liquid item but meaningfully informs an illiquid one; the median shrugs off gift-price outliers. A statistic, not a setter.
+      </div>
+      <div class="arrow">▼ &nbsp;noisy, lagged sample (only at market touchpoints)</div>
+      <div class="layer">
+        <div class="tag">PER BOT — the private book (tick-thread-owned)</div>
+        <b>BotMarketBook</b>. Blends the bot's own observations (its completed trades weighted 1.0, asks it browsed 0.4, shouts 0.15…) with a <i>noisy, lagged</i> sample of consensus. The noise is seeded stable per (bot, key, day) — a bot holds a consistently slightly-wrong idea for a session rather than jittering. Social bots are better informed; loners are wronger. <b>This is the only price source any decision may read.</b>
+      </div>
+      <div class="arrow">▼</div>
+      <div class="layer">
+        <div class="tag">PER BOT — decisions</div>
+        <b>List / buy / use / scroll.</b> WTP, reservation, the upgrade menu, the scroll DP — all run off the private book, never the raw ledger or raw consensus.
+      </div>
+    </div>
+  </div>
+
+  <div class="ok">
+    <b>Two hard rules that keep it honest.</b> (1) <b>Player↔player trades never feed pricing</b> — only bots' own books observe, and they observe only events they were party to or physically browsed. (2) A <b>stall sale fires the tape and belief update even when the seller is a player</b> (<code>HiredMerchant.buy → BotManager.notifyStallSale</code>), because a bot browsing a map can't tell a player stall from a bot stall — it just reads <code>getItems()</code> of whatever merchants stand there.
+  </div>
+  <p class="legend">No decision code may read channel-wide merchant registries, the raw ledger, the raw consensus, or another bot's book. The shared consensus reaches behavior <i>only</i> through the noisy, touchpoint-sampled perception in <code>BotMarketBook</code>. Enforced by convention: the book is the single price source for behavior.</p>
+
+  <!-- ============================================================= -->
+  <h2>2. How a bot values a scroll</h2>
+  <p>A scroll's meso worth is a stack of three independent numbers — a supply anchor, a demand ceiling, and (only when <i>using</i> one) an opportunity cost. Each answers a different question.</p>
+
+  <table>
+    <tr><th>Layer</th><th>Question</th><th>How it's computed</th></tr>
+    <tr>
+      <td><b>Supply anchor</b><br><code>scrollPriceMeso</code></td>
+      <td>What would it cost to <i>get another</i> one?</td>
+      <td>The cheapest legit source, now blended with the live tape:
+        <ul style="margin:6px 0 0;padding-left:18px">
+          <li><b>Shop-sold</b> → <code>min(NPC shop price, consensus)</code> when the tape has evidence, else the shop price. The NPC's infinite supply is a hard cap, but a <i>glut</i> trading below shop passes straight through.</li>
+          <li><b>Drop-only</b> → the consensus when the tape has clearings, else the farm cost (<code>farmingCostMeso</code>: best-dropper drop-rate × realistic time-to-kill <i>for this bot</i> × <code>FARM_MESO_PER_SECOND</code>, plus spawn-density seek overhead).</li>
+          <li><b>Chaos / White</b> → <code>max(10M cold-market floor, consensus)</code> — now that chaos gambles and whites protect, the market prices them; the 10M is only a floor until the tape has clearings.</li>
+        </ul>
+      </td>
+    </tr>
+    <tr>
+      <td><b>Demand ceiling</b><br><code>scrollCombatCeilingMeso</code></td>
+      <td>What's the most a best-buyer pays for the combat value it injects?</td>
+      <td><code>SCROLL_CEILING_PER_EV × success × marketStatValue × slotDurabilityFactor</code>. Crucially <code>marketStatValue</code> now scores a multi-stat scroll by its <b>best-use worth across class camps</b> (<code>bestRoleWorth</code>), not the sum of all four mains — so a +15-all-stat scroll is valued at what its <i>best</i> buyer gets (~19.5), not 60.</td>
+    </tr>
+    <tr>
+      <td><b>Opportunity cost of USING</b><br><code>applyCostMeso</code></td>
+      <td>What do I forgo by burning this one instead of selling it?</td>
+      <td><code>0.9 × scrollPriceMeso</code> — a scroll is liquid, so consuming one forgoes nearly its resale. <b>Zero for tradeBlocked scrolls</b> (<code>[4yrAnniv]</code>, Dragon Stone): they can't be sold/listed/traded, so consuming one forgoes no sale. The reproduction curve still keeps the full price — remaking one still costs effort; only this action cost is zeroed.</td>
+    </tr>
+  </table>
+
+  <div class="note">
+    <b>The <code>slotDurabilityFactor</code> is why glove scrolls cost more than weapon scrolls.</b> It's WZ-derived: least-squares growth of <code>marketStatValue</code> per required level within a slot category, normalized so the weapon average is 1.0. Flat-progression slots (gloves ~2.6×, shoes ~2.6×, capes ~2.4×) scale <i>up</i> because a scrolled flat-slot piece stays best-in-slot near-forever, where a scrolled weapon is soon outgrown. The same +2 ATT is simply worth more where it lasts. Behavior follows price for free: because per-apply cost is a fraction of this ceiling, bots are proportionally more reluctant to burn a flat-slot scroll on a marginal gain.
+  </div>
+
+  <p class="legend">GM/junk shops are filtered before any of this: a legitimate shop never sells an item below its NPC sell-back value (free arbitrage), so any <code>shopitems</code> row with buy ≤ sell-back is dropped by <code>marketBuyPriceMeso</code>'s reverse index.</p>
+
+  <!-- ============================================================= -->
+  <h2>3. How a bot decides to scroll</h2>
+  <p>Valuation feeds the same decision engine the <a href="self-scrolling.html">self-scrolling pipeline</a> documents in full. In one paragraph: an item is worth the <b>cheapest expected meso to reproduce one this good from scratch</b> — a small DP over <code>(slots left, score)</code> with an explicit abandon-and-rebuy option (<code>BotScrollValuer.reproductionValue</code>). Because a regular scroll burns a slot win-or-lose, the only retry is at the item level, which makes the value-vs-score curve <b>convex</b> above the clean-base cost. The planner (<code>BotScrollPlanner.planBest</code>) picks the single best (item, scroll) play, applies it, then rescans — so <b>snowballing a strong base and abandoning a crippled one is emergent, not scripted</b>. Boom scrolls are gated on a usable fallback item for the slot plus positive EV after the boom-loss term. Chaos is a Monte-Carlo-free path — an exact convolution over the piece's own convex band curve. White is protected when <code>failRate × p × marginal-band value > white cost</code>.</p>
+  <div class="ok"><b>Nothing here is a threshold someone typed in.</b> "Gamble early, cut losses early", "snowball winners", "protect only when the slot at risk is worth more than the white" — these all fall out of the convex curve and the EV comparison. See <a href="self-scrolling.html">self-scrolling.html</a> for the DP, the worked example, and the chat flow.</div>
+
+  <!-- ============================================================= -->
+  <h2>4. Feedback loops &amp; self-correction</h2>
+  <p>This is the centerpiece. Prices don't stay right because anyone corrects them — they stay right because <b>every mispricing creates the pressure that erases it</b>. The core loop, both directions:</p>
+
+  <div class="loop">
+    <div class="loopcard">
+      <div class="h" style="color:var(--bad)">GLUT — too many listings, price too high</div>
+      <div class="chain">
+        many listings <span class="n">→</span> stalls sit <b>unsold</b> for rounds
+        <span class="n">→</span> on stall service, <code>undercutTarget</code> steps the ask <b>below the cheapest competing ask</b>
+        <span class="n">→</span> clearings fall <span class="n">→</span> <b>consensus falls</b>
+        <span class="n">→</span> <span class="s">(the new link)</span> <code>applyCostMeso</code> falls, so bots <b>burn more scrolls</b>; and <code>maybeBargainBuy</code> clears cheap stock
+        <span class="n">→</span> supply drains <span class="p">→ price recovers</span>
+      </div>
+    </div>
+    <div class="loopcard">
+      <div class="h" style="color:var(--good)">SCARCITY — nothing for sale, price too low</div>
+      <div class="chain">
+        wants go unfilled <span class="p">→</span> repeated failure <b>raises the belief</b> (scarcity evidence, but WTP stays capped by use-value)
+        <span class="p">→</span> consensus rises <span class="p">→</span> farming that item beats the alternatives (grind steering, S4)
+        <span class="p">→</span> supply returns <span class="p">→ price settles</span> at ≈ frontier cost
+      </div>
+    </div>
+  </div>
+
+  <p>The load-bearing piece is the <b>unsold-pressure undercut</b>. Without it the market froze: every ask sat a margin above every WTP (a structural no-trade zone), and worse, glut entrants who perceive consensus priced <i>at</i> the going rate — so gluts <b>raised</b> prices. Stepping the ask to just under the cheapest visible competitor (never above the bot's own perception; reservation still floors it) is what converts oversupply into falling prices.</p>
+
+  <table>
+    <tr><th>Mechanism</th><th>What it corrects</th><th>Code</th></tr>
+    <tr><td><b>Unsold-pressure undercut</b> <span class="pill acc">load-bearing</span></td><td>Gluts otherwise raised prices; this makes them lower prices.</td><td><code>BotMarketMath.undercutTarget</code>, driven by unsold rounds in <code>evaluateListings</code></td></tr>
+    <tr><td><b>Reprice toward belief on service</b></td><td>Stale asks track the market across a market day (3–6h service cadence).</td><td><code>HiredMerchant.botServiceReprice</code> → <code>BotMarketMath.repriceAsk</code> (pressure 0.5, floored at ½ ask / NPC sell-back)</td></tr>
+    <tr><td><b>NPC counter caps</b></td><td>An ask can never exceed the NPC shop price (infinite supply); applies to clean equips only.</td><td><code>npcShopPrice</code> ← <code>marketBuyPriceMeso</code> (existing GM-filtered shopitems index)</td></tr>
+    <tr><td><b>Belief-less WTP floors</b></td><td>A <i>fresh</i> market has no beliefs to price against — these let it clear at all.</td><td>Equips: <code>equipBuyCeilingMeso</code>. Scrolls (new): per-unit <code>min(scrollCombatCeilingMeso, replacement)</code> in <code>maybeBargainBuy</code></td></tr>
+    <tr><td><b>Obtainable-only catalog index</b></td><td>Unobtainable scrolls can't fake cheap reproduction costs (Dragon Stone's fake 1M once flattened HTP's band curve).</td><td><code>scrollsByCategory</code> (obtainable-filtered); owned-scroll play still uses anything in the bag</td></tr>
+    <tr><td><b>Outlier / volume damping</b></td><td>One gift-price trade can't cascade; a liquid item barely moves.</td><td>weighted-median + decayed-volume damping in <code>BotMarketConsensus</code></td></tr>
+    <tr><td><b>humanizeAsk</b></td><td>Presentation only — rounds asks so they don't read like calculator output; the value core is untouched.</td><td><code>BotMarketMath.humanizeAsk</code> (per-bot deterministic style; <code>unitAsk</code> value core unchanged)</td></tr>
+  </table>
+
+  <div class="ok"><b>Why it converges instead of oscillating.</b> Demand is price-elastic (WTP caps), supply is price-responsive with lag, updates are confidence-damped, repricing is asynchronous across bots (each rides its own personality schedule, so no two reprice in the same tick), and the consensus layer bounds collective error — individual perceptions orbit a slow robust statistic instead of chasing each other. A sparse market can't random-walk and a single outlier can't cascade.</div>
+
+  <!-- ============================================================= -->
+  <h2>5. Special scrolls — a case study</h2>
+  <p>Two owner-interesting scrolls exercise the "req-locked, trade-blocked" corners. Neither needed special-casing — they flow through the same planner emergently.</p>
+
+  <div class="grid g2">
+    <div class="panel">
+      <h3>[4yrAnniv] scrolls</h3>
+      <p>22 ids, req-locked to Maple event gear (e.g. 2043013 → Maple Glory Sword; capes → Maple Cape), mostly <code>cursed=30</code> (boom), all <code>tradeBlock=1</code>. Obtainable only as a 20% drop from event boss Giant Cake (9400606).</p>
+      <p class="muted">The req path is fully emergent: <code>getScrollReqs</code> reads the WZ <code>req</code> id-list, <code>applicable()</code> honors it (req list wins; category match is only the fallback), and the planner picks it up. Boom variants need a usable fallback piece for the slot before they're allowed. Zero opportunity cost since tradeBlocked.</p>
+    </div>
+    <div class="panel">
+      <h3>Dragon Stone (2041200)</h3>
+      <p>100% success, +15 all stats / +140 PDD / +140 MDD / +15 EVA, <code>only=1</code>, <code>tradeBlock=1</code>, <code>reqRUC=3</code>, req = Horntail Necklace. Not in <code>drop_data</code>; its only shop rows are price-1 GM shops that <code>shopPrices()</code> (<code>price &gt; 1</code>) already excludes.</p>
+      <p class="muted">Applies emergently on an HTP with a free slot. Its +15 mains score a gain of ~19.5 for any job so the DP fires; but its 280 defense and +15 avoid are invisible to the offense-only gain axis (open gap 8, below).</p>
+    </div>
+  </div>
+  <p class="legend">Accessory scrolls 20492xx (pendant/ring/belt) now apply via the <b>shared</b> <code>ItemConstants.canScroll</code> (extracted from the player's <code>ScrollHandler</code> path — bots share player code) instead of a reimplemented category fallback. But every obtainable one is <code>cursed=50</code> (boom), and the market catalog index excludes boom scrolls by design, so accessory band curves stay flat until a non-boom accessory scroll exists.</p>
+
+  <!-- ============================================================= -->
+  <h2>6. Roadmap</h2>
+  <p>What's built vs. what's next, from the design doc §14 and the build ledger's pending list.</p>
+
+  <div class="grid g3">
+    <div class="panel">
+      <h3>Built</h3>
+      <ul style="margin:6px 0 0;padding-left:18px">
+        <li><span class="pill good">done</span> S0 — substrate fixes (staged-meso getter, floor-drop on trade void, <code>marketBusy</code> gate, <code>BotAssetView</code>)</li>
+        <li><span class="pill good">done</span> S1 — beliefs + valuation (<code>BotMarketMath</code> / <code>Book</code> / <code>Ledger</code> / <code>Consensus</code>, structured priors, sim tests)</li>
+        <li><span class="pill good">done</span> S2 — FM errand + bot-owned stalls, browse observation, ledger hooks, live restock/reprice service</li>
+        <li><span class="pill good">done</span> S3 — shout grammar + bus + accept-at-ask direct equip trades</li>
+        <li><span class="pill good">done</span> S4 (first half) — equip banding + listing, <code>maybeBargainBuy</code>, chaos/white plays, banded tape</li>
+        <li><span class="pill good">done</span> Audit fixes 1–6 (2026-07-04) — shared <code>canScroll</code>, consensus-blended <code>scrollPriceMeso</code>, belief-less scroll WTP, zero apply-cost for tradeBlocked, <code>bestRoleWorth</code>, obtainable-only catalog</li>
+      </ul>
+    </div>
+    <div class="panel">
+      <h3>Next</h3>
+      <ul style="margin:6px 0 0;padding-left:18px">
+        <li><span class="pill warn">next</span> S4 second half — <code>BotTradeNegotiator</code> counters/rude-cancel, personality traits (<code>mesoFocus</code> / <code>haggleStance</code> / <code>buffSpend</code> / <code>collectorTaste</code>)</li>
+        <li><span class="pill warn">next</span> Grind-advisor market term (sale value/hr of surplus drops)</li>
+        <li><span class="pill warn">next</span> Flip <code>SCROLL_FOR_PROFIT_ENABLED</code> — finished gear flows to stalls</li>
+        <li><span class="pill warn">next</span> Retire placeholder constants (<code>SCROLL_OPPORTUNITY_MARGIN/FRACTION</code>, Chaos/White 10M, <code>SCROLL_CEILING_PER_EV</code>, <code>AMMO_CEILING_*</code>) as endogenous replacements land</li>
+      </ul>
+    </div>
+    <div class="panel">
+      <h3>Later &amp; open gaps</h3>
+      <ul style="margin:6px 0 0;padding-left:18px">
+        <li><span class="pill acc">later</span> S3 deferred — consumable/stack shout trading, <code>PC&gt;</code> replies, <code>B&gt;</code> emission, approach-walk before invite, auto-equip bought upgrades</li>
+        <li><span class="pill acc">later</span> S5 — gossip diffusion, ammo/buff purchase behavior, <code>/api/market*</code> routes</li>
+        <li><span class="pill acc">later</span> S6 — fuzzy chat, storage NPC use</li>
+        <li><span class="pill acc">later</span> P3 — <code>FARM_MESO_PER_SECOND</code> → own observed meso/hr EMA</li>
+        <li><span class="pill bad">open gap 7</span> <code>reqRUC</code> unenforced — a bot can apply Dragon Stone with fewer free slots than a client allows</li>
+        <li><span class="pill bad">open gap 8</span> Offense-only gain axis — pure-defense scrolls (shield DEF/HP) never fire; needs a survival-stat gain term</li>
+      </ul>
+    </div>
+  </div>
+
+  <hr>
+  <h2>Where this lives in code</h2>
+  <div class="panel files">
+    <p><code>server.bots.BotMarketLedger</code> — the append-only MySQL tape (<code>bot_market_event</code>) + faucet/sink counters.</p>
+    <p><code>server.bots.BotMarketConsensus</code> — the shared damped statistic: 3-minute off-tick sweep, weighted median, volume damping.</p>
+    <p><code>server.bots.BotMarketBook</code> — the per-bot private book (tick-thread-owned): private observations ⊕ noisy/lagged consensus sample. The only price source decisions may read.</p>
+    <p><code>server.bots.BotMarketMath</code> — pure math: one confidence-weighted update rule, <code>undercutTarget</code>, <code>repriceAsk</code>, <code>qualityBand</code>/<code>priceKey</code>, structured priors, <code>humanizeAsk</code>.</p>
+    <p><code>server.bots.BotScrollManager</code> — valuation glue: <code>scrollPriceMeso</code>, <code>applyCostMeso</code>, <code>scrollCombatCeilingMeso</code>, <code>slotDurabilityFactor</code>, <code>marketStatValue</code>/<code>bestRoleWorth</code>, <code>equipMarketQuote</code>, <code>scrollsByCategory</code>.</p>
+    <p><code>server.bots.BotFreeMarketManager</code> — the FM errand, stall lifecycle, <code>evaluateListings</code>/<code>evaluateEquipListings</code>, <code>maybeBargainBuy</code>.</p>
+    <p><code>server.bots.BotScrollValuer</code> / <code>BotScrollPlanner</code> — the reproduction-cost DP and the one-scroll-then-rescan planner (see <a href="self-scrolling.html">self-scrolling.html</a>).</p>
+    <p class="muted">Design of record: <code>docs/bot/living-economy-design.md</code>. Build ledger: <code>docs/bot/kb/project_living_economy_build.md</code>. Math reference: <code>docs/bot/economy-design.md</code>.</p>
+  </div>
+
+</div>
+</body>
+</html>

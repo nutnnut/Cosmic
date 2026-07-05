@@ -1386,8 +1386,8 @@ class BotCombatManager {
         return profile;
     }
 
-    // Cheap fingerprint over every stat the damage profile reads, plus level (covers mastery-passive
-    // gains that level-ups bring). All are stored local-stat field reads, recomputed only on stat change.
+    // Cheap fingerprint over every stat the damage profile reads, plus skill levels for passive
+    // damage modifiers such as weapon mastery and Element Amplification.
     private static int damageStatSignature(Character bot) {
         int sig = bot.getTotalWatk();
         sig = sig * 31 + bot.getTotalMagic();
@@ -1395,7 +1395,28 @@ class BotCombatManager {
         sig = sig * 31 + bot.getTotalDex();
         sig = sig * 31 + bot.getTotalLuk();
         sig = sig * 31 + bot.getLevel();
+        sig = sig * 31 + damageSkillSignature(bot);
         return sig;
+    }
+
+    private static int damageSkillSignature(Character bot) {
+        try {
+            Map<Skill, Character.SkillEntry> skills = bot.getSkills();
+            if (skills == null || skills.isEmpty()) {
+                return 0;
+            }
+
+            int sig = 0;
+            for (Skill skill : skills.keySet()) {
+                if (skill == null) continue;
+                int level = bot.getSkillLevel(skill);
+                if (level <= 0) continue;
+                sig += skill.getId() * 31 + level;
+            }
+            return sig;
+        } catch (Throwable t) {
+            return 0;
+        }
     }
 
     static long damageProfileKey(int skillId, int skillLevel, AttackRoute route, WeaponType weaponType) {

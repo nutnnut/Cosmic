@@ -252,10 +252,17 @@ public class LifeFactory {
         return new Pair<>(stats, attackInfos);
     }
 
+    // Mob ids whose WZ load already failed (e.g. stale drop_data droppers with no WZ entry):
+    // without this, every caller re-parses and re-logs the same SEVERE error forever.
+    private static final Set<Integer> failedMonsterLoads = java.util.concurrent.ConcurrentHashMap.newKeySet();
+
     public static Monster getMonster(int mid) {
         try {
             MonsterStats stats = monsterStats.get(mid);
             if (stats == null) {
+                if (failedMonsterLoads.contains(mid)) {
+                    return null;
+                }
                 Pair<MonsterStats, List<MobAttackInfoHolder>> mobStats = getMonsterStats(mid);
                 stats = mobStats.getLeft();
                 setMonsterAttackInfo(mid, mobStats.getRight());
@@ -264,6 +271,7 @@ public class LifeFactory {
             }
             return new Monster(mid, stats);
         } catch (NullPointerException npe) {
+            failedMonsterLoads.add(mid);
             log.error("[SEVERE] MOB {} failed to load.", mid, npe);
             return null;
         }

@@ -1,11 +1,14 @@
 package server.bots;
 
+import client.inventory.Equip;
 import org.junit.jupiter.api.Test;
 
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 /**
  * Pure (WZ/DB-free) checks on the equip-value SSOT's survivability term — the stats {@code offenseValue}
@@ -41,5 +44,26 @@ class BotScrollManagerTest {
         // An attack scroll out-values an equal-point stat scroll.
         assertTrue(BotScrollManager.marketStatValue(Map.of("PAD", 2))
                 > BotScrollManager.marketStatValue(Map.of("DEX", 2)));
+    }
+
+    @Test
+    void bestRoleWorthValuesAMultiJobPieceAtItsBestClass() {
+        // Accessory +10STR/+12DEX/+10INT/+10LUK -> a bowman wears it best: DEX(12)*1 + STR(10)*0.3.
+        assertEquals(12 + 10 * 0.3, BotScrollManager.bestRoleWorth(0, 0, 10, 12, 10, 10), 1e-9);
+        // +1watk/+4matk -> a physical job wears it (1*5) over a mage (4*1); never summed to 9.
+        assertEquals(5.0, BotScrollManager.bestRoleWorth(1, 4, 0, 0, 0, 0), 1e-9);
+    }
+
+    @Test
+    void chaosOutcomeUsesExactConvexTailExpectation() {
+        Equip glove = mock(Equip.class);
+        when(glove.getWatk()).thenReturn((short) 10);
+
+        BotScrollManager.EquipQuote quote = new BotScrollManager.EquipQuote(
+                1082000, 0, 0L, band -> band * band, 50.0, 5.0);
+
+        // ATT weight=5, range +/-5, baseScore=50, bandUnit=5 -> bands clamp to
+        // 0,0,0,0,0,0,1,2,3,4,5. Exact convex EV = (1+4+9+16+25)/11 = 5.
+        assertEquals(5.0, BotScrollManager.chaosOutcomeMeanValue(glove, quote, 5), 1e-9);
     }
 }

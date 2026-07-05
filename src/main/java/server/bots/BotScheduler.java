@@ -587,6 +587,9 @@ public final class BotScheduler {
             // immediately, instead of every bot grinding at spawn and only settling over many minutes.
             BotBreakManager.startLoginBreak(e, e.bot, now);
         }
+        // Same equilibrium trick for the market: seed the mid-market-day fraction (and stall
+        // rebuilders) so the FM repopulates right after a restart instead of over the first hour.
+        BotFreeMarketManager.maybeSeedLoginMarketDay(e, e.bot, now);
     }
 
     /** Decide once, when a crew session begins, whether the whole crew is logging in to CHILL (leader's
@@ -610,6 +613,14 @@ public final class BotScheduler {
                 if (e != null) {
                     BotBreakManager.startLoginBreak(e, e.bot, now);
                 }
+            }
+        }
+        // Market-day seeding for crew members too (a third of the population): tickScan's reason
+        // checks still own the trip decision, and crews already tolerate individual errands.
+        for (ManagedBot m : members) {
+            BotEntry e = bm.getEntryByBotCharId(m.botCharId());
+            if (e != null) {
+                BotFreeMarketManager.maybeSeedLoginMarketDay(e, e.bot, now);
             }
         }
     }

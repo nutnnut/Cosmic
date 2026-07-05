@@ -32,6 +32,11 @@ public class Foothold implements Comparable<Foothold> {
     private final int id;
     private int next, prev;
     private boolean forbidFallDown;
+    // WZ storage path is foothold/<layer>/<group>/<id>; the client keeps both on CStaticFoothold
+    // (m_lPage/m_lZMass, v95 PDB) and scopes airborne wall collision by zMass group. -1 = unknown
+    // (synthetic/hand-built test footholds), which collision code treats as "always collidable".
+    private int layer = -1;
+    private int zMass = -1;
 
     public Foothold(Point p1, Point p2, int id) {
         this.p1 = p1;
@@ -41,59 +46,6 @@ public class Foothold implements Comparable<Foothold> {
 
     public boolean isWall() {
         return p1.x == p2.x;
-    }
-
-    /**
-     * A wall foothold is collidable when the lower endpoint is connected into a foothold
-     * chain that eventually reaches non-wall ground. Real client collision in maps such as
-     * 193000000 treats bottom-anchored, open-top walls as solid. The open lower-end case is
-     * still non-collidable so ledge edges do not become side walls.
-     */
-    public static boolean isCollidableWall(Foothold wall, java.util.Map<Integer, Foothold> footholdsById) {
-        if (wall == null || !wall.isWall()) {
-            return false;
-        }
-        Point lowerEndpoint = wall.getY1() >= wall.getY2() ? wall.p1 : wall.p2;
-        return linkedChainReachesGroundAtEndpoint(wall, wall.prev, false, lowerEndpoint, footholdsById)
-                || linkedChainReachesGroundAtEndpoint(wall, wall.next, true, lowerEndpoint, footholdsById);
-    }
-
-    private static boolean linkedChainReachesGroundAtEndpoint(Foothold wall,
-                                                              int linkedId,
-                                                              boolean followNext,
-                                                              Point endpoint,
-                                                              java.util.Map<Integer, Foothold> footholdsById) {
-        if (linkedId == 0) {
-            return false;
-        }
-        Foothold linked = footholdsById.get(linkedId);
-        if (linked == null || !touchesPoint(linked, endpoint)) {
-            return false;
-        }
-        return chainReachesGround(wall, followNext, footholdsById);
-    }
-
-    private static boolean chainReachesGround(Foothold start, boolean followNext,
-                                              java.util.Map<Integer, Foothold> footholdsById) {
-        int id = followNext ? start.next : start.prev;
-        int depth = 0;
-        while (id != 0 && depth < 10) {
-            Foothold fh = footholdsById.get(id);
-            if (fh == null) {
-                return false;
-            }
-            if (!fh.isWall()) {
-                return true;
-            }
-            id = followNext ? fh.next : fh.prev;
-            depth++;
-        }
-        return false;
-    }
-
-    private static boolean touchesPoint(Foothold foothold, Point point) {
-        return (foothold.getX1() == point.x && foothold.getY1() == point.y)
-                || (foothold.getX2() == point.x && foothold.getY2() == point.y);
     }
 
     public int getX1() {
@@ -167,5 +119,21 @@ public class Foothold implements Comparable<Foothold> {
 
     public void setForbidFallDown(boolean forbidFallDown) {
         this.forbidFallDown = forbidFallDown;
+    }
+
+    public int getLayer() {
+        return layer;
+    }
+
+    public void setLayer(int layer) {
+        this.layer = layer;
+    }
+
+    public int getZMass() {
+        return zMass;
+    }
+
+    public void setZMass(int zMass) {
+        this.zMass = zMass;
     }
 }

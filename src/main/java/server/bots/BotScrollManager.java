@@ -7,6 +7,7 @@ import client.inventory.Equip.ScrollResult;
 import client.inventory.Inventory;
 import client.inventory.InventoryType;
 import client.inventory.Item;
+import client.inventory.WeaponType;
 import client.inventory.ModifyInventory;
 import client.inventory.manipulator.InventoryManipulator;
 import config.YamlConfig;
@@ -29,8 +30,10 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.IdentityHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.DoubleUnaryOperator;
 
 /**
@@ -96,8 +99,10 @@ final class BotScrollManager {
 
     // ---- Farming-cost (rarity→meso) anchors. See BotFarmingCostModel. ----
     /** Effort→meso anchor: how much a second of the bot's farming is worth. The single tunable knob
-     *  here (economy-design §9); a future ledger can replace it with the bot's real meso/sec. */
-    private static final double FARM_MESO_PER_SECOND = 1_000.0;
+     *  here (economy-design §9); a future ledger can replace it with the bot's real meso/sec.
+     *  Package-visible: BotFreeMarketManager prices a stall slot's bother off the same anchor,
+     *  so the P3 retirement (own observed meso/hr) swaps both call sites at once. */
+    static final double FARM_MESO_PER_SECOND = 1_000.0;
     /** FALLBACK per-kill travel/respawn-wait overhead — used only when the spawn index has no
      *  data for the dropper; otherwise {@link #seekOverheadSeconds} supplies real density. */
     private static final double FARM_SEEK_OVERHEAD_SECONDS = 3.0;
@@ -112,6 +117,9 @@ final class BotScrollManager {
 
     /** Lazily-loaded cheapest NPC-shop buy price per item id (populate-once cache; all shop items). */
     private static volatile Map<Integer, Integer> shopPrices;
+
+    private static final int REPRO_CURVE_CACHE_MAX = 4096;
+    private static final Map<ReproCurveKey, DoubleUnaryOperator> reproCurveCache = new ConcurrentHashMap<>();
 
     private BotScrollManager() {}
 
@@ -215,8 +223,13 @@ final class BotScrollManager {
             return;
         }
 
-        ScrollResult result = applyScroll(bot, equip, scrollItem);
-        announce(bot, result, equip);
+        boolean useWhite = shouldUseWhiteScroll(entry, bot, equip, scrollItem);
+        ScrollResult result = applyScroll(bot, equip, scrollItem, useWhite);
+        if (useWhite && result == ScrollResult.FAIL) {
+            BotManager.getInstance().botSay(bot, "failed, but the white scroll saved my slot");
+        } else {
+            announce(bot, result, equip);
+        }
         if (result != null) {
             BotManager.getInstance().notifyNearbyBotsOfScroll(bot, result, scrollItem.getItemId(), 3_000L);
         }
@@ -284,6 +297,12 @@ final class BotScrollManager {
      *  time ({@link #executeConfirmed}/{@link BotInventoryManager#hasItem}), so a stale off-thread read
      *  just yields a no-op and the next scan retries. */
     static void scheduleScrollPlan(BotEntry entry, Character bot, java.util.function.BiConsumer<BotEntry, Resolved> apply) {
+        if (entry == null || bot == null || apply == null) {
+            return;
+        }
+        if (!markScrollPlanQueued(entry)) {
+            return;
+        }
         BotGrindAdvisor.DECIDE_POOL.execute(() -> {
             Resolved resolved;
             // The plan walks the whole inventory with WZ lookups and shares the single DECIDE_POOL with
@@ -295,6 +314,7 @@ final class BotScrollManager {
             } catch (RuntimeException e) {
                 return; // WZ/inventory hiccup off-thread — skip this scan, the timer re-arms
             } finally {
+                entry.scrollPlanQueued = false;
                 BotPerformanceMonitor.recordSince("scroll-scan", t0);
             }
             final Resolved r = resolved; // may be null (no worthwhile play) — apply decides what to do
@@ -302,12 +322,36 @@ final class BotScrollManager {
         });
     }
 
+    private static boolean markScrollPlanQueued(BotEntry entry) {
+        synchronized (entry) {
+            if (entry.scrollPlanQueued) {
+                return false;
+            }
+            entry.scrollPlanQueued = true;
+            return true;
+        }
+    }
+
+    private static boolean markChaosPlanQueued(BotEntry entry) {
+        synchronized (entry) {
+            if (entry.chaosPlanQueued) {
+                return false;
+            }
+            entry.chaosPlanQueued = true;
+            return true;
+        }
+    }
+
     /** Apply an auto-scan plan on the scheduler thread. Re-checks the gating state (it may have changed
      *  while the plan computed off-thread) before committing. */
     private static void applyAutoScrollPlan(BotEntry entry, Resolved resolved) {
         Character bot = entry.bot;
-        if (resolved == null || bot == null || !entry.selfScrollEnabled
+        if (bot == null || !entry.selfScrollEnabled
                 || entry.pendingAction != null || entry.pendingTradeCategory != null) {
+            return;
+        }
+        if (resolved == null) {
+            maybeChaosPlay(entry, bot); // no regular play: maybe gamble a chaos reroll instead
             return;
         }
         Equip equip = resolved.equip();
@@ -348,6 +392,13 @@ final class BotScrollManager {
     // equip in place (returns the same ref, or null on a boom), then the scroll is consumed and the
     // client view refreshed. Returns the outcome, or null if the scroll vanished before applying.
     private static ScrollResult applyScroll(Character chr, Equip toScroll, Item scroll) {
+        return applyScroll(chr, toScroll, scroll, false);
+    }
+
+    /** {@code useWhite}: protect the slot on a fail, consuming an owned White Scroll — the same
+     *  {@code ws} flag/consume flow ScrollHandler runs for players. Silently degrades to an
+     *  unprotected apply when no White Scroll is actually in the bag. */
+    private static ScrollResult applyScroll(Character chr, Equip toScroll, Item scroll, boolean useWhite) {
         ItemInformationProvider ii = ItemInformationProvider.getInstance();
         Client c = chr.getClient();
         int scrollId = scroll.getItemId();
@@ -357,7 +408,15 @@ final class BotScrollManager {
         byte oldLevel = toScroll.getLevel();
         byte oldSlots = toScroll.getUpgradeSlots();
 
-        Equip scrolled = (Equip) ii.scrollEquipWithId(toScroll, scrollId, false, 0, false);
+        Item wscroll = null;
+        if (useWhite) {
+            wscroll = useInv.findById(ItemId.WHITE_SCROLL);
+            if (wscroll == null) {
+                useWhite = false;
+            }
+        }
+
+        Equip scrolled = (Equip) ii.scrollEquipWithId(toScroll, scrollId, useWhite, 0, false);
         ScrollResult result;
         if (scrolled == null) {
             result = ScrollResult.CURSE;
@@ -373,6 +432,13 @@ final class BotScrollManager {
         try {
             if (scroll.getQuantity() < 1) {
                 return null;
+            }
+            if (useWhite && !ItemConstants.isCleanSlate(scrollId)) {
+                if (wscroll.getQuantity() < 1) {
+                    return null;
+                }
+                InventoryManipulator.removeFromSlot(c, InventoryType.USE, wscroll.getPosition(),
+                        (short) 1, false, false);
             }
             InventoryManipulator.removeFromSlot(c, InventoryType.USE, scroll.getPosition(), (short) 1, false);
         } finally {
@@ -472,7 +538,7 @@ final class BotScrollManager {
             return 0.0;
         }
         double base = baseOffenseValue(bot, ii, itemId);
-        DoubleUnaryOperator vf = BotScrollValuer.reproductionValue(
+        DoubleUnaryOperator vf = cachedReproductionValue(
                 base, tuc, reproSpecs(pc, opts), cleanBaseCostMeso(pc, ii, itemId));
         // wornRivalValue 0 / not-dominated / no fallback: a fresh clean base valued on its own.
         BotScrollPlanner.EquipCandidate c = new BotScrollPlanner.EquipCandidate(
@@ -512,7 +578,7 @@ final class BotScrollManager {
             // how much this item is worth = cheapest expected meso to reproduce one this good. Built
             // from the item's clean-base score + total upgrade slots + the obtainable scroll set, with
             // a stubbed clean-base cost. This is what makes the DP snowball winners / abandon losers.
-            DoubleUnaryOperator valueFn = BotScrollValuer.reproductionValue(
+            DoubleUnaryOperator valueFn = cachedReproductionValue(
                     baseOffenseValue(bot, ii, eq.getItemId()), totalSlots(ii, eq.getItemId()),
                     reproSpecs(pc, options), cleanBaseCostMeso(pc, ii, eq.getItemId()));
             // Self-combat floor: value of the item the bot WEARS in this slot (no decay). For a worn
@@ -709,7 +775,7 @@ final class BotScrollManager {
 
     /** Reproduction value of an equip at its current offense score, using its own value curve. */
     private static double reproValueNow(ProducerCombat pc, Character bot, ItemInformationProvider ii, Equip eq) {
-        DoubleUnaryOperator vf = BotScrollValuer.reproductionValue(
+        DoubleUnaryOperator vf = cachedReproductionValue(
                 baseOffenseValue(bot, ii, eq.getItemId()), totalSlots(ii, eq.getItemId()),
                 reproSpecs(pc, buildOptions(pc, bot, ii, eq)), cleanBaseCostMeso(pc, ii, eq.getItemId()));
         return vf.applyAsDouble(offenseValue(bot, eq));
@@ -947,7 +1013,7 @@ final class BotScrollManager {
             // already handles the CURSE outcome: item removed + unequipped).
             options.add(new BotScrollPlanner.ScrollOption(sid, scrollName(ii, sid),
                     effectiveSuccessPct(success) / 100.0,
-                    cursed / 100.0, gain, SCROLL_OPPORTUNITY_FRACTION * scrollPriceMeso(pc, sid)));
+                    cursed / 100.0, gain, applyCostMeso(pc, sid)));
         }
         return options;
     }
@@ -957,7 +1023,9 @@ final class BotScrollManager {
         if (reqs != null && !reqs.isEmpty()) {
             return reqs.contains(equipId);
         }
-        return (scrollId / 100) % 100 == (equipId / 10000) % 100;
+        // Shared category rule (incl. the 20492xx accessory-scroll special case) — bots use the same
+        // applicability check ScrollHandler enforces for players.
+        return ItemConstants.canScroll(scrollId, equipId);
     }
 
     private static Item findScroll(Character bot, int itemId) {
@@ -971,34 +1039,41 @@ final class BotScrollManager {
 
     // ---- Transparent job-weighted offense value (v1 stand-in for the equip optimizer) ----
 
+    /** The one offense weighting shared by the bot's own keep/upgrade decisions AND market pricing:
+     *  the class camp's attack stat (matk for mages else watk) + main·{@link #MAIN_STAT_WEIGHT} +
+     *  secondary·{@link #SECONDARY_STAT_WEIGHT}. The role ([main, secondary], mage flag) is the only
+     *  input that differs — the bot's job for self-valuation, the item's implied job for the market. */
+    private static double offenseCore(boolean mage, int watk, int matk, int mainStat, int secondaryStat) {
+        return (mage ? MATK_WEIGHT * matk : ATT_WEIGHT * watk)
+                + MAIN_STAT_WEIGHT * mainStat
+                + SECONDARY_STAT_WEIGHT * secondaryStat;
+    }
+
     static double offenseValue(Character bot, Equip eq) {
         boolean[] mage = new boolean[1];
         char[] ms = mainSecondary(jobId(bot), mage);
-        double att = mage[0] ? MATK_WEIGHT * eq.getMatk() : ATT_WEIGHT * eq.getWatk();
-        return att
-                + MAIN_STAT_WEIGHT * statOfEquip(eq, ms[0])
-                + SECONDARY_STAT_WEIGHT * statOfEquip(eq, ms[1]);
+        return offenseCore(mage[0], eq.getWatk(), eq.getMatk(),
+                statOfEquip(eq, ms[0]), statOfEquip(eq, ms[1]));
     }
 
     static double offenseValueFromStats(Character bot, Map<String, Integer> st) {
         boolean[] mage = new boolean[1];
         char[] ms = mainSecondary(jobId(bot), mage);
-        double att = mage[0] ? MATK_WEIGHT * st.getOrDefault("MAD", 0)
-                : ATT_WEIGHT * st.getOrDefault("PAD", 0);
-        return att
-                + MAIN_STAT_WEIGHT * st.getOrDefault(statKey(ms[0]), 0)
-                + SECONDARY_STAT_WEIGHT * st.getOrDefault(statKey(ms[1]), 0);
+        return offenseCore(mage[0], st.getOrDefault("PAD", 0), st.getOrDefault("MAD", 0),
+                st.getOrDefault(statKey(ms[0]), 0), st.getOrDefault(statKey(ms[1]), 0));
     }
 
-    /** Job-agnostic best-buyer worth of the stats a scroll grants, for market/trade pricing: attack at
-     *  ATT_WEIGHT, magic attack at MATK_WEIGHT, every base stat at its main weight (so an INT scroll keeps
-     *  a mage's value even when a warrior bot holds it), plus the small survival terms. SSOT weights, no
-     *  job lookup — the counterpart to {@link #offenseValueFromStats} for a tradeable economy. */
+    /** Job-agnostic best-buyer worth of the stats a scroll grants, for market/trade pricing: the offense
+     *  is the BEST-USE worth across every class camp ({@link #bestRoleWorth}) — a multi-stat scroll is
+     *  priced at the single class that gains most from it, never the sum of all four mains (e.g. Dragon
+     *  Stone's +15 all stats scores ~19.5 at its best buyer, not 60). Single-stat scrolls are unchanged
+     *  (sum == max). Plus the small survival terms. SSOT weights, no bot lookup — the counterpart to
+     *  {@link #offenseValueFromStats} for a tradeable economy. */
     static double marketStatValue(Map<String, Integer> st) {
-        double offense = ATT_WEIGHT * st.getOrDefault("PAD", 0)
-                + MATK_WEIGHT * st.getOrDefault("MAD", 0)
-                + MAIN_STAT_WEIGHT * (st.getOrDefault("STR", 0) + st.getOrDefault("DEX", 0)
-                        + st.getOrDefault("INT", 0) + st.getOrDefault("LUK", 0));
+        double offense = bestRoleWorth(
+                st.getOrDefault("PAD", 0), st.getOrDefault("MAD", 0),
+                st.getOrDefault("STR", 0), st.getOrDefault("DEX", 0),
+                st.getOrDefault("INT", 0), st.getOrDefault("LUK", 0));
         return offense + survivalValueFromStats(st);
     }
 
@@ -1038,9 +1113,13 @@ final class BotScrollManager {
      *  slot count alone. */
     static final double SCROLL_HEADROOM_FRACTION = 0.5;
 
-    /** Usable catalog scrolls per equip category ((equipId/10000)%100), filtered by the same
-     *  rules {@link #buildOptions} applies to owned scrolls: no meta scrolls (clean slate /
-     *  modifier / white), no boom risk, positive success. Built once from the item catalog. */
+    /** Usable, OBTAINABLE catalog scrolls per equip category ((equipId/10000)%100), filtered by the
+     *  same rules {@link #buildOptions} applies to owned scrolls: no meta scrolls (clean slate /
+     *  modifier / white), no boom risk, positive success. Additionally obtainable-only — a scroll with
+     *  no legit shop row and no dropper is skipped, so an unbuyable/undroppable scroll (e.g. Dragon
+     *  Stone) never prices market reproduction curves at the fake {@link #DEFAULT_SCROLL_COST_MESO}
+     *  default and flattens a slot's band curve. Owned-scroll play ({@link #buildOptions}) is
+     *  unaffected: it scans the bag directly, not this index. Built once from the item catalog. */
     private static volatile Map<Integer, List<Integer>> scrollsByCategory;
 
     /** Boot warm hook (BotGrindAdvisor.warmGrindData): build the catalog-scroll index off-thread.
@@ -1069,6 +1148,11 @@ final class BotScrollManager {
             if (st == null || st.getOrDefault("success", 0) <= 0 || st.getOrDefault("cursed", 0) > 0) {
                 continue;
             }
+            // Obtainable-only: a scroll no shop legitimately sells and no mob drops can't set a real
+            // reproduction cost, so it must not seed the market curves (see field javadoc).
+            if (shopPrices().get(sid) == null && bestDropChance(sid) <= 0) {
+                continue;
+            }
             List<Integer> reqs = ii.getScrollReqs(sid);
             if (reqs != null && !reqs.isEmpty()) {
                 Set<Integer> cats = new HashSet<>();
@@ -1077,6 +1161,13 @@ final class BotScrollManager {
                 }
                 for (int cat : cats) {
                     m.computeIfAbsent(cat, k -> new ArrayList<>()).add(sid);
+                }
+            } else if (sid / 100 == 20492) {
+                // Generic accessory scrolls (no req list) apply to ring/pendant/belt — bucket into all
+                // three, derived from the same accessory-scroll ids ItemConstants.canScroll dispatches to.
+                for (int accScroll : new int[]{ItemId.RING_STR_100_SCROLL, ItemId.DRAGON_STONE_SCROLL,
+                        ItemId.BELT_STR_100_SCROLL}) {
+                    m.computeIfAbsent((accScroll / 100) % 100, k -> new ArrayList<>()).add(sid);
                 }
             } else {
                 m.computeIfAbsent((sid / 100) % 100, k -> new ArrayList<>()).add(sid);
@@ -1177,6 +1268,48 @@ final class BotScrollManager {
                     op.successRate(), op.statGain(), scrollPriceMeso(pc, op.scrollItemId())));
         }
         return specs;
+    }
+
+    private record ReproSpecKey(long successRateBits, long statGainBits, long mesoCostBits) {}
+
+    private record ReproCurveKey(long baseScoreBits, int tuc, long cleanCostBits, List<ReproSpecKey> specs) {}
+
+    private static DoubleUnaryOperator cachedReproductionValue(double baseScore, int tuc,
+            List<BotScrollValuer.ScrollSpec> scrolls, double baseCostMeso) {
+        if (tuc <= 0 || scrolls == null || scrolls.isEmpty()) {
+            return BotScrollValuer.reproductionValue(baseScore, tuc, scrolls, baseCostMeso);
+        }
+        List<BotScrollValuer.ScrollSpec> normalized = new ArrayList<>(scrolls.size());
+        List<ReproSpecKey> specs = new ArrayList<>(scrolls.size());
+        for (BotScrollValuer.ScrollSpec sc : scrolls) {
+            if (sc == null) {
+                continue;
+            }
+            normalized.add(sc);
+            specs.add(new ReproSpecKey(
+                    Double.doubleToLongBits(sc.successRate()),
+                    Double.doubleToLongBits(sc.statGain()),
+                    Double.doubleToLongBits(sc.mesoCost())));
+        }
+        if (specs.isEmpty()) {
+            return BotScrollValuer.reproductionValue(baseScore, tuc, scrolls, baseCostMeso);
+        }
+        ReproCurveKey key = new ReproCurveKey(
+                Double.doubleToLongBits(baseScore),
+                tuc,
+                Double.doubleToLongBits(Math.max(0.0, baseCostMeso)),
+                List.copyOf(specs));
+        if (reproCurveCache.size() > REPRO_CURVE_CACHE_MAX) {
+            reproCurveCache.clear();
+        }
+        return reproCurveCache.computeIfAbsent(key, ignored -> {
+            long t0 = BotPerformanceMonitor.start();
+            try {
+                return BotScrollValuer.reproductionValue(baseScore, tuc, List.copyOf(normalized), baseCostMeso);
+            } finally {
+                BotPerformanceMonitor.recordSince("scroll-curve-build", t0);
+            }
+        });
     }
 
     /** A boom is survivable when ANOTHER usable equip exists for the same slot (worn or bagged) —
@@ -1331,21 +1464,46 @@ final class BotScrollManager {
         return m;
     }
 
-    /** Meso price of a scroll = MIN over sources: cheapest NPC-shop price, else its drop-farm cost
-     *  (rarity→meso). Falls back to a flat default only when it is neither shop-sold nor dropped. */
+    /** Meso price of a scroll, blending the live market consensus so scroll USE-cost tracks the tape
+     *  (a glut lowers apply-cost → usage rises; scarcity raises it). Chaos/White: max(10M cold-market
+     *  floor, consensus). Shop-sold: min(NPC shop price, consensus) when there IS a consensus — the
+     *  NPC's infinite supply caps the price, but a glut trading below shop passes through; else the
+     *  shop price. Not shop-sold: the consensus when there is one, else the drop-farm cost (rarity→meso),
+     *  else a flat default. {@link BotMarketConsensus#consensus} returns 0 with no evidence — safe to
+     *  branch on. */
     private static double scrollPriceMeso(ProducerCombat pc, int scrollId) {
-        // ponytail: hardcoded floor until the value model prices these properly. Chaos/White scrolls
-        // are high-demand trade goods the shop/farm heuristic values far too low, so bots dumped them
-        // for buffer early. Flat 10M keep-floor; drop this once scrollMarketValueMeso estimates them.
+        double consensus = BotMarketConsensus.getInstance().consensus(BotMarketMath.priceKey(scrollId, 0));
+        // Chaos/White now have real consumption (chaos gambles, white protection), so the live
+        // market consensus prices them; the old 10M stopgap survives only as a cold-market floor
+        // until the tape has clearings.
         if (ItemConstants.isChaosScroll(scrollId) || scrollId == ItemId.WHITE_SCROLL) {
-            return 10_000_000;
+            return Math.max(10_000_000.0, consensus);
         }
         Integer price = shopPrices().get(scrollId);
         if (price != null) {
-            return price;
+            return consensus > 0 ? Math.min(price, consensus) : price;
+        }
+        if (consensus > 0) {
+            return consensus;
         }
         double farm = farmingCostMeso(pc, scrollId);
         return Double.isFinite(farm) ? farm : DEFAULT_SCROLL_COST_MESO;
+    }
+
+    /** Per-apply opportunity cost of USING one scroll: {@link #SCROLL_OPPORTUNITY_FRACTION} of its
+     *  market price, EXCEPT a tradeBlocked scroll (e.g. Dragon Stone, [4yrAnniv]) forgoes no sale —
+     *  it can't be sold/listed/traded — so consuming one costs no opportunity. The reproduction/value
+     *  curves keep the FULL price (remaking one still costs effort); only this action cost is zeroed.
+     *  {@code isDropRestricted} is guarded for WZ-less unit tests (treat as tradeable on failure). */
+    private static double applyCostMeso(ProducerCombat pc, int sid) {
+        try {
+            if (ItemInformationProvider.getInstance().isDropRestricted(sid)) {
+                return 0.0;
+            }
+        } catch (RuntimeException e) {
+            // WZ unavailable (tests) — treat as tradeable, keep the normal opportunity cost.
+        }
+        return SCROLL_OPPORTUNITY_FRACTION * scrollPriceMeso(pc, sid);
     }
 
     /** USE-bag shelf valuation hook: kept scrolls should be protected by the same market/farm value
@@ -1356,10 +1514,15 @@ final class BotScrollManager {
     }
 
     /** Combat-demand ceiling for an equip scroll, in meso: the most a best-buyer pays for the combat
-     *  value it injects = {@link #SCROLL_CEILING_PER_EV} × successRate × {@link #marketStatValue}. The
-     *  USE-shelf keeper caps a scroll's worth at min(obtainCost, this) — a flooded/shop-cheap scroll
-     *  stays at its obtain cost, an overpriced-but-weak one is pulled down to its real combat value.
-     *  Returns 0 for stat-less scrolls (clean slate, chaos, enhancement) so they keep obtain-cost worth. */
+     *  value it injects = {@link #SCROLL_CEILING_PER_EV} × successRate × {@link #marketStatValue},
+     *  scaled by the target slot's {@link #slotDurabilityFactor} — the same +2 ATT is worth far more
+     *  on a glove (stays best-in-slot near-forever) than on a soon-outgrown weapon. The USE-shelf
+     *  keeper caps a scroll's worth at min(obtainCost, this) — a flooded/shop-cheap scroll stays at
+     *  its obtain cost, an overpriced-but-weak one is pulled down to its real combat value. Because
+     *  the planner's per-apply cost is a fraction of this price, the durability premium also makes
+     *  bots proportionally more reluctant to burn flat-slot scrolls on marginal gains — behavior and
+     *  price calibrate together. Returns 0 for stat-less scrolls (clean slate, chaos, enhancement)
+     *  so they keep obtain-cost worth. */
     static double scrollCombatCeilingMeso(int scrollId) {
         Map<String, Integer> st = ItemInformationProvider.getInstance().getEquipStats(scrollId);
         if (st == null) {
@@ -1368,7 +1531,111 @@ final class BotScrollManager {
         int success = st.getOrDefault("success", 0);
         double statWorth = marketStatValue(st);
         return success <= 0 || statWorth <= 0 ? 0.0
-                : SCROLL_CEILING_PER_EV * (success / 100.0) * statWorth;
+                : SCROLL_CEILING_PER_EV * (success / 100.0) * statWorth
+                        * slotDurabilityFactor(scrollId / 100 % 100);
+    }
+
+    /** Levels of onward progression a scroll investment is judged against when asking how fast a
+     *  slot outgrows its gear — a data-shape constant for the durability curve, not a price knob. */
+    private static final double REPLACEMENT_HORIZON_LEVELS = 30.0;
+    /** Worth (in {@link #marketStatValue} units) of a canonical completed scroll job — five
+     *  successful +2 ATT applies. The yardstick a slot's base-stat growth is measured against:
+     *  the investment dies when levelling has out-grown roughly this much added worth. */
+    private static final double SCROLL_JOB_WORTH = 5 * 2 * ATT_WEIGHT;
+    /** Category needs at least this many stat-bearing equips for a trustworthy growth fit. */
+    private static final int DURABILITY_MIN_SAMPLES = 8;
+    private static volatile Map<Integer, Double> slotDurability;
+
+    /**
+     * Investment durability of scrolling equip category {@code cat} (the {@code (id/10000)%100}
+     * slot code shared by {@link #applicable}): how long a scrolled piece stays best-in-slot,
+     * derived from the WZ equip catalog. Within each category we fit the growth of base
+     * {@link #marketStatValue} per required level: weapons grow steeply (a scrolled level-40
+     * sword is landfill twenty levels later — short investment life), gloves/shoes/capes are
+     * nearly flat (a well-scrolled glove serves forever). Normalized so the WEAPON-category
+     * average is 1.0: {@link #SCROLL_CEILING_PER_EV} keeps its live-market Attack-60% anchor and
+     * flat-slot scrolls scale UP relative to it — matching the real economy, where armor-ATT
+     * scrolls trade far above same-tier weapon scrolls. 1.0 for unknown/sparse categories and on
+     * WZ-less test runs (getAllItems empty), so nothing shifts without data.
+     */
+    static double slotDurabilityFactor(int equipCategory) {
+        Map<Integer, Double> cached = slotDurability;
+        if (cached == null) {
+            cached = buildSlotDurability();
+            slotDurability = cached;
+        }
+        return cached.getOrDefault(equipCategory, 1.0);
+    }
+
+    private static Map<Integer, Double> buildSlotDurability() {
+        ItemInformationProvider ii = ItemInformationProvider.getInstance();
+        Map<Integer, List<double[]>> samples = new HashMap<>();
+        try {
+            for (Pair<Integer, String> item : ii.getAllItems()) {
+                int id = item.getLeft();
+                if (id < 1000000 || id >= 2000000) {
+                    continue;
+                }
+                Map<String, Integer> st = ii.getEquipStats(id);
+                if (st == null) {
+                    continue;
+                }
+                double worth = marketStatValue(st);
+                if (worth <= 0) {
+                    continue;
+                }
+                samples.computeIfAbsent(id / 10000 % 100, k -> new ArrayList<>())
+                        .add(new double[]{st.getOrDefault("reqLevel", 0), worth});
+            }
+        } catch (RuntimeException e) {
+            // WZ unavailable (tests): empty map -> every factor 1.0
+        }
+        Map<Integer, Double> raw = new HashMap<>();
+        double weaponSum = 0;
+        int weaponN = 0;
+        for (Map.Entry<Integer, List<double[]>> e : samples.entrySet()) {
+            List<double[]> pts = e.getValue();
+            if (pts.size() < DURABILITY_MIN_SAMPLES) {
+                continue;
+            }
+            double meanX = 0, meanY = 0;
+            for (double[] p : pts) {
+                meanX += p[0];
+                meanY += p[1];
+            }
+            meanX /= pts.size();
+            meanY /= pts.size();
+            double cov = 0, var = 0;
+            for (double[] p : pts) {
+                cov += (p[0] - meanX) * (p[1] - meanY);
+                var += (p[0] - meanX) * (p[0] - meanX);
+            }
+            double slope = var > 0 ? Math.max(0, cov / var) : 0; // absolute worth gain per level
+            // A scroll job is outgrown once the slot's base-stat growth overtakes the worth the
+            // scrolls added. ABSOLUTE slope vs a fixed payload — NOT slope/meanY: gloves' tiny
+            // base worth made their negligible drift look like fast relative growth (0.79 factor
+            // when the real economy says ~2x weapons).
+            double durability = SCROLL_JOB_WORTH
+                    / (SCROLL_JOB_WORTH + slope * REPLACEMENT_HORIZON_LEVELS);
+            raw.put(e.getKey(), durability);
+            if (e.getKey() >= 30 && e.getKey() <= 49) {
+                weaponSum += durability;
+                weaponN++;
+            }
+        }
+        double weaponAvg = weaponN > 0 ? weaponSum / weaponN : 1.0;
+        Map<Integer, Double> out = new HashMap<>();
+        StringBuilder dbg = new StringBuilder();
+        for (Map.Entry<Integer, Double> e : raw.entrySet()) {
+            double factor = Math.clamp(e.getValue() / weaponAvg, 0.5, 4.0);
+            out.put(e.getKey(), factor);
+            dbg.append(e.getKey()).append('=').append(String.format(Locale.US, "%.2f", factor)).append(' ');
+        }
+        if (!out.isEmpty()) {
+            org.slf4j.LoggerFactory.getLogger(BotScrollManager.class)
+                    .info("scroll slot-durability factors (weapon avg = 1.0): {}", dbg.toString().trim());
+        }
+        return out;
     }
 
     /** Market (acquisition) value of any shop-bought item — the cheapest legitimate NPC buy price.
@@ -1377,6 +1644,402 @@ final class BotScrollManager {
     static int marketBuyPriceMeso(int itemId) {
         Integer buy = shopPrices().get(itemId);
         return buy == null ? 0 : buy;
+    }
+
+    // ---- equip market quote (S4): band + reproduction-curve price for one rolled piece ---------
+
+    /** Secondhand discount on scrolled pieces (SoloMapling parity): a buyer pays at most 60% of
+     *  what reproducing the piece would cost — below that, crafting your own dominates. The CLEAN
+     *  band is never discounted; a clean base is fully fungible with a shop/drop copy. */
+    static final double SECONDHAND_DISCOUNT = 0.6;
+
+    /** Representative job for a weapon type so market pricing reuses the {@link #mainSecondary} role
+     *  SSOT — a staff prices as a magician's, a bow as a bowman's, etc. */
+    private static int weaponRoleJob(WeaponType wt) {
+        return switch (wt) {
+            case WAND, STAFF -> 200;         // magician:   INT / LUK
+            case BOW, CROSSBOW -> 300;       // bowman:     DEX / STR
+            case CLAW, DAGGER_OTHER -> 400;  // thief:      LUK / DEX
+            case KNUCKLE -> 510;             // brawler:    STR / DEX
+            case GUN -> 520;                 // gunslinger: DEX / STR
+            default -> 100;                  // warrior:    STR / DEX
+        };
+    }
+
+    private static int statByCode(char code, int str, int dex, int intel, int luk) {
+        return switch (code) {
+            case 's' -> str;
+            case 'd' -> dex;
+            case 'i' -> intel;
+            case 'l' -> luk;
+            default -> 0;
+        };
+    }
+
+    /** The four distinct class camps a wearable item could belong to (representative jobs feeding
+     *  {@link #mainSecondary}): warrior STR/DEX, mage INT/LUK, bowman DEX/STR, thief LUK/DEX
+     *  (gunslinger/brawler collapse onto bowman/warrior stat-wise). */
+    private static final int[] MARKET_ROLE_JOBS = {100, 200, 300, 400};
+
+    /** Best-use offense worth of raw stats across every class that could wear the item — the market
+     *  values a multi-job piece at the class it serves best, never a blend. E.g. +10STR/+12DEX/+10INT/
+     *  +10LUK scores as a bowman (12·1 + 10·0.3); +1watk/+4matk scores as a physical job (1·5 > 4·1),
+     *  since a warrior would wear it over a mage. */
+    static double bestRoleWorth(int watk, int matk, int str, int dex, int intel, int luk) {
+        double best = 0;
+        for (int job : MARKET_ROLE_JOBS) {
+            boolean[] mage = new boolean[1];
+            char[] ms = mainSecondary(job, mage);
+            best = Math.max(best, offenseCore(mage[0], watk, matk,
+                    statByCode(ms[0], str, dex, intel, luk),
+                    statByCode(ms[1], str, dex, intel, luk)));
+        }
+        return best;
+    }
+
+    /** Market worth of an equip's stats via the SAME {@link #offenseCore} + {@link #mainSecondary}
+     *  role table the bot uses for itself — only the role source differs. A WEAPON is camp-locked, so
+     *  it is scored for the class its type implies (a staff by matk + INT + LUK·secondary, a sword by
+     *  watk + STR + DEX). Armor/accessory is worn by every class, so it takes the best-use MAX over
+     *  all class camps ({@link #bestRoleWorth}). Either way survival is added on top. This is why a
+     *  piece is never priced up by a stat its actual buyers can't use. */
+    private static double equipMarketWorth(int itemId, int watk, int matk,
+            int str, int dex, int intel, int luk, double survival) {
+        WeaponType wt = ItemInformationProvider.getInstance().getWeaponType(itemId);
+        if (wt == WeaponType.NOT_A_WEAPON) {
+            return bestRoleWorth(watk, matk, str, dex, intel, luk) + survival;
+        }
+        boolean[] mage = new boolean[1];
+        char[] ms = mainSecondary(weaponRoleJob(wt), mage);
+        return offenseCore(mage[0], watk, matk,
+                statByCode(ms[0], str, dex, intel, luk),
+                statByCode(ms[1], str, dex, intel, luk)) + survival;
+    }
+
+    /** Market worth of an equip's ACTUAL rolled stats — the {@link Equip}-getter counterpart to
+     *  {@link #marketStatValue}, for pricing a specific rolled piece (see {@link #equipMarketWorth}). */
+    static double marketStatValueOf(Equip eq) {
+        return equipMarketWorth(eq.getItemId(), eq.getWatk(), eq.getMatk(),
+                eq.getStr(), eq.getDex(), eq.getInt(), eq.getLuk(), survivalValue(eq));
+    }
+
+    /** Same worth as {@link #marketStatValueOf} for an equip's CLEAN catalog stats — used as the band
+     *  baseline so the surplus (rolled − clean) is measured on the same weapon-aware axis. */
+    static double marketStatValueOfClean(int itemId, Map<String, Integer> st) {
+        return equipMarketWorth(itemId,
+                st.getOrDefault("PAD", 0), st.getOrDefault("MAD", 0),
+                st.getOrDefault("STR", 0), st.getOrDefault("DEX", 0),
+                st.getOrDefault("INT", 0), st.getOrDefault("LUK", 0),
+                survivalValueFromStats(st));
+    }
+
+    /**
+     * Market quote for one rolled equip. {@code band} is the shared price-key quality dimension
+     * ({@link BotMarketMath#priceKey}): how many common-scroll-successes the piece sits above its
+     * clean base — provenance-blind on purpose, a godly clean roll prices like a scrolled one.
+     * {@code bandCurve} maps any band to meso along the reproduction-cost curve
+     * ({@link BotScrollValuer#reproductionValue} over the catalog-wide scroll set at full market
+     * prices), discounted {@link #SECONDHAND_DISCOUNT} above clean; hand it to
+     * {@link BotMarketMath#curveCalibration} with the item's traded bands to pin the whole line to
+     * live evidence. {@code curveQuoteMeso} is the curve read at this piece's own band. v1 ignores
+     * consumed upgrade slots (bands don't encode them). Null when WZ knows no clean stats.
+     */
+    record EquipQuote(int itemId, int band, long curveQuoteMeso,
+                      java.util.function.DoubleUnaryOperator bandCurve,
+                      double baseScore, double bandUnit) {}
+
+    static EquipQuote equipMarketQuote(BotEntry entry, Character bot, Equip eq) {
+        ItemInformationProvider ii = ItemInformationProvider.getInstance();
+        Map<String, Integer> clean = ii.getEquipStats(eq.getItemId());
+        if (clean == null) {
+            return null;
+        }
+        ProducerCombat pc = resolveProducerCombat(entry, bot);
+        double baseScore = marketStatValueOfClean(eq.getItemId(), clean);
+        int tuc = clean.getOrDefault("tuc", 0);
+        double[] gains = catalogGains(ii, eq.getItemId());
+        double unit = bandUnit(gains);
+        int maxBand = maxBand(gains, unit, tuc);
+        int band = equipQualityBand(ii, eq);
+        double cleanCost = cleanBaseCostMeso(pc, ii, eq.getItemId());
+        java.util.function.DoubleUnaryOperator vf = cachedReproductionValue(
+                baseScore, tuc, marketReproSpecs(pc, ii, eq.getItemId()), cleanCost);
+        java.util.function.DoubleUnaryOperator bandCurve = b -> {
+            if (b <= 0 || unit <= 0) {
+                return cleanCost;
+            }
+            // Cap at the slot budget's reachable ceiling: past it the restart DP never terminates
+            // in success and its estimate is meaningless (a wild clean roll prices AT the ceiling).
+            return SECONDHAND_DISCOUNT * vf.applyAsDouble(baseScore + Math.min(b, maxBand) * unit);
+        };
+        return new EquipQuote(eq.getItemId(), band, Math.round(bandCurve.applyAsDouble(band)),
+                bandCurve, baseScore, unit);
+    }
+
+    /** What a best-buyer bot pays for a rolled stall equip: its combat upgrade gain over the
+     *  bot's worn piece (potentialValue diff; 0 when unwearable or no upgrade) at the same
+     *  meso-per-EV anchor scroll demand uses ({@link #SCROLL_CEILING_PER_EV}), scaled by the
+     *  slot's investment durability — a glove upgrade outlives a weapon upgrade for buyers
+     *  exactly as it does for scrollers. */
+    static long equipBuyCeilingMeso(Character bot, Equip candidate) {
+        ItemInformationProvider ii = ItemInformationProvider.getInstance();
+        Short slot = primarySlot(ii, candidate.getItemId());
+        if (slot == null || !ii.canWearEquipment(bot, candidate, slot)) {
+            return 0;
+        }
+        Equip worn = wornInSlot(bot, ii, slot);
+        double gain = potentialValue(bot, ii, candidate)
+                - (worn == null ? 0.0 : potentialValue(bot, ii, worn));
+        if (gain <= 0) {
+            return 0;
+        }
+        return Math.round(SCROLL_CEILING_PER_EV * gain
+                * slotDurabilityFactor(candidate.getItemId() / 10000 % 100));
+    }
+
+    /** Quality band of a rolled equip — the price-key dimension both sides of a trade must agree
+     *  on, so it is deterministic from the WZ catalog alone (no producer/price context): the
+     *  piece's job-neutral stat surplus over its clean base, in units of the slot's median
+     *  catalog-scroll gain, capped at the slot budget's reachable ceiling. 0 for clean/unknown. */
+    static int equipQualityBand(ItemInformationProvider ii, Equip eq) {
+        Map<String, Integer> clean = ii.getEquipStats(eq.getItemId());
+        if (clean == null) {
+            return 0;
+        }
+        double[] gains = catalogGains(ii, eq.getItemId());
+        double unit = bandUnit(gains);
+        int band = BotMarketMath.qualityBand(marketStatValueOf(eq) - marketStatValueOfClean(eq.getItemId(), clean), unit);
+        return Math.min(band, maxBand(gains, unit, clean.getOrDefault("tuc", 0)));
+    }
+
+    /** Catalog-wide reproduction specs for {@code equipId}: the slot's obtainable stat scrolls
+     *  ({@link #scrollsByCategory} — meta/boom/zero-success already excluded), gain valued
+     *  job-neutrally at FULL market price. The market counterpart to {@link #reproSpecs},
+     *  which only sees owned scrolls. */
+    private static List<BotScrollValuer.ScrollSpec> marketReproSpecs(ProducerCombat pc,
+            ItemInformationProvider ii, int equipId) {
+        List<BotScrollValuer.ScrollSpec> specs = new ArrayList<>();
+        for (int sid : scrollsByCategory(ii).getOrDefault((equipId / 10000) % 100, List.of())) {
+            if (!applicable(ii, sid, equipId)) {
+                continue;
+            }
+            Map<String, Integer> st = ii.getEquipStats(sid);
+            double gain = st == null ? 0.0 : marketStatValue(st);
+            if (gain > 0) {
+                specs.add(new BotScrollValuer.ScrollSpec(
+                        effectiveSuccessPct(st.getOrDefault("success", 0)) / 100.0,
+                        gain, scrollPriceMeso(pc, sid)));
+            }
+        }
+        return specs;
+    }
+
+    /** Sorted positive job-neutral gains of the slot's applicable catalog scrolls. */
+    private static double[] catalogGains(ItemInformationProvider ii, int equipId) {
+        List<Double> gains = new ArrayList<>();
+        for (int sid : scrollsByCategory(ii).getOrDefault((equipId / 10000) % 100, List.of())) {
+            if (!applicable(ii, sid, equipId)) {
+                continue;
+            }
+            Map<String, Integer> st = ii.getEquipStats(sid);
+            double gain = st == null ? 0.0 : marketStatValue(st);
+            if (gain > 0) {
+                gains.add(gain);
+            }
+        }
+        double[] out = new double[gains.size()];
+        for (int i = 0; i < out.length; i++) {
+            out[i] = gains.get(i);
+        }
+        java.util.Arrays.sort(out);
+        return out;
+    }
+
+    /** The band unit — "one average scroll success" — as the median catalog-scroll gain. */
+    private static double bandUnit(double[] sortedGains) {
+        return sortedGains.length == 0 ? 0.0 : sortedGains[sortedGains.length / 2];
+    }
+
+    private static int maxBand(double[] sortedGains, double unit, int tuc) {
+        return unit <= 0 || sortedGains.length == 0 ? 0
+                : (int) Math.floor(tuc * sortedGains[sortedGains.length - 1] / unit);
+    }
+
+    // ---- chaos & white scroll consumption (S4, owner-specced) ----------------------------------
+
+    /** A piece must sit at least this many bands above clean before a chaos gamble is considered —
+     *  the convexity that makes the reroll EV-positive only exists on an already-scrolled piece. */
+    private static final int CHAOS_MIN_BAND = 2;
+
+    record ChaosPlay(Equip target, Item scroll, double evMeso, String targetName) {}
+
+    /**
+     * Best chaos gamble across the bot's owned chaos scrolls × scrollable pieces, or null. The
+     * reroll walks every positive stat ±range symmetrically, but the piece's market value curve
+     * is CONVEX in stat score — so on a well-scrolled piece the expected post-reroll VALUE beats
+     * the current value (upside bands are worth more than downside bands lose). EV is judged in
+     * meso against the chaos scroll's own market cost, with a deterministic per-bot gambler
+     * appetite: a gambler plays slightly negative EV for the thrill, a cautious bot wants edge.
+     */
+    static ChaosPlay bestChaosPlay(BotEntry entry, Character bot) {
+        ItemInformationProvider ii = ItemInformationProvider.getInstance();
+        Item chaos = null;
+        for (Item s : bot.getInventory(InventoryType.USE).list()) {
+            if (ItemConstants.isChaosScroll(s.getItemId()) && s.getQuantity() > 0) {
+                chaos = s;
+                break;
+            }
+        }
+        if (chaos == null) {
+            return null;
+        }
+        Map<String, Integer> st = ii.getEquipStats(chaos.getItemId());
+        double p = effectiveSuccessPct(st == null ? 60 : st.getOrDefault("success", 60)) / 100.0;
+        ProducerCombat pc = resolveProducerCombat(entry, bot);
+        double cost = applyCostMeso(pc, chaos.getItemId());
+        int range = YamlConfig.config.server.CHSCROLL_STAT_RANGE;
+        double appetite = (bot.getId() * 2654435761L >>> 24 & 0xFF) / 255.0;
+        double required = cost * (0.3 - 0.6 * appetite);
+        ChaosPlay best = null;
+        for (Equip eq : collectEquips(bot, ii)) {
+            if (eq.getUpgradeSlots() < 1) {
+                continue; // server quirk: a chaos apply still needs (and consumes) a slot
+            }
+            EquipQuote q = equipMarketQuote(entry, bot, eq);
+            if (q == null || q.band() < CHAOS_MIN_BAND || q.bandUnit() <= 0) {
+                continue;
+            }
+            double vNow = q.bandCurve().applyAsDouble(q.band());
+            double ev = p * (chaosOutcomeMeanValue(eq, q, range) - vNow) - cost;
+            if (ev > required && (best == null || ev > best.evMeso())) {
+                best = new ChaosPlay(eq, chaos, ev, equipName(ii, eq.getItemId()));
+            }
+        }
+        return best;
+    }
+
+    /** Mean post-chaos market value of {@code eq}: exact expectation over the server's actual reroll
+     *  semantics (every positive stat moves uniform +/-range, floored at 0), read off the piece's own
+     *  convex band curve. This deliberately keeps rare high-ATT tails visible instead of relying on
+     *  random samples to hit them. */
+    static double chaosOutcomeMeanValue(Equip eq, EquipQuote q, int range) {
+        Map<Long, Double> dist = new HashMap<>();
+        dist.put(0L, 1.0);
+        dist = convolveChaosStat(dist, eq.getWatk(), ATT_WEIGHT, range);
+        dist = convolveChaosStat(dist, eq.getMatk(), MATK_WEIGHT, range);
+        dist = convolveChaosStat(dist, eq.getStr(), MAIN_STAT_WEIGHT, range);
+        dist = convolveChaosStat(dist, eq.getDex(), MAIN_STAT_WEIGHT, range);
+        dist = convolveChaosStat(dist, eq.getInt(), MAIN_STAT_WEIGHT, range);
+        dist = convolveChaosStat(dist, eq.getLuk(), MAIN_STAT_WEIGHT, range);
+        dist = convolveChaosStat(dist, eq.getWdef(), WDEF_WEIGHT, range);
+        dist = convolveChaosStat(dist, eq.getMdef(), MDEF_WEIGHT, range);
+        dist = convolveChaosStat(dist, eq.getHp(), HP_WEIGHT, range);
+        dist = convolveChaosStat(dist, eq.getMp(), MP_WEIGHT, range);
+        dist = convolveChaosStat(dist, eq.getAvoid(), AVOID_WEIGHT, range);
+        dist = convolveChaosStat(dist, eq.getSpeed(), MOVE_WEIGHT, range);
+        dist = convolveChaosStat(dist, eq.getJump(), MOVE_WEIGHT, range);
+
+        double sum = 0.0;
+        for (Map.Entry<Long, Double> outcome : dist.entrySet()) {
+            double score = outcome.getKey() / 1000.0;
+            double band = Math.max(0.0, (score - q.baseScore()) / q.bandUnit());
+            sum += outcome.getValue() * q.bandCurve().applyAsDouble(band);
+        }
+        return sum;
+    }
+
+    private static Map<Long, Double> convolveChaosStat(Map<Long, Double> dist, short cur, double weight, int range) {
+        if (cur <= 0 || weight <= 0.0) {
+            return dist;
+        }
+        if (range <= 0) {
+            long score = Math.round(weight * cur * 1000.0);
+            Map<Long, Double> next = new HashMap<>(dist.size());
+            for (Map.Entry<Long, Double> base : dist.entrySet()) {
+                next.merge(base.getKey() + score, base.getValue(), Double::sum);
+            }
+            return next;
+        }
+        int outcomes = 2 * range + 1;
+        double p = 1.0 / outcomes;
+        Map<Long, Double> next = new HashMap<>(dist.size() * Math.min(outcomes, 8));
+        for (Map.Entry<Long, Double> base : dist.entrySet()) {
+            for (int delta = -range; delta <= range; delta++) {
+                long score = Math.round(weight * Math.max(0, cur + delta) * 1000.0);
+                next.merge(base.getKey() + score, base.getValue() * p, Double::sum);
+            }
+        }
+        return next;
+    }
+
+    /** No regular scroll play existed this scan: consider gambling a chaos reroll instead. The
+     *  scan is as heavy as a plan build (quotes + MC per piece), so it runs on the decide pool
+     *  and applies through the same pending/confirm flow as any scroll. */
+    private static void maybeChaosPlay(BotEntry entry, Character bot) {
+        if (entry == null || bot == null || !markChaosPlanQueued(entry)) {
+            return;
+        }
+        BotGrindAdvisor.DECIDE_POOL.execute(() -> {
+            ChaosPlay play;
+            long t0 = BotPerformanceMonitor.start();
+            try {
+                play = bestChaosPlay(entry, bot);
+            } catch (RuntimeException e) {
+                return; // WZ/inventory hiccup off-thread — next scan retries
+            } finally {
+                entry.chaosPlanQueued = false;
+                BotPerformanceMonitor.recordSince("chaos-scan", t0);
+            }
+            if (play == null) {
+                return;
+            }
+            BotManager.after(0, () -> {
+                if (!entry.selfScrollEnabled || entry.pendingAction != null
+                        || entry.pendingTradeCategory != null) {
+                    return;
+                }
+                entry.pendingScrollEquip = play.target();
+                entry.pendingScrollScroll = play.scroll();
+                String pitch = "feeling lucky - gonna chaos my " + play.targetName()
+                        + ", could go big or brick it";
+                if (entry.owner == bot) {
+                    BotManager.getInstance().botSay(bot, pitch);
+                    BotManager.after(BotManager.randMs(1500, 2500), () -> executeConfirmed(entry, bot));
+                } else {
+                    entry.pendingAction = "scroll_confirm";
+                    BotManager.getInstance().botReply(entry, pitch
+                            + String.format(" (ev ~%,.0f meso for me)", play.evMeso()));
+                }
+            });
+        });
+    }
+
+    /** White-scroll gate (owner-specced): protect an apply when failRate × the slot's option
+     *  value — the next success this slot could still deliver on the piece's own convex curve —
+     *  exceeds the White Scroll's market cost. On a nearly-done piece the marginal band is worth
+     *  a fortune, so the last slots protect themselves; early slots never do. */
+    static boolean shouldUseWhiteScroll(BotEntry entry, Character bot, Equip equip, Item scroll) {
+        int sid = scroll.getItemId();
+        if (ItemConstants.isCleanSlate(sid) || ItemConstants.isModifierScroll(sid)) {
+            return false; // nothing at stake
+        }
+        if (bot.getInventory(InventoryType.USE).findById(ItemId.WHITE_SCROLL) == null) {
+            return false;
+        }
+        Map<String, Integer> st = ItemInformationProvider.getInstance().getEquipStats(sid);
+        double p = st == null ? 0 : effectiveSuccessPct(st.getOrDefault("success", 0)) / 100.0;
+        if (p <= 0 || p >= 1) {
+            return false; // can't fail (or can't succeed): protection buys nothing
+        }
+        EquipQuote q = equipMarketQuote(entry, bot, equip);
+        if (q == null || q.bandUnit() <= 0) {
+            return false;
+        }
+        double marginal = q.bandCurve().applyAsDouble(q.band() + 1)
+                - q.bandCurve().applyAsDouble(q.band());
+        ProducerCombat pc = resolveProducerCombat(entry, bot);
+        return (1.0 - p) * p * Math.max(0, marginal)
+                > applyCostMeso(pc, ItemId.WHITE_SCROLL);
     }
 
     /**

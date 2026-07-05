@@ -106,6 +106,50 @@ Read-only per-bot autopilot internals for live debugging (party cohesion, follow
 "routeCache":{"hits","misses","rate"}}             // region-route cache effectiveness, cumulative since server start (rate = hits/(hits+misses)); A/B vs pathfind count in bot-perf CSV
 ```
 
+### `/market` (page)
+Trading-site style price history: item picker (most-cleared first) + canvas chart of clearings
+(green line, dot size = qty), listing asks (hollow blue dots) and the current consensus estimate
+(dashed). Range buttons 24h/3d/7d/30d/1y; auto-refreshes. Linked from the landing page.
+
+### `/api/market/items`
+Items with any tape activity, most-cleared first (max 300): the chart's item picker.
+```
+{"items":[{"item","name","sales","events","lastAt","lastPrice"}, ...]}
+```
+
+### `/api/market/history?item=<itemId>[&hours=168]`
+One item's price series from `bot_market_event`: clearings (TRADE + STALL_SALE) and listing asks,
+plus the live consensus estimate + damping volume for band 0.
+```
+{"item","name","consensus","volume",
+ "clearings":[{"t","p","q"}, ...],   // unit price p at time t, qty q
+ "asks":[{"t","p","q"}, ...]}
+```
+
+### `/api/market/stalls`
+Every OPEN hired merchant in every world (bot- and player-owned alike): position, description and
+full stock. The live-debug view for stall placement/pricing (living-economy design sec 11).
+```
+{"stalls":[{
+  "owner","n","desc","map","ch","x","y","mesos",
+  "items":[{"item","name","bundles","per","price","unit","live"}, ...]  // price = per-bundle; unit = price/per; live=false => sold out
+}, ...]}
+```
+
+### `/api/market/bot?id=<botCharId>` or `?name=<botName>`
+One bot's market brain: FM errand state, wallet split (BotAssetView incl. Fredrick), bag
+classification, the stall dry-run with per-stack verdicts, and its persisted price beliefs.
+Beliefs/pricing use a DETACHED book replica loaded from `bot_market_belief` — never the
+tick-thread-owned live book — so numbers can lag the live book by up to a flush (~4min).
+```
+{"id","n","map",
+ "fm":{"errandTown","phase","room","placeTries","standX","standY","marketBusy","nextScanInS","stallServiceInS"},
+ "meso":{"liquid","merchant","storage","escrow","total"},
+ "listings":[{"item","name","qty","ask","npcSellBack","npcShop","premium","verdict"}, ...],  // verdict: list | crowded out (slot cap) | premium not worth a slot | npc sale pays better | no price basis | untradeable
+ "bag":[{"item","name","qty","tier","keep"}, ...],                                           // classifyBagUse tiers + keep-value SSOT
+ "beliefs":[{"key","item","name","band","est","conf","obs","ageS","consensus"}, ...]}
+```
+
 ### `/api/bot/pathlog?id=<botCharId>`
 On-demand per-bot navigation trace, mirroring the `!botnav pathlog <name>` command. **Toggle:** the
 first call attaches a 120-tick (~6 s) ring-buffer recorder (`BotEntry.pathLogger`) — recording is

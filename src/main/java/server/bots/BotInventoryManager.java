@@ -305,6 +305,7 @@ class BotInventoryManager {
 
     static void tickManualTrade(BotEntry entry, Character bot) {
         if (entry.pendingTradeCategory != null) return;
+        if (entry.shoutTradeActive()) return; // a shout-trade owns this Trade window (S3)
 
         Trade trade = bot.getTrade();
         Character commander = BotManager.getInstance().commanderOrOwner(entry);
@@ -729,6 +730,7 @@ class BotInventoryManager {
 
     /** Called every bot simulation tick while a trade sequence is in progress. */
     static void tickTrade(BotEntry entry, Character bot) {
+        if (entry.shoutTradeActive()) return; // a shout-trade owns this Trade window (S3)
         // Fire a queued bot-initiated retry once this bot is free and the delay expires.
         if (entry.pendingTradeCategory == null && entry.pendingBotTradeRetry != null) {
             if (entry.pendingBotTradeRetryMs > 0) {
@@ -867,14 +869,10 @@ class BotInventoryManager {
                 tradeItem.setPosition((short) (idx + 1)); // trade-window slot 1-9
                 tradeItem.setQuantity(tradeQty);
 
-                if (trade.addItem(tradeItem)) {
+                if (trade.addItem(tradeItem)) { // addItem broadcasts to both windows
                     rememberTradeWindowItemForRestore(entry, item, tradeItem);
                     InventoryManipulator.removeFromSlot(bot.getClient(),
                             invType, item.getPosition(), tradeQty, false);
-                    bot.sendPacket(PacketCreator.getTradeItemAdd((byte) 0, tradeItem));
-                    if (trade.getPartner() != null) {
-                        trade.getPartner().getChr().sendPacket(PacketCreator.getTradeItemAdd((byte) 1, tradeItem));
-                    }
                 }
             } finally {
                 inv.unlockInventory();
@@ -1741,6 +1739,20 @@ class BotInventoryManager {
         return collectEquipsGroup(EquipsGroup.NORMAL, entry, bot);
     }
 
+    /** The valuables shelf itself, ranked: NORMAL-group bag equips kept for their above-base
+     *  rolls ({@link #shouldKeepForSellTrash}) — the natural stall supply. These pieces sit in
+     *  the bag waiting for a buyer; the FM stall is where they finally meet one. */
+    static List<Equip> collectMarketableEquips(BotEntry entry, Character bot) {
+        ItemInformationProvider ii = ItemInformationProvider.getInstance();
+        List<Equip> kept = new ArrayList<>();
+        for (Item item : collectTrashEquips(entry, bot)) {
+            if (item instanceof Equip equip && shouldKeepForSellTrash(ii, equip)) {
+                kept.add(equip);
+            }
+        }
+        return rankKeptValuables(ii, kept);
+    }
+
     static List<Item> collectSellTrashEquips(BotEntry entry, Character bot) {
         List<Item> trash = collectTrashEquips(entry, bot);
         if (trash.isEmpty()) {
@@ -2023,6 +2035,7 @@ class BotInventoryManager {
         List<Item> ownAmmo = new ArrayList<>();
         List<Item> otherAmmo = new ArrayList<>();
         List<Item> buffs = new ArrayList<>();
+        List<Item> returnScrolls = new ArrayList<>();
         List<Item> shelf = new ArrayList<>(); // surplus ammo, misc -> kept unless cramped
 
         for (Item item : all) {
@@ -2042,6 +2055,8 @@ class BotInventoryManager {
                 allCure.add(item);
             } else if (isBuffConsumable(id)) {
                 buffs.add(item);
+            } else if (BotShopManager.isReturnScroll(id)) {
+                returnScrolls.add(item);
             } else {
                 shelf.add(item); // uncategorized -> kept unless cramped
             }
@@ -2049,6 +2064,7 @@ class BotInventoryManager {
 
         classifyRecoveryRunway(recovery, out, shelf);
         classifyOtherAmmoReserve(otherAmmo, out, shelf);
+        classifyReturnScrollRunway(returnScrolls, out, shelf);
 
         // RUNWAY: a little all-cure insurance; surplus to the shelf. (Not resupplied -> no buy loop.)
         allCure.sort(Comparator.comparingInt(Item::getQuantity).reversed());
@@ -2081,6 +2097,24 @@ class BotInventoryManager {
                 out.put(it, new UseClass(UseTier.RUNWAY, 0, 0, "recovery-runway"));
                 if (BotPotionManager.healsHp(fx)) hp += it.getQuantity();
                 if (BotPotionManager.healsMp(fx)) mp += it.getQuantity();
+            } else {
+                shelf.add(it);
+            }
+        }
+    }
+
+    // Town-return scrolls the bot resupplies at shops: reserve up to the buy target so a cramped
+    // trip never sheds scrolls the bot would immediately rebuy (buy/sell loop). Mirrors the
+    // recovery/ammo runways; the target is BotShopManager.returnScrollReserveTarget() (SSOT with the
+    // buy logic). Surplus beyond the target drops to the shelf and sells normally under pressure.
+    private static void classifyReturnScrollRunway(List<Item> returnScrolls, Map<Item, UseClass> out, List<Item> shelf) {
+        returnScrolls.sort(Comparator.comparingInt(Item::getQuantity).reversed());
+        int target = BotShopManager.returnScrollReserveTarget();
+        int kept = 0;
+        for (Item it : returnScrolls) {
+            if (kept < target) {
+                out.put(it, new UseClass(UseTier.RUNWAY, 0, 0, "return-scroll-runway"));
+                kept += it.getQuantity();
             } else {
                 shelf.add(it);
             }

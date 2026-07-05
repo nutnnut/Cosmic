@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Bot Market Prices</title>
+<style>
+  html,body{margin:0;height:100%;background:#10141c;color:#cdd6e4;font:14px system-ui,sans-serif;display:flex;flex-direction:column}
+  header{display:flex;align-items:baseline;gap:16px;padding:10px 16px;border-bottom:1px solid #232c3d}
+  header h1{font-size:16px;font-weight:600;color:#9fb0c8;margin:0}
+  header a{color:#6cc6ff;text-decoration:none;font-size:13px}
+  header .range{margin-left:auto;display:flex;gap:6px}
+  header .range button{background:#171c26;color:#9fb0c8;border:1px solid #3a4761;border-radius:5px;padding:3px 10px;cursor:pointer;font:12px system-ui}
+  header .range button.on{color:#10141c;background:#6cc6ff;border-color:#6cc6ff}
+  main{flex:1;display:flex;min-height:0}
+  #list{width:320px;overflow-y:auto;border-right:1px solid #232c3d}
+  #list .row{padding:8px 12px;cursor:pointer;display:flex;justify-content:space-between;gap:8px;border-bottom:1px solid #161c28}
+  #list .row:hover{background:#171c26}
+  #list .row.sel{background:#1b2436}
+  #list .nm{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  #list .px{color:#8fd18f;font-variant-numeric:tabular-nums;white-space:nowrap}
+  #list .meta{color:#5c6a82;font-size:11px}
+  #chartwrap{flex:1;display:flex;flex-direction:column;min-width:0}
+  #title{padding:10px 16px 0;font-size:15px;color:#e6edf7}
+  #stats{padding:2px 16px 8px;font-size:12px;color:#8494ad}
+  #stats b{color:#cdd6e4;font-variant-numeric:tabular-nums}
+  canvas{flex:1;width:100%;min-height:0}
+  #legend{padding:6px 16px 12px;font-size:12px;color:#8494ad}
+  .dotL{color:#6cc6ff}.dotC{color:#8fd18f}.dotK{color:#e0b45c}
+</style>
+</head>
+<body>
+<header>
+  <h1>Bot Market</h1>
+  <a href="/">&larr; home</a>
+  <a href="/api/market/stalls" target="_blank">live stalls (json)</a>
+  <div class="range" id="range"></div>
+</header>
+<main>
+  <div id="list"></div>
+  <div id="chartwrap">
+    <div id="title">pick an item</div>
+    <div id="stats"></div>
+    <canvas id="c"></canvas>
+    <div id="legend">
+      <span class="dotC">&#9679;</span> clearing (trade / stall sale, dot size = qty) &nbsp;
+      <span class="dotL">&#9675;</span> listing ask &nbsp;
+      <span class="dotK">- - -</span> consensus estimate
+    </div>
+  </div>
+</main>
+<script>
+"use strict";
+const fmt = n => n >= 1e9 ? (n/1e9).toFixed(2)+"b" : n >= 1e6 ? (n/1e6).toFixed(2)+"m" : n >= 1e3 ? (n/1e3).toFixed(1)+"k" : String(Math.round(n));
+const ago = t => { const s = (Date.now()-t)/1000; return s<90 ? Math.round(s)+"s" : s<5400 ? Math.round(s/60)+"m" : s<172800 ? Math.round(s/3600)+"h" : Math.round(s/86400)+"d"; };
+let items = [], sel = 0, hours = 168, hist = null;
+
+const RANGES = [[24,"24h"],[72,"3d"],[168,"7d"],[720,"30d"],[8760,"1y"]];
+const rangeDiv = document.getElementById("range");
+for (const [h, label] of RANGES) {
+  const b = document.createElement("button");
+  b.textContent = label;
+  b.onclick = () => { hours = h; renderRange(); loadHist(); };
+  b.dataset.h = h;
+  rangeDiv.appendChild(b);
+}
+function renderRange() {
+  for (const b of rangeDiv.children) b.classList.toggle("on", Number(b.dataset.h) === hours);
+}
+renderRange();
+
+async function loadItems() {
+  const r = await fetch("/api/market/items");
+  items = (await r.json()).items;
+  const list = document.getElementById("list");
+  list.innerHTML = "";
+  for (const it of items) {
+    const row = document.createElement("div");
+    row.className = "row" + (it.item === sel ? " sel" : "");
+    row.innerHTML = "<div><div class='nm'>" + (it.name || it.item) + "</div>"
+      + "<div class='meta'>" + it.sales + " sales &middot; " + it.events + " events &middot; " + ago(it.lastAt) + " ago</div></div>"
+      + "<div class='px'>" + fmt(it.lastPrice) + "</div>";
+    row.onclick = () => { sel = it.item; loadHist(); for (const c of list.children) c.classList.remove("sel"); row.classList.add("sel"); };
+    list.appendChild(row);
+  }
+  if (!sel && items.length) { sel = items[0].item; list.children[0].classList.add("sel"); loadHist(); }
+}
+
+async function loadHist() {
+  if (!sel) return;
+  const r = await fetch("/api/market/history?item=" + sel + "&hours=" + hours);
+  hist = await r.json();
+  document.getElementById("title").textContent = (hist.name || hist.item) + "  (" + hist.item + ")";
+  const clr = hist.clearings, lastC = clr.length ? clr[clr.length-1] : null;
+  document.getElementById("stats").innerHTML =
+    "last clearing <b>" + (lastC ? fmt(lastC.p) : "-") + "</b>"
+    + " &middot; consensus <b>" + (hist.consensus > 0 ? fmt(hist.consensus) : "-") + "</b>"
+    + " &middot; volume(damping) <b>" + hist.volume + "</b>"
+    + " &middot; " + clr.length + " clearings / " + hist.asks.length + " asks in range";
+  draw();
+}
+
+function draw() {
+  const cv = document.getElementById("c");
+  const dpr = window.devicePixelRatio || 1;
+  cv.width = cv.clientWidth * dpr; cv.height = cv.clientHeight * dpr;
+  const g = cv.getContext("2d");
+  g.scale(dpr, dpr);
+  const W = cv.clientWidth, H = cv.clientHeight, L = 74, R = 14, T = 12, B = 26;
+  g.clearRect(0, 0, W, H);
+  if (!hist) return;
+  const pts = hist.clearings.concat(hist.asks);
+  const now = Date.now(), t0 = now - hours*3600e3;
+  let pmin = Infinity, pmax = -Infinity;
+  for (const p of pts) { if (p.p < pmin) pmin = p.p; if (p.p > pmax) pmax = p.p; }
+  if (hist.consensus > 0) { pmin = Math.min(pmin, hist.consensus); pmax = Math.max(pmax, hist.consensus); }
+  if (!isFinite(pmin)) { pmin = 0; pmax = 1; }
+  if (pmin === pmax) { pmin *= 0.9; pmax *= 1.1; pmax = pmax || 1; }
+  const pad = (pmax - pmin) * 0.08; pmin = Math.max(0, pmin - pad); pmax += pad;
+  const X = t => L + (W - L - R) * (t - t0) / (now - t0);
+  const Y = p => T + (H - T - B) * (1 - (p - pmin) / (pmax - pmin));
+
+  // grid + axes
+  g.strokeStyle = "#1d2534"; g.fillStyle = "#5c6a82"; g.font = "11px system-ui"; g.textAlign = "right";
+  for (let i = 0; i <= 4; i++) {
+    const p = pmin + (pmax - pmin) * i / 4, y = Y(p);
+    g.beginPath(); g.moveTo(L, y); g.lineTo(W - R, y); g.stroke();
+    g.fillText(fmt(p), L - 6, y + 4);
+  }
+  g.textAlign = "center";
+  for (let i = 0; i <= 6; i++) {
+    const t = t0 + (now - t0) * i / 6, x = X(t);
+    const d = new Date(t);
+    g.fillText(hours <= 72 ? d.getHours() + ":" + String(d.getMinutes()).padStart(2, "0")
+                           : (d.getMonth()+1) + "/" + d.getDate(), x, H - 8);
+  }
+
+  // consensus line
+  if (hist.consensus > 0) {
+    g.strokeStyle = "#e0b45c"; g.setLineDash([5, 5]);
+    g.beginPath(); g.moveTo(L, Y(hist.consensus)); g.lineTo(W - R, Y(hist.consensus)); g.stroke();
+    g.setLineDash([]);
+  }
+  // asks: hollow blue dots
+  g.strokeStyle = "#6cc6ff";
+  for (const a of hist.asks) {
+    if (a.t < t0) continue;
+    g.beginPath(); g.arc(X(a.t), Y(a.p), 2.5, 0, 7); g.stroke();
+  }
+  // clearings: green line + qty-sized dots
+  const clr = hist.clearings.filter(p => p.t >= t0);
+  g.strokeStyle = "#8fd18f"; g.lineWidth = 1.5;
+  g.beginPath();
+  clr.forEach((p, i) => { const x = X(p.t), y = Y(p.p); i ? g.lineTo(x, y) : g.moveTo(x, y); });
+  g.stroke(); g.lineWidth = 1;
+  g.fillStyle = "#8fd18f";
+  for (const p of clr) {
+    g.beginPath(); g.arc(X(p.t), Y(p.p), Math.min(7, 2 + Math.sqrt(p.q)), 0, 7); g.fill();
+  }
+}
+
+window.addEventListener("resize", draw);
+loadItems();
+setInterval(loadItems, 60_000);
+setInterval(loadHist, 30_000);
+</script>
+</body>
+</html>

@@ -8,9 +8,11 @@ metadata:
 ---
 
 Long-term goal: a bot-driven **simulated economy** (bots dominate; humans interact as first-class
-participants). Full design lives in-repo at `docs/bot/economy-design.md` — read it for the model
+participants). **BUILD DESIGN OF RECORD (2026-07-02): `docs/bot/living-economy-design.md`** —
+decentralized belief-based pricing (no central price loop), FM stalls + shout grammar + haggling,
+slice plan S0-S6; it wins on conflicts. `docs/bot/economy-design.md` stays as the math reference
 (reproduction-cost scroll DP, opportunity-cost WTP, farming-cost anchor gated by combat feasibility,
-damped relative price-discovery vs. faucet/sink monetary control, two-only exogenous inputs).
+LP-dual equilibrium theory, Fish Spear calibration).
 
 Key decisions locked in conversation (also in the doc):
 - Frontier producer = **bots only**, filtered by **last-login freshness** (stale chars excluded from
@@ -158,8 +160,10 @@ reproduction-cost value), e7906460b (scroll debug command). BotScrollPlannerTest
 - `explainNoPlan` gives cheap chat reasons when nothing qualifies (no slots / no fitting scrolls /
   only boom / useless stats / out-classed gear / odds not worth).
 
-v1 SAFETY CUT: auto-scan skips ALL destroy-capable scrolls (cursed>0) — no boom risk. Planner boom
-gate is tested+ready; wiring boom scrolls + real fallback-slot detection is a NEXT increment.
+STALE (fixed since): the v1 "skip ALL cursed>0" safety cut is GONE from the owned-scroll path —
+buildOptions now feeds boom scrolls with their boom rate; the planner gates them on
+hasFallbackForSlot + EV. Only the CATALOG index (scrollsByCategory → market curves/headroom)
+still excludes cursed>0. See [[kb_bot_scroll_special_scrolls_and_market_feedback]].
 REMAINING GAPS (see chat 2026-06): offense-only valuation (HP/DEF/avoid/acc/utility scored 0 → never
 scrolled; needs real optimizer/DPS value); periodic auto-trigger when armed (only chains after a
 confirmed scroll); persist toggle across relog; white-scroll slot protection; forward-looking

@@ -358,11 +358,22 @@ final class BotPhysicsEngine {
      */
     static Foothold syncAndDetectGround(BotEntry entry, Character bot) {
         syncGroundPosition(entry, bot.getPosition().x);
-        Foothold fh = findGroundFoothold(bot.getMap(), bot.getPosition());
+        Foothold fh = findContinuityGroundFoothold(entry, bot.getMap(), bot.getPosition());
+        if (fh == null) {
+            fh = findGroundFoothold(bot.getMap(), bot.getPosition());
+        }
         if (fh == null) {
             beginFall(entry, bot, 0);
         }
         return fh;
+    }
+
+    private static Foothold findContinuityGroundFoothold(BotEntry entry, MapleMap map, Point position) {
+        if (entry == null || entry.lastRegionId < 0 || map == null || position == null) {
+            return null;
+        }
+        GroundRegionSample sample = findWalkRegionGroundSample(map, entry.lastRegionId, position.x, position.y);
+        return sample == null ? null : sample.foothold();
     }
 
     static Foothold findGroundFoothold(MapleMap map, Point position) {
@@ -525,11 +536,23 @@ final class BotPhysicsEngine {
         return sample == null ? null : sample.point();
     }
 
+    static Foothold findWalkRegionGroundFoothold(MapleMap map, int regionId, int x, int referenceY) {
+        GroundRegionSample sample = findWalkRegionGroundSample(map, regionId, x, referenceY);
+        return sample == null ? null : sample.foothold();
+    }
+
     static boolean canWalkGroundStep(MapleMap map, Point currentPos, int stepX) {
         if (map == null || currentPos == null) {
             return false;
         }
         Foothold foothold = findGroundFoothold(map, currentPos);
+        return canWalkGroundStep(map, currentPos, foothold, stepX);
+    }
+
+    static boolean canWalkGroundStep(MapleMap map, Point currentPos, Foothold foothold, int stepX) {
+        if (map == null || currentPos == null) {
+            return false;
+        }
         GroundStepPreview preview = previewGroundStep(map, currentPos, foothold, currentPos.x + stepX);
         return preview != null && !preview.lostGround() && !preview.blocked();
     }
@@ -539,12 +562,34 @@ final class BotPhysicsEngine {
             return false;
         }
         Foothold foothold = findGroundFoothold(map, currentPos);
+        return isGroundStepBlockedByWall(map, currentPos, foothold, stepX);
+    }
+
+    static boolean isGroundStepBlockedByWall(MapleMap map, Point currentPos, Foothold foothold, int stepX) {
+        if (map == null || currentPos == null || stepX == 0) {
+            return false;
+        }
         GroundStepPreview preview = previewGroundStep(map, currentPos, foothold, currentPos.x + stepX);
         return preview != null && preview.blocked();
     }
 
+    /**
+     * Client truth (v83 CVecCtrl::CalcWalk/CollisionDetectWalk + live test on 600020100 x=-1315):
+     * ground walking does NO wall scan at all — a walker follows its standing foothold's prev/next
+     * chain, and the only "wall stop" is the chain itself ending at a vertical link (which the
+     * region model already encodes: regions end there). So a ground runway is blocked only by the
+     * map side boundary. Maps with no region model (mocked trees) keep the old any-wall stop —
+     * their hand-built footholds have no chain/region data to walk by.
+     */
     static boolean isGroundRunwayBlockedByWall(MapleMap map, Point from, Point to) {
-        return findGroundWallCollision(map, from, to).type() == AirCollisionType.WALL;
+        AirCollision collision = findGroundWallCollision(map, from, to, MOVER_ZMASS_ALL);
+        if (collision.type() != AirCollisionType.WALL) {
+            return false;
+        }
+        if (collision.foothold() == null) {
+            return true; // map side boundary
+        }
+        return resolveWalkRegionLookup(map) == null; // no region model — conservative legacy stop
     }
 
     static boolean isGroundFarBelow(MapleMap map, Point position) {
@@ -584,6 +629,22 @@ final class BotPhysicsEngine {
             return null;
         }
         int regionId = lookup.regionIdByFootholdId().getOrDefault(foothold.getId(), -1);
+        return findWalkRegionGroundSample(lookup, regionId, foothold, x, referenceY);
+    }
+
+    private static GroundRegionSample findWalkRegionGroundSample(MapleMap map, int regionId, int x, int referenceY) {
+        WalkRegionLookup lookup = resolveWalkRegionLookup(map);
+        if (lookup == null) {
+            return null;
+        }
+        return findWalkRegionGroundSample(lookup, regionId, null, x, referenceY);
+    }
+
+    private static GroundRegionSample findWalkRegionGroundSample(WalkRegionLookup lookup,
+                                                                 int regionId,
+                                                                 Foothold foothold,
+                                                                 int x,
+                                                                 int referenceY) {
         BotNavigationGraph.Region region = lookup.regionsById().get(regionId);
         if (region == null || region.isRopeRegion) {
             return null;
@@ -621,7 +682,7 @@ final class BotPhysicsEngine {
             // or its prev/next) always beats a non-chain segment; the dx/dy score only breaks ties
             // within the same chain class. Crossing footholds that share no chain link keep the old
             // behaviour, so a ramp crossing flat ground can still be walked down.
-            boolean chainStep = isChainStep(foothold, segment.footholdId);
+            boolean chainStep = foothold == null || isChainStep(foothold, segment.footholdId);
             int score = dx * 1000 + Math.abs(dy);
             boolean better = bestSegment == null
                     || (chainStep && !bestChainStep)
@@ -716,7 +777,14 @@ final class BotPhysicsEngine {
                 ? standingPoint.y
                 : currentPos.y;
 
-        AirCollision wall = findGroundWallCollision(map, currentPos, new Point(nextX, baseY));
+        // Client ground walking scans NO walls (CVecCtrl::CalcWalk — chain traversal only; the
+        // region model encodes the chain, so region-constrained sampling below IS the junction
+        // stop). Only the map side boundary still blocks. Maps without a region model keep the
+        // legacy any-wall stop: their walkers snap by raw findBelow and would otherwise cross
+        // through structures.
+        AirCollision wall = constrainToWalkRegion
+                ? mapSideBoundaryCollision(map, currentPos, new Point(nextX, baseY))
+                : findGroundWallCollision(map, currentPos, new Point(nextX, baseY), MOVER_ZMASS_ALL);
         if (wall.type() == AirCollisionType.WALL) {
             return new GroundStepPreview(baseY, currentPos, foothold, false, true);
         }
@@ -1182,6 +1250,35 @@ final class BotPhysicsEngine {
         return simulateWalkOffLanding(map, from, desiredDir, initialGroundTravelState(from), profile);
     }
 
+    /**
+     * The live launch state at a walk-off lip is not unique: the bot arrives with an arbitrary
+     * fractional physX phase, sub-step carryMs, and hspeed (standing start at the anchor vs
+     * walking through at full speed), which shifts the exact dismount pixel and the seeded air
+     * drift by a rounding step (e.g. 6 vs 7 px/tick at 105% speed). Returns the walk-off outcome
+     * for a spread of those launch states — baseline (the historical single sim: phase 0,
+     * standing start) FIRST — so graphgen can check the landing is stable across all of them
+     * before authoring an edge from just one. Entries may be null (that variant found no landing).
+     */
+    static java.util.List<WalkOffLanding> walkOffLandingVariants(MapleMap map,
+                                                                 Point from,
+                                                                 int desiredDir,
+                                                                 BotMovementProfile profile) {
+        java.util.List<WalkOffLanding> outcomes = new java.util.ArrayList<>();
+        double terminalHSpeed = maxHSpeedPerClientStep(profile) * desiredDir;
+        double[] physXPhases = {0.0, -0.4, 0.4};
+        double[] carryPhases = {0.0, CLIENT_GROUND_STEP_MS / 2.0};
+        double[] launchHSpeeds = {0.0, terminalHSpeed};
+        for (double phase : physXPhases) {
+            for (double carryMs : carryPhases) {
+                for (double hspeed : launchHSpeeds) {
+                    outcomes.add(simulateWalkOffLanding(map, from, desiredDir,
+                            new GroundTravelState(from.x + phase, hspeed, carryMs), profile));
+                }
+            }
+        }
+        return outcomes;
+    }
+
     static WalkOffLanding simulateWalkOffLanding(MapleMap map,
                                                  Point from,
                                                  int desiredDir,
@@ -1395,7 +1492,7 @@ final class BotPhysicsEngine {
         Point prevPt = new Point((int) Math.round(entry.physX), (int) Math.round(entry.physY));
         {
             Point nextPt = new Point((int) Math.round(nextX), (int) Math.round(nextY));
-            AirCollision collision = resolveAirCollision(map, prevPt, nextPt);
+            AirCollision collision = resolveAirCollision(map, prevPt, nextPt, moverZMassFor(entry, map));
             if (collision.type() == AirCollisionType.LAND) {
                 nextX = collision.point().x;
                 nextY = collision.point().y;
@@ -1564,7 +1661,8 @@ final class BotPhysicsEngine {
 
         Point previousPos = roundedAirPosition(entry);
         Point nextPos = advanceAirbornePosition(entry, bot);
-        AirCollision collision = resolveAirCollision(bot.getMap(), previousPos, nextPos);
+        AirCollision collision = resolveAirCollision(bot.getMap(), previousPos, nextPos,
+                moverZMassFor(entry, bot.getMap()));
         if (collision.type() == AirCollisionType.WALL) {
             collideWithAirWall(entry, bot, collision.point());
             return AirborneStepResult.WALL;
@@ -1882,11 +1980,61 @@ final class BotPhysicsEngine {
         return estimateRopeGrabTimeMs(map, from, -ropeJumpForcePerTick(profile), stepX, targetRope, 0L);
     }
 
-    private static AirCollision resolveAirCollision(MapleMap map, Point previousPos, Point nextPos) {
+    /**
+     * Mover zMass of a live bot: the group of the region the bot last resolved to. Reuses the nav
+     * layer's chain-continuity tracking ({@link BotEntry#lastRegionId}) — the client equivalent is
+     * CVecCtrl::m_lZMass, set from the attached foothold and KEPT while airborne. A region is one
+     * foothold chain, and WZ chains never cross zMass groups, so any segment's foothold carries the
+     * region's group. Unknown region → {@link #MOVER_ZMASS_UNKNOWN} (base-group walls only, same as
+     * a fresh client mover).
+     */
+    static int moverZMassFor(BotEntry entry, MapleMap map) {
+        if (entry == null) {
+            return MOVER_ZMASS_UNKNOWN;
+        }
+        return regionZMass(map, entry.lastRegionId);
+    }
+
+    static int regionZMass(MapleMap map, int regionId) {
+        if (regionId < 0) {
+            return MOVER_ZMASS_UNKNOWN;
+        }
+        WalkRegionLookup lookup = resolveWalkRegionLookup(map);
+        if (lookup == null) {
+            return MOVER_ZMASS_UNKNOWN;
+        }
+        BotNavigationGraph.Region region = lookup.regionsById().get(regionId);
+        if (region == null || region.isRopeRegion || region.segments.isEmpty()) {
+            return MOVER_ZMASS_UNKNOWN;
+        }
+        Foothold foothold = lookup.footholdsById().get(region.segments.get(0).footholdId);
+        return foothold == null ? MOVER_ZMASS_UNKNOWN : foothold.getZMass();
+    }
+
+    /** Mover zMass for a sim launched at {@code from}: the group of the foothold under the launch
+     *  point when it is effectively standing there, else unknown. Where two chains overlap at the
+     *  same pixel (shared ground) the chain-blind lookup can pick either group — acceptable: both
+     *  grounds coincide there and the mis-pick only re-enables that structure's own walls. */
+    private static int moverZMassAt(MapleMap map, Point from) {
+        if (map == null || from == null) {
+            return MOVER_ZMASS_UNKNOWN;
+        }
+        Foothold foothold = findGroundFoothold(map, from);
+        if (foothold == null) {
+            return MOVER_ZMASS_UNKNOWN;
+        }
+        Point ground = findGroundPoint(map, from);
+        if (ground == null || Math.abs(ground.y - from.y) > cfg.MAX_SLOPE_UP) {
+            return MOVER_ZMASS_UNKNOWN; // airborne start — last-stood group unknown to the sim
+        }
+        return foothold.getZMass();
+    }
+
+    private static AirCollision resolveAirCollision(MapleMap map, Point previousPos, Point nextPos, int moverZMass) {
         if (map == null || map.getFootholds() == null || previousPos == null || nextPos == null) {
             return AirCollision.none();
         }
-        AirCollision wall = findWallCollision(map, previousPos, nextPos);
+        AirCollision wall = findWallCollision(map, previousPos, nextPos, moverZMass);
         AirCollision ceiling = findCeilingCollision(map, previousPos, nextPos);
         AirCollision landing = findGroundCollision(map, previousPos, nextPos);
         AirCollision best = AirCollision.none();
@@ -2336,18 +2484,55 @@ final class BotPhysicsEngine {
         return best;
     }
 
-    private static AirCollision findWallCollision(MapleMap map, Point previousPos, Point nextPos) {
-        return findWallCollision(map, previousPos, nextPos, false);
+    /** Mover zMass sentinel: collide with EVERY wall regardless of group (legacy/conservative paths
+     *  that predate the zMass model — mocked trees and no-region maps). */
+    static final int MOVER_ZMASS_ALL = Integer.MIN_VALUE;
+    /** Mover zMass sentinel: group unknown (fresh mover, never attached). Client inits CVecCtrl the
+     *  same way (CUser::GetZMass returns -1) — only base-group walls collide. */
+    static final int MOVER_ZMASS_UNKNOWN = -1;
+
+    /**
+     * Client wall-collidability rule (v83 CVecCtrl::CollisionDetectFloat @0x9b36bc, field names from
+     * the v95 PDB): a vertical wall is collision-tested only when its m_lZMass equals the map's
+     * m_nBaseZMass or the mover's current m_lZMass (the group of the foothold last stood on —
+     * CVecCtrl::OnAttachedObjectChanged). Walls of unrelated structures are invisible, which is why
+     * a floor mover passes 600020100's x=-1315 tower wall both walking and airborne (live-verified).
+     * Walls with no parsed group (synthetic test maps) collide for everyone.
+     */
+    private static boolean wallCollidesForMover(int baseZMass, int wallZMass, int moverZMass) {
+        if (moverZMass == MOVER_ZMASS_ALL || wallZMass < 0 || baseZMass < 0) {
+            return true;
+        }
+        return wallZMass == baseZMass || wallZMass == moverZMass;
     }
 
-    private static AirCollision findGroundWallCollision(MapleMap map, Point previousPos, Point nextPos) {
-        return findWallCollision(map, previousPos, nextPos, true);
+    /** Build-time variant for the graph builder: does {@code wall} collide for a mover launching
+     *  from region {@code from}? (Mover zMass = the launch region's foothold group.) */
+    static boolean wallCollidesForLaunch(MapleMap map, Foothold wall, BotNavigationGraph.Region from) {
+        int moverZMass = from == null || from.isRopeRegion || from.segments.isEmpty()
+                ? MOVER_ZMASS_UNKNOWN
+                : footholdZMass(map, from.segments.get(0).footholdId);
+        return wallCollidesForMover(collisionIndex(map).baseZMass(), wall.getZMass(), moverZMass);
+    }
+
+    private static int footholdZMass(MapleMap map, int footholdId) {
+        Foothold foothold = footholdsById(map).get(footholdId);
+        return foothold == null ? MOVER_ZMASS_UNKNOWN : foothold.getZMass();
+    }
+
+    private static AirCollision findWallCollision(MapleMap map, Point previousPos, Point nextPos, int moverZMass) {
+        return findWallCollision(map, previousPos, nextPos, false, moverZMass);
+    }
+
+    private static AirCollision findGroundWallCollision(MapleMap map, Point previousPos, Point nextPos, int moverZMass) {
+        return findWallCollision(map, previousPos, nextPos, true, moverZMass);
     }
 
     private static AirCollision findWallCollision(MapleMap map,
                                                   Point previousPos,
                                                   Point nextPos,
-                                                  boolean allowWalkableGroundEndpoint) {
+                                                  boolean allowWalkableGroundEndpoint,
+                                                  int moverZMass) {
         if (map == null || map.getFootholds() == null) {
             return AirCollision.none();
         }
@@ -2355,8 +2540,12 @@ final class BotPhysicsEngine {
             return AirCollision.none();
         }
 
+        FootholdCollisionIndex index = collisionIndex(map);
         AirCollision best = mapSideBoundaryCollision(map, previousPos, nextPos);
-        for (Foothold foothold : collisionIndex(map).collidableWalls()) {
+        for (Foothold foothold : index.walls()) {
+            if (!wallCollidesForMover(index.baseZMass(), foothold.getZMass(), moverZMass)) {
+                continue;
+            }
             AirCollision collision = wallCollision(foothold, previousPos, nextPos, allowWalkableGroundEndpoint);
             if (collision.type() == AirCollisionType.WALL && collision.progress() < best.progress()) {
                 best = collision;
@@ -2439,8 +2628,9 @@ final class BotPhysicsEngine {
     private static final int GROUND_BUCKET_SHIFT = 6; // 64px columns
     private static final Foothold[] NO_FOOTHOLDS = new Foothold[0];
 
-    private record FootholdCollisionIndex(java.util.List<Foothold> collidableWalls,
+    private record FootholdCollisionIndex(java.util.List<Foothold> walls,
                                           java.util.List<Foothold> collidableFromBelow,
+                                          int baseZMass,
                                           int bucketMinX,
                                           Foothold[][] groundBuckets) {
         Foothold[] groundBucketAt(int x) {
@@ -2456,7 +2646,7 @@ final class BotPhysicsEngine {
     // foothold lists) — callers fall back to the original tree/map query so stubbed seams keep
     // working exactly as before.
     private static final FootholdCollisionIndex UNINDEXABLE = new FootholdCollisionIndex(
-            java.util.List.of(), java.util.List.of(), 0, new Foothold[0][]);
+            java.util.List.of(), java.util.List.of(), -1, 0, new Foothold[0][]);
 
     private static FootholdCollisionIndex collisionIndex(MapleMap map) {
         server.maps.FootholdTree tree = map != null ? map.getFootholds() : null;
@@ -2480,11 +2670,17 @@ final class BotPhysicsEngine {
             java.util.List<Foothold> fromBelow = new java.util.ArrayList<>();
             int minX = Integer.MAX_VALUE;
             int maxX = Integer.MIN_VALUE;
+            // Client truth (v95 PDB CWvsPhysicalSpace2D::Load @ v83 0xa44c7c): m_nBaseZMass is the
+            // smallest zMass group value that has footholds in the map. Airborne wall collision
+            // (CollisionDetectFloat) tests a wall only when its zMass equals the base group or the
+            // mover's current group — see wallCollidesForMover.
+            int baseZMass = -1;
             for (Foothold fh : all) {
+                if (fh.getZMass() >= 0 && (baseZMass < 0 || fh.getZMass() < baseZMass)) {
+                    baseZMass = fh.getZMass();
+                }
                 if (fh.isWall()) {
-                    if (Foothold.isCollidableWall(fh, byId)) {
-                        walls.add(fh);
-                    }
+                    walls.add(fh);
                     continue;
                 }
                 ground.add(fh);
@@ -2535,7 +2731,7 @@ final class BotPhysicsEngine {
                 }
             }
             return new FootholdCollisionIndex(java.util.List.copyOf(walls), java.util.List.copyOf(fromBelow),
-                    minX, buckets);
+                    baseZMass, minX, buckets);
         });
     }
 
@@ -2789,6 +2985,7 @@ final class BotPhysicsEngine {
         final float gravity = gravityPerTick();
         final float maxFall = maxFallPerTick();
         final int floorY = mapFloorY(map);
+        final int moverZMass = moverZMassAt(map, from);
 
         for (int tick = 0; tick < FALL_SIM_TICK_CAP; tick++) {
             Point current = new Point((int) Math.round(physX), (int) Math.round(physY));
@@ -2807,7 +3004,7 @@ final class BotPhysicsEngine {
             int x = (int) Math.round(physX);
             int intY = (int) Math.round(physY);
             AirCollision collision = resolveAirCollision(map, new Point((int) Math.round(physX - stepX), previousIntY),
-                    new Point(x, intY));
+                    new Point(x, intY), moverZMass);
             if (collision.type() == AirCollisionType.WALL) {
                 physX = collision.point().x;
                 physY = collision.point().y;
@@ -2965,6 +3162,7 @@ final class BotPhysicsEngine {
         final float gravity = gravityPerTick();
         final float maxFall = maxFallPerTick();
         final int floorY = mapFloorY(map);
+        final int moverZMass = moverZMassAt(map, from);
         boolean flashInjected = false;
 
         for (int tick = 0; tick < FALL_SIM_TICK_CAP; tick++) {
@@ -2986,7 +3184,7 @@ final class BotPhysicsEngine {
             int intY = (int) Math.round(physY);
             Point previousPoint = new Point((int) Math.round(physX - stepX), previousIntY);
             Point nextPoint = new Point(x, intY);
-            AirCollision collision = resolveAirCollision(map, previousPoint, nextPoint);
+            AirCollision collision = resolveAirCollision(map, previousPoint, nextPoint, moverZMass);
             if (collision.type() == AirCollisionType.WALL) {
                 physX = collision.point().x;
                 physY = collision.point().y;

@@ -980,12 +980,22 @@ public class Server {
         // Localhost-only web view of the bot world graph + live per-map character occupancy.
         server.bots.BotWorldGraphWebServer.start();
 
+        // Living-economy shared price statistic: periodic ledger sweep (cheap no-op until market
+        // events flow). Bots read it only through their noisy per-bot perception.
+        server.bots.BotMarketConsensus.startSweeping();
+
         OpcodeConstants.generateOpcodeNames();
         CommandsExecutor.getInstance();
 
         for (Channel ch : this.getAllChannels()) {
             ch.reloadEventScriptManager();
         }
+    }
+
+    /** The channel-handler service singletons (note service, Fredrick processor). Exposed so bot
+     *  code can run the SAME Fredrick reclaim op players use instead of reimplementing it. */
+    public ChannelDependencies getChannelDependencies() {
+        return channelDependencies;
     }
 
     private ChannelDependencies registerChannelDependencies() {

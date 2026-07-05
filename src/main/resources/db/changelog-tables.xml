@@ -130,4 +130,8 @@
         <sqlFile path="db/tables/030-bot-familiarity.sql"/>
     </changeSet>
 
+    <changeSet id="31" author="Claude">
+        <sqlFile path="db/tables/031-bot-market.sql"/>
+    </changeSet>
+
 </databaseChangeLog>

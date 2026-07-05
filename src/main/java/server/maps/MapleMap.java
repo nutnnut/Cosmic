@@ -2630,6 +2630,12 @@ public class MapleMap {
         Channel cserv = chr.getClient().getChannelServer();
         chr.unregisterChairBuff();
 
+        // A departing character's live market shouts + any pending shout-deal awaiting them go stale
+        // on leaving the map (living-economy S3): drop them so bots don't chase a counterparty that
+        // left, and a re-entry starts clean.
+        server.bots.BotMarketShoutBus.getInstance().dropSpeakerOnMap(mapid, chr.getId());
+        server.bots.BotShoutTradeManager.forget(chr.getId());
+
         Party party = chr.getParty();
         chrWLock.lock();
         try {

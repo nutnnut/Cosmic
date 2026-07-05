@@ -57,6 +57,12 @@ class BotWorldGraphWebServerTest {
         assertEquals(9, BotWorldGraphWebServer.resolveMoveTargetFrom(CHAIN, Set.of(), 1, List.of(9)));
     }
 
+    @Test
+    void worldMapImageAvailability_matchesServedPngFolder() {
+        assertEquals(true, BotWorldGraphWebServer.hasWorldMapImage("000"));
+        assertEquals(false, BotWorldGraphWebServer.hasWorldMapImage("999999"));
+    }
+
     private static Character onMap(int id, int mapId, String name, boolean bot) {
         Character chr = mock(Character.class);
         when(chr.getId()).thenReturn(id);

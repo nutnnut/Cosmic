@@ -46,6 +46,9 @@ final class BotNavigationManager {
     // position (6-10 ticks = 300-500ms, jittered per park spot).
     private static final int BLOCKED_POS_GIVE_UP_MIN_TICKS = 6;
     private static final int BLOCKED_POS_GIVE_UP_JITTER_TICKS = 4;
+    // Drift radius for the blocked-position watchdog: a bounce across a launch point spans up to
+    // ~2 walk steps; anything inside this box is "parked", not progress (trackBlockedPositionGate).
+    private static final int BLOCKED_POS_DRIFT_PX = 16;
     // Steering anchor inside a launch window: aim a few px inside the nearest window edge
     // (window center when narrower than two insets) instead of the exact boundary pixel.
     // The executable region is the WHOLE window; steering at the boundary pixel parks bots
@@ -218,11 +221,15 @@ final class BotNavigationManager {
             // where the bot actually stands (pathlog-Leroy-2026-06-12T141517: stale DROP
             // window [1245,1285], bot at 1287, while a fresh plan's window contained the
             // bot the whole time). Drop the edge and replan from the live position.
-            if (runAiTick && entry.navEdge != null
+            // Fires while EITHER the edge or its committed route is still held: incidental
+            // clearNavigationState calls between ticks used to null navEdge (route re-served it
+            // next AI tick) and the give-up never tripped (KB oscillation ledger #15).
+            if (runAiTick && (entry.navEdge != null || entry.committedRoute != null)
                     && entry.navBlockedPosTicks > 0
                     && entry.navBlockedPosTicks >= entry.navBlockedPosGiveUpTicks) {
                 clearNavigation(entry);
                 clearCommittedRoute(entry); // parked against a gate — force a genuinely fresh route, not the same hop
+                entry.navBlockedPosTicks = 0; // consumed — the fresh plan starts with a clean count
             }
 
             BotNavigationGraph.Edge edge = reuseCommittedEdge(graph, entry, startRegionId, targetRegionId);
@@ -231,14 +238,14 @@ final class BotNavigationManager {
             boolean committedRouteReplan = false;  // had to (re)compute the committed route this tick
             if (edgeReused) {
                 BotNavigationGraph.Edge refreshedEdge = refreshPendingClimbExitEdge(
-                        graph, entry, bot, botPos, startRegionId, targetRegionId, edge, runAiTick);
+                        graph, entry, bot, botPos, startRegionId, targetRegionId, pathTargetPos, edge, runAiTick);
                 if (refreshedEdge != edge) {
                     edge = refreshedEdge;
                     edgeReused = edge != null;
                 }
                 if (edgeReused) {
                     BotNavigationGraph.Edge refreshedGroundEdge = refreshCommittedGroundEdge(
-                            graph, entry, startRegionId, targetRegionId, edge, runAiTick);
+                            graph, entry, startRegionId, targetRegionId, pathTargetPos, edge, runAiTick);
                     if (refreshedGroundEdge != edge) {
                         edge = refreshedGroundEdge;
                         edgeReused = edge != null;
@@ -251,12 +258,12 @@ final class BotNavigationManager {
                 // position-dependent; the old per-region next-hop cache was position-blind and could
                 // serve mutually-inconsistent cached hops (r45->r42 while r42->r45) and trap the bot
                 // ping-ponging. One route planned from the bot's own position is acyclic. The route is
-                // recomputed only when the goal region changes or the bot is knocked off it.
+                // recomputed only when the goal region/point changes or the bot is knocked off it.
                 // Same-region planning is intentionally allowed: intra-region portals appear as
                 // self-loop edges (fromRegionId == toRegionId) and the search picks them when the
                 // walk-to-entry + walk-from-exit cost beats the direct walk; an empty route falls
                 // through to direct steering.
-                edge = nextCommittedRouteEdge(graph, entry, startRegionId, targetRegionId);
+                edge = nextCommittedRouteEdge(graph, entry, startRegionId, targetRegionId, pathTargetPos);
                 if (edge != null) {
                     committedRouteFollow = true; // following the already-committed route (the good case)
                 } else if (committedRouteStillCoversTarget(entry, startRegionId, targetRegionId, pathTargetPos)) {
@@ -271,7 +278,7 @@ final class BotNavigationManager {
                         entry.committedRouteTargetRegionId = targetRegionId;
                         entry.committedRouteTargetPos = pathTargetPos == null ? null : new Point(pathTargetPos);
                         entry.committedRouteCursor = 0; // fresh route — follow it from the top
-                        edge = nextCommittedRouteEdge(graph, entry, startRegionId, targetRegionId);
+                        edge = nextCommittedRouteEdge(graph, entry, startRegionId, targetRegionId, pathTargetPos);
                         committedRouteReplan = true; // had to (re)plan — goal-region change or knocked off-route
                     } else {
                         // Uncommittable (intra-region portal detour): fall back to the per-hop planner.
@@ -352,7 +359,7 @@ final class BotNavigationManager {
                     : committedRouteFollow ? "route"     // following the committed route — want lots of these
                     : committedRouteReplan ? "replan"    // route recomputed (goal moved / knocked off-route)
                     : "new";
-            trackBlockedPositionGate(entry, botPos, edgeReused);
+            trackBlockedPositionGate(entry, botPos);
             entry.navPreciseTarget = shouldUsePreciseTarget(graph, entry, botPos, edge);
             entry.navTargetPos = selectWaypoint(entry, graph, botPos, edge);
             if (entry.pathLogger != null) {
@@ -413,22 +420,28 @@ final class BotNavigationManager {
 
     /**
      * Counts consecutive ticks spent parked against a committed edge's position gate
-     * (block reason "*-pos") without any actual movement. resolveTarget gives the edge up
-     * and replans once the count passes a jittered threshold (~300-500ms). Any position
-     * change restarts the count, so a slow legal approach (e.g. slippery-ground pulse
-     * creep) is never interrupted while it is making progress.
+     * (block reason "*-pos") without real progress. resolveTarget gives the edge up
+     * and replans once the count passes a jittered threshold (~300-500ms). Progress means
+     * leaving a small drift radius around where the blocking began: the old exact-position
+     * reset let a bot that BOUNCES ±walkStep across an unhittable launch point (1px jump
+     * window) restart the count every tick and oscillate forever. A slow legal approach
+     * (e.g. slippery-ground pulse creep) escapes the radius within a few ticks and still
+     * restarts the count; a false trip merely replans from the same spot and carries on.
      */
-    private static void trackBlockedPositionGate(BotEntry entry, Point botPos, boolean edgeReused) {
-        boolean blockedPos = edgeReused
-                && entry.lastEdgeBlockReason != null
+    private static void trackBlockedPositionGate(BotEntry entry, Point botPos) {
+        // Count ANY held edge parked against a *-pos gate — reused AND route-served alike. The old
+        // edgeReused-only rule was blind to a route whose hop is re-served from the committed-route
+        // bucket every AI tick (nav="route"): MAGEFUNNY froze 12min at (-1313,156) blocked tele-pos
+        // with the counter permanently at 0 (KB oscillation ledger #15).
+        boolean blockedPos = entry.lastEdgeBlockReason != null
                 && entry.lastEdgeBlockReason.endsWith("-pos");
         if (!blockedPos) {
             entry.navBlockedPosTicks = 0;
             return;
         }
         if (entry.navBlockedPosTicks == 0
-                || botPos.x != entry.navBlockedPosX
-                || botPos.y != entry.navBlockedPosY) {
+                || Math.abs(botPos.x - entry.navBlockedPosX) > BLOCKED_POS_DRIFT_PX
+                || Math.abs(botPos.y - entry.navBlockedPosY) > BLOCKED_POS_DRIFT_PX) {
             entry.navBlockedPosTicks = 0;
             entry.navBlockedPosGiveUpTicks = BLOCKED_POS_GIVE_UP_MIN_TICKS
                     + ThreadLocalRandom.current().nextInt(BLOCKED_POS_GIVE_UP_JITTER_TICKS + 1);
@@ -482,6 +495,7 @@ final class BotNavigationManager {
                                                                        Point botPos,
                                                                        int startRegionId,
                                                                        int targetRegionId,
+                                                                       Point targetPos,
                                                                        BotNavigationGraph.Edge edge,
                                                                        boolean runAiTick) {
         if (!runAiTick
@@ -500,7 +514,7 @@ final class BotNavigationManager {
         }
 
         // Committed-route SSOT: pull the next hop from the bot's planned route, not a shared cache entry.
-        BotNavigationGraph.Edge bestEdge = nextCommittedRouteEdge(graph, entry, startRegionId, targetRegionId);
+        BotNavigationGraph.Edge bestEdge = nextCommittedRouteEdge(graph, entry, startRegionId, targetRegionId, targetPos);
         if (sameEdge(edge, bestEdge) || bestEdge == null) {
             return edge;
         }
@@ -516,6 +530,7 @@ final class BotNavigationManager {
                                                                       BotEntry entry,
                                                                       int startRegionId,
                                                                       int targetRegionId,
+                                                                      Point targetPos,
                                                                       BotNavigationGraph.Edge edge,
                                                                       boolean runAiTick) {
         if (!runAiTick
@@ -530,7 +545,7 @@ final class BotNavigationManager {
 
         // Committed-route SSOT: the next hop comes from the bot's planned route, not a shared cache
         // entry. Refreshing against a cache every ground tick re-injects cross-region disagreement.
-        BotNavigationGraph.Edge bestEdge = nextCommittedRouteEdge(graph, entry, startRegionId, targetRegionId);
+        BotNavigationGraph.Edge bestEdge = nextCommittedRouteEdge(graph, entry, startRegionId, targetRegionId, targetPos);
         if (bestEdge == null || sameEdge(edge, bestEdge)) {
             return edge;
         }
@@ -1360,15 +1375,17 @@ final class BotNavigationManager {
             return fromRegion.pointAt(targetX);
         }
 
-        if (hasReachedDirectionalDropRunway(botPos, edge)) {
-            return new Point(edge.endPoint);
-        }
-
         BotNavigationGraph.Region fromRegion = graph.getRegion(edge.fromRegionId);
         if (fromRegion == null || fromRegion.isRopeRegion) {
             return new Point(edge.endPoint);
         }
 
+        // The live walk-off sim is the ONLY gate for feeding the landing point. An earlier
+        // "x past the runway anchor in the launch direction" shortcut also matched a bot standing
+        // on a DIFFERENT same-height foothold beyond the gap: it then steered at endPoint.x,
+        // reached that x still grounded (no lip there), and walked in place against the committed
+        // edge forever - travel deadlined and retried the identical hop in a loop
+        // (pathlog-itunes-2026-07-02T071428, NLC 600000000, DROP (2938,261)->(2898,381)).
         BotPhysicsEngine.WalkOffLanding liveOutcome = BotPhysicsEngine.simulateWalkOffLanding(
                 entry.bot.getMap(), botPos, Integer.signum(edge.launchStepX),
                 new BotPhysicsEngine.GroundTravelState(entry.physX, entry.hspeed, entry.groundPhysicsCarryMs),
@@ -1382,34 +1399,34 @@ final class BotNavigationManager {
         return new Point(edge.startPoint);
     }
 
-    private static boolean hasReachedDirectionalDropRunway(Point botPos, BotNavigationGraph.Edge edge) {
-        if (botPos == null || edge == null || edge.launchStepX == 0) {
-            return false;
-        }
-
-        int direction = Integer.signum(edge.launchStepX);
-        return direction > 0
-                ? botPos.x >= edge.startPoint.x
-                : botPos.x <= edge.startPoint.x;
-    }
-
+    /** Walking the authored direction from here must (a) dismount BEFORE the steering point —
+     *  point-steering stops at endPoint.x, so a lip beyond it is never reached (the wrong-ledge
+     *  walk-in-place park) — and (b) actually DESCEND off this region. The exact landing platform
+     *  is deliberately NOT matched against the edge's target: a walk-off landing is knife-edge
+     *  sensitive to the sub-tick launch x (1px flips which shelf catches the fall — 100000102 r17
+     *  lands r18 or r23 depending on stance), so requiring toRegionId equality parked bots at the
+     *  runway anchor forever. The route simply continues (replans) from wherever it touches down. */
     private static boolean matchesDirectionalDrop(BotNavigationGraph.Edge edge,
                                                   BotNavigationGraph graph,
                                                   BotPhysicsEngine.WalkOffLanding outcome) {
-        if (outcome == null || outcome.landing() == null) {
+        if (outcome == null || outcome.landing() == null || outcome.launchPoint() == null) {
             return false;
         }
         Foothold landingFoothold = outcome.landing().foothold();
         if (landingFoothold == null) {
             return false;
         }
-        if (graph.regionIdByFootholdId.getOrDefault(landingFoothold.getId(), -1) != edge.toRegionId) {
-            return false;
+        int landingRegionId = graph.regionIdByFootholdId.getOrDefault(landingFoothold.getId(), -1);
+        if (landingRegionId < 0 || landingRegionId == edge.fromRegionId) {
+            return false; // no region change (or off-graph ground): the dismount achieves nothing
         }
-        int xTolerance = Math.max(6, Math.abs(edge.launchStepX) + 2);
-        int yTolerance = BotMovementManager.cfg.JUMP_Y_THRESH * 2;
-        return Math.abs(outcome.landing().point().x - edge.endPoint.x) <= xTolerance
-                && Math.abs(outcome.landing().point().y - edge.endPoint.y) <= yTolerance;
+        if (outcome.landing().point().y <= outcome.launchPoint().y + 4) {
+            return false; // not a descent (same builder guard as addDirectionalDropEdge)
+        }
+        int slack = Math.max(6, Math.abs(edge.launchStepX) + 2);
+        return edge.launchStepX < 0
+                ? outcome.launchPoint().x >= edge.endPoint.x - slack
+                : outcome.launchPoint().x <= edge.endPoint.x + slack;
     }
 
     // Crowd de-stacking under a shared cache: each bot hashes (by its stable routeSeed) to one of
@@ -1534,6 +1551,20 @@ final class BotNavigationManager {
 
     /** The skill-edge mask a live bot is actually eligible for (teleport / flash-jump), the SSOT both the
      *  planner and the /mapgraph debug link compute from. 0 = walk-only. */
+    /** True when the graph was built for the bot's live movement physics. Speed/jump stats shape
+     *  every authored JUMP/FLASH_JUMP arc; snowshoes only matter where the ground is slippery
+     *  (mirrors the provider's canonicalProfile stripping). */
+    private static boolean graphMatchesLiveProfile(BotNavigationGraph graph, MapleMap map, Character bot) {
+        if (graph.movementProfile == null) {
+            return true;
+        }
+        BotMovementProfile live = BotMovementProfile.fromCharacter(bot);
+        return graph.movementProfile.totalSpeedStat() == live.totalSpeedStat()
+                && graph.movementProfile.totalJumpStat() == live.totalJumpStat()
+                && (graph.movementProfile.snowShoes() == live.snowShoes()
+                    || !BotPhysicsEngine.slipperyGround(map));
+    }
+
     static int botSkillMask(Character bot) {
         int mask = 0;
         if (bot != null) {
@@ -1689,6 +1720,16 @@ final class BotNavigationManager {
         if (startRegionId != targetRegionId) {
             return false;
         }
+        return committedRouteTargetPosMatches(entry, targetPos);
+    }
+
+    /** The committed route was planned toward {@code committedRouteTargetPos}; it only remains valid
+     *  while the live target is still (near) that point. Same-region goal-POINT changes matter as much
+     *  as region changes: a route's detour hops can be rational for one point and absurd for another in
+     *  the same region (600020100: the portal tour committed toward st01 at (541,155) kept being served
+     *  after travel gave up and pinned st00 at (-1392,155) — also region 97 — steering the bot AWAY
+     *  from a 79px direct walk forever; pathlog-VonLaugh-2026-07-04, KB oscillation ledger #15). */
+    private static boolean committedRouteTargetPosMatches(BotEntry entry, Point targetPos) {
         Point committedTarget = entry.committedRouteTargetPos;
         if (committedTarget == null || targetPos == null) {
             return committedTarget == null && targetPos == null;
@@ -1700,14 +1741,15 @@ final class BotNavigationManager {
      * Next hop off the committed route: the first usable, non-WALK edge leaving the bot's current
      * region. A* routes are region-acyclic, so the bot advances along its own route and never reverses
      * into the region it just came from (the GearArrow r45&lt;-&gt;r42 ping-pong was from inconsistent
-     * shared cache entries). Returns {@code null} when the route is absent/stale (goal region
-     * changed) or the bot's region isn't on it (knocked off) — the caller then recomputes and commits
-     * a fresh route.
+     * shared cache entries). Returns {@code null} when the route is absent/stale (goal region OR goal
+     * point changed — see {@link #committedRouteTargetPosMatches}) or the bot's region isn't on it
+     * (knocked off) — the caller then recomputes and commits a fresh route.
      */
     static BotNavigationGraph.Edge nextCommittedRouteEdge(BotNavigationGraph graph, BotEntry entry,
-                                                          int startRegionId, int targetRegionId) {
+                                                          int startRegionId, int targetRegionId, Point targetPos) {
         List<BotNavigationGraph.Edge> route = entry.committedRoute;
-        if (route == null || route.isEmpty() || entry.committedRouteTargetRegionId != targetRegionId) {
+        if (route == null || route.isEmpty() || entry.committedRouteTargetRegionId != targetRegionId
+                || !committedRouteTargetPosMatches(entry, targetPos)) {
             return null;
         }
         int cursor = Math.max(0, entry.committedRouteCursor);
@@ -2071,6 +2113,17 @@ final class BotNavigationManager {
         int skillMask = forcedSkillMask;
         if (skillsEnabled && bot != null) {
             skillMask |= botSkillMask(bot);
+        }
+        // Closest-profile fallback graph (exact-profile build pending): JUMP/FLASH_JUMP arcs are
+        // authored by per-x physics simulation of the GRAPH's profile, and flying them with
+        // different live speed/jump stats lands a different arc — e.g. Haste 140/120 on the base
+        // 100/100 graph overshot the platform and looped forever (pathlog-TeensDusk-2026-07-03,
+        // 103000000 JUMP r127->r122). Plan around them; WALK/PORTAL/CLIMB/DROP/TELEPORT stay
+        // profile-safe. canReach/costToGoal/nearestReachableRegion all share this mask, so
+        // reachability verdicts and redirects stay consistent with what the executor can fly.
+        if (bot != null && !graphMatchesLiveProfile(graph, map, bot)) {
+            skillMask = (skillMask | BotNavigationGraph.EXCLUDE_JUMP_ARCS)
+                    & ~BotNavigationGraph.SKILL_FLASH_JUMP;
         }
         try {
             // Reachability early-exit: if the target region is not forward-reachable from the start for
@@ -2552,11 +2605,21 @@ final class BotNavigationManager {
                                                                      MapleMap map,
                                                                      Point botPos,
                                                                      BotNavigationGraph.Edge edge) {
-        if (!canExecuteJumpFromCurrentPosition(graph, map, botPos, edge)) {
+        if (edge.type != BotNavigationGraph.EdgeType.JUMP && edge.type != BotNavigationGraph.EdgeType.FLASH_JUMP) {
             return false;
         }
-        int launchX = selectedJumpLaunchX(entry, graph, edge);
+        // STRICT window containment — the builder's expandJumpLaunchWindow authors the maximal
+        // per-x-simulated valid span, so any acceptance outside it fires a physically impossible
+        // arc by construction. A widened acceptance (one motor step) used to live here for narrow
+        // windows, but on a steep target slope the landing floor rises several px per x, so one
+        // pixel outside the window the arc falls short and the bot jumps in place forever
+        // (pathlog-CheatSTanK-2026-07-03, 600000000 JUMP r68->r62 window=[1620,1623] from x=1624).
+        // Unhittable narrow windows are instead handled by the blocked-pos watchdog give-up.
+        if (!isWithinJumpLaunchWindow(graph, botPos, edge)) {
+            return false;
+        }
         int tolerance = Math.max(1, BotPhysicsEngine.walkStep(map, entry != null ? entry.movementProfile : null));
+        int launchX = selectedJumpLaunchX(entry, graph, edge);
         return Math.abs(botPos.x - launchX) <= tolerance;
     }
 
@@ -2595,12 +2658,20 @@ final class BotNavigationManager {
         return true;
     }
 
+    /** Strict containment in the authored launch window. The builder authors the maximal
+     *  per-x-simulated valid span, so widening acceptance beyond it (a former one-motor-step
+     *  slack for narrow windows, 8a7e7b3) launches physically impossible arcs — on steep target
+     *  slopes even 1px outside the window the jump falls short and loops in place
+     *  (pathlog-CheatSTanK-2026-07-03). Narrow windows the motor can't stand in are handled by
+     *  the blocked-pos watchdog give-up, not by accepting an invalid launch. */
     static boolean isWithinJumpLaunchWindow(BotNavigationGraph graph,
                                             Point botPos,
                                             BotNavigationGraph.Edge edge) {
         if (botPos == null
-                || (edge.type != BotNavigationGraph.EdgeType.JUMP && edge.type != BotNavigationGraph.EdgeType.FLASH_JUMP)
-                || !edge.containsLaunchX(botPos.x)) {
+                || (edge.type != BotNavigationGraph.EdgeType.JUMP && edge.type != BotNavigationGraph.EdgeType.FLASH_JUMP)) {
+            return false;
+        }
+        if (!edge.containsLaunchX(botPos.x)) {
             return false;
         }
 

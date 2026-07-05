@@ -92,6 +92,9 @@ public final class BotPerformanceMonitor {
         notes.put("common-passive-recovery", "BotPotionManager.tickPassiveRecovery (regen / mana recovery)");
         notes.put("common-build-levelup", "BotBuildManager.checkLevelUp (skill point allocation)");
         notes.put("common-afk-check", "BotChatManager.tickAfkCheck (owner-AFK detection)");
+        notes.put("common-fm-scan", "BotFreeMarketManager.tickScan (throttled market-day reason check; arms an FM errand)");
+        notes.put("common-fm-errand", "BotFreeMarketManager.tickErrand (live FM session: travel/browse/stall/fredrick/shout-stand state machine)");
+        notes.put("common-shout-trade", "BotShoutTradeManager.tick (shout emit/match + shout-trade window state machine)");
         notes.put("common-trade", "BotInventoryManager.tickTrade (in-progress bot trade state machine)");
         notes.put("common-manual-trade", "BotInventoryManager.tickManualTrade (manual bot/player trade)");
         notes.put("common-pq-hooks", "BotPqHooks.tick (KPQ / OPQ / LPQ state machines)");
