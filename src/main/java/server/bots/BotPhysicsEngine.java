@@ -831,6 +831,70 @@ final class BotPhysicsEngine {
         syncCharacterState(entry);
     }
 
+    // === LOD1 motion plan (unobserved-map movement, docs/bot/unobserved-lod-design.md §2.1) ===
+    // Pure helpers: a LOD1 bot's position is not physics-integrated; it lerps (from->to) over a
+    // duration derived from the SAME ground speed physics uses, so abstract time ~= real time.
+
+    /** Pixel path length along a committed route's edge chain: each edge's start->end segment plus the
+     *  gap between consecutive edges. 0 for a null/empty route. The "distance without live A*" the
+     *  motion-plan duration uses (design §2.1) — the route was already planned; we only measure it. */
+    static double routePixelLength(java.util.List<BotNavigationGraph.Edge> route) {
+        if (route == null || route.isEmpty()) {
+            return 0.0;
+        }
+        double total = 0.0;
+        Point cursor = null;
+        for (BotNavigationGraph.Edge e : route) {
+            if (e == null) {
+                continue;
+            }
+            if (cursor != null) {
+                total += cursor.distance(e.startPoint);
+            }
+            total += e.startPoint.distance(e.endPoint);
+            cursor = e.endPoint;
+        }
+        return total;
+    }
+
+    /** Straight-line distance with the §2.1 slack factor, used when no committed route exists. */
+    static double straightLinePixelLength(Point from, Point to) {
+        return from == null || to == null ? 0.0 : from.distance(to) * 1.3;
+    }
+
+    /** Motion-plan traversal time (ms) for {@code pixelDistance} at the bot's real ground speed (px/s,
+     *  the same {@link BotMovementProfile#walkVelocityPxs()} physics integrates), with ±10% humanlike
+     *  jitter. Never below 1ms so arrival is always strictly after departure. */
+    static long motionDurationMs(double pixelDistance, double groundPxPerSec, java.util.Random rng) {
+        if (pixelDistance <= 0 || groundPxPerSec <= 0) {
+            return 0L;
+        }
+        double seconds = pixelDistance / groundPxPerSec;
+        double jitter = rng == null ? 1.0 : 1.0 + (rng.nextDouble() - 0.5) * 0.2; // ±10%
+        return Math.max(1L, Math.round(seconds * 1000.0 * jitter));
+    }
+
+    /** Lerp the plan position by wall clock. Before depart -> from; after arrive -> to. Y holds at
+     *  {@code holdY} (the foothold Y) the whole way; exact Y is only reconciled at the LOD0
+     *  transition foothold snap (§4). Returns null only when both endpoints are null. */
+    static Point motionLerp(Point from, Point to, long departMs, long arriveMs, int holdY, long nowMs) {
+        if (from == null && to == null) {
+            return null;
+        }
+        if (from == null) {
+            return new Point(to.x, holdY);
+        }
+        if (to == null || nowMs <= departMs || arriveMs <= departMs) {
+            return new Point(from.x, holdY);
+        }
+        if (nowMs >= arriveMs) {
+            return new Point(to.x, holdY);
+        }
+        double t = (nowMs - departMs) / (double) (arriveMs - departMs);
+        int x = (int) Math.round(from.x + (to.x - from.x) * t);
+        return new Point(x, holdY);
+    }
+
     /** Min drop (px) below the portal landing before a map-change spawn falls by gravity instead of
      *  snapping. Below this the floor is effectively at the spawn point — snap (no visible drop). */
     static final int SPAWN_FALL_MIN_DROP_PX = 12;

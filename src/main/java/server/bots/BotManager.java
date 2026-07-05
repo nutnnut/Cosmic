@@ -6779,7 +6779,12 @@ public class BotManager {
     }
 
     private boolean consumeAiTick(BotEntry entry) {
-        entry.aiTickAccumulatorMs += BotMovementManager.cfg.TICK_MS;
+        // Accumulate the REAL elapsed interval, not a constant: a LOD1 bot ticks at LOD1_TICK_MS
+        // (500ms) via retask, so adding a fixed TICK_MS would make its AI ticks fire 10x too slowly.
+        // tickIntervalMs is the SSOT for the bot's live cadence (set at registration + by retask);
+        // fall back to TICK_MS for entries built outside registerBotInternal (unit-test harnesses).
+        int elapsed = entry.tickIntervalMs > 0 ? entry.tickIntervalMs : BotMovementManager.cfg.TICK_MS;
+        entry.aiTickAccumulatorMs += elapsed;
         if (entry.aiTickAccumulatorMs < cfg.AI_TICK_MS) {
             return false;
         }
