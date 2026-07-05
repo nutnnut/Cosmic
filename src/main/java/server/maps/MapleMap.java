@@ -2467,6 +2467,13 @@ public class MapleMap {
             broadcastSpawnPlayerMapObjectMessage(chr, chr, true);
         }
 
+        // Unobserved-map LOD (docs/bot/unobserved-lod-design.md §4): a real player entering promotes
+        // this map's bots to full fidelity. Snap any LOD1 bot onto its foothold BEFORE the entering
+        // client's spawn packets are built below, so none is seen floating/underground on entry.
+        if (!(chr.getClient() instanceof BotClient)) {
+            server.bots.BotManager.getInstance().materializeBotsForObserver(this);
+        }
+
         sendObjectPlacement(chr.getClient());
 
         if (isStartingEventMap() && !eventStarted()) {
