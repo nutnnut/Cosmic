@@ -63,6 +63,10 @@ public class BotEntry {
     long motionDepartMs = 0L;
     long motionArriveMs = 0L;
     int motionHoldY = 0; // last-known foothold Y, held for Y until arrival (exact Y only matters at the LOD0 transition)
+    // LOD1 cross-map travel (design §2.2): a hop's execution becomes "dwell the modeled hop seconds,
+    // then warp" instead of walking to the portal. This is the dwell deadline for the current hop
+    // (0 = not armed / between hops). Distinct from portalEnterDwellUntilMs (the observed pre-warp pause).
+    long lod1TravelDwellUntilMs = 0L;
     BotMovementProfile movementProfile = BotMovementProfile.base();
 
     // Physics
