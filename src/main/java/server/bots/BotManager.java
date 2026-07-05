@@ -193,8 +193,10 @@ public class BotManager {
         // Unobserved-map LOD (docs/bot/unobserved-lod-design.md): when no real player can observe a bot,
         // simplify its simulation. Each subsystem's simplification is an independent boolean so any one
         // can be bisected/disabled live (all default true; all false => bit-for-bit today's behavior).
-        // NOTE (Stage 1): only _CADENCE is consumed yet, and it is still inert until Stage 2 supplies the
-        // coarse-tick physics path (see cadenceForLod). _PHYSICS/_TRAVEL/_GRIND are declared now, wired later.
+        // NOTE (through Stage 2): _PHYSICS (§2.1 motion-plan movement) and _TRAVEL (§2.2 timed warps) are
+        // live. _GRIND (§2.3 abstract combat) is Stage 3. _CADENCE (the 50ms->500ms retask) stays gated OFF
+        // until Stage 3: LOD1 bots still fight for real in Stage 2, so 500ms would 10x-slow their combat
+        // (see cadenceForLod).
         public boolean SIMPLIFY_UNOBSERVED_BOTS_PHYSICS = true;  // §2.1 motion-plan movement instead of physics/nav
         public boolean SIMPLIFY_UNOBSERVED_BOTS_TRAVEL = true;   // §2.2 timed warps instead of executed hops
         public boolean SIMPLIFY_UNOBSERVED_BOTS_GRIND = true;    // §2.3 abstract kill events instead of real combat
@@ -899,7 +901,7 @@ public class BotManager {
     /**
      * LOD1->LOD0 (design §4): materialize the bot from its motion plan back onto real physics —
      * finalize the lerp position, clear the plan, snap to the foothold below (spawnIntoMap settles it),
-     * mark LOD0, and (once Stage 2's cadence flip is live) retask to 50ms. Called from the bot's own
+     * mark LOD0, and (once Stage 3's cadence flip is live) retask to 50ms. Called from the bot's own
      * tick (updateLod) and synchronously from {@link #materializeBotsForObserver} at addPlayer.
      */
     private void materializeBotToLod0(BotEntry entry) {
@@ -919,7 +921,7 @@ public class BotManager {
         BotMovementManager.resetEntryStateAfterTeleport(entry);
         entry.lod = BotEntry.Lod.LOD0;
         entry.lodUnobservedSinceMs = 0L;
-        retaskToFullFidelity(entry);                          // no-op until the Stage 2 cadence flip
+        retaskToFullFidelity(entry);                          // no-op until the Stage 3 cadence flip
         BotMovementManager.broadcastMovement(entry);          // now observed — push the settled position
     }
 
@@ -969,16 +971,21 @@ public class BotManager {
     }
 
     /**
-     * The tick interval (ms) a bot should run at for its current LOD. Stage 1 deliberately returns the
-     * full-fidelity {@code TICK_MS} unconditionally: a LOD1 bot still runs the FULL tick body (physics
-     * expects ~50ms steps), so retasking to 500ms now would break its movement. Stage 2 supplies the
-     * coarse-tick physics path and flips {@code stage2CoarseTickReady} to true, at which point a LOD1 bot
-     * with {@code SIMPLIFY_UNOBSERVED_BOTS_CADENCE} (and the physics simplification) drops to LOD1_TICK_MS.
+     * The tick interval (ms) a bot should run at for its current LOD. Returns the full-fidelity
+     * {@code TICK_MS} unconditionally through Stage 2. Movement (§2.1) and travel (§2.2) are now
+     * time-based and cadence-independent, but Stage 2 LOD1 bots still run REAL combat (abstract grind
+     * is Stage 3) — dropping a grinding bot to 500ms would make it attack ~10x slower and wreck its
+     * kill/exp/loot rates. So the 500ms retask stays gated OFF until Stage 3's abstract grind makes the
+     * coarse tick safe: {@code stage3AbstractGrindReady} is flipped there, and only then does a LOD1 bot
+     * with {@code SIMPLIFY_UNOBSERVED_BOTS_CADENCE} (and the physics simplification) drop to LOD1_TICK_MS.
+     * Stage 3 must ALSO exclude bots on a real-walking travel leg (taxi/ferry) and any uncovered state
+     * (see {@link #lod1MotionPlanCovered}) so no raw physics integrator ever runs at 500ms.
      */
     private int cadenceForLod(BotEntry entry) {
-        final boolean stage2CoarseTickReady = false; // <-- Stage 2 flips this on
-        if (stage2CoarseTickReady && entry.lod == BotEntry.Lod.LOD1
-                && cfg.SIMPLIFY_UNOBSERVED_BOTS_CADENCE && cfg.SIMPLIFY_UNOBSERVED_BOTS_PHYSICS) {
+        final boolean stage3AbstractGrindReady = false; // <-- Stage 3 flips this on (NOT Stage 2)
+        if (stage3AbstractGrindReady && entry.lod == BotEntry.Lod.LOD1
+                && cfg.SIMPLIFY_UNOBSERVED_BOTS_CADENCE && cfg.SIMPLIFY_UNOBSERVED_BOTS_PHYSICS
+                && lod1MotionPlanCovered(entry)) {
             return cfg.LOD1_TICK_MS;
         }
         return BotMovementManager.cfg.TICK_MS;
