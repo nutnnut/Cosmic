@@ -693,7 +693,13 @@ class BotCombatManager {
         // Default: re-poll at the fixed cadence; refined to the nearest rebuff deadline at the clean exit.
         entry.nextBuffCheckAtMs = now + SKILL_BUFF_SCAN_MS;
 
-        if (bot.getMap().getAllMonsters().stream().noneMatch(Monster::isAlive)) return;
+        // Map-global "is anything here to fight" gate. Read the map's O(1) spawned-monster counter
+        // (SSOT) instead of materializing + scanning getAllMonsters() per bot: on a crowded grind map
+        // every bot answered this identical map-global question by taking objectRLock and walking ALL
+        // map objects (mobs+drops+npcs), convoying into the multi-hundred-ms tickBuffs spikes. count==0
+        // is exactly the "map cleared" case this guards; a just-killed mob awaiting removal still counts,
+        // which at worst lets a due, deadline-gated rebuff fire a beat early (harmless while grinding).
+        if (bot.getMap().getSpawnedMonstersOnMap() == 0) return;
 
         if (trySupportBuff(entry, bot, now)) {
             return;
