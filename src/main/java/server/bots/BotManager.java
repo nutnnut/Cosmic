@@ -5920,6 +5920,13 @@ public class BotManager {
         // allocates timing state, while the enabled path keeps every per-subsystem label.
         boolean perf = BotPerformanceMonitor.enabled();
         long t = perf ? System.nanoTime() : 0L;
+        // Abstract-grind LOD1 bots (Stage 3) take no real damage and emit calibrated kills instead of
+        // simulating combat, so the whole live-combat slice — contact-damage sweep, skill (re)buffs,
+        // heal, magic-guard, recovery — is wasted work for them. Gate it off: their tickAbstractGrind
+        // charges coarse MP, and slice 2 will model HP/pots honestly via the danger model rather than
+        // a live per-tick sweep. Same SSOT predicate the grind dispatch uses, so a bot that abstract-
+        // grinds this tick never also runs the real combat slice.
+        boolean abstractCombatless = abstractGrindEligible(entry);
         // ~5Hz gate for latency-insensitive opportunity scans (loot pickup, quest turn-in), staggered
         // across bots by id so their cost spreads over ticks instead of spiking one. A ground drop or a
         // quest turn-in tolerates a 200ms cadence; combat/potions/physics stay at the full tick rate.
@@ -5930,7 +5937,7 @@ public class BotManager {
         // bots don't all sweep on the same tick). The cooldown tick-down inside tickMobDamage still
         // runs every call, so the invuln window length is unaffected.
         // ponytail: 1-in-2 halves the sweep; widen to (& 3) if a later capture shows it still hot.
-        boolean runMobTouchSweep = ((tickN & 1) == (bot.getId() & 1));
+        boolean runMobTouchSweep = !abstractCombatless && ((tickN & 1) == (bot.getId() & 1));
         BotCombatManager.tickMobDamage(entry, bot, runMobTouchSweep);
         if (perf) BotPerformanceMonitor.record("common-mob-damage", System.nanoTime() - t);
         if (bot.getHp() <= 0) {
@@ -5964,15 +5971,17 @@ public class BotManager {
         // Living economy: persist this bot's dirty price beliefs every few minutes, on its own
         // tick thread (books are tick-thread-owned by design).
         BotMarketBook.maybeFlush(entry, bot);
-        if (perf) t = System.nanoTime();
-        BotCombatManager.tryCastMagicGuard(entry, bot);
-        if (perf) BotPerformanceMonitor.record("common-magic-guard", System.nanoTime() - t);
-        if (perf) t = System.nanoTime();
-        // Top-priority pot-saver: a low-HP-pool bot keeps Beginner Recovery up to bleed the HP gap with
-        // spare MP. Runs in the common section (in OR out of combat); self-gates so it never interrupts
-        // an attack and never blocks the autopot from still potting at its threshold.
-        BotCombatManager.tryCastRecovery(entry, bot);
-        if (perf) BotPerformanceMonitor.record("common-recovery-skill", System.nanoTime() - t);
+        if (!abstractCombatless) {
+            if (perf) t = System.nanoTime();
+            BotCombatManager.tryCastMagicGuard(entry, bot);
+            if (perf) BotPerformanceMonitor.record("common-magic-guard", System.nanoTime() - t);
+            if (perf) t = System.nanoTime();
+            // Top-priority pot-saver: a low-HP-pool bot keeps Beginner Recovery up to bleed the HP gap with
+            // spare MP. Runs in the common section (in OR out of combat); self-gates so it never interrupts
+            // an attack and never blocks the autopot from still potting at its threshold.
+            BotCombatManager.tryCastRecovery(entry, bot);
+            if (perf) BotPerformanceMonitor.record("common-recovery-skill", System.nanoTime() - t);
+        }
         if (perf) t = System.nanoTime();
         BotBuildManager.checkLevelUp(entry, bot);
         if (perf) BotPerformanceMonitor.record("common-build-levelup", System.nanoTime() - t);
@@ -6036,13 +6045,16 @@ public class BotManager {
             // Support healing is top priority — runs before buffs so that a bot below the heal
             // threshold casts Heal before a rebuff uses up this tick's action window. If it fires,
             // entry.attackCooldownMs is set to the heal animation lock and tickActionLocked() will
-            // return true, causing the caller to skip attack logic this tick.
-            if (perf) t = System.nanoTime();
-            BotCombatManager.tickSupportHealing(entry, bot);
-            if (perf) BotPerformanceMonitor.record("common-support-heal", System.nanoTime() - t);
-            if (perf) t = System.nanoTime();
-            BotCombatManager.tickBuffs(entry, bot);
-            if (perf) BotPerformanceMonitor.record("common-combat-buffs", System.nanoTime() - t);
+            // return true, causing the caller to skip attack logic this tick. Skipped for abstract-
+            // grind bots (no real HP loss to heal, no live combat to buff — see abstractCombatless).
+            if (!abstractCombatless) {
+                if (perf) t = System.nanoTime();
+                BotCombatManager.tickSupportHealing(entry, bot);
+                if (perf) BotPerformanceMonitor.record("common-support-heal", System.nanoTime() - t);
+                if (perf) t = System.nanoTime();
+                BotCombatManager.tickBuffs(entry, bot);
+                if (perf) BotPerformanceMonitor.record("common-combat-buffs", System.nanoTime() - t);
+            }
             if (perf) t = System.nanoTime();
             BotBuffManager.tick(entry, bot);
             if (perf) BotPerformanceMonitor.record("common-buff-pots", System.nanoTime() - t);
