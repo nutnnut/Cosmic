@@ -8,9 +8,18 @@ Durable facts from the 2000-bot perf push. Session state + resume point:
 - **Stages 0+1** = observer substrate + kill calibration, behaviorally **INERT** (label only).
 - **Stage 2** = LOD1 motion-plan movement (skip per-tick nav/physics) + cross-map timed warps +
   observation transitions + Y-band gate. Cadence still 50ms; combat still real.
-- **Stage 3 (NEXT, not built)** = abstract grind + the 500ms cadence flip = the ~10× wakeup win.
-  Cadence and combat are COUPLED: you cannot drop LOD1 to 500ms while combat is real (a grinder
-  would attack 10× slower and crater exp/loot). So the cadence flip MUST wait for abstract grind.
+- **Stage 3 slice 1 = BUILT** (`1ef845878`): abstract grind + the 500ms cadence flip = the ~10× wakeup
+  win. A covered unobserved (LOD1) grinder stops real combat/nav and emits calibrated kills via
+  `MapleMap.damageMonster` (exp/drops/quests/spawn bookkeeping full-fidelity), then drops to 500ms.
+  SSOT gate `BotManager.abstractGrindEligible` shared by `cadenceForLod` + the grind dispatch so a bot
+  at 500ms is never left running real 50ms combat. Coarse per-kill MP charge (casters still drink MP
+  pots). Cadence and combat are COUPLED: you cannot drop LOD1 to 500ms while combat is real (a grinder
+  would attack 10× slower and crater exp/loot) — that's why the flip lives with abstract grind.
+  Verified at 30x (420 bots): combat-target-search 0.5+→0.002 cores, tick-abstract-grind 0.04–0.1 core
+  for the WHOLE LOD1 grind pop, real exp/meso/loot flowing.
+- **Stage 3 slice 2 (NOT built)** = exact resource honesty (attacks-per-kill MP, ammo, HP/pot from the
+  danger model; honor break/leech in abstract grind for rate fidelity). Slice 1 charges only a coarse
+  1-cast MP/kill; LOD1 bots take no real damage so they don't buy HP pots (economy gap to close).
 
 ## Perf hot-path traps (reusable)
 1. **`MapleMap.getAllMonsters()` / `getMonsters()` / `getMapObjectsInRange()` are O(ALL map
@@ -22,9 +31,27 @@ Durable facts from the 2000-bot perf push. Session state + resume point:
      by a full `getAllMonsters().stream()` scan; replaced with the O(1) lock-free SSOT
      `MapleMap.getSpawnedMonstersOnMap()` (AtomicInteger, incremented on spawn / decremented in
      removeKilledMonsterObject). Fix cut common-combat-buffs −66% (commit 7fa267df3).
-   - The remaining `getAllMonsters` callers that need the actual list (not a count) are the
-     residual convoy risk; a real root fix would be a **monster-type index on MapleMap** so the
-     scan stops iterating non-monster objects (shared non-bot code — rule #2 caution).
+   - **DONE (`481309326`): monster fast-index on MapleMap.** `getMonsters()`/`getAllMonsters()` now
+     read a write-through `oid->Monster` ConcurrentHashMap (maintained under objectWLock at
+     addMapObject/spawnAndAddRangedMapObject/removeMapObject) instead of walking ALL objects under
+     objectRLock. Lock-free, no all-objects walk. Killed the monster-scan convoy: abstract-grind pick
+     tail 965→44ms, passive-loot tail 586→45ms at 30x. NOTE: `getMapObjectsInRange` (items/npcs/etc.)
+     still walks all objects — index items too if item scans become the bottleneck.
+
+## The combat-buffs stall was GC, not a lock (2026-07-06, big one)
+The multi-second `common-combat-buffs`/`common-systems` tick spikes (1.4–1.9 cores, max 4–6s) that
+looked like an objectRLock convoy were **GC stop-the-world**. Tell: the tick-stall log attributes them
+across EVERY unrelated phase (tick-autopilot, quest-scan, fm-errand, abstract-grind) — a lock convoy
+hits one lock's callers, STW hits everyone. `jstat -gcutil` at 473 bots on **-Xmx4096m**: old gen
+**94% full**, 778 concurrent GC cycles → young-GC evacuation failures = the multi-second STW.
+- **Fix = heap, not code** (`52b91b8df`, launch.bat): `-Xms8g -Xmx8g -XX:+UseG1GC
+  -XX:InitiatingHeapOccupancyPercent=40`. At 8GB/465 bots: old gen 94→41%, concurrent GC 778→10,
+  combat-buffs mean 1.43→0.32 cores (−78%), tick-total 2.28→1.70, stalls ~40–130/30s → ~10 over the run.
+- Live retained set **~1.23GB old gen (~2.6MB/bot)** at 465 bots → projects ~5.3GB at 2000 → fits 8GB.
+- Residual few stalls are `tick-autopilot`/advisor (the scroll-dp single-thread DECIDE_POOL serial
+  ceiling, ~1 core) + fm-errand narration. Metaspace sits ~98% (auto-grows, FGC=0 — not urgent).
+- **Lesson:** before chasing a "lock convoy" in bot code, check `jstat` — a cross-phase stall spread is
+  GC. The box has 32GB; the 2–4GB heap was a launch-flag oversight.
 2. **`bot-grind-advisor` (single-thread `DECIDE_POOL`) is DEMAND-SATURATED, not per-op-bound.**
    The gear-valuation reproduction-cost DP (`BotScrollValuer.costFrom`) was ~156ms/call because it
    memoized score at 0.001 resolution and fractional stat-gains blow up the state space.

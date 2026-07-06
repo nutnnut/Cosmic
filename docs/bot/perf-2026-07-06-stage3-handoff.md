@@ -1,10 +1,20 @@
-# Perf/LOD session handoff — 2026-07-06 (resume at Stage 3)
+# Perf/LOD session handoff — 2026-07-06 (Stage 3 slice 1 + monster index + 8GB heap LANDED)
 
 Supersedes `perf-2026-07-05-handoff.md`. Goal unchanged: **2000+ bots on this 6-core box**
 (was ~600 ceiling). Owner-approved lossy lever = unobserved-map LOD
-(`docs/bot/unobserved-lod-design.md`). This session landed the lossless fixes + LOD Stages
-0–2 + scroll-DP throughput, all committed on `dev`. **Next: Stage 3 (the cadence flip / ~10×
-wakeup win — THE 2000-bot lever), then the 2000-bot botpop test.**
+(`docs/bot/unobserved-lod-design.md`).
+
+## UPDATE (2026-07-06 pm, testing at 30x = ~465 bots, then ~1000): three big landings
+1. **Stage 3 slice 1** (`1ef845878`): LOD1 abstract grind + 500ms cadence flip — THE ~10× wakeup lever.
+   Real combat/nav collapsed for the unobserved pop (combat-target-search 0.5+→0.002 cores).
+2. **MapleMap monster fast-index** (`481309326`): killed the getAllMonsters O(all-objects) objectRLock
+   convoy (abstract-grind/passive-loot tails 900+/580ms → ~45ms). Owner OK'd upstream perf edits.
+3. **8GB heap** (`52b91b8df`, launch.bat was -Xmx2048m): the multi-second "combat-buffs" stalls were
+   **GC, not locks** (old gen 94% full at 4GB → evac-failure STW). 8GB+G1 IHOP=40: old gen 94→41%,
+   combat-buffs 1.43→0.32 cores. See `kb/kb_bot_lod_and_perf_2026-07-06.md` "combat-buffs stall was GC".
+**Next: (a) Stage 3 slice 2 (exact resource honesty); (b) grow the managed-bot pool (currently ~1000)
+toward 2000 to run the real 2000-bot botpop test; (c) scroll-dp advisor demand-reduction (the residual
+~1-core serial ceiling).** Original Stage-1/2 detail below (still accurate).
 
 ## Committed on `dev` (all compiled, tree clean; branch `dev`, off `master`)
 ```
