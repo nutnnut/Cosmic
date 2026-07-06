@@ -118,7 +118,10 @@ final class BotScrollManager {
     /** Lazily-loaded cheapest NPC-shop buy price per item id (populate-once cache; all shop items). */
     private static volatile Map<Integer, Integer> shopPrices;
 
-    private static final int REPRO_CURVE_CACHE_MAX = 4096;
+    // Higher cap so the wholesale clear() below is a true last resort, not a recurring cold-storm: with
+    // baseScore bucketed (see cachedReproductionValue) the distinct-key set is small, and each curve is a
+    // light lambda + a 0.1-resolution memo, so tens of thousands fit comfortably in the 8GB heap.
+    private static final int REPRO_CURVE_CACHE_MAX = 32768;
     private static final Map<ReproCurveKey, DoubleUnaryOperator> reproCurveCache = new ConcurrentHashMap<>();
 
     private BotScrollManager() {}
@@ -1308,8 +1311,15 @@ final class BotScrollManager {
         if (specs.isEmpty()) {
             return BotScrollValuer.reproductionValue(baseScore, tuc, scrolls, baseCostMeso);
         }
+        // baseScore is baseOffenseValue(bot, ...), a continuous per-bot weighted score, so keying the
+        // cache on its exact bits made a distinct curve for nearly every (bot, item) pair. At 700+ bots
+        // that blew past the cap into a wholesale clear(), so every scroll scan / chaos gamble re-solved
+        // the reproduction DP cold — the #1 CPU consumer in the JFR profile (costFrom + its HashMap memo
+        // on the bot-grind-advisor thread). Bucket baseScore to 0.1 (the DP's own resolution) so bots of
+        // similar offense share one warm curve, and build the curve at the bucketed score to match.
+        double qBaseScore = Math.round(baseScore * 10.0) / 10.0;
         ReproCurveKey key = new ReproCurveKey(
-                Double.doubleToLongBits(baseScore),
+                Double.doubleToLongBits(qBaseScore),
                 tuc,
                 priceBucket(Math.max(0.0, baseCostMeso)),
                 List.copyOf(specs));
@@ -1319,7 +1329,7 @@ final class BotScrollManager {
         return reproCurveCache.computeIfAbsent(key, ignored -> {
             long t0 = BotPerformanceMonitor.start();
             try {
-                return BotScrollValuer.reproductionValue(baseScore, tuc, List.copyOf(normalized), baseCostMeso);
+                return BotScrollValuer.reproductionValue(qBaseScore, tuc, List.copyOf(normalized), baseCostMeso);
             } finally {
                 BotPerformanceMonitor.recordSince("scroll-curve-build", t0);
             }
