@@ -123,6 +123,11 @@ public class MapleMap {
     private final AtomicInteger spawnedMonstersOnMap = new AtomicInteger(0);
     private final AtomicInteger droppedItemCount = new AtomicInteger(0);
     private final Collection<Character> characters = new LinkedHashSet<>();
+    // O(1) gate for isObservedByPlayer(): number of characters on this map that count as observers
+    // (real client, not hidden-from-bots). Maintained write-through at addPlayer/removePlayer and by
+    // Character.setHiddenFromBots (a GM toggling hide while on-map). Replaces the per-broadcast
+    // chrRLock scan that ran on every bot movement/attack/buff packet.
+    private final AtomicInteger observerCount = new AtomicInteger(0);
     private final Map<Integer, Set<Integer>> mapParty = new LinkedHashMap<>();
     private final Map<Integer, Portal> portals = new HashMap<>();
     private final Map<Integer, Integer> backgroundTypes = new HashMap<>();
@@ -2332,6 +2337,9 @@ public class MapleMap {
         try {
             characters.add(chr);
             chrSize = characters.size();
+            if (countsAsObserver(chr)) {
+                observerCount.incrementAndGet();
+            }
 
             if (party != null && party.getMemberById(chr.getId()) != null) {
                 addPartyMemberInternal(chr, party.getId());
@@ -2662,6 +2670,9 @@ public class MapleMap {
                 removePartyMemberInternal(chr, party.getId());
             }
 
+            if (countsAsObserver(chr)) {
+                observerCount.decrementAndGet();
+            }
             characters.remove(chr);
         } finally {
             chrWLock.unlock();
@@ -3151,17 +3162,20 @@ public class MapleMap {
     /** True if any real client (human, including a hidden GM) is in the map to observe broadcasts.
      *  Bots run on a no-op {@link BotClient}, so a map of only bots returns false. */
     public boolean isObservedByPlayer() {
-        chrRLock.lock();
-        try {
-            for (Character chr : characters) {
-                if (!(chr.getClient() instanceof BotClient) && !chr.isHiddenFromBots()) {
-                    return true;
-                }
-            }
-            return false;
-        } finally {
-            chrRLock.unlock();
-        }
+        return observerCount.get() > 0;
+    }
+
+    /** A character contributes to {@link #observerCount} iff it is a real client (not a bot) and is
+     *  not hidden from bots. Kept identical to the old per-scan predicate in isObservedByPlayer. */
+    private static boolean countsAsObserver(Character chr) {
+        return !(chr.getClient() instanceof BotClient) && !chr.isHiddenFromBots();
+    }
+
+    /** Called by {@link Character#setHiddenFromBots} when a real player toggles observer visibility
+     *  while already on this map, keeping {@link #observerCount} in sync (addPlayer/removePlayer only
+     *  see the value at entry/exit). {@code +1} = became an observer, {@code -1} = stopped being one. */
+    public void adjustObserverCount(int delta) {
+        observerCount.addAndGet(delta);
     }
 
     public Collection<Character> getCharacters() {

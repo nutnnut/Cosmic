@@ -6600,7 +6600,17 @@ public class Character extends AbstractCharacterObject {
     }
 
     public void setHiddenFromBots(boolean hiddenFromBots) {
+        if (this.hiddenFromBots == hiddenFromBots) {
+            return;
+        }
         this.hiddenFromBots = hiddenFromBots;
+        // Keep the current map's O(1) observer counter in sync: going hidden drops this player as an
+        // observer, going visible restores it. Only real-client players are ever counted (a bot never
+        // toggles this). addPlayer/removePlayer handle entry/exit; this handles a toggle while on-map.
+        MapleMap map = getMap();
+        if (map != null && !(getClient() instanceof BotClient)) {
+            map.adjustObserverCount(hiddenFromBots ? -1 : +1);
+        }
     }
 
     public boolean isMapObjectVisible(MapObject mo) {
