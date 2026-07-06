@@ -785,11 +785,13 @@ class BotCombatManager {
         }
         Monster target = entry.grindTarget;
         if (target == null || !target.isAlive()) {
-            target = nearestMonster(bot.getMap().getAllMonsters().stream()
-                    .filter(Monster::isAlive).toList(), bot.getPosition().x, bot.getPosition().y);
-        }
-        if (target == null) {
-            return false;                                      // nothing to fight: don't burn a charge
+            // No committed target: defer the rock buff rather than pay an O(all-map-objects)
+            // getAllMonsters scan under objectRLock here — this was the last such scan left in the
+            // tickBuffs hot path after the getSpawnedMonstersOnMap fix, and a candidate for the
+            // multi-second combat-buffs tail-stalls. A rock buff (Shadow Partner etc.) with nothing
+            // committed to fight isn't worth a charge; the bot rebuffs on the next scan once it
+            // commits to a target.
+            return false;
         }
         double perHit = estimateBestSkillHitDamage(entry, bot, target);
         if (perHit <= 0) {
