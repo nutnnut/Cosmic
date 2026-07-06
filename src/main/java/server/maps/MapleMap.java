@@ -109,6 +109,14 @@ public class MapleMap {
     private static final Map<Integer, Pair<Integer, Integer>> dropBoundsCache = new HashMap<>(100);
 
     private final Map<Integer, MapObject> mapobjects = new LinkedHashMap<>();
+    // Monster fast-index (oid -> Monster): a write-through view of the MONSTER-typed entries in
+    // mapobjects, maintained under objectWLock at the same add/remove sites (addMapObject,
+    // spawnAndAddRangedMapObject, removeMapObject). Lets getMonsters()/getAllMonsters() answer without
+    // taking objectRLock and walking ALL map objects (mobs+drops+npcs+summons) — that O(all-objects) scan
+    // was the objectRLock convoy source behind the multi-second bot tick tail-stalls at high bot density.
+    // ConcurrentHashMap so monster queries are lock-free (callers already tolerate weak consistency via
+    // isAlive() checks).
+    private final Map<Integer, Monster> monstersByOid = new java.util.concurrent.ConcurrentHashMap<>();
     private final Set<Integer> selfDestructives = new LinkedHashSet<>();
     private final Collection<SpawnPoint> monsterSpawn = Collections.synchronizedList(new LinkedList<>());
     private final Collection<SpawnPoint> allMonsterSpawn = Collections.synchronizedList(new LinkedList<>());
@@ -397,6 +405,9 @@ public class MapleMap {
         try {
             mapobject.setObjectId(curOID);
             this.mapobjects.put(curOID, mapobject);
+            if (mapobject.getType() == MapObjectType.MONSTER) {
+                monstersByOid.put(curOID, (Monster) mapobject);
+            }
         } finally {
             objectWLock.unlock();
         }
@@ -425,6 +436,9 @@ public class MapleMap {
         try {
             mapobject.setObjectId(curOID);
             this.mapobjects.put(curOID, mapobject);
+            if (mapobject.getType() == MapObjectType.MONSTER) {
+                monstersByOid.put(curOID, (Monster) mapobject);
+            }
             for (Character chr : characters) {
                 if (condition == null || condition.canSpawn(chr)) {
                     if (chr.getPosition().distanceSq(mapobject.getPosition()) <= getRangedDistance()) {
@@ -493,6 +507,7 @@ public class MapleMap {
         objectWLock.lock();
         try {
             this.mapobjects.remove(num);
+            monstersByOid.remove(num); // no-op when num isn't a monster; keeps the monster index in lockstep
         } finally {
             objectWLock.unlock();
         }
@@ -1178,7 +1193,8 @@ public class MapleMap {
     }
 
     public final List<MapObject> getMonsters() {
-        return getMapObjectsInRange(new Point(0, 0), Double.POSITIVE_INFINITY, Arrays.asList(MapObjectType.MONSTER));
+        // Lock-free read from the monster fast-index (no objectRLock, no all-objects walk). See monstersByOid.
+        return new ArrayList<MapObject>(monstersByOid.values());
     }
 
     public final List<Reactor> getAllReactors() {
@@ -1191,12 +1207,8 @@ public class MapleMap {
     }
 
     public final List<Monster> getAllMonsters() {
-        List<Monster> list = new LinkedList<>();
-        for (MapObject mmo : getMonsters()) {
-            list.add((Monster) mmo);
-        }
-
-        return list;
+        // Lock-free read from the monster fast-index (no objectRLock, no all-objects walk). See monstersByOid.
+        return new ArrayList<Monster>(monstersByOid.values());
     }
 
     public int countItems() {
