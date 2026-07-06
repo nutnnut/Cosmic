@@ -64,6 +64,28 @@ hits one lock's callers, STW hits everyone. `jstat -gcutil` at 473 bots on **-Xm
    lazy per-score DP on `curve.apply`, uninstrumented until the `scroll-dp` perf section added
    this session.)
 
+## combat-buffs WAS real CPU — abstract-grind combat-slice gate + O(1) observer counter (2026-07-06 pm, verified A/B)
+Two changes, A/B'd on the live server (baseline 655 bots vs after 714 bots, 0 observed maps both):
+- **`98a3351c1` — O(1) `MapleMap.isObservedByPlayer()`.** It took `chrRLock` and linearly scanned every
+  character, and it is the funnel gate in `broadcastMessage` that runs on EVERY bot broadcast
+  (movement/attack/stance/damage/buff). On a bot-only map (0 observers) every broadcast scanned all
+  characters just to learn "nobody's watching." Replaced with a write-through `AtomicInteger observerCount`
+  (maintained at addPlayer/removePlayer + `Character.setHiddenFromBots`); the method is now one atomic read.
+- **`79463d782` — LOD-gate the live-combat slice for abstract grinders.** `runCommonTickSystems` ran the
+  whole combat slice (tickMobDamage sweep, tickBuffs, tickSupportHealing, tryCastMagicGuard, tryCastRecovery)
+  for EVERY bot incl. ~580 unobserved 500ms abstract grinders, who take no real damage and emit calibrated
+  kills — so it's pure waste. Gated behind the existing `abstractGrindEligible` SSOT.
+- **Verified numbers (real process CPU via Get-Process TotalProcessorTime delta, the ground truth):**
+  **2.50 → 1.32 cores (−47%), at HIGHER pop (655→714).** Section `common-combat-buffs` **1.591 → 0.039
+  cores (−97.5%)**, avg/call 0.585ms → 0.018ms. So that 0.585ms/call WAS genuine work (buff casts +
+  `getBuffedValue` fair-lock pairs + the per-broadcast observer scan), not wall-clock noise — removing the
+  calls dropped REAL CPU by 1.18 cores. Abstract grind stayed healthy (53.9k kills, no NPE/errors).
+- **Correction to the wall-clock note below:** the "cores" number DOES inflate with lock-wait, but the
+  underlying combat-buffs work was substantially real CPU/contention. The A/B (removing it → −1.18 real
+  cores) is ground truth. Don't over-apply the "it's only wall-clock" lesson — cross-check BOTH ways.
+- **New #1 CPU consumer after this: `scroll-dp` ~1.0 core** (the single-thread `DECIDE_POOL` advisor serial
+  ceiling, item 2 below). That is now THE 2000-bot bottleneck — demand-reduction is the next lever.
+
 ## `BotPerformanceMonitor` "cpu_core" is WALL-CLOCK, not CPU (measurement trap, verified 2026-07-06)
 `record()` stores `System.nanoTime()` elapsed per section; the CSV `cpu_core` = summed elapsed / window
 across all tick threads. That includes time a thread is **blocked** (lock wait, GC safepoint) inside the
