@@ -64,6 +64,21 @@ hits one lock's callers, STW hits everyone. `jstat -gcutil` at 473 bots on **-Xm
    lazy per-score DP on `curve.apply`, uninstrumented until the `scroll-dp` perf section added
    this session.)
 
+## `BotPerformanceMonitor` "cpu_core" is WALL-CLOCK, not CPU (measurement trap, verified 2026-07-06)
+`record()` stores `System.nanoTime()` elapsed per section; the CSV `cpu_core` = summed elapsed / window
+across all tick threads. That includes time a thread is **blocked** (lock wait, GC safepoint) inside the
+section — NOT just CPU. Proof: at 735 bots the CSV showed tick-total **3.4 "cores"** and
+common-combat-buffs **2.3**, but actual process CPU (Get-Process TotalProcessorTime delta) was **2.03 of
+6 cores** and GC was 1.2%. A subset (tick-total) can't exceed total process CPU, so the "cores" are
+wall-clock occupancy, not load. **Always cross-check a scary "cores" number against real process CPU
+before optimizing it.** common-combat-buffs looks huge because it's the highest-call-rate longer section,
+so it absorbs the most lock-wait/GC-pause wall-time attribution — it's a VICTIM/BAROMETER of contention,
+not itself CPU-heavy. jstack during its "spikes" shows the bot-tick (`pool-3-thread`) threads PARKED, not
+in tickBuffs. Corollary: the session's "-78% combat-buffs" (8GB) and monster-index tail drops are real
+*contention/stall* reductions, but don't read the "cores" as CPU. Real bottleneck for smooth 2000-bot
+operation is LOCK CONTENTION (chrRLock broadcasts, remaining objectRLock item scans), not CPU (which has
+headroom: ~2 cores at 735 bots) and not GC (fine at 8GB).
+
 ## Measurement gotchas
 - The advisor **ramps ~6–8 min after boot** and is **bursty** — capture perflog DURING a burst
   (poll `bot-grind-advisor` `cpu=` delta, fire when >0.3 cores) or you read ~0.
