@@ -4042,6 +4042,14 @@ public class Character extends AbstractCharacterObject {
     }
 
     public void updateActiveEffects() {
+        // prtLock BEFORE effLock. This method reaches getPartyMembersOnSameMap (which takes prtLock) via
+        // isUpdatingEffect -> StatEffect.isActive while holding effLock — an implicit eff->prt order that
+        // deadlocked AB-BA against registerEffect's prt->eff when a party member buffed this character at
+        // the instant it was map-changing (updateActiveEffects runs from MapleMap.addPlayer). Every other
+        // site that takes both locks (registerEffect, cancelEffect) uses prt->eff; match that convention.
+        // The sole caller (MapleMap.addPlayer) holds neither lock, so hoisting prtLock here is safe, and
+        // the inner prtLock acquisition is reentrant on the same thread.
+        prtLock.lock();
         effLock.lock();     // thanks davidlafriniere, maple006, RedHat for pointing a deadlock occurring here
         try {
             Set<BuffStat> updatedBuffs = new LinkedHashSet<>();
@@ -4067,6 +4075,7 @@ public class Character extends AbstractCharacterObject {
             updateEffects(updatedBuffs);
         } finally {
             effLock.unlock();
+            prtLock.unlock();
         }
     }
 
