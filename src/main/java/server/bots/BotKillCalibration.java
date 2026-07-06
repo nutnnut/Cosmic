@@ -215,6 +215,17 @@ final class BotKillCalibration {
         return st != null && st.samples > 0 && st.emaRatio > 0 ? st.emaRatio : 1.0;
     }
 
+    /** The advisor's committed kills/hr prediction for a bot on {@code mapId}, or 0 when there is none /
+     *  it is for a different map / it is stale. Stage 3's abstract-grind rate uses this (× the bucket
+     *  correction) when the bot has no fresh own-measured rate yet. */
+    static double predictedKph(int botCharId, int mapId, long freshWithinMs) {
+        Prediction pred = predictionByBot.get(botCharId);
+        if (pred == null || pred.killsPerHour <= 0 || pred.mapId != mapId) {
+            return 0.0;
+        }
+        return System.currentTimeMillis() - pred.atMs <= freshWithinMs ? pred.killsPerHour : 0.0;
+    }
+
     /** A bot's own fresh measured rate for a (map,mob), or 0 when it has none / it is stale. Stage 3
      *  prefers this over the bucket factor when present. */
     static double freshBotRate(int botCharId, int mapId, int mobId, long freshWithinMs) {

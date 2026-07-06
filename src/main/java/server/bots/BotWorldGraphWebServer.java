@@ -1198,6 +1198,8 @@ public final class BotWorldGraphWebServer {
                     .append(",\"errand\":").append(e.autopilotErrandMapId)
                     .append(",\"grinding\":").append(e.grinding)
                     .append(",\"lod\":").append(jsonStr(e.lod.name()))
+                    .append(",\"tickMs\":").append(e.tickIntervalMs)
+                    .append(",\"absKills\":").append(e.abstractKillCount)
                     .append(",\"following\":").append(e.following)
                     .append(",\"followTo\":").append(e.followTargetId)
                     .append(",\"transit\":").append(e.autopilotTransitFollow)

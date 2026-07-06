@@ -89,9 +89,11 @@ Read-only per-bot autopilot internals for live debugging (party cohesion, follow
   "id","n","map","lvl",
   "party","crew","owner",          // owner: "null" | "self" | <human name>
   "apParty","dst","errand",        // apParty = party-autopilot on; dst = travel target map; errand = resupply map (-1 none)
-  "grinding","lod","following","followTo","transit","waiting",
+  "grinding","lod","tickMs","absKills","following","followTo","transit","waiting",
   "op",                            // operator override command name ("" = none)
                                    // lod: unobserved-map level of detail "LOD0" (full fidelity) | "LOD1" (unobserved/coarse)
+                                   // tickMs: live tick interval (50 = LOD0/full; 500 = LOD1 coarse cadence, Stage 3)
+                                   // absKills: cumulative Stage-3 abstract kills emitted by this bot while unobserved
   "wt","atk","aoe","noAmmo",       // combat-readiness: weapon type; resolved single-target/aoe skill ids (atk=0 => no offensive skill => basic swing only); ammo gate
   "status",                        // the @botstatus line
   "detail":{                       // only when ?id= given

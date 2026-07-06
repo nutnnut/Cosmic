@@ -187,7 +187,7 @@ public class BotManager {
                 19, 20, 21, 21, 20, 18, 16, 15, 13, 10, 10, 10 // 12-23
         };
         public int POPULATION_NOISE = 2;                   // +/- jitter on the hourly target
-        public double POPULATION_MULTIPLIER = 10.0;        // scales the whole online target up/down, so bot
+        public double POPULATION_MULTIPLIER = 30.0;        // scales the whole online target up/down, so bot
                                                            // count is adjustable without editing the curve/noise
 
         // Unobserved-map LOD (docs/bot/unobserved-lod-design.md): when no real player can observe a bot,
@@ -982,13 +982,28 @@ public class BotManager {
      * (see {@link #lod1MotionPlanCovered}) so no raw physics integrator ever runs at 500ms.
      */
     private int cadenceForLod(BotEntry entry) {
-        final boolean stage3AbstractGrindReady = false; // <-- Stage 3 flips this on (NOT Stage 2)
-        if (stage3AbstractGrindReady && entry.lod == BotEntry.Lod.LOD1
-                && cfg.SIMPLIFY_UNOBSERVED_BOTS_CADENCE && cfg.SIMPLIFY_UNOBSERVED_BOTS_PHYSICS
-                && lod1MotionPlanCovered(entry)) {
+        // Stage 3: a covered LOD1 bot runs abstract combat (deadline-driven, cadence-independent),
+        // motion-plan movement (wall-clock lerp) and timed-warp travel — nothing per-tick needs 50ms, so
+        // it drops to the coarse LOD1_TICK_MS. abstractGrindEligible is the SSOT gate shared with the
+        // grind dispatch, so a bot at 500ms is never left running real 50ms-cadence combat at 500ms.
+        if (cfg.SIMPLIFY_UNOBSERVED_BOTS_CADENCE && cfg.SIMPLIFY_UNOBSERVED_BOTS_PHYSICS
+                && abstractGrindEligible(entry)) {
             return cfg.LOD1_TICK_MS;
         }
         return BotMovementManager.cfg.TICK_MS;
+    }
+
+    /**
+     * SSOT gate for Stage 3 coarse operation: a LOD1 bot whose movement state is "covered" (grounded, no
+     * trade/market/errand/operator — see {@link #lod1MotionPlanCovered}) and which is NOT on a
+     * real-walking travel leg (taxi/ferry approach still needs real movement). Shared by
+     * {@link #cadenceForLod} (the 500ms retask) and the grind dispatch (the abstract-kill branch) so the
+     * two can never disagree. Gated by the {@code SIMPLIFY_UNOBSERVED_BOTS_GRIND} toggle.
+     */
+    private boolean abstractGrindEligible(BotEntry entry) {
+        return cfg.SIMPLIFY_UNOBSERVED_BOTS_GRIND
+                && lod1MotionPlanCovered(entry)   // implies lod==LOD1, grounded, no trade/market/errand/operator
+                && entry.followTravelTaxiNpcId == 0 && !entry.followTravelFerry;
     }
 
     /** Retask the bot iff its desired LOD cadence differs from its current tick interval. */
@@ -4235,6 +4250,24 @@ public class BotManager {
 
         // Grind mode: navigate toward nearest monster, attack when in range
         if (entry.grinding) {
+            // Stage 3 (design §2.3): a covered unobserved (LOD1) bot skips real combat + movement and
+            // emits calibrated abstract kills instead; uncovered/observed grinders fall through to real
+            // combat below. tickAbstractGrind always consumes the tick (the bot holds ground).
+            if (abstractGrindEligible(entry)) {
+                if (!perf) {
+                    long tAbs = BotPerformanceMonitor.startStallPhase();
+                    tickAbstractGrind(entry, bot, botPos, runAiTick);
+                    BotPerformanceMonitor.recordStallPhase("tick-abstract-grind", tAbs);
+                } else {
+                    long tAbs = System.nanoTime();
+                    try {
+                        tickAbstractGrind(entry, bot, botPos, runAiTick);
+                    } finally {
+                        BotPerformanceMonitor.record("tick-abstract-grind", System.nanoTime() - tAbs);
+                    }
+                }
+                return;
+            }
             LocalOpportunityAttackResult grindResult;
             if (!perf) {
                 long tGrindTrace = BotPerformanceMonitor.startStallPhase();
@@ -6489,6 +6522,130 @@ public class BotManager {
             BotPhysicsEngine.teleportTo(entry, bot, pos);
         }
         entry.lastNavDecision = "lod1-motion";
+    }
+
+    // ===== Stage 3: abstract grind for covered, unobserved (LOD1) bots (design §2.3) =====
+    // A bot's own fresh measured rate stays authoritative for this long after its last kill; the
+    // advisor's committed prediction stays usable for this long after it was installed. Then the rate
+    // falls back to the (job, level-band) correction bucket, or a short idle re-check if nothing exists.
+    private static final long ABSTRACT_FRESH_RATE_MS = 10 * 60_000L;
+    private static final long ABSTRACT_PREDICTION_FRESH_MS = 30 * 60_000L;
+
+    /**
+     * One coarse tick of abstract grind: the bot holds its ground (no target search / attack planning /
+     * physics) and emits calibrated kill events against live spawned mobs through the real death path
+     * ({@link MapleMap#damageMonster} → exp/drops/quests/spawn bookkeeping all full-fidelity). Buffs,
+     * potions, passive loot and passive recovery already ran in runCommonTickSystems this tick, so this
+     * method only owns the kill generator and its honest MP charge. Always consumes the tick.
+     */
+    private void tickAbstractGrind(BotEntry entry, Character bot, Point botPos, boolean runAiTick) {
+        entry.grindTarget = null;                  // abstract grind holds no live combat target
+        BotPhysicsEngine.idleOnGround(entry, bot); // stay grounded/synced in place (unobserved: no broadcast)
+        if (!runAiTick) {
+            return;
+        }
+        long now = System.currentTimeMillis();
+        if (entry.nextAbstractKillAtMs == 0L) {
+            entry.nextAbstractKillAtMs = now + abstractKillDelayMs(entry, bot);
+            return;
+        }
+        if (now < entry.nextAbstractKillAtMs) {
+            return;
+        }
+        Monster mob = pickAbstractKillTarget(entry, bot, botPos);
+        if (mob != null) {
+            entry.lastAbstractMobId = mob.getId();
+            bot.getMap().damageMonster(bot, mob, mob.getHp()); // exactly lethal, credited to the bot
+            chargeAbstractKillMp(entry, bot);
+            entry.abstractKillCount++;
+        }
+        // Re-arm regardless: when the map is spawn-limited (mob == null) the supply cap is already baked
+        // into the calibrated rate, so skipping this kill and waiting the modeled interval keeps rates honest.
+        entry.nextAbstractKillAtMs = now + abstractKillDelayMs(entry, bot);
+    }
+
+    /** Poisson (exponential) inter-kill delay (ms) around the calibrated mean, so abstract kills don't
+     *  arrive metronomically. Falls back to a 5s idle re-check when no calibrated rate exists yet. */
+    private long abstractKillDelayMs(BotEntry entry, Character bot) {
+        double kph = calibratedKillsPerHour(entry, bot);
+        if (kph <= 0) {
+            return 5_000L;
+        }
+        double meanMs = 3_600_000.0 / kph;
+        double u = Math.max(1e-6, ThreadLocalRandom.current().nextDouble());
+        long d = Math.round(-meanMs * Math.log(u));                   // exponential inter-arrival
+        return Math.max(200L, Math.min(d, Math.round(meanMs * 5.0))); // clamp pathological head/tail
+    }
+
+    /** The bot's calibrated kills/hr on its current map: its own fresh measured rate when it has one,
+     *  else the advisor's committed prediction × the (job, level-band) correction bucket (Stage 0). */
+    private double calibratedKillsPerHour(BotEntry entry, Character bot) {
+        int mapId = bot.getMapId();
+        double fresh = BotKillCalibration.freshBotRate(bot.getId(), mapId, entry.lastAbstractMobId,
+                ABSTRACT_FRESH_RATE_MS);
+        if (fresh > 0) {
+            return fresh;
+        }
+        double predicted = BotKillCalibration.predictedKph(bot.getId(), mapId, ABSTRACT_PREDICTION_FRESH_MS);
+        if (predicted <= 0) {
+            return 0.0;
+        }
+        int jobId = bot.getJob() != null ? bot.getJob().getId() : 0;
+        return predicted * BotKillCalibration.bucketFactor(jobId, bot.getLevel() / 10);
+    }
+
+    /** Pick a live spawned mob for an abstract kill: nearest to the bot (so its loot lands within the
+     *  bot's passive-loot range), preferring active-quest mobs so quests still progress. Map-wide, but
+     *  only runs on a due kill (seconds apart), not per tick. Null when the map is spawn-limited. */
+    private Monster pickAbstractKillTarget(BotEntry entry, Character bot, Point botPos) {
+        MapleMap map = bot.getMap();
+        if (map == null || map.getSpawnedMonstersOnMap() == 0) {
+            return null;
+        }
+        java.util.Set<Integer> questMobs = entry.activeQuestMobIds;
+        Monster nearest = null;
+        double nearestSq = Double.MAX_VALUE;
+        Monster nearestQuest = null;
+        double nearestQuestSq = Double.MAX_VALUE;
+        for (server.maps.MapObject o : map.getMonsters()) {
+            Monster m = (Monster) o;
+            if (!m.isAlive()) {
+                continue;
+            }
+            double dsq = m.getPosition().distanceSq(botPos);
+            if (dsq < nearestSq) {
+                nearestSq = dsq;
+                nearest = m;
+            }
+            if (!questMobs.isEmpty() && questMobs.contains(m.getId()) && dsq < nearestQuestSq) {
+                nearestQuestSq = dsq;
+                nearestQuest = m;
+            }
+        }
+        return nearestQuest != null ? nearestQuest : nearest;
+    }
+
+    /** Coarse honest MP charge per abstract kill: one cast of the bot's primary attack skill. Real kills
+     *  take several attacks and multi-target casts hit several mobs, so this is an approximation (refined
+     *  in Stage 3 slice 2); charging it keeps casters spending MP → drinking MP pots (economy) instead of
+     *  farming free. Non-casters (getMpCon 0) are unaffected. */
+    private void chargeAbstractKillMp(BotEntry entry, Character bot) {
+        if (entry.attackSkillId == 0) {
+            return;
+        }
+        client.Skill skill = client.SkillFactory.getSkill(entry.attackSkillId);
+        if (skill == null) {
+            return;
+        }
+        int level = bot.getSkillLevel(skill);
+        if (level <= 0) {
+            return;
+        }
+        StatEffect effect = skill.getEffect(level);
+        int mpCon = effect == null ? 0 : effect.getMpCon();
+        if (mpCon > 0) {
+            bot.addMP(-Math.min(mpCon, bot.getMp()));
+        }
     }
 
     void stepMovementCore(BotEntry entry,

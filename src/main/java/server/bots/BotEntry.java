@@ -67,6 +67,13 @@ public class BotEntry {
     // then warp" instead of walking to the portal. This is the dwell deadline for the current hop
     // (0 = not armed / between hops). Distinct from portalEnterDwellUntilMs (the observed pre-warp pause).
     long lod1TravelDwellUntilMs = 0L;
+    // LOD1 abstract grind (Stage 3, design §2.3): a covered unobserved bot stops running real combat and
+    // emits calibrated kill events instead. nextAbstractKillAtMs is the wall-clock deadline for the next
+    // abstract kill (0 = not armed). lastAbstractMobId is the last mob type killed (own-fresh-rate lookup
+    // key). abstractKillCount is telemetry surfaced in /api/botdebug.
+    long nextAbstractKillAtMs = 0L;
+    int lastAbstractMobId = 0;
+    long abstractKillCount = 0L;
     BotMovementProfile movementProfile = BotMovementProfile.base();
 
     // Physics

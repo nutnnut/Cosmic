@@ -111,6 +111,7 @@ public final class BotPerformanceMonitor {
         notes.put("tick-anchored-farm", "tickAnchoredFarm dispatch");
         notes.put("tick-standalone-move", "tickStandaloneMoveTarget (owner-offline move)");
         notes.put("tick-grind-dispatch", "grind mode dispatch in tickCore");
+        notes.put("tick-abstract-grind", "Stage 3 LOD1 abstract grind (calibrated kill generator, replaces real combat when unobserved)");
         notes.put("tick-map-change", "map change handler (rebuild footholds, regrounding)");
         notes.put("step-movement-core", "stepMovementCore wrapper (nav resolve + movement phase)");
         notes.put("opportunity-attack", "tryLocalOpportunityAttack");
