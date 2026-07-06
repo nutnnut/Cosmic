@@ -34,10 +34,22 @@ final class BotScrollValuer {
     /** Iterations for the restart fixed point; D converges geometrically so this is comfortably ample
      *  even for high-restart (low success-rate) targets where the contraction rate approaches 1. */
     private static final int RESTART_ITERS = 120;
-    /** Fixed-point convergence tolerance in meso: D converges geometrically toward values in the
-     *  millions, so a sub-meso residual is numerically indistinguishable from the converged answer
-     *  while landing in ~5-15 iterations instead of the full {@link #RESTART_ITERS} cap. */
-    private static final double RESTART_EPSILON_MESO = 1.0;
+    /** Fixed-point convergence tolerance, RELATIVE to the value: reproduction costs run from a few
+     *  thousand meso (cheap low-level bases) to the millions (scrolled rares), so a flat meso epsilon
+     *  either over-iterates the millions or terminates cheap items prematurely. Stop when the restart
+     *  value moves less than {@code REL} of itself, floored by {@code FLOOR} meso. At 0.1% of value that
+     *  is a few-thousand-meso residual on a multi-million valuation — far below any decision-relevant
+     *  precision — and lands in ~10 iterations instead of the ~20 a 1-meso tolerance needed. The 1-meso
+     *  floor keeps the fixed point exact on the small synthetic values the unit tests assert, where the
+     *  relative term would otherwise over-loosen convergence (residual amplifies with the contraction
+     *  rate). Past ~1M the relative term dominates and gives a few-hundred-meso tolerance — negligible. */
+    private static final double RESTART_EPSILON_REL = 0.0003;
+    private static final double RESTART_EPSILON_FLOOR_MESO = 1.0;
+
+    /** Convergence tolerance for the restart fixed point at a given value (see {@link #RESTART_EPSILON_REL}). */
+    private static double convergenceEps(double value) {
+        return Math.max(RESTART_EPSILON_FLOOR_MESO, Math.abs(value) * RESTART_EPSILON_REL);
+    }
 
     private BotScrollValuer() {}
 
@@ -60,15 +72,24 @@ final class BotScrollValuer {
             return score -> base; // can't be improved -> worth exactly its base cost everywhere
         }
         Map<Long, Double> curve = new ConcurrentHashMap<>();
-        return score -> curve.computeIfAbsent(Math.round(score * 1000.0),
-                k -> {
-                    long t0 = BotPerformanceMonitor.start(); // perf: lazy reproduction-cost DP
-                    try {
-                        return productionCost(score, baseScore, tuc, scrolls, base);
-                    } finally {
-                        BotPerformanceMonitor.recordSince("scroll-dp", t0);
-                    }
-                });
+        return score -> {
+            // Quantize the queried score to 0.1 — the same resolution the inner DP memoizes at
+            // (costFrom keys score at round(a*10)), so it can't distinguish anything finer anyway.
+            // The planner samples many reachable stat-scores per candidate at 0.001 (BotScrollPlanner),
+            // and each distinct score on a cold curve is a full DP solve (`scroll-dp`); merging them into
+            // 0.1 bands collapses ~100x of those near-duplicate solves into memo hits with no
+            // decision-relevant precision loss (curve values are sampled at integer stat bands).
+            double q = Math.round(score * 10.0) / 10.0;
+            return curve.computeIfAbsent(Math.round(q * 10.0),
+                    k -> {
+                        long t0 = BotPerformanceMonitor.start(); // perf: lazy reproduction-cost DP
+                        try {
+                            return productionCost(q, baseScore, tuc, scrolls, base);
+                        } finally {
+                            BotPerformanceMonitor.recordSince("scroll-dp", t0);
+                        }
+                    });
+        };
     }
 
     /** Cheapest expected meso to produce an item reaching {@code >= target} (restart-on-ruin DP). */
@@ -81,7 +102,7 @@ final class BotScrollValuer {
         for (int iter = 0; iter < RESTART_ITERS; iter++) {
             Map<Long, Double> memo = new HashMap<>();
             double next = costFrom(tuc, baseScore, target, scrolls, baseCost, restart, memo);
-            if (Math.abs(next - restart) <= RESTART_EPSILON_MESO) {
+            if (Math.abs(next - restart) <= convergenceEps(next)) {
                 restart = next;
                 break;
             }
@@ -129,7 +150,7 @@ final class BotScrollValuer {
         for (int iter = 0; iter < RESTART_ITERS; iter++) {
             Map<Long, Double> memo = new HashMap<>();
             double next = costFrom(tuc, baseScore, target, scrolls, baseCost, restart, memo);
-            if (Math.abs(next - restart) <= RESTART_EPSILON_MESO) {
+            if (Math.abs(next - restart) <= convergenceEps(next)) {
                 restart = next;
                 break;
             }
