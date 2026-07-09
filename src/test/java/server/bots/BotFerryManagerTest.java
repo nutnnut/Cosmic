@@ -225,6 +225,51 @@ class BotFerryManagerTest {
     }
 
     @Test
+    void shouldWalkBackThroughScriptedExitWhenTicketlessAtLeafreDock() {
+        // The Leafre dock's only exits are the ticket-gated ferry and the SCRIPTED west00 (dracoout)
+        // portal. A ticketless bot here must walk back to the seller's map and re-buy — before this
+        // leg existed the dock was a permanent trap (live pile-up of ~36 bots).
+        Fixture f = fixture(240000110, new Point(0, 0));
+        when(f.bot().getMeso()).thenReturn(100000);
+        Portal west00 = mock(Portal.class);
+        when(west00.getPosition()).thenReturn(new Point(5, 0));
+        when(west00.getPortalStatus()).thenReturn(Portal.OPEN);
+        when(west00.getScriptName()).thenReturn("dracoout");
+        when(f.map().getPortals()).thenReturn(List.of()); // no PLAIN portal back — scripted only
+        when(f.map().getPortal("west00")).thenReturn(west00);
+        // The real dracoout script warps to 240000100; a scripted portal that does NOT change the
+        // map trips the script-no-land guard, so the mock must land the warp.
+        org.mockito.Mockito.doAnswer(inv -> {
+            when(f.bot().getMapId()).thenReturn(240000100);
+            return null;
+        }).when(west00).enterPortal(any());
+
+        try (Seams seams = new Seams()) {
+            seams.hasTicket = false;
+
+            assertTrue(BotFerryManager.tickBoarding(f.entry(), f.bot(), BotFerryManager.LEAFRE_TO_ORBIS, 0L, true));
+            verify(west00).enterPortal(any());
+            assertTrue(seams.ticketsBought.isEmpty()); // buy happens after landing on the seller's map
+        }
+    }
+
+    @Test
+    void shouldWalkBackDownTheChainWhenTicketlessAtOrbisPier() {
+        // Ticketless at the Orbis pier (usher map): walk back to the PREVIOUS chain map (the walkway),
+        // not fail the hop — each landing re-plans until the bot is back at the seller.
+        Fixture f = fixture(200000111, new Point(0, 0));
+        when(f.bot().getMeso()).thenReturn(100000);
+        Portal back = portalTo(f.map(), 1, 200000110, new Point(5, 0));
+
+        try (Seams seams = new Seams()) {
+            seams.hasTicket = false;
+
+            assertTrue(BotFerryManager.tickBoarding(f.entry(), f.bot(), ORBIS, 0L, true));
+            verify(back).enterPortal(any());
+        }
+    }
+
+    @Test
     void shouldCrossWalkwayThroughPierPortal() {
         Fixture f = fixture(200000110, new Point(0, 0));
         Portal toPier = portalTo(f.map(), 1, 200000111, new Point(5, 0));
