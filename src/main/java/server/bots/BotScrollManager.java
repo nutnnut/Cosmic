@@ -1929,6 +1929,15 @@ final class BotScrollManager {
             if (eq.getUpgradeSlots() < 1) {
                 continue; // server quirk: a chaos apply still needs (and consumes) a slot
             }
+            // Chaos is only economically worth the scroll on offense gear: a piece carrying weapon ATT,
+            // or a magic weapon with BOTH INT and MATT. A chaos reroll moves every stat randomly, and only
+            // on those pieces does the convex upside (a big ATT / INT+MATT roll) beat the scroll's market
+            // cost — on pure-DEF/utility gear it's a losing gamble. Gating here also skips the bulk of the
+            // chaos-scan CPU (the per-equip market quote + full stat-convolution) for the many non-offense
+            // pieces a bot owns, instead of computing an EV that would be rejected anyway.
+            if (!(eq.getWatk() > 0 || (eq.getInt() > 0 && eq.getMatk() > 0))) {
+                continue;
+            }
             EquipQuote q = equipMarketQuote(entry, bot, eq);
             if (q == null || q.band() < CHAOS_MIN_BAND || q.bandUnit() <= 0) {
                 continue;
