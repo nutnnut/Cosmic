@@ -70,8 +70,10 @@ JDBC harness numbers (150 items + 50 equips per save, localhost):
 
 ## Measured outcome (live)
 
-- Shutdown with ~867 online bots: **14.3s wall, 0 deadlocks, 0 two-minute overruns** (~61 saves/s).
-  Previously ~2-4 saves/s serial → would have been 4-7 minutes.
+- Final build, 573 online bots after a grind soak: **16.9s shutdown, 0 deadlocks, 0 save errors,
+  0 two-minute overruns** across the whole run (boot + 960-bot spawn wave + grind + shutdown).
+  An earlier run saved ~867 bots in 14.3s (before the MonsterBook semicolon fix, so with a handful
+  of failed monsterbook saves). Previously ~2-4 saves/s serial → 4-7 minutes for the same populations.
 - Equip attachment integrity after batched saves: 0 missing equip rows, 0 equip rows on non-equip
   items (verified by SQL join checks).
 - During heavy save concurrency deadlocks may still occasionally appear as
