@@ -24,6 +24,20 @@ Fixed on dev: `3230e69e7` (ferry) + `d3c8c599e` (job errand).
 - NPC 2082003 on the dock (Temple of Time travel) has NO script in the repo — travel not coded
   server-side; deliberately not modeled (owner: don't code it yet).
 
+### Instance 2 (2026-07-09 late): Nett's Pyramid hub 926010000 "Pyramid Dunes" (`636f89325`)
+- Entry: plain desert portal `piramid00` on 260020500 (script `nets_in`) warps in unconditionally
+  and saves the "MIRROR" location — bots wandering/patrolling the Ariant desert stumble in. The
+  Dimensional Mirror NPC path is NOT implemented (only `9010022_old.js` has it), so the field
+  portal is the sole vector.
+- Exit: the hub's only exit `out00` (script `nets_out`, warps to the saved MIRROR = 260020500) is
+  scripted -> invisible to the base WZ scan (tm=999999999 skipped at BotWorldGraph ~:741). Dozens
+  of bots piled up with "no reachable grind spot" (incl. 113M-meso bots — not a fare problem).
+- Fix: `SCRIPTED_ENTRANCES += (926010000, "out00", 260020500)`. No GRAPH_VERSION/cache bump —
+  the world-graph disk cache is pure-WZ and scripted entrances are re-applied in-memory on load.
+- Latent sibling (NOT fixed, not currently reachable by wanderers): ARPQ room 980010020 out00 ->
+  980010000 which has returnMap=999999999 and only scripted exits. Only PQ-internal; audit it if
+  bot ARPQ participation is ever built.
+
 ## Class 2: fare-blocked job errand + no-prediction abstract grind (Amherst 1000000)
 
 - Deadlock triangle: (a) job errand targets a Victoria instructor, Shanks fare = 150 meso, bot has
