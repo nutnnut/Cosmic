@@ -511,6 +511,8 @@ public class BotEntry {
     int jobErrandMapId = -1;
     final BotTravelManager.ErrandProgress jobErrandProgress = new BotTravelManager.ErrandProgress();
     long jobErrandLastWarnMs = 0L;     // throttle the "can't reach instructor" error log while stuck
+    long jobErrandFareRetryAtMs = 0L;  // fare-blocked pause: errand won't re-begin until this lapses
+                                       // (the bot grinds meanwhile to earn the taxi/ferry fare)
 
     // Gachapon errand (BotGachaponManager): autopilot-only. When the bot has spare account NX (from
     // looted NX cards), it picks the best-EV reachable gachapon town, travels to the NPC, buys

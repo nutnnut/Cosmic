@@ -194,9 +194,15 @@ final class BotStarterKitManager {
     static final long ERRAND_NO_PROGRESS_MS = 90_000L;
     /** Throttle for the "can't reach instructor" error log while a fallback-off bot is stuck retrying. */
     static final long ERRAND_WARN_INTERVAL_MS = 30_000L;
+    // Fare-blocked pause: how long the errand yields to grinding before retrying the instructor trip.
+    static final int FARE_GRIND_PAUSE_MIN_MS = 4 * 60_000;
+    static final int FARE_GRIND_PAUSE_MAX_MS = 8 * 60_000;
 
     /** Begin an instructor-walk errand for an autopilot bot instead of advancing instantly. */
     static void beginJobErrand(BotEntry entry, Job target) {
+        if (System.currentTimeMillis() < entry.jobErrandFareRetryAtMs) {
+            return; // fare-blocked pause: grinding to earn the taxi/ferry fare — retry when it lapses
+        }
         JobChangeNpc instructor = jobChangeNpcFor(target);
         if (instructor == null) {
             return;
@@ -274,6 +280,20 @@ final class BotStarterKitManager {
                 if (BotFerryManager.isWaitingOrRiding(entry, bot)) {
                     return true; // legitimate ferry wait/ride: stay committed without a stuck log
                 }
+                // Fare-blocked, not path-blocked: the instructor IS routable with a fuller wallet, the
+                // bot just can't pay the taxi/ferry fare yet. Staying committed would deadlock — the
+                // errand suppresses exactly the grinding that earns the fare (the Maple Island lv10
+                // pile-up: meso=0, Shanks wants 150, so nobody ever leaves). Pause the errand and
+                // release the tick to grind; beginJobErrand re-arms once the pause lapses and re-checks.
+                if (fareBlockedRoute(bot, entry.jobErrandMapId)) {
+                    entry.jobErrandFareRetryAtMs =
+                            now + BotManager.randMs(FARE_GRIND_PAUSE_MIN_MS, FARE_GRIND_PAUSE_MAX_MS);
+                    log.info("Bot '{}' can't afford the fare toward its {} instructor (map {}, meso={})"
+                                    + " - grinding for it, errand retries in a few minutes.",
+                            bot.getName(), entry.jobErrandTarget, entry.jobErrandMapId, bot.getMeso());
+                    clearJobErrand(entry);
+                    return false;
+                }
                 warnJobErrandStuck(entry, bot, "travel gave up reaching instructor");
                 return true; // keep retrying, stuck here until it gets through — never grind
             }
@@ -303,6 +323,24 @@ final class BotStarterKitManager {
                 bot != null ? bot.getName() : "?", target, reason);
         clearJobErrand(entry);
         advanceJob(entry, target);
+    }
+
+    /** True when no route reaches {@code mapId} with the bot's current meso but one exists with a full
+     *  wallet — i.e. the only blocker is a taxi/ferry fare the bot can't pay yet. Mirrors the
+     *  reachability options {@link #warnJobErrandStuck} logs with. */
+    private static boolean fareBlockedRoute(Character bot, int mapId) {
+        BotWorldGraph.RouteOptions broke = new BotWorldGraph.RouteOptions(false, bot.getMeso(), true,
+                bot.getJob().getId() == 0, bot.getLevel(),
+                BotAutopilotManager.worldTourReturn(bot), BotAutopilotManager.fmReturn(bot));
+        if (BotAutopilotManager.routeForBot(bot, bot.getMapId(), mapId,
+                JOB_ERRAND_MAX_TRAVEL_HOPS, broke) != null) {
+            return false; // routable with the current wallet — the block is execution-side, not the fare
+        }
+        BotWorldGraph.RouteOptions rich = new BotWorldGraph.RouteOptions(false, Integer.MAX_VALUE, true,
+                bot.getJob().getId() == 0, bot.getLevel(),
+                BotAutopilotManager.worldTourReturn(bot), BotAutopilotManager.fmReturn(bot));
+        return BotAutopilotManager.routeForBot(bot, bot.getMapId(), mapId,
+                JOB_ERRAND_MAX_TRAVEL_HOPS, rich) != null;
     }
 
     /**
