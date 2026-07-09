@@ -599,7 +599,11 @@ final class BotWorldGraph {
             // Leafre: Cave of Life entrance -> Leafre field 240040600, script hontale_morph2
             new ScriptedEntrance(240040700, "out00", 240040600),
             // Helios Tower Time Control Room -> Ellin Forest Small Forest, script move_elin.
-            new ScriptedEntrance(222020400, "in01", 300000100)
+            new ScriptedEntrance(222020400, "in01", 300000100),
+            // Leafre station dock -> Leafre station, script dracoout. The dock's ONLY other graph edge
+            // is the ticket-gated Orbis ferry (30k, sold one map back), so a ticketless bot inside was
+            // a can't-return trap — the symmetry audit missed it because the ferry edge "reaches back".
+            new ScriptedEntrance(240000110, "west00", 240000100)
     );
 
     /** The scripted-entrance portal name to walk for a {@code fromMap -> destMap} hop, or null when that
