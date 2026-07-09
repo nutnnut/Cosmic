@@ -52,19 +52,19 @@ Confirmed by a 90s JFR profile (`jcmd <pid> JFR.start settings=profile`, analyze
 - Bot tick threads: ~1.0 core across 6 workers.
 - **Nav graph builds at RUNTIME** (bursty ~2s each, `bot-nav-graph-warmup` thread) — see open items.
 
-## OPEN ITEMS (ranked)
-1. **Nav runtime graph builds** — the other 100%-spike source. Log shows `Built bot nav graph map
-   (107000403) in 1960ms` at runtime though boot "loaded 5841 maps from cache". Likely the disk cache is
-   keyed by (map, speed, jump) so varied bot movement profiles miss it -> rebuild storms as bots enter
-   maps. Investigate the cache key / pre-bake common speed/jump. NAV TERRITORY — read `.claude/skills/
-   bot-nav/SKILL.md`, respect GRAPH_VERSION rules, skip nav/graph tests unless touched.
-2. **dropBuffStats latent deadlock (2nd inversion, NOT fixed)** — `dropBuffStats` holds `chrLock` then
-   reaches `prtLock` via `isActive->getPartyMembersOnSameMap` (chr->prt), vs `registerEffect`'s prt->chr.
-   Rarer (conditional on `bestApplied` + same-char race) but a real 2000-bot risk. Recommend a proper
-   global **prt -> eff -> chr** lock-ordering audit of `client.Character` before the 2000-bot run.
-3. **Job-advance-stuck bug** — dozens of bots endlessly retry routing to the Magician instructor (npc
-   1032001, map 101000003) from Amherst (`route-reachable=false`); ERROR-spams the log and burns decide
-   cycles. Pre-existing travel/nav routing issue. Visualize: `/mapgraph?id=1000000`.
+## OPEN ITEMS (ranked) — 2026-07-09 late-session update: 1 measured-small, 2+3 FIXED
+1. **Nav runtime graph builds** — MEASURED, small lever: only 15 runtime builds in 25 min live
+   (MIN_PRIORITY warmup thread; disk cache v70 holds 15,245 graphs across ~50 profiles and persists, so
+   each (map,profile) builds once ever; worst single build 7.8s). Not worth churning. Latent oddity:
+   `snowShoes` is not in the cache filename/validation (canonicalized away off-ice — mostly benign).
+2. **FIXED (`8a2d4adaf`)** — full prt->eff->chr audit of `client.Character` done: the real inversion was
+   `cancelBuffStats` (eff->chr->prt via dropBuffStats->isActive; common handler paths) + a second in
+   `cancelAllBuffs(soft)`. Both hoisted like c9ba4f4da. No other multi-lock site deviates.
+3. **FIXED (`d3c8c599e` + `e0ddfd1df`)** — the Amherst pile-up was a fare deadlock: job errand suppresses
+   grinding, bot has 0 meso for Shanks (150), LOD1 abstract grind emits 0 kills on an unpredicted map.
+   Now the errand yields to grinding when fare-blocked, and Maple Island shops reserve a 500-meso fare
+   floor. See docs/bot/kb/kb_bot_oneway_map_and_fare_deadlocks.md (also covers the Leafre dock trap,
+   `3230e69e7`).
 4. **Remaining scroll demand** (lower priority now): the planner samples ~120 distinct target-scores per
    scan (`BotScrollPlanner.valueOf`/`evApply`, key `round(v*1000)`); cache the plan RESULT per bot or
    coarsen/cap the planner sampling if scroll-dp climbs again.
