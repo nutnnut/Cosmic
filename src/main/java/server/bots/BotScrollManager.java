@@ -1488,30 +1488,43 @@ final class BotScrollManager {
         return m;
     }
 
-    /** Meso price of a scroll, blending the live market consensus so scroll USE-cost tracks the tape
-     *  (a glut lowers apply-cost → usage rises; scarcity raises it). Chaos/White: max(10M cold-market
-     *  floor, consensus). Shop-sold: min(NPC shop price, consensus) when there IS a consensus — the
-     *  NPC's infinite supply caps the price, but a glut trading below shop passes through; else the
-     *  shop price. Not shop-sold: the consensus when there is one, else the drop-farm cost (rarity→meso),
-     *  else a flat default. {@link BotMarketConsensus#consensus} returns 0 with no evidence — safe to
-     *  branch on. */
+    /** Meso price of a scroll, blending the bot's own perceived market price (belief book — see
+     *  {@link #perceivedScrollPrice}) so scroll USE-cost tracks the tape (a glut lowers apply-cost →
+     *  usage rises; scarcity raises it). Chaos/White: max(10M cold-market floor, perceived). Shop-sold:
+     *  min(NPC shop price, perceived) when there IS a read — the NPC's infinite supply caps the price,
+     *  but a glut trading below shop passes through; else the shop price. Not shop-sold: the perceived
+     *  price when there is one, else the drop-farm cost (rarity→meso), else a flat default. Returns 0
+     *  with no evidence — safe to branch on. */
     private static double scrollPriceMeso(ProducerCombat pc, int scrollId) {
-        double consensus = BotMarketConsensus.getInstance().consensus(BotMarketMath.priceKey(scrollId, 0));
+        double perceived = perceivedScrollPrice(pc, scrollId);
         // Chaos/White now have real consumption (chaos gambles, white protection), so the live
-        // market consensus prices them; the old 10M stopgap survives only as a cold-market floor
+        // market prices them; the old 10M stopgap survives only as a cold-market floor
         // until the tape has clearings.
         if (ItemConstants.isChaosScroll(scrollId) || scrollId == ItemId.WHITE_SCROLL) {
-            return Math.max(10_000_000.0, consensus);
+            return Math.max(10_000_000.0, perceived);
         }
         Integer price = shopPrices().get(scrollId);
         if (price != null) {
-            return consensus > 0 ? Math.min(price, consensus) : price;
+            return perceived > 0 ? Math.min(price, perceived) : price;
         }
-        if (consensus > 0) {
-            return consensus;
+        if (perceived > 0) {
+            return perceived;
         }
         double farm = farmingCostMeso(pc, scrollId);
         return Double.isFinite(farm) ? farm : DEFAULT_SCROLL_COST_MESO;
+    }
+
+    /** The bot's OWN read of a scroll's market price via its belief book (design invariant §10.6:
+     *  BotMarketBook is the only price source for bot behavior — raw consensus reads made every bot's
+     *  scroll pricing perfectly synchronized, defeating the heterogeneous-belief model). Falls back to
+     *  raw consensus only when no bot context exists (offline valuation / unit-test paths). Like
+     *  consensus(), returns 0 with no evidence — callers branch on that. */
+    private static double perceivedScrollPrice(ProducerCombat pc, int scrollId) {
+        long key = BotMarketMath.priceKey(scrollId, 0);
+        if (pc != null && pc.entry() != null && pc.bot() != null) {
+            return BotMarketBook.of(pc.entry(), pc.bot()).perceivedPrice(key, System.currentTimeMillis());
+        }
+        return BotMarketConsensus.getInstance().consensus(key);
     }
 
     /** Per-apply opportunity cost of USING one scroll: {@link #SCROLL_OPPORTUNITY_FRACTION} of its
@@ -1930,12 +1943,13 @@ final class BotScrollManager {
                 continue; // server quirk: a chaos apply still needs (and consumes) a slot
             }
             // Chaos is only economically worth the scroll on offense gear: a piece carrying weapon ATT,
-            // or a magic weapon with BOTH INT and MATT. A chaos reroll moves every stat randomly, and only
-            // on those pieces does the convex upside (a big ATT / INT+MATT roll) beat the scroll's market
-            // cost — on pure-DEF/utility gear it's a losing gamble. Gating here also skips the bulk of the
-            // chaos-scan CPU (the per-equip market quote + full stat-convolution) for the many non-offense
-            // pieces a bot owns, instead of computing an EV that would be rejected anyway.
-            if (!(eq.getWatk() > 0 || (eq.getInt() > 0 && eq.getMatk() > 0))) {
+            // magic ATT, or any INT (INT drives magic damage, so INT gear is the mage analog of ATT
+            // gear). A chaos reroll moves every stat randomly, and only on those pieces does the convex
+            // upside beat the scroll's market cost — on pure-DEF/utility gear it's a losing gamble.
+            // (The earlier watk || INT&&MATT form silently excluded matk-only and int-only pieces.)
+            // Gating here also skips the bulk of the chaos-scan CPU (the per-equip market quote + full
+            // stat-convolution) for the many non-offense pieces a bot owns.
+            if (!(eq.getWatk() > 0 || eq.getMatk() > 0 || eq.getInt() > 0)) {
                 continue;
             }
             EquipQuote q = equipMarketQuote(entry, bot, eq);
@@ -2071,7 +2085,9 @@ final class BotScrollManager {
         double marginal = q.bandCurve().applyAsDouble(q.band() + 1)
                 - q.bandCurve().applyAsDouble(q.band());
         ProducerCombat pc = resolveProducerCombat(entry, bot);
-        return (1.0 - p) * p * Math.max(0, marginal)
+        // failRate × marginal, per the spec above. (An earlier extra ×p factor made protection value
+        // peak at p=0.5 and vanish for the risky low-p scrolls where protection matters most.)
+        return (1.0 - p) * Math.max(0, marginal)
                 > applyCostMeso(pc, ItemId.WHITE_SCROLL);
     }
 
