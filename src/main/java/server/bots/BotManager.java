@@ -1301,6 +1301,15 @@ public class BotManager {
 
     /** Cancel and remove a bot by the bot character's own ID (used during shutdown/disconnect). */
     public boolean removeBotByCharId(int botCharId) {
+        // Reasonless legacy entry point: attach the caller's stack so any unregistration path we
+        // haven't tagged yet self-identifies in the log (zombie-bot root-cause tracing).
+        return removeBotByCharId(botCharId, null);
+    }
+
+    /** As {@link #removeBotByCharId(int)}, with the removal reason recorded in the log — entry
+     *  removal without a matching world removal produces an untickable zombie character, so every
+     *  removal must be attributable (see sweepZombieBotCharacters). */
+    public boolean removeBotByCharId(int botCharId, String reason) {
         boolean removed = false;
         for (Map.Entry<Integer, List<BotEntry>> ownerEntry : bots.entrySet()) {
             List<BotEntry> entries = ownerEntry.getValue();
@@ -1320,6 +1329,14 @@ public class BotManager {
                     ownerFormations.remove(ownerEntry.getKey());
                     townClusterAnchors.remove(ownerEntry.getKey());
                 }
+            }
+        }
+        if (removed) {
+            if (reason != null) {
+                log.info("Bot entry removed for charId {} ({})", botCharId, reason);
+            } else {
+                log.info("Bot entry removed for charId {} (untagged path)", botCharId,
+                        new Exception("unregister stack"));
             }
         }
         return removed;
@@ -1342,7 +1359,7 @@ public class BotManager {
             }
         }
         for (Character bot : online) {
-            removeBotByCharId(bot.getId());          // cancel tick + drop the entry
+            removeBotByCharId(bot.getId(), "admin disconnect-all"); // cancel tick + drop the entry
             if (bot.getClient() != null) {
                 // forceDisconnect saves + leaves the world SYNCHRONOUSLY (on this thread), one bot at a
                 // time. The async disconnect() instead fans every bot's saveCharToDB across ThreadManager,
@@ -1524,7 +1541,7 @@ public class BotManager {
             return false;
         }
 
-        boolean removed = removeBotByCharId(bot.getId());
+        boolean removed = removeBotByCharId(bot.getId(), "disconnect/takeover cleanup");
         clearBotOnlyAutopotState(bot);
         return removed;
     }
@@ -4065,7 +4082,7 @@ public class BotManager {
         // Stop ticking and clean up rather than NPE-spamming TimerManager workers. Disconnect the
         // character as well — dropping only the entry left an untickable zombie online.
         if (bot.getMap() == null) {
-            removeBotByCharId(botCharId);
+            removeBotByCharId(botCharId, "tickCore map-null guard");
             if (bot.getClient() != null) {
                 bot.getClient().forceDisconnect();
             }
@@ -4887,7 +4904,7 @@ public class BotManager {
             log.error("Disabling bot '{}' after {} tick failures within {} ms (owner={}, map={}, grinding={}, following={})",
                     botName, entry.tickFailureCount, BOT_TICK_FAILURE_WINDOW_MS, ownerName, mapId,
                     entry.grinding, entry.following, t);
-            removeBotByCharId(botCharId);
+            removeBotByCharId(botCharId, "tick-failure disable");
             // Entry removal alone leaves the character online as an untickable zombie (observed:
             // DAGGERSTRAND) — take it out of the world too; the scheduler can respawn it clean.
             if (bot != null && bot.getClient() != null) {
