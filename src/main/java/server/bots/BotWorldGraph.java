@@ -603,7 +603,12 @@ final class BotWorldGraph {
             // Leafre station dock -> Leafre station, script dracoout. The dock's ONLY other graph edge
             // is the ticket-gated Orbis ferry (30k, sold one map back), so a ticketless bot inside was
             // a can't-return trap — the symmetry audit missed it because the ferry edge "reaches back".
-            new ScriptedEntrance(240000110, "west00", 240000100)
+            new ScriptedEntrance(240000110, "west00", 240000100),
+            // Nett's Pyramid hub (Pyramid Dunes): bots wander onto the plain desert portal piramid00
+            // on 260020500 (script nets_in, unconditional warp in + saveLocation("MIRROR")), and the
+            // hub's ONLY exit out00 (script nets_out, warps to the saved MIRROR = 260020500) was
+            // invisible to the graph — a can't-return trap that collected dozens of bots.
+            new ScriptedEntrance(926010000, "out00", 260020500)
     );
 
     /** The scripted-entrance portal name to walk for a {@code fromMap -> destMap} hop, or null when that
