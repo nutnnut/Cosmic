@@ -3848,6 +3848,12 @@ public class Character extends AbstractCharacterObject {
 
     public void cancelAllBuffs(boolean softcancel) {
         if (softcancel) {
+            // prtLock BEFORE effLock (same AB-BA class as the updateActiveEffects fix): the
+            // cancelEffectFromBuffStat calls below reach the public cancelEffect wrapper (prtLock) while
+            // this frame still holds effLock+chrLock — inverted vs registerEffect's prt->eff->chr when a
+            // party member is buffing this character concurrently. The inner prtLock reentry is
+            // same-thread safe.
+            prtLock.lock();
             effLock.lock();
             chrLock.lock();
             try {
@@ -3863,6 +3869,7 @@ public class Character extends AbstractCharacterObject {
             } finally {
                 chrLock.unlock();
                 effLock.unlock();
+                prtLock.unlock();
             }
         } else {
             Map<StatEffect, Long> mseBuffs = new LinkedHashMap<>();
@@ -4162,6 +4169,13 @@ public class Character extends AbstractCharacterObject {
     }
 
     public void cancelBuffStats(BuffStat stat) {
+        // prtLock BEFORE effLock (same AB-BA class as the updateActiveEffects fix): dropBuffStats below
+        // reaches getPartyMembersOnSameMap (prtLock) via fetchBestEffectFromItemEffectHolder ->
+        // StatEffect.isActive while effLock+chrLock are held — eff->chr->prt, inverted vs registerEffect's
+        // prt->eff->chr. A party member buffing this character (its caster's thread runs registerEffect on
+        // OUR locks) racing our own handler-thread cancelBuffStats (combat state cancels, TakeDamage,
+        // unequip) hangs AB-BA. Callers hold neither lock; the inner prtLock reentry is same-thread safe.
+        prtLock.lock();
         effLock.lock();
         try {
             List<Pair<Integer, BuffStatValueHolder>> cancelList = new LinkedList<>();
@@ -4186,6 +4200,7 @@ public class Character extends AbstractCharacterObject {
             }
         } finally {
             effLock.unlock();
+            prtLock.unlock();
         }
 
         cancelPlayerBuffs(Arrays.asList(stat));
