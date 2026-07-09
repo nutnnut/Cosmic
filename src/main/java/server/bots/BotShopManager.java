@@ -9,6 +9,7 @@ import client.inventory.WeaponType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import constants.game.GameConstants;
+import constants.id.MapId;
 import constants.inventory.ItemConstants;
 import server.ItemInformationProvider;
 import server.Shop;
@@ -481,12 +482,29 @@ final class BotShopManager {
         }
     }
 
+    // On Maple Island every meso matters for the Shanks fare off the island (150): shop spending
+    // reserves this floor so a resupply can never re-strand a bot broke at the dock (owner rule:
+    // reserve the fare, don't ban the shop).
+    private static final int MAPLE_ISLAND_FARE_RESERVE_MESO = 500;
+
+    /** Meso a bot must NOT spend at shops (kept for travel fares); 0 off Maple Island. */
+    private static int shopMesoReserve(Character bot) {
+        return MapId.isMapleIsland(bot.getMapId()) ? MAPLE_ISLAND_FARE_RESERVE_MESO : 0;
+    }
+
+    /** The meso actually spendable at a shop after {@link #shopMesoReserve}. SSOT budget base for
+     *  every buy path (pots, ammo, scrolls, equips) — raw {@code getMeso()} would let a purchase dip
+     *  into the reserved fare. */
+    static long spendableMeso(Character bot) {
+        return Math.max(0, (long) bot.getMeso() - shopMesoReserve(bot));
+    }
+
     /** SSOT affordability gate for a BUY-pots resupply errand: skip the town trip when the bot can't
      *  afford a useful restock, so a broke bot doesn't walk to a shop, buy nothing on NOT_ENOUGH_MESO,
      *  and bounce back forever. Used by BOTH errand triggers (reactive grind-stop in BotPotionManager
      *  and pre-travel in BotAutopilotManager). Selling is never gated by this — it earns the meso. */
     static boolean canAffordPotResupply(Character bot) {
-        return bot.getMeso() >= BotManager.cfg.POT_SPEND_MIN_MESO;
+        return spendableMeso(bot) >= BotManager.cfg.POT_SPEND_MIN_MESO;
     }
 
     /** True when the equipped weapon REQUIRES ammo but has none usable (no stars/bullets and no
@@ -1158,7 +1176,7 @@ final class BotShopManager {
             return afterPreferredWeapon;
         }
         // Surplus only: reserve the pot/ammo resupply floor, then cap the gear spend.
-        long budget = Math.min((long) EQUIP_BUY_MAX_MESO, (long) bot.getMeso() - BotManager.cfg.AMMO_RESERVE_MESO);
+        long budget = Math.min((long) EQUIP_BUY_MAX_MESO, spendableMeso(bot) - BotManager.cfg.AMMO_RESERVE_MESO);
         if (budget <= 0) {
             return sequence;
         }
@@ -1255,7 +1273,7 @@ final class BotShopManager {
     }
 
     private static long preferredWeaponBudget(Character bot) {
-        return Math.min((long) PREFERRED_WEAPON_BUY_MAX_MESO, (long) bot.getMeso() - BotManager.cfg.AMMO_RESERVE_MESO);
+        return Math.min((long) PREFERRED_WEAPON_BUY_MAX_MESO, spendableMeso(bot) - BotManager.cfg.AMMO_RESERVE_MESO);
     }
 
     private static ShopSlotItem findNeededPreferredWeaponItem(Character bot, Shop shop) {
@@ -1367,7 +1385,7 @@ final class BotShopManager {
         if (current >= BotManager.cfg.POT_LOW_WARN * 5) {
             return sequence;
         }
-        long mesoCap = (long) Math.floor(bot.getMeso() * (1.0 - reserveForOtherFrac));
+        long mesoCap = (long) Math.floor(spendableMeso(bot) * (1.0 - reserveForOtherFrac));
         return appendBuyReport(sequence, buyPotions(bot, shop, forHp, mesoCap), label);
     }
 
@@ -1398,6 +1416,16 @@ final class BotShopManager {
         int totalBought = 0;
         ShortfallReason reason = ShortfallReason.NONE;
         int price = item.shopItem.getPrice();
+        if (price > 0) {
+            // Universal fare-reserve clamp: buyDirect only checks RAW meso, so without this a batch
+            // buy could dip into the reserved travel fare (shopMesoReserve) that budgets upstream
+            // were protecting.
+            int spendableQty = (int) Math.min(desiredQuantity, spendableMeso(bot) / price);
+            if (spendableQty <= 0) {
+                return new BuyReport(0, 0, 0, ShortfallReason.NO_MESO);
+            }
+            desiredQuantity = spendableQty;
+        }
 
         while (totalBought < desiredQuantity) {
             int remaining = desiredQuantity - totalBought;
@@ -1409,7 +1437,7 @@ final class BotShopManager {
             }
             if (result == Shop.TransactionResult.NOT_ENOUGH_MESO) {
                 reason = ShortfallReason.NO_MESO;
-                int affordable = price > 0 ? Math.min(remaining, bot.getMeso() / price) : 0;
+                int affordable = price > 0 ? (int) Math.min(remaining, spendableMeso(bot) / price) : 0;
                 if (affordable > 0) {
                     Shop.TransactionResult partial = shop.buyDirect(bot, item.slot, item.shopItem.getItemId(), (short) affordable);
                     if (partial == Shop.TransactionResult.SUCCESS) {

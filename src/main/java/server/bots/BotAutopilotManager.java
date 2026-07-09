@@ -983,14 +983,6 @@ final class BotAutopilotManager {
         if (entry.autopilotErrandMapId != -1) {
             return true; // already on a trip; nothing to diagnose
         }
-        // Maple Island newbies (lv<=8) never resupply: island income is snail-drop pennies and every
-        // meso is needed for the Shanks fare off the island (150) — a pot trip would spend the boat
-        // money and re-strand the bot (owner rule; pairs with the fare-blocked job-errand yield).
-        // Real newbies tough it out on unpotted HP too.
-        if (bot.getLevel() <= 8 && constants.id.MapId.isMapleIsland(bot.getMapId())) {
-            logErrandBlock(entry, bot, "maple-island-newbie-saves-fare");
-            return false;
-        }
         long now = System.currentTimeMillis();
         if (now < entry.autopilotNextErrandAtMs) {
             logErrandBlock(entry, bot, "errand-cooldown");
