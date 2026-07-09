@@ -722,8 +722,11 @@ public class BotEntry {
     volatile boolean marketBusy = false;
 
     // This bot's private price book (living economy layer 2) - lazily loaded on first market
-    // touch via BotMarketBook.of, self-flushed on the bot's own tick. Tick-thread-owned.
-    BotMarketBook marketBook = null;
+    // touch via BotMarketBook.of, self-flushed on the bot's own tick. Reads/writes cross threads
+    // in practice (HiredMerchant.buy -> notifyStallSale on the buyer's thread; BotFreeMarketManager's
+    // DECIDE_POOL plan), so the book itself is internally thread-safe (see BotMarketBook) and this
+    // field is volatile so a racing lazy-init always publishes-and-sees the same instance.
+    volatile BotMarketBook marketBook = null;
 
     // Trade queue
     String pendingTradeCategory = null;

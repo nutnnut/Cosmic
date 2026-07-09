@@ -21,6 +21,7 @@ import server.maps.SavedLocationType;
 
 import java.awt.Point;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ThreadLocalRandom;
@@ -165,6 +166,8 @@ final class BotFreeMarketManager {
      *  on how far one visit may cut an ask (never below half, nor the NPC sell-back). */
     private static final double REPRICE_PRESSURE = 0.5;
     private static final double REPRICE_MAX_DROP = 0.5;
+    /** Undercut margin below the cheapest visible competing ask (design sec 5); matches BotMarketSimTest. */
+    private static final double UNDERCUT_FRACTION = 0.02;
 
     private BotFreeMarketManager() {
     }
@@ -1415,7 +1418,8 @@ final class BotFreeMarketManager {
         entry.marketBusy = true;
         try {
             BotMarketBook book = BotMarketBook.of(entry, bot);
-            int free = merchant.botServiceReprice(psi -> serviceReprice(bot, book, psi, now));
+            Map<Long, Long> competingAsks = scanCompetingAsks(bot);
+            int free = merchant.botServiceReprice(psi -> serviceReprice(bot, book, psi, competingAsks, now));
             int restocked = 0;
             for (ListingPlan plan : validPlans(bot, entry.fmPlannedListings)) {
                 if (restocked >= free) {
@@ -1452,12 +1456,45 @@ final class BotFreeMarketManager {
     }
 
     /**
-     * New per-bundle price for a live slot: step the current ask toward the bot's belief at the
-     * slot's banded key by {@link #REPRICE_PRESSURE}, floored so one visit never cuts an ask below
-     * {@link #REPRICE_MAX_DROP} of itself nor below the per-unit NPC sell-back. A belief-less slot
-     * (no evidence) keeps its price. Reuses {@link BotMarketMath#repriceAsk} — no parallel pricing.
+     * One-time scan of every OTHER currently-open stall on this map: cheapest unit ask per banded
+     * priceKey (design sec 5 undercut evidence — "just under the cheapest competing ask"). Computed
+     * once per stall-service visit (not per slot) since the room's merchant list doesn't change
+     * mid-service; reuses the same {@code MapObjectType.HIRED_MERCHANT} enumeration tickBrowse scans.
      */
-    private static int serviceReprice(Character bot, BotMarketBook book, PlayerShopItem psi, long now) {
+    private static Map<Long, Long> scanCompetingAsks(Character bot) {
+        Map<Long, Long> best = new HashMap<>();
+        for (MapObject o : bot.getMap().getMapObjectsInRange(bot.getPosition(),
+                Double.POSITIVE_INFINITY, List.of(MapObjectType.HIRED_MERCHANT))) {
+            if (!(o instanceof HiredMerchant hm) || hm.getOwnerId() == bot.getId() || !hm.isOpen()) {
+                continue;
+            }
+            for (PlayerShopItem psi : hm.getItems()) {
+                if (!psi.isExist() || psi.getBundles() <= 0) {
+                    continue;
+                }
+                Item it = psi.getItem();
+                long unit = Math.round(psi.getPrice() / (double) Math.max(1, it.getQuantity()));
+                if (unit <= 0) {
+                    continue;
+                }
+                long key = BotMarketMath.priceKey(it.getItemId(), bandOf(it));
+                best.merge(key, unit, Math::min);
+            }
+        }
+        return best;
+    }
+
+    /**
+     * New per-bundle price for a live slot: step the current ask toward the best evidence at the
+     * slot's banded key — the bot's own belief undercut just below the cheapest visible competing
+     * ask ({@link BotMarketMath#undercutTarget}, {@link #UNDERCUT_FRACTION}; never chasing above the
+     * bot's own perceived value) — by {@link #REPRICE_PRESSURE}, floored so one visit never cuts an
+     * ask below {@link #REPRICE_MAX_DROP} of itself nor below the per-unit NPC sell-back. A
+     * belief-less slot with no competition keeps its price. Reuses {@link BotMarketMath#repriceAsk}
+     * and {@link BotMarketMath#undercutTarget} — no parallel pricing.
+     */
+    private static int serviceReprice(Character bot, BotMarketBook book, PlayerShopItem psi,
+                                      Map<Long, Long> competingAsks, long now) {
         Item it = psi.getItem();
         int perBundle = Math.max(1, it.getQuantity());
         long key = BotMarketMath.priceKey(it.getItemId(), bandOf(it));
@@ -1466,10 +1503,23 @@ final class BotFreeMarketManager {
         double curUnitAsk = psi.getPrice() / (double) perBundle;
         long npcUnit = npcSell.price(it.getItemId(), 1);
         double reservation = Math.max(npcUnit, curUnitAsk * REPRICE_MAX_DROP);
-        double newUnit = BotMarketMath.repriceAsk(curUnitAsk, perceived, confidence, REPRICE_PRESSURE, reservation);
+        long competingUnitAsk = competingAsks.getOrDefault(key, 0L);
+        double newUnit = repriceWithUndercut(curUnitAsk, perceived, confidence, reservation, competingUnitAsk);
         long humanUnit = BotMarketMath.humanizeAsk(Math.round(newUnit), bot.getId());
         long newBundle = humanUnit * perBundle;
         return (int) Math.min(Integer.MAX_VALUE, Math.max(1, newBundle));
+    }
+
+    /**
+     * Core reprice decision (design sec 5), pulled out of {@link #serviceReprice} so the undercut
+     * wiring is unit-testable without a live stall/Character: undercut just under the cheapest
+     * visible competing ask (never chasing above the bot's own perception), then step
+     * gap-proportionally toward that evidence, floored at {@code reservation}.
+     */
+    static double repriceWithUndercut(double curUnitAsk, double perceived, double confidence,
+                                      double reservation, double competingUnitAsk) {
+        double evidence = BotMarketMath.undercutTarget(perceived, competingUnitAsk, UNDERCUT_FRACTION);
+        return BotMarketMath.repriceAsk(curUnitAsk, evidence, confidence, REPRICE_PRESSURE, reservation);
     }
 
     /** Browse every other stall on this room map: observations always, bargains sparingly.

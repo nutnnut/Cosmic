@@ -78,4 +78,27 @@ class BotFreeMarketManagerTest {
                 new client.inventory.Item(2040804, (short) 0, (short) 5), (short) 1, (short) 5, 600_000);
         assertEquals(3_000_000, plan.bundlePrice(), "bundle price = unit ask x per-bundle qty");
     }
+
+    @Test
+    void repriceWithUndercutCrossesBelowCompetitionAndNeverAboveOwnPerception() {
+        // Design sec 5: the "load-bearing" anti-freeze rule - a cheaper visible competitor pulls
+        // the reprice DOWN to cross below it, instead of drifting toward pure self-perception.
+        double withCompetitor = BotFreeMarketManager.repriceWithUndercut(
+                1_000_000, 1_200_000, 5, 500_000, 900_000);
+        double withoutCompetitor = BotFreeMarketManager.repriceWithUndercut(
+                1_000_000, 1_200_000, 5, 500_000, 0);
+        assertTrue(withCompetitor < withoutCompetitor,
+                "a cheaper visible competitor pulls the reprice down vs. chasing pure perception");
+        assertTrue(withCompetitor < 1_000_000, "actually steps the ask down toward the competitor");
+
+        // A pricier ("silly") competitor never drags the target above what plain perception gives.
+        double withSillyCompetitor = BotFreeMarketManager.repriceWithUndercut(
+                1_000_000, 1_200_000, 5, 500_000, 5_000_000);
+        assertEquals(withoutCompetitor, withSillyCompetitor, 1e-6,
+                "a competitor pricier than perception doesn't change the target");
+
+        // The seller's reservation still floors the step even under undercut pressure.
+        double floored = BotFreeMarketManager.repriceWithUndercut(600_000, 1_200_000, 0, 590_000, 100_000);
+        assertTrue(floored >= 590_000, "never crosses the seller's reservation");
+    }
 }

@@ -3,9 +3,9 @@ package server.bots;
 import server.bots.BotMarketMath.Belief;
 
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Layer 2 of the belief model (docs/bot/living-economy-design.md sec 4): one bot's private,
@@ -14,7 +14,16 @@ import java.util.Map;
  *
  * <p>This is the ONLY price source bot decision code may read (design sec 10.6). No server
  * dependencies: the consensus arrives through {@link ConsensusSource}, time through arguments —
- * fully unit/sim-testable. Not thread-safe by design: a book belongs to its bot's tick context.
+ * fully unit/sim-testable.
+ *
+ * <p>Thread-safety: a book is created for one bot, but is NOT touched only from that bot's own
+ * tick thread in practice — {@code HiredMerchant.buy} observes the SELLER's book from whatever
+ * thread processes the buyer's purchase, and {@code BotFreeMarketManager}'s listing plan reads a
+ * book from {@code BotGrindAdvisor.DECIDE_POOL} while the owning bot's tick thread may concurrently
+ * {@link #observe} or flush the same book. {@link #of} publishes the lazily-created instance
+ * race-safely (a losing initializer's book is discarded before it can be observed into), {@link
+ * #byKey} is a {@link ConcurrentHashMap}, and every per-key read/mutate is synchronized on that
+ * key's own {@link KeyState} so concurrent observers never race on one key's belief.
  */
 final class BotMarketBook {
 
@@ -24,24 +33,33 @@ final class BotMarketBook {
     /**
      * The bot's book, lazily created + loaded from the store on first touch (mirrors the
      * personality loadOrCreate-at-spawn pattern). Informedness derives from social traits:
-     * plugged-in bots hold tighter price ideas (design sec 4 layer 2).
+     * plugged-in bots hold tighter price ideas (design sec 4 layer 2). Race-safe: two threads
+     * touching the market for the first time at once must not each publish their own book (the
+     * loser would silently drop whatever it observed before losing) — the slow path is
+     * synchronized on {@code entry} and re-checks under the lock.
      */
     static BotMarketBook of(BotEntry entry, client.Character bot) {
         BotMarketBook book = entry.marketBook;
-        if (book == null) {
-            BotPersonality p = entry.personality != null ? entry.personality : BotPersonality.defaults();
-            double informed = BotMarketMath.clamp01(0.5 * p.sociability() + 0.5 * p.chattiness());
-            book = new BotMarketBook(bot.getId(), informed, BotMarketConsensus.getInstance());
-            book.loadFrom(BotMarketStore.getInstance().loadBeliefs(bot.getId()));
-            entry.marketBook = book;
+        if (book != null) {
+            return book;
+        }
+        synchronized (entry) {
+            book = entry.marketBook;
+            if (book == null) {
+                BotPersonality p = entry.personality != null ? entry.personality : BotPersonality.defaults();
+                double informed = BotMarketMath.clamp01(0.5 * p.sociability() + 0.5 * p.chattiness());
+                book = new BotMarketBook(bot.getId(), informed, BotMarketConsensus.getInstance());
+                book.loadFrom(BotMarketStore.getInstance().loadBeliefs(bot.getId()));
+                entry.marketBook = book;
+            }
         }
         return book;
     }
 
     /**
-     * Persist dirty rows every few minutes ON THE BOT'S OWN TICK THREAD (books are not
-     * thread-safe by design — a book belongs to its bot's tick context). Losing a few minutes
-     * of observations on a hard kill is acceptable: beliefs are re-learnable.
+     * Persist dirty rows every few minutes. The book itself is safe for concurrent flush/observe
+     * (see class javadoc); {@code nextFlushAtMs} is only ever advanced from this one call site, so
+     * a double-flush race would at worst save the same rows twice, not corrupt anything.
      */
     static void maybeFlush(BotEntry entry, client.Character bot) {
         BotMarketBook book = entry.marketBook;
@@ -59,7 +77,7 @@ final class BotMarketBook {
         }
     }
 
-    private long nextFlushAtMs;
+    private volatile long nextFlushAtMs;
 
     /** The shared layer-1 statistic, injected (production: BotMarketConsensus singleton). */
     interface ConsensusSource {
@@ -77,8 +95,9 @@ final class BotMarketBook {
     /** 0..1 how plugged-in this bot is; shrinks perception noise (from social traits). */
     private final double informedness;
 
-    private final Map<Long, KeyState> byKey = new HashMap<>();
+    private final Map<Long, KeyState> byKey = new ConcurrentHashMap<>();
 
+    /** Per-key belief state; every field access must hold this instance's monitor (see class javadoc). */
     private static final class KeyState {
         Belief belief = Belief.NONE;
         int obs;
@@ -105,15 +124,17 @@ final class BotMarketBook {
             return;
         }
         KeyState ks = byKey.computeIfAbsent(priceKey, k -> new KeyState());
-        if (ks.lastSeenMs > 0) {
-            long gap = Math.max(0, nowMs - ks.lastSeenMs);
-            ks.gapEmaMs = ks.gapEmaMs <= 0 ? gap : (ks.gapEmaMs * 3 + gap) / 4;
-            ks.belief = BotMarketMath.decay(ks.belief, gap, BotMarketMath.halfLifeMs((long) ks.gapEmaMs));
+        synchronized (ks) {
+            if (ks.lastSeenMs > 0) {
+                long gap = Math.max(0, nowMs - ks.lastSeenMs);
+                ks.gapEmaMs = ks.gapEmaMs <= 0 ? gap : (ks.gapEmaMs * 3 + gap) / 4;
+                ks.belief = BotMarketMath.decay(ks.belief, gap, BotMarketMath.halfLifeMs((long) ks.gapEmaMs));
+            }
+            ks.belief = BotMarketMath.updateBelief(ks.belief, price, weight);
+            ks.obs++;
+            ks.lastSeenMs = nowMs;
+            ks.dirty = true;
         }
-        ks.belief = BotMarketMath.updateBelief(ks.belief, price, weight);
-        ks.obs++;
-        ks.lastSeenMs = nowMs;
-        ks.dirty = true;
         evictIfOverCap();
     }
 
@@ -152,15 +173,21 @@ final class BotMarketBook {
 
     private Belief decayedPrivate(long priceKey, long nowMs) {
         KeyState ks = byKey.get(priceKey);
-        if (ks == null || ks.belief.isEmpty()) {
+        if (ks == null) {
             return Belief.NONE;
         }
-        long silent = Math.max(0, nowMs - ks.lastSeenMs);
-        return BotMarketMath.decay(ks.belief, silent, BotMarketMath.halfLifeMs((long) ks.gapEmaMs));
+        synchronized (ks) {
+            if (ks.belief.isEmpty()) {
+                return Belief.NONE;
+            }
+            long silent = Math.max(0, nowMs - ks.lastSeenMs);
+            return BotMarketMath.decay(ks.belief, silent, BotMarketMath.halfLifeMs((long) ks.gapEmaMs));
+        }
     }
 
     // ------------------------------------------------------------------ persistence bridge
 
+    /** Only called from within {@link #of}'s synchronized slow path, before publish — no lock needed. */
     void loadFrom(Map<Long, BotMarketStore.StoredBelief> rows) {
         for (BotMarketStore.StoredBelief b : rows.values()) {
             KeyState ks = new KeyState();
@@ -176,10 +203,12 @@ final class BotMarketBook {
         List<BotMarketStore.StoredBelief> out = new ArrayList<>();
         for (Map.Entry<Long, KeyState> e : byKey.entrySet()) {
             KeyState ks = e.getValue();
-            if (ks.dirty) {
-                out.add(new BotMarketStore.StoredBelief(e.getKey(), Math.round(ks.belief.estimate()),
-                        ks.belief.confidence(), ks.obs, ks.lastSeenMs));
-                ks.dirty = false;
+            synchronized (ks) {
+                if (ks.dirty) {
+                    out.add(new BotMarketStore.StoredBelief(e.getKey(), Math.round(ks.belief.estimate()),
+                            ks.belief.confidence(), ks.obs, ks.lastSeenMs));
+                    ks.dirty = false;
+                }
             }
         }
         return out;
@@ -196,8 +225,12 @@ final class BotMarketBook {
         Long coldest = null;
         long coldestSeen = Long.MAX_VALUE;
         for (Map.Entry<Long, KeyState> e : byKey.entrySet()) {
-            if (e.getValue().lastSeenMs < coldestSeen) {
-                coldestSeen = e.getValue().lastSeenMs;
+            long seen;
+            synchronized (e.getValue()) {
+                seen = e.getValue().lastSeenMs;
+            }
+            if (seen < coldestSeen) {
+                coldestSeen = seen;
                 coldest = e.getKey();
             }
         }
