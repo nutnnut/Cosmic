@@ -108,10 +108,19 @@ public class HiredMerchant extends AbstractMapObject {
     }
 
     private void broadcastToVisitors(Packet packet) {
-        for (Visitor visitor : visitors) {
-            if (visitor != null) {
-                visitor.chr.sendPacket(packet);
+        for (int i = 0; i < visitors.length; i++) {
+            Visitor visitor = visitors[i];
+            if (visitor == null) {
+                continue;
             }
+            // A visitor whose client is gone logged out mid-visit (Character nulls its client on
+            // disconnect) — purge the slot instead of NPEing, which crash-looped every later
+            // join/leave on this stall.
+            if (visitor.chr.getClient() == null) {
+                visitors[i] = null;
+                continue;
+            }
+            visitor.chr.sendPacket(packet);
         }
     }
 
