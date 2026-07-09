@@ -144,7 +144,9 @@ You don't have to host the server on your local machine to play. It's possible t
 
 I leave it to you to figure out the server hosting part, but once you have that running you'll need to edit the client ip to point to your remote server ip.
 
-### WZ files
+### !!!WZ files!!! - !!!NOT INCLUDED!!!111!11!1!!!!
+Get from the original [Cosmic](https://github.com/P0nk/Cosmic) repo, or export yourself per upstream instruction.
+
 WZ files are the asset/data files required by the client and server. Typically, the [HaRepacker-resurrected](https://github.com/lastbattle/Harepacker-resurrected) tool is used to manage (view, edit, export) the .wz files.
 
 The client can read the .wz files directly, but the server requires them to be in XML format. The server does not make use of the sprites, which is the motivation for different kinds of exporting. 

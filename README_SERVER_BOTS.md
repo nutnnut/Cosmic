@@ -314,3 +314,17 @@ Bots can hold short casual conversations with the owner using a tiny local model
 - LLM only fires when a message is **directly addressed** to a specific bot by name (`Jason hi`, `Leroy how are you`).
 - Bots remember the last few recent chat turns in memory for short context. Persistent disk memory is off by default for speed; set `BotLlmConfig.memoryEnabled = true` if bots should remember conversations across restarts.
 
+### Shoutouts
+**[Cosmic](https://github.com/P0nk/Cosmic)** - This project is built on top of Cosmic and obviously wouldn't be possible without Cosmic and everyone who has ever contributed to Cosmic and its upstream/predecessors HeavenMS, so thank you to everybody involved in any point in the project's history!
+
+**[Madara's SoloMapling](https://github.com/MadaraGameDev/SoloMapling)** - Biggest ongoing sibling project, also focused on bots. 
+- Despite seemingly very similar feature sets, there are many many major differences in infrastructure that make merging both projects into one system impossible. [A merge do exists](github.com/Seikoxi/BotlingMaple) (both systems running independently, but not interacting with one another)
+- We are good friends and the features do get shared/ported over both here and there all the time.
+
+**[Swordie](https://gitlab.com/swordiemen/swordie-232) & Maple Development discord** - Swordie is my another favorite source (and favorite server when it was live), although I decided against making v232 bots due to modern Maplestory feature bloat and solo focused gameplay. Both discord channels have been very helpful for questions and getting the resources I needed.
+
+**Anti & Madara** - You guys' bots clips shared in discord server(s) are the first time I saw (server) bots in Maplestory and inspired me to start my own attempt
+
+**wisteria** - awesome client edit for bot inventory UI
+
+**Everybody on my discord channel** - Ironically the journey to make bots play with me offline has been far from lonely. Having more people enjoying this helped justified the effort, tokens, and electricity wasted on vibe coding this project!
