@@ -52,6 +52,27 @@ Confirmed by a 90s JFR profile (`jcmd <pid> JFR.start settings=profile`, analyze
 - Bot tick threads: ~1.0 core across 6 workers.
 - **Nav graph builds at RUNTIME** (bursty ~2s each, `bot-nav-graph-warmup` thread) — see open items.
 
+## 2026-07-09 night: CPU-spike hunt (100% spikes/stutters despite low averages)
+180s JFR @572 bots (file: logs/perf-capture/spike-20260709-192202.jfr) + 2s CPU sampling + jstat:
+- GC ruled out (0 full GCs, 0.66% overhead). Netty WEPoll.wait samples are an artifact — discount.
+- Bot tick pool (TimerManager-Worker) = 47.5% of all samples; bursts every 15-25s up to ~2.6 cores.
+- **FIXED (`f5ba9fff2`)**: `Character.getQuests()` copied the whole quest map on EVERY kill
+  (raiseQuestMobCount) — 4.6% of ALL samples, the largest single leaf. Now a cached immutable
+  snapshot invalidated at the 6 quest-map mutation sites.
+- **FIXED (`2e6cb0da7`)**: bot quest gate isStarted/isCompleted/currentProgress used getQuest(),
+  which INSERTS a NOT_STARTED placeholder per miss — the per-bot index scan bloated every bot's
+  quest map with hundreds of placeholders (compounding the per-kill copy above). Now getQuestNoAdd.
+- Defender (MsMpEng) was scanning all server file I/O with ZERO exclusions (2670 CPU-s burned);
+  exclusions added live: path D:\GameServers + processes java.exe/mysqld.exe.
+- OPEN: a ~13-15s-cadence machine-wide 90-100% spike with LOW game-server jvm CPU — unattributed
+  (Defender bursts? scheduler contention?); needs xperf/WPR or 250ms typeperf. May already be gone
+  post-exclusions — re-measure first.
+- OPEN: rare mega-ticks (tick-total max 1326ms, 0.01% slow) in UN-instrumented tick code — none of
+  the perf sections shows >83ms max, so the 1.3s is outside them; needs a targeted slow-tick stack
+  dump (e.g. jstack self when a tick exceeds 500ms).
+- quest-scan is the biggest steady sectioned consumer after abstract-grind (0.08 cores, avg 6.7ms);
+  re-measure post-fixes before more work.
+
 ## OPEN ITEMS (ranked) — 2026-07-09 late-session update: 1 measured-small, 2+3 FIXED
 1. **Nav runtime graph builds** — MEASURED, small lever: only 15 runtime builds in 25 min live
    (MIN_PRIORITY warmup thread; disk cache v70 holds 15,245 graphs across ~50 profiles and persists, so
