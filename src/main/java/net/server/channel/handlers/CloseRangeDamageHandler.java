@@ -96,8 +96,11 @@ public final class CloseRangeDamageHandler extends AbstractDealDamageHandler {
         if (GameConstants.isFinisherSkill(attack.skill)) {
             if (comboBuff != null) {
                 numFinisherOrbs = comboBuff - 1;
+                // Only consume/re-give orbs when the combo buff actually exists — with no buff,
+                // handleOrbconsume derefs the missing COMBO start time (NPE). Can happen when the
+                // buff expires between an attack being planned/sent and this handler running.
+                chr.handleOrbconsume();
             }
-            chr.handleOrbconsume();
         } else if (attack.numAttacked > 0) {
             if (attack.skill != 1111008 && comboBuff != null) {
                 int orbcount = chr.getBuffedValue(BuffStat.COMBO);

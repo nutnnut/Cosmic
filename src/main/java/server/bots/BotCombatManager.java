@@ -1780,6 +1780,14 @@ class BotCombatManager {
         if (!effect.canPaySkillCost(bot)) {
             return null;
         }
+        // Combo finishers (Panic/Coma) are client-gated on holding at least one combo orb — a bot
+        // must play the same rule. COMBO buff value = orbs + 1, so < 2 means no orb to consume.
+        if (GameConstants.isFinisherSkill(skillId)) {
+            Integer combo = bot.getBuffedValue(BuffStat.COMBO);
+            if (combo == null || combo < 2) {
+                return null;
+            }
+        }
         WeaponType weaponType = BotAttackExecutionProvider.getEquippedWeaponType(bot);
         if (!canUseAttackSkillWithWeapon(skillId, weaponType)) {
             return null;
