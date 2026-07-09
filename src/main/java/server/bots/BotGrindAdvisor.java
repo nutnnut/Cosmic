@@ -384,8 +384,29 @@ final class BotGrindAdvisor {
         return buildCandidates(entry, bot, mapAllowed);
     }
 
+    /** Two-sided level-band admission for a candidate mob: [level-DOWN, level+UP] with a CONSTANT
+     *  look-down span, so a low-level bot floors at mob level 1 while a level-80's floor sits at 55.
+     *  A cheap pre-filter in front of the emergent exp/hit-chance/survivability scoring (which still
+     *  does the fine selection inside the band). */
+    static boolean levelBandAllows(int botLevel, int mobLevel) {
+        return mobLevel >= Math.max(1, botLevel - BotManager.cfg.GRIND_LEVEL_BAND_DOWN)
+                && mobLevel <= botLevel + BotManager.cfg.GRIND_LEVEL_BAND_UP;
+    }
+
     private static List<MobCandidate> buildCandidates(BotEntry entry, Character bot,
                                                       java.util.function.IntPredicate mapAllowed) {
+        boolean band = BotManager.cfg.GRIND_LEVEL_BAND_ENABLED && bot != null;
+        List<MobCandidate> candidates = buildCandidates(entry, bot, mapAllowed, band ? bot.getLevel() : 0);
+        if (candidates.isEmpty() && band) {
+            // Never strand: no map holds a single in-band mob -> fall back to the full pool.
+            candidates = buildCandidates(entry, bot, mapAllowed, 0);
+        }
+        return candidates;
+    }
+
+    private static List<MobCandidate> buildCandidates(BotEntry entry, Character bot,
+                                                      java.util.function.IntPredicate mapAllowed,
+                                                      int bandLevel) {
         awaitWarm(); // hold the decide thread until the boot warm is done — never run a cold pass under load
         ItemInformationProvider ii = ItemInformationProvider.getInstance();
         BotSpawnIndex.Index index = BotSpawnIndex.get();
@@ -431,6 +452,9 @@ final class BotGrindAdvisor {
                 MobProfile p = profiles.get(e.getKey());
                 if (p == null || p.exp() <= 0) { // 0-exp props aren't grinding
                     continue;
+                }
+                if (bandLevel > 0 && !levelBandAllows(bandLevel, p.level())) {
+                    continue; // out of the level band (also skips its gear-prospect cost)
                 }
                 long tGear = BotPerformanceMonitor.start();
                 List<GearProspect> gear = gearByMob.computeIfAbsent(e.getKey(), id ->

@@ -223,6 +223,18 @@ class BotCombatManager {
         public int   GRIND_REGION_OCCUPANCY_PENALTY = 1200;
         public int   GRIND_REGION_OCCUPANCY_PENALTY_CAP = 3600;
 
+        // Grind doctrine (BotGrindDoctrine/BotGrindSpots): map-archetype positioning — bots claim
+        // and camp/patrol/stack-work spawn clusters instead of chasing the best-scored mob across
+        // the whole map. Off = pre-doctrine behavior (everything roams).
+        public boolean GRIND_DOCTRINE_ENABLED = true;
+        // Class-aware engage feel: thief-line bots probabilistically jump-attack (and occasionally
+        // hop AWAY mid-engage, throwing backward — the classic mini-kite). Off = plant-and-swing.
+        public boolean ENGAGE_STYLE_ENABLED = true;
+        // Chance a thief engagement opens with a hop-attack, and of that hop going away-from-mob.
+        public double ENGAGE_HOP_CHANCE = 0.68d;
+        public double ENGAGE_KITE_HOP_CHANCE = 0.35d;
+        public long  ENGAGE_HOP_MIN_INTERVAL_MS = 2_500L;
+
         // Mob damage
         public int   MOB_TOUCH_SWEEP_HEIGHT = 50;
         public int   MOB_HIT_COOLDOWN_MS = 1500;
@@ -1009,6 +1021,10 @@ class BotCombatManager {
             double rangeSq = (double) BotCombatManager.cfg.GRIND_SEEK_RANGE * BotCombatManager.cfg.GRIND_SEEK_RANGE;
             Foothold botFoothold = findGroundFoothold(botPos, bot);
             List<Monster> candidates = aliveMonstersInRange(bot, botPos, rangeSq);
+            if (candidates.isEmpty()) return null;
+            // Grind doctrine: restrict to the claimed spot/stack; empty = wait beat at the spot
+            // (respawn camping), relocation handled by BotGrindDoctrine's patience timers.
+            candidates = BotGrindDoctrine.filterCandidates(entry, candidates, System.currentTimeMillis());
             if (candidates.isEmpty()) return null;
 
             List<ScoredGrindTarget> scoredTargets = scoreGrindTargets(entry, bot, botPos, botFoothold, candidates);
@@ -2797,6 +2813,62 @@ class BotCombatManager {
         }
 
         return BotPhysicsEngine.findGroundFoothold(bot.getMap(), position);
+    }
+
+    // ---------------------------------------------------------------- engage-style hop (thieves)
+
+    /** Horizontal reach of an engage hop and the max landing-Y drift that still counts as
+     *  "same ground" for the away-hop safety check. */
+    static final int ENGAGE_HOP_REACH_PX = 60;
+    private static final int ENGAGE_HOP_LAND_Y_TOLERANCE = 40;
+
+    /** Thief lines open engagements with a hop-attack (star throw / stab mid-jump). Warriors stay
+     *  planted; mage/bowman engage feel already comes from teleport-nav and the kiting band. */
+    static boolean isJumpAttackJob(Character bot) {
+        int job = bot.getJob().getId();
+        return (job >= 410 && job <= 412) || (job >= 420 && job <= 422);
+    }
+
+    /**
+     * Class-aware engage feel: roll once per engagement (target change) whether it opens with a
+     * hop-attack; long fights re-roll every {@code ENGAGE_HOP_MIN_INTERVAL_MS} so the liveliness
+     * persists without constant bouncing. The caller executes the hop (initiateJump) and the attack
+     * lands mid-air on the next tick via the existing ascent-attack path.
+     */
+    static boolean shouldEngageHop(BotEntry entry, Character bot, Monster target, long now) {
+        if (!cfg.ENGAGE_STYLE_ENABLED || entry == null || bot == null || target == null
+                || !isJumpAttackJob(bot)) {
+            return false;
+        }
+        int oid = target.getObjectId();
+        if (entry.engageHopTargetOid != oid
+                || now - entry.engageHopLastAtMs >= cfg.ENGAGE_HOP_MIN_INTERVAL_MS) {
+            entry.engageHopTargetOid = oid;
+            entry.engageHopLastAtMs = now;
+            entry.engageHopPlanned = ThreadLocalRandom.current().nextDouble() < cfg.ENGAGE_HOP_CHANCE;
+        }
+        return entry.engageHopPlanned;
+    }
+
+    /**
+     * Direction (signed dx) for a planned engage hop: toward the mob, or with
+     * {@code ENGAGE_KITE_HOP_CHANCE} AWAY from it (throwing backward at the pursuer — the classic
+     * thief mini-kite) — but only when the away landing stays on same-level ground. Toward hops
+     * need no land check (worst case they land on the mob's platform).
+     */
+    static int engageHopDx(Character bot, Point botPos, Point targetPos) {
+        int toward = Integer.signum(targetPos.x - botPos.x);
+        if (toward == 0) {
+            toward = bot.isFacingLeft() ? -1 : 1;
+        }
+        if (ThreadLocalRandom.current().nextDouble() < cfg.ENGAGE_KITE_HOP_CHANCE) {
+            int awayX = botPos.x - toward * ENGAGE_HOP_REACH_PX;
+            Foothold fh = findGroundFoothold(new Point(awayX, botPos.y), bot);
+            if (fh != null && Math.abs(fh.calculateFooting(awayX) - botPos.y) <= ENGAGE_HOP_LAND_Y_TOLERANCE) {
+                return -toward * ENGAGE_HOP_REACH_PX;
+            }
+        }
+        return toward * ENGAGE_HOP_REACH_PX;
     }
 
     private record ScoredGrindTarget(Monster monster, long graphCost, long localScore, double distanceSq) {

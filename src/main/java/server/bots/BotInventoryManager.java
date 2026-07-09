@@ -220,6 +220,7 @@ class BotInventoryManager {
         long now = System.currentTimeMillis();
         Point botPos = bot.getPosition();
         double seekRangeSq = (double) BotCombatManager.cfg.GRIND_SEEK_RANGE * BotCombatManager.cfg.GRIND_SEEK_RANGE;
+        List<MapItem> eligible = new ArrayList<>();
         MapItem nearest = null;
         double nearestDistSq = Double.MAX_VALUE;
 
@@ -232,11 +233,49 @@ class BotInventoryManager {
                 continue;
             }
             double distSq = dropPos.distanceSq(botPos);
-            if (distSq > seekRangeSq || distSq >= nearestDistSq) continue;
-            nearestDistSq = distSq;
-            nearest = drop;
+            if (distSq > seekRangeSq) continue;
+            eligible.add(drop);
+            if (distSq < nearestDistSq) {
+                nearestDistSq = distSq;
+                nearest = drop;
+            }
         }
-        return nearest;
+        if (nearest == null || !BotManager.cfg.LOOT_SWEEP_CHAIN_ENABLED) {
+            return nearest;
+        }
+        return sweepChainEnd(botPos, nearest, eligible);
+    }
+
+    /** Same-ledge Y band for chaining drops into one sweep. */
+    static final int LOOT_SWEEP_SAME_LEDGE_Y = 120;
+
+    /**
+     * Loot sweep: walk to the FAR end of the same-ledge drop chain on the near drop's side, so the
+     * passive loot vacuum (tickPassiveLoot fires en route every tick) grabs the whole chain in one
+     * continuous motion instead of stop-and-go nearest-drop hops. Drops on the other side of the
+     * bot are caught by a later sweep.
+     */
+    static MapItem sweepChainEnd(Point botPos, MapItem nearest, List<MapItem> eligible) {
+        Point nearPos = nearest.getPosition();
+        int dir = Integer.signum(nearPos.x - botPos.x);
+        if (dir == 0) {
+            return nearest;
+        }
+        MapItem far = nearest;
+        int farDx = Math.abs(nearPos.x - botPos.x);
+        for (MapItem drop : eligible) {
+            Point p = drop.getPosition();
+            if (Integer.signum(p.x - botPos.x) != dir
+                    || Math.abs(p.y - nearPos.y) > LOOT_SWEEP_SAME_LEDGE_Y) {
+                continue;
+            }
+            int dx = Math.abs(p.x - botPos.x);
+            if (dx > farDx) {
+                farDx = dx;
+                far = drop;
+            }
+        }
+        return far;
     }
 
     static boolean hasAnyInventoryFull(Character bot) {

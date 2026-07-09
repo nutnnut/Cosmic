@@ -154,6 +154,28 @@ public class BotManager {
         // but still get pulled back to a same-map party anchor if they fall far out of bounds.
         public int GRIND_PARTY_TELEPORT_DIST_MULTIPLIER = 2;
 
+        // Rest-spot safety (resolveSafeIdleRegion): ledges bearing a static mob SPAWN are
+        // categorically hot (mobs patrol their whole foothold, even the far tip), and clearance is
+        // axis-aware — height above a spawn is worth more than horizontal gap (mobs don't climb).
+        // Off = live-mob danger ranking only (previous behavior).
+        public boolean REST_SPOT_SAFETY_ENABLED = true;
+        // Mid-combat rope stall recovery: clinging to a rope with no vertical progress while a mob
+        // waits nearby -> dismount toward it instead of hanging forever. Off = nav-only recovery.
+        public boolean CLIMB_COMBAT_RECOVERY_ENABLED = true;
+        public long CLIMB_STALL_MS = 1_200L;
+        public int CLIMB_STALL_PROGRESS_EPS = 6;
+        // Grind-advisor level band: pre-filter candidate mobs to [level-DOWN, level+UP] before the
+        // emergent exp/survivability scoring (constant look-down span, so lowbies floor at mob lv 1
+        // while a lv 80 floors at 55). Never strands: an empty banded pool falls back to the full
+        // pool. Off = fully emergent selection (previous behavior).
+        public boolean GRIND_LEVEL_BAND_ENABLED = true;
+        public int GRIND_LEVEL_BAND_UP = 12;
+        public int GRIND_LEVEL_BAND_DOWN = 25;
+        // Grind loot sweep: instead of walking to the NEAREST eligible drop, walk to the FAR end of
+        // the same-ledge drop chain on that side, so the passive loot vacuum grabs the whole chain
+        // in one continuous motion. Off = nearest-drop walking (previous behavior).
+        public boolean LOOT_SWEEP_CHAIN_ENABLED = true;
+
         // Party-autopilot cohesion (BotAutopilotManager): the leader holds and waits for
         // stragglers instead of racing ahead. Hops>this many portals behind triggers a wait
         // (1 = wait once someone is 2+ maps back; tolerates one map of in-transit spread).
@@ -3400,6 +3422,12 @@ public class BotManager {
                 return lootPos;
             }
         }
+        // Grind doctrine: hold near the claimed spot's anchor (small in-spot drift) instead of
+        // region-random wandering — a camped bot visibly works its spot while waiting for respawns.
+        Point doctrineIdle = BotGrindDoctrine.idleAnchorTarget(entry, botPos);
+        if (doctrineIdle != null) {
+            return doctrineIdle;
+        }
 
         BotNavigationGraph graph = map != null ? BotNavigationGraphProvider.peekBestGraph(map, entry.movementProfile) : null;
         int regionId = graph != null ? BotNavigationManager.resolveCurrentRegionId(graph, entry, map, botPos) : -1;
@@ -3471,10 +3499,44 @@ public class BotManager {
                 dangerByRegion.merge(r.id, defense.expectedTouchHpLossFraction(bot, m), Double::sum);
             }
         }
+        // Rest-spot safety: a ledge BEARING a static spawn is categorically hot (mobs patrol their
+        // whole foothold chain, even the currently-empty far tip) — hard-reject it as long as a
+        // spawn-free ledge remains. Spawn points also join the threat list for the axis-aware
+        // clearance pick below.
+        java.util.Set<Integer> hotSpawnRegions = java.util.Set.of();
+        List<Point> spawnThreats = List.of();
+        if (cfg.REST_SPOT_SAFETY_ENABLED) {
+            java.util.Set<Integer> hot = new java.util.HashSet<>();
+            List<Point> threats = new ArrayList<>();
+            for (server.life.SpawnPoint sp : map.getMonsterSpawn()) {
+                Point p = sp.getPosition();
+                if (p == null) {
+                    continue;
+                }
+                threats.add(p);
+                BotNavigationGraph.Region r = idleRegionAt(graph, p);
+                if (r != null) {
+                    hot.add(r.id);
+                }
+            }
+            hotSpawnRegions = hot;
+            spawnThreats = threats;
+        }
         List<BotNavigationGraph.Region> ground = new ArrayList<>();
         for (BotNavigationGraph.Region r : graph.regions) {
             if (!r.isRopeRegion && r.width() > 0) {
                 ground.add(r);
+            }
+        }
+        if (!hotSpawnRegions.isEmpty()) {
+            List<BotNavigationGraph.Region> cold = new ArrayList<>(ground.size());
+            for (BotNavigationGraph.Region r : ground) {
+                if (!hotSpawnRegions.contains(r.id)) {
+                    cold.add(r);
+                }
+            }
+            if (!cold.isEmpty()) {
+                ground = cold;
             }
         }
         if (ground.isEmpty()) {
@@ -3513,7 +3575,9 @@ public class BotManager {
                 BotNavigationGraph.Region r = safest.get(ThreadLocalRandom.current().nextInt(safest.size()));
                 candidates.add(r.pointAt(ThreadLocalRandom.current().nextInt(r.minX, r.maxX + 1)));
             }
-            Point spot = pickFarthestFromMobs(candidates, others);
+            Point spot = cfg.REST_SPOT_SAFETY_ENABLED
+                    ? pickSafestClearance(candidates, mobPts, spawnThreats, others)
+                    : pickFarthestFromMobs(candidates, others);
             return spot != null ? spot : candidates.get(0);
         }
         BotNavigationGraph.Region pick = safest.get(0);
@@ -3523,8 +3587,51 @@ public class BotManager {
         for (int i = 0; i < samples; i++) {
             candidates.add(pick.pointAt(pick.minX + (span * i) / Math.max(1, samples - 1)));
         }
-        Point safe = pickFarthestFromMobs(candidates, mobPts);
+        Point safe = cfg.REST_SPOT_SAFETY_ENABLED
+                ? pickSafestClearance(candidates, mobPts, spawnThreats, List.of())
+                : pickFarthestFromMobs(candidates, mobPts);
         return safe != null ? safe : pick.centerPoint();
+    }
+
+    /** Height above a threat is worth this many horizontal px of gap (mobs don't climb); being
+     *  level with or below it earns no vertical credit. */
+    static final double IDLE_SAFE_VERTICAL_WEIGHT = 3.0;
+
+    /** Axis-aware clearance pick (rest-spot safety): maximize the minimum clearance over all live
+     *  mobs AND static spawns, with a small destack bonus for distance from other characters. */
+    private static Point pickSafestClearance(List<Point> candidates, List<Point> mobPts,
+                                             List<Point> spawnPts, List<Point> others) {
+        Point best = null;
+        double bestScore = -Double.MAX_VALUE;
+        for (Point c : candidates) {
+            if (c == null) {
+                continue;
+            }
+            double clearance = 100_000.0; // no threats -> everywhere is safe
+            for (Point t : mobPts) {
+                clearance = Math.min(clearance, idleClearance(c, t));
+            }
+            for (Point t : spawnPts) {
+                clearance = Math.min(clearance, idleClearance(c, t));
+            }
+            double destack = 0.0;
+            if (!others.isEmpty()) {
+                destack = Double.MAX_VALUE;
+                for (Point o : others) {
+                    destack = Math.min(destack, c.distance(o));
+                }
+            }
+            double score = clearance + 0.25 * destack;
+            if (score > bestScore) {
+                bestScore = score;
+                best = c;
+            }
+        }
+        return best;
+    }
+
+    private static double idleClearance(Point p, Point threat) {
+        return Math.abs(p.x - threat.x) + IDLE_SAFE_VERTICAL_WEIGHT * Math.max(0, threat.y - p.y);
     }
 
     /**
@@ -4371,6 +4478,22 @@ public class BotManager {
         } else if (entry.breakUntilMs != 0L) {
             BotBreakManager.endBreak(entry, bot);   // break just elapsed -> clear + resume grind
         }
+        // Mid-combat rope stall recovery: hung on a rope (no committed nav edge, no vertical
+        // progress) with a live hostile nearby -> dismount toward it. The nav layer never sees the
+        // combat target, so nothing else rescues this posture (stuck watchdog bails on climbing).
+        if (entry.climbing && cfg.CLIMB_COMBAT_RECOVERY_ENABLED && entry.navEdge == null) {
+            if (tickClimbCombatRecovery(entry, bot, botPos)) {
+                return new LocalOpportunityAttackResult(true, targetPos);
+            }
+        } else {
+            entry.climbStallSinceMs = 0;
+            entry.climbStallLastY = Integer.MIN_VALUE;
+        }
+        // Grind doctrine: keep the spot/archetype state fresh (map change, claim renewal, relocation
+        // patience). Cheap after the first tick on a map; shapes findGrindTarget below.
+        if (runAiTick) {
+            BotGrindDoctrine.update(entry, bot, System.currentTimeMillis());
+        }
         double seekRangeSq = (double) BotCombatManager.cfg.GRIND_SEEK_RANGE * BotCombatManager.cfg.GRIND_SEEK_RANGE;
         Monster target = entry.grindTarget;
         if (target == null || !target.isAlive()
@@ -4547,11 +4670,24 @@ public class BotManager {
             if (aoeRepositionPos == null
                     && attackGateOpen && BotCombatManager.isTargetInAttackRange(attackPlan, bot, target)
                     && BotCombatManager.canUseAttackPlanNow(entry, grindWeaponType, attackPlan)) {
+                // Class-aware engage feel: a thief engagement can open with a hop — the attack then
+                // lands mid-air on the next tick via the existing ascent-attack path. Away-hops
+                // (mini-kite) are land-checked inside engageHopDx.
+                if (!entry.inAir && crossRegionRetreatPos == null
+                        && BotCombatManager.shouldEngageHop(entry, bot, target, now)) {
+                    entry.engageHopPlanned = false;
+                    BotMovementManager.initiateJump(entry, bot, BotCombatManager.engageHopDx(bot, botPos, tp));
+                    recordCombatPathTick(entry, targetPos, true, runAiTick);
+                    return new LocalOpportunityAttackResult(true, targetPos);
+                }
                 attackAttemptedInRange = true;
                 // In range — attack if grounded, or during ascent of a jump
                 int prevCooldown = entry.attackCooldownMs;
                 BotCombatManager.attackMonster(entry, bot, attackPlan);
                 boolean attacked = entry.attackCooldownMs != prevCooldown;
+                if (attacked) {
+                    BotGrindDoctrine.markProgress(entry, now); // spot is producing
+                }
                 // If a ranged bot just did a degenerate close-range hit, force retreat next tick
                 if (attacked && attackPlan.isCloseRangeRoute()
                         && BotCombatManager.isRangedAmmoWeapon(grindWeaponType)) {
@@ -4611,6 +4747,40 @@ public class BotManager {
             if (lootPos != null) targetPos = lootPos;
         }
         return new LocalOpportunityAttackResult(false, targetPos);
+    }
+
+    /**
+     * Rope-stall recovery (grind mode): clinging with no committed nav edge and no vertical progress
+     * for CLIMB_STALL_MS while a live hostile waits nearby -> dismount toward it (legal jump-off, no
+     * snapping). Deliberate nav climbs (navEdge != null) are excluded by the caller — the route
+     * driver owns those. Returns true when the dismount fired (tick consumed).
+     */
+    private boolean tickClimbCombatRecovery(BotEntry entry, Character bot, Point botPos) {
+        long now = System.currentTimeMillis();
+        if (entry.climbStallLastY == Integer.MIN_VALUE
+                || Math.abs(botPos.y - entry.climbStallLastY) >= cfg.CLIMB_STALL_PROGRESS_EPS) {
+            entry.climbStallSinceMs = now;
+            entry.climbStallLastY = botPos.y;
+            return false;
+        }
+        if (now - entry.climbStallSinceMs < cfg.CLIMB_STALL_MS) {
+            return false;
+        }
+        Monster target = entry.grindTarget;
+        if (target == null || !target.isAlive() || target.getMap() != bot.getMap()) {
+            target = BotCombatManager.findFollowAttackTarget(entry, bot); // local scan, no chase
+        }
+        if (target == null || target.getPosition() == null) {
+            return false; // nothing to fight — leave the posture to the nav layer
+        }
+        int dx = target.getPosition().x - botPos.x;
+        if (dx == 0) {
+            dx = bot.isFacingLeft() ? -1 : 1;
+        }
+        BotMovementManager.jumpOffRope(entry, bot, dx);
+        entry.climbStallSinceMs = 0;
+        entry.climbStallLastY = Integer.MIN_VALUE;
+        return true;
     }
 
     private void recordCombatPathTick(BotEntry entry, Point targetPos, boolean consumedTick, boolean runAiTick) {

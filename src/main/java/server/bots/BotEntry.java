@@ -796,6 +796,29 @@ public class BotEntry {
     int patrolMapId = -1;
     Point patrolWanderTarget = null;
 
+    // Grind doctrine (BotGrindDoctrine): map-archetype positioning state. Style null = ROAM
+    // (pre-doctrine behavior). All state is per-map; reset by BotGrindDoctrine.clear.
+    int grindDoctrineMapId = -1;
+    BotGrindSpots.Profile grindDoctrineProfile = null;
+    BotGrindDoctrine.Style grindDoctrineStyle = null;
+    Point grindSpotAnchor = null;
+    int grindSpotRadius = 0;
+    long grindSpotClaimKey = 0L;
+    java.awt.Rectangle grindStackBox = null;   // STACK tether box (null for CAMP/PATROL)
+    long grindSpotDrySinceMs = 0L;             // no in-spot candidate since (0 = producing)
+    long grindSpotProgressAtMs = 0L;           // last landed hit at the claimed spot
+    long grindSpotExcludedKey = 0L;            // just-relocated-from spot, on cooldown
+    long grindSpotExcludeUntilMs = 0L;
+    java.util.List<BotGrindSpots.Spot> grindPatrolRing = null;
+    int grindPatrolRingPos = 0;
+    // Engage-style hop (BotCombatManager.shouldEngageHop): per-engagement roll state.
+    int engageHopTargetOid = -1;
+    boolean engageHopPlanned = false;
+    long engageHopLastAtMs = 0L;
+    // Mid-combat rope stall recovery (BotManager.tickGrindMode climb recovery).
+    long climbStallSinceMs = 0L;
+    int climbStallLastY = Integer.MIN_VALUE;
+
     // Buff consumables (toggleable; cheap = weakest buff of each type, max = strongest)
     boolean buffConsumablesEnabled = false;
     boolean buffCheapMode          = true;
