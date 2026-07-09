@@ -8762,14 +8762,15 @@ public class Character extends AbstractCharacterObject {
         return false;
     }
 
-    // ponytail: char saves wipe-and-reinsert their rows on shared tables (inventoryitems, skills,
-    // savedlocations); run in parallel (shutdown disconnect loop + periodic autosave + bot logouts)
-    // they deadlock in InnoDB. Gate the DB write so few enough overlap that the bounded retry reliably
-    // wins. Permits = the deadlock/throughput knob: drop to 1 for guaranteed zero deadlock (saves
-    // serialize). SSOT - covers autosave, bot logout, shutdown and despawn.
-    // ponytail: 1 permit = guaranteed zero deadlock (saves serialize). 4 still deadlocked past the
-    // retry budget under bot-logout storms; bump back up only if save throughput becomes the bottleneck.
-    private static final java.util.concurrent.Semaphore SAVE_GATE = new java.util.concurrent.Semaphore(1, true);
+    // ponytail: char saves wipe-and-reinsert their rows on shared tables; run in parallel they used
+    // to deadlock in InnoDB. Root cause (found 2026-07-09, standalone JDBC repro): five save-path
+    // tables had no characterid index, so their per-char DELETEs full-scanned - lock-testing every
+    // row in the table against other saves' uncommitted inserts. Fixed by 032-save-indexes.sql;
+    // with the indexes + READ_UNCOMMITTED, 1600 full-shape saves at 16-way concurrency produced
+    // zero deadlocks. Permits stay as the safety knob: the bounded retry below absorbs any residual
+    // deadlock, and dropping this to 1 re-serializes saves if a storm ever reappears ("Deadlock
+    // saving chr" warnings in the log). SSOT - covers autosave, bot logout, shutdown and despawn.
+    private static final java.util.concurrent.Semaphore SAVE_GATE = new java.util.concurrent.Semaphore(6, true);
 
     public void saveCharToDB() {
         if (YamlConfig.config.server.USE_AUTOSAVE) {

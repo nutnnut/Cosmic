@@ -67,6 +67,14 @@ public class DatabaseConnection {
         config.addDataSourceProperty("cachePrepStmts", true);
         config.addDataSourceProperty("prepStmtCacheSize", 25);
         config.addDataSourceProperty("prepStmtCacheSqlLimit", 2048);
+        // Collapse executeBatch() INSERTs into one multi-row statement (one round trip instead of
+        // one per row) - the char-save item rewrite depends on this. Safe here because no caller
+        // reads getGeneratedKeys() off a batch (audited 2026-07-09; keys off a rewritten batch would
+        // be unreliable under innodb_autoinc_lock_mode=2). Gotcha: batches the driver can't
+        // VALUES-rewrite (INSERT..ON DUPLICATE KEY UPDATE, REPLACE - e.g. monsterbook, skills) get
+        // semicolon-JOINED instead, so their SQL must not carry a trailing ';' (would form an empty
+        // ';;' statement the server rejects, failing the save).
+        config.addDataSourceProperty("rewriteBatchedStatements", true);
 
         return config;
     }
