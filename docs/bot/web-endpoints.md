@@ -31,13 +31,15 @@ Live occupancy of every online character, bucketed by map. Cached ~750 ms.
 ```
 {"maps":{"<mapId>":{
    "players":[{"id","n","l","j","c","p","g"}, ...],
-   "bots":[{"id","n","l","j","c","p","g","a","status"}, ...]
+   "bots":[{"id","n","l","j","c","p","g","a","stuck"?,"status"}, ...]
 }}}
 ```
 `n`=name, `l`=level, `j`=job, `c`=commandable (1 = managed/RTS-controllable bot), `p`=party id (0=none),
 `g`=crew id (0=none). `a`=coarse activity bucket (`"grind"`|`"break"`|`"chill"`; chill = whole-session
 chill login, gacha/idle/logging-off → break, resupply/travel/quest → grind) for the roster tally (bots
-only). `status`=the
+only). `stuck`=short wedge reason, present only when the bot is detectably stuck
+(`BotAutopilotManager.stuckReason`: "can't find anywhere to grind" / "travel gave up (...)" /
+"autopilot leaked off") — drives the roster's "possibly stuck" counter+filter. `status`=the
 @botstatus line (bots only; drives the roster-hover tooltip and the right-panel detail — omitted for
 players and for bots with no registry entry).
 

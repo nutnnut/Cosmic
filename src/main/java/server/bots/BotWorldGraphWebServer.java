@@ -2199,7 +2199,7 @@ public final class BotWorldGraphWebServer {
         // an online player owner). g = persistent crew id (0 = none). p = game party id (0 = solo). The
         // roster nests party (outer) > crew (inner) > loose; commands target managed bots only.
         int commandable = 0, crew = 0;
-        String status = null, activity = null;
+        String status = null, activity = null, stuck = null;
         if (bot) {
             BotEntry e = lookupBotEntry(chr.getId());
             if (e != null) {
@@ -2207,6 +2207,7 @@ public final class BotWorldGraphWebServer {
                 crew = e.crewGroupId != null ? e.crewGroupId : 0;
                 status = BotAutopilotManager.statusReport(e, chr); // hover/right-panel @status (cheap: field reads)
                 activity = BotAutopilotManager.activityCategory(e, chr); // grind/break bucket for the roster tally
+                stuck = BotAutopilotManager.stuckReason(e, chr); // wedged-bot detector for "possibly stuck"
             }
         }
         int party = Math.max(0, chr.getPartyId());
@@ -2214,6 +2215,7 @@ public final class BotWorldGraphWebServer {
                 + ",\"j\":" + jsonStr(j == null ? "" : j.toString())
                 + ",\"c\":" + commandable + ",\"p\":" + party + ",\"g\":" + crew
                 + (activity != null ? ",\"a\":" + jsonStr(activity) : "")
+                + (stuck != null ? ",\"stuck\":" + jsonStr(stuck) : "")
                 + (status != null ? ",\"status\":" + jsonStr(status) : "") + "}";
     }
 

@@ -519,18 +519,20 @@ function renderRoster(){
     for(const c of o.bots)    items.push({c, map:+map, bot:true});
   }
   let filt = items;
-  if(stuckOnly) filt = filt.filter(it => it.bot && it.c.a==='idle');   // click "possibly stuck" -> only leaked bots
+  // "possibly stuck" = server-side wedge detector (c.stuck reason: can't-find-grind trap /
+  // travel give-up cooldown / inert-autopilot leak) — broader than the old a==='idle' bucket.
+  if(stuckOnly) filt = filt.filter(it => it.bot && it.c.stuck);
   if(query) filt = filt.filter(it => it.c.n.toLowerCase().includes(query));
   // managed = self-owned/ownerless bots (commandable, c=1); companion = bots following an online owner
   let players=0, managed=0, companion=0, grinding=0, onBreak=0, chilling=0, stuck=0;
   for(const it of items){
     if(!it.bot){ players++; continue; }
     if(it.c.c) managed++; else companion++;
-    // tally over all bots; 'idle' = inert-autopilot leak (bug), split out from real breaks
-    if(it.c.a==='chill') chilling++; else if(it.c.a==='idle') stuck++; else if(it.c.a==='break') onBreak++; else grinding++;
+    if(it.c.stuck) stuck++;   // counted independently of the activity buckets below
+    if(it.c.a==='chill') chilling++; else if(it.c.a==='idle'){} else if(it.c.a==='break') onBreak++; else grinding++;
   }
   const head = ((query||stuckOnly) ? filt.length+' shown · ' : '') + players + ' online + ' + managed + ' managed + ' + companion + ' companion';
-  const stuckHtml = '<span onclick="toggleStuck()" title="autopilot leaked off — click to filter roster to these bots (hover a row for its last decision)" style="cursor:pointer;text-decoration:underline;color:'
+  const stuckHtml = '<span onclick="toggleStuck()" title="wedged bots: can\'t find anywhere to grind, travel in give-up cooldown, or autopilot leaked off — click to filter (hover a row for the reason)" style="cursor:pointer;text-decoration:underline;color:'
     + (stuck?'#ff6b6b':'#8a94a6') + (stuckOnly?';font-weight:bold':'') + '">' + stuck + ' possibly stuck</span>';
   const breakdown = (managed+companion)
     ? grinding+' grinding · '+onBreak+' taking a break · '+chilling+' just chilling · '+stuckHtml : '';
@@ -567,7 +569,9 @@ function rowHtml(it, opts){
   return '<div class="rosterItem'+(sel?' sel':'')+(opts.off?' off':'')+'"'+(it.bot?' data-cid="'+it.c.id+'"':'')
     + ' onmouseenter="rosterTip(event,'+it.c.id+','+it.map+','+(it.bot?1:0)+')" onmouseleave="hideTip()"'
     + ' onclick="'+click+'">'
-    + (it.bot?'&#129302; ':'&#128100; ') + esc(it.c.n) + ' <span class="meta">Lv'+it.c.l+' '+esc(it.c.j)+'</span>'
+    + (it.bot?'&#129302; ':'&#128100; ')
+    + (it.bot && it.c.stuck ? '<span title="'+esc(it.c.stuck)+'" style="color:#ff6b6b">&#9888;</span> ' : '')
+    + esc(it.c.n) + ' <span class="meta">Lv'+it.c.l+' '+esc(it.c.j)+'</span>'
     + (meta!=='' ? '<br><span class="meta">'+meta+'</span>' : '') + '</div>';
 }
 // nesting: party (outer box) > crew (inner box) > loose rows. Boxes only form at >=2 members.

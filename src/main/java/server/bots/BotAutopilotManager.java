@@ -1132,6 +1132,38 @@ final class BotAutopilotManager {
         return "grind";
     }
 
+    /**
+     * Short reason when the bot is detectably WEDGED — conditions that are easy to detect but that
+     * the bot cannot fix by itself (or only escapes slowly) — else null. Powers the roster's
+     * "possibly stuck" counter/filter; strictly broader than the {@code "idle"} activity bucket,
+     * which missed e.g. the Pyramid-Dunes trap bots because their chill/break state hid them.
+     */
+    static String stuckReason(BotEntry entry, Character bot) {
+        if (entry == null || bot == null) {
+            return null;
+        }
+        // Decide loop can't find anywhere to grind (one-way-map trap class: Pyramid Dunes, Leafre
+        // dock). The LAST decision failed and no plan was installed since — a successful decide
+        // overwrites the reason ("grind <dest> ..."), so a lingering failure = still failing.
+        String reason = entry.autopilotLastDecisionReason;
+        if (!isActive(entry) && reason != null
+                && (reason.startsWith("no reachable grind spot") || reason.startsWith("decide failed"))) {
+            return "can't find anywhere to grind";
+        }
+        // Travel to its current destination is inside a give-up cooldown: it tried, failed
+        // (deadline/portal), and is deliberately not retrying yet. Often self-heals on retry, but a
+        // repeat offender sits here most of the time — exactly the "possibly" in possibly stuck.
+        if (System.currentTimeMillis() < entry.followTravelGiveUpUntilMs) {
+            String why = entry.followTravelGiveUpReason;
+            return "travel gave up (" + (why != null ? why : "unknown") + ")";
+        }
+        // Inert-autopilot leak (the original possibly-stuck bucket, kb_bot_inert_autopilot_recovery).
+        if ("idle".equals(activityCategory(entry, bot))) {
+            return "autopilot leaked off";
+        }
+        return null;
+    }
+
     static String statusReport(BotEntry entry, Character bot) {
         String currentMap = currentMapName(bot);
         if (entry == null || bot == null) {
