@@ -234,6 +234,9 @@ class BotCombatManager {
         public double ENGAGE_HOP_CHANCE = 0.68d;
         public double ENGAGE_KITE_HOP_CHANCE = 0.35d;
         public long  ENGAGE_HOP_MIN_INTERVAL_MS = 2_500L;
+        // Targeting: penalize mobs the bot hits but barely damages (high WDEF / deep level gap),
+        // so it prefers well-matched mobs on mixed-level maps. Off = pre-penalty targeting.
+        public boolean LOW_DAMAGE_PENALTY_ENABLED = true;
 
         // Mob damage
         public int   MOB_TOUCH_SWEEP_HEIGHT = 50;
@@ -2295,13 +2298,15 @@ class BotCombatManager {
                                                              List<Monster> candidates) {
         boolean fragile = isFragile(bot); // compute ONCE per scoring pass, not per candidate (USE-bag scan)
         AccuracyContext acc = accuracyContext(bot); // bot accuracy is per-pass, not per-candidate
+        Map<Integer, Long> dmgCache = new HashMap<>(); // per-pass, keyed by mob id (few types per map)
         List<ScoredGrindTarget> scoredTargets = new ArrayList<>(candidates.size());
         for (Monster candidate : candidates) {
             long localScore = grindTargetScore(bot, botPos, botFoothold, candidate)
                     - aoeClusterBonus(entry, candidate, candidates)
                     - questTargetBonus(entry, candidate)
                     + touchDangerPenalty(fragile, bot, candidate)
-                    + lowAccuracyPenalty(acc, candidate);
+                    + lowAccuracyPenalty(acc, candidate)
+                    + lowDamagePenalty(entry, bot, candidate, dmgCache);
             scoredTargets.add(new ScoredGrindTarget(candidate, localScore, localScore,
                     candidate.getPosition().distanceSq(botPos)));
         }
@@ -2316,6 +2321,7 @@ class BotCombatManager {
                                                               List<Monster> candidates) {
         boolean fragile = isFragile(bot); // compute ONCE per scoring pass, not per candidate (USE-bag scan)
         AccuracyContext acc = accuracyContext(bot); // bot accuracy is per-pass, not per-candidate
+        Map<Integer, Long> dmgCache = new HashMap<>(); // per-pass, keyed by mob id (few types per map)
         Map<Integer, GrindTargetGroup> groupsByRegionId = new HashMap<>();
         for (Monster candidate : candidates) {
             Point targetPos = candidate.getPosition();
@@ -2329,7 +2335,8 @@ class BotCombatManager {
                     - aoeClusterBonus(entry, candidate, candidates)
                     - questTargetBonus(entry, candidate)
                     + touchDangerPenalty(fragile, bot, candidate)
-                    + lowAccuracyPenalty(acc, candidate);
+                    + lowAccuracyPenalty(acc, candidate)
+                    + lowDamagePenalty(entry, bot, candidate, dmgCache);
             GrindTargetGroup group = groupsByRegionId.computeIfAbsent(targetRegionId, GrindTargetGroup::new);
             group.add(candidate, localScore, targetPos.distanceSq(botPos));
         }
@@ -2481,6 +2488,34 @@ class BotCombatManager {
         server.combat.CombatFormulaProvider f = server.combat.CombatFormulaProvider.getInstance();
         int acc = magic ? f.getTotalMagicAccuracy(bot) : f.getTotalAccuracy(bot);
         return new AccuracyContext(acc, bot.getLevel(), magic);
+    }
+
+    // Low-damage targeting penalty: de-prioritize mobs the bot can HIT but barely dents (high WDEF
+    // and/or deep level gap — a lv70 chipping 1-digit lines into a lv83 Ghost Pirate's 30k HP while
+    // in-band mobs stand nearby). Complements lowAccuracyPenalty, which only sees miss chance: a
+    // reliably-hit-for-nothing mob previously scored identically to a well-matched one. Soft and
+    // proportional (still fights when nothing better is in reach). Shots-to-kill comes from the
+    // same SSOT damage model the grind advisor prices maps with; cached per scoring pass by mob id.
+    static final double DAMAGE_OK_SHOTS = 15.0;   // at/below this shots-to-kill: no penalty
+    static final double DAMAGE_MAX_SHOTS = 60.0;  // at/above this: full penalty
+    static final long LOW_DAMAGE_TARGET_PENALTY = 2000L;
+
+    static long lowDamagePenalty(BotEntry entry, Character bot, Monster target, Map<Integer, Long> cache) {
+        if (!cfg.LOW_DAMAGE_PENALTY_ENABLED || entry == null || bot == null || target == null) {
+            return 0L;
+        }
+        return cache.computeIfAbsent(target.getId(), id -> {
+            double perShot = estimateBestSkillHitDamage(entry, bot, target);
+            if (perShot <= 0) {
+                return 0L; // unknown damage -> no penalty (the accuracy term owns whiffing)
+            }
+            double shots = target.getMaxHp() / perShot;
+            if (shots <= DAMAGE_OK_SHOTS) {
+                return 0L;
+            }
+            double t = Math.min(1.0, (shots - DAMAGE_OK_SHOTS) / (DAMAGE_MAX_SHOTS - DAMAGE_OK_SHOTS));
+            return Math.round(t * LOW_DAMAGE_TARGET_PENALTY);
+        });
     }
 
     static long lowAccuracyPenalty(AccuracyContext ctx, Monster target) {

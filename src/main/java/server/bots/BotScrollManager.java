@@ -1824,6 +1824,14 @@ final class BotScrollManager {
         if (slot == null || !ii.canWearEquipment(bot, candidate, slot)) {
             return 0;
         }
+        // Off-type weapon (a mace to a knuckle pirate): canWearEquipment passes on raw stats (v83
+        // has no job lock on most 1H weapons) and the offense scorer would count its WATK as pure
+        // upgrade gain — but attack skills need the build's weapon type, so it's never a combat
+        // upgrade, only trade stock. Same gate levelsUntilWearable already applies.
+        if (slot == (short) -11
+                && !BotEquipManager.isPreferredWeapon(bot, ii.getWeaponType(candidate.getItemId()), candidate)) {
+            return 0;
+        }
         Equip worn = wornInSlot(bot, ii, slot);
         double gain = potentialValue(bot, ii, candidate)
                 - (worn == null ? 0.0 : potentialValue(bot, ii, worn));

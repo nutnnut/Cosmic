@@ -448,13 +448,19 @@ final class BotGrindAdvisor {
         List<MobCandidate> candidates = new ArrayList<>();
         for (BotSpawnIndex.MapSpawns map : maps) {
             Map<MobProfile, Integer> pointsByMob = new HashMap<>();
+            int inBandPoints = 0;
             for (Map.Entry<Integer, Integer> e : map.mobCounts().entrySet()) {
                 MobProfile p = profiles.get(e.getKey());
                 if (p == null || p.exp() <= 0) { // 0-exp props aren't grinding
                     continue;
                 }
-                if (bandLevel > 0 && !levelBandAllows(bandLevel, p.level())) {
-                    continue; // out of the level band (also skips its gear-prospect cost)
+                // Level band steers map ADMISSION only — out-of-band mobs stay in the blend at
+                // their real (usually dismal) kill rate, because the bot WILL fight them on-site
+                // (target selection is spatial). Dropping them scored mixed maps off a fantasy:
+                // Warped Path of Time<3> priced as 3 in-band Buffoons while 25 out-of-band Ghost
+                // Pirates (2x HP, 2x WDEF) were 89% of what a lv70 actually swung at.
+                if (bandLevel <= 0 || levelBandAllows(bandLevel, p.level())) {
+                    inBandPoints += e.getValue();
                 }
                 long tGear = BotPerformanceMonitor.start();
                 List<GearProspect> gear = gearByMob.computeIfAbsent(e.getKey(), id ->
@@ -464,8 +470,8 @@ final class BotGrindAdvisor {
                 pointsByMob.put(new MobProfile(p.mobId(), p.mobName(), p.level(), p.avoid(), p.exp(),
                         p.killSeconds(), p.rawKillSeconds(), p.touchDanger(), gear), e.getValue());
             }
-            if (totalPoints(pointsByMob) < MIN_SPAWN_POINTS) {
-                continue;
+            if (totalPoints(pointsByMob) < MIN_SPAWN_POINTS || inBandPoints < MIN_SPAWN_POINTS) {
+                continue; // too small, or nothing level-appropriate anchoring the map
             }
             long tBlend = BotPerformanceMonitor.start();
             candidates.add(blendCandidate(map.mapId(), mapName(map.mapId()), map.areaPx(),
