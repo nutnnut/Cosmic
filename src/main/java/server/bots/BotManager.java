@@ -209,7 +209,7 @@ public class BotManager {
                 19, 20, 21, 21, 20, 18, 16, 15, 13, 10, 10, 10 // 12-23
         };
         public int POPULATION_NOISE = 2;                   // +/- jitter on the hourly target
-        public double POPULATION_MULTIPLIER = 30.0;        // scales the whole online target up/down, so bot
+        public double POPULATION_MULTIPLIER = 10.0;        // scales the whole online target up/down, so bot
                                                            // count is adjustable without editing the curve/noise
 
         // Unobserved-map LOD (docs/bot/unobserved-lod-design.md): when no real player can observe a bot,
