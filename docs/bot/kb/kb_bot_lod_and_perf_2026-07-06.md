@@ -86,6 +86,20 @@ Two changes, A/B'd on the live server (baseline 655 bots vs after 714 bots, 0 ob
 - **New #1 CPU consumer after this: `scroll-dp` ~1.0 core** (the single-thread `DECIDE_POOL` advisor serial
   ceiling, item 2 below). That is now THE 2000-bot bottleneck — demand-reduction is the next lever.
 
+## scroll-dp was CHAOS-dominated; gate chaos to offense gear (2026-07-09, verified)
+The `scroll-dp` DECIDE_POOL DP (~1 core, the #1 CPU consumer per JFR) was NOT reduced by coarsening the
+curve resolution (`502bb23e2`) or fixing the curve-cache thrash (`593ce61c8`) — both stayed ~0.99 cores.
+Why: the population is low-level gear (thousand-meso, sparse integer stat-scores), so the million-meso /
+dense-fractional cost structure those fixes target barely exists; and the solves are DEMAND-bound, not
+per-op/cache-bound (reinforces the demand-saturation lesson below). The actual driver was the CHAOS
+gamble: `bestChaosPlay` ran a market quote (reproduction-DP curve) + full stat-convolution for EVERY owned
+slotted equip, incl. pure-DEF junk. Gating it to offense gear only — `watk>0 || (int>0 && matk>0)`, owner's
+domain rule (chaos only worth it on ATT or INT+MATT pieces) — BEFORE the quote/convolution: **scroll-dp
+0.995 -> 0.207 cores (-79%), chaos-scan 0.597 -> 0.203, tick-total 1.85 -> 1.04** (`82d82f22b`). Lesson:
+when a demand-bound DP won't shrink from per-op/cache tuning, find the CALLER generating the demand (here a
+gamble evaluating gear it should never gamble on) and gate IT. JFR whole-process profile (`jcmd JFR.start
+settings=profile`) proved the cost is bot code, not upstream (packets 5 samples, client.* ~4%, GC 0.7%).
+
 ## `BotPerformanceMonitor` "cpu_core" is WALL-CLOCK, not CPU (measurement trap, verified 2026-07-06)
 `record()` stores `System.nanoTime()` elapsed per section; the CSV `cpu_core` = summed elapsed / window
 across all tick threads. That includes time a thread is **blocked** (lock wait, GC safepoint) inside the
