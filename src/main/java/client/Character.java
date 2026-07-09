@@ -4879,9 +4879,21 @@ public class Character extends AbstractCharacterObject {
         return client.getAbstractPlayerInteraction();
     }
 
+    // Snapshot of quests.values(), rebuilt lazily after a quest mutation. Kills call
+    // raiseQuestMobCount -> getQuests() constantly (bots included), and copying the whole
+    // ever-growing quest map per kill was a measured whole-server CPU hotspot; quest map
+    // MUTATIONS (start/complete/forfeit/lookup-insert) are rare by comparison. Guarded by
+    // synchronized (quests) like the map itself; immutable so callers can't corrupt it.
+    private List<QuestStatus> questSnapshot = null;
+
     private List<QuestStatus> getQuests() {
         synchronized (quests) {
-            return new ArrayList<>(quests.values());
+            List<QuestStatus> snapshot = questSnapshot;
+            if (snapshot == null) {
+                snapshot = List.copyOf(quests.values());
+                questSnapshot = snapshot;
+            }
+            return snapshot;
         }
     }
 
@@ -4890,7 +4902,7 @@ public class Character extends AbstractCharacterObject {
      *  yields the same string; compared against {@link #savedQuestSignature} to skip an unchanged
      *  re-write. Built from in-memory state only (no DB), so it's cheap relative to the writes it saves. */
     private String computeQuestSignature() {
-        List<QuestStatus> qs = getQuests();
+        List<QuestStatus> qs = new ArrayList<>(getQuests()); // snapshot is immutable; sort a copy
         qs.sort(Comparator.comparingInt(q -> q.getQuest().getId()));
         StringBuilder sb = new StringBuilder(qs.size() * 24);
         for (QuestStatus q : qs) {
@@ -6217,6 +6229,7 @@ public class Character extends AbstractCharacterObject {
             if (qs == null) {
                 qs = new QuestStatus(quest, QuestStatus.Status.NOT_STARTED);
                 quests.put(questid, qs);
+                questSnapshot = null;
             }
             return qs;
         }
@@ -6230,6 +6243,7 @@ public class Character extends AbstractCharacterObject {
                 final QuestStatus stat = new QuestStatus(quest, QuestStatus.Status.getById(status));
                 stat.setCustomData(customData);
                 quests.put(quest.getId(), stat);
+                questSnapshot = null;
             }
         }
     }
@@ -6239,6 +6253,7 @@ public class Character extends AbstractCharacterObject {
             if (!quests.containsKey(quest.getId())) {
                 final QuestStatus status = new QuestStatus(quest, QuestStatus.Status.NOT_STARTED);
                 quests.put(quest.getId(), status);
+                questSnapshot = null;
                 return status;
             }
             return quests.get(quest.getId());
@@ -6253,6 +6268,7 @@ public class Character extends AbstractCharacterObject {
 
     public final QuestStatus getQuestRemove(final Quest quest) {
         synchronized (quests) {
+            questSnapshot = null;
             return quests.remove(quest.getId());
         }
     }
@@ -7628,6 +7644,7 @@ public class Character extends AbstractCharacterObject {
                             status.setForfeited(rs.getInt("forfeited"));
                             status.setCompleted(rs.getInt("completed"));
                             ret.quests.put(q.getId(), status);
+                            ret.questSnapshot = null;
                             loadedQuestStatus.put(rs.getInt("queststatusid"), status);
                         }
                     }
@@ -10140,6 +10157,7 @@ public class Character extends AbstractCharacterObject {
     public void updateQuestStatus(QuestStatus qs) {
         synchronized (quests) {
             quests.put(qs.getQuestID(), qs);
+            questSnapshot = null;
         }
         if (qs.getStatus().equals(QuestStatus.Status.STARTED)) {
             announceUpdateQuest(DelayedQuestUpdate.UPDATE, qs, false);
