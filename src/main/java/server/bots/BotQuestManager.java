@@ -118,15 +118,23 @@ final class BotQuestManager {
             Integer selection = pickBestRewardSelection(bot, quest.completeSelectableRewardItemIds(bot));
             quest.complete(bot, npc, selection);
         }
+        // Read-only status checks use getQuestNoAdd: the plain getQuest() INSERTS a NOT_STARTED
+        // placeholder on every miss, so scanning the whole quest index per bot was inflating every
+        // bot's quest map with hundreds of placeholders (memory + per-kill quest-loop cost).
         @Override public boolean isStarted(Character bot, int questId) {
-            return bot.getQuest(Quest.getInstance(questId)).getStatus() == QuestStatus.Status.STARTED;
+            QuestStatus qs = bot.getQuestNoAdd(Quest.getInstance(questId));
+            return qs != null && qs.getStatus() == QuestStatus.Status.STARTED;
         }
         @Override public boolean isCompleted(Character bot, int questId) {
-            return bot.getQuest(Quest.getInstance(questId)).getStatus() == QuestStatus.Status.COMPLETED;
+            QuestStatus qs = bot.getQuestNoAdd(Quest.getInstance(questId));
+            return qs != null && qs.getStatus() == QuestStatus.Status.COMPLETED;
         }
         @Override public Map<Integer, Integer> currentProgress(Character bot, int questId) {
-            QuestStatus qs = bot.getQuest(Quest.getInstance(questId));
+            QuestStatus qs = bot.getQuestNoAdd(Quest.getInstance(questId));
             java.util.Map<Integer, Integer> out = new java.util.HashMap<>();
+            if (qs == null) {
+                return out; // not started -> no progress (doc: "0 when not started")
+            }
             for (Map.Entry<Integer, String> e : qs.getProgress().entrySet()) {
                 int v;
                 try {
