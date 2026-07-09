@@ -1205,8 +1205,73 @@ public class BotManager {
         }
     }
 
+    /** Grace before an entry-less online bot character counts as a zombie (covers spawn/register
+     *  and register-replace windows). */
+    private static final long ZOMBIE_GRACE_MS = 90_000L;
+    private final ConcurrentHashMap<Integer, Long> zombieSuspectSinceMs = new ConcurrentHashMap<>();
+
+    /**
+     * Zombie sweep: a character online with a BotClient but NO registry entry receives no ticks —
+     * it can never move, respond to commands, or log itself out, and it displays as a phantom
+     * "companion" in the roster. Observed sources: a disconnect whose world-removal gate
+     * (isLoggedin/getClient) didn't run after cleanupBotRuntimeState already dropped the entry,
+     * the tickCore map-null guard, and the 3-strike tick-failure disable. Whatever the leak path,
+     * self-heal here: after a grace window, force the character out of the world.
+     */
+    private void sweepZombieBotCharacters() {
+        long now = System.currentTimeMillis();
+        for (net.server.world.World w : net.server.Server.getInstance().getWorlds()) {
+            for (net.server.channel.Channel ch : net.server.Server.getInstance().getChannelsFromWorld(w.getId())) {
+                for (Character chr : ch.getPlayerStorage().getAllCharacters()) {
+                    if (!(chr.getClient() instanceof BotClient)) {
+                        continue;
+                    }
+                    int id = chr.getId();
+                    if (getEntryByBotCharId(id) != null || spawningBotIds.contains(id)) {
+                        zombieSuspectSinceMs.remove(id);
+                        continue;
+                    }
+                    Long since = zombieSuspectSinceMs.putIfAbsent(id, now);
+                    if (since == null || now - since < ZOMBIE_GRACE_MS) {
+                        continue;
+                    }
+                    zombieSuspectSinceMs.remove(id);
+                    log.warn("Zombie bot character '{}' (id {}, map {}): online with no registry entry - evicting from world",
+                            chr.getName(), id, chr.getMapId());
+                    evictZombieBotCharacter(w, ch, chr);
+                }
+            }
+        }
+    }
+
+    private static void evictZombieBotCharacter(net.server.world.World w, net.server.channel.Channel ch, Character chr) {
+        try {
+            if (chr.getClient() != null) {
+                chr.getClient().forceDisconnect(); // full teardown when the Client's one-shot latch is unused
+            }
+        } catch (Exception e) {
+            log.warn("Zombie eviction: forceDisconnect threw for '{}'", chr.getName(), e);
+        }
+        // The zombie-creating disconnect attempt may already have consumed the Client's one-shot
+        // 'disconnecting' latch (making forceDisconnect a no-op) — pull the character out directly.
+        if (ch.getPlayerStorage().getCharacterById(chr.getId()) != null) {
+            try {
+                if (chr.getMap() != null) {
+                    chr.getMap().removePlayer(chr);
+                }
+                ch.removePlayer(chr);
+                w.removePlayer(chr);
+                chr.logOff();
+                log.info("Zombie bot character '{}' evicted via direct world removal", chr.getName());
+            } catch (Exception e) {
+                log.error("Zombie eviction failed for '{}'", chr.getName(), e);
+            }
+        }
+    }
+
     /** Evict in-memory nav graphs for maps no bot is in or traveling to, capping bot heap growth. */
     private void sweepIdleGraphs() {
+        sweepZombieBotCharacters();
         java.util.Set<Integer> activeMapIds = new java.util.HashSet<>();
         for (BotEntry e : botsByCharId.values()) {
             if (e.bot != null) {
@@ -3997,9 +4062,13 @@ public class BotManager {
         Character bot = entry.bot;
 
         // Guard: bot was removed from its map externally (e.g. a prior disconnect race).
-        // Stop ticking and clean up rather than NPE-spamming TimerManager workers.
+        // Stop ticking and clean up rather than NPE-spamming TimerManager workers. Disconnect the
+        // character as well — dropping only the entry left an untickable zombie online.
         if (bot.getMap() == null) {
             removeBotByCharId(botCharId);
+            if (bot.getClient() != null) {
+                bot.getClient().forceDisconnect();
+            }
             return;
         }
 
@@ -4819,6 +4888,11 @@ public class BotManager {
                     botName, entry.tickFailureCount, BOT_TICK_FAILURE_WINDOW_MS, ownerName, mapId,
                     entry.grinding, entry.following, t);
             removeBotByCharId(botCharId);
+            // Entry removal alone leaves the character online as an untickable zombie (observed:
+            // DAGGERSTRAND) — take it out of the world too; the scheduler can respawn it clean.
+            if (bot != null && bot.getClient() != null) {
+                bot.getClient().forceDisconnect();
+            }
             return;
         }
 
