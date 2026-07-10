@@ -887,7 +887,11 @@ public class Character extends AbstractCharacterObject {
         if (weapon_item == null) {
             return 1;
         }
-        WeaponType weapon = ItemInformationProvider.getInstance().getWeaponType(weapon_item.getItemId());
+        return calculateMinBaseDamage(watk, mastery,
+                ItemInformationProvider.getInstance().getWeaponType(weapon_item.getItemId()));
+    }
+
+    public int calculateMinBaseDamage(int watk, double mastery, WeaponType weapon) {
         if (getJob().isA(Job.THIEF) && weapon == WeaponType.DAGGER_OTHER) {
             weapon = WeaponType.DAGGER_THIEVES;
         }

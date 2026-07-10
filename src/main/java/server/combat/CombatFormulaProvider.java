@@ -788,13 +788,17 @@ public final class CombatFormulaProvider {
         };
     }
 
+    // Base damage for a skill resolved against an explicit weapon type: MUST use the same per-weapon/job
+    // stat selection the equipped-weapon path uses (Character.calculateMaxBaseDamage picks LUK for
+    // thief daggers/claws, DEX for bow/xbow/gun, STR otherwise). A local STR-primary formula here gimped
+    // every LUK/DEX class ~2-15x — in the grind model, in skill scoring, and in the damage bots actually
+    // dealt — which is why high-level bandits were farming level-30 maps.
     private long physicalMaxBaseDamage(Character bot, int watk, WeaponType weaponType) {
-        return (long) Math.ceil((weaponType.getMaxDamageMultiplier() * bot.getTotalStr() + bot.getTotalDex()) * watk / 100.0d);
+        return bot.calculateMaxBaseDamage(watk, weaponType);
     }
 
     private long physicalMinBaseDamage(Character bot, int watk, WeaponType weaponType, double mastery) {
-        return Math.max(1L, Math.round((weaponType.getMaxDamageMultiplier() * bot.getTotalStr() * mastery * 0.9d
-                + bot.getTotalDex()) * watk / 100.0d));
+        return Math.max(1L, bot.calculateMinBaseDamage(watk, mastery, weaponType));
     }
 
     private DamageProfile resolveMagicDamageProfile(Character bot, int skillId, StatEffect effect, int healTargetCount) {
