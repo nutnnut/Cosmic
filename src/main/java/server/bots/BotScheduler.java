@@ -232,6 +232,13 @@ public final class BotScheduler {
     /** when each crew (group id) was brought online together, for the shared leader-paced session. */
     private final Map<Integer, Long> crewOnlineSince = new ConcurrentHashMap<>();
 
+    /** Whether each live crew's CURRENT session is a chill session — the crew-wide SSOT behind every
+     *  member's {@code BotEntry.chillSession}. Decided once at session start and re-applied to every live
+     *  member on each sweep, so a member that relogs mid-session (straggler respawn -> fresh, un-chilled
+     *  entry) rejoins the crew's decision instead of drifting. It cannot live on the leader's entry: when
+     *  the LEADER is the one that relogged, its flag is the one that was lost. Dropped at session end. */
+    private final Map<Integer, Boolean> crewChillSession = new ConcurrentHashMap<>();
+
     /** last live-cohort fingerprint per crew (leader id), so a join/leave triggers a party re-decide. */
     private static final Map<Integer, Integer> crewCohortSig = new ConcurrentHashMap<>();
 
@@ -261,16 +268,21 @@ public final class BotScheduler {
             List<ManagedBot> members = e.getValue();
             boolean anyLive = members.stream().anyMatch(m -> bm.getEntryByBotCharId(m.botCharId()) != null);
             if (!anyLive) {
-                crewOnlineSince.remove(gid);
+                endCrewSession(gid);
                 offlineCrews.add(e);
                 continue;
             }
             long since = crewOnlineSince.computeIfAbsent(gid, k -> now);
+            if (!crewChillSession.containsKey(gid)) {
+                // A live crew this scheduler never started a session for — it came up outside Pass B
+                // (server restart, !botpop), or its leader hadn't finished loading when it did. Decide
+                // now so the chill flag always has exactly one owner; retries while the leader is absent.
+                markCrewSession(bm, gid, members, now);
+            }
             BotPersonality leaderP = BotPersonality.parse(
                     BotConfigService.getInstance().load(crewLeader(members)));
-            // A crew that logged in to chill runs a half-length session too (driven off the leader's flag).
-            BotEntry leaderEntry = bm.getEntryByBotCharId(crewLeader(members));
-            boolean crewChill = leaderEntry != null && leaderEntry.chillSession;
+            // A crew that logged in to chill runs a half-length session too.
+            boolean crewChill = Boolean.TRUE.equals(crewChillSession.get(gid));
             long crewSessionMs = crewChill ? sessionMsOf(leaderP) / 2 : sessionMsOf(leaderP);
             // Stay-online QoL: keep the whole crew online if any member is partied with a real player.
             boolean crewWithPlayer = members.stream().anyMatch(m -> {
@@ -283,7 +295,7 @@ public final class BotScheduler {
                         bm.logoutManagedBot(m.botCharId());
                     }
                 }
-                crewOnlineSince.remove(gid);
+                endCrewSession(gid);
                 continue;
             }
             boolean broughtAny = false;
@@ -293,9 +305,7 @@ public final class BotScheduler {
                 }
             }
             if (crewChill) { // a respawned straggler joins its crew's chill instead of grinding alone
-                for (ManagedBot m : members) {
-                    applyCrewChill(bm, m.botCharId(), now);
-                }
+                applyCrewChill(bm, members, now);
             }
             formCrewParty(bm, members, broughtAny);
             crewLive += liveCount(bm, members);
@@ -322,7 +332,7 @@ public final class BotScheduler {
             }
             if (broughtAny) {
                 crewOnlineSince.put(e.getKey(), now);
-                markCrewSession(bm, e.getValue(), now);
+                markCrewSession(bm, e.getKey(), e.getValue(), now);
                 formCrewParty(bm, e.getValue(), true);
                 crewLive += liveCount(bm, e.getValue());
             }
@@ -545,7 +555,7 @@ public final class BotScheduler {
             }
         }
         crewOnlineSince.put(gid, now);
-        markCrewSession(bm, crew, now);
+        markCrewSession(bm, gid, crew, now);
         formCrewParty(bm, crew, true);
         return crew.size();
     }
@@ -593,18 +603,20 @@ public final class BotScheduler {
     }
 
     /** Decide once, when a crew session begins, whether the whole crew is logging in to CHILL (leader's
-     *  personality + the global chance config); if so flag every live member and route them to town to
-     *  linger together. Mirrors {@link #beginSoloSession} for crews — the leader speaks for the unit. */
-    private void markCrewSession(BotManager bm, List<ManagedBot> members, long now) {
+     *  personality + the global chance config), record it as the crew-wide flag, and apply it. Mirrors
+     *  {@link #beginSoloSession} for crews — the leader speaks for the unit. No-op while the leader isn't
+     *  loaded: leaving {@code crewChillSession} unset makes the caller retry rather than default to grind. */
+    private void markCrewSession(BotManager bm, int gid, List<ManagedBot> members, long now) {
         BotEntry leaderEntry = bm.getEntryByBotCharId(crewLeader(members));
         if (leaderEntry == null || leaderEntry.bot == null) {
             return;
         }
         BotPersonality leaderP = BotPersonality.parse(BotConfigService.getInstance().load(crewLeader(members)));
-        if (BotBreakManager.rollChill(leaderP, leaderEntry.bot.getLevel(), ThreadLocalRandom.current().nextDouble())) {
-            for (ManagedBot m : members) {
-                applyCrewChill(bm, m.botCharId(), now);
-            }
+        boolean chill = BotBreakManager.rollChill(leaderP, leaderEntry.bot.getLevel(),
+                ThreadLocalRandom.current().nextDouble());
+        crewChillSession.put(gid, chill);
+        if (chill) {
+            applyCrewChill(bm, members, now);
         } else if (ThreadLocalRandom.current().nextDouble()
                 < BotBreakManager.loginBreakChance(leaderP.breakFreqPerHour(), leaderP.breakLenMeanMin())) {
             // Seed the crew's resting fraction at login too, so crews hit equilibrium from spawn.
@@ -625,14 +637,44 @@ public final class BotScheduler {
         }
     }
 
-    /** Flag one crew member's session as chill and route it to town (no-op if not live or already chill).
-     *  Used at crew session start and to fold a self-healed straggler into an already-chilling crew. */
-    private static void applyCrewChill(BotManager bm, int charId, long now) {
-        BotEntry e = bm.getEntryByBotCharId(charId);
-        if (e != null && !e.chillSession) {
+    /**
+     * Apply a chilling crew's decision to every live member: flag the session chill and park it in town.
+     * EXCEPTION: a member far enough below the pack keeps grinding to catch up instead — the same rule a
+     * leader-triggered group break uses ({@link BotAutopilotManager#catchesUpThroughRest}), so the two
+     * rest paths can never disagree about who sits out. The cohort is the crew's live members rather than
+     * the game party, because at session start the party hasn't been formed yet.
+     * Re-run every sweep: a straggler that relogged rejoins the chill, and a member whose town rest
+     * expired re-arms it (grind resumes on its own otherwise — nothing else re-arms an in-town chill).
+     */
+    private static void applyCrewChill(BotManager bm, List<ManagedBot> members, long now) {
+        List<BotEntry> cohort = liveEntries(bm, members);
+        for (BotEntry e : cohort) {
+            if (BotAutopilotManager.catchesUpThroughRest(e, cohort)) {
+                continue;
+            }
             e.chillSession = true;
-            BotBreakManager.startTownBreak(e, e.bot, now);
+            if (e.breakUntilMs == 0L && !e.restErrand) {
+                BotBreakManager.startTownBreak(e, e.bot, now);
+            }
         }
+    }
+
+    /** The crew members that are currently logged in. */
+    private static List<BotEntry> liveEntries(BotManager bm, List<ManagedBot> members) {
+        List<BotEntry> live = new ArrayList<>();
+        for (ManagedBot m : members) {
+            BotEntry e = bm.getEntryByBotCharId(m.botCharId());
+            if (e != null && e.bot != null) {
+                live.add(e);
+            }
+        }
+        return live;
+    }
+
+    /** Forget a crew's session state once it is fully offline (or was just logged out as a unit). */
+    private void endCrewSession(int gid) {
+        crewOnlineSince.remove(gid);
+        crewChillSession.remove(gid);
     }
 
     private static long sessionMs(BotEntry e) {

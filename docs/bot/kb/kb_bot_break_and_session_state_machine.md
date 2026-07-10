@@ -15,7 +15,7 @@ correctly. Investigated 2026-07-04 while diagnosing a skewed grind:break ratio.
    this bot logs in to loiter in town all session, not grind. Gated by
    `BotBreakManager.rollChill` (config `CHILL_SESSION_ENABLED` + `CHILL_SESSION_MULTIPLIER`,
    level ≥ `CHILL_MIN_LEVEL`=5, personality `chillSessionChance`). Roster bucket = `chill`.
-   Legit/by-design.
+   Legit/by-design. For a CREW the decision is crew-wide, not per-bot — see "Crew chill" below.
 
 2. **In-session break** — a grinding bot pauses. Rolled at most once/min in
    `BotBreakManager.maybeStartBreak` (per-minute prob = `breakFreqPerHour/60`, damped by
@@ -65,8 +65,40 @@ at once then all breaking at once.
 
 `BotAutopilotManager.maybeStartGroupBreak`: a party cohort (autopilotParty, ≥2 members) breaks
 together — only the leader (cohort[0]) rolls, on the AVERAGE of members' traits; low-cluster
-members (`catchUpSplit`, ≥ `PARTY_LEECH_GAP_TRIGGER` below the pack) keep grinding to catch up.
-Solo bots (cohort < 2) use the per-bot `maybeStartBreak` path.
+members keep grinding to catch up. Solo bots (cohort < 2) use the per-bot `maybeStartBreak` path.
+
+## Who sits out a group rest (SSOT)
+
+`BotAutopilotManager.catchesUpThroughRest(member, cohort)` — the ONE predicate for "this member is far
+enough below the pack to skip the group's rest and grind to catch up". Wraps the pure
+`BotBreakManager.catchUpSplit` (levels + `PARTY_LEECH_GAP_TRIGGER`). Both rest paths call it — the
+leader-triggered group break AND the crew chill session — so they can never disagree about who sits out.
+The cohort is the party at break time, or the crew's live entries at crew-session start (the party isn't
+formed yet then). A catch-up member is **never** flagged `chillSession`, so it buckets as `grind`.
+
+`catchingUpWhileCohortRests(entry)` derives the status: catch-up member + any cohort mate chilling /
+on a break / on a rest errand → **"grinding to catch up with my group"** (`statusReport`). No new flag;
+it's read off the cohort.
+
+## Crew chill (2026-07-10) — the decision is crew-wide, and `entry.chillSession` is NOT its SSOT
+
+A crew's chill decision lives in `BotScheduler.crewChillSession` (group id → boolean), decided once per
+crew session in `markCrewSession` (leader's personality) and **re-applied to every live member each sweep**
+by `applyCrewChill`. `entry.chillSession` is a per-login cache of that decision, never the source.
+
+Why: `BotEntry` is per-login. When a crew member relogs mid-session (straggler respawn in `cohereCrews`
+Pass A) it comes back with a fresh, un-chilled entry. The old code re-derived the crew's chill from
+`leaderEntry.chillSession` — so when the **leader** was the one that relogged, the crew's chill flag was
+exactly the one that got lost, `crewChill` latched false forever, and any member that hadn't relogged kept
+chilling alone. Observed 2026-07-10: crew 1212 (leader `itunes` + `TriOcean` grinding, `NatureFax` still
+"just chilling in town today"). `chillSession` is never cleared anywhere, so the drift was permanent.
+
+`applyCrewChill` also re-arms an expired in-town chill rest (`breakUntilMs == 0 && !restErrand`). Only the
+`restErrand` arm of `BotAutopilotManager` (~line 809) re-arms chill; a bot that started its chill *already
+in town* has no errand and would otherwise silently resume grinding when its first town break expired.
+
+Pass A marks a session for any live crew with no `crewChillSession` entry (server restart, `!botpop`), so
+the decision always has exactly one owner. `endCrewSession` drops both crew maps at session end.
 
 ## Roster bucket derivation (SSOT)
 
@@ -82,7 +114,10 @@ see [[kb_bot_inert_autopilot_recovery]].
 ## Debugging idle bots
 
 - `/api/botdebug` status ending `"idle rn"` = the inert leak; `"taking a break"` = state 2;
-  `"just chilling…"` = state 1; errand phrases = state 3. Count these separately.
+  `"just chilling…"` = state 1; `"grinding to catch up with my group"` = the catch-up split of a
+  resting cohort (productive, bucket `grind`); errand phrases = state 3. Count these separately.
+- One crewmate chilling while the others grind = crew-chill drift; check `crewChillSession` ownership
+  before blaming the roll (see "Crew chill" above).
 - `/api/bot/pathlog?id=<charId>` (toggle: call to start, call again to dump) — header shows
   `Autopilot: off destMap=-1`, `Mode: idle`, `Errands: …`, and a `Lifecycle:` line iff
   `loggingOut || breakUntilMs>0`. No Lifecycle line + Autopilot off = the leak, not a break.

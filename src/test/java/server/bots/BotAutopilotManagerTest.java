@@ -364,6 +364,65 @@ class BotAutopilotManagerTest {
         }
     }
 
+    /** The one rule both group rests (leader break, crew chill session) share: who is far enough behind
+     *  the pack to sit the rest out and grind. PARTY_LEECH_GAP_TRIGGER defaults to 4. */
+    @Test
+    void catchUpMemberIsTheOnlyOneThatSkipsAGroupRest() {
+        Fixture low = fixture(HUNTING_GROUND, onlineOwner());
+        Fixture mid = fixture(HUNTING_GROUND, onlineOwner());
+        Fixture high = fixture(HUNTING_GROUND, onlineOwner());
+        when(low.bot().getLevel()).thenReturn(20);
+        when(mid.bot().getLevel()).thenReturn(30);
+        when(high.bot().getLevel()).thenReturn(31);
+        List<BotEntry> cohort = List.of(low.entry(), mid.entry(), high.entry());
+
+        assertTrue(BotAutopilotManager.catchesUpThroughRest(low.entry(), cohort));
+        assertFalse(BotAutopilotManager.catchesUpThroughRest(mid.entry(), cohort));
+        assertFalse(BotAutopilotManager.catchesUpThroughRest(high.entry(), cohort));
+
+        // A tight cohort has no gap: nobody splits off, everyone rests together.
+        when(low.bot().getLevel()).thenReturn(29);
+        assertFalse(BotAutopilotManager.catchesUpThroughRest(low.entry(), cohort));
+
+        // A soloist is never "behind" anyone.
+        assertFalse(BotAutopilotManager.catchesUpThroughRest(low.entry(), List.of(low.entry())));
+    }
+
+    @Test
+    void reportsCatchUpGrindOnlyWhileTheCohortIsActuallyResting() {
+        Fixture low = fixture(HUNTING_GROUND, onlineOwner());
+        Fixture high = fixture(HUNTING_GROUND, onlineOwner());
+        when(low.bot().getHp()).thenReturn(50);
+        when(low.bot().getMap().getMapName()).thenReturn("Henesys Hunting Ground I");
+        when(low.bot().getLevel()).thenReturn(20);
+        when(high.bot().getLevel()).thenReturn(30);
+        for (Fixture f : List.of(low, high)) {
+            f.entry().autopilotParty = true;
+            f.entry().autopilotMapId = HUNTING_GROUND;
+        }
+        low.entry().autopilotDestinationName = "Henesys Hunting Ground I";
+        low.entry().autopilotObjectiveSummary = "farm Pan Lid from Orange Mushroom";
+
+        try (Seams seams = new Seams(null)) {
+            BotAutopilotManager.partyMembers = entry -> List.of(high.entry(), low.entry());
+
+            // Cohort is grinding too -> the straggler is just a normal grinder.
+            assertFalse(BotAutopilotManager.catchingUpWhileCohortRests(low.entry()));
+            assertFalse(BotAutopilotManager.statusReport(low.entry(), low.bot()).contains("catch up"));
+
+            // Crewmate chills (or breaks) -> the straggler names why it is out there alone.
+            high.entry().chillSession = true;
+            assertTrue(BotAutopilotManager.catchingUpWhileCohortRests(low.entry()));
+            assertEquals("im at Henesys Hunting Ground I, grinding to catch up with my group",
+                    BotAutopilotManager.statusReport(low.entry(), low.bot()));
+            // It is grinding, so it must never land in the roster's chill bucket.
+            assertEquals("grind", BotAutopilotManager.activityCategory(low.entry(), low.bot()));
+
+            // The chilling crewmate itself is not "catching up" — it is the pack.
+            assertFalse(BotAutopilotManager.catchingUpWhileCohortRests(high.entry()));
+        }
+    }
+
     @Test
     void shouldNotStartGroupBreakWhileCohortIsInTransit() {
         Fixture leader = fixture(104000000, onlineOwner());

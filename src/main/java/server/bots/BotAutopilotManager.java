@@ -599,10 +599,8 @@ final class BotAutopilotManager {
         // leader picks ONE break spot (town or a nearby safe map) so the party rests as a group rather
         // than each member rolling its own destination and scattering.
         int dest = decideBreakDestination(entry, bot);
-        int[] levels = cohort.stream().filter(m -> m.bot != null).mapToInt(m -> m.bot.getLevel()).sorted().toArray();
-        int trigger = BotManager.cfg.PARTY_LEECH_GAP_TRIGGER;
         for (BotEntry m : cohort) {
-            if (m.bot == null || BotBreakManager.catchUpSplit(m.bot.getLevel(), levels, trigger)) {
+            if (m.bot == null || catchesUpThroughRest(m, cohort)) {
                 continue; // behind the pack -> skip the break, grind solo to catch up
             }
             if (dest != -1 && dest != m.bot.getMapId()) {
@@ -613,6 +611,46 @@ final class BotAutopilotManager {
             }
         }
         return true;
+    }
+
+    /**
+     * Whether {@code member} sits far enough below its cohort's pack to sit out the group's rest and keep
+     * grinding to catch up. The single expression of that rule: the leader-triggered group break and the
+     * crew-wide chill session both call it, so they can never disagree about who keeps grinding.
+     * {@code cohort} is the party for a live group break, or a crew's live entries at session start
+     * (before the party has formed) — the levels are the same set either way.
+     */
+    static boolean catchesUpThroughRest(BotEntry member, List<BotEntry> cohort) {
+        if (member == null || member.bot == null || cohort == null || cohort.size() < 2) {
+            return false;
+        }
+        int[] levels = cohort.stream().filter(m -> m.bot != null)
+                .mapToInt(m -> m.bot.getLevel()).sorted().toArray();
+        return BotBreakManager.catchUpSplit(member.bot.getLevel(), levels,
+                BotManager.cfg.PARTY_LEECH_GAP_TRIGGER);
+    }
+
+    /**
+     * True when this bot is grinding alone because its COHORT is resting — a crew-wide chill session or a
+     * leader-triggered group break — and it is behind enough to catch up. Purely derived (no flag of its
+     * own): a catch-up member is never marked {@code chillSession}, so the roster already buckets it as
+     * grinding; this only names the reason it's out there by itself.
+     */
+    static boolean catchingUpWhileCohortRests(BotEntry entry) {
+        if (entry == null || !entry.autopilotParty) {
+            return false;
+        }
+        List<BotEntry> cohort = partyMembers.members(entry);
+        if (!catchesUpThroughRest(entry, cohort)) {
+            return false;
+        }
+        long now = System.currentTimeMillis();
+        for (BotEntry m : cohort) {
+            if (m != entry && (m.chillSession || m.restErrand || now < m.breakUntilMs)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     static boolean cohortTransitActive(List<BotEntry> cohort) {
@@ -1217,6 +1255,11 @@ final class BotAutopilotManager {
                     ? "im at " + currentMap + ", idle rn"
                     : "im at " + currentMap + ", " + activity;
             return base + lastDecisionSuffix(entry);
+        }
+        // Grinding on while the rest of the cohort chills/breaks — checked after the leak arm above so a
+        // wedged catch-up bot still reports "idle rn" instead of claiming it's out there working.
+        if (catchingUpWhileCohortRests(entry)) {
+            return "im at " + currentMap + ", grinding to catch up with my group";
         }
 
         String destination = entry.autopilotDestinationName == null || entry.autopilotDestinationName.isBlank()
