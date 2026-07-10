@@ -145,13 +145,11 @@ public final class BotShoutTradeManager {
         if (shouts.isEmpty()) {
             return false;
         }
-        BotMarketBook book = BotMarketBook.of(entry, bot);
         for (BotMarketShoutBus.Shout s : shouts) {
             Offer o = s.offer();
-            if (o.kind() != Kind.PRICE_CHECK && o.priceMeso() > 0) {
-                // hearing an advertisement is weak evidence (design sec 4)
-                book.observe(BotMarketMath.priceKey(o.itemId(), 0), o.priceMeso(), BotMarketMath.W_SHOUT, now);
-            }
+            // A heard shout is an ADVERTISEMENT, not a clearing — it never moves the price belief.
+            // Folding shouts in (W_SHOUT) let reproduction-cost asks echo between bots and poison
+            // beliefs to billions; only realized trades/stall sales (W_TRADE) set the price now.
             if (!isEquip(o.itemId())) {
                 continue; // v1: equips only
             }

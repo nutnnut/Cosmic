@@ -33,6 +33,36 @@ class BotMarketBookTest {
     };
 
     @Test
+    void asksAnchorToConsensusThenRegainPrivateInfluenceAsOwnClearingsAccrue() {
+        final double C = 16_000_000, V = 200; // a solid clearing consensus (Dragon Toenail band 0)
+        BotMarketBook.ConsensusSource consensus = new BotMarketBook.ConsensusSource() {
+            public double consensus(long k) { return C; }
+            public double volume(long k) { return V; }
+        };
+        BotMarketBook book = new BotMarketBook(7, 1.0, consensus); // fully informed -> no perception noise
+        long now = 1_000_000_000L;
+        double hugeAnchor = 500_000_000, salvage = 180_000;
+
+        // No private belief: the ask base anchors to the 16m consensus, NOT the 500m reproduction
+        // anchor (perceivedConfidence carries the full consensus mass, so askBase trusts the price).
+        double price = book.perceivedPrice(KEY, now);
+        double conf = book.perceivedConfidence(KEY, now);
+        assertEquals(C, price, 1, "no private belief -> perceived price is the consensus");
+        assertEquals(V, conf, 1e-9, "confidence includes the full consensus mass");
+        double baseNoBelief = BotMarketMath.askBase(price, conf, hugeAnchor, salvage);
+        assertTrue(baseNoBelief < 20_000_000, "ask anchors near the 16m consensus, not the 500m anchor");
+
+        // The bot logs its OWN clearings above consensus: its private belief regains influence.
+        for (int i = 0; i < 20; i++) {
+            book.observe(KEY, 30_000_000, BotMarketMath.W_TRADE, now);
+        }
+        double base2 = BotMarketMath.askBase(
+                book.perceivedPrice(KEY, now), book.perceivedConfidence(KEY, now), hugeAnchor, salvage);
+        assertTrue(base2 > baseNoBelief, "own clearings pull the bot's ask toward its individual view");
+        assertTrue(base2 < 30_000_000, "but it stays blended with the market consensus");
+    }
+
+    @Test
     void concurrentObserveAndReadNeverThrowsOrCorruptsTheBook() throws InterruptedException {
         BotMarketBook book = new BotMarketBook(1, 0.5, NO_CONSENSUS);
         int threads = 8;

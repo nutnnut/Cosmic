@@ -166,9 +166,20 @@ final class BotMarketBook {
         return p > 0 ? p : Math.max(0, npcFallback);
     }
 
-    /** Private-layer confidence (post-decay) — margin/ask formation reads this. */
+    /** Private-layer confidence (post-decay). */
     double privateConfidence(long priceKey, long nowMs) {
         return decayedPrivate(priceKey, nowMs).confidence();
+    }
+
+    /**
+     * Total confidence behind {@link #perceivedPrice}: the private layer's confidence PLUS the shared
+     * consensus mass. Ask formation reads this (not private confidence alone) so a solid clearing
+     * consensus is a HIGH-confidence price input to {@code askBase} — the reproduction anchor steps
+     * aside where real clearings exist, and the bot's own belief regains influence as its private
+     * clearing evidence accrues. With neither layer it is 0, so the anchor stands (never-cleared item).
+     */
+    double perceivedConfidence(long priceKey, long nowMs) {
+        return decayedPrivate(priceKey, nowMs).confidence() + Math.max(0, consensus.volume(priceKey));
     }
 
     private Belief decayedPrivate(long priceKey, long nowMs) {

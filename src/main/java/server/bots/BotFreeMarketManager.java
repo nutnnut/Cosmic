@@ -279,7 +279,7 @@ final class BotFreeMarketManager {
         long salvage = npcSell.price(quote.itemId(), 1);
         double anchor = Math.min(calibratedCurveQuote(book, quote, now), BotMarketMath.reproSanityCap(salvage));
         return Math.round(BotMarketMath.askBase(
-                book.perceivedPrice(key, now), book.privateConfidence(key, now), anchor, salvage));
+                book.perceivedPrice(key, now), book.perceivedConfidence(key, now), anchor, salvage));
     }
 
     /**
@@ -291,7 +291,7 @@ final class BotFreeMarketManager {
         long key = BotMarketMath.priceKey(quote.itemId(), quote.band());
         long salvage = npcSell.price(quote.itemId(), 1);
         double anchor = Math.min(calibratedCurveQuote(book, quote, now), BotMarketMath.reproSanityCap(salvage));
-        return unitAsk(book.perceivedPrice(key, now), book.privateConfidence(key, now), anchor, salvage);
+        return unitAsk(book.perceivedPrice(key, now), book.perceivedConfidence(key, now), anchor, salvage);
     }
 
     /** After-fee premium of selling the stack on a stall vs just NPC-selling it — the quantity a
@@ -371,7 +371,7 @@ final class BotFreeMarketManager {
             long key = BotMarketMath.priceKey(id, 0);
             double costBasisUnit = e.getValue().keepValue() / qty;
             double salvageUnit = npcWhole / (double) qty;
-            int ask = unitAsk(book.perceivedPrice(key, now), book.privateConfidence(key, now), costBasisUnit, salvageUnit);
+            int ask = unitAsk(book.perceivedPrice(key, now), book.perceivedConfidence(key, now), costBasisUnit, salvageUnit);
             ask = (int) Math.min(Integer.MAX_VALUE, BotMarketMath.humanizeAsk(ask, bot.getId()));
             if (shopPrice > 0 && ask >= shopPrice) {
                 ask = shopPrice - 1; // undercut the counter or don't bother
@@ -1672,8 +1672,10 @@ final class BotFreeMarketManager {
         return snapped != null ? snapped : new Point(stallPos);
     }
 
-    /** Read one stall's listings into the book and maybe grab a bargain — the per-stall body the
-     *  browse loop runs on arrival at each merchant (was the inner loop of the old instant sweep). */
+    /** Scan one stall's listings for a bargain — the per-stall body the browse loop runs on arrival
+     *  at each merchant. A listing ask is an advertisement, not a clearing, so it no longer moves the
+     *  price belief (that echo poisoned beliefs to remake cost); browsing still reads perceived value
+     *  to spot underpriced buys. */
     private static void observeStall(BotEntry entry, Character bot, BotMarketBook book,
                                      HiredMerchant merchant, long now) {
         List<PlayerShopItem> items = merchant.getItems();
@@ -1685,7 +1687,6 @@ final class BotFreeMarketManager {
             int perBundle = Math.max(1, psi.getItem().getQuantity());
             double unit = (double) psi.getPrice() / perBundle;
             long key = BotMarketMath.priceKey(psi.getItem().getItemId(), bandOf(psi.getItem()));
-            book.observe(key, unit, BotMarketMath.W_ASK, now);
             maybeBargainBuy(entry, bot, book, merchant, slot, psi, unit, key, now);
         }
     }
