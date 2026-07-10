@@ -92,11 +92,14 @@ Read-only per-bot autopilot internals for live debugging (party cohesion, follow
   "id","n","map","lvl",
   "party","crew","owner",          // owner: "null" | "self" | <human name>
   "apParty","dst","errand",        // apParty = party-autopilot on; dst = travel target map; errand = resupply map (-1 none)
-  "grinding","lod","tickMs","absKills","following","followTo","transit","waiting",
+  "grinding","lod","tickMs","absKills","realKills","following","followTo","transit","waiting",
   "op",                            // operator override command name ("" = none)
                                    // lod: unobserved-map level of detail "LOD0" (full fidelity) | "LOD1" (unobserved/coarse)
                                    // tickMs: live tick interval (50 = LOD0/full; 500 = LOD1 coarse cadence, Stage 3)
                                    // absKills: cumulative Stage-3 abstract kills emitted by this bot while unobserved
+                                   // realKills: cumulative real-combat kills while grinding (raw, AoE multi-kills included).
+                                   //   absKills/realKills are the audit pair: pin the map to LOD0 via /api/lod for the
+                                   //   real rate, release for the abstract rate (see tools/lod_grind_audit.py).
   "wt","atk","aoe","noAmmo",       // combat-readiness: weapon type; resolved single-target/aoe skill ids (atk=0 => no offensive skill => basic swing only); ammo gate
   "status",                        // the @botstatus line
   "detail":{                       // only when ?id= given
@@ -115,13 +118,27 @@ Read-only per-bot autopilot internals for live debugging (party cohesion, follow
 ### `/api/killcalib`
 Read-only kill-rate calibration summary for unobserved-map LOD; see
 [`living-server-design.md`](living-server-design.md):
-the aggregate measured-vs-predicted kill-rate ratio bucketed by `(jobId, level band)`, plus tracked-bot/sample
+the aggregate measured-vs-model kill-rate ratio bucketed by `(jobId, level band)`, plus tracked-bot/sample
 totals. The durable store is `logs/bot-kill-calibration.tsv` (flushed every 60s, loaded on boot). `ratio` < 1
-means the advisor over-predicts kills/hr for that bucket; Stage 3 uses it as the correction factor.
+means the advisor model over-predicts kills/hr for that bucket; Stage 3 uses it as the correction factor.
 ```
 {"enabled":bool,
- "trackedBots","trackedRates","rateSamples",       // per-(bot,map,mob) EMA store size + total rate samples
- "buckets":[{"jobId","levelBand","ratio","samples"}, ...]}   // ratio = measured/predicted EMA (1.0 default = no data)
+ "trackedBots","trackedRates","rateSamples",       // per-(bot,map,mob) rate store size + total rate samples
+ "buckets":[{"jobId","levelBand","ratio","samples"}, ...]}   // ratio = measured/model (1.0 default = no data)
+```
+The measured side is a SUSTAINED rate (decayed `kills / activeMs`); the model side is
+`BotGrindAdvisor.modeledKillsPerHour` for the same bot on the same map — the same model whose output the
+abstract grind replays (× this ratio), so a healthy `ratio` sits near 1.0 and the model's systematic
+error cancels in replay.
+
+### `/api/lod[?maps=<id,...>][&force=0|1][&clear=1]`
+Pin maps to full fidelity (LOD0) on demand, as if a real player were standing on each: their bots run real
+combat, real physics and the 50ms tick, while every other map stays coarse. `maps=` pins (`force=0` releases),
+`clear=1` releases everything, and a bare GET reports the pinned set. Pins live in memory only — a restart
+drops them. Use this to measure a ground-truth kill rate on a few maps (`tools/lod_grind_audit.py --arm real
+--maps ...`) without putting the whole server back on full fidelity, which does not fit in the CPU budget.
+```
+{"forcedLod0":[<mapId>, ...]}
 ```
 
 ### `/market` (page)

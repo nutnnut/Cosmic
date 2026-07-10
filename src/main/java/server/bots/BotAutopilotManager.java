@@ -2240,9 +2240,6 @@ final class BotAutopilotManager {
         // Already on the picked map: announcePlan's "this map works" covers it — a separate
         // "arrived" line right after would be redundant chatter.
         entry.autopilotArrivalAnnounced = pick.mapId() == fromMapId;
-        // Stage 0 calibration: remember the committed kills/hr prediction so real grind kills on this
-        // map can be measured against it (BotKillCalibration ratio denominator).
-        BotKillCalibration.notePrediction(entry, rec.killsPerHour(), pick.mapId());
         recordDecision(entry, "grind " + entry.autopilotDestinationName + " ("
                 + entry.autopilotObjectiveSummary + ")");
     }

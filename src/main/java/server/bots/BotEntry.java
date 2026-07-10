@@ -69,11 +69,22 @@ public class BotEntry {
     long lod1TravelDwellUntilMs = 0L;
     // LOD1 abstract grind (Stage 3, design §2.3): a covered unobserved bot stops running real combat and
     // emits calibrated kill events instead. nextAbstractKillAtMs is the wall-clock deadline for the next
-    // abstract kill (0 = not armed). lastAbstractMobId is the last mob type killed (own-fresh-rate lookup
-    // key). abstractKillCount is telemetry surfaced in /api/botdebug.
+    // abstract kill (0 = not armed). abstractKillCount is telemetry surfaced in /api/botdebug.
+    // realKillCount is its full-fidelity counterpart — every mob this bot killed through real combat
+    // while grinding, counted raw (AoE multi-kills included). The pair is the ground truth for auditing
+    // whether the abstract grind reproduces the real one: pin the map to LOD0 via /api/lod to measure
+    // the real rate, release the pin to measure the abstract rate, and compare. See
+    // tools/lod_grind_audit.py.
     long nextAbstractKillAtMs = 0L;
-    int lastAbstractMobId = 0;
     long abstractKillCount = 0L;
+    long realKillCount = 0L;
+    // On-demand modeled rate for the current map (BotGrindAdvisor.modeledKillsPerHourCached): the
+    // abstract-grind rate denominator/replay model and, via abstractModelAttackDuty (fraction of wall
+    // time spent casting), the time-based MP charge. Only the bot's own tick thread touches these.
+    double abstractModelKph = 0.0;
+    double abstractModelAttackDuty = 0.0;
+    int abstractModelMapId = 0;
+    long abstractModelAtMs = 0L;
     BotMovementProfile movementProfile = BotMovementProfile.base();
 
     // Physics

@@ -40,9 +40,11 @@ import tools.Pair;
 import java.awt.*;
 import java.sql.SQLException;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ScheduledFuture;
@@ -215,8 +217,31 @@ public class BotManager {
         // Unobserved-map LOD (docs/bot/living-server-design.md): when no real player can observe a bot,
         // simplify its simulation. Each subsystem's simplification is an independent boolean so any one
         // can be bisected/disabled live (all default true; all false => bit-for-bit today's behavior).
-        // All four paths are implemented. The cadence gate shares abstractGrindEligible so a bot that
-        // still needs real combat cannot accidentally receive coarse LOD1 ticks.
+        //
+        // They are NOT orthogonal. cadenceForLod requires CADENCE && PHYSICS && abstractGrindEligible
+        // (which requires GRIND), so clearing GRIND *or* PHYSICS also drops the bot back to the 50ms tick.
+        // That gate is deliberate: a bot must never receive coarse ticks while it still runs real combat
+        // or real physics, both of which assume a 50ms step.
+        //
+        // CPU, measured on a 6-core box (tools/lod_grind_audit.py --perf-sweep). At ~560 unobserved bots
+        // the shipped config cost ~0.33 process cores while all-off exceeded 4.7 and starved the tick
+        // pool. At ~200 bots (2026-07-10): shipped ~0.11 cores, all-off ~0.83; per-option cost of turning
+        // ONE simplification off: GRIND +0.73 (real combat is the dominant cost), PHYSICS +0.26,
+        // TRAVEL +0.07, CADENCE ~+0.01 process cores. Even at low CPU the shared timer pool delivers
+        // 50ms ticks late once many bots want them (ticks/bot falls well under 1000/tickMs), so full
+        // fidelity degrades before the CPU meter says so. That is the load LOD exists to buy down; it is
+        // also why a ground-truth kill rate is measured by pinning a few maps via /api/lod rather than by
+        // clearing these flags globally (a starved pool depresses the very rate you are trying to measure).
+        //
+        // PHYSICS: BotMovementManager's nav resolve + physics integration become a wall-clock lerp between
+        //   two points (a "motion plan"), but only while lod1MotionPlanCovered -- grounded, not climbing,
+        //   swimming or airborne, no trade/market/errand/operator override -- and only while the goal sits
+        //   within the bot's real basic-attack vertical reach. Anything else falls through to real physics.
+        // TRAVEL: cross-map legs become a timed warp instead of executed portal hops (BotTravelManager).
+        // GRIND: target search, attack planning and real attacks become calibrated kill events emitted
+        //   through MapleMap.damageMonster, so exp, drops, quest credit and spawn bookkeeping stay real.
+        //   The kill rate comes from BotKillCalibration, learned from this bot's own real grinding.
+        // CADENCE: the 50ms -> LOD1_TICK_MS retask itself. Engages only once nothing per-tick remains.
         public boolean SIMPLIFY_UNOBSERVED_BOTS_PHYSICS = true;  // motion-plan movement instead of physics/nav
         public boolean SIMPLIFY_UNOBSERVED_BOTS_TRAVEL = true;   // timed warps instead of executed hops
         public boolean SIMPLIFY_UNOBSERVED_BOTS_GRIND = true;    // abstract kill events instead of real combat
@@ -862,6 +887,29 @@ public class BotManager {
     private static final Map<Integer, int[]> lodNeighborCache = new ConcurrentHashMap<>();
 
     /**
+     * Maps pinned to full fidelity regardless of who is watching (debug/calibration; see {@code /api/lod}).
+     * A pinned map behaves as though a real player stood on it: its bots hold LOD0, so they run real
+     * combat, real physics and the 50ms tick while the rest of the server stays coarse. That is how
+     * {@code tools/lod_grind_audit.py} measures a ground-truth kill rate — pinning the whole server back
+     * to full fidelity does not fit in the CPU budget (see the SIMPLIFY_UNOBSERVED_BOTS_* notes on Config).
+     * Never persisted: a restart clears every pin.
+     */
+    private static final Set<Integer> forcedLod0Maps = ConcurrentHashMap.newKeySet();
+
+    /** Pin/unpin one map to full fidelity. Returns true when the pinned set actually changed. */
+    static boolean forceLod0(int mapId, boolean pinned) {
+        return pinned ? forcedLod0Maps.add(mapId) : forcedLod0Maps.remove(mapId);
+    }
+
+    static void clearForcedLod0() {
+        forcedLod0Maps.clear();
+    }
+
+    static Set<Integer> forcedLod0Maps() {
+        return Collections.unmodifiableSet(forcedLod0Maps);
+    }
+
+    /**
      * A map is "effectively observed" if it — or any of its 1-portal-edge neighbor maps — is observed
      * by a real player. Observer SSOT is {@link MapleMap#isObservedByPlayer()} (counts hidden {@code
      * !hide} GMs, excludes bots and {@code !hidebot} GMs). The 1-edge pre-warm keeps a bot at full
@@ -889,13 +937,14 @@ public class BotManager {
     }
 
     /**
-     * Recompute a bot's LOD for this tick. LOD0 (full fidelity) when its map is effectively observed,
-     * its party has a real player, or it is in an active trade. Otherwise LOD1, but only after the map +
+     * Recompute a bot's LOD for this tick. LOD0 (full fidelity) when its map is pinned via {@code /api/lod},
+     * effectively observed, its party has a real player, or it is in an active trade. Otherwise LOD1, after the map +
      * neighborhood has been player-free for the downgrade hysteresis window (no thrash on map-hoppers).
      */
     private void updateLod(BotEntry entry, Character bot) {
         BotEntry.Lod prev = entry.lod;
-        boolean lod0Now = effectivelyObserved(bot.getMap())
+        boolean lod0Now = forcedLod0Maps.contains(bot.getMapId())
+                || effectivelyObserved(bot.getMap())
                 || partyHasRealPlayer(bot)
                 || bot.getTrade() != null;
         LodDecision d = decideLod(entry.lod, entry.lodUnobservedSinceMs, lod0Now,
@@ -6801,11 +6850,13 @@ public class BotManager {
     }
 
     // ===== Stage 3: abstract grind for covered, unobserved (LOD1) bots (design §2.3) =====
-    // A bot's own fresh measured rate stays authoritative for this long after its last kill; the
-    // advisor's committed prediction stays usable for this long after it was installed. Then the rate
-    // falls back to the (job, level-band) correction bucket, or a short idle re-check if nothing exists.
+    // A bot's own fresh measured rate stays authoritative for this long after its last kill; after
+    // that the rate is the advisor's on-demand map model × the (job, level-band) correction bucket
+    // (BotGrindAdvisor.modeledKillsPerHourCached, learned against the same model in BotKillCalibration).
     private static final long ABSTRACT_FRESH_RATE_MS = 10 * 60_000L;
-    private static final long ABSTRACT_PREDICTION_FRESH_MS = 30 * 60_000L;
+    /** How long a rate-less bot waits before re-asking the model (caches still cold, or a map with
+     *  nothing grindable on it). It kills nothing meanwhile. */
+    private static final long UNCALIBRATED_RECHECK_MS = 5_000L;
 
     /**
      * One coarse tick of abstract grind: the bot holds its ground (no target search / attack planning /
@@ -6821,32 +6872,42 @@ public class BotManager {
             return;
         }
         long now = System.currentTimeMillis();
+        double kph = calibratedKillsPerHour(entry, bot);
+        if (kph <= 0) {
+            // Neither measured nor modelable for this spot (caches cold, or nothing grindable here):
+            // we do not know how fast this bot grinds, so grant nothing and look again shortly.
+            // Emitting a kill anyway would apply a flat 3600/5 = 720 kills/hr floor regardless of
+            // job, level, or map — the exact defect the sustained-rate rework removed.
+            entry.nextAbstractKillAtMs = now + UNCALIBRATED_RECHECK_MS;
+            return;
+        }
         if (entry.nextAbstractKillAtMs == 0L) {
-            entry.nextAbstractKillAtMs = now + abstractKillDelayMs(entry, bot);
+            entry.nextAbstractKillAtMs = now + abstractKillDelayMs(kph);
             return;
         }
         if (now < entry.nextAbstractKillAtMs) {
             return;
         }
         Monster mob = pickAbstractKillTarget(entry, bot, botPos);
+        long delayMs = abstractKillDelayMs(kph);
         if (mob != null) {
-            entry.lastAbstractMobId = mob.getId();
+            // Step to the kill the way a real grinder would have walked there (unobserved: nothing
+            // renders the hop). Without this, kills far across the map shed their drops outside the
+            // bot's passive-loot range and the abstract grind under-earns loot/meso vs real grinding.
+            BotPhysicsEngine.teleportTo(entry, bot, mob.getPosition());
             bot.getMap().damageMonster(bot, mob, mob.getHp()); // exactly lethal, credited to the bot
-            chargeAbstractKillMp(entry, bot);
+            chargeAbstractGrindMp(entry, bot, delayMs);
             entry.abstractKillCount++;
         }
-        // Re-arm regardless: when the map is spawn-limited (mob == null) the supply cap is already baked
-        // into the calibrated rate, so skipping this kill and waiting the modeled interval keeps rates honest.
-        entry.nextAbstractKillAtMs = now + abstractKillDelayMs(entry, bot);
+        // Re-arm regardless. When the map is spawn-limited (mob == null) the bot simply misses this kill,
+        // exactly as a real one loses the race to a rival — contention is enforced by the empty map, not by
+        // the rate. The rate itself is learned from real grinding under whatever crowd was present.
+        entry.nextAbstractKillAtMs = now + delayMs;
     }
 
     /** Poisson (exponential) inter-kill delay (ms) around the calibrated mean, so abstract kills don't
-     *  arrive metronomically. Falls back to a 5s idle re-check when no calibrated rate exists yet. */
-    private long abstractKillDelayMs(BotEntry entry, Character bot) {
-        double kph = calibratedKillsPerHour(entry, bot);
-        if (kph <= 0) {
-            return 5_000L;
-        }
+     *  arrive metronomically. Caller must pass a positive rate. */
+    private long abstractKillDelayMs(double kph) {
         double meanMs = 3_600_000.0 / kph;
         double u = Math.max(1e-6, ThreadLocalRandom.current().nextDouble());
         long d = Math.round(-meanMs * Math.log(u));                   // exponential inter-arrival
@@ -6854,25 +6915,25 @@ public class BotManager {
     }
 
     /** The bot's calibrated kills/hr on its current map: its own fresh measured rate when it has one,
-     *  else the advisor's committed prediction × the (job, level-band) correction bucket (Stage 0). */
+     *  else the advisor's modeled rate for this map × the (job, level-band) correction bucket. The
+     *  bucket was learned against the same model (BotKillCalibration), so the model's systematic error
+     *  cancels; no committed plan or prediction is required, which keeps directed (!goto), owner-
+     *  commanded, and freshly-restarted bots earning at a modeled rate instead of stalling. */
     private double calibratedKillsPerHour(BotEntry entry, Character bot) {
-        int mapId = bot.getMapId();
-        double fresh = BotKillCalibration.freshBotRate(bot.getId(), mapId, entry.lastAbstractMobId,
-                ABSTRACT_FRESH_RATE_MS);
+        double fresh = BotKillCalibration.freshBotRate(bot.getId(), bot.getMapId(), ABSTRACT_FRESH_RATE_MS);
         if (fresh > 0) {
             return fresh;
         }
-        double predicted = BotKillCalibration.predictedKph(bot.getId(), mapId, ABSTRACT_PREDICTION_FRESH_MS);
-        if (predicted <= 0) {
-            return 0.0;
-        }
         int jobId = bot.getJob() != null ? bot.getJob().getId() : 0;
-        return predicted * BotKillCalibration.bucketFactor(jobId, bot.getLevel() / 10);
+        return BotGrindAdvisor.modeledKillsPerHourCached(entry, bot)
+                * BotKillCalibration.bucketFactor(jobId, bot.getLevel() / 10);
     }
 
-    /** Pick a live spawned mob for an abstract kill: nearest to the bot (so its loot lands within the
-     *  bot's passive-loot range), preferring active-quest mobs so quests still progress. Map-wide, but
-     *  only runs on a due kill (seconds apart), not per tick. Null when the map is spawn-limited. */
+    /** Pick a live spawned mob for an abstract kill: nearest to the bot (short hops, so the bot drifts
+     *  across spawn clusters the way a real grinder works a map), preferring active-quest mobs so quests
+     *  still progress. Map-wide, but only runs on a due kill (seconds apart), not per tick. Null when
+     *  the map is spawn-limited. The caller steps the bot to the mob before the kill, which is what
+     *  keeps drops inside passive-loot range. */
     private Monster pickAbstractKillTarget(BotEntry entry, Character bot, Point botPos) {
         MapleMap map = bot.getMap();
         if (map == null || map.getSpawnedMonstersOnMap() == 0) {
@@ -6901,12 +6962,13 @@ public class BotManager {
         return nearestQuest != null ? nearestQuest : nearest;
     }
 
-    /** Coarse honest MP charge per abstract kill: one cast of the bot's primary attack skill. Real kills
-     *  take several attacks and multi-target casts hit several mobs, so this is an approximation (refined
-     *  in Stage 3 slice 2); charging it keeps casters spending MP → drinking MP pots (economy) instead of
-     *  farming free. Non-casters (getMpCon 0) are unaffected. */
-    private void chargeAbstractKillMp(BotEntry entry, Character bot) {
-        if (entry.attackSkillId == 0) {
+    /** Honest MP charge for the grind time behind one abstract kill. Casts are a function of TIME spent
+     *  attacking, not of kills — one cast per kill would overcharge AoE (one cast kills several) and
+     *  undercharge single-target (several casts per kill). So: casts = modeled attack duty × interval /
+     *  attack cycle, each costing the primary skill's mpCon. Keeps casters spending MP → drinking MP
+     *  pots (economy) at the rate real grinding would. Non-casters (mpCon 0) are unaffected. */
+    private void chargeAbstractGrindMp(BotEntry entry, Character bot, long grindMs) {
+        if (entry.attackSkillId == 0 || entry.abstractModelAttackDuty <= 0) {
             return;
         }
         client.Skill skill = client.SkillFactory.getSkill(entry.attackSkillId);
@@ -6919,8 +6981,13 @@ public class BotManager {
         }
         StatEffect effect = skill.getEffect(level);
         int mpCon = effect == null ? 0 : effect.getMpCon();
-        if (mpCon > 0) {
-            bot.addMP(-Math.min(mpCon, bot.getMp()));
+        if (mpCon <= 0) {
+            return;
+        }
+        double casts = entry.abstractModelAttackDuty * (grindMs / 1000.0) / BotGrindAdvisor.ATTACK_CYCLE_SECONDS;
+        int mp = (int) Math.round(mpCon * casts);
+        if (mp > 0) {
+            bot.addMP(-Math.min(mp, bot.getMp()));
         }
     }
 

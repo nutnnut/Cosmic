@@ -73,7 +73,7 @@ final class BotGrindAdvisor {
     private static final Logger log = LoggerFactory.getLogger(BotGrindAdvisor.class);
 
     /** Same producer anchors as the scroll farming-cost model. */
-    private static final double ATTACK_CYCLE_SECONDS = 0.72;
+    static final double ATTACK_CYCLE_SECONDS = 0.72;
     private static final double DROP_CHANCE_DENOMINATOR = 1_000_000.0;
     private static final int MIN_SPAWN_POINTS = 3;
     private static final int INSTANCED_MAPID_FLOOR = 900000000;
@@ -382,6 +382,69 @@ final class BotGrindAdvisor {
     static List<MobCandidate> candidatesFor(BotEntry entry, Character bot,
                                             java.util.function.IntPredicate mapAllowed) {
         return buildCandidates(entry, bot, mapAllowed);
+    }
+
+    /**
+     * The advisor's modeled sustained kills/hr for {@code bot} grinding {@code mapId}, or 0 when the
+     * model cannot answer (caches not warmed yet, a town/instanced map, or nothing grindable there).
+     * The same SSOT math a committed plan prediction carries ({@link #profileFor} →
+     * {@link #blendCandidate} → {@link BotGrindPlanner#killsPerHour}), restricted to the one map the
+     * bot is standing on: no gear valuation, no aspirational-mob caching, no admission gates — those
+     * exist to PICK a map, and this map is already picked. Cheap enough for a bot tick thread (a
+     * handful of cached mob profiles), so the abstract grind can rate a spot no fresh plan ever priced
+     * (directed !goto pins never re-decide; owner-commanded grinds and restarts install no prediction).
+     */
+    /** How long an entry-cached modeled rate stays valid. Long enough to amortize the mob profiling,
+     *  short enough to track level-ups and gear swaps while a bot camps one map for hours. */
+    private static final long MODEL_CACHE_TTL_MS = 10 * 60_000L;
+
+    /** Entry-cached {@link #modeledKillsPerHour} for the bot's CURRENT map: recomputes on map change,
+     *  TTL expiry, or while the model has no answer yet (cold caches — cheap to re-ask). Also stashes
+     *  the modeled attack duty (fraction of wall time spent casting = blended kill seconds × kph/3600,
+     *  supply caps included) for the abstract grind's time-based MP charge. Cache fields live on the
+     *  entry and are touched only by the bot's own tick thread. */
+    static double modeledKillsPerHourCached(BotEntry entry, Character bot) {
+        int mapId = bot.getMapId();
+        long now = System.currentTimeMillis();
+        if (entry.abstractModelMapId != mapId || entry.abstractModelKph <= 0
+                || now - entry.abstractModelAtMs > MODEL_CACHE_TTL_MS) {
+            MobCandidate c = modeledCandidate(entry, bot, mapId);
+            double kph = c == null ? 0.0 : BotGrindPlanner.killsPerHour(c);
+            entry.abstractModelKph = kph;
+            entry.abstractModelAttackDuty = c == null ? 0.0 : Math.min(1.0, c.killSeconds() * kph / 3600.0);
+            entry.abstractModelMapId = mapId;
+            entry.abstractModelAtMs = now;
+        }
+        return entry.abstractModelKph;
+    }
+
+    static double modeledKillsPerHour(BotEntry entry, Character bot, int mapId) {
+        MobCandidate c = modeledCandidate(entry, bot, mapId);
+        return c == null ? 0.0 : BotGrindPlanner.killsPerHour(c);
+    }
+
+    /** The single-map candidate behind {@link #modeledKillsPerHour}, or null when the model cannot
+     *  answer. */
+    private static MobCandidate modeledCandidate(BotEntry entry, Character bot, int mapId) {
+        if (!isWarm()) {
+            return null; // never pay the cold WZ scan on a tick thread; the caller re-checks shortly
+        }
+        BotSpawnIndex.MapSpawns map = BotSpawnIndex.get().byMap().get(mapId);
+        if (map == null || map.town() || mapId >= INSTANCED_MAPID_FLOOR) {
+            return null;
+        }
+        MonsterInformationProvider mi = MonsterInformationProvider.getInstance();
+        Map<MobProfile, Integer> pointsByMob = new HashMap<>();
+        for (Map.Entry<Integer, Integer> e : map.mobCounts().entrySet()) {
+            MobProfile p = profileFor(entry, bot, mi, e.getKey());
+            if (p != null && p.exp() > 0) {
+                pointsByMob.put(p, e.getValue());
+            }
+        }
+        if (pointsByMob.isEmpty()) {
+            return null;
+        }
+        return blendCandidate(mapId, mapName(mapId), map.areaPx(), pointsByMob);
     }
 
     /** Two-sided level-band admission for a candidate mob: [level-DOWN, level+UP] with a CONSTANT

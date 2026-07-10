@@ -175,6 +175,7 @@ public final class BotWorldGraphWebServer {
             s.createContext("/api/command", BotWorldGraphWebServer::serveCommand);
             s.createContext("/api/botdebug", BotWorldGraphWebServer::serveBotDebug);
             s.createContext("/api/killcalib", BotWorldGraphWebServer::serveKillCalib);
+            s.createContext("/api/lod", BotWorldGraphWebServer::serveLod);
             s.createContext("/api/market/stalls", BotWorldGraphWebServer::serveMarketStalls);
             s.createContext("/api/market/bot", BotWorldGraphWebServer::serveMarketBot);
             s.createContext("/api/market/items", BotWorldGraphWebServer::serveMarketItems);
@@ -1154,6 +1155,36 @@ public final class BotWorldGraphWebServer {
         send(ex, 200, "application/json", BotKillCalibration.summaryJson().getBytes(StandardCharsets.UTF_8));
     }
 
+    /** Pin maps to full fidelity (LOD0) on demand, as if a real player were standing on each one: their
+     *  bots run real combat, real physics and the 50ms tick while the rest of the server stays coarse.
+     *  {@code ?maps=<id,..>[&force=0|1]} pins (default) or releases; {@code ?clear=1} releases everything;
+     *  a bare GET reports the pinned set. Pins are in-memory and a restart drops them. */
+    private static void serveLod(HttpExchange ex) throws IOException {
+        Map<String, String> q = queryParams(ex.getRequestURI().getRawQuery());
+        if (q.containsKey("clear")) {
+            BotManager.clearForcedLod0();
+        }
+        String maps = q.getOrDefault("maps", "").trim();
+        if (!maps.isEmpty()) {
+            boolean pin = !"0".equals(q.getOrDefault("force", "1"));
+            for (String tok : maps.split(",")) {
+                try {
+                    BotManager.forceLod0(Integer.parseInt(tok.trim()), pin);
+                } catch (NumberFormatException ignored) {
+                    // skip junk ids rather than failing the whole request
+                }
+            }
+        }
+        List<Integer> pinned = new ArrayList<>(BotManager.forcedLod0Maps());
+        Collections.sort(pinned);
+        StringBuilder sb = new StringBuilder("{\"forcedLod0\":[");
+        for (int i = 0; i < pinned.size(); i++) {
+            sb.append(i == 0 ? "" : ",").append(pinned.get(i));
+        }
+        sb.append("]}");
+        send(ex, 200, "application/json", sb.toString().getBytes(StandardCharsets.UTF_8));
+    }
+
     private static void serveBotDebug(HttpExchange ex) throws IOException {
         int filterId = 0;
         try {
@@ -1200,6 +1231,7 @@ public final class BotWorldGraphWebServer {
                     .append(",\"lod\":").append(jsonStr(e.lod.name()))
                     .append(",\"tickMs\":").append(e.tickIntervalMs)
                     .append(",\"absKills\":").append(e.abstractKillCount)
+                    .append(",\"realKills\":").append(e.realKillCount)
                     .append(",\"following\":").append(e.following)
                     .append(",\"followTo\":").append(e.followTargetId)
                     .append(",\"transit\":").append(e.autopilotTransitFollow)

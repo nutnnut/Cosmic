@@ -78,6 +78,9 @@ Do not copy a graph version from a KB note. The current value and full schema hi
   [`kb_bot_coldstart_queststatus_fullscan.md`](kb_bot_coldstart_queststatus_fullscan.md): boot warm-up.
 - [`kb_live_values_view_cme_in_bot_ticks.md`](kb_live_values_view_cme_in_bot_ticks.md): unsafe live-view
   iteration.
+- [`kb_bot_lod_abstract_grind_calibration.md`](kb_bot_lod_abstract_grind_calibration.md): the unobserved-map
+  abstract grind measured a peak kill rate instead of a sustained one; signatures, the corrected
+  estimator, and how to measure ground truth without starving the tick pool.
 
 ## Maintenance
 
