@@ -44,4 +44,4 @@ for both say and reply branches. Direct (non-queued) `botReply` prompts call `sh
 
 NOT wired: `skill_tree_choice` (dynamic per-job tree options + info-only report selector — labels would need
 to mirror `resolveSkillTreeChoice`; skipped to avoid mismatched labels). Visually unverified in-client as of
-2026-06-14 (compiles). See [[project_solomapling_audit.md]].
+Implemented 2026-06-14.

@@ -318,7 +318,7 @@ Bots can hold short casual conversations with the owner using a tiny local model
 **[Cosmic](https://github.com/P0nk/Cosmic)** - This project is built on top of Cosmic and obviously wouldn't be possible without Cosmic and everyone who has ever contributed to Cosmic and its upstream/predecessors HeavenMS, so thank you to everybody involved in any point in the project's history!
 
 **[Madara's SoloMapling](https://github.com/MadaraGameDev/SoloMapling)** - Biggest ongoing sibling project, also focused on bots. 
-- Despite seemingly very similar feature sets, there are many many major differences in infrastructure that make merging both projects into one system impossible. [A merge do exists](github.com/Seikoxi/BotlingMaple) (both systems running independently, but not interacting with one another)
+- Despite seemingly similar feature sets, major infrastructure differences make a single merged bot system impractical. [A combined fork exists](https://github.com/Seikoxi/BotlingMaple), with both systems running independently.
 - We are good friends and the features do get shared/ported over both here and there all the time.
 
 **[Swordie](https://gitlab.com/swordiemen/swordie-232) & Maple Development discord** - Swordie is my another favorite source (and favorite server when it was live), although I decided against making v232 bots due to modern Maplestory feature bloat and solo focused gameplay. Both discord channels have been very helpful for questions and getting the resources I needed.

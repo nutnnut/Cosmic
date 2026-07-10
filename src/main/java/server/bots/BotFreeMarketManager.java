@@ -27,7 +27,7 @@ import java.util.Map;
 import java.util.concurrent.ThreadLocalRandom;
 
 /**
- * Free-Market session errand (docs/bot/living-economy-design.md sec 8.1-8.2): during a rest
+ * Free-Market session errand (docs/bot/economy.md): during a rest
  * break, a bot with sellable surplus travels to an FM town, walks the market portal in, picks a
  * room, opens a real {@link HiredMerchant} stall stocked from its shelf surplus at prices from
  * its own {@link BotMarketBook}, browses the other stalls (observations + the odd bargain buy),

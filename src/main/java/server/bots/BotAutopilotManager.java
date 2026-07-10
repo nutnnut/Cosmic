@@ -1434,7 +1434,8 @@ final class BotAutopilotManager {
 
     /** Decision-dispatch seam: a group member's destination is chosen by its cohort leader (shared
      *  plan via {@link #redecideParty}); a self-deciding bot runs its own advisor pass (grind /
-     *  farm-item + ferry teaser, via {@link #redecideSolo}). Stage 5's player-led policy plugs in
+     *  farm-item + ferry teaser, via {@link #redecideSolo}). TODO(bot-player-led-party): the
+     *  player-led policy plugs in
      *  here — one branch — instead of being smeared across the decision call sites. */
     private static void redecide(BotEntry entry, Character bot) {
         if (decidesAsGroupMember(entry)) {

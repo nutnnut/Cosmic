@@ -1147,7 +1147,7 @@ public final class BotWorldGraphWebServer {
         }
     }
 
-    /** Stage 0 kill-rate calibration summary (docs/bot/unobserved-lod-design.md §5.0): the aggregate
+    /** Kill-rate calibration summary (docs/bot/living-server-design.md): the aggregate
      *  measured/predicted ratio buckets by (jobId, level band) plus tracked-bot/sample totals. Read-only
      *  JSON; the durable store lives in {@code logs/bot-kill-calibration.tsv}. */
     private static void serveKillCalib(HttpExchange ex) throws IOException {
@@ -1908,7 +1908,7 @@ public final class BotWorldGraphWebServer {
     // --- live occupancy ---
 
     /** Every character currently online across all worlds/channels (bots included). */
-    // --- living-economy debug surface (docs/bot/living-economy-design.md sec 11) ---
+    // --- living-economy debug surface (docs/bot/economy.md) ---
 
     /** Every OPEN hired merchant in every world: where it stands, whose it is, what it sells. */
     private static void serveMarketStalls(HttpExchange ex) throws IOException {

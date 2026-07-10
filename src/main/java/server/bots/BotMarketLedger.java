@@ -16,7 +16,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.LongAdder;
 
 /**
- * Append-only market tape (table {@code bot_market_event}, docs/bot/living-economy-design.md
+ * Append-only market tape (table {@code bot_market_event}, docs/bot/economy.md
  * sec 12) + in-memory faucet/sink tallies. Mirrors the {@link ManagedBotService} DAO pattern.
  *
  * <p>Consumers: the consensus sweep reads the recent window; the web observability endpoints read

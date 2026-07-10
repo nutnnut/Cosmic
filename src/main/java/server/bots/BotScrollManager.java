@@ -61,7 +61,7 @@ final class BotScrollManager {
     // shields, accessories — Old Raggedy Cape's +10 avoid, a +HP shield) isn't valued at 0. Kept well
     // below ATT/main-stat on purpose: a point of weapon attack still dwarfs a point of WDEF, but a
     // defensive piece is no longer worthless. ACC is intentionally NOT here — accuracy is owned by the
-    // aspirational-grind effective-DPS model (see project_bot_accuracy_aspirational_target), valuing it
+    // aspirational-grind effective-DPS model, valuing it
     // again per-item would double-count. ponytail: flat weights, tune if bots over/under-value tanky gear.
     private static final double WDEF_WEIGHT = 0.05;
     private static final double MDEF_WEIGHT = 0.04;

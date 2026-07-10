@@ -41,5 +41,5 @@ To support `returnMapOf`, `BotWorldGraph.Index` now carries `returnMaps` and the
 next boot. Entry vector note: the bot most likely reached Sleepywood via placement/quest-errand (which
 bypass the danger block), NOT by grind-selection, so recovery is the load-bearing fix here.
 
-Related: [[kb_bot_inert_autopilot_recovery]] (other stranded-bot self-heal), [[kb_bot_town_nav_airborne_target]]
-(travel give-up loop), [[feedback_client_side_formulas_in_bot]] (StatEffect stays generic; bot reuses applyTo).
+Related: [[kb_bot_town_nav_airborne_target]]
+(travel give-up loop). `StatEffect` stays generic; the bot reuses `applyTo`.

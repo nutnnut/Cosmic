@@ -23,7 +23,7 @@ import java.util.Map;
  * code cannot see today (stall stock, storage, trade escrow, merchant earnings) alongside the
  * live bags.
  *
- * Contract (docs/bot/living-economy-design.md sec 10.4):
+ * Contract (docs/bot/economy.md):
  * - valuation / wealth / market decisions read the FULL snapshot;
  * - wear / consume / stage paths may only touch IN-HAND assets (EQUIPPED / BAG);
  * - an item appears in exactly one location (no double counting: staging into a trade or stall

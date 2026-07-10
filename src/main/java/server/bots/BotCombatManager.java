@@ -1726,7 +1726,7 @@ class BotCombatManager {
         }
     }
 
-    // Matches maplestory-wasm CharLook::set_alerted(5000): called on attack, skill cast, and
+    // Matches the client's 5000ms alerted state: called on attack, skill cast, and
     // damage taken. Always an absolute reset to now+5s (never additive), mirroring TimedBool::set_for.
     private static final long ALERT_DURATION_MS = 5000L;
 

@@ -831,7 +831,7 @@ final class BotPhysicsEngine {
         syncCharacterState(entry);
     }
 
-    // === LOD1 motion plan (unobserved-map movement, docs/bot/unobserved-lod-design.md §2.1) ===
+    // === LOD1 motion plan (unobserved-map movement, docs/bot/living-server-design.md) ===
     // Pure helpers: a LOD1 bot's position is not physics-integrated; it lerps (from->to) over a
     // duration derived from the SAME ground speed physics uses, so abstract time ~= real time.
 
@@ -1441,7 +1441,7 @@ final class BotPhysicsEngine {
     }
 
     /**
-     * Intent-driven swim integrator. Mirrors wasm Physics::move_swimming, but
+     * Intent-driven swim integrator fitted to client behavior.
      * the only inputs are discrete intents on {@link BotEntry}:
      *   swimMoveDir       — -1/0/+1 horizontal steer
      *   swimVerticalHold  — -1 (UP slow sink) / 0 (free sink) / +1 (DOWN fast sink)
@@ -1471,7 +1471,7 @@ final class BotPhysicsEngine {
             entry.downJumpPending = false;
             entry.downJumpGracePeriodMS = 0L;
             // Preserve velY/hspeed from launch — a jump-off-platform should
-            // still arc upward under swim physics (matches wasm: NORMAL kick
+            // still arc upward under swim physics (a NORMAL kick
             // immediately followed by SWIMMING integration).
         } else if (Math.abs(entry.physX - pos.x) > 2 || Math.abs(entry.physY - pos.y) > 2) {
             // External teleport (mob-touch knockback, !warp, position correction)
@@ -1780,7 +1780,7 @@ final class BotPhysicsEngine {
         }
         // Broadcast-only alert substitution. The server-side Character.stance above keeps the
         // logical stance (STAND/WALK/etc.); only the wire byte gets ALERT when the alert timer
-        // is active. Mirrors maplestory-wasm CharLook.cpp substituting Stance::ALERT for STAND1/2
+        // is active. Mirrors the client substituting Stance::ALERT for STAND1/2
         // while TimedBool alerted is set_for(5000).
         return new MovementSnapshot(entry.movementVelX, entry.movementVelY, broadcastStance(entry, stance));
     }

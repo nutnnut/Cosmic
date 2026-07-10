@@ -1,92 +1,88 @@
-# Bot Knowledge Base
+# Bot knowledge base
 
-Project-scoped knowledge for the AI companion bot work (formerly PC-scope auto-memory,
-relocated here so it's git-shared across machines/agents per CLAUDE.md rule #5).
-Each file is one fact/area. One-line hooks below — open the file for detail.
+Durable, project-scoped notes for facts that are expensive to rediscover. These are incident and
+subsystem references, not task status, handoffs, or release checklists. Prefer the specialized skills
+for broad combat/navigation workflows and open a KB entry only for the specific failure mode at hand.
+The only actionable backlog is [`../ROADMAP.md`](../ROADMAP.md).
 
-## Project
+## Navigation and movement
 
-- [kb_bot_movement_skills_teleport_flashjump.md](kb_bot_movement_skills_teleport_flashjump.md) — Bot Teleport (mages) + Flash Jump (NL thieves) at nav level (GRAPH_VERSION 60): RE'd constants (teleport=WZ `range`, modelled max 150px; FJ=±550/−350 px/s mid-air apex), cross-region skill edges + intra-region runtime express, two-pass distance-scaled cost gate, >40%MP/>500k-meso gate
-- [kb_bot_missing_class_sp_builds.md](kb_bot_missing_class_sp_builds.md) — SP builds for previously-unbuilt classes: Pirate tree (PirateBuilds knuckle/gun split via entry.spVariant), Paladin (WarriorBuilds sword), F/P mage line (MageBuilds); +respec rows DARKKNIGHT/IL. Pirate AP build done; damage formula verified (Character.calculateMaxBaseDamage SSOT). Behavioral gaps: Energy-Charge-bar gate (Marauder/Bucc), Battleship-mount gate (Corsair)
-- [kb_bot_player_party_social.md](kb_bot_player_party_social.md) — Player<->bot dynamic party: Flow1/2/3 in BotSocialManager.offerToPlayer + maybeHandlePartyChat; partyHasRealPlayer guards scheduler logout/break/thinning; BotFamiliarityManager 30s sampler → bot_player_familiarity table
-- [project_bot_web_observability_ssot.md](project_bot_web_observability_ssot.md) — Bot web endpoints (BotWorldGraphWebServer /api/live, /api/mapinfo, /api/botdebug) = live observability SSOT, staged to supersede scattered file loggers; MCP wrap deferred
-- [kb_bot_errand_dwell_clobber.md](kb_bot_errand_dwell_clobber.md) — ROOT CAUSE job-advance-stuck: errand resets shared npcDwellUntilMs every TRAVELING tick, zeroing taxi/ferry board dwell → never pays fare → stuck forever. Fix (8ac78c357): reset dwell only while WALKING on NPC's own map
-- [kb_bot_npc_hop_hail_map_wide.md](kb_bot_npc_hop_hail_map_wide.md) — Taxi/ferry job-advance give-ups = bot can't stand exactly on dock/tree NPC; generic tickTravel:218 deadline preempts hop fallback. Fix = exempt taxi+ferry from line-218, hail map-wide on budget lapse
-- [kb_bot_eventmanager_transit_rides.md](kb_bot_eventmanager_transit_rides.md) — EventManager rides (subway/train/crane/elevator) modeled as BotFerryManager FerryRoutes; 3 boarding styles dispatched in tickBoarding; El Nath 211000000 still islanded
-- [kb_bot_passive_mp_hp_regen.md](kb_bot_passive_mp_hp_regen.md) — Bot passive HP/MP regen (no client = no 0x59 packet): tickPassiveRecovery 10s, base MP=3, Improved MP Recovery = charLevel*skillLevel/10 (calibrated). Fixed mage resupply parity + logout-never-finishes
-- [kb_bot_cold_decide_gc_storm.md](kb_bot_cold_decide_gc_storm.md) — 60-bot freeze = COLD BotGrindAdvisor decide storm at boot racing warmup → GC stop-the-world. Fix = awaitWarm() latch in buildCandidates; +monitor sorts by cumulative CPU; +PartySearchEchelon lock-inversion crash fix
-- [kb_bot_npc_dwell_walk_in_place.md](kb_bot_npc_dwell_walk_in_place.md) — "Walking in place" at NPCs = dwell ticks return true without stepping physics; fix = settleStandingDwell/tickGrounded(null) in approachNpc+taxi+gachapon; +progress-aware errand timeout
-- [project_bot_accuracy_aspirational_target.md](project_bot_accuracy_aspirational_target.md) — Aspirational-grind-mob SSOT breaks low-DEX vicious cycle: accuracy valued as effective-DPS for gear farming + AP DEX floor, aimed at map bot WANTS not where it's stuck
-- [kb_bot_ops_console.md](kb_bot_ops_console.md) — In-game GM ops console (Messenger-as-console): BotOpsConsole + BotConsoleTap live decision stream; additive over file loggers; verbs list/status/log/grind/say/cmd
-- [kb_bot_response_overlay.md](kb_bot_response_overlay.md) — BotPrompt: SSOT sendHint "possible responses" overlay for owner discrete-choice prompts (scroll/AP/SP/job); presentation-only, verbatim tokens
-- [kb_bot_use_value_shelf.md](kb_bot_use_value_shelf.md) — USE-bag pressure-driven value-shelf sell model (RUNWAY/JUNK/SHELF), per-SET rechargeable-ammo valuation, USE_NEVER_SELL_MESO floor
-- [kb_bot_town_nav_airborne_target.md](kb_bot_town_nav_airborne_target.md) — Town-nav stranding: (A) airborne move-target same-region straight-line steer; (B FIXED 01ec4f48d) autopilot travel give-up/wander loop — 5 fixes (resetForModeChange, no-wander-in-cooldown, portal filter, progress-aware deadline)
-- [project_codebase_overview.md](project_codebase_overview.md) — Repo structure, key classes, architecture
-- [project_party_autopilot_redesign.md](project_party_autopilot_redesign.md) — Staged redesign of bot party/crew autopilot into SSOT PartyAutopilotState; Stage 1 (plan SSOT) landed, Stages 2-5 designed
-- [project_living_economy_build.md](project_living_economy_build.md) — **Living economy BUILD STATE (branch dev-economy): S0-S2 landed** (beliefs/consensus/sim, asset view, stall errand), commit map, implementation insights (undercut repricing load-bearing, tick-thread books, shout-bus requirement), pending live-verify + S3-S6 — resume here
-- [project_bot_economy_and_self_scrolling.md](project_bot_economy_and_self_scrolling.md) — Simulated-economy vision + bot self-scrolling: scope decisions & build slices; **build design of record = docs/bot/living-economy-design.md** (economy-design.md stays as math reference)
-- [kb_bot_scroll_special_scrolls_and_market_feedback.md](kb_bot_scroll_special_scrolls_and_market_feedback.md) — 2026-07-04 audit: req-restricted scrolls ([4yrAnniv]/Dragon Stone) work emergently via getScrollReqs; 8 ranked gaps — accessory-scroll (20492xx) applicability hole, scroll USE never reads consensus (open demand loop), no scroll WTP at stalls, untradeable scrolls overcharged opportunity cost, unobtainable scrolls pollute market curves at 1M default
-- [project_solomapling_audit.md](project_solomapling_audit.md) — Audit of sibling fork SoloMapling: complementary; only real steal = world-population FM substrate; full report docs/bot/solomapling-audit.md
-- [kb_bot_solomapling_trade_behavior.md](kb_bot_solomapling_trade_behavior.md) — SoloMapling FM/trade BEHAVIOR deep-dive (state machine, haggle, buy decision, browse-as-visitor, stand selection, chatter, merchant skins/placement) + ranked steal-list for our economy update (delayed/considered buying, buy comparison, skin variety, haggle, visitor presence) — behavior only, keep our SSOT pricing
-- [kb_bot_solomapling_grind_v03.md](kb_bot_solomapling_grind_v03.md) — SoloMapling v0.3 (2026-07-08) grind-AI rewrite audit: ranked borrow-backs (map-archetype CAMP/ROAM/PATROL/STACK strategies + spot clustering, rest-spot positional safety, class-aware engage feel, in-combat rope ClimbRecovery, level-band map pre-filter); skip their thousands-of-ambient-bots scaling arc. **All 7 borrow-backs IMPLEMENTED 2026-07-09 — see kb_bot_grind_doctrine.md**
-- [kb_bot_grind_doctrine.md](kb_bot_grind_doctrine.md) — **Grind doctrine (2026-07-09): spot clustering + CAMP/PATROL/STACK/ROAM archetypes** (BotGrindSpots/BotGrindDoctrine in the shared findGrindTarget path = solo+party+takeover uniformly), thief engage-hop mini-kite, spawn-ledge rest safety, rope-stall combat dismount, advisor level band, loot chain sweep — 6 live toggles (`GRIND_DOCTRINE_ENABLED` etc.), each off = previous behavior; TTL claims; regime-scaled relocation patience
-- [project_grind_advisor_perf.md](project_grind_advisor_perf.md) — BotGrindAdvisor "dozens of seconds" = COLD cache tax, not algorithm; warm party-of-6 ~20ms; fix = boot-warm caches; grind.* instrumentation + BotGrindProfileTest
-- [kb_bot_perf_stress_hotpaths.md](kb_bot_perf_stress_hotpaths.md) — 615-bot stress capture: DECIDE_POOL pegged for minutes in scroll/chaos valuation DP (no curve cache, 120 fixed-point iters, 128 MC curve misses); nav-graph v70 cold rebuild = days of 2-core churn; ranked plan (P0-P6 + not-worth list) = docs/bot/perf-optimization-plan.md — **P0-P4 + LOD Stages 0-2 + scroll-DP throughput landed & committed on dev; the "no curve cache / 120 iters" DP framing is superseded (see kb_bot_lod_and_perf_2026-07-06 — advisor is demand-saturated, not per-op-bound). Resume: docs/bot/perf-2026-07-06-stage3-handoff.md**
-- [kb_bot_lod_and_perf_2026-07-06.md](kb_bot_lod_and_perf_2026-07-06.md) — **LOD build state (Stages 0-2 landed on dev) + reusable perf traps**: getAllMonsters/getMapObjectsInRange are O(ALL map objects) → objectRLock convoy (don't recompute map-global facts per-bot; getSpawnedMonstersOnMap O(1) SSOT); bot-grind-advisor DECIDE_POOL is DEMAND-saturated (coarsening the scroll DP = 33x throughput ceiling, NOT CPU — cut demand for CPU); advisor ramps ~6-8min + bursty (capture during burst). Session resume → perf-2026-07-06-stage3-handoff.md
-- [../perf-2026-07-09-handoff.md](../perf-2026-07-09-handoff.md) — **RESUME PERF WORK HERE (2026-07-09)**: Stage 3 abstract-grind combat-slice gate + O(1) isObservedByPlayer (real CPU -47%), an AB-BA party-buff deadlock fix (updateActiveEffects prt->eff — was a hard 2000-bot hang), scroll-DP resolution/cache (no-op on low-level gear, kept for scaling), and the CHAOS GATE (offense-only: -79% scroll-dp — the scroll DP was chaos-dominated) all COMMITTED on dev. JFR proved cost is bot code not upstream. Open: nav runtime graph-build bursts, a 2nd latent chr->prt deadlock (dropBuffStats), job-advance-stuck routing bug, 2000-bot pop plateau
-- [../perf-2026-07-06-stage3-handoff.md](../perf-2026-07-06-stage3-handoff.md) — SUPERSEDED by the 07-09 handoff above (kept for history: Stage 3 slice 1 + monster index + 8GB heap landing)
-- [../perf-2026-07-05-handoff.md](../perf-2026-07-05-handoff.md) — SUPERSEDED by the 07-06 handoff above (kept for history: the uncommitted-lossless-fixes starting state)
-- [../unobserved-lod-design.md](../unobserved-lod-design.md) — Unobserved-map LOD design of record (owner-approved): LOD0/LOD1, isObservedByPlayer SSOT + 1-portal-edge pre-warm, !hidebot GM tier, motion-plan movement, BotTravelCost timed warps, calibrated abstract kill events, SIMPLIFY_UNOBSERVED_BOTS_* toggles; target 2000 bots
-- [kb_bot_break_and_session_state_machine.md](kb_bot_break_and_session_state_machine.md) — Bot rest state machine: chill session vs in-session break (in-place/town/nearby-safe) vs rest-errand vs the inert-autopilot LEAK; resume via endBreak in tickGrindMode (only while grinding=true); login-break seeding; group breaks; activityCategory roster-bucket SSOT (folds the "idle rn" leak into `break` — split it out before blaming break tuning)
-- [kb_bot_inert_autopilot_recovery.md](kb_bot_inert_autopilot_recovery.md) — Bots idling in town = autopilot leaked OFF (autopilotMapId=-1), NOT a break; self-heal maybeRecoverInertAutopilot in tickIdleEntry. 2026-07-04: SLOW accumulation (84%→16% grind over hours; restart resets it) — root cause = recovery FAILS whenever decide() throws a (stackless fast-throw) NPE that hits live bots; exact line needs -XX:-OmitStackTraceInFastThrow, suspects = today's valuation/market commits feeding decide. DECIDE_POOL throughput + formation commit + handled mob-load ruled out as the driver. Added `idle` roster bucket + "possibly stuck" clickable filter
-- [project_bot_independence_infra.md](project_bot_independence_infra.md) — Big one: sell-trash + rare-keep, BotSpawnIndex/BotGrindPlanner/BotGrindAdvisor "where to grind", BotTravelManager multi-hop, BotAutopilotManager (solo/party/farm autopilot, resupply errands, death respawn, party transit), @botme/@botparty takeover; inventory hygiene
-- [kb_bot_maker_economy.md](kb_bot_maker_economy.md) — ETC-bag-jam root cause (maker mats kept unconditionally), recipe DB tables, 25 storage NPC ids, autoCompactIfCramped; full design docs/bot/autopilot-independence-audit.md
-- [kb_bot_navigation_architecture.md](kb_bot_navigation_architecture.md) — Bot nav graph/physics file:line map (line numbers stale; see kb_bot_nav_costs_and_anchors for current)
-- [kb_bot_map_partition_travel.md](kb_bot_map_partition_travel.md) — Partition-aware cross-map travel for SPLIT maps (down-jump-only platforms). Reachability SSOT = `BotNavigationGraph.canReach` (NOT a parallel SCC); this layer only composes it across maps as `(map, arrivalPortal)` BFS. BotMapPartition (per-arrival reachable-exit summary + shared portal-eligibility predicate) + BotWorldPartitionRouter + BotMapPartitionProvider (lazy write-through TSV, fullyConnected fallback). Wired additively into tickTravel; one-way deps, not folded into BotWorldGraph
-- [kb_bot_nav_costs_and_anchors.md](kb_bot_nav_costs_and_anchors.md) — A* edge cost model, anchor sampling, rope-grab AI-only, same-region portals, jump exec reuses edge launchStepX, forbidFallDown solid in grace, GRAPH_VERSION 47
-- [kb_bot_nav_oscillation_rootcauses.md](kb_bot_nav_oscillation_rootcauses.md) — 3 "bot stuck in a loop" oscillations + fixes: (1) rope-top down-key phantom DROP (DOWN grabs rope, not drops) → downKeyGrabsRope guard; (2) rope-bottom region dead-zone -1 → empty path → inAir+isGroundFarBelow gate; (3) GearArrow r45<->r42 ping-pong = position-dependent next-hop served from a position-blind, never-invalidated route cache → fix = commit ONE route per bot and follow it
-- [kb_bot_nav_selfloop_portal_unfollowable.md](kb_bot_nav_selfloop_portal_unfollowable.md) — ROOT CAUSE travel/job-advance frozen at `no-path`: optimal route needs an intra-region PORTAL self-loop (Kerning shortcut) the committed-follower can't traverse → computeCommittedRoute returns null → fallback caps & caches NO_EDGE. Fix: re-search a self-loop-portal-free walk route (excludeSelfLoopPortals flag, PORTAL_FREE_EDGE_CHECKS=640k). Note `/api/pathfind` diverges from live (seed 0 + portal allowed)
-- [kb_bot_empty_committed_route_replan.md](kb_bot_empty_committed_route_replan.md) — Empty committed routes are valid direct-walk plans; treating them as missing caused repeated `pathfind-committed` A* searches for same-region targets.
-- [kb_bot_cleric_heal_architecture.md](kb_bot_cleric_heal_architecture.md) — Bot heal/buff flow, packet encoding, WZ refs, formula call graph
-- [kb_bot_alert_stance_emulation.md](kb_bot_alert_stance_emulation.md) — 5s alert-pose emulation: alertedUntilMs + movementSnapshot stance swap
-- [kb_bot_attack_planning_flow.md](kb_bot_attack_planning_flow.md) — planAttack dispatch, hitbox sources by route, strike-point reach gate
-- [kb_v83_client_combat_internals.md](kb_v83_client_combat_internals.md) — Verified client facts (CMob::GetHitPoint, mob-rect = sprite lt/rb, projectilerange=400)
-- [kb_bot_swim_and_forbidfalldown.md](kb_bot_swim_and_forbidfalldown.md) — Swim-map physics + foothold/forbidFallDown drop gate; configurable swim Config; calibration TODO
-- [kb_bot_equip_optimizer.md](kb_bot_equip_optimizer.md) — Pareto-DP equip optimizer file:line map (autoEquip, OptimizerHooks, debug dump, trade-restore safety net)
-- [kb_bot_trade_dupe_loss_audit.md](kb_bot_trade_dupe_loss_audit.md) — Player→bot trade item-loss: bot tick keeps farming during open trade, races Trade.completeTrade addFromDrop
-- [kb_power_knockback_packet_structure.md](kb_power_knockback_packet_structure.md) — Power Knockback (3101003/3201003) is a melee swing on bow classes (0x2C/0xBA, WZ range=130); direction byte must be a swing body-action id; MOVE_LIFE knockback deferred
-- [kb_shadow_partner_and_pierce_skills.md](kb_shadow_partner_and_pierce_skills.md) — Iron Arrow/Avenger packet shape (plain ranged + mobCount cap); Shadow Partner doubles ranged numDamage; bulletConsume fix
-- [kb_bot_aoe_cluster_target_bias.md](kb_bot_aoe_cluster_target_bias.md) — Target selection subtracts per-mob cluster bonus when bot has aoeSkillId; radius 150, bonus 200/mob, capped at mobCount-1
-- [kb_bot_job_change_walk_to_npc.md](kb_bot_job_change_walk_to_npc.md) — Bot job advance walks to verified instructor for all explorer tiers (tier=id%10); SCRIPTED_ENTRANCES traversal; maybeStartOverdueJobAdvance re-trigger; JOB_CHANGE_FALLBACK_ANYWHERE default OFF
-- [kb_bot_job_errand_bagfull_ferry_deadlock.md](kb_bot_job_errand_bagfull_ferry_deadlock.md) — ROOT CAUSE ferry-board-fail loop forever: job errand's top DETOUR_ERRANDS priority starves the queued resupply errand, so a full ETC bag can never free up to buy the fare ticket; fix = DetourErrand.yieldForResupply escape valve
-- [kb_bot_oneway_map_and_fare_deadlocks.md](kb_bot_oneway_map_and_fare_deadlocks.md) — 2026-07-09 twin pile-ups: Leafre dock 240000110 = one-way map whose only graph exit was the ticket-gated ferry (fix: SCRIPTED_ENTRANCES dracoout row + ticketless walk-back-and-rebuy leg in tickBoarding); Amherst = fare-blocked job errand suppressing the very grinding that earns the fare + LOD1 abstract grind emits 0 kills on an unpredicted map (fix: fareBlockedRoute pause/yield). Audit rule: conditional (fare/ticket) edges count as ABSENT for trap audits
-- [kb_bot_quest_commitment_and_danger_targeting.md](kb_bot_quest_commitment_and_danger_targeting.md) — Three composing grind biases: map-bias in travelWeight, per-mob target-score terms (aoe/quest/touch-danger), SSOT activeQuestMobIds; BotDangerAssessment self-preservation
-- [kb_bot_skill_classification.md](kb_bot_skill_classification.md) — Skill classification SSOT predicates, non-duration-buff infinite-rebuff fix (getDuration()>0 gate), BotSkillClassificationExportTest dump
-- [kb_bot_aoe_reposition_before_fire.md](kb_bot_aoe_reposition_before_fire.md) — Bot defers single-target shot to step into cluster centroid when AoE beats fire-now DPS x1.5 (bounded chase); aoeRepositionTarget gate order
-- [kb_bot_chat_charset_ascii_only.md](kb_bot_chat_charset_ascii_only.md) — Bot chat is US-ASCII; non-ASCII renders as '?'. Use plain ASCII; sanitizeChat chokepoint logs+fixes corruption
-- [kb_bot_grind_gear_valuation.md](kb_bot_grind_gear_valuation.md) — Farm-target gear valuation: shield gate on 2H builds, crossSlotBar ensembles, weaponSpeedFactor DPS normalization
-- [kb_bot_slippery_ground_physics.md](kb_bot_slippery_ground_physics.md) — Packet-fitted kinetic slip model, snowshoe profile flag + graph keying, counter-strafe braking, MOVE_PLAYER vx semantics; GRAPH_VERSION 52
-- [kb_bot_downjump_eligibility.md](kb_bot_downjump_eligibility.md) — Down-jumps have NO drop-distance cap (300px was wrong, removed, GRAPH_VERSION 57); true rule unknown; see docs/bot/physics-client-audit.md §b
-- [kb_bot_inert_autopilot_recovery.md](kb_bot_inert_autopilot_recovery.md) — Managed bots idling in town = autopilot leaked OFF (autopilotMapId=-1) no recovery. Fix: maybeRecoverInertAutopilot self-heal + un-swallow decide catches + pickTownLoiterAnchor
-- [kb_bot_logout_loiter_unreachable_anchor.md](kb_bot_logout_loiter_unreachable_anchor.md) — ROOT CAUSE logout bot stuck for minutes (`nav=no-ai`, far script-task target): tickLogout was the only loiterAtAnchor caller hardcoding runAiTick=false, which blocks ALL edge exec → can't reach a cross-region town anchor. Fix = loiter with the live runAiTick like the other 3 callers (no mobs in safe towns, so it still won't fight)
-- [kb_bot_fetch_quests.md](kb_bot_fetch_quests.md) — Fetch quests: qualifiesFetch, QuestMeta.items, v4 cache, retrieveItemDroppers SSOT, effectiveTargetMobs/countsMet/activeQuestMobIds; grab-quest-before-departing fix
-- [kb_bot_thief_claw_dagger_split.md](kb_bot_thief_claw_dagger_split.md) — Thief splits claw(Assassin)/dagger(Bandit→Shadower) tied to planned 2nd job; dagger SP trees added; out-of-ammo bots forced to town to refill (isOutOfUsableAmmo)
-- [kb_bot_sleepywood_trap_return_scroll.md](kb_bot_sleepywood_trap_return_scroll.md) — Lv<15 bot trapped in Sleepywood: recovery = donated return-scroll rescue (escapeTrappedRegion) + prevention = grind-prune danger-blocked returnMaps; cache GRAPH_VERSION 2→3
-- [kb_bot_double_register_botpop_race.md](kb_bot_double_register_botpop_race.md) — botpop-on = DUPLICATE BotEntry per char (2 tick tasks → thrashing). Cause = non-atomic register racing fast-start sweeps. Fix = spawningBotIds claim + registryLock atomic publish + liveness guard
-- [kb_bot_coldstart_queststatus_fullscan.md](kb_bot_coldstart_queststatus_fullscan.md) — 5-min boot + mysqld pegged = queststatus FULL TABLE SCAN per bot char-load (254k rows, no index); fix = 028-perf-indexes.sql (cs28). NOT the WZ warm
-- [kb_bot_errand_progress_ssot.md](kb_bot_errand_progress_ssot.md) — BotTravelManager.ErrandProgress = SSOT no-progress deadline for all long-travel errands; begin/stalled/record/touch; refreshes on hop+active-travel so ferry waits don't trip it; replaced 3 wall-clock timers
-- [kb_bot_ranged_spacing_weapons.md](kb_bot_ranged_spacing_weapons.md) — All 4 ranged weapons retreat for spacing; freeze-next-to-mob bug was a MISSING anti-freeze (now unified RetreatGiveUp watchdog) + rope guard, NOT weapon type
-- [kb_bot_self_owned_owner_assumptions.md](kb_bot_self_owned_owner_assumptions.md) — Recurring bug class: owner-assumption code breaks for self-owned bots (owner==entry.bot); getBotEntries(owner.getId())=self-only trap; shareCandidateEntries crew SSOT
-- [../party-autopilot-redesign.md](../party-autopilot-redesign.md) — Staged redesign of party/crew autopilot to a single-source-of-truth `PartyAutopilotState` (kills the follower-drift bug class — plan was stored N times & fought to stay in sync). Stages 1-3 LANDED (plan SSOT; decision-dispatch seam + `decidesAsGroupMember` predicate; `DetourErrand` abstraction for job/quest/gacha). Stages 4-5 DEFERRED (owner's call): Stage 4 AutopilotState enum = TODO/handoff (70 grinding/following sites across untested combat/movement hot paths + semi-orthogonal; add characterization tests FIRST, then refactor; TODO marker at BotEntry.following); Stage 5 PlayerLedDecider deferred (needs execution-layer grind<->follow switch since following/grinding are separate modes). Note: literal solo-as-cohort-of-1 was deliberately dropped (solo has no drift; autopilotParty is load-bearing). Suite restored to green (49/0/0). Read this before touching party autopilot
-- [kb_live_values_view_cme_in_bot_ticks.md](kb_live_values_view_cme_in_bot_ticks.md) — Snapshot map characters to avoid ConcurrentModificationException on the grind hot path
-- [kb_save_throughput_and_deadlocks.md](kb_save_throughput_and_deadlocks.md) — **Char-save deadlock saga RESOLVED (2026-07-09)**: June's "parallel saves can't work" was wrong — root cause = missing `inventoryitems(accountid)` + 5 aux characterid indexes (full-scan lock sweeps), caught live via SHOW ENGINE INNODB STATUS; saves now batched (multi-row INSERT + equip select-back) + parallel (SAVE_GATE=6); ~870-bot shutdown 14s / 0 deadlocks (was 4-7 min); gotcha: rewriteBatchedStatements semicolon-joins large ODKU/REPLACE batches — batched SQL must not end with ';'
+- [`kb_bot_nav_oscillation_rootcauses.md`](kb_bot_nav_oscillation_rootcauses.md): recurring loop classes
+  and the builder/executor mismatches behind them.
+- [`kb_bot_map_partition_travel.md`](kb_bot_map_partition_travel.md): arrival-dependent reachability on
+  split maps.
+- [`kb_bot_swim_and_forbidfalldown.md`](kb_bot_swim_and_forbidfalldown.md) and
+  [`kb_bot_slippery_ground_physics.md`](kb_bot_slippery_ground_physics.md): special physics.
+- [`kb_bot_downjump_eligibility.md`](kb_bot_downjump_eligibility.md): down-jump evidence and limits.
+- [`kb_bot_nav_selfloop_portal_unfollowable.md`](kb_bot_nav_selfloop_portal_unfollowable.md),
+  [`kb_bot_empty_committed_route_replan.md`](kb_bot_empty_committed_route_replan.md), and
+  [`kb_bot_nav_search_scaling.md`](kb_bot_nav_search_scaling.md): planner/cache edge cases.
+- [`kb_bot_town_nav_airborne_target.md`](kb_bot_town_nav_airborne_target.md),
+  [`kb_bot_logout_loiter_unreachable_anchor.md`](kb_bot_logout_loiter_unreachable_anchor.md), and
+  [`kb_bot_sleepywood_trap_return_scroll.md`](kb_bot_sleepywood_trap_return_scroll.md): travel recovery.
 
-## Feedback (how to work on this fork)
+Do not copy a graph version from a KB note. The current value and full schema history live only in
+`BotNavigationGraphProvider.GRAPH_VERSION`.
 
-- [feedback_owner_features_gated_not_removed.md](feedback_owner_features_gated_not_removed.md) — Owner perks (item priority, supply sharing, walk-to-owner) are intended: gate on owner being a real ONLINE player, never remove
-- [feedback_subagent_model_tiering.md](feedback_subagent_model_tiering.md) — Subagent model by difficulty: sonnet straightforward, opus moderate/important, fable hardest only; escalate a tier on weak results
-- [feedback_micro_position_cheat_allowance.md](feedback_micro_position_cheat_allowance.md) — Scoped exception to intent-based-only: sub-tick micro-positioning may cheat when 50ms input granularity makes a humanly-legal maneuver bot-impossible (last resort)
-- [feedback_client_side_formulas_in_bot.md](feedback_client_side_formulas_in_bot.md) — Client-side formulas (damage rolls, cast stance bytes) go in bot code, never in StatEffect / damage handlers
-- [feedback_verify_ids_against_handbook.md](feedback_verify_ids_against_handbook.md) — Verify NPC/item/map IDs against handbook/NPC.txt etc., never guess
-- [feedback_wz_worktree_junction_hazard.md](feedback_wz_worktree_junction_hazard.md) — WZ wipe hazard: remove any inner wz junction with a non-recursive rmdir FIRST (CLAUDE.md rule #7)
-- [feedback_codex_mojibake.md](feedback_codex_mojibake.md) — Windows PowerShell mojibake trap: read Unicode repo docs as UTF-8 before copying patch context
+## Travel and errands
+
+- [`kb_bot_eventmanager_transit_rides.md`](kb_bot_eventmanager_transit_rides.md): scripted transit.
+- [`kb_bot_oneway_map_and_fare_deadlocks.md`](kb_bot_oneway_map_and_fare_deadlocks.md): conditional-edge
+  trap audit rules.
+- [`kb_bot_npc_dwell_walk_in_place.md`](kb_bot_npc_dwell_walk_in_place.md),
+  [`kb_bot_errand_dwell_clobber.md`](kb_bot_errand_dwell_clobber.md), and
+  [`kb_bot_errand_progress_ssot.md`](kb_bot_errand_progress_ssot.md): dwell/progress ownership.
+- [`kb_bot_npc_hop_hail_map_wide.md`](kb_bot_npc_hop_hail_map_wide.md) and
+  [`kb_bot_job_errand_bagfull_ferry_deadlock.md`](kb_bot_job_errand_bagfull_ferry_deadlock.md): transport
+  fallback and detour priority.
+- [`kb_bot_job_change_walk_to_npc.md`](kb_bot_job_change_walk_to_npc.md) and
+  [`kb_bot_fetch_quests.md`](kb_bot_fetch_quests.md): legal NPC/quest execution.
+
+## Combat, skills, and progression
+
+- [`kb_bot_cleric_heal_architecture.md`](kb_bot_cleric_heal_architecture.md): healing/buff path.
+- [`kb_bot_aoe_cluster_target_bias.md`](kb_bot_aoe_cluster_target_bias.md) and
+  [`kb_bot_aoe_reposition_before_fire.md`](kb_bot_aoe_reposition_before_fire.md): AoE selection.
+- [`kb_bot_ranged_spacing_weapons.md`](kb_bot_ranged_spacing_weapons.md) and
+  [`kb_bot_thief_claw_dagger_split.md`](kb_bot_thief_claw_dagger_split.md): ranged/no-ammo behavior.
+- [`kb_bot_quest_commitment_and_danger_targeting.md`](kb_bot_quest_commitment_and_danger_targeting.md):
+  quest and survival biases.
+- [`kb_bot_skill_classification.md`](kb_bot_skill_classification.md),
+  [`kb_bot_missing_class_sp_builds.md`](kb_bot_missing_class_sp_builds.md), and
+  [`kb_bot_passive_mp_hp_regen.md`](kb_bot_passive_mp_hp_regen.md): skill/build/recovery facts.
+- [`kb_bot_alert_stance_emulation.md`](kb_bot_alert_stance_emulation.md): alert presentation.
+
+## Items, economy, and trading
+
+- [`kb_bot_equip_optimizer.md`](kb_bot_equip_optimizer.md) and
+  [`kb_bot_grind_gear_valuation.md`](kb_bot_grind_gear_valuation.md): equipment decision seams.
+- [`kb_bot_use_value_shelf.md`](kb_bot_use_value_shelf.md): USE inventory tiers.
+- [`kb_bot_trade_dupe_loss_audit.md`](kb_bot_trade_dupe_loss_audit.md): open-trade concurrency hazards.
+
+## Population, social, and operations
+
+- [`kb_bot_player_party_social.md`](kb_bot_player_party_social.md): real-player party safeguards.
+- [`kb_bot_self_owned_owner_assumptions.md`](kb_bot_self_owned_owner_assumptions.md): ownership audit.
+- [`kb_bot_double_register_botpop_race.md`](kb_bot_double_register_botpop_race.md): population registry race.
+- [`kb_bot_inert_autopilot_recovery.md`](kb_bot_inert_autopilot_recovery.md): leaked-off autopilot,
+  recovery, and stuck classification.
+- [`kb_bot_ops_console.md`](kb_bot_ops_console.md) and
+  [`kb_bot_response_overlay.md`](kb_bot_response_overlay.md): operator/prompt surfaces.
+- [`kb_bot_chat_charset_ascii_only.md`](kb_bot_chat_charset_ascii_only.md): client text encoding.
+
+## Performance and persistence
+
+- [`kb_save_throughput_and_deadlocks.md`](kb_save_throughput_and_deadlocks.md): save batching and the
+  resolved InnoDB deadlock pattern.
+- [`kb_bot_cold_decide_gc_storm.md`](kb_bot_cold_decide_gc_storm.md) and
+  [`kb_bot_coldstart_queststatus_fullscan.md`](kb_bot_coldstart_queststatus_fullscan.md): boot warm-up.
+- [`kb_live_values_view_cme_in_bot_ticks.md`](kb_live_values_view_cme_in_bot_ticks.md): unsafe live-view
+  iteration.
+
+## Maintenance
+
+- Keep one file per reusable fact or tightly coupled failure class.
+- Remove commit ledgers, stale line numbers, completed checklists, live process state, and handoff text.
+- Correct an existing entry instead of appending a chronological correction trail.
+- Link stable symbols/files. Avoid duplicating large source tables or configuration defaults.
+- Describe unresolved facts as known limitations, not promises. Only `../ROADMAP.md` defines tasks.

@@ -9,14 +9,12 @@ metadata:
 
 Tactical borrow of SoloMapling's `MapleMessengerConsole` (MMC). A GM opens the Maple
 Messenger window and types `Console: <verb> <args>`; output renders back into the same
-window. Purpose: a quiet, scrollable dev pane separate from party/map chat. Full audit/plan
-rationale in `docs/bot/solomapling-audit.md` (line 56 tactical-borrow entry).
+window. Purpose: a quiet, scrollable dev pane separate from party/map chat.
 
 **Key finding:** the messenger window CANNOT replace our file-based debug. A 3-line chat pane
 is a low-bandwidth interactive channel; high-bandwidth structured dumps (`BotPathLogger` nav
 traces -> `logs/bot-nav/`, inv/scroll dumps) stay file-bound. The console is additive: a
-remote-control + live-summary layer that TRIGGERS file dumps and surfaces their paths. See
-[[kb_bot_navigation_architecture]].
+remote-control + live-summary layer that triggers file dumps and surfaces their paths.
 
 **Files (all new under server.bots):**
 - `BotOpsConsole.java` (public singleton) — `isConsoleLine()` prefix gate, `handle()` verb
@@ -46,5 +44,5 @@ decision ANNOUNCEMENTS only (per-tick nav trace + full grind scoring stay file-b
 console / single operator / one world. No dedicated `nav` verb — use `cmd !botnav`.
 
 Build verified BUILD SUCCESS (commit on branch `experimental`). Owner-feature gating philosophy
-unaffected (this is GM-gated dev tooling). Related: [[project_grind_advisor_perf]],
+unaffected (this is GM-gated dev tooling).
 [[kb_bot_response_overlay]].

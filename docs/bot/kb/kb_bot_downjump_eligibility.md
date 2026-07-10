@@ -22,7 +22,7 @@ still refuses a `forbidFallDown` source foothold; execution abandons edges that 
 
 Authoritative writeup + retraction: `docs/bot/physics-client-audit.md` §(b) (in git).
 Regression test: `BotNavigationGraphProviderTest#shouldConnectOrbisStationLowerLedgesToUpperPlatform`.
-Related: [[kb_bot_nav_costs_and_anchors]], [[kb_bot_navigation_architecture]], [[reference_reverse_engineering_toolkit]].
+Client reverse-engineering anchors are retained in `docs/bot/physics-client-audit.md`.
 
 RESOLVED separate gap (GRAPH_VERSION 58): mid-rope jump-grabs were missing. `canReachRopeFromGround`
 horizontal reach used the jump arc back to launch height only; a rope/ladder whose climbable span

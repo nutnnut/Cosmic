@@ -4,7 +4,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Pure math core of the living economy (docs/bot/living-economy-design.md sec 4-5).
+ * Pure math core of the living economy (docs/bot/economy.md).
  * No server dependencies; every function is deterministic and unit-testable.
  *
  * One update rule serves both belief owners (a bot's private book and the shared consensus):

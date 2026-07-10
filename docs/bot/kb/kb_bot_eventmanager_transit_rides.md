@@ -7,7 +7,7 @@ metadata:
   originSessionId: c525ecec-48bc-49d0-8a18-9d716d21ee2b
 ---
 
-Cross-map transports the WZ scan can't see (EventManager rides) are modeled as `FerryRoute`s in `BotFerryManager`, reusing the existing stateless boarding/transit machinery (`routesBoardingAt` → world-graph edge when `RouteOptions.withFerry()`; `TRANSIT_MAP_TO_ROUTE` → `tickTransit` waits on ride maps). Adding rows needs NO graph/cache bump (cache is pure-WZ, ferry edges re-added in memory). See [[kb_bot_navigation_architecture]], [[kb_bot_errand_progress_ssot]].
+Cross-map transports the WZ scan can't see (EventManager rides) are modeled as `FerryRoute`s in `BotFerryManager`, reusing the existing stateless boarding/transit machinery (`routesBoardingAt` → world-graph edge when `RouteOptions.withFerry()`; `TRANSIT_MAP_TO_ROUTE` → `tickTransit` waits on ride maps). Adding rows needs NO graph/cache bump (cache is pure-WZ, ferry edges re-added in memory). See [[kb_bot_errand_progress_ssot]].
 
 **Three boarding styles, dispatched in `tickBoarding` by route shape:**
 1. **ticket+gate** (existing ferries + KC↔NLC `Subway`): `ticketItemId!=0`. Buy ticket → usher → gate "entry" → board.

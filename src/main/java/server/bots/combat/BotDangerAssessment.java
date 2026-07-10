@@ -14,7 +14,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * (the player-matching contact-damage formula that already accounts for the bot's WDEF, job/level
  * standard PDD, and the mob's PAD). We only sample that roll and turn it into a hits-to-kill verdict.
  *
- * <p>Used by two consumers (kept non-redundant — see {@code docs/handoffs/05-self-preservation.md}):
+ * <p>Used by two consumers so danger scoring stays non-redundant:
  * <ul>
  *   <li>target selection — a soft scoring penalty that de-prioritizes touch-dangerous mobs for a
  *       fragile bot (never a hard skip, so the bot still fights if nothing safer exists);</li>

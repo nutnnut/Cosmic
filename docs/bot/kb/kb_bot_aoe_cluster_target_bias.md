@@ -41,5 +41,3 @@ If a future skill has reach significantly larger than 150 (or strike-point ancho
 ## When this might mislead
 
 The bonus is per-mob distance density — it doesn't know about footholds inside the cluster radius or whether mobs are actually reachable. If the cluster is on a foothold the bot can't reach, the bot will still aim toward it. The `!sameFoothold` and graph-path-cost penalties usually offset this, but worth keeping in mind when debugging.
-
-See also: [[kb-bot-attack-planning-flow]], [[kb-power-knockback-packet-structure]].

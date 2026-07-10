@@ -12,7 +12,7 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Layer 1 of the belief model (docs/bot/living-economy-design.md sec 4): the shared, damped,
+ * Layer 1 of the belief model (docs/bot/economy.md): the shared, damped,
  * robust per-item price statistic — the market's ambient "everyone roughly knows what this
  * costs". Computed by a periodic sweep over the ledger's recent window; never a price setter,
  * never read raw by bot decisions (only through BotMarketBook's noisy perception).

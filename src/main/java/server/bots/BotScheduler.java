@@ -16,13 +16,12 @@ import java.util.concurrent.ThreadLocalRandom;
 /**
  * Living-server population scheduler: every {@code POPULATION_SWEEP_MS} it logs managed bots in and
  * out so the online count tracks a target curve by server-local hour, biased by each bot's
- * {@link BotPersonality} (preferred hours + how often it plays). DEFAULT OFF
- * ({@code BotManager.cfg.POPULATION_SCHED_ENABLED}) — a server start never silently spawns a crowd.
+ * {@link BotPersonality} (preferred hours + how often it plays). The live default is controlled by
+ * {@code BotManager.cfg.POPULATION_SCHED_ENABLED} and exposed through the admin settings surface.
  *
  * <p>Decision math is the pure, tested {@link BotScheduleMath}; this class only does the IO (count
  * live bots, spawn/logout via {@link BotManager}). Safety: it only ever touches characters in the
- * {@code managed_bot} registry. Career turnover + auto-generation are a follow-up (P3b); this pass
- * tracks the curve over the existing managed pool and under-fills (logged) when the pool is short.
+ * {@code managed_bot} registry. Career turnover and bounded auto-generation refill a short pool.
  */
 public final class BotScheduler {
     private static final Logger log = LoggerFactory.getLogger(BotScheduler.class);

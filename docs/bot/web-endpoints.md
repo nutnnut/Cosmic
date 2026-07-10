@@ -113,7 +113,8 @@ Read-only per-bot autopilot internals for live debugging (party cohesion, follow
 ```
 
 ### `/api/killcalib`
-Read-only Stage 0 kill-rate calibration summary (unobserved-map LOD, `docs/bot/unobserved-lod-design.md` §5.0):
+Read-only kill-rate calibration summary for unobserved-map LOD; see
+[`living-server-design.md`](living-server-design.md):
 the aggregate measured-vs-predicted kill-rate ratio bucketed by `(jobId, level band)`, plus tracked-bot/sample
 totals. The durable store is `logs/bot-kill-calibration.tsv` (flushed every 60s, loaded on boot). `ratio` < 1
 means the advisor over-predicts kills/hr for that bucket; Stage 3 uses it as the correction factor.

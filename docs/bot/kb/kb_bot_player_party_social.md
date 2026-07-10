@@ -19,4 +19,4 @@ Four party-social surfaces between bots and real players (all in `server.bots`):
 
 **Familiarity tracking** — `BotFamiliarityManager` presence-diff sampler (30s TimerManager tick registered in `BotScheduler.start()`, ungated). Diffs live (bot,human) party pairs vs in-memory `sessionStart`: new pair→`party_count++`, ongoing→accrue `total_ms`, vanished→flush+drop. Self-heals on kick/disband/logout (sample sees changed membership; no event hooks). Table `bot_player_familiarity` (Liquibase cs30, `030-bot-familiarity.sql`). Getter `familiarity(botId,playerId)` for FUTURE greet-as-known system (NOT built yet — data only).
 
-Tests: `BotSocialPartyChatTest` (alias matching + key roundtrip). Gated by `SOCIAL_PARTY_ENABLED`/`SOCIAL_INVITE_PLAYERS`. See [[project_bot_independence_infra.md]], [[kb_bot_self_owned_owner_assumptions.md]].
+Tests: `BotSocialPartyChatTest` (alias matching + key roundtrip). Gated by `SOCIAL_PARTY_ENABLED`/`SOCIAL_INVITE_PLAYERS`. Ownership details are in `kb_bot_self_owned_owner_assumptions.md`.

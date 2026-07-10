@@ -17,7 +17,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * Stage 0 of the unobserved-map LOD design (docs/bot/unobserved-lod-design.md §2.3, §5.0):
+ * Kill-rate calibration for unobserved-map LOD (docs/bot/living-server-design.md):
  * permanent kill-rate calibration instrumentation. While a bot grinds at full fidelity it kills
  * real mobs through the shared damage handlers; here we observe those kills and compare the
  * <em>measured</em> rate against the {@link BotGrindPlanner#killsPerHour} prediction the advisor

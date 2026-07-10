@@ -212,16 +212,14 @@ public class BotManager {
         public double POPULATION_MULTIPLIER = 10.0;        // scales the whole online target up/down, so bot
                                                            // count is adjustable without editing the curve/noise
 
-        // Unobserved-map LOD (docs/bot/unobserved-lod-design.md): when no real player can observe a bot,
+        // Unobserved-map LOD (docs/bot/living-server-design.md): when no real player can observe a bot,
         // simplify its simulation. Each subsystem's simplification is an independent boolean so any one
         // can be bisected/disabled live (all default true; all false => bit-for-bit today's behavior).
-        // NOTE (through Stage 2): _PHYSICS (§2.1 motion-plan movement) and _TRAVEL (§2.2 timed warps) are
-        // live. _GRIND (§2.3 abstract combat) is Stage 3. _CADENCE (the 50ms->500ms retask) stays gated OFF
-        // until Stage 3: LOD1 bots still fight for real in Stage 2, so 500ms would 10x-slow their combat
-        // (see cadenceForLod).
-        public boolean SIMPLIFY_UNOBSERVED_BOTS_PHYSICS = true;  // §2.1 motion-plan movement instead of physics/nav
-        public boolean SIMPLIFY_UNOBSERVED_BOTS_TRAVEL = true;   // §2.2 timed warps instead of executed hops
-        public boolean SIMPLIFY_UNOBSERVED_BOTS_GRIND = true;    // §2.3 abstract kill events instead of real combat
+        // All four paths are implemented. The cadence gate shares abstractGrindEligible so a bot that
+        // still needs real combat cannot accidentally receive coarse LOD1 ticks.
+        public boolean SIMPLIFY_UNOBSERVED_BOTS_PHYSICS = true;  // motion-plan movement instead of physics/nav
+        public boolean SIMPLIFY_UNOBSERVED_BOTS_TRAVEL = true;   // timed warps instead of executed hops
+        public boolean SIMPLIFY_UNOBSERVED_BOTS_GRIND = true;    // abstract kill events instead of real combat
         public boolean SIMPLIFY_UNOBSERVED_BOTS_CADENCE = true;  // the 50ms->500ms tick retask itself
         // LOD1 coarse tick interval (ms) and the player-free hysteresis before a LOD0->LOD1 downgrade.
         public int LOD1_TICK_MS = 500;
@@ -292,7 +290,7 @@ public class BotManager {
         // gachapon, chasing uniques by expected value. Kill switch + the spend knobs, all visible.
         public boolean GACHAPON_ENABLED = true;
         // Living-economy free-market sessions: autopilot bots with sellable surplus open real
-        // hired-merchant stalls in FM rooms and browse others' (docs/bot/living-economy-design.md).
+        // hired-merchant stalls in FM rooms and browse others' (docs/bot/economy.md).
         public boolean FM_MARKET_ENABLED = true;
         // Chance a townside rest break pops into the free market to browse/hang out even with nothing
         // to sell - the FM is ~1 hop from most towns, so idle bots congregating there make the market
@@ -858,7 +856,7 @@ public class BotManager {
         return false;
     }
 
-    // === Unobserved-map LOD (docs/bot/unobserved-lod-design.md §1, Stage 1 substrate) ===
+    // === Unobserved-map LOD (docs/bot/living-server-design.md) ===
 
     // Per-mapId cache of portal-neighbor map ids (BotWorldGraph portal adjacency, resolved once).
     private static final Map<Integer, int[]> lodNeighborCache = new ConcurrentHashMap<>();
@@ -5465,7 +5463,7 @@ public class BotManager {
         // Sentry/farm-here is an active combat mode that just anchors to a fixed spot.
         // Route through the shared active-mode reset so it stays in lock-step with
         // grind/patrol (self-buff, pot-share, ammo-low, "low on pots" fallback all
-        // gate on entry.grinding — see kb feedback_bot_coding_guidelines).
+        // gate on entry.grinding).
         enterActiveMode(entry);
         entry.farmAnchor = new Point(dest);
         entry.farmAnchorMapId = entry.bot.getMapId();
@@ -6743,7 +6741,7 @@ public class BotManager {
      * tick: it is grounded and in no state that runs a raw physics integrator (air/climb/swim/fidget)
      * or a separate movement path (trade/market/ferry/FM/gacha errand, operator command). Those stay
      * on real physics so the lerp never corrupts them — and, in Stage 2's cadence gate, keep the bot at
-     * 50ms. (docs/bot/unobserved-lod-design.md §2.1.)
+     * 50ms. (docs/bot/living-server-design.md.)
      */
     private boolean lod1MotionPlanCovered(BotEntry entry) {
         if (entry == null || entry.lod != BotEntry.Lod.LOD1) {

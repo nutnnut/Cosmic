@@ -27,8 +27,9 @@ import server.bots.BotMarketLedger.EventKind;
  * <p><b>v1 is EQUIP-scoped.</b> Equips carry real per-piece willingness-to-pay
  * ({@link BotScrollManager#equipBuyCeilingMeso}) and willingness-to-sell
  * ({@link BotScrollManager#equipMarketQuote}), so no parallel pricing is needed — and the design's own
- * examples (glove / ilbis / fish spear) are all equips. Consumable/stack shout-trading is a later
- * slice. Every item and meso movement rides {@code Trade}'s staged-debit + refund-on-cancel path, and
+ * examples (glove / ilbis / fish spear) are all equips. TODO(bot-stack-shout-trade): add
+ * quantity-aware consumable/stack trading. Every item and meso movement rides {@code Trade}'s
+ * staged-debit + refund-on-cancel path, and
  * each side locks only after it has both staged its own side and validated the partner's, so a
  * declined or timed-out window never dupes or loses (invariant 5).
  */

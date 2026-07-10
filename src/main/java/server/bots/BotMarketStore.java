@@ -15,7 +15,7 @@ import java.util.Map;
 
 /**
  * Persistence for the two belief layers (tables {@code bot_market_belief} /
- * {@code bot_market_consensus}, docs/bot/living-economy-design.md sec 12). Same DAO pattern as
+ * {@code bot_market_consensus}, docs/bot/economy.md). Same DAO pattern as
  * {@link ManagedBotService}. Prices survive restarts; no ledger replay needed at boot.
  */
 public final class BotMarketStore {

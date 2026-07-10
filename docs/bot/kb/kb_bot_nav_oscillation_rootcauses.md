@@ -467,5 +467,4 @@ keeps dodge behavior. Regression: `BotMovementManagerTest.shouldNotMobDodgeWhile
   `BotRegion11ForkOscillationTest` (synthetic region-11 fork, #5/#5b),
   `BotHenesysDeptStoreDescentTest` (WZ-backed 100000102 descent, #9/#10).
 
-Related: [[kb_bot_nav_costs_and_anchors]], [[kb_bot_downjump_eligibility]],
-[[kb_bot_town_nav_airborne_target]], [[kb_bot_navigation_architecture]].
+Related: [[kb_bot_downjump_eligibility]], [[kb_bot_town_nav_airborne_target]].

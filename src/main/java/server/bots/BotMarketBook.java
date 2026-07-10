@@ -8,7 +8,7 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Layer 2 of the belief model (docs/bot/living-economy-design.md sec 4): one bot's private,
+ * Layer 2 of the belief model (docs/bot/economy.md): one bot's private,
  * imperfect view of prices. Blends the bot's own observations with a noisy, seeded sample of the
  * shared consensus; personal experience outweighs hearsay as confidence grows.
  *

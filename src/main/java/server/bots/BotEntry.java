@@ -29,7 +29,7 @@ public class BotEntry {
 
     final Character bot;
     volatile Character owner;
-    // TODO(party-autopilot-stage4): `following` + `grinding` (line ~114) + the autopilot sub-flags
+    // TODO(bot-party-autopilot-stage4): `following` + `grinding` (line ~114) + the autopilot sub-flags
     // (autopilotTransitFollow/autopilotCohortMember/autopilotWaitAnchor) are a scattered boolean soup
     // (~70 sites, 10 files incl. combat/movement hot paths). High reward (this shape caused the
     // sentry-mode grinding=false regression) but DEFERRED: do NOT enum-ify blind — those hot paths have
@@ -43,7 +43,7 @@ public class BotEntry {
     // Reassignable so the unobserved-LOD cadence switch (BotManager.retask) can cancel this task and
     // re-register at a coarser interval. Every register/removal path treats it as the one live task.
     ScheduledFuture<?> task;
-    // Level-of-detail (unobserved-map LOD, docs/bot/unobserved-lod-design.md). LOD0 = today's full
+    // Level-of-detail (unobserved-map LOD, docs/bot/living-server-design.md). LOD0 = today's full
     // 50ms fidelity; LOD1 = coarse/unobserved. Computed per tick in BotManager.updateLod. Stage 1
     // wires the field + hysteresis but does NOT change behavior (cadence stays 50ms; §5 stage 1).
     enum Lod { LOD0, LOD1 }
@@ -54,7 +54,7 @@ public class BotEntry {
     // Current TimerManager tick interval (ms). Set at registration; retask() compares against the
     // desired cadence so a no-op retask is skipped.
     int tickIntervalMs = 0;
-    // LOD1 motion plan (unobserved-map movement, docs/bot/unobserved-lod-design.md §2.1). While
+    // LOD1 motion plan (unobserved-map movement, docs/bot/living-server-design.md). While
     // unobserved the bot's in-map position is NOT physics-integrated; it lerps along (from->to) by
     // wall clock. motionTo == null means no active plan (idle in place at the current spot). Frozen
     // when a bot drops to LOD1; cleared/re-materialized when a real player observes it (§4).
@@ -609,7 +609,7 @@ public class BotEntry {
     long npcDwellUntilMs = 0L;
     // Client-side alert-stance emulation: when currentTimeMillis < alertedUntilMs the bot's
     // broadcast stance gets STAND→ALERT substituted so observers see the alert pose.
-    // Mirrors CharLook::alerted (TimedBool, 5000ms) in maplestory-wasm. Absolute reset on each
+    // Mirrors the client's 5000ms alerted state. Absolute reset on each
     // trigger (attack/hit/heal/buff), never additive.
     long alertedUntilMs = 0L;
     // Debounce flag for the scheduled stance-reset callback in BotCombatManager.markAlerted.

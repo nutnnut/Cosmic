@@ -44,7 +44,7 @@ Fixed on dev: `3230e69e7` (ferry) + `d3c8c599e` (job errand).
   0; (b) errand policy (JOB_CHANGE_FALLBACK_ANYWHERE off) suppresses grinding forever while
   committed — exactly the income that would unblock it; (c) standing on a map with NO advisor
   prediction, LOD1 abstract grind emits 0 kills (`calibratedKillsPerHour`=0 -> 5s idle re-check
-  loop), so meso stays 0. Dozens of lv8-30 bots, ERROR-spamming the log (perf handoff open item 3).
+  loop), so meso stays 0. Dozens of lv8-30 bots were observed ERROR-spamming the log.
 - Fix: `fareBlockedRoute` (route null with current meso but non-null with MAX meso) -> pause the
   errand 4-8 min jittered (`jobErrandFareRetryAtMs`, gate in `beginJobErrand`) and release the tick
   to grind; the retry re-checks the wallet. Genuinely unroutable instructors keep stay-committed.
