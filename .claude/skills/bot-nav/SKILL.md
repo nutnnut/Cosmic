@@ -53,15 +53,22 @@ diagnosing a new stuck bot — most "new" stucks are a known class.
 ## Live debugging workflow (server up, port 8089, no auth)
 
 Route list SSOT: `createContext(...)` in `BotWorldGraphWebServer.start()`; docs in
-`docs/bot/web-endpoints.md`. Prefer these over log-scraping.
+`docs/bot/web-endpoints.md`. Prefer these over log-scraping. Query with exactly
+`curl -s http://localhost:8089/api/...` — the read-only endpoints in that form are pre-allowlisted
+in `.claude/settings.json` (no permission prompt); other hosts/forms and the state-changing
+endpoints (`/api/command`, `/api/settings`, `/api/lod`, `/api/spawnbot`) still prompt.
+Shortcut: `tools/bot_triage.ps1 <botName>` bundles steps 0's status read, the botdebug detail and
+the map's mapinfo into one report (add `-X <x> -Y <y>` to append a navprobe).
 
 0. **Rule out a non-nav state first**: read the bot's `status` line in `/api/botdebug` before any
    pathlog. `grinding=true` with zero kills is usually a LEGAL idle — personality break
    (`breakUntilMs`), party idle-leech (`idleLeech`), ferry/station wait, errand — not a stuck.
    These states suppress combat on top of grind mode; the LOD abstract grind mirrors them
    (`kb_bot_lod_abstract_grind_calibration.md`).
-1. **Capture a pathlog**: `GET /api/bot/pathlog?id=<charId>` toggles the recorder; the file lands
-   in `logs/bot-nav/pathlog-<name>-<ts>.txt`. Get charId from `/api/live` (search by name) or
+1. **Capture a pathlog**: `tools/bot_pathlog.ps1 <botName>` does the whole dance (resolve charId
+   by name, attach recorder, wait ~8s, dump + print). Manual form: `GET /api/bot/pathlog?id=<charId>`
+   toggles the recorder (two calls ≥6s apart); the file lands in
+   `logs/bot-nav/pathlog-<name>-<ts>.txt`. Get charId from `/api/live` (search by name) or
    `/api/botdebug` (filters by `?id=` only, NOT `?name=`).
 2. **Read the header first**:
    - `Graph:` line — `exact` / `closest ... requestedSpeed=X` / `none/warming` +
