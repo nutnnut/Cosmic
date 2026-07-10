@@ -87,10 +87,13 @@ passive-loot range).
 
 Paired pinned-map run (14 maps, 5-min windows): **median bias 1.00x** (range 0.88–1.28, n=5 joined),
 AoE median 0.93 vs single-target 1.03 — no class inversion, no floor cluster, no zero-kill cluster in
-the abstract arm. Residual known bias: a bot that is *broken at LOD0* (stuck/nav, kills nothing for
-minutes while `grinding`) still earns the modeled rate abstractly — LOD models a working grinder;
-fix the stuck bot, not the model. The audit tool warns about zero-kill stable grinders in both arms
-to surface exactly these.
+the abstract arm. The zero-kill "stuck" bots that run turned up were mostly LEGAL idles riding on
+grind mode — personality breaks and party idle-leech — which real combat respects but the abstract
+grind originally ignored (farming 24/7 at the modeled rate). `tickAbstractGrind` now rolls the same
+break decisions and grants nothing while `onBreak`/`idleLeech`. Residual known bias: a bot genuinely
+*broken at LOD0* (nav-stuck while `grinding`) still earns the modeled rate abstractly — LOD models a
+working grinder; fix the stuck bot, not the model. The audit tool warns about zero-kill stable
+grinders in both arms to surface exactly these.
 
 Known imperfection: `/api/killcalib` bucket ratios spread wide (typically 0.2–0.7; isolated extremes
 like 14.6x for one bandit band with many samples). The bucket cancels model error *on average per

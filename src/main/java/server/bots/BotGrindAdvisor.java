@@ -426,6 +426,17 @@ final class BotGrindAdvisor {
     /** The single-map candidate behind {@link #modeledKillsPerHour}, or null when the model cannot
      *  answer. */
     private static MobCandidate modeledCandidate(BotEntry entry, Character bot, int mapId) {
+        Map<MobProfile, Integer> pointsByMob = profilePointsFor(entry, bot, mapId);
+        if (pointsByMob == null || pointsByMob.isEmpty()) {
+            return null;
+        }
+        BotSpawnIndex.MapSpawns map = BotSpawnIndex.get().byMap().get(mapId);
+        return blendCandidate(mapId, mapName(mapId), map.areaPx(), pointsByMob);
+    }
+
+    /** Per-mob (profile → spawn points) for one map, or null when the model cannot answer (caches not
+     *  warm, town/instanced map, no grindable spawn). Shared by the modeled rate and its debug view. */
+    private static Map<MobProfile, Integer> profilePointsFor(BotEntry entry, Character bot, int mapId) {
         if (!isWarm()) {
             return null; // never pay the cold WZ scan on a tick thread; the caller re-checks shortly
         }
@@ -441,10 +452,56 @@ final class BotGrindAdvisor {
                 pointsByMob.put(p, e.getValue());
             }
         }
-        if (pointsByMob.isEmpty()) {
-            return null;
+        return pointsByMob;
+    }
+
+    /**
+     * JSON decomposition of the abstract-grind rate model for {@code bot} on its CURRENT map — the
+     * measured-vs-model debugging surface behind {@code /api/grindmodel} (a wildly wrong calibration
+     * bucket means one of these components is wrong for that bot's context; this shows which).
+     */
+    static String modelDebugJson(BotEntry entry, Character bot) {
+        int mapId = bot.getMapId();
+        StringBuilder sb = new StringBuilder(512);
+        sb.append("{\"botId\":").append(bot.getId())
+                .append(",\"mapId\":").append(mapId)
+                .append(",\"level\":").append(bot.getLevel())
+                .append(",\"jobId\":").append(bot.getJob() != null ? bot.getJob().getId() : 0)
+                .append(",\"warm\":").append(isWarm());
+        Map<MobProfile, Integer> pointsByMob = profilePointsFor(entry, bot, mapId);
+        if (pointsByMob == null || pointsByMob.isEmpty()) {
+            return sb.append(",\"modelKph\":0,\"reason\":\"no grindable spawn / town / cold caches\"}")
+                    .toString();
         }
-        return blendCandidate(mapId, mapName(mapId), map.areaPx(), pointsByMob);
+        BotSpawnIndex.MapSpawns map = BotSpawnIndex.get().byMap().get(mapId);
+        MobCandidate c = blendCandidate(mapId, mapName(mapId), map.areaPx(), pointsByMob);
+        double kph = BotGrindPlanner.killsPerHour(c);
+        double seek = BotGrindPlanner.seekSeconds(c.mapAreaPx(), c.spawnPoints());
+        sb.append(",\"modelKph\":").append(Math.round(kph))
+                .append(",\"blendKillSeconds\":").append(Math.round(c.killSeconds() * 10) / 10.0)
+                .append(",\"seekSeconds\":").append(Math.round(seek * 10) / 10.0)
+                .append(",\"spawnPoints\":").append(c.spawnPoints())
+                .append(",\"areaPx\":").append(c.mapAreaPx())
+                .append(",\"supplyKph\":")
+                .append(Math.round(c.spawnPoints() * 3600.0 / BotGrindPlanner.RESPAWN_PERIOD_SECONDS))
+                .append(",\"attackCycleSeconds\":").append(ATTACK_CYCLE_SECONDS)
+                .append(",\"mobs\":[");
+        boolean first = true;
+        for (Map.Entry<MobProfile, Integer> e : pointsByMob.entrySet()) {
+            MobProfile p = e.getKey();
+            if (!first) {
+                sb.append(',');
+            }
+            first = false;
+            sb.append("{\"mobId\":").append(p.mobId())
+                    .append(",\"name\":\"").append(p.mobName().replace("\"", "'")).append('"')
+                    .append(",\"level\":").append(p.level())
+                    .append(",\"points\":").append(e.getValue())
+                    .append(",\"killSeconds\":").append(Math.round(p.killSeconds() * 10) / 10.0)
+                    .append(",\"rawKillSeconds\":").append(Math.round(p.rawKillSeconds() * 10) / 10.0)
+                    .append('}');
+        }
+        return sb.append("]}").toString();
     }
 
     /** Two-sided level-band admission for a candidate mob: [level-DOWN, level+UP] with a CONSTANT

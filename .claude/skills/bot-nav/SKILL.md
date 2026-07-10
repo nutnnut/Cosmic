@@ -55,6 +55,11 @@ diagnosing a new stuck bot — most "new" stucks are a known class.
 Route list SSOT: `createContext(...)` in `BotWorldGraphWebServer.start()`; docs in
 `docs/bot/web-endpoints.md`. Prefer these over log-scraping.
 
+0. **Rule out a non-nav state first**: read the bot's `status` line in `/api/botdebug` before any
+   pathlog. `grinding=true` with zero kills is usually a LEGAL idle — personality break
+   (`breakUntilMs`), party idle-leech (`idleLeech`), ferry/station wait, errand — not a stuck.
+   These states suppress combat on top of grind mode; the LOD abstract grind mirrors them
+   (`kb_bot_lod_abstract_grind_calibration.md`).
 1. **Capture a pathlog**: `GET /api/bot/pathlog?id=<charId>` toggles the recorder; the file lands
    in `logs/bot-nav/pathlog-<name>-<ts>.txt`. Get charId from `/api/live` (search by name) or
    `/api/botdebug` (filters by `?id=` only, NOT `?name=`).

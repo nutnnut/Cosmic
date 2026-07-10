@@ -6872,6 +6872,22 @@ public class BotManager {
             return;
         }
         long now = System.currentTimeMillis();
+        // The same personality/group break rolls the real grind path makes, so an unobserved bot keeps
+        // its farm/idle ratio instead of farming 24/7. On a break — or while a party level-gap
+        // idle-leech suppresses all damage — a real bot kills nothing, so the abstract grind must grant
+        // nothing either. (Measured live: an idle-leech bot at 0 real kills/hr was being granted the
+        // full modeled rate while unobserved.) A rest break that wants a town trip sets restErrand,
+        // which drops the bot out of abstract eligibility into the real errand path on its own.
+        if (!isRealPlayerTakeover(entry) && !BotAutopilotManager.maybeStartGroupBreak(entry, bot)) {
+            BotBreakManager.maybeStartBreak(entry, bot, now);
+        }
+        if (BotBreakManager.onBreak(entry, now) || entry.idleLeech) {
+            entry.nextAbstractKillAtMs = 0L; // re-arm fresh on resume; no kill accrues across the pause
+            return;
+        }
+        if (entry.breakUntilMs != 0L) {
+            BotBreakManager.endBreak(entry, bot); // break just elapsed -> clear + resume
+        }
         double kph = calibratedKillsPerHour(entry, bot);
         if (kph <= 0) {
             // Neither measured nor modelable for this spot (caches cold, or nothing grindable here):
