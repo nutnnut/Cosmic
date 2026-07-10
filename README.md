@@ -3,6 +3,18 @@ Cosmic is a server emulator for Global MapleStory (GMS) version 83.
 
 ## This fork's custom features (check config.yaml)
 - BOTS, I know you are here because of my AI companion bots :) check [README_SERVER_BOTS.md](README_SERVER_BOTS.md)
+
+### Client WZ (market icons)
+The bot web market view (`http://<server>:8089/market`) shows real item sprites only when binary
+client WZs are present — the repo's `wz/` XML dump has the image data stripped. To light them up:
+1. Copy `Character.wz` and `Item.wz` from a game client into `wz-client/` (gitignored, ~2.5 GB).
+2. Run `powershell -ExecutionPolicy Bypass -File tools\extract_item_icons.ps1` — it uses
+   [HaRepacker-resurrected](https://github.com/lastbattle/Harepacker-resurrected)'s `MapleLib.dll`
+   (default path `D:\GameServers\Maplestory\tools\WZharepackerx86`; install HaRepacker there if
+   missing) to extract icons for every item id the v83 server knows into
+   `src/main/resources/web/item-icons/` (also gitignored).
+3. `mvn package` and restart the server — icons are served from the jar classpath
+   (`/api/market/icon`). Without them the page falls back to placeholder tiles.
 - Scroll Success Bonus: adds a flat bonus % to all scroll success chances
 - Maker Skills: Black/Dark crystal only improves stats and never decreases
 - Godly Stats: chance for equipment to receive random bonus stats (like free-pre-applied chaos scroll, inspired by MapleRoyals)

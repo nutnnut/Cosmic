@@ -5,6 +5,10 @@
 wz/*
 /wz/*
 /wz
+# Binary client WZs (Character.wz/Item.wz) + the icons extracted from them for the /market web view.
+# See README "Client WZ (market icons)": tools/extract_item_icons.ps1 regenerates the icons.
+/wz-client/
+/src/main/resources/web/item-icons/
 /target
 
 # build files
