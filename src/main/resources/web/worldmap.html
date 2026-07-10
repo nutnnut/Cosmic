@@ -529,7 +529,7 @@ function renderRoster(){
   }
   let filt = items;
   // "possibly stuck" = server-side wedge detector (c.stuck reason: can't-find-grind trap /
-  // travel give-up cooldown / inert-autopilot leak) — broader than the old a==='idle' bucket.
+  // inert-autopilot leak) — broader than the old a==='idle' bucket.
   if(stuckOnly) filt = filt.filter(it => it.bot && it.c.stuck);
   if(query) filt = filt.filter(it => it.c.n.toLowerCase().includes(query));
   // managed = self-owned/ownerless bots (commandable, c=1); companion = bots following an online owner
@@ -541,7 +541,7 @@ function renderRoster(){
     if(it.c.a==='chill') chilling++; else if(it.c.a==='idle'){} else if(it.c.a==='break') onBreak++; else grinding++;
   }
   const head = ((query||stuckOnly) ? filt.length+' shown · ' : '') + players + ' online + ' + managed + ' managed + ' + companion + ' companion';
-  const stuckHtml = '<span onclick="toggleStuck()" title="wedged bots: can\'t find anywhere to grind, travel in give-up cooldown, or autopilot leaked off — click to filter (hover a row for the reason)" style="cursor:pointer;text-decoration:underline;color:'
+  const stuckHtml = '<span onclick="toggleStuck()" title="wedged bots: can\'t find anywhere to grind or autopilot leaked off — click to filter (hover a row for the reason)" style="cursor:pointer;text-decoration:underline;color:'
     + (stuck?'#ff6b6b':'#8a94a6') + (stuckOnly?';font-weight:bold':'') + '">' + stuck + ' possibly stuck</span>';
   const breakdown = (managed+companion)
     ? grinding+' grinding · '+onBreak+' taking a break · '+chilling+' just chilling · '+stuckHtml : '';

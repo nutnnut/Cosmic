@@ -1220,6 +1220,7 @@ public class BotManager {
      */
     private void sweepZombieBotCharacters() {
         long now = System.currentTimeMillis();
+        java.util.Set<Integer> onlineBotIds = new java.util.HashSet<>();
         for (net.server.world.World w : net.server.Server.getInstance().getWorlds()) {
             for (net.server.channel.Channel ch : net.server.Server.getInstance().getChannelsFromWorld(w.getId())) {
                 for (Character chr : ch.getPlayerStorage().getAllCharacters()) {
@@ -1227,6 +1228,7 @@ public class BotManager {
                         continue;
                     }
                     int id = chr.getId();
+                    onlineBotIds.add(id);
                     if (getEntryByBotCharId(id) != null || spawningBotIds.contains(id)) {
                         zombieSuspectSinceMs.remove(id);
                         continue;
@@ -1242,6 +1244,9 @@ public class BotManager {
                 }
             }
         }
+        // A suspect can disconnect normally during its grace window and disappear from every storage.
+        // Without pruning, those one-shot IDs accumulate for the process lifetime.
+        zombieSuspectSinceMs.keySet().removeIf(id -> !onlineBotIds.contains(id));
     }
 
     private static void evictZombieBotCharacter(net.server.world.World w, net.server.channel.Channel ch, Character chr) {

@@ -8,6 +8,12 @@ Durable facts from the 2000-bot perf push. Session state + resume point:
 - **Stages 0+1** = observer substrate + kill calibration, behaviorally **INERT** (label only).
 - **Stage 2** = LOD1 motion-plan movement (skip per-tick nav/physics) + cross-map timed warps +
   observation transitions + Y-band gate. Cadence still 50ms; combat still real.
+- **2026-07-10 live stuck fix:** an active LOD1 timed portal hop must not run the LOD0 physical-walk
+  deadline before its modeled dwell. The fixed position made the approach deadline expire during the
+  ~25s dwell, after which autopilot's deadline escape took a different portal and could loop between
+  maps (live: Reed, Ghost Ship 3 -> 4 while targeting Ghost Ship 2). `tickTravel` now skips only that
+  inapplicable deadline for LOD1 timed portal hops; closed portals and script/landing failures still
+  use the normal give-up path. Regression: `lod1TimedPortalHopOutlivesPhysicalWalkDeadline`.
 - **Stage 3 slice 1 = BUILT** (`1ef845878`): abstract grind + the 500ms cadence flip = the ~10× wakeup
   win. A covered unobserved (LOD1) grinder stops real combat/nav and emits calibrated kills via
   `MapleMap.damageMonster` (exp/drops/quests/spawn bookkeeping full-fidelity), then drops to 500ms.

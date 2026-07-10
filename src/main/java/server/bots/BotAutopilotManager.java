@@ -1188,13 +1188,9 @@ final class BotAutopilotManager {
                 && (reason.startsWith("no reachable grind spot") || reason.startsWith("decide failed"))) {
             return "can't find anywhere to grind";
         }
-        // Travel to its current destination is inside a give-up cooldown: it tried, failed
-        // (deadline/portal), and is deliberately not retrying yet. Often self-heals on retry, but a
-        // repeat offender sits here most of the time — exactly the "possibly" in possibly stuck.
-        if (System.currentTimeMillis() < entry.followTravelGiveUpUntilMs) {
-            String why = entry.followTravelGiveUpReason;
-            return "travel gave up (" + (why != null ? why : "unknown") + ")";
-        }
+        // A travel give-up cooldown is deliberately transient and cannot establish a wedge. The bot may
+        // legally wait (ferry), retry, or take a different hop while the old destination-scoped cooldown
+        // remains set. Live sampling showed those bots moving across maps while falsely flagged here.
         // Inert-autopilot leak (the original possibly-stuck bucket, kb_bot_inert_autopilot_recovery).
         if ("idle".equals(activityCategory(entry, bot))) {
             return "autopilot leaked off";

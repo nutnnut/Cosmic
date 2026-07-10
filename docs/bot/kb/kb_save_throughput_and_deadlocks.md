@@ -54,8 +54,10 @@ JDBC harness numbers (150 items + 50 equips per save, localhost):
    recovered by a select-back on `(inventorytype, position)` (NOT `getGeneratedKeys()`: a rewritten
    batch's keys may interleave under `innodb_autoinc_lock_mode=2`). Slot uniqueness holds for char
    inventories; raw lists (STORAGE/DUEY) fall back to the legacy per-row path on collision.
-3. **`rewriteBatchedStatements=true`** in DatabaseConnection. Audited: no caller reads
-   getGeneratedKeys off a batch. **Gotcha (cost a debugging round):** batches the driver can't
+3. **`rewriteBatchedStatements=true`** in DatabaseConnection. Audited: no concurrent server save path
+   reads generated keys from a batch. The offline `CodeCouponGenerator` does, but runs serial unique
+   inserts where Connector/J's contiguous-key inference is sufficient; do not generalize that pattern
+   to concurrent attachment writes. **Gotcha (cost a debugging round):** batches the driver can't
    VALUES-rewrite (`INSERT..ON DUPLICATE KEY UPDATE` — monsterbook; `REPLACE` — skills) are instead
    semicolon-JOINED into one multi-statement string — but only for batches over a size threshold,
    so small probes pass while real saves fail. If the statement SQL itself ends with `;` (MonsterBook's

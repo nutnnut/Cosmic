@@ -389,6 +389,17 @@ class BotAutopilotManagerTest {
     }
 
     @Test
+    void transientTravelGiveUpDoesNotReportBotStuck() {
+        Fixture f = fixture(TOWN);
+        f.entry().autopilotMapId = HUNTING_GROUND;
+        f.entry().followTravelGiveUpUntilMs = System.currentTimeMillis() + 45_000L;
+        f.entry().followTravelGiveUpTargetMapId = HUNTING_GROUND;
+        f.entry().followTravelGiveUpReason = "deadline";
+
+        assertNull(BotAutopilotManager.stuckReason(f.entry(), f.bot()));
+    }
+
+    @Test
     void reportsCatchUpGrindOnlyWhileTheCohortIsActuallyResting() {
         Fixture low = fixture(HUNTING_GROUND, onlineOwner());
         Fixture high = fixture(HUNTING_GROUND, onlineOwner());

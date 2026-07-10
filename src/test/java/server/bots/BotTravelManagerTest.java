@@ -184,6 +184,24 @@ class BotTravelManagerTest {
         }
     }
 
+    @Test
+    void lod1TimedPortalHopOutlivesPhysicalWalkDeadline() {
+        Portal portal = portal(1, HENESYS, Portal.MAP_PORTAL, null, Portal.OPEN, new Point(300, 0));
+        Fixture f = fixture(HUNTING_GROUND, HENESYS, new Point(0, 0), List.of(portal));
+        f.entry().lod = BotEntry.Lod.LOD1;
+
+        assertTrue(BotTravelManager.tickFollowTravel(f.entry(), f.bot(), f.anchor(), true));
+        assertTrue(f.entry().lod1TravelDwellUntilMs > 0L);
+
+        // The modeled portal dwell is longer than some physical approach budgets. It must finish the
+        // abstract hop instead of giving up and wandering through a different portal.
+        f.entry().followTravelDeadlineMs = System.currentTimeMillis() - 1L;
+        assertTrue(BotTravelManager.tickFollowTravel(f.entry(), f.bot(), f.anchor(), true));
+        assertEquals(HENESYS, f.entry().followTravelTargetMapId);
+        assertNull(f.entry().followTravelGiveUpReason);
+        verify(portal, never()).enterPortal(any());
+    }
+
     private static final class PartitionRouteStub implements AutoCloseable {
         private final BotTravelManager.PartitionRouteLookup previous = BotTravelManager.partitionRouteLookup;
 

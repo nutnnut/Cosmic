@@ -308,7 +308,14 @@ final class BotTravelManager {
                 return false;
             }
             refreshTravelDeadlineOnProgress(entry, bot, map, portalApproachTarget(map, portal), now);
-            if (now > entry.followTravelDeadlineMs) {
+            // LOD1 execution does not walk toward the portal: it deliberately holds position for the
+            // modeled hop dwell, then enters the real portal below. Applying the physical walk deadline
+            // first can expire during that dwell (25s portal price), abandon the correct hop, and send
+            // the bot wandering through a different exit forever. Script/landing failures still give up
+            // in lod1TimedWarp; only the inapplicable approach deadline is skipped.
+            boolean lod1TimedHop = entry.lod == BotEntry.Lod.LOD1
+                    && BotManager.cfg.SIMPLIFY_UNOBSERVED_BOTS_TRAVEL;
+            if (!lod1TimedHop && now > entry.followTravelDeadlineMs) {
                 giveUp(entry, now, "deadline");
                 return false;
             }
