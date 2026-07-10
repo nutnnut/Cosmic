@@ -85,21 +85,27 @@ passive-loot range).
 
 ## Verified (2026-07-10, ~200-bot roster)
 
-Paired pinned-map run (14 maps, 5-min windows): **median bias 1.00x** (range 0.88–1.28, n=5 joined),
-AoE median 0.93 vs single-target 1.03 — no class inversion, no floor cluster, no zero-kill cluster in
-the abstract arm. The zero-kill "stuck" bots that run turned up were mostly LEGAL idles riding on
-grind mode — personality breaks and party idle-leech — which real combat respects but the abstract
-grind originally ignored (farming 24/7 at the modeled rate). `tickAbstractGrind` now rolls the same
-break decisions and grants nothing while `onBreak`/`idleLeech`. Residual known bias: a bot genuinely
-*broken at LOD0* (nav-stuck while `grinding`) still earns the modeled rate abstractly — LOD models a
-working grinder; fix the stuck bot, not the model. The audit tool warns about zero-kill stable
-grinders in both arms to surface exactly these.
+Paired pinned-map runs (14 maps, 5-min windows): **median bias 1.00–1.03x** across rounds, joined
+bots within [0.81, 1.28], no AoE-vs-single-target inversion, no floor cluster. Each round's worst
+outlier exposed a real-fidelity state the abstract grind was ignoring, all now mirrored in
+`tickAbstractGrind`:
 
-Known imperfection: `/api/killcalib` bucket ratios spread wide (typically 0.2–0.7; isolated extremes
-like 14.6x for one bandit band with many samples). The bucket cancels model error *on average per
-(job, band)* — which is why bias lands at 1.0 — but a bucket learned mostly on one map generalizes
-imperfectly to another. The next accuracy lever is shrinking the model error itself (kill-time /
-attack-cycle realism per class), not more calibration machinery.
+- **Breaks / idle-leech** (bots "farming 24/7"): the abstract path skipped the personality/group
+  break rolls and the party idle-leech damage gate. Now rolled identically; paused bots earn nothing
+  (verified: 27 paused LOD1 bots earned 1 kill over 5 min while 78 grinders earned 2090).
+- **Out-of-MP casters** (158x over-grant on a broke lv20 mage: 12 real vs 1896 granted): a MAGICIAN
+  that cannot pay its attack skill's mpCon earns nothing until regen/potions recover it — the rate
+  becomes MP-throughput-limited, like real play.
+- Residual: a bot genuinely *broken at LOD0* (nav-stuck while `grinding`) still earns the modeled
+  rate — LOD models a working grinder; fix the stuck bot, not the model. The audit tool warns about
+  zero-kill stable grinders in both arms to surface these.
+
+The wide bucket spread first seen on `/api/killcalib` (0.2–0.7 typical, 14.6x bandit extreme) was
+root-caused via `/api/grindmodel`: `CombatFormulaProvider.physicalMax/MinBaseDamage` applied a
+STR-primary formula to every weapon, gimping LUK/DEX classes ~2–15x in the model, in skill scoring,
+and in dealt damage — and steering the advisor toward trivial maps for those classes. Fixed by
+delegating to `Character.calculateMaxBaseDamage(watk, weaponType)` stat selection; buckets were
+dropped and relearn near 1.0.
 
 ## Verifying against ground truth
 
