@@ -23,6 +23,8 @@ session handoffs that previously described intermediate stages.
   farm, equip, compact, or scroll the same item while it is staged in a trade or merchant operation.
 - Price beliefs influence decisions; they do not mint items or meso. Real inventory, fees, storage,
   merchant, and trade paths perform every transfer.
+- Shared price consensus is clearing-only. Stall listings and shout asks remain visible audit data,
+  but advertisements never seed or move the price that bots use for valuation.
 - Merchant stock and Fredrick holdings are assets. Do not count a listing as both bag inventory and
   merchant inventory.
 - Tick-thread code reads stable snapshots. Database and expensive valuation work belongs off the hot

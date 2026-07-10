@@ -1,6 +1,5 @@
 package server.bots;
 
-import server.bots.BotMarketLedger.EventKind;
 import server.bots.BotMarketLedger.MarketEvent;
 import server.bots.BotMarketMath.Belief;
 import server.bots.BotMarketMath.PricePoint;
@@ -104,52 +103,27 @@ public final class BotMarketConsensus implements BotMarketBook.ConsensusSource {
     /**
      * Pure sweep core: fold a window of events into the per-key statistics. Per key —
      * decay the standing volume for elapsed silence (half-life from the key's own event
-     * spacing), build the recency+source-weighted median (clearing prices; listing asks only
-     * when a key has no clearings — design sec 4 layer 1), then take one volume-damped step
-     * toward it. Returns the keys that moved.
+     * spacing), build the recency-weighted median of realized clearing prices, then take one
+     * volume-damped step toward it. Listing and shout asks remain ledger/audit data, never shared
+     * price evidence: letting an advertisement seed consensus creates a self-reinforcing rumor loop.
+     * Returns the keys that moved.
      */
     List<Long> sweep(List<MarketEvent> window, long nowMs) {
         Map<Long, List<MarketEvent>> clearingByKey = new HashMap<>();
-        Map<Long, List<MarketEvent>> asksByKey = new HashMap<>();
         for (MarketEvent e : window) {
             if (e.unitPrice() <= 0) {
                 continue;
             }
             if (e.kind().isClearing()) {
                 clearingByKey.computeIfAbsent(e.priceKey(), k -> new ArrayList<>()).add(e);
-            } else if (e.kind() == EventKind.LIST) {
-                asksByKey.computeIfAbsent(e.priceKey(), k -> new ArrayList<>()).add(e);
             }
         }
 
-        java.util.Set<Long> keys = new java.util.HashSet<>(clearingByKey.keySet());
-        keys.addAll(asksByKey.keySet());
-
         List<Long> moved = new ArrayList<>();
-        for (long key : keys) {
-            List<MarketEvent> clearings = clearingByKey.get(key);
-            boolean hasClearings = clearings != null && !clearings.isEmpty();
+        for (Map.Entry<Long, List<MarketEvent>> entry : clearingByKey.entrySet()) {
+            long key = entry.getKey();
+            List<MarketEvent> evidence = entry.getValue();
             Belief current = byKey.getOrDefault(key, Belief.NONE);
-
-            // Clearing-preferential: a realized clearing always updates the consensus, but a listing
-            // ask only SEEDS a key that has never formed a clearing-derived number. An advertisement
-            // never moves an established price — that shout/ask echo is the rumor loop that poisoned
-            // beliefs to remake cost (see the belief-model fix). Seeds stay bounded because post-fix
-            // LIST asks are Phase B sanity-capped at emission.
-            List<MarketEvent> evidence;
-            double sourceWeight;
-            if (hasClearings) {
-                evidence = clearings;
-                sourceWeight = BotMarketMath.W_TRADE;
-            } else if (current.isEmpty()) {
-                evidence = asksByKey.get(key);
-                sourceWeight = BotMarketMath.W_ASK;
-            } else {
-                continue; // established consensus, only advertisements this window — leave it be
-            }
-            if (evidence == null || evidence.isEmpty()) {
-                continue;
-            }
 
             List<Long> stamps = new ArrayList<>(evidence.size());
             for (MarketEvent e : evidence) {
@@ -162,7 +136,7 @@ public final class BotMarketConsensus implements BotMarketBook.ConsensusSource {
             double totalWeight = 0;
             for (MarketEvent e : evidence) {
                 double recency = Math.pow(0.5, (double) Math.max(0, nowMs - e.atMs()) / halfLife);
-                double w = sourceWeight * recency;
+                double w = BotMarketMath.W_TRADE * recency;
                 points.add(new PricePoint(e.unitPrice(), w));
                 totalWeight += w;
             }

@@ -8,6 +8,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Random;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -186,6 +187,26 @@ class BotMarketSimTest {
         double after = consensus.consensus(KEY);
         assertTrue(Math.abs(after - before) / before < 0.15,
                 "gift-price outlier is damped: " + before + " -> " + after);
+    }
+
+    @Test
+    void listingAsksNeverFormOrMoveConsensus() {
+        BotMarketConsensus consensus = new BotMarketConsensus(null, null);
+        MarketEvent ask = new MarketEvent(1, T0, EventKind.LIST,
+                1082089, 0, 1, 1_500_000_000, 1, -1, 910000001);
+
+        consensus.sweep(List.of(ask), T0);
+        assertEquals(0, consensus.consensus(KEY),
+                "an advertisement must not seed a shared market price");
+
+        MarketEvent clearing = new MarketEvent(2, T0 + ROUND_MS, EventKind.STALL_SALE,
+                1082089, 0, 1, 16_000_000, 1, 2, 910000001);
+        consensus.sweep(List.of(clearing), T0 + ROUND_MS);
+        double clearingConsensus = consensus.consensus(KEY);
+
+        consensus.sweep(List.of(ask), T0 + 2 * ROUND_MS);
+        assertEquals(clearingConsensus, consensus.consensus(KEY),
+                "an advertisement must not move a clearing-derived market price");
     }
 
     // (b, sag half): cheap supply entering undercuts and drags clearings + consensus down,
