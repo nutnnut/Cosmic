@@ -6888,6 +6888,17 @@ public class BotManager {
         if (entry.breakUntilMs != 0L) {
             BotBreakManager.endBreak(entry, bot); // break just elapsed -> clear + resume
         }
+        // A caster that cannot pay its attack skill's MP cost stops earning: a real out-of-MP mage is
+        // reduced to a staff poke worth ~nothing (measured live: 12 real kills/hr vs 1896 granted).
+        // Non-casters keep killing — their plain weapon swing is close to their skill damage. MP
+        // recovers through the potion/regen systems that already run each coarse tick, so kills resume
+        // exactly when a real bot's casting would — i.e. the rate becomes MP-throughput-limited, which
+        // is the real dynamic for a bot too broke to buy MP pots.
+        if (bot.getJobStyle() == client.Job.MAGICIAN
+                && bot.getMp() < primaryAttackMpCon(entry, bot)) {
+            entry.nextAbstractKillAtMs = 0L;
+            return;
+        }
         double kph = calibratedKillsPerHour(entry, bot);
         if (kph <= 0) {
             // Neither measured nor modelable for this spot (caches cold, or nothing grindable here):
@@ -6978,25 +6989,33 @@ public class BotManager {
         return nearestQuest != null ? nearestQuest : nearest;
     }
 
+    /** MP cost of one cast of the bot's primary attack skill (0 = no skill / free / not learned). */
+    private static int primaryAttackMpCon(BotEntry entry, Character bot) {
+        if (entry.attackSkillId == 0) {
+            return 0;
+        }
+        client.Skill skill = client.SkillFactory.getSkill(entry.attackSkillId);
+        if (skill == null) {
+            return 0;
+        }
+        int level = bot.getSkillLevel(skill);
+        if (level <= 0) {
+            return 0;
+        }
+        StatEffect effect = skill.getEffect(level);
+        return effect == null ? 0 : effect.getMpCon();
+    }
+
     /** Honest MP charge for the grind time behind one abstract kill. Casts are a function of TIME spent
      *  attacking, not of kills — one cast per kill would overcharge AoE (one cast kills several) and
      *  undercharge single-target (several casts per kill). So: casts = modeled attack duty × interval /
      *  attack cycle, each costing the primary skill's mpCon. Keeps casters spending MP → drinking MP
      *  pots (economy) at the rate real grinding would. Non-casters (mpCon 0) are unaffected. */
     private void chargeAbstractGrindMp(BotEntry entry, Character bot, long grindMs) {
-        if (entry.attackSkillId == 0 || entry.abstractModelAttackDuty <= 0) {
+        if (entry.abstractModelAttackDuty <= 0) {
             return;
         }
-        client.Skill skill = client.SkillFactory.getSkill(entry.attackSkillId);
-        if (skill == null) {
-            return;
-        }
-        int level = bot.getSkillLevel(skill);
-        if (level <= 0) {
-            return;
-        }
-        StatEffect effect = skill.getEffect(level);
-        int mpCon = effect == null ? 0 : effect.getMpCon();
+        int mpCon = primaryAttackMpCon(entry, bot);
         if (mpCon <= 0) {
             return;
         }
