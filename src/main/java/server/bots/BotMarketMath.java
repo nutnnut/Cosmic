@@ -30,7 +30,11 @@ final class BotMarketMath {
     /** Perception noise: max relative band for a fully unplugged bot; informed bots shrink it. */
     static final double NOISE_MAX_BAND = 0.25;
 
-    /** Consensus prior can never outweigh more than this many trades' worth of own experience. */
+    /** Consensus prior can never outweigh more than this many trades' worth of own experience.
+     *  Do NOT raise this to "trust consensus more": once the price belief is fed only realized
+     *  clearings (the belief-model fix), a bot's private number and the consensus agree, and this cap
+     *  is exactly what preserves per-bot disagreement. Ask formation reads the consensus mass through
+     *  {@code BotMarketBook.perceivedConfidence} instead, so it does not need this cap relaxed. */
     static final double CONSENSUS_PRIOR_CAP = 4.0;
 
     private BotMarketMath() {

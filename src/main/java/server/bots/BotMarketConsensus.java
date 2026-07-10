@@ -128,8 +128,25 @@ public final class BotMarketConsensus implements BotMarketBook.ConsensusSource {
         List<Long> moved = new ArrayList<>();
         for (long key : keys) {
             List<MarketEvent> clearings = clearingByKey.get(key);
-            boolean usingAsks = clearings == null || clearings.isEmpty();
-            List<MarketEvent> evidence = usingAsks ? asksByKey.get(key) : clearings;
+            boolean hasClearings = clearings != null && !clearings.isEmpty();
+            Belief current = byKey.getOrDefault(key, Belief.NONE);
+
+            // Clearing-preferential: a realized clearing always updates the consensus, but a listing
+            // ask only SEEDS a key that has never formed a clearing-derived number. An advertisement
+            // never moves an established price — that shout/ask echo is the rumor loop that poisoned
+            // beliefs to remake cost (see the belief-model fix). Seeds stay bounded because post-fix
+            // LIST asks are Phase B sanity-capped at emission.
+            List<MarketEvent> evidence;
+            double sourceWeight;
+            if (hasClearings) {
+                evidence = clearings;
+                sourceWeight = BotMarketMath.W_TRADE;
+            } else if (current.isEmpty()) {
+                evidence = asksByKey.get(key);
+                sourceWeight = BotMarketMath.W_ASK;
+            } else {
+                continue; // established consensus, only advertisements this window — leave it be
+            }
             if (evidence == null || evidence.isEmpty()) {
                 continue;
             }
@@ -141,7 +158,6 @@ public final class BotMarketConsensus implements BotMarketBook.ConsensusSource {
             stamps.sort(Long::compare);
             long halfLife = BotMarketMath.halfLifeMs(BotMarketMath.medianInterEventGapMs(stamps));
 
-            double sourceWeight = usingAsks ? BotMarketMath.W_ASK : BotMarketMath.W_TRADE;
             List<PricePoint> points = new ArrayList<>(evidence.size());
             double totalWeight = 0;
             for (MarketEvent e : evidence) {
@@ -155,7 +171,6 @@ public final class BotMarketConsensus implements BotMarketBook.ConsensusSource {
                 continue;
             }
 
-            Belief current = byKey.getOrDefault(key, Belief.NONE);
             long updatedAt = updatedAtMs.getOrDefault(key, 0L);
             if (!current.isEmpty() && updatedAt > 0) {
                 current = BotMarketMath.decay(current, Math.max(0, nowMs - updatedAt), halfLife);
