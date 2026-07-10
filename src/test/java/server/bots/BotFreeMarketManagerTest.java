@@ -11,17 +11,24 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class BotFreeMarketManagerTest {
 
     @Test
-    void unitAskMarksUpTheStrongerOfPerceptionAndCostBasis() {
-        int informed = BotFreeMarketManager.unitAsk(1_000_000, 20, 400_000);
-        assertTrue(informed > 1_000_000, "asks above the perceived price");
-        assertTrue(informed < 1_400_000, "informed margin stays modest");
+    void unitAskLetsBeliefOverrideTheAnchorDownward() {
+        // The fix: a confident belief from real clearings must NOT be floored by a much higher
+        // reproduction/cost anchor (the old max(belief, anchor) pinned illiquid asks billions high).
+        int believed = BotFreeMarketManager.unitAsk(2_000_000, 50, 50_000_000, 10_000);
+        assertTrue(believed < 5_000_000, "a confident 2m belief prices near 2m, not the 50m anchor");
+        assertTrue(believed > 2_000_000, "still above the belief by the opening margin");
 
-        int ignorant = BotFreeMarketManager.unitAsk(0, 0, 400_000);
-        assertTrue(ignorant > 400_000, "no perception -> cost-plus off the shelf keep-value");
-        assertTrue(ignorant > BotFreeMarketManager.unitAsk(0, 20, 400_000),
+        // No belief -> the (already sanity-capped) anchor stands, cost-plus.
+        int ignorant = BotFreeMarketManager.unitAsk(0, 0, 400_000, 10_000);
+        assertTrue(ignorant > 400_000, "no perception -> cost-plus off the anchor");
+        assertTrue(ignorant > BotFreeMarketManager.unitAsk(0, 20, 400_000, 10_000),
                 "ignorance widens the opening margin (room to learn downward)");
 
-        assertEquals(0, BotFreeMarketManager.unitAsk(0, 0, 0), "nothing to go on -> don't list");
+        // Salvage (NPC sell-back) is the hard floor — never list below it.
+        assertTrue(BotFreeMarketManager.unitAsk(0, 0, 1_000, 500_000) >= 500_000,
+                "never opens below the NPC salvage reservation");
+
+        assertEquals(0, BotFreeMarketManager.unitAsk(0, 0, 0, 0), "nothing to go on -> don't list");
     }
 
     @Test

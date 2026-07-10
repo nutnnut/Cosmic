@@ -260,6 +260,56 @@ final class BotMarketMath {
     // ------------------------------------------------------------------ pricing behavior
 
     /**
+     * Structural weight of the reproduction-cost anchor as a price prior, in the same evidence units
+     * as a belief's confidence (W_TRADE = 1 per own clearing). Small on purpose: a couple of the
+     * bot's own clearings outweigh "what it would cost to remake", so a piece that clears cheap stops
+     * being asked at remake cost. Reproduction is a fading prior, not a hard floor.
+     */
+    static final double REPRO_ANCHOR_PRIOR = 1.0;
+
+    /**
+     * Opening ask base BEFORE the seller margin: the bot's market belief blended with the
+     * reproduction-cost anchor by confidence, floored at salvage. With no belief the anchor stands; as
+     * the bot's own clearing evidence accrues the base converges to what the market actually pays -
+     * up OR down - so remake cost no longer floors the ask (the {@code max(belief, reproCost)} that
+     * pinned illiquid/heavily-scrolled asks billions high). Salvage (NPC sell-back) is the true
+     * reservation: a bot never opens below what the counter pays back for the item.
+     *
+     * @param belief     the bot's perceived market price at this key (0 = no belief)
+     * @param confidence accumulated evidence weight behind {@code belief}
+     * @param reproAnchor sanity-capped reproduction-cost quote (see {@link #reproSanityCap})
+     * @param salvageFloor NPC sell-back unit price - the hard reservation
+     */
+    static double askBase(double belief, double confidence, double reproAnchor, double salvageFloor) {
+        double anchor = Math.max(0, reproAnchor);
+        double base;
+        if (anchor <= 0) {
+            base = Math.max(0, belief);
+        } else if (belief > 0 && confidence > 0) {
+            base = (belief * confidence + anchor * REPRO_ANCHOR_PRIOR) / (confidence + REPRO_ANCHOR_PRIOR);
+        } else {
+            base = anchor; // no confident belief yet - the reproduction prior stands
+        }
+        return Math.max(base, Math.max(0, salvageFloor));
+    }
+
+    /**
+     * How many times an item's NPC salvage value the reproduction-cost anchor may reach before it is
+     * treated as noise. The reproduction DP can imply a remake cost of billions for a never-cleared or
+     * heavily-scrolled piece that nothing ever pays; capping the anchor at a generous multiple of the
+     * item's salvage (a monotone tier proxy) keeps an unproven ask plausible. Real market evidence
+     * still lifts the ask above this once the item actually clears - the cap only bounds the no-belief
+     * prior. Generous enough never to bind on legitimately valued gear (nothing observed clears within
+     * three orders of magnitude of the 2.1b cap it removes); tune with post-fix clearing data.
+     */
+    static final long REPRO_CAP_OVER_SALVAGE = 1000;
+
+    /** Sanity ceiling for a reproduction-cost anchor, tied to the item's NPC salvage. */
+    static double reproSanityCap(long salvageUnit) {
+        return Math.max(1, salvageUnit) * (double) REPRO_CAP_OVER_SALVAGE;
+    }
+
+    /**
      * Seller opening margin over the perceived price: firmer stance asks more; low confidence
      * widens the margin (room to learn downward without selling below the market).
      */

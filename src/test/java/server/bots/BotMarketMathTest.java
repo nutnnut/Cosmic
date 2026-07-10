@@ -154,6 +154,39 @@ class BotMarketMathTest {
         assertTrue(withCurve > withComparable, "curve dominates the ladder");
     }
 
+    // ask base: market belief overrides the reproduction anchor downward; salvage floors it
+    @Test
+    void askBaseLetsConfidentBeliefOverrideAnchorDownward() {
+        // No belief -> the anchor stands (cost-plus prior).
+        assertEquals(100_000, BotMarketMath.askBase(0, 0, 100_000, 10_000), 1e-9);
+        // Salvage is the hard reservation floor.
+        assertEquals(500_000, BotMarketMath.askBase(0, 0, 100_000, 500_000), 1e-9,
+                "never below salvage");
+        // The fix: a confident belief far below a huge anchor pulls the base DOWN toward the belief,
+        // instead of max(belief, anchor) pinning it at the anchor.
+        double believed = BotMarketMath.askBase(2_000_000, 50, 50_000_000, 10_000);
+        assertTrue(believed < 5_000_000, "confident 2m belief prices near 2m, not the 50m anchor");
+        assertTrue(believed > 2_000_000, "the fading anchor prior keeps it a touch above belief");
+        // More evidence converges the base closer to the belief.
+        double lessSure = BotMarketMath.askBase(2_000_000, 10, 50_000_000, 0);
+        double moreSure = BotMarketMath.askBase(2_000_000, 100, 50_000_000, 0);
+        assertTrue(moreSure < lessSure, "more clearing evidence -> closer to the belief");
+        // With no anchor, belief stands alone (no phantom downward drag).
+        assertEquals(1_000_000, BotMarketMath.askBase(1_000_000, 5, 0, 0), 1e-9);
+        assertEquals(0, BotMarketMath.askBase(0, 0, 0, 0), 1e-9, "nothing to go on");
+    }
+
+    @Test
+    void reproSanityCapBoundsTheAnchorToSalvageTier() {
+        assertEquals(50_000_000, BotMarketMath.reproSanityCap(50_000), 1e-9,
+                "cap = salvage x REPRO_CAP_OVER_SALVAGE");
+        assertEquals(BotMarketMath.REPRO_CAP_OVER_SALVAGE, BotMarketMath.reproSanityCap(0), 1e-9,
+                "zero salvage still yields a finite floor cap");
+        // A billion-meso reproduction anchor is clamped to the item's tier ceiling.
+        double cappedAnchor = Math.min(2_000_000_000.0, BotMarketMath.reproSanityCap(50_000));
+        assertEquals(50_000_000, cappedAnchor, 1e-9, "the 2.1b runaway is erased");
+    }
+
     // supporting machinery
 
     @Test

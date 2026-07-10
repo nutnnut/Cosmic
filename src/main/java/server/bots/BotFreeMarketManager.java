@@ -253,18 +253,45 @@ final class BotFreeMarketManager {
     // ---- pure pricing core (unit-tested) -------------------------------------------------------
 
     /**
-     * Unit ask for a listing: the max of what the bot believes the market pays and its own cost
-     * basis (the shelf keep-value SSOT), marked up by the confidence-scaled opening margin
-     * (design sec 5). 0 = nothing to go on, don't list.
+     * Unit ask for a listing: the belief-vs-anchor base ({@link BotMarketMath#askBase} — market
+     * belief overrides the cost/reproduction anchor downward as evidence accrues, salvage floors it),
+     * marked up by the confidence-scaled opening margin (design sec 5). 0 = nothing to go on, don't
+     * list.
      */
-    static int unitAsk(double perceivedUnit, double privateConfidence, double costBasisUnit) {
-        double base = Math.max(perceivedUnit, costBasisUnit);
+    static int unitAsk(double perceivedUnit, double privateConfidence, double anchorUnit, double salvageUnit) {
+        double base = BotMarketMath.askBase(perceivedUnit, privateConfidence, anchorUnit, salvageUnit);
         if (base <= 0) {
             return 0;
         }
         double margin = BotMarketMath.openingMargin(0.5, privateConfidence); // trait wiring: S4
         long ask = Math.round(base * (1.0 + margin));
         return (int) Math.min(Integer.MAX_VALUE, Math.max(1, ask));
+    }
+
+    /**
+     * SSOT unit reservation for a rolled equip (no seller margin): the calibrated reproduction curve
+     * as a sanity-capped anchor, the bot's banded belief overriding it downward, NPC salvage as the
+     * hard floor. The lowest unit price the seller will accept — used by the shout responder to decide
+     * whether a buy offer covers the piece.
+     */
+    static long equipReservationUnit(BotMarketBook book, BotScrollManager.EquipQuote quote, long now) {
+        long key = BotMarketMath.priceKey(quote.itemId(), quote.band());
+        long salvage = npcSell.price(quote.itemId(), 1);
+        double anchor = Math.min(calibratedCurveQuote(book, quote, now), BotMarketMath.reproSanityCap(salvage));
+        return Math.round(BotMarketMath.askBase(
+                book.perceivedPrice(key, now), book.privateConfidence(key, now), anchor, salvage));
+    }
+
+    /**
+     * SSOT advertised unit ask for a rolled equip (reservation + opening margin). Both the stall
+     * listing path ({@link #evaluateEquipListings}) and the shout path
+     * ({@link BotShoutTradeManager}) price through this — no parallel reproduction-cost ask.
+     */
+    static int equipUnitAsk(BotMarketBook book, BotScrollManager.EquipQuote quote, long now) {
+        long key = BotMarketMath.priceKey(quote.itemId(), quote.band());
+        long salvage = npcSell.price(quote.itemId(), 1);
+        double anchor = Math.min(calibratedCurveQuote(book, quote, now), BotMarketMath.reproSanityCap(salvage));
+        return unitAsk(book.perceivedPrice(key, now), book.privateConfidence(key, now), anchor, salvage);
     }
 
     /** After-fee premium of selling the stack on a stall vs just NPC-selling it — the quantity a
@@ -343,7 +370,8 @@ final class BotFreeMarketManager {
             }
             long key = BotMarketMath.priceKey(id, 0);
             double costBasisUnit = e.getValue().keepValue() / qty;
-            int ask = unitAsk(book.perceivedPrice(key, now), book.privateConfidence(key, now), costBasisUnit);
+            double salvageUnit = npcWhole / (double) qty;
+            int ask = unitAsk(book.perceivedPrice(key, now), book.privateConfidence(key, now), costBasisUnit, salvageUnit);
             ask = (int) Math.min(Integer.MAX_VALUE, BotMarketMath.humanizeAsk(ask, bot.getId()));
             if (shopPrice > 0 && ask >= shopPrice) {
                 ask = shopPrice - 1; // undercut the counter or don't bother
@@ -413,9 +441,7 @@ final class BotFreeMarketManager {
                 out.add(new ListingVerdict(id, 1, 0, npcWhole, shopPrice, 0, "no price basis", null));
                 continue;
             }
-            long key = BotMarketMath.priceKey(id, quote.band());
-            double curveQuote = calibratedCurveQuote(book, quote, now);
-            int ask = unitAsk(book.perceivedPrice(key, now), book.privateConfidence(key, now), curveQuote);
+            int ask = equipUnitAsk(book, quote, now);
             ask = (int) Math.min(Integer.MAX_VALUE, BotMarketMath.humanizeAsk(ask, bot.getId()));
             if (quote.band() == 0 && shopPrice > 0 && ask >= shopPrice) {
                 ask = shopPrice - 1; // a clean piece competes with the NPC counter; a roll doesn't

@@ -118,7 +118,7 @@ public final class BotShoutTradeManager {
             return true; // walked off / busy — the moment passed
         }
         if (selling) {
-            Equip mine = findSellableEquip(entry, bot, o);
+            Equip mine = findSellableEquip(entry, bot, o, now);
             if (mine == null || !BotMarketShoutBus.getInstance().claim(bot.getMapId(), speakerId, o)) {
                 return true; // no longer have it, or someone else took the shout
             }
@@ -166,7 +166,7 @@ public final class BotShoutTradeManager {
                 bankShoutDecision(entry, s.speakerId(), o, false, now); // I'd buy
                 return true;
             }
-            if (o.kind() == Kind.BUY && findSellableEquip(entry, bot, o) != null) {
+            if (o.kind() == Kind.BUY && findSellableEquip(entry, bot, o, now) != null) {
                 bankShoutDecision(entry, s.speakerId(), o, true, now); // I'd sell
                 return true;
             }
@@ -185,22 +185,45 @@ public final class BotShoutTradeManager {
         return clean != null && BotScrollManager.equipBuyCeilingMeso(bot, clean) > 0;
     }
 
-    /** The cheapest marketable equip the bot holds matching the buy shout whose market value the
-     *  offered price covers — sell the worst-rolled qualifying piece first. Null = nothing to sell. */
-    private static Equip findSellableEquip(BotEntry entry, Character bot, Offer o) {
+    /** The cheapest marketable equip the bot holds matching the buy shout whose reservation the
+     *  offered price covers — sell the worst-rolled qualifying piece first. Null = nothing to sell.
+     *  Reservation is the shared FM ask SSOT (belief/salvage-based), not raw reproduction cost, so a
+     *  bot will now let illiquid/armor pieces go at what the market actually pays. */
+    private static Equip findSellableEquip(BotEntry entry, Character bot, Offer o, long now) {
         Equip best = null;
         long bestValue = Long.MAX_VALUE;
         for (Equip eq : BotInventoryManager.collectMarketableEquips(entry, bot)) {
             if (eq.getItemId() != o.itemId()) {
                 continue;
             }
-            long value = BotScrollManager.equipMarketQuote(entry, bot, eq).curveQuoteMeso();
+            long value = reservationOf(entry, bot, eq, now);
             if (value > 0 && o.priceMeso() >= value && value < bestValue) {
                 best = eq;
                 bestValue = value;
             }
         }
         return best;
+    }
+
+    /** Advertised unit ask for a surplus piece, priced through the shared FM ask SSOT
+     *  ({@link BotFreeMarketManager#equipUnitAsk}) instead of raw reproduction cost — market belief
+     *  overrides remake cost downward, salvage floors it, never the 2.1b cap. 0 = unpriceable. */
+    private static long advertisedAsk(BotEntry entry, Character bot, Equip eq, long now) {
+        BotScrollManager.EquipQuote quote = BotScrollManager.equipMarketQuote(entry, bot, eq);
+        if (quote == null || quote.curveQuoteMeso() <= 0) {
+            return 0;
+        }
+        return BotFreeMarketManager.equipUnitAsk(BotMarketBook.of(entry, bot), quote, now);
+    }
+
+    /** The lowest unit price the bot accepts for a piece — the shared FM reservation (no seller
+     *  margin). 0 = unpriceable. */
+    private static long reservationOf(BotEntry entry, Character bot, Equip eq, long now) {
+        BotScrollManager.EquipQuote quote = BotScrollManager.equipMarketQuote(entry, bot, eq);
+        if (quote == null || quote.curveQuoteMeso() <= 0) {
+            return 0;
+        }
+        return BotFreeMarketManager.equipReservationUnit(BotMarketBook.of(entry, bot), quote, now);
     }
 
     private static void commit(BotEntry entry, Character bot, Character speaker, Offer o,
@@ -235,7 +258,7 @@ public final class BotShoutTradeManager {
             return false; // invite from someone unrelated to our deal
         }
         boolean selling = d.sellerId() == bot.getId();
-        Equip sell = selling ? findSellableEquip(entry, bot, d.offer()) : null;
+        Equip sell = selling ? findSellableEquip(entry, bot, d.offer(), now) : null;
         if (selling && sell == null) {
             return false; // no longer have the piece — let the invite lapse/cancel on the initiator's clock
         }
@@ -279,7 +302,7 @@ public final class BotShoutTradeManager {
             return; // nothing to sell after all — let the invite lapse
         }
         Equip eq = stock.get(0); // the very piece the stand advertises (top surplus)
-        long ask = BotScrollManager.equipMarketQuote(entry, bot, eq).curveQuoteMeso();
+        long ask = advertisedAsk(entry, bot, eq, now);
         if (ask <= 0) {
             return;
         }
@@ -486,7 +509,7 @@ public final class BotShoutTradeManager {
             return;
         }
         Equip eq = stock.get(0); // the top valuable surplus piece
-        long ask = BotScrollManager.equipMarketQuote(entry, bot, eq).curveQuoteMeso();
+        long ask = advertisedAsk(entry, bot, eq, now);
         if (ask <= 0) {
             return;
         }
