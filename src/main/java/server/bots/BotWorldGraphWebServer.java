@@ -175,11 +175,14 @@ public final class BotWorldGraphWebServer {
             s.createContext("/api/command", BotWorldGraphWebServer::serveCommand);
             s.createContext("/api/botdebug", BotWorldGraphWebServer::serveBotDebug);
             s.createContext("/api/killcalib", BotWorldGraphWebServer::serveKillCalib);
+            s.createContext("/api/grindmodel", BotWorldGraphWebServer::serveGrindModel);
             s.createContext("/api/lod", BotWorldGraphWebServer::serveLod);
             s.createContext("/api/market/stalls", BotWorldGraphWebServer::serveMarketStalls);
             s.createContext("/api/market/bot", BotWorldGraphWebServer::serveMarketBot);
             s.createContext("/api/market/items", BotWorldGraphWebServer::serveMarketItems);
             s.createContext("/api/market/history", BotWorldGraphWebServer::serveMarketHistory);
+            s.createContext("/api/market/listings", BotWorldGraphWebServer::serveMarketListings);
+            s.createContext("/api/market/icon", BotWorldGraphWebServer::serveMarketIcon);
             s.createContext("/market", BotWorldGraphWebServer::serveMarketPage);
             s.createContext("/api/bot/pathlog", BotWorldGraphWebServer::servePathLog);
             s.createContext("/api/perf", BotWorldGraphWebServer::servePerf);
@@ -1153,6 +1156,36 @@ public final class BotWorldGraphWebServer {
      *  JSON; the durable store lives in {@code logs/bot-kill-calibration.tsv}. */
     private static void serveKillCalib(HttpExchange ex) throws IOException {
         send(ex, 200, "application/json", BotKillCalibration.summaryJson().getBytes(StandardCharsets.UTF_8));
+    }
+
+    /** {@code ?id=<botCharId>}: the abstract-grind rate model for that bot on its current map,
+     *  decomposed (per-mob kill times, blend, seek, supply cap) plus the live calibration inputs
+     *  (fresh own rate, bucket factor). The measured-vs-model debugging surface: a wildly wrong
+     *  {@code /api/killcalib} bucket means one of these components is wrong for that bot's context. */
+    private static void serveGrindModel(HttpExchange ex) throws IOException {
+        int id = 0;
+        try {
+            id = Integer.parseInt(queryParams(ex.getRequestURI().getRawQuery()).getOrDefault("id", "0").trim());
+        } catch (NumberFormatException ignore) { /* falls through to the 404 below */ }
+        BotEntry entry = null;
+        for (BotEntry e : BotManager.getInstance().allEntries()) {
+            if (e.bot != null && e.bot.getId() == id) {
+                entry = e;
+                break;
+            }
+        }
+        if (entry == null || entry.bot == null) {
+            send(ex, 404, "application/json", "{\"error\":\"no bot with that id\"}".getBytes(StandardCharsets.UTF_8));
+            return;
+        }
+        String model = BotGrindAdvisor.modelDebugJson(entry, entry.bot);
+        int jobId = entry.bot.getJob() != null ? entry.bot.getJob().getId() : 0;
+        double freshRate = BotKillCalibration.freshBotRate(id, entry.bot.getMapId(), 10 * 60_000L);
+        double bucket = BotKillCalibration.bucketFactor(jobId, entry.bot.getLevel() / 10);
+        String out = model.substring(0, model.length() - 1)  // splice calibration inputs into the model json
+                + ",\"freshRateKph\":" + Math.round(freshRate)
+                + ",\"bucketFactor\":" + Math.round(bucket * 1000.0) / 1000.0 + "}";
+        send(ex, 200, "application/json", out.getBytes(StandardCharsets.UTF_8));
     }
 
     /** Pin maps to full fidelity (LOD0) on demand, as if a real player were standing on each one: their
@@ -2133,8 +2166,14 @@ public final class BotWorldGraphWebServer {
         send(ex, 200, "application/json", sb.append("]}").toString().getBytes(StandardCharsets.UTF_8));
     }
 
+    /** Cap on the shout-ask points returned for one item so a very chatty item stays a bounded
+     *  payload; the most recent are the informative ones. Clearings/list-asks are never capped. */
+    private static final int SHOUT_POINT_CAP = 1500;
+
     /** {@code ?item=<id>[&hours=168]}: the item's tape series — clearings (trades + stall sales),
-     *  asks (listings) and the current consensus estimate (band 0). */
+     *  list asks, shout asks and the current consensus estimate (band 0). Every point carries its
+     *  detail (kind, seller/buyer/map) and a {@code names} map resolves the party ids for the
+     *  transaction-detail popup. */
     private static void serveMarketHistory(HttpExchange ex) throws IOException {
         Map<String, String> q = queryParams(ex.getRequestURI().getRawQuery());
         int itemId;
@@ -2154,37 +2193,155 @@ public final class BotWorldGraphWebServer {
             hours = 168;
         }
         long sinceMs = System.currentTimeMillis() - Math.max(1, hours) * 3_600_000L;
-        StringBuilder clearings = new StringBuilder("[");
-        StringBuilder asks = new StringBuilder("[");
-        boolean firstClear = true;
-        boolean firstAsk = true;
-        for (BotMarketLedger.MarketEvent e : BotMarketLedger.getInstance().itemHistory(itemId, sinceMs)) {
-            boolean clearing = e.kind().isClearing();
-            if (!clearing && e.kind() != BotMarketLedger.EventKind.LIST) {
-                continue; // delist/expire/shout/flow rows aren't price points
+        List<BotMarketLedger.MarketEvent> events = BotMarketLedger.getInstance().itemHistory(itemId, sinceMs);
+        List<BotMarketLedger.MarketEvent> clearings = new ArrayList<>();
+        List<BotMarketLedger.MarketEvent> listAsks = new ArrayList<>();
+        List<BotMarketLedger.MarketEvent> shouts = new ArrayList<>();
+        for (BotMarketLedger.MarketEvent e : events) {
+            switch (e.kind()) {
+                case TRADE, STALL_SALE -> clearings.add(e);
+                case LIST -> listAsks.add(e);
+                case SHOUT -> shouts.add(e);
+                default -> { /* delist/expire/flow rows aren't price points */ }
             }
-            StringBuilder sb = clearing ? clearings : asks;
-            if (clearing ? !firstClear : !firstAsk) {
+        }
+        if (shouts.size() > SHOUT_POINT_CAP) {
+            shouts = shouts.subList(shouts.size() - SHOUT_POINT_CAP, shouts.size()); // keep the most recent
+        }
+        java.util.Set<Integer> partyIds = new java.util.HashSet<>();
+        for (BotMarketLedger.MarketEvent e : clearings) {
+            if (e.sellerId() != null) partyIds.add(e.sellerId());
+            if (e.buyerId() != null) partyIds.add(e.buyerId());
+        }
+        Map<Integer, String> names = BotMarketLedger.getInstance().charNames(partyIds);
+        long key = BotMarketMath.priceKey(itemId, 0);
+        StringBuilder sb = new StringBuilder("{\"item\":").append(itemId)
+                .append(",\"name\":").append(jsonStr(itemName(itemId)))
+                .append(",\"consensus\":").append(Math.round(BotMarketConsensus.getInstance().consensus(key)))
+                .append(",\"volume\":").append(String.format(Locale.US, "%.2f", BotMarketConsensus.getInstance().volume(key)))
+                .append(",\"clearings\":");
+        appendMarketPoints(sb, clearings);
+        sb.append(",\"asks\":");
+        appendMarketPoints(sb, listAsks);
+        sb.append(",\"shouts\":");
+        appendMarketPoints(sb, shouts);
+        sb.append(",\"names\":{");
+        boolean firstName = true;
+        for (Map.Entry<Integer, String> en : names.entrySet()) {
+            if (!firstName) {
                 sb.append(',');
             }
-            if (clearing) {
-                firstClear = false;
-            } else {
-                firstAsk = false;
+            firstName = false;
+            sb.append('"').append(en.getKey()).append("\":").append(jsonStr(en.getValue()));
+        }
+        sb.append("}}");
+        send(ex, 200, "application/json", sb.toString().getBytes(StandardCharsets.UTF_8));
+    }
+
+    /** Serialize a tape series as {@code [{t,p,q,k,s,b,m}, ...]}: time, unit price, qty, kind code
+     *  ({@code t}rade/{@code s}tall/{@code l}ist/s{@code h}out), seller/buyer/map ids (-1 = none). */
+    private static void appendMarketPoints(StringBuilder sb, List<BotMarketLedger.MarketEvent> pts) {
+        sb.append('[');
+        for (int i = 0; i < pts.size(); i++) {
+            BotMarketLedger.MarketEvent e = pts.get(i);
+            if (i > 0) {
+                sb.append(',');
             }
             sb.append("{\"t\":").append(e.atMs())
                     .append(",\"p\":").append(e.unitPrice())
                     .append(",\"q\":").append(e.qty())
+                    .append(",\"k\":\"").append(marketKindCode(e.kind())).append('"')
+                    .append(",\"s\":").append(e.sellerId() == null ? -1 : e.sellerId())
+                    .append(",\"b\":").append(e.buyerId() == null ? -1 : e.buyerId())
+                    .append(",\"m\":").append(e.mapId() == null ? -1 : e.mapId())
                     .append('}');
         }
-        long key = BotMarketMath.priceKey(itemId, 0);
-        String json = "{\"item\":" + itemId
-                + ",\"name\":" + jsonStr(itemName(itemId))
-                + ",\"consensus\":" + Math.round(BotMarketConsensus.getInstance().consensus(key))
-                + ",\"volume\":" + String.format(Locale.US, "%.2f", BotMarketConsensus.getInstance().volume(key))
-                + ",\"clearings\":" + clearings.append(']')
-                + ",\"asks\":" + asks.append(']') + "}";
-        send(ex, 200, "application/json", json.getBytes(StandardCharsets.UTF_8));
+        sb.append(']');
+    }
+
+    private static String marketKindCode(BotMarketLedger.EventKind k) {
+        return switch (k) {
+            case TRADE -> "t";
+            case STALL_SALE -> "s";
+            case LIST -> "l";
+            case SHOUT -> "h";
+            default -> "?";
+        };
+    }
+
+    /** {@code ?item=<id>}: every OPEN stall (bot- or player-owned) currently holding this item, with
+     *  per-piece stat preview — the live "listings on sale" order book for the selected item. */
+    private static void serveMarketListings(HttpExchange ex) throws IOException {
+        Map<String, String> q = queryParams(ex.getRequestURI().getRawQuery());
+        int itemId;
+        try {
+            itemId = Integer.parseInt(q.getOrDefault("item", "0").trim());
+        } catch (NumberFormatException e) {
+            itemId = 0;
+        }
+        if (itemId <= 0) {
+            send(ex, 400, "application/json", "{\"error\":\"?item=<itemId> required\"}".getBytes(StandardCharsets.UTF_8));
+            return;
+        }
+        StringBuilder sb = new StringBuilder("{\"item\":").append(itemId)
+                .append(",\"name\":").append(jsonStr(itemName(itemId)))
+                .append(",\"listings\":[");
+        boolean first = true;
+        for (World w : Server.getInstance().getWorlds()) {
+            for (HiredMerchant hm : w.getActiveMerchants()) {
+                for (PlayerShopItem psi : hm.getItems()) {
+                    if (psi.getItem().getItemId() != itemId || !psi.isExist() || psi.getBundles() <= 0) {
+                        continue;
+                    }
+                    if (!first) {
+                        sb.append(',');
+                    }
+                    first = false;
+                    int per = Math.max(1, psi.getItem().getQuantity());
+                    String specifier = BotOfferManager.formatItemSpecifier(psi.getItem(), 0);
+                    sb.append("{\"owner\":").append(jsonStr(hm.getOwner()))
+                            .append(",\"map\":").append(hm.getMapId())
+                            .append(",\"ch\":").append(hm.getChannel())
+                            .append(",\"bundles\":").append(psi.getBundles())
+                            .append(",\"per\":").append(per)
+                            .append(",\"price\":").append(psi.getPrice())
+                            .append(",\"unit\":").append(Math.round((double) psi.getPrice() / per))
+                            .append(",\"stats\":").append(jsonStr(specifier))
+                            .append('}');
+                }
+            }
+        }
+        send(ex, 200, "application/json", sb.append("]}").toString().getBytes(StandardCharsets.UTF_8));
+    }
+
+    /** {@code ?item=<id>}: the item's sprite PNG. Sprite integration seam — serves
+     *  {@code /web/item-icons/<id>.png} from the classpath when present, else 404 so the page falls
+     *  back to a placeholder tile. Drop extracted client icons into that resource folder (or repoint
+     *  this at a WZ canvas reader once real client WZ with basedata is loaded) and sprites light up
+     *  with no page change. */
+    private static void serveMarketIcon(HttpExchange ex) throws IOException {
+        Map<String, String> q = queryParams(ex.getRequestURI().getRawQuery());
+        int itemId;
+        try {
+            itemId = Integer.parseInt(q.getOrDefault("item", "0").trim());
+        } catch (NumberFormatException e) {
+            itemId = 0;
+        }
+        byte[] png = null;
+        if (itemId > 0) {
+            String path = "/web/item-icons/" + itemId + ".png";
+            try (InputStream in = BotWorldGraphWebServer.class.getResourceAsStream(path)) {
+                if (in != null) {
+                    png = in.readAllBytes();
+                }
+            }
+        }
+        if (png == null) {
+            send(ex, 404, "application/json", "{\"error\":\"no icon\"}".getBytes(StandardCharsets.UTF_8));
+            return;
+        }
+        ex.getResponseHeaders().set("Cache-Control", "public, max-age=86400");
+        send(ex, 200, "image/png", png);
     }
 
     private static List<Character> onlineCharacters() {

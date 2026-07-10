@@ -203,6 +203,40 @@ public final class BotMarketLedger {
         return out;
     }
 
+    /** Resolve a set of character ids to names (web transaction-detail display). One batch query;
+     *  ids absent from {@code characters} are simply omitted. Empty in, empty out. */
+    public Map<Integer, String> charNames(java.util.Collection<Integer> ids) {
+        Map<Integer, String> out = new java.util.HashMap<>();
+        if (ids == null || ids.isEmpty()) {
+            return out;
+        }
+        StringBuilder in = new StringBuilder();
+        for (Integer id : ids) {
+            if (id == null) {
+                continue;
+            }
+            if (in.length() > 0) {
+                in.append(',');
+            }
+            in.append(id.intValue());
+        }
+        if (in.length() == 0) {
+            return out;
+        }
+        try (Connection con = DatabaseConnection.getConnection();
+             PreparedStatement ps = con.prepareStatement(
+                     "SELECT id, name FROM characters WHERE id IN (" + in + ")")) {
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    out.put(rs.getInt("id"), rs.getString("name"));
+                }
+            }
+        } catch (SQLException e) {
+            log.warn("charNames lookup failed: {}", e.toString());
+        }
+        return out;
+    }
+
     /** Snapshot of the in-memory faucet/sink tallies (category -> total meso since boot). */
     public Map<String, Long> flowSnapshot(boolean faucet) {
         Map<String, Long> out = new ConcurrentHashMap<>();

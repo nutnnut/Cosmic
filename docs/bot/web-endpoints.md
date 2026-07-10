@@ -131,6 +131,18 @@ The measured side is a SUSTAINED rate (decayed `kills / activeMs`); the model si
 abstract grind replays (× this ratio), so a healthy `ratio` sits near 1.0 and the model's systematic
 error cancels in replay.
 
+### `/api/grindmodel?id=<botCharId>`
+The abstract-grind rate model for one bot on its CURRENT map, decomposed — the measured-vs-model
+debugging surface. A wildly wrong `/api/killcalib` bucket means one of these components is wrong for
+that bot's context; this shows which.
+```
+{"botId","mapId","level","jobId","warm",
+ "modelKph","blendKillSeconds","seekSeconds","spawnPoints","areaPx","supplyKph","attackCycleSeconds",
+ "mobs":[{"mobId","name","level","points","killSeconds","rawKillSeconds"}, ...],
+ "freshRateKph",   // bot's own measured sustained rate here (0 = none/stale)
+ "bucketFactor"}   // (job, level-band) measured/model correction the abstract grind will apply
+```
+
 ### `/api/lod[?maps=<id,...>][&force=0|1][&clear=1]`
 Pin maps to full fidelity (LOD0) on demand, as if a real player were standing on each: their bots run real
 combat, real physics and the 50ms tick, while every other map stays coarse. `maps=` pins (`force=0` releases),
@@ -142,9 +154,15 @@ drops them. Use this to measure a ground-truth kill rate on a few maps (`tools/l
 ```
 
 ### `/market` (page)
-Trading-site style price history: item picker (most-cleared first) + canvas chart of clearings
-(green line, dot size = qty), listing asks (hollow blue dots) and the current consensus estimate
-(dashed). Range buttons 24h/3d/7d/30d/1y; auto-refreshes. Linked from the landing page.
+Trading-site style market view. Left: searchable item picker (most-cleared first) with sprite tiles.
+Center: a price chart with **OHLC candlesticks** bucketed client-side from clearings (green up / red
+down; wick = high/low; body = open/close), stall asks (hollow blue) and shout asks (faint) as dot
+clouds, and the consensus estimate (dashed gold). Hover any datapoint for a tooltip; a clearing shows
+kind/price/qty/when and the resolved **seller/buyer/map** (transaction detail). Right: the live open-stall
+listings table for the selected item (unit price, stats, owner, location) + a recent-asks list. Header
+toggles (all client-side): **candles/line**, **log y**, **clip outliers** (y-range keys off clearings so a
+few 2.1b asks don't flatten the candles — clamped points get a count note), **asks** on/off, **shouts**
+on/off. Range buttons 24h/3d/7d/30d/1y; auto-refreshes. Linked from the landing page.
 
 ### `/api/market/items`
 Items with any tape activity, most-cleared first (max 300): the chart's item picker.
@@ -153,13 +171,32 @@ Items with any tape activity, most-cleared first (max 300): the chart's item pic
 ```
 
 ### `/api/market/history?item=<itemId>[&hours=168]`
-One item's price series from `bot_market_event`: clearings (TRADE + STALL_SALE) and listing asks,
-plus the live consensus estimate + damping volume for band 0.
+One item's price series from `bot_market_event`: clearings (TRADE + STALL_SALE), stall list asks and
+shout asks (shouts capped to the most recent 1500), plus the live consensus estimate + damping volume
+for band 0. Each point carries its detail — `k` kind (`t`rade/stall `s`ale/`l`ist/s`h`out), `s`eller /
+`b`uyer / `m`ap ids (-1 = none) — and `names` resolves the clearing party ids for the detail popup.
 ```
 {"item","name","consensus","volume",
- "clearings":[{"t","p","q"}, ...],   // unit price p at time t, qty q
- "asks":[{"t","p","q"}, ...]}
+ "clearings":[{"t","p","q","k","s","b","m"}, ...],   // unit price p at time t, qty q
+ "asks":[{"t","p","q","k","s","b","m"}, ...],        // stall LIST asks
+ "shouts":[{"t","p","q","k","s","b","m"}, ...],      // shout ads (most recent 1500)
+ "names":{"<charId>":"<name>", ...}}                 // seller/buyer ids seen in clearings
 ```
+
+### `/api/market/listings?item=<itemId>`
+The live "on sale" order book for one item: every OPEN stall (bot- or player-owned) currently holding it,
+cheapest unit first on the page. `stats` is the same equip stat specifier the offer/shout previews use
+(`BotOfferManager.formatItemSpecifier`; item name for non-equips).
+```
+{"item","name","listings":[{"owner","map","ch","bundles","per","price","unit","stats"}, ...]}
+```
+
+### `/api/market/icon?item=<itemId>`
+Item sprite PNG. **Sprite-integration seam:** serves `/web/item-icons/<id>.png` from the classpath when
+present, else 404 (the page falls back to a placeholder tile). Drop extracted client icons into that
+resource folder — or repoint the handler at a WZ canvas reader once real client WZ with `basedata` is
+loaded — and sprites light up with no page change. (The repo's WZ dump has icon canvas nodes stripped of
+`basedata`, so no icons are available from WZ today.)
 
 ### `/api/market/stalls`
 Every OPEN hired merchant in every world (bot- and player-owned alike): position, description and
