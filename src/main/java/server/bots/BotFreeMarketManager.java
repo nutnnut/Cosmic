@@ -1531,7 +1531,8 @@ final class BotFreeMarketManager {
      * New per-bundle price for a live slot: step the current ask toward the best evidence at the
      * slot's banded key — the bot's own belief undercut just below the cheapest visible competing
      * ask ({@link BotMarketMath#undercutTarget}, {@link #UNDERCUT_FRACTION}; never chasing above the
-     * bot's own perceived value) — by {@link #REPRICE_PRESSURE}, floored so one visit never cuts an
+     * bot's own perceived value) — by accumulated unsold pressure ({@link
+     * #UNSOLD_PRESSURE_PER_OBSERVATION} up to {@link #MAX_UNSOLD_PRESSURE}), floored so one visit never cuts an
      * ask below {@link #REPRICE_MAX_DROP} of itself nor below the per-unit NPC sell-back. Every
      * surviving hourly interval also supplies directional evidence: even a belief-less or poisoned
      * uncontested slot walks down until demand clears it. Reuses {@link BotMarketMath#repriceAsk}

@@ -32,3 +32,13 @@ while liquid or near-equilibrium items resist isolated noise.
 The behavioral seams are `BotMarketConsensus.sweep` (`BotMarketSimTest`) and
 `BotFreeMarketManager.repriceUnsold` (`BotFreeMarketManagerTest`). The event tape remains the audit
 trail; bot decisions continue to read only `BotMarketBook`.
+
+Design lineage (reviewed 2026-07-11 against the rev-2 design of record, git `fa5f59405`): the
+mechanism matches the design's seller-repricing and stability structure (gap-proportional
+confidence-damped steps, asynchronous per-bot service cadence, reservation floor, W_OUTCOME 0.3 as
+planned). Two deliberate deviations, both tightenings: (1) the design allowed "listing asks as weak
+evidence when no clearings exist" — dropped, because the ask echo let reproduction-cost asks seed
+the consensus that justified the next generation of high asks; (2) the design kept sold-fast/unsold
+outcomes private to each bot's book — they now also reach the shared consensus as bounded
+directional pressure, because a persisted bad consensus at a key with no clearings could never heal
+through private books that keep re-sampling it.

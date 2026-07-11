@@ -71,7 +71,7 @@
 
   <h1>Living Bot Economy</h1>
   <p class="sub">How companion bots <b>discover prices by trading</b> — no central price-setter, no authored price tables, no rate caps. Just agents that farm, scroll, list, buy, and re-price.</p>
-  <p class="muted">This is the shipped behavior on branch <code>dev-economy</code> (slices S0–S4 plus the 2026-07-04 scroll/market audit fixes). The full design of record is <code>docs/bot/living-economy-design.md</code>; the math reference is <code>docs/bot/economy-design.md</code>. This page explains what actually runs and why, every claim tied to a real class/method.</p>
+  <p class="muted">This is the shipped behavior as of 2026-07-11 (slices S0–S4, the 2026-07-04 scroll/market audit fixes, and the supply/demand price-discovery pass). The as-built map and invariants live in <code>docs/bot/economy.md</code>; the price-discovery mechanism notes are in <code>docs/bot/kb/kb_bot_market_price_discovery.md</code> (the original design docs were consolidated; the rev-2 design of record survives in git history at <code>fa5f59405</code>). This page explains what actually runs and why, every claim tied to a real class/method.</p>
 
   <!-- ============================================================= -->
   <h2>1. Big picture — a decentralized, belief-based market</h2>
@@ -81,12 +81,12 @@
     <div class="layers">
       <div class="layer">
         <div class="tag">SHARED — MySQL tape</div>
-        <b>BotMarketLedger</b> → <code>bot_market_event</code>. Append-only record of every arms-length event: TRADE, STALL_SALE, LIST, SHOUT, NPC_SELL/BUY, faucet/sink counters. It <i>records</i>; it never creates meso or items.
+        <b>BotMarketLedger</b> → <code>bot_market_event</code>. Append-only record of every arms-length event: TRADE, STALL_SALE, LIST, SHOUT, NPC_SELL/BUY, faucet/sink counters, plus the censored exposure outcomes UNSOLD and SOLD_FAST. It <i>records</i>; it never creates meso or items.
       </div>
       <div class="arrow">▼ &nbsp;3-minute off-tick sweep</div>
       <div class="layer">
         <div class="tag">SHARED — the stabilizer</div>
-        <b>BotMarketConsensus</b>. Per <code>priceKey</code>, a <b>recency-weighted median</b> of clearing prices, damped by decayed event volume. One odd trade barely moves a liquid item but meaningfully informs an illiquid one; the median shrugs off gift-price outliers. A statistic, not a setter.
+        <b>BotMarketConsensus</b>. Per <code>priceKey</code>, a <b>recency-weighted median</b> of realized clearing prices (TRADE / STALL_SALE only — LIST and SHOUT advertisements are audit data and can never seed or move it), damped by decayed event volume. Exposed-stock outcomes (UNSOLD / SOLD_FAST) then apply bounded <i>directional</i> pressure on top (§4). One odd trade barely moves a liquid item but meaningfully informs an illiquid one; the median shrugs off gift-price outliers. A statistic, not a setter.
       </div>
       <div class="arrow">▼ &nbsp;noisy, lagged sample (only at market touchpoints)</div>
       <div class="layer">
@@ -154,10 +154,10 @@
     <div class="loopcard">
       <div class="h" style="color:var(--bad)">GLUT — too many listings, price too high</div>
       <div class="chain">
-        many listings <span class="n">→</span> stalls sit <b>unsold</b> for rounds
-        <span class="n">→</span> on stall service, <code>undercutTarget</code> steps the ask <b>below the cheapest competing ask</b>
-        <span class="n">→</span> clearings fall <span class="n">→</span> <b>consensus falls</b>
-        <span class="n">→</span> <span class="s">(the new link)</span> <code>applyCostMeso</code> falls, so bots <b>burn more scrolls</b>; and <code>maybeBargainBuy</code> clears cheap stock
+        many listings <span class="n">→</span> stalls sit <b>unsold</b> through the ~hourly service visit
+        <span class="n">→</span> <code>repriceUnsold</code> steps the ask <b>down</b> (pressure grows with repeated exposure and same-key stock) and tapes an <b>UNSOLD</b> outcome
+        <span class="n">→</span> lower clearings <i>and</i> the UNSOLD pressure pull <b>consensus down</b>
+        <span class="n">→</span> <code>applyCostMeso</code> falls, so bots <b>burn more scrolls</b>; and <code>maybeBargainBuy</code> clears cheap stock
         <span class="n">→</span> supply drains <span class="p">→ price recovers</span>
       </div>
     </div>
@@ -165,6 +165,7 @@
       <div class="h" style="color:var(--good)">SCARCITY — nothing for sale, price too low</div>
       <div class="chain">
         wants go unfilled <span class="p">→</span> repeated failure <b>raises the belief</b> (scarcity evidence, but WTP stays capped by use-value)
+        <span class="p">→</span> stock that <b>sells within 15 min</b> of listing/repricing tapes <b>SOLD_FAST</b>, probing consensus one step up
         <span class="p">→</span> consensus rises <span class="p">→</span> farming that item beats the alternatives (grind steering, S4)
         <span class="p">→</span> supply returns <span class="p">→ price settles</span> at ≈ frontier cost
       </div>
@@ -173,10 +174,19 @@
 
   <p>The load-bearing piece is the <b>unsold-pressure undercut</b>. Without it the market froze: every ask sat a margin above every WTP (a structural no-trade zone), and worse, glut entrants who perceive consensus priced <i>at</i> the going rate — so gluts <b>raised</b> prices. Stepping the ask to just under the cheapest visible competitor (never above the bot's own perception; reservation still floors it) is what converts oversupply into falling prices.</p>
 
+  <h3>Price healing from exposed supply and demand (2026-07-11)</h3>
+  <p>Clearing-only consensus fixed the ask-echo rumor loop, but it left a hole: a <b>persisted bad consensus</b> at a quality band with no clearings could sit wrong forever — nothing trades at the poisoned price, so no trade ever corrects it. The fix is to let <b>real exposure</b> speak. A bot stall is a standing experiment: stock offered at a price that <i>survives</i> the ~hourly service interval (55–65 min, per-bot jittered) is evidence the price is too high; stock that <i>clears within 15 minutes</i> of opening or repricing is evidence it was too low. Both are censored outcomes — they bound the true price from one side without claiming to know it.</p>
+  <div class="ok"><b>Guardrails keep outcomes from becoming advertisements.</b> An outcome can never <i>seed</i> a key that has no clearing history; UNSOLD may only lower an established consensus and SOLD_FAST (probing +10% above the cleared ask) may only raise it; targets within a <b>5% deadband</b> of consensus are ignored, so near-equilibrium noise does nothing; outcome weight is 0.3 vs a trade's 1.0, scales <b>sublinearly with quantity</b> (log₂, capped 8×), and stays volume-damped by clearing history; and a real clearing <b>resets</b> the seller's accumulated unsold pressure. Markdowns start small (~6% of the gap per observation, capped at 50%, never below the reservation floor of max(NPC sell-back, half the current ask) per visit) and grow only with repeated exposure or crowded same-key stock.</div>
+  <p class="legend">Design lineage: the rev-2 design allowed listing asks as weak consensus evidence when no clearings existed, and kept sold-fast/unsold outcomes private to each bot's book. Both were revised in July 2026 — ask evidence created a self-reinforcing rumor loop (reproduction-cost asks seeded the consensus that justified the next generation of high asks), and private-only outcomes could never heal a persisted bad consensus that every book keeps re-sampling. The 0.3 outcome weight the design planned is kept, applied at the shared layer with the bounds above.</p>
+
   <table>
     <tr><th>Mechanism</th><th>What it corrects</th><th>Code</th></tr>
     <tr><td><b>Unsold-pressure undercut</b> <span class="pill acc">load-bearing</span></td><td>Gluts otherwise raised prices; this makes them lower prices.</td><td><code>BotMarketMath.undercutTarget</code>, driven by unsold rounds in <code>evaluateListings</code></td></tr>
-    <tr><td><b>Reprice toward belief on service</b></td><td>Stale asks track the market across a market day (3–6h service cadence).</td><td><code>HiredMerchant.botServiceReprice</code> → <code>BotMarketMath.repriceAsk</code> (pressure 0.5, floored at ½ ask / NPC sell-back)</td></tr>
+    <tr><td><b>Hourly unsold down-pressure</b> <span class="pill acc">load-bearing</span></td><td>Persisted/poisoned prices with no clearings heal instead of sitting wrong forever; surviving stock walks down until demand clears it.</td><td><code>BotFreeMarketManager.repriceUnsold</code> (55–65 min service) → UNSOLD tape → <code>BotMarketConsensus.applyDirectionalOutcomes</code> (down-only)</td></tr>
+    <tr><td><b>Fast-sale up-pressure</b></td><td>Underpriced stock stops being given away: a sale within 15 min of listing/repricing probes consensus up.</td><td><code>BotManager.notifyStallSale</code> → <code>recordSaleOutcome</code> → SOLD_FAST tape (+10% probe, up-only)</td></tr>
+    <tr><td><b>Clearing-only consensus</b></td><td>Advertisements can't become prices: LIST/SHOUT asks once seeded a self-reinforcing rumor loop.</td><td><code>EventKind.isClearing</code> gate in <code>BotMarketConsensus.sweep</code></td></tr>
+    <tr><td><b>Outcome guardrails</b></td><td>Outcome pressure can't invent prices, oscillate near equilibrium, or let one bulk stack outvote history.</td><td>no-seed rule + 5% <code>OUTCOME_DEADBAND</code> + <code>W_OUTCOME</code> 0.3 + log₂ quantity weight (cap 8×) + clearing resets pressure</td></tr>
+    <tr><td><b>Reprice toward belief on service</b></td><td>Stale asks track the market across a market day (~hourly service cadence).</td><td><code>HiredMerchant.botServiceReprice</code> → <code>BotMarketMath.repriceAsk</code> (pressure grows 6%/observation to 50%, floored at ½ ask / NPC sell-back)</td></tr>
     <tr><td><b>NPC counter caps</b></td><td>An ask can never exceed the NPC shop price (infinite supply); applies to clean equips only.</td><td><code>npcShopPrice</code> ← <code>marketBuyPriceMeso</code> (existing GM-filtered shopitems index)</td></tr>
     <tr><td><b>Belief-less WTP floors</b></td><td>A <i>fresh</i> market has no beliefs to price against — these let it clear at all.</td><td>Equips: <code>equipBuyCeilingMeso</code>. Scrolls (new): per-unit <code>min(scrollCombatCeilingMeso, replacement)</code> in <code>maybeBargainBuy</code></td></tr>
     <tr><td><b>Obtainable-only catalog index</b></td><td>Unobtainable scrolls can't fake cheap reproduction costs (Dragon Stone's fake 1M once flattened HTP's band curve).</td><td><code>scrollsByCategory</code> (obtainable-filtered); owned-scroll play still uses anything in the bag</td></tr>
@@ -218,6 +228,7 @@
         <li><span class="pill good">done</span> S3 — shout grammar + bus + accept-at-ask direct equip trades</li>
         <li><span class="pill good">done</span> S4 (first half) — equip banding + listing, <code>maybeBargainBuy</code>, chaos/white plays, banded tape</li>
         <li><span class="pill good">done</span> Audit fixes 1–6 (2026-07-04) — shared <code>canScroll</code>, consensus-blended <code>scrollPriceMeso</code>, belief-less scroll WTP, zero apply-cost for tradeBlocked, <code>bestRoleWorth</code>, obtainable-only catalog</li>
+        <li><span class="pill good">done</span> Supply/demand price discovery (2026-07-11) — clearing-only consensus, hourly UNSOLD down-pressure, 15-min SOLD_FAST up-pressure, deadband + quantity/volume damping; persisted bad prices heal without admin clears</li>
       </ul>
     </div>
     <div class="panel">
@@ -246,13 +257,13 @@
   <h2>Where this lives in code</h2>
   <div class="panel files">
     <p><code>server.bots.BotMarketLedger</code> — the append-only MySQL tape (<code>bot_market_event</code>) + faucet/sink counters.</p>
-    <p><code>server.bots.BotMarketConsensus</code> — the shared damped statistic: 3-minute off-tick sweep, weighted median, volume damping.</p>
+    <p><code>server.bots.BotMarketConsensus</code> — the shared damped statistic: 3-minute off-tick sweep, weighted median of clearings only, volume damping, directional UNSOLD/SOLD_FAST outcome folding.</p>
     <p><code>server.bots.BotMarketBook</code> — the per-bot private book (tick-thread-owned): private observations ⊕ noisy/lagged consensus sample. The only price source decisions may read.</p>
     <p><code>server.bots.BotMarketMath</code> — pure math: one confidence-weighted update rule, <code>undercutTarget</code>, <code>repriceAsk</code>, <code>qualityBand</code>/<code>priceKey</code>, structured priors, <code>humanizeAsk</code>.</p>
     <p><code>server.bots.BotScrollManager</code> — valuation glue: <code>scrollPriceMeso</code>, <code>applyCostMeso</code>, <code>scrollCombatCeilingMeso</code>, <code>slotDurabilityFactor</code>, <code>marketStatValue</code>/<code>bestRoleWorth</code>, <code>equipMarketQuote</code>, <code>scrollsByCategory</code>.</p>
-    <p><code>server.bots.BotFreeMarketManager</code> — the FM errand, stall lifecycle, <code>evaluateListings</code>/<code>evaluateEquipListings</code>, <code>maybeBargainBuy</code>.</p>
+    <p><code>server.bots.BotFreeMarketManager</code> — the FM errand, stall lifecycle, <code>repriceUnsold</code>/<code>recordSaleOutcome</code> (censored-outcome tape), <code>maybeBargainBuy</code>.</p>
     <p><code>server.bots.BotScrollValuer</code> / <code>BotScrollPlanner</code> — the reproduction-cost DP and the one-scroll-then-rescan planner (see <a href="self-scrolling.html">self-scrolling.html</a>).</p>
-    <p class="muted">Design of record: <code>docs/bot/living-economy-design.md</code>. Build ledger: <code>docs/bot/kb/project_living_economy_build.md</code>. Math reference: <code>docs/bot/economy-design.md</code>.</p>
+    <p class="muted">As-built map and invariants: <code>docs/bot/economy.md</code>. Price-discovery notes: <code>docs/bot/kb/kb_bot_market_price_discovery.md</code>. The original design docs (<code>living-economy-design.md</code>, <code>economy-design.md</code>, the build ledger) were consolidated into those two; the rev-2 design survives in git history (<code>fa5f59405</code>).</p>
   </div>
 
 </div>
