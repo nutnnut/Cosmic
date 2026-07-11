@@ -17,7 +17,14 @@ roll. A criterion therefore has two ORTHOGONAL dimensions that combine (`BotMark
 stat floor + clean flag, stat aliases att/watk/wa, matt/ma/tma, str, dex, int, luk): `B> 8+ str clean
 steel knuckler 500k` asks for an unscrolled piece that DROPPED well. Want selection scans the
 drop-roll space capped at the real randomizer range, so a shouted criterion is always droppable. The
-criterion prices the **minimum acceptable roll**, not a specific piece: a seller who answers the want
+criterion prices the **minimum acceptable roll**, not a specific piece. A want must also be
+OBTAINABLE: the item is NPC-shop-sold, or its best dropper spawns on a map the world graph can
+actually travel to (`BotScrollManager.farmableMaps` — one static flood from Henesys with every legal
+conveyance, computed once per run since the portal/ferry graph is baked WZ truth). Live spawn points
+alone don't qualify: event arenas carry real spawn rows with no travel route in (Giant Cake in Cake
+vs Pie, sole dropper of Maple Hats/Leaves, once had bots shouting B> for event-only gear). The same
+gate keeps event-only SCROLLS out of `scrollsByCategory`, so they never seed market curves either.
+A seller who answers the want
 owes the *worst* qualifying item it holds, and the buyer's real protection is the per-roll
 willingness-to-pay re-check at confirm time (`BotScrollManager.equipBuyCeilingMeso` on the ACTUAL
 staged piece), not the number it shouted. Never read the shouted price as a promise about quality.

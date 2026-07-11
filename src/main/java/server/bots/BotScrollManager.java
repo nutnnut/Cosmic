@@ -1234,9 +1234,10 @@ final class BotScrollManager {
             if (st == null || st.getOrDefault("success", 0) <= 0 || st.getOrDefault("cursed", 0) > 0) {
                 continue;
             }
-            // Obtainable-only: a scroll no shop legitimately sells and no mob drops can't set a real
-            // reproduction cost, so it must not seed the market curves (see field javadoc).
-            if (shopPrices().get(sid) == null && bestDropChance(sid) <= 0) {
+            // Obtainable-only: a scroll no shop legitimately sells and nobody can farm (no dropper,
+            // or droppers only on event maps no travel route reaches) can't set a real reproduction
+            // cost, so it must not seed the market curves (see field javadoc).
+            if (shopPrices().get(sid) == null && !droppedByLiveSpawn(sid, farmableMaps())) {
                 continue;
             }
             List<Integer> reqs = ii.getScrollReqs(sid);
@@ -2250,6 +2251,7 @@ final class BotScrollManager {
         // Cheap pre-rank: job-neutral stat lead of (clean + reachable bands) over the worn piece.
         Set<Integer> obtainable = new HashSet<>(shopPrices().keySet());
         obtainable.addAll(bestDropperByItem().keySet());
+        Set<Integer> reachable = farmableMaps(); // null = graph unavailable, skip travel gate
         Map<Short, Double> wornScoreBySlot = new HashMap<>();
         record Cheap(int itemId, Equip clean, double lead) {}
         List<Cheap> ranked = new ArrayList<>();
@@ -2266,8 +2268,8 @@ final class BotScrollManager {
             if (st == null || st.getOrDefault("reqLevel", 0) > bot.getLevel()) {
                 continue;
             }
-            if (!shopPrices().containsKey(id) && !droppedByLiveSpawn(id)) {
-                continue; // event-only / unreachable-dropper items: nobody can farm one to sell
+            if (!shopPrices().containsKey(id) && !droppedByLiveSpawn(id, reachable)) {
+                continue; // event-only / travel-unreachable droppers: nobody can farm one to sell
             }
             if (!(ii.getEquipById(id) instanceof Equip clean)) {
                 continue;
@@ -2401,11 +2403,14 @@ final class BotScrollManager {
         return tuc > 0 && eq.getUpgradeSlots() == tuc;
     }
 
-    /** True when the item's best dropper actually spawns somewhere bots/players can farm — an
-     *  event-only or unreachable dropper row in {@code drop_data} doesn't make an item obtainable,
-     *  and shouting a want for it is asking for something nobody can go get. Fails OPEN when the
-     *  spawn index isn't available (unit tests). */
-    private static boolean droppedByLiveSpawn(int itemId) {
+    /** True when the item's best dropper spawns somewhere a player/bot could actually go farm it —
+     *  {@code reachable} being the {@link #farmableMaps()} world flood. Spawn points alone aren't
+     *  enough: an event arena can carry live, non-town spawn rows (e.g. Giant Cake in Cake vs Pie,
+     *  the only dropper of Maple Hats/Leaves) while no travel route leads in, and pricing or wanting
+     *  its drops is trading in something nobody can go get. A null {@code reachable} (world graph
+     *  unavailable) skips the travel gate, and a failing spawn index skips the whole check — fail
+     *  OPEN so tests/boot without the caches don't starve wants. */
+    private static boolean droppedByLiveSpawn(int itemId, Set<Integer> reachable) {
         int[] dropper = bestDropperByItem().get(itemId);
         if (dropper == null) {
             return false;
@@ -2414,7 +2419,8 @@ final class BotScrollManager {
             BotSpawnIndex.Index index = BotSpawnIndex.get();
             for (BotSpawnIndex.SpawnSite site : BotSpawnIndex.spawnSites(dropper[0])) {
                 BotSpawnIndex.MapSpawns map = index.byMap().get(site.mapId());
-                if (map != null && !map.town() && site.spawnPoints() > 0) {
+                if (map != null && !map.town() && site.spawnPoints() > 0
+                        && (reachable == null || reachable.contains(site.mapId()))) {
                     return true;
                 }
             }
@@ -2422,6 +2428,34 @@ final class BotScrollManager {
             return true; // index unavailable — don't silently starve wants in tests/boot
         }
         return false;
+    }
+
+    /** Hub the farmable-world flood starts from (Henesys): connected by portal/taxi/ferry to every
+     *  legitimately walkable region, so anything NOT in the flood is event-/script-gated content. */
+    private static final int FARMABLE_FLOOD_HUB_MAPID = 100000000;
+
+    /** Lazily-computed set of every map ANYONE could travel to: one world-graph flood from a hub
+     *  town with all legal conveyances allowed (scroll, taxi with a full wallet, ferry, no level
+     *  gate). The portal/ferry graph is baked WZ truth — it cannot change until restart — so this
+     *  is computed once and shared by every bot, unlike the per-bot farm-command reachability
+     *  (which also weighs THAT bot's wallet/level). Null when the graph can't answer (unit tests
+     *  without WZ): callers skip the travel gate then (fail open), and the failure is not cached
+     *  so a boot-time hiccup heals on the next pass. */
+    private static volatile Set<Integer> farmableMaps;
+
+    private static Set<Integer> farmableMaps() {
+        Set<Integer> cached = farmableMaps;
+        if (cached != null) {
+            return cached;
+        }
+        try {
+            cached = BotWorldGraph.reachableWithin(FARMABLE_FLOOD_HUB_MAPID, Integer.MAX_VALUE,
+                    new BotWorldGraph.RouteOptions(true, Integer.MAX_VALUE, true));
+        } catch (RuntimeException e) {
+            return null;
+        }
+        farmableMaps = cached;
+        return cached;
     }
 
     private static BotMarketGrammar.Stat grammarStat(String wzKey) {
