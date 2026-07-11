@@ -5,6 +5,11 @@ subsystem references, not task status, handoffs, or release checklists. Prefer t
 for broad combat/navigation workflows and open a KB entry only for the specific failure mode at hand.
 The only actionable backlog is [`../ROADMAP.md`](../ROADMAP.md).
 
+Maintain entries as CURRENT TRUTH: when a fact changes, edit or replace the stale text in place —
+never append dated "UPDATE:" blocks at the bottom that leave obsolete claims standing above them.
+Every line of an entry must be true as written; git history (keep commit hashes as provenance where
+useful) records how it evolved.
+
 ## Navigation and movement
 
 - [`kb_bot_nav_oscillation_rootcauses.md`](kb_bot_nav_oscillation_rootcauses.md): recurring loop classes
