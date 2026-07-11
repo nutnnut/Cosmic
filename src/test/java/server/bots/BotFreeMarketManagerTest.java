@@ -57,10 +57,10 @@ class BotFreeMarketManagerTest {
     }
 
     @Test
-    void slotWorthTracksTheFarmingCostScaffold() {
-        assertEquals(Math.round(BotScrollManager.FARM_MESO_PER_SECOND * 30.0),
+    void slotWorthTracksTheFarmingCostAnchor() {
+        assertEquals(Math.round(BotScrollManager.farmMesoPerSecond() * 30.0),
                 BotFreeMarketManager.slotWorthMesos(),
-                "a slot must out-earn ~30s of the farming-cost anchor (retires with it at P3)");
+                "a slot must out-earn ~30s of the live farming-income anchor");
     }
 
     @Test
@@ -84,6 +84,29 @@ class BotFreeMarketManagerTest {
         BotFreeMarketManager.ListingPlan plan = new BotFreeMarketManager.ListingPlan(
                 new client.inventory.Item(2040804, (short) 0, (short) 5), (short) 1, (short) 5, 600_000);
         assertEquals(3_000_000, plan.bundlePrice(), "bundle price = unit ask x per-bundle qty");
+    }
+
+    @Test
+    void priceStylingAppliesToTheBuyerFacingBundleTotal() {
+        BotFreeMarketManager.NpcSellLookup realSell = BotFreeMarketManager.npcSell;
+        BotFreeMarketManager.NpcShopPrice realShop = BotFreeMarketManager.npcShopPrice;
+        try {
+            BotFreeMarketManager.npcShopPrice = id -> 0;
+            BotFreeMarketManager.npcSell = (id, qty) -> 1_000; // far below: styling is free to act
+            var plan = new BotFreeMarketManager.ListingPlan(
+                    new client.inventory.Item(2040804, (short) 0, (short) 5), (short) 1, (short) 5, 623_457);
+            long raw = plan.bundlePrice(); // 3,117,285 — calculator output
+            assertEquals(BotMarketMath.humanizeAsk(raw, 7), BotFreeMarketManager.styledBundlePrice(plan, 7),
+                    "charm rounds the whole-bundle total the buyer reads, not the per-unit quotient");
+
+            // Presentation never crosses economics: salvage at the styled value -> raw total stands.
+            BotFreeMarketManager.npcSell = (id, qty) -> BotMarketMath.humanizeAsk(raw, 7);
+            assertEquals(raw, BotFreeMarketManager.styledBundlePrice(plan, 7),
+                    "styling that would dip to/below NPC sell-back is discarded");
+        } finally {
+            BotFreeMarketManager.npcSell = realSell;
+            BotFreeMarketManager.npcShopPrice = realShop;
+        }
     }
 
     @Test

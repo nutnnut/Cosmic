@@ -65,4 +65,21 @@ class BotFarmingCostModelTest {
         double cost = BotFarmingCostModel.rarityMeso(in(5.0, 1000, 1000));
         assertEquals(1.0, cost, 1e-9);
     }
+
+    @Test
+    void byproductCreditNetsAgainstEffort() {
+        // 1000 kills × 1s effort at 1 meso/s = 1000 gross; the dropper yields 0.4 meso/kill anyway.
+        BotFarmingCostModel.FarmInput input = in(0.001, 1000, 1000);
+        assertEquals(1000.0, BotFarmingCostModel.rarityMeso(input), 1e-9);
+        assertEquals(600.0, BotFarmingCostModel.rarityMeso(input, 0.4), 1e-9,
+                "byproduct income comes off the per-kill effort");
+    }
+
+    @Test
+    void onPathDropperNetsToZeroNotNegative() {
+        // Byproduct worth MORE than the effort (an ordinary grind mob): net clamps at 0 — the item
+        // arrives free while leveling; salvage floors the price downstream, never a negative cost.
+        double net = BotFarmingCostModel.rarityMeso(in(0.001, 1000, 1000), 5.0);
+        assertEquals(0.0, net, 1e-9);
+    }
 }

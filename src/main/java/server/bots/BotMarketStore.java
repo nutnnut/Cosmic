@@ -116,6 +116,26 @@ public final class BotMarketStore {
         return out;
     }
 
+    /** Wipe every persisted private belief (test-server economy reset). */
+    void clearAllBeliefs() {
+        try (Connection con = DatabaseConnection.getConnection();
+             PreparedStatement ps = con.prepareStatement("DELETE FROM bot_market_belief")) {
+            ps.executeUpdate();
+        } catch (SQLException e) {
+            log.warn("bot_market_belief clear failed: {}", e.toString());
+        }
+    }
+
+    /** Wipe every persisted consensus row (test-server economy reset). */
+    void clearConsensus() {
+        try (Connection con = DatabaseConnection.getConnection();
+             PreparedStatement ps = con.prepareStatement("DELETE FROM bot_market_consensus")) {
+            ps.executeUpdate();
+        } catch (SQLException e) {
+            log.warn("bot_market_consensus clear failed: {}", e.toString());
+        }
+    }
+
     /** Batch upsert of consensus rows the sweep moved. */
     public void saveConsensus(Collection<StoredConsensus> rows) {
         if (rows.isEmpty()) {

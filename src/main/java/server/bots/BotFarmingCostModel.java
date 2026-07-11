@@ -49,12 +49,27 @@ final class BotFarmingCostModel {
     /** Expected meso-equivalent effort to obtain one of the item, or {@code +∞} when un-farmable
      *  (no drop rate, or the producer can't damage the mob). */
     static double rarityMeso(FarmInput in) {
+        return rarityMeso(in, 0.0);
+    }
+
+    /**
+     * Rarity net of byproduct income: every kill spent chasing the drop also banks the dropper's
+     * ordinary yield (meso + NPC-salvageable loot), so that credit comes off the effort. For an
+     * on-grind-path dropper the two roughly cancel — the item arrives for free while leveling and
+     * nets to ~0 (callers floor at salvage/handling) — while a residual survives exactly where
+     * targeted farming really costs more than it returns (high-HP, low-yield, off-path mobs).
+     *
+     * @param byproductMesoPerKill expected meso value of everything ELSE one kill of the dropper
+     *                             yields (meso EV + NPC salvage EV of its drops)
+     */
+    static double rarityMeso(FarmInput in, double byproductMesoPerKill) {
         if (in.mesoPerSecond() <= 0 || in.baseDropRate() <= 0 || in.damagePerSecond() <= 0) {
             return Double.POSITIVE_INFINITY;
         }
         double expectedKills = Math.min(MAX_EXPECTED_KILLS, 1.0 / Math.min(1.0, in.baseDropRate()));
-        double effortSeconds = expectedKills * (secondsPerKill(in) + Math.max(0.0, in.seekOverheadSeconds()));
-        return effortSeconds * in.mesoPerSecond();
+        double effortPerKill = (secondsPerKill(in) + Math.max(0.0, in.seekOverheadSeconds())) * in.mesoPerSecond();
+        double netPerKill = Math.max(0.0, effortPerKill - Math.max(0.0, byproductMesoPerKill));
+        return expectedKills * netPerKill;
     }
 
     /** Realistic, capped time to kill one mob: at least one attack cycle, otherwise HP ÷ DPS. */

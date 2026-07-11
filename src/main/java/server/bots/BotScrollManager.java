@@ -17,6 +17,8 @@ import constants.inventory.ItemConstants;
 import server.ItemInformationProvider;
 import server.life.LifeFactory;
 import server.life.Monster;
+import server.life.MonsterDropEntry;
+import server.life.MonsterInformationProvider;
 import tools.DatabaseConnection;
 import tools.PacketCreator;
 import tools.Pair;
@@ -98,11 +100,16 @@ final class BotScrollManager {
     private static final int CLEAN_BASE_COST_FLOOR = 100_000;
 
     // ---- Farming-cost (rarity→meso) anchors. See BotFarmingCostModel. ----
-    /** Effort→meso anchor: how much a second of the bot's farming is worth. The single tunable knob
-     *  here (economy-design §9); a future ledger can replace it with the bot's real meso/sec.
-     *  Package-visible: BotFreeMarketManager prices a stall slot's bother off the same anchor,
-     *  so the P3 retirement (own observed meso/hr) swaps both call sites at once. */
-    static final double FARM_MESO_PER_SECOND = 1_000.0;
+    /** Effort→meso anchor fallback: serves only until {@link #farmMesoPerSecond} has a live sample
+     *  (boot, unit tests, nobody grinding). Deliberately modest — the old flat 1,000/s scaffold
+     *  overpriced farmed items severalfold against what a bot's hour of grinding actually banks. */
+    static final double FARM_MESO_PER_SECOND_FALLBACK = 250.0;
+    /** How long one sampled world farming-income rate serves before resampling. */
+    private static final long FARM_RATE_TTL_MS = 5 * 60_000L;
+    /** Enough grinding bots for a stable median without sweeping the whole population. */
+    private static final int FARM_RATE_SAMPLE_CAP = 48;
+    private static volatile double cachedFarmMesoPerSecond;
+    private static volatile long farmRateSampledAtMs;
     /** FALLBACK per-kill travel/respawn-wait overhead — used only when the spawn index has no
      *  data for the dropper; otherwise {@link #seekOverheadSeconds} supplies real density. */
     private static final double FARM_SEEK_OVERHEAD_SECONDS = 3.0;
@@ -1447,6 +1454,113 @@ final class BotScrollManager {
         return best;
     }
 
+    /** Lazily-built floor of clean stat scores among OBTAINABLE equips (NPC-shop-sold or
+     *  mob-dropped), per (equip category, reqLevel decade): the cheapest same-slot alternative a
+     *  buyer could wear instead. Built once from the two already-cached source maps. */
+    private static volatile Map<Long, Double> baselineCleanScoreByBucket;
+
+    private static long baselineBucketKey(int category, int reqLevel) {
+        return category * 1000L + Math.min(25, Math.max(0, reqLevel / 10));
+    }
+
+    private static Map<Long, Double> baselineCleanScores() {
+        Map<Long, Double> cached = baselineCleanScoreByBucket;
+        if (cached != null) {
+            return cached;
+        }
+        Map<Long, Double> m = new HashMap<>();
+        ItemInformationProvider ii = ItemInformationProvider.getInstance();
+        Set<Integer> obtainable = new HashSet<>(shopPrices().keySet());
+        obtainable.addAll(bestDropperByItem().keySet());
+        for (int id : obtainable) {
+            if (id < 1_000_000 || id >= 2_000_000) {
+                continue; // equips only
+            }
+            Map<String, Integer> st;
+            try {
+                st = ii.getEquipStats(id);
+            } catch (RuntimeException e) {
+                continue;
+            }
+            if (st == null) {
+                continue;
+            }
+            double score = marketStatValueOfClean(id, st);
+            m.merge(baselineBucketKey(id / 10000 % 100, st.getOrDefault("reqLevel", 0)), score, Math::min);
+        }
+        baselineCleanScoreByBucket = m;
+        return m;
+    }
+
+    /** Cheapest-alternative clean score for the slot at (or walking down from) the level decade;
+     *  NaN when the catalog knows no obtainable alternative for the category at all. */
+    private static double slotLevelBaselineScore(int category, int reqLevel) {
+        Map<Long, Double> m = baselineCleanScores();
+        for (int bucket = Math.min(25, Math.max(0, reqLevel / 10)); bucket >= 0; bucket--) {
+            Double s = m.get(category * 1000L + bucket);
+            if (s != null) {
+                return s;
+            }
+        }
+        return Double.NaN;
+    }
+
+    /** Fraction of the best-buyer per-EV ceiling a fresh seed opens at. Deliberately under real
+     *  demand: an overpriced key starves of the clearings that would correct it, while an
+     *  underpriced one clears fast and SOLD_FAST pressure walks it up on real evidence. */
+    private static final double CLEAN_PREMIUM_PER_EV_FRACTION = 0.5;
+
+    /**
+     * Demand-anchored worth of a clean piece's stat lead over the cheapest obtainable same-slot,
+     * same-level-band alternative, at the per-EV anchor buyers already use
+     * ({@link #SCROLL_CEILING_PER_EV} × {@link #slotDurabilityFactor}). This is what separates a
+     * 2-ATT clean cape from a statless cape of the same level: identical farm effort, very
+     * different buyer value. 0 when the piece IS the baseline or no alternative is cataloged.
+     */
+    static double cleanUtilityPremiumMeso(ItemInformationProvider ii, int itemId) {
+        Map<String, Integer> st;
+        try {
+            st = ii.getEquipStats(itemId);
+        } catch (RuntimeException e) {
+            return 0;
+        }
+        if (st == null) {
+            return 0;
+        }
+        double baseline = slotLevelBaselineScore(itemId / 10000 % 100, st.getOrDefault("reqLevel", 0));
+        if (Double.isNaN(baseline)) {
+            return 0;
+        }
+        double lead = marketStatValueOfClean(itemId, st) - baseline;
+        if (lead <= 0) {
+            return 0;
+        }
+        return CLEAN_PREMIUM_PER_EV_FRACTION * SCROLL_CEILING_PER_EV * lead
+                * slotDurabilityFactor(itemId / 10000 % 100);
+    }
+
+    /**
+     * Band-0 market worth of a clean piece — the seed the ask/curve machinery opens from when no
+     * clearing evidence exists. Demand-anchored on the stat lead over the cheapest slot
+     * alternative, clamped by supply: never below the net-of-byproduct acquisition cost (an
+     * on-path drop is nearly free, so only its stat utility justifies a premium) and never above
+     * the gross targeted acquisition cost (nobody pays more than farm-it-yourself — abundance
+     * beats utility). With neither shop nor dropper, the reqLevel placeholder floors the premium.
+     */
+    private static double cleanMarketWorthMeso(ProducerCombat pc, ItemInformationProvider ii, int itemId) {
+        Integer shop = shopPrices().get(itemId);
+        double shopCost = shop != null && shop > 0 ? shop : Double.POSITIVE_INFINITY;
+        double grossAcq = Math.min(shopCost, farmingCostMeso(pc, itemId));
+        double premium = cleanUtilityPremiumMeso(ii, itemId);
+        if (Double.isInfinite(grossAcq)) {
+            Map<String, Integer> st = ii.getEquipStats(itemId);
+            int reqLevel = st == null ? 0 : st.getOrDefault("reqLevel", 0);
+            return Math.max(Math.max(CLEAN_BASE_COST_FLOOR, reqLevel * CLEAN_BASE_COST_PER_LEVEL), premium);
+        }
+        double netAcq = Math.min(shopCost, farmingCostMesoNet(pc, itemId));
+        return Math.min(Math.max(netAcq, premium), grossAcq);
+    }
+
     /**
      * The asking bot's farming combat context, resolved once per pass: its {@link BotEntry} (for the
      * chosen attack skills), the bot itself, and the attack cycle (DPS denominator). Per-mob damage is
@@ -1501,21 +1615,113 @@ final class BotScrollManager {
     }
 
     /**
-     * Drop-effort → meso (rarity) for an item the <em>asking bot</em> would farm: expected kills (from
-     * the item's best drop rate) × realistic capped time-to-kill × the meso/sec anchor. Returns
-     * {@code +∞} when no mob drops it or the bot can't damage the dropper, so callers fall back to
-     * other sources. Producer per-attack damage uses the combat SSOT
-     * ({@link BotCombatManager#estimateBestSkillHitDamage}) — magic vs physical, skill %, lines and mob
-     * defense all handled there — falling back to a basic physical hit only when the bot has no skill.
+     * Live effort→meso anchor: what a second of bot farming actually returns, sampled across the
+     * population — each grinding bot's modeled sustained kill rate on its current map
+     * ({@link BotGrindAdvisor#modeledCandidate}) × that mob's per-kill yield (meso EV + NPC-salvage
+     * EV of its drops), median-aggregated so one whale or one starved bot can't skew it. TTL-cached;
+     * keeps the last good sample when nobody is grinding right now, and falls back to
+     * {@link #FARM_MESO_PER_SECOND_FALLBACK} before the first sample (boot, unit tests).
+     * Package-visible: BotFreeMarketManager prices a stall slot's bother off the same anchor.
      */
-    private static double farmingCostMeso(ProducerCombat pc, int itemId) {
+    static double farmMesoPerSecond() {
+        long now = System.currentTimeMillis();
+        if (now - farmRateSampledAtMs < FARM_RATE_TTL_MS && cachedFarmMesoPerSecond > 0) {
+            return cachedFarmMesoPerSecond;
+        }
+        farmRateSampledAtMs = now; // claim first: concurrent callers at worst double-sample
+        double sampled = sampleWorldFarmMesoPerSecond();
+        if (sampled > 0) {
+            cachedFarmMesoPerSecond = sampled;
+        }
+        double cached = cachedFarmMesoPerSecond;
+        return cached > 0 ? cached : FARM_MESO_PER_SECOND_FALLBACK;
+    }
+
+    private static double sampleWorldFarmMesoPerSecond() {
+        List<Double> rates = new ArrayList<>();
+        try {
+            for (BotEntry entry : BotManager.getInstance().allBotEntries()) {
+                Character bot = entry.bot;
+                if (bot == null || bot.getMap() == null) {
+                    continue;
+                }
+                BotGrindPlanner.MobCandidate c = BotGrindAdvisor.modeledCandidate(entry, bot, bot.getMapId());
+                if (c == null) {
+                    continue; // town/FM/instanced or cold model — not a grinding bot right now
+                }
+                double kph = BotGrindPlanner.killsPerHour(c);
+                double perKill = kph <= 0 ? 0 : mobKillValueMeso(bot, c.mobId());
+                if (perKill <= 0) {
+                    continue;
+                }
+                rates.add(kph * perKill / 3600.0);
+                if (rates.size() >= FARM_RATE_SAMPLE_CAP) {
+                    break;
+                }
+            }
+        } catch (RuntimeException e) {
+            return 0; // boot/unit-test paths without a live bot registry
+        }
+        if (rates.isEmpty()) {
+            return 0;
+        }
+        rates.sort(Double::compare);
+        return rates.get(rates.size() / 2);
+    }
+
+    /** Cached base per-kill yield of a mob at 1x rates: meso drop EV + NPC-salvage EV of item drops. */
+    private record MobKillValue(double mesoEv, double salvageEv) {}
+
+    private static final Map<Integer, MobKillValue> mobKillValueCache = new ConcurrentHashMap<>();
+
+    /** Expected meso value of ONE ordinary kill of {@code mobId} for {@code bot}: meso EV × meso
+     *  rate + NPC sell-back EV of its item drops × drop rate — the byproduct side of farming. */
+    private static double mobKillValueMeso(Character bot, int mobId) {
+        MobKillValue v = mobKillValueCache.computeIfAbsent(mobId, id -> {
+            double meso = 0, salvage = 0;
+            try {
+                ItemInformationProvider ii = ItemInformationProvider.getInstance();
+                for (MonsterDropEntry de : MonsterInformationProvider.getInstance().retrieveDrop(id)) {
+                    double p = Math.min(1.0, de.chance / DROP_CHANCE_DENOMINATOR);
+                    if (p <= 0) {
+                        continue;
+                    }
+                    if (de.itemId == 0) {
+                        meso += p * (de.Minimum + de.Maximum) / 2.0;
+                    } else if (de.questid == 0) {
+                        double qty = Math.max(1.0, (de.Minimum + de.Maximum) / 2.0);
+                        double unit = ii.getPrice(de.itemId, 1);
+                        if (unit > 0) {
+                            salvage += p * qty * unit;
+                        }
+                    }
+                }
+            } catch (RuntimeException e) {
+                // WZ/DB unavailable (tests) — no yield, callers treat as no byproduct credit
+            }
+            return new MobKillValue(meso, salvage);
+        });
+        double mesoRate = 1, dropRate = 1;
+        try {
+            mesoRate = Math.max(1, bot.getMesoRate());
+            dropRate = Math.max(1, bot.getDropRate());
+        } catch (RuntimeException e) {
+            // mocked/partial Character — 1x rates
+        }
+        return v.mesoEv() * mesoRate + v.salvageEv() * dropRate;
+    }
+
+    /** Farm inputs for the item's best dropper, or null when un-farmable by this producer. */
+    private record FarmContext(BotFarmingCostModel.FarmInput input, int dropperMobId) {}
+
+    private static FarmContext farmContext(ProducerCombat pc, int itemId) {
         int[] dropper = bestDropperByItem().get(itemId); // {mobId, chance}
         if (dropper == null) {
-            return Double.POSITIVE_INFINITY;
+            return null;
         }
         Monster mob = LifeFactory.getMonster(dropper[0]);
         if (mob == null) {
-            return Double.POSITIVE_INFINITY;
+            return null;
         }
         int mobHp = Math.max(1, mob.getMaxHp());
         double perAttack = BotCombatManager.estimateBestSkillHitDamage(pc.entry(), pc.bot(), mob);
@@ -1525,10 +1731,36 @@ final class BotScrollManager {
             perAttack = BotEquipManager.expectedDamageAfterDef(pc.bot().calculateMaxBaseDamage(pc.bot().getTotalWatk()), mobWdef);
         }
         double dps = perAttack / pc.attackCycleSeconds();
-        BotFarmingCostModel.FarmInput in = new BotFarmingCostModel.FarmInput(
+        return new FarmContext(new BotFarmingCostModel.FarmInput(
                 dropper[1] / DROP_CHANCE_DENOMINATOR, mobHp, dps,
-                pc.attackCycleSeconds(), seekOverheadSeconds(dropper[0]), FARM_MESO_PER_SECOND);
-        return BotFarmingCostModel.rarityMeso(in);
+                pc.attackCycleSeconds(), seekOverheadSeconds(dropper[0]), farmMesoPerSecond()),
+                dropper[0]);
+    }
+
+    /**
+     * Drop-effort → meso (rarity) for an item the <em>asking bot</em> would farm: expected kills (from
+     * the item's best drop rate) × realistic capped time-to-kill × the live meso/sec anchor. Returns
+     * {@code +∞} when no mob drops it or the bot can't damage the dropper, so callers fall back to
+     * other sources. Producer per-attack damage uses the combat SSOT
+     * ({@link BotCombatManager#estimateBestSkillHitDamage}) — magic vs physical, skill %, lines and mob
+     * defense all handled there — falling back to a basic physical hit only when the bot has no skill.
+     * This is the GROSS targeted-farm cost; behavior decisions (scroll planning, shelf protection)
+     * read it. Market seeding reads {@link #farmingCostMesoNet} instead.
+     */
+    private static double farmingCostMeso(ProducerCombat pc, int itemId) {
+        FarmContext fc = farmContext(pc, itemId);
+        return fc == null ? Double.POSITIVE_INFINITY : BotFarmingCostModel.rarityMeso(fc.input());
+    }
+
+    /** Farming cost net of the dropper's byproduct yield — the acquisition floor of a market seed:
+     *  an on-grind-path drop arrives nearly free while leveling, so its net cost collapses toward
+     *  zero and salvage floors the ask ({@link BotFarmingCostModel#rarityMeso(FarmInput, double)}). */
+    private static double farmingCostMesoNet(ProducerCombat pc, int itemId) {
+        FarmContext fc = farmContext(pc, itemId);
+        if (fc == null) {
+            return Double.POSITIVE_INFINITY;
+        }
+        return BotFarmingCostModel.rarityMeso(fc.input(), mobKillValueMeso(pc.bot(), fc.dropperMobId()));
     }
 
     /** Best (highest) {@code drop_data} chance for the item across all droppers (out of 1,000,000),
@@ -1586,8 +1818,13 @@ final class BotScrollManager {
         if (perceived > 0) {
             return perceived;
         }
+        // No market evidence: seed at obtain cost, capped by what the scroll's combat value is
+        // actually worth to a buyer — a rare drop's targeted-farm cost can run to billions, but
+        // nobody pays past the stat EV it injects. Statless scrolls (ceiling 0) keep obtain cost.
         double farm = farmingCostMeso(pc, scrollId);
-        return Double.isFinite(farm) ? farm : DEFAULT_SCROLL_COST_MESO;
+        double seed = Double.isFinite(farm) ? farm : DEFAULT_SCROLL_COST_MESO;
+        double ceiling = scrollCombatCeilingMeso(scrollId);
+        return ceiling > 0 ? Math.min(seed, ceiling) : seed;
     }
 
     /** The bot's OWN read of a scroll's market price via its belief book (design invariant §10.6:
@@ -1874,7 +2111,9 @@ final class BotScrollManager {
         double unit = bandUnit(gains);
         int maxBand = maxBand(gains, unit, tuc);
         int band = equipQualityBand(ii, eq);
-        double cleanCost = cleanBaseCostMeso(pc, ii, eq.getItemId());
+        // Market seed, not raw acquisition: stat-lead premium over the slot's cheapest
+        // alternative, clamped between net-of-byproduct and gross farm cost.
+        double cleanCost = cleanMarketWorthMeso(pc, ii, eq.getItemId());
         java.util.function.DoubleUnaryOperator vf = cachedReproductionValue(
                 baseScore, tuc, marketReproSpecs(pc, ii, eq.getItemId()), cleanCost);
         java.util.function.DoubleUnaryOperator bandCurve = b -> {

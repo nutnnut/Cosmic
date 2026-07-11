@@ -166,8 +166,10 @@ on/off. Range buttons 24h/3d/7d/30d/1y; auto-refreshes. Linked from the landing 
 
 ### `/api/market/items`
 Items with any tape activity, most-cleared first (max 300): the chart's item picker.
+`farmMesoPerSecond` is the live effort→meso anchor (median sampled bot farming income,
+`BotScrollManager.farmMesoPerSecond`) — the calibration surface for seed prices.
 ```
-{"items":[{"item","name","sales","events","lastAt","lastPrice"}, ...]}
+{"farmMesoPerSecond":123.4,"items":[{"item","name","sales","events","lastAt","lastPrice"}, ...]}
 ```
 
 ### `/api/market/history?item=<itemId>[&hours=168]`
@@ -256,6 +258,18 @@ character that already has the build you want, then `/api/command moveto x y` to
 or load failed.
 ```
 {"results":[{"id":767,"spawned":true},{"id":814,"spawned":false,"note":"already online or load failed"}]}
+```
+
+### `/api/economyreset?confirm=1`
+**Destructive, test-server only.** Wipes the bot-market economy so prices reseed from scratch:
+clears `bot_market_event` (tape), `bot_market_consensus` and `bot_market_belief` (both persisted
+belief layers), drops every bot's in-memory `BotMarketBook` and unsold-pressure state
+(`fmMarketOfferByKey`, `fmPlannedListings`), and force-closes every bot's open hired-merchant
+stall so the next market trip relists from fresh seeds. Requires `?confirm=1` (missing/wrong ->
+400, no mutation). A book flushing concurrently on another thread may re-save a handful of stale
+rows after the clear; call it twice if that matters. State-changing GET (LAN debug only).
+```
+{"cleared":true,"books":<n>,"stalls":<n>}
 ```
 
 ### `/api/navprobe?id=<botCharId>&x=<>&y=<>[&skills=1][&mode=normal|exhaustive]`

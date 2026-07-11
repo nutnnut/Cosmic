@@ -1604,6 +1604,11 @@ public class BotManager {
         }
     }
 
+    /** Snapshot of every registered bot entry (world farm-rate sampling, economy reset). */
+    List<BotEntry> allBotEntries() {
+        return new ArrayList<>(botsByCharId.values());
+    }
+
     private void indexBotEntry(BotEntry entry) {
         if (entry != null && entry.bot != null) {
             botsByCharId.put(entry.bot.getId(), entry);

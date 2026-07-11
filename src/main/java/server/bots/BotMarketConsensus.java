@@ -216,6 +216,19 @@ public final class BotMarketConsensus implements BotMarketBook.ConsensusSource {
         return new WeightedEvidence(BotMarketMath.weightedMedian(points), totalWeight, halfLife);
     }
 
+    /** Full in-memory + persisted reset (test-server reseed endpoint). Marks the store loaded so
+     *  nothing re-reads the just-cleared table, and advances the sweep cursor so a pre-reset tape
+     *  window can never be re-folded. */
+    void resetAll(long nowMs) {
+        byKey.clear();
+        updatedAtMs.clear();
+        loaded = true;
+        lastSweepMs = nowMs;
+        if (store != null) {
+            store.clearConsensus();
+        }
+    }
+
     private void ensureLoaded() {
         if (loaded || store == null) {
             loaded = true;

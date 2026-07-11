@@ -256,6 +256,32 @@ final class BotFreeMarketManager {
         }
     }
 
+    /** Full economy reseed (test-server web endpoint): wipe the tape and both persisted belief
+     *  layers, drop every bot's in-memory book and unsold-pressure state, and force-close bot
+     *  stalls so the next market trip relists from fresh seeds. Books flushing concurrently may
+     *  re-save a handful of stale rows; run the reset twice if that matters. */
+    static String resetEconomyForReseed() {
+        BotMarketLedger.getInstance().clearAll();
+        BotMarketConsensus.getInstance().resetAll(System.currentTimeMillis());
+        BotMarketStore.getInstance().clearAllBeliefs();
+        int books = 0, stalls = 0;
+        for (BotEntry entry : BotManager.getInstance().allBotEntries()) {
+            entry.marketBook = null;
+            entry.fmMarketOfferByKey.clear();
+            entry.fmPlannedListings = List.of(); // stale plans carry pre-reset prices; drop so restock replans
+            books++;
+            Character bot = entry.bot;
+            if (bot != null) {
+                HiredMerchant hm = bot.getWorldServer().getHiredMerchant(bot.getId());
+                if (hm != null) {
+                    hm.forceClose();
+                    stalls++;
+                }
+            }
+        }
+        return "{\"cleared\":true,\"books\":" + books + ",\"stalls\":" + stalls + "}";
+    }
+
     // ---- pure pricing core (unit-tested) -------------------------------------------------------
 
     /**
@@ -307,14 +333,14 @@ final class BotFreeMarketManager {
         return gross - Trade.getFee(gross) - npcSellWholeStack;
     }
 
-    /** A stall slot must out-earn the time the trip represents: ~this many seconds of the
-     *  farming-cost scaffold ({@link BotScrollManager#FARM_MESO_PER_SECOND}; both retire together
-     *  at P3). Keeps NPC staples (potions) off the stall without a ban — their premium is real
-     *  but tiny, so it never covers the bother of a slot. */
+    /** A stall slot must out-earn the time the trip represents: ~this many seconds of the live
+     *  farming income anchor ({@link BotScrollManager#farmMesoPerSecond}). Keeps NPC staples
+     *  (potions) off the stall without a ban — their premium is real but tiny, so it never covers
+     *  the bother of a slot. */
     private static final double LISTING_WORTH_SECONDS = 30.0;
 
     static long slotWorthMesos() {
-        return Math.round(BotScrollManager.FARM_MESO_PER_SECOND * LISTING_WORTH_SECONDS);
+        return Math.round(BotScrollManager.farmMesoPerSecond() * LISTING_WORTH_SECONDS);
     }
 
     /** A planned stall listing: one bag stack -> one merchant slot. */
@@ -322,6 +348,28 @@ final class BotFreeMarketManager {
         long bundlePrice() {
             return (long) unitPrice * Math.max(1, perBundle);
         }
+    }
+
+    /**
+     * Buyer-facing slot price: the whole-bundle total styled as ONE human number (price charm
+     * belongs on the figure the buyer reads; a charmed unit multiplied back out reads like
+     * calculator output again). Styling is presentation only, so it may never cross the economic
+     * bounds the plan already honored: if the rounded total dips to the stack's NPC sell-back or
+     * climbs to the standing NPC counter (the flat recharge-set cost for rechargeables), the raw
+     * total stands.
+     */
+    static int styledBundlePrice(ListingPlan plan, int botId) {
+        long raw = Math.min(Integer.MAX_VALUE, Math.max(1, plan.bundlePrice()));
+        long styled = BotMarketMath.humanizeAsk(raw, botId);
+        int id = plan.item().getItemId();
+        long salvage = npcSell.price(id, plan.perBundle());
+        int shop = npcShopPrice.price(id);
+        long ceiling = ItemConstants.isRechargeable(id) ? Math.max(1, salvage) - 1
+                : shop > 0 ? (long) shop * Math.max(1, plan.perBundle()) - 1 : Long.MAX_VALUE;
+        if (styled <= salvage || styled > ceiling) {
+            styled = raw;
+        }
+        return (int) Math.min(Integer.MAX_VALUE, Math.max(1, styled));
     }
 
     private record UnsoldOutcome(int itemId, int band, int quantity, int unitPrice) {}
@@ -380,7 +428,6 @@ final class BotFreeMarketManager {
             double costBasisUnit = e.getValue().keepValue() / qty;
             double salvageUnit = npcWhole / (double) qty;
             int ask = unitAsk(book.perceivedPrice(key, now), book.perceivedConfidence(key, now), costBasisUnit, salvageUnit);
-            ask = (int) Math.min(Integer.MAX_VALUE, BotMarketMath.humanizeAsk(ask, bot.getId()));
             if (shopPrice > 0 && ask >= shopPrice) {
                 ask = shopPrice - 1; // undercut the counter or don't bother
             }
@@ -450,7 +497,6 @@ final class BotFreeMarketManager {
                 continue;
             }
             int ask = equipUnitAsk(book, quote, now);
-            ask = (int) Math.min(Integer.MAX_VALUE, BotMarketMath.humanizeAsk(ask, bot.getId()));
             if (quote.band() == 0 && shopPrice > 0 && ask >= shopPrice) {
                 ask = shopPrice - 1; // a clean piece competes with the NPC counter; a roll doesn't
             }
@@ -1406,8 +1452,8 @@ final class BotFreeMarketManager {
             for (ListingPlan plan : listings) {
                 Item staged = plan.item().copy();
                 staged.setQuantity(plan.perBundle());
-                long bundlePrice = Math.min(Integer.MAX_VALUE, plan.bundlePrice());
-                PlayerShopItem shopItem = new PlayerShopItem(staged, plan.bundles(), (int) bundlePrice);
+                int bundlePrice = styledBundlePrice(plan, bot.getId());
+                PlayerShopItem shopItem = new PlayerShopItem(staged, plan.bundles(), bundlePrice);
                 if (!merchant.addItem(shopItem)) {
                     break; // slot cap
                 }
@@ -1416,7 +1462,8 @@ final class BotFreeMarketManager {
                         (short) (plan.bundles() * plan.perBundle()), true);
                 BotMarketLedger.getInstance().append(BotMarketLedger.EventKind.LIST,
                         plan.item().getItemId(), bandOf(plan.item()), plan.bundles() * plan.perBundle(),
-                        plan.unitPrice(), bot.getId(), null, bot.getMapId());
+                        Math.round(bundlePrice / (double) Math.max(1, plan.perBundle())),
+                        bot.getId(), null, bot.getMapId());
                 markOffer(entry, BotMarketMath.priceKey(plan.item().getItemId(), bandOf(plan.item())), now);
                 listed++;
             }
@@ -1469,8 +1516,8 @@ final class BotFreeMarketManager {
                 }
                 Item staged = plan.item().copy();
                 staged.setQuantity(plan.perBundle());
-                long bundlePrice = Math.min(Integer.MAX_VALUE, plan.bundlePrice());
-                PlayerShopItem shopItem = new PlayerShopItem(staged, plan.bundles(), (int) bundlePrice);
+                int bundlePrice = styledBundlePrice(plan, bot.getId());
+                PlayerShopItem shopItem = new PlayerShopItem(staged, plan.bundles(), bundlePrice);
                 if (!merchant.addItem(shopItem)) {
                     break; // slot cap
                 }
@@ -1479,7 +1526,8 @@ final class BotFreeMarketManager {
                         (short) (plan.bundles() * plan.perBundle()), true);
                 BotMarketLedger.getInstance().append(BotMarketLedger.EventKind.LIST,
                         plan.item().getItemId(), bandOf(plan.item()), plan.bundles() * plan.perBundle(),
-                        plan.unitPrice(), bot.getId(), null, bot.getMapId());
+                        Math.round(bundlePrice / (double) Math.max(1, plan.perBundle())),
+                        bot.getId(), null, bot.getMapId());
                 markOffer(entry, BotMarketMath.priceKey(plan.item().getItemId(), bandOf(plan.item())), now);
                 restocked++;
             }
@@ -1556,10 +1604,18 @@ final class BotFreeMarketManager {
                 .markUnsold(now);
         double newUnit = repriceUnsold(curUnitAsk, perceived, confidence, reservation,
                 competingUnitAsk, pressureObservations);
-        long humanUnit = BotMarketMath.humanizeAsk(Math.round(newUnit), bot.getId());
+        // Style the buyer-facing bundle total, not the unit (a charmed unit times perBundle reads
+        // like calculator output again). Presentation only: if rounding dips below the reservation
+        // floor the reprice honored, or climbs back above the slot's current price (this is a
+        // markdown pass), the raw total stands.
+        long rawBundle = Math.max(1, Math.round(newUnit * perBundle));
+        long newBundle = BotMarketMath.humanizeAsk(rawBundle, bot.getId());
+        if (newBundle < Math.round(reservation) * perBundle || newBundle > psi.getPrice()) {
+            newBundle = rawBundle;
+        }
         outcomes.add(new UnsoldOutcome(it.getItemId(), band,
-                Math.max(1, psi.getBundles()) * perBundle, (int) Math.min(Integer.MAX_VALUE, humanUnit)));
-        long newBundle = humanUnit * perBundle;
+                Math.max(1, psi.getBundles()) * perBundle, (int) Math.min(Integer.MAX_VALUE,
+                Math.round(newBundle / (double) perBundle))));
         return (int) Math.min(Integer.MAX_VALUE, Math.max(1, newBundle));
     }
 

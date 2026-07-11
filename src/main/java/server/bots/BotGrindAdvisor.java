@@ -424,8 +424,9 @@ final class BotGrindAdvisor {
     }
 
     /** The single-map candidate behind {@link #modeledKillsPerHour}, or null when the model cannot
-     *  answer. */
-    private static MobCandidate modeledCandidate(BotEntry entry, Character bot, int mapId) {
+     *  answer. Package-visible: the market's live farm-income anchor samples it
+     *  ({@code BotScrollManager.farmMesoPerSecond}). */
+    static MobCandidate modeledCandidate(BotEntry entry, Character bot, int mapId) {
         Map<MobProfile, Integer> pointsByMob = profilePointsFor(entry, bot, mapId);
         if (pointsByMob == null || pointsByMob.isEmpty()) {
             return null;

@@ -33,6 +33,52 @@ The behavioral seams are `BotMarketConsensus.sweep` (`BotMarketSimTest`) and
 `BotFreeMarketManager.repriceUnsold` (`BotFreeMarketManagerTest`). The event tape remains the audit
 trail; bot decisions continue to read only `BotMarketBook`.
 
+Poisoned-consensus persistence: `bot_market_consensus` rows written under the old ask-echo /
+repro-floored regime carry clearing volume in the hundreds (bots really did buy from each other at
+reproduction prices), and the fixed pricing code still reads them as high-confidence market truth —
+asks re-emerge at the Integer.MAX clamp (rendered as 2.0b/2.1b/2,099,999,xxx by per-bot ask
+styling). They cannot heal on their own: nobody can afford a ~2.1b ask, so the key never clears
+again, and hourly UNSOLD pressure (W_OUTCOME 0.3) against hundreds of units of standing volume
+moves the consensus by well under a percent per sweep. Overpriced keys starve of exactly the
+clearing evidence that would correct them — the asymmetry that makes seeding LOW safer than seeding
+high (a cheap ask clears fast and SOLD_FAST probes upward on real W_TRADE evidence). To reset the
+persisted layers, the server must be STOPPED first: the sweep holds all consensus rows in memory
+and re-upserts any key it later moves (preserving nothing of a live-table clear), and bot books
+likewise re-save private beliefs. Clear `bot_market_consensus` and `bot_market_belief` together.
+
+Price styling (`BotMarketMath.humanizeAsk`) applies to the buyer-facing figure: the whole-bundle
+slot total (`BotFreeMarketManager.styledBundlePrice`, also the reprice pass) and the spoken shout
+price — never the per-unit quotient, which multiplied back out reads like calculator output.
+Styling is presentation only and is discarded when rounding would cross an economic bound the plan
+honored (NPC sell-back floor, NPC counter / recharge-set ceiling, reprice reservation).
+
+Cold-start seeding (no clearing evidence at a key) is demand-anchored and supply-clamped
+(`BotScrollManager.cleanMarketWorthMeso`):
+
+- The effort→meso anchor is LIVE: `BotScrollManager.farmMesoPerSecond()` samples grinding bots'
+  modeled sustained kill rates × their mob's per-kill yield (meso EV + NPC-salvage EV of drops,
+  `mobKillValueMeso`), median-aggregated, 5-min TTL. The old flat 1,000/s scaffold overpriced
+  farmed items severalfold; `FARM_MESO_PER_SECOND_FALLBACK` (250/s) serves only boot/tests.
+- Acquisition cost is net of byproduct: chasing a drop also banks the dropper's ordinary yield
+  (`BotFarmingCostModel.rarityMeso(input, byproductPerKill)`), so on-grind-path drops net to ~0
+  and salvage floors the ask. Behavior decisions (scroll planning, shelf protection) keep the
+  GROSS targeted-farm cost — only market seeds use the net.
+- A clean equip seeds at its stat LEAD over the cheapest obtainable same-slot, same-level-decade
+  alternative (`cleanUtilityPremiumMeso`, baseline from the shop+drop catalogs), priced at half
+  the best-buyer per-EV ceiling (`SCROLL_CEILING_PER_EV` × slot durability) — a lv50 +2 ATT cape
+  (1102041) seeds millions above a statless lv50 cape despite identical farm effort. Clamped
+  between net acquisition (floor) and gross acquisition (abundance cap: nobody pays above
+  farm-it-yourself).
+- Scroll seeds cap at `scrollCombatCeilingMeso` (stat EV × success × durability at the same
+  per-EV anchor) instead of raw targeted-farm cost.
+
+Seeding errs LOW on purpose: the correction asymmetry (see poisoned-consensus above) means cheap
+seeds heal upward through real clearings + SOLD_FAST probes, while expensive seeds starve.
+
+`/api/economyreset?confirm=1` (test-server tool, `docs/bot/web-endpoints.md`) wipes the tape,
+consensus, and beliefs (memory + DB), drops per-bot pressure state, and force-closes bot stalls so
+the whole market reseeds under the current model.
+
 Design lineage (reviewed 2026-07-11 against the rev-2 design of record, git `fa5f59405`): the
 mechanism matches the design's seller-repricing and stability structure (gap-proportional
 confidence-damped steps, asynchronous per-bot service cadence, reservation floor, W_OUTCOME 0.3 as

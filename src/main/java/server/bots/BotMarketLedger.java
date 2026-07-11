@@ -101,6 +101,16 @@ public final class BotMarketLedger {
         }
     }
 
+    /** Wipe the tape (test-server economy reset); swallow-and-log like {@link #append}. */
+    void clearAll() {
+        try (Connection con = DatabaseConnection.getConnection();
+             PreparedStatement ps = con.prepareStatement("DELETE FROM bot_market_event")) {
+            ps.executeUpdate();
+        } catch (SQLException e) {
+            log.warn("bot_market_event clear failed: {}", e.toString());
+        }
+    }
+
     /** Meso created/destroyed accounting (design sec 5: measured, never managed). */
     public void recordFlow(String category, long meso, boolean faucet) {
         (faucet ? faucetByCategory : sinkByCategory)

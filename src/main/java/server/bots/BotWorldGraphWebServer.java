@@ -187,6 +187,7 @@ public final class BotWorldGraphWebServer {
             s.createContext("/api/bot/pathlog", BotWorldGraphWebServer::servePathLog);
             s.createContext("/api/perf", BotWorldGraphWebServer::servePerf);
             s.createContext("/api/spawnbot", BotWorldGraphWebServer::serveSpawnBot);
+            s.createContext("/api/economyreset", BotWorldGraphWebServer::serveEconomyReset);
             s.createContext("/api/navprobe", BotWorldGraphWebServer::serveNavProbe);
             s.createContext("/mapgraph", BotWorldGraphWebServer::serveMapGraphPage);
             s.createContext("/api/mapgraph", BotWorldGraphWebServer::serveMapGraph);
@@ -759,6 +760,24 @@ public final class BotWorldGraphWebServer {
                     .append(spawned ? "" : ",\"note\":\"already online or load failed\"").append('}');
         }
         send(ex, 200, "application/json", sb.append("]}").toString().getBytes(StandardCharsets.UTF_8));
+    }
+
+    /** Wipes the bot-market economy (tape + consensus + beliefs + in-memory books + open bot
+     *  stalls) so prices reseed from scratch. Test-server tool; requires ?confirm=1. */
+    private static void serveEconomyReset(HttpExchange ex) throws IOException {
+        if (!"1".equals(queryParams(ex.getRequestURI().getRawQuery()).get("confirm"))) {
+            send(ex, 400, "application/json",
+                    "{\"error\":\"economy reset wipes all market state; call with ?confirm=1\"}"
+                            .getBytes(StandardCharsets.UTF_8));
+            return;
+        }
+        try {
+            send(ex, 200, "application/json",
+                    BotFreeMarketManager.resetEconomyForReseed().getBytes(StandardCharsets.UTF_8));
+        } catch (RuntimeException e) {
+            send(ex, 500, "application/json",
+                    ("{\"error\":" + jsonStr(e.toString()) + "}").getBytes(StandardCharsets.UTF_8));
+        }
     }
 
     private static void serveAdminPage(HttpExchange ex) throws IOException {
@@ -2146,9 +2165,12 @@ public final class BotWorldGraphWebServer {
         send(ex, 200, "text/html; charset=utf-8", body);
     }
 
-    /** Items with tape activity, most-cleared first — the chart's item picker. */
+    /** Items with tape activity, most-cleared first — the chart's item picker. Also carries the
+     *  live effort→meso anchor so the sampled farming income is observable for calibration. */
     private static void serveMarketItems(HttpExchange ex) throws IOException {
-        StringBuilder sb = new StringBuilder("{\"items\":[");
+        StringBuilder sb = new StringBuilder("{\"farmMesoPerSecond\":")
+                .append(Math.round(BotScrollManager.farmMesoPerSecond() * 10) / 10.0)
+                .append(",\"items\":[");
         boolean first = true;
         for (BotMarketLedger.TradedItem t : BotMarketLedger.getInstance().tradedItems(300)) {
             if (!first) {
