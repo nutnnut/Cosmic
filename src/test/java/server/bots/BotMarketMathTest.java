@@ -136,6 +136,27 @@ class BotMarketMathTest {
         assertEquals(1_600_000, q11, 1, "exactly the curve's marginal cost above it");
     }
 
+    // (g2) market evidence can BEND the curve, not just scale it: two clearings with a shallower
+    // worst-vs-best spread than the structural prior compress the min-max difference.
+    @Test
+    void calibratedCurveBendsSpreadToMarketEvidence() {
+        DoubleUnaryOperator convex = band -> 100_000 * Math.pow(1.6, band); // structural spread 5->10 ~= 10.5x
+        DoubleUnaryOperator single = BotMarketMath.calibratedCurve(
+                List.of(new Sample(10, 1_000_000, 1)), convex);
+        assertEquals(1_000_000, single.applyAsDouble(10), 5, "one observation still just scales (pins the band)");
+        assertEquals(1_600_000, single.applyAsDouble(11), 20, "and follows the structural shape elsewhere");
+
+        // Market pays only 2x more at band 10 than band 5 (a far shallower spread than 10.5x).
+        DoubleUnaryOperator bent = BotMarketMath.calibratedCurve(
+                List.of(new Sample(5, 1_000_000, 1), new Sample(10, 2_000_000, 1)), convex);
+        assertEquals(1_000_000, bent.applyAsDouble(5), 5_000, "fits the low band");
+        assertEquals(2_000_000, bent.applyAsDouble(10), 10_000, "fits the high band");
+        double spread = bent.applyAsDouble(10) / bent.applyAsDouble(5);
+        assertTrue(spread < 3.0, "spread bent down toward the market's 2x, well under the structural 10.5x");
+        assertTrue(bent.applyAsDouble(7) > bent.applyAsDouble(5)
+                && bent.applyAsDouble(7) < bent.applyAsDouble(10), "unobserved band interpolates monotonically");
+    }
+
     @Test
     void impliedStatPricePricesNeverTradedComparable() {
         double beta = BotMarketMath.impliedStatPrice(
@@ -302,5 +323,70 @@ class BotMarketMathTest {
                 assertTrue(h > 0, "positive price");
             }
         }
+    }
+
+    // buyer-side mirrors
+
+    @Test
+    void humanizeBidRoundNeverExceedsInputAndAlwaysLandsOnACleanThousand() {
+        // A spoken bid must never exceed the buyer's computed bid, so every style floors.
+        long[] raws = {123_456, 5_825_734, 999_999, 1_499_000, 47_500_000, 250_001, 100_000, 2_000_000_000L};
+        for (int bot = 0; bot < 96; bot++) {
+            for (long raw : raws) {
+                long h = BotMarketMath.humanizeBidRound(raw, bot);
+                assertEquals(0, h % 1000, "humanizeBidRound must be a round thousand: " + raw + " -> " + h);
+                assertTrue(h <= raw, "humanizeBidRound must never exceed the input: " + raw + " -> " + h);
+                assertTrue(h >= 1000, "positive, at-least-a-thousand price");
+            }
+        }
+    }
+
+    @Test
+    void humanizeBidRoundIsDeterministicPerBot() {
+        assertEquals(BotMarketMath.humanizeBidRound(5_825_734, 42),
+                BotMarketMath.humanizeBidRound(5_825_734, 42), "one bot bids the same item identically");
+        java.util.Set<Long> shapes = new java.util.HashSet<>();
+        for (int bot = 0; bot < 32; bot++) {
+            shapes.add(BotMarketMath.humanizeBidRound(5_825_734, bot));
+        }
+        assertTrue(shapes.size() >= 2, "the population uses more than one rounding style");
+    }
+
+    @Test
+    void humanizeBidRoundFloorsSubFloorInputToNearestThousand() {
+        assertEquals(55_000, BotMarketMath.humanizeBidRound(55_400, 7));
+    }
+
+    @Test
+    void counterBidConcedesUpwardWithinCeiling() {
+        double counter = BotMarketMath.counterBid(600_000, 1_000_000, 800_000, 0.5);
+        assertTrue(counter <= 800_000, "counter never above ceiling");
+        assertTrue(counter > 600_000, "counter concedes something");
+
+        // firmness 1.0 barely moves.
+        double barelyMoves = BotMarketMath.counterBid(600_000, 1_000_000, 800_000, 1.0);
+        assertEquals(600_000, barelyMoves, 1e-9, "firmness 1.0 stays put");
+
+        // firmness 0.0 meets min(partnerAsk, ceiling).
+        double meetsCap = BotMarketMath.counterBid(600_000, 700_000, 800_000, 0.0);
+        assertEquals(700_000, meetsCap, 1e-9, "firmness 0 meets the partner ask when it's under ceiling");
+        double meetsCeiling = BotMarketMath.counterBid(600_000, 1_000_000, 800_000, 0.0);
+        assertEquals(800_000, meetsCeiling, 1e-9, "firmness 0 meets the ceiling when the ask exceeds it");
+
+        // cap at/below currentBid returns currentBid unchanged.
+        assertEquals(600_000, BotMarketMath.counterBid(600_000, 500_000, 800_000, 0.5), 1e-9,
+                "a partner ask already below the bid is not countered downward");
+
+        // never exceeds ceiling even at firmness 0.
+        assertTrue(BotMarketMath.counterBid(100_000, 10_000_000, 800_000, 0.0) <= 800_000);
+    }
+
+    @Test
+    void acceptableAskRespectsCeilingAndSlack() {
+        assertTrue(BotMarketMath.acceptableAsk(800_000, 800_000, 0), "ask at ceiling accepted with no slack");
+        assertFalse(BotMarketMath.acceptableAsk(800_001, 800_000, 0), "ask above ceiling rejected with no slack");
+        // slack 0.1 -> effective ceiling = 800_000 * 0.9 = 720_000.
+        assertTrue(BotMarketMath.acceptableAsk(720_000, 800_000, 0.1), "ask at the slacked ceiling accepted");
+        assertFalse(BotMarketMath.acceptableAsk(720_001, 800_000, 0.1), "ask past the slacked ceiling rejected");
     }
 }

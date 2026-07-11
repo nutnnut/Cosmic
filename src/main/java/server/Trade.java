@@ -239,6 +239,8 @@ public class Trade {
         chr.sendPacket(PacketCreator.getTradeChat(chr, message, true));
         if (partner != null) {
             partner.getChr().sendPacket(PacketCreator.getTradeChat(chr, message, false));
+            // Headless bots can't read the packet — hand them the window chat (no-op for players).
+            server.bots.BotManager.onTradeChat(partner.getChr(), chr, message);
         }
     }
 

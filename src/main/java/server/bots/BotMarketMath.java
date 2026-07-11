@@ -222,6 +222,52 @@ final class BotMarketMath {
         return c > 0 ? calibration * c : 0;
     }
 
+    /** Exponent bounds on the shape fit: 0 flattens the curve to one price, 2 doubles its log-spread.
+     *  Keeps sparse/noisy evidence from inverting (never negative -> stays monotone) or exploding it. */
+    static final double CURVE_SHAPE_MIN = 0.0;
+    static final double CURVE_SHAPE_MAX = 2.0;
+
+    /**
+     * Shape-aware curve calibration: a weighted least-squares fit of {@code price ~= A * curve(band)^B}
+     * in log space over the observed bands. Unlike {@link #curveCalibration} (a single factor that can
+     * only SCALE the structural curve up or down), the exponent {@code B} lets real clearings also BEND
+     * it — change the worst-vs-best SPREAD, i.e. the min-max price difference: a market that pays less
+     * for rare rolls than the structural rarity prior implies flattens the curve ({@code B<1}); one that
+     * pays more steepens it ({@code B>1}). With a single observed band (or bands sharing one curve value)
+     * the exponent is unidentifiable and collapses to pure scaling ({@code B=1}) — exactly the old
+     * behavior. Returns the raw structural {@code curve} unchanged when nothing usable is observed, so
+     * the prior stands only where no clearing evidence exists (clearing-evidence-dominates invariant).
+     * {@code B} is clamped to {@code [CURVE_SHAPE_MIN, CURVE_SHAPE_MAX]}, so a calibrated curve of a
+     * monotone structural curve stays monotone.
+     */
+    static java.util.function.DoubleUnaryOperator calibratedCurve(
+            List<Sample> observedBands, java.util.function.DoubleUnaryOperator curve) {
+        double sw = 0, swx = 0, swy = 0, swxx = 0, swxy = 0;
+        for (Sample s : observedBands) {
+            double c = curve.applyAsDouble(s.x());
+            if (c > 0 && s.price() > 0 && s.weight() > 0) {
+                double x = Math.log(c), y = Math.log(s.price());
+                sw += s.weight();
+                swx += s.weight() * x;
+                swy += s.weight() * y;
+                swxx += s.weight() * x * x;
+                swxy += s.weight() * x * y;
+            }
+        }
+        if (sw <= 0) {
+            return curve; // no evidence: the structural prior stands as-is
+        }
+        double xbar = swx / sw, ybar = swy / sw;
+        double varx = swxx / sw - xbar * xbar;
+        double slope = varx > 1e-12 ? (swxy / sw - xbar * ybar) / varx : 1.0; // one point -> pure scale
+        double b = Math.max(CURVE_SHAPE_MIN, Math.min(CURVE_SHAPE_MAX, slope));
+        double a = Math.exp(ybar - b * xbar);
+        return band -> {
+            double c = curve.applyAsDouble(band);
+            return c > 0 ? a * Math.pow(c, b) : 0.0;
+        };
+    }
+
     /**
      * Per-slot implied meso per stat-score point from traded comparables: least squares through
      * the origin (beta = sum w*s*p / sum w*s^2). A never-traded item then quotes score * beta -
@@ -382,6 +428,26 @@ final class BotMarketMath {
         return offer >= reservation * (1.0 + Math.max(0, slackFraction));
     }
 
+    /**
+     * Buyer-side mirror of {@link #counterPrice}: concede from the current bid UPWARD toward the
+     * partner's ask, capped by the buyer's ceiling. firmness 1 = barely moves, 0 = meets the
+     * (capped) ask.
+     */
+    static double counterBid(double currentBid, double partnerAsk, double ceiling, double firmness) {
+        double cap = Math.min(partnerAsk, ceiling);
+        if (cap <= currentBid) {
+            return currentBid;
+        }
+        double concede = (cap - currentBid) * (1.0 - clamp01(firmness));
+        return Math.min(ceiling, currentBid + concede);
+    }
+
+    /** Buyer-side mirror of {@link #acceptable}: accept an ask at or below the ceiling less the
+     *  trait-scaled slack of the buyer. */
+    static boolean acceptableAsk(double ask, double ceiling, double slackFraction) {
+        return ask <= ceiling * (1.0 - Math.max(0, slackFraction));
+    }
+
     /** Below this a price is left exact — cheap capped consumables should not drift into charm. */
     static final long HUMANIZE_FLOOR = 100_000L;
 
@@ -443,6 +509,34 @@ final class BotMarketMath {
             case 0 -> twoSig;                            // 2 sig figs (5,800,000)
             case 1 -> Math.round(t / 50.0) * 50 * step;  // nice half (6,000,000 / 5,500,000)
             default -> Math.round(t / 25.0) * 25 * step; // nice quarter (5,750,000)
+        };
+        return Math.max(1000, rounded);
+    }
+
+    /**
+     * Buyer-side mirror of {@link #humanizeAskRound}: quantize a raw bid into a clean k/m-rendering
+     * number, per-bot deterministic style. Buyers speak bids; rounding a bid UP would cross the
+     * ceiling the caller just honored, so bid styling only ever rounds DOWN (floor) - unlike ask
+     * styling, which may round either way. Callers only pass prices >= {@link #HUMANIZE_FLOOR} in
+     * practice, but a sub-floor input still floors cleanly to the nearest thousand.
+     */
+    static long humanizeBidRound(long price, int botId) {
+        if (price < HUMANIZE_FLOOR) {
+            return Math.max(1000, (price / 1000) * 1000);
+        }
+        long step = 1;
+        int digits = 3;
+        while (price / step >= 1000) {
+            step *= 10;
+            digits++;
+        }
+        long t = price / step;
+        long twoSig = (t / 10) * 10 * step;
+        int style = (int) Math.floorMod(mix(botId, 0x505249434533L), 3L); // salt "PRICE3"
+        long rounded = switch (style) {
+            case 0 -> twoSig;                 // 2 sig figs, floored
+            case 1 -> (t / 50) * 50 * step;   // nice half, floored
+            default -> (t / 25) * 25 * step;  // nice quarter, floored
         };
         return Math.max(1000, rounded);
     }

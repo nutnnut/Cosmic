@@ -255,6 +255,36 @@ public record BotPersonality(
         return GACHA_SPEND_FRAC_LOW + (GACHA_SPEND_FRAC_HIGH - GACHA_SPEND_FRAC_LOW) * gachaAppetite();
     }
 
+    // ---- haggling temperament (living-economy S4) ----
+    // Seed-derived with a distinct salt (same trick as gachaAppetite): stable per bot across restarts
+    // with no stored field, uncorrelated with the other trait rolls. Repeated encounters with the
+    // same bot should feel like the same negotiator.
+    private static final long HAGGLE_SALT = 0x4841474C454631L; // "HAGLEF1"
+
+    /** Stable 0..1 haggling stubbornness. Neutral 0.5 for the seed-0 default profile. */
+    private double haggleTemper() {
+        return seed == 0 ? 0.5 : new Random(seed ^ HAGGLE_SALT).nextDouble();
+    }
+
+    /** Concession firmness for counter-offers (BotMarketMath.counterPrice/counterBid): 1 = barely
+     *  moves per round, 0 = meets the other side. Bounded away from the extremes so every bot both
+     *  concedes something and keeps something back. */
+    public double haggleFirmness() {
+        return 0.25 + 0.5 * haggleTemper();
+    }
+
+    /** How many counter-offers the bot will make before it accepts-or-walks (patience, 2..4). */
+    public int haggleRounds() {
+        return 2 + (int) Math.round(haggleTemper() * 2.0);
+    }
+
+    /** Accept-slack fraction: the bot takes a deal within this margin of its bound instead of
+     *  squeezing out one more round (BotMarketMath.acceptable/acceptableAsk). Firmer bots demand
+     *  a little more headroom before settling. */
+    public double haggleSlack() {
+        return 0.02 + 0.04 * haggleTemper();
+    }
+
     // ---- serialization (flat key=value; tolerant on read) ----
 
     public String serialize() {

@@ -225,8 +225,8 @@
         <li><span class="pill good">done</span> S0 — substrate fixes (staged-meso getter, floor-drop on trade void, <code>marketBusy</code> gate, <code>BotAssetView</code>)</li>
         <li><span class="pill good">done</span> S1 — beliefs + valuation (<code>BotMarketMath</code> / <code>Book</code> / <code>Ledger</code> / <code>Consensus</code>, structured priors, sim tests)</li>
         <li><span class="pill good">done</span> S2 — FM errand + bot-owned stalls, browse observation, ledger hooks, live restock/reprice service</li>
-        <li><span class="pill good">done</span> S3 — shout grammar + bus + accept-at-ask direct equip trades</li>
-        <li><span class="pill good">done</span> S4 (first half) — equip banding + listing, <code>maybeBargainBuy</code>, chaos/white plays, banded tape</li>
+        <li><span class="pill good">done</span> S3 — shout grammar + bus + direct equip trades</li>
+        <li><span class="pill good">done</span> S4 — equip banding + listing, <code>maybeBargainBuy</code>, chaos/white plays, banded tape, <code>B&gt;</code> buy-order shouts with roll criteria, in-window trade-chat haggling</li>
         <li><span class="pill good">done</span> Audit fixes 1–6 (2026-07-04) — shared <code>canScroll</code>, consensus-blended <code>scrollPriceMeso</code>, belief-less scroll WTP, zero apply-cost for tradeBlocked, <code>bestRoleWorth</code>, obtainable-only catalog</li>
         <li><span class="pill good">done</span> Supply/demand price discovery (2026-07-11) — clearing-only consensus, hourly UNSOLD down-pressure, 15-min SOLD_FAST up-pressure, deadband + quantity/volume damping; persisted bad prices heal without admin clears</li>
       </ul>
@@ -234,7 +234,6 @@
     <div class="panel">
       <h3>Next</h3>
       <ul style="margin:6px 0 0;padding-left:18px">
-        <li><span class="pill warn">next</span> S4 second half — <code>BotTradeNegotiator</code> counters/rude-cancel, personality traits (<code>mesoFocus</code> / <code>haggleStance</code> / <code>buffSpend</code> / <code>collectorTaste</code>)</li>
         <li><span class="pill warn">next</span> Grind-advisor market term (sale value/hr of surplus drops)</li>
         <li><span class="pill warn">next</span> Flip <code>SCROLL_FOR_PROFIT_ENABLED</code> — finished gear flows to stalls</li>
         <li><span class="pill warn">next</span> Retire placeholder constants (<code>SCROLL_OPPORTUNITY_MARGIN/FRACTION</code>, Chaos/White 10M, <code>SCROLL_CEILING_PER_EV</code>, <code>AMMO_CEILING_*</code>) as endogenous replacements land</li>
@@ -243,7 +242,7 @@
     <div class="panel">
       <h3>Later &amp; open gaps</h3>
       <ul style="margin:6px 0 0;padding-left:18px">
-        <li><span class="pill acc">later</span> S3 deferred — consumable/stack shout trading, <code>PC&gt;</code> replies, <code>B&gt;</code> emission, approach-walk before invite, auto-equip bought upgrades</li>
+        <li><span class="pill acc">later</span> S3 deferred — consumable/stack shout trading, <code>PC&gt;</code> replies, approach-walk before invite</li>
         <li><span class="pill acc">later</span> S5 — gossip diffusion, ammo/buff purchase behavior, <code>/api/market*</code> routes</li>
         <li><span class="pill acc">later</span> S6 — fuzzy chat, storage NPC use</li>
         <li><span class="pill acc">later</span> P3 — <code>FARM_MESO_PER_SECOND</code> → own observed meso/hr EMA</li>

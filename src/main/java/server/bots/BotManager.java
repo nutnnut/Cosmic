@@ -1720,6 +1720,16 @@ public class BotManager {
         return botsByCharId.get(botCharId);
     }
 
+    /** Trade-window chat reaches a headless bot here (single hook in {@link server.Trade#chat}):
+     *  haggle positions are spoken as plain lines with a meso token, and a bot can't read the
+     *  packet its fake client was sent. No-op when the listener isn't a registered bot. */
+    public static void onTradeChat(Character listener, Character speaker, String message) {
+        BotEntry entry = getInstance().getEntryByBotCharId(listener.getId());
+        if (entry != null) {
+            BotShoutTradeManager.onTradeChat(entry, speaker, message);
+        }
+    }
+
     /**
      * Registered bot entries for every online bot in {@code anyMember}'s game party, in
      * party-member order (deterministic across members). Empty when not in a party. The

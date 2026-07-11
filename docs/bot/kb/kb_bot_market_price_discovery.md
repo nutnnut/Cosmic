@@ -72,8 +72,31 @@ Cold-start seeding (no clearing evidence at a key) is demand-anchored and supply
 - Scroll seeds cap at `scrollCombatCeilingMeso` (stat EV × success × durability at the same
   per-EV anchor) instead of raw targeted-farm cost.
 
+Roll-rarity pricing of clean drops (`BotScrollManager.equipMarketQuote` band curve,
+`BotRollDistribution`): a clean piece's stats are a TWO-STAGE drop roll — `getRandStat` rolls each
+nonzero catalog stat uniformly in `[c−r1, c+r1]` (`r1 = min(ceil(c*0.1), 5)`), then with 20%
+(`GODLY_STATS_DROP_CHANCE`) the result is upgraded by `getRandUpgradedStat` (+`Uniform{0..maxBonus}`).
+Top rolls are exponentially rare (plain tail × 20% gate × godly tail), so `cleanMarketWorthMeso` is
+the FLOOR-roll price (cost per drop) and a threshold roll is priced at `cleanCost × expected drops to
+hit it = cleanCost / P(surplus ≥ threshold)` — the same expected-attempts logic `rarityMeso` applies
+to drop CHANCE, now applied to ROLL rarity on the dominant rollable stat. This is scale-aware for free
+(a base-2 dex reaching 8 via godly costs ~90× its floor; a base-20 str's plain 18–22 barely moves) and
+MONOTONE: bands reachable by clean rolls are rarity-priced, and above the clean-roll ceiling the curve
+joins the scrolled-piece reproduction DP via `max(rarity ceiling at roll max, reproduction DP)` — no
+band-0/band-1 inversion. The quote reads the curve at the piece's FRACTIONAL band so pieces sharing an
+integer band still resolve by roll; the integer band stays the provenance-blind price key.
+
+The structural rarity curve is only a PRIOR. Clearings reshape it: `BotMarketMath.calibratedCurve`
+fits `price ≈ A·curve(band)^B` in log space over a bot's banded beliefs, so evidence moves both the
+LEVEL (`A`) and the worst-vs-best SPREAD (`B`, clamped `[0,2]` to stay monotone) — a market that pays
+less for rare rolls than the prior implies flattens the curve. With one observed band it collapses to
+pure scaling. Direct banded belief (`perceivedPrice`) still overrides the curve outright where it
+exists (clearing-evidence-dominates).
+
 Seeding errs LOW on purpose: the correction asymmetry (see poisoned-consensus above) means cheap
-seeds heal upward through real clearings + SOLD_FAST probes, while expensive seeds starve.
+seeds heal upward through real clearings + SOLD_FAST probes, while expensive seeds starve. A top-roll
+rarity price above every bot's combat-anchored WTP (`equipBuyCeilingMeso`, kept LINEAR) simply doesn't
+clear bot-to-bot — realistic, not a defect to fix.
 
 `/api/economyreset?confirm=1` (test-server tool, `docs/bot/web-endpoints.md`) wipes the tape,
 consensus, and beliefs (memory + DB), drops per-bot pressure state, and force-closes bot stalls so

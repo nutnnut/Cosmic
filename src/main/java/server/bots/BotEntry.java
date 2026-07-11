@@ -1005,6 +1005,31 @@ public class BotEntry {
     int shoutBuySpeakerId = -1;                         // the shout speaker we're deliberating over
     BotMarketGrammar.Offer shoutBuyOffer;               // the offer under consideration
     boolean shoutBuySelling;                            // our role if we act: true = we'd sell to a B>
+    boolean shoutBuyCounter;                            // banked as a COUNTER (haggle), not accept-at-price
+
+    // Haggling (living-economy S4): a negotiation layered over the shout-trade window. The buyer's
+    // staged meso is its binding position (Trade.setMeso is additive — it can only rise); the
+    // seller's position is spoken. haggleTheirPrice is written from the packet thread (trade chat)
+    // and read on the AI tick.
+    boolean shoutTradeHaggle;                           // negotiation (not accept-at-price) in progress
+    volatile int haggleTheirPrice;                      // partner's last spoken price (0 = none yet)
+    int haggleTheirPriceSeen;                           // last partner price my policy acted on
+    int haggleMyPrice;                                  // my last spoken/staged position (0 = none)
+    int haggleMyStagedMeso;                             // buyer only: meso actually staged so far
+    int haggleRoundsLeft;                               // counters I may still make before accept-or-walk
+    long haggleBoundMeso;                               // my hard bound: buyer per-roll WTP / seller reservation
+    boolean haggleFinal;                                // I declared a final offer
+    long haggleActAtMs;                                 // human "typing" beat before my next haggle move
+    int shoutTradeAgreedPrice;                          // settled price (0 = still the offer/negotiating)
+    client.inventory.Equip shoutTradeDealEquip;         // the actual piece changing hands (band observe)
+
+    // Standing buy want (living-economy S3 B> emission): the one upgrade this bot is shopping for.
+    BotMarketGrammar.Offer buyWant;                     // BUY offer (criterion carries the roll floor)
+    int buyWantBand;                                    // quality band the bid was priced at
+    long buyWantCeilingMeso;                            // per-roll WTP at that band — the bid's hard cap
+    long buyWantRecomputeAtMs;                          // lazy recompute wall clock (0 = force)
+    int buyWantNoFills;                                 // consecutive shouts without a fill (bid ladder)
+    long lastBuyShoutAtMs;                              // walk-up sellers accepted while a B> is fresh
 
     boolean shoutTradeActive() {
         return shoutTradePartnerId != -1;

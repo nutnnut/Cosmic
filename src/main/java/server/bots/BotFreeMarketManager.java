@@ -326,6 +326,39 @@ final class BotFreeMarketManager {
         return unitAsk(book.perceivedPrice(key, now), book.perceivedConfidence(key, now), anchor, salvage);
     }
 
+    /** Fraction of the WTP ceiling an evidence-free opening bid starts at. Errs low on purpose —
+     *  the same asymmetry that makes cold-start SEEDS open low: a cheap bid that fills teaches a
+     *  real clearing; an unfilled one ladders up on the bot's own no-fill evidence. */
+    private static final double OPEN_BID_CEILING_FRACTION = 0.6;
+    /** Per unfilled re-shout, the bid steps this fraction toward the ceiling (capped rungs). */
+    private static final double BID_LADDER_STEP = 0.15;
+    private static final int BID_LADDER_MAX_RUNGS = 4;
+
+    /**
+     * SSOT opening bid for a wanted equip at a quality band — the buyer mirror of
+     * {@link #equipUnitAsk}: the bot's banded belief less its opening margin (buyers open below
+     * perception exactly as sellers open above reservation), or a deliberate fraction of the WTP
+     * ceiling when no belief exists. {@code noFills} is the private no-fill ladder: each unfilled
+     * shout of the same want steps the bid toward the ceiling; a fill resets it. The ceiling
+     * (per-roll willingness-to-pay at the want's band) is a hard cap — a bid never exceeds what
+     * the minimum acceptable roll is worth to this bot. 0 = no biddable price.
+     */
+    static int equipUnitBid(BotMarketBook book, int itemId, int band, long ceilingMeso,
+                            int noFills, long now) {
+        if (ceilingMeso <= 0) {
+            return 0;
+        }
+        long key = BotMarketMath.priceKey(itemId, band);
+        double perceived = book.perceivedPrice(key, now);
+        double margin = BotMarketMath.openingMargin(0.5, book.perceivedConfidence(key, now)); // trait wiring: S4
+        double base = perceived > 0
+                ? perceived * (1.0 - Math.min(0.5, margin))
+                : ceilingMeso * OPEN_BID_CEILING_FRACTION;
+        base *= 1.0 + BID_LADDER_STEP * Math.min(BID_LADDER_MAX_RUNGS, Math.max(0, noFills));
+        long bid = Math.min(ceilingMeso, Math.round(base));
+        return (int) Math.min(Integer.MAX_VALUE, Math.max(0, bid));
+    }
+
     /** After-fee premium of selling the stack on a stall vs just NPC-selling it — the quantity a
      *  listing must justify. <= 0 means the NPC counter is the standing better bid. */
     static long listingPremium(int unitAsk, int quantity, long npcSellWholeStack) {
@@ -539,9 +572,8 @@ final class BotFreeMarketManager {
                 observed.add(new BotMarketMath.Sample(b, price, conf));
             }
         }
-        double pinned = BotMarketMath.quoteFromCurve(
-                BotMarketMath.curveCalibration(observed, quote.bandCurve()),
-                quote.bandCurve(), quote.band());
+        double pinned = BotMarketMath.calibratedCurve(observed, quote.bandCurve())
+                .applyAsDouble(quote.band());
         return pinned > 0 ? pinned : quote.curveQuoteMeso();
     }
 

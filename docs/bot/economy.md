@@ -10,8 +10,11 @@ session handoffs that previously described intermediate stages.
   persistent price beliefs. `BotMarketLedger` records market events; `BotMarketMath` owns quote math.
 - `BotFreeMarketManager` decides when an autonomous bot should visit the Free Market, browse, open or
   service a hired merchant, price surplus, collect Fredrick holdings, and return to its prior town.
-- `BotMarketShoutBus`, `BotMarketGrammar`, `BotShoutTradeManager`, and the trade negotiator implement
-  structured shout-driven equip trading.
+- `BotMarketShoutBus`, `BotMarketGrammar`, and `BotShoutTradeManager` implement structured shout-driven
+  equip trading: bots emit `S>` asks for surplus and `B>` buy orders (optionally with a stat criterion,
+  e.g. `8+ att work glove 500k`) for the one upgrade they want, match heard shouts over the vanilla
+  `Trade`, and haggle in-window via plain trade-chat counters bounded by each side's per-roll SSOT
+  price.
 - `BotScrollManager`/`BotScrollPlanner` remain the scroll and equipment-value source of truth.
   Market code consumes their values instead of maintaining a second equipment scorer.
 - `BotMakerManager`/`BotMakerPlanner`, gachapon, shop decisions, and grind selection consume the same
@@ -23,8 +26,9 @@ session handoffs that previously described intermediate stages.
   farm, equip, compact, or scroll the same item while it is staged in a trade or merchant operation.
 - Price beliefs influence decisions; they do not mint items or meso. Real inventory, fees, storage,
   merchant, and trade paths perform every transfer.
-- Only actual clearings can seed shared price consensus. Stall listings and shout asks remain visible
-  audit data, but advertisements never become the price that bots use for valuation.
+- Only actual clearings can seed shared price consensus. Stall listings, shout asks and bids, and
+  in-window haggle counters remain visible audit data, but advertisements never become the price that
+  bots use for valuation.
 - Exposed outcomes provide directional supply/demand pressure without turning advertisements into
   prices: surviving bot-stall stock is repriced about hourly and can only push consensus down; a sale
   within 15 minutes of opening/repricing can only push it up. Corrections start small, grow with

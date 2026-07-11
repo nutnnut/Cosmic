@@ -16,14 +16,19 @@ final class BotMarketChatter {
 
     private BotMarketChatter() {}
 
-    // Sell/buy shout prefixes. All stay parseable by BotMarketGrammar (letter immediately before '>').
-    // S>/B> weighted heavier by repetition so the plain form stays common.
-    private static final String[] SELL_PREFIXES = {"S>", "S>", "S>", "SELL>", "Selling>"};
-    private static final String[] BUY_PREFIXES = {"B>", "B>", "B>", "BUY>", "Buying>"};
+    // Sell/buy shout prefixes. All stay parseable by BotMarketGrammar (letter immediately before '>',
+    // except WTS>/WTB> where the grammar reads the LAST letter). S>/B> weighted heavier by repetition
+    // so the plain form stays common.
+    private static final String[] SELL_PREFIXES = {"S>", "S>", "S>", "SELL>", "Selling>", "WTS>"};
+    private static final String[] BUY_PREFIXES = {"B>", "B>", "B>", "BUY>", "Buying>", "WTB>"};
 
-    // Occasional trailing flavor on a shout (mostly none — the blanks keep it usually clean).
-    private static final List<String> SHOUT_SUFFIXES = List.of(
+    // Occasional trailing flavor on a shout (mostly none — the blanks keep it usually clean). Split by
+    // kind so seller flavor ("cheap", "no lowball") never lands on a buy shout and vice versa.
+    private static final List<String> SELL_SUFFIXES = List.of(
             "", "", "", "", "", "", "no lowball", "pm me", "cheap", "pros only", "cs ok", "quick sale");
+    private static final List<String> BUY_SUFFIXES = List.of(
+            "", "", "", "", "", "", "pm me", "have meso", "paying fair", "anyone?", "need it today",
+            "w/ meso ready");
 
     private static final List<String> CONFIRM = List.of(
             "looks good, locking it in", "deal, confirming", "aight locking it in",
@@ -41,8 +46,18 @@ final class BotMarketChatter {
      *  occasional suffix and a rare full-uppercase — SoloMapling's shout-variety trick. */
     static String sellShout(String preview, int price, int botId) {
         String prefix = SELL_PREFIXES[Math.floorMod(botId, SELL_PREFIXES.length)];
-        String suffix = pick(SHOUT_SUFFIXES);
+        String suffix = pick(SELL_SUFFIXES);
         String line = prefix + " " + preview + " " + BotMarketGrammar.mesoShort(price)
+                + (suffix.isEmpty() ? "" : " " + suffix);
+        return ThreadLocalRandom.current().nextInt(100) < 15 ? line.toUpperCase(Locale.ROOT) : line;
+    }
+
+    /** A styled buy-shout line: the bot's per-id prefix + item label + clean k/m price, with an
+     *  occasional suffix and a rare full-uppercase — mirrors sellShout but for buy orders. */
+    static String buyShout(String itemLabel, int price, int botId) {
+        String prefix = BUY_PREFIXES[Math.floorMod(botId, BUY_PREFIXES.length)];
+        String suffix = pick(BUY_SUFFIXES);
+        String line = prefix + " " + itemLabel + " " + BotMarketGrammar.mesoShort(price)
                 + (suffix.isEmpty() ? "" : " " + suffix);
         return ThreadLocalRandom.current().nextInt(100) < 15 ? line.toUpperCase(Locale.ROOT) : line;
     }
@@ -57,6 +72,47 @@ final class BotMarketChatter {
 
     static String restate(String itemName, int price) {
         return String.format(Locale.ROOT, pick(RESTATE), itemName, BotMarketGrammar.mesoShort(price));
+    }
+
+    // ---- Haggle chains: buyer/seller price negotiation in trade window ----
+    // CONTRACT: counterSell, counterBuy, finalOffer, agree must each contain the price exactly once
+    // (parsed as the LAST meso token). walkAway must contain NO meso token at all.
+    private static final List<String> COUNTER_SELL = List.of(
+            "got a %1$s, how about %2$s", "this one is %1$s, id want %2$s",
+            "mine beats that - %1$s for %2$s", "check it, %1$s. %2$s and its yours");
+    private static final List<String> COUNTER_BUY = List.of(
+            "hmm, %s?", "how about %s", "best i can do is %s", "i can go %s", "bit steep, %s?");
+    private static final List<String> FINAL_OFFER = List.of(
+            "%s, final offer", "cant go past %s", "%s, take it or leave it", "%s is my limit");
+    private static final List<String> AGREE = List.of(
+            "deal, %s it is", "alright, %s, deal", "ok %s works", "sold at %s");
+    private static final List<String> WALK_AWAY = List.of(
+            "too rich for me, sorry", "thats over my budget, gl selling", "cant do that price, sorry",
+            "ill pass, thanks anyway", "out of my range, gl");
+
+    /** A seller countering a buy shout with a better piece; uses per-item preview + final price ask. */
+    static String counterSell(String preview, int price) {
+        return String.format(Locale.ROOT, pick(COUNTER_SELL), preview, BotMarketGrammar.mesoShort(price));
+    }
+
+    /** A buyer countering a sell shout; price-only counter. */
+    static String counterBuy(int price) {
+        return String.format(Locale.ROOT, pick(COUNTER_BUY), BotMarketGrammar.mesoShort(price));
+    }
+
+    /** A final, take-it-or-leave-it offer; buyer or seller. */
+    static String finalOffer(int price) {
+        return String.format(Locale.ROOT, pick(FINAL_OFFER), BotMarketGrammar.mesoShort(price));
+    }
+
+    /** Agreement to a negotiated price. */
+    static String agree(int price) {
+        return String.format(Locale.ROOT, pick(AGREE), BotMarketGrammar.mesoShort(price));
+    }
+
+    /** Walk away from the negotiation; contains NO meso token. */
+    static String walkAway() {
+        return pick(WALK_AWAY);
     }
 
     // ---- Free-market trip narration (BotFreeMarketManager reply lines) ----

@@ -469,9 +469,12 @@ final class BotOfferManager {
      * other tokens use "+" since they are bonus values ("+3 str", "+3 att").
      */
     static String formatItemSpecifier(Item item, Character audience) {
-        if (item instanceof Equip && audience == null) {
+        if (item instanceof Equip eq && audience == null) {
             String name = ItemInformationProvider.getInstance().getName(item.getItemId());
-            return name == null || name.isBlank() ? String.valueOf(item.getItemId()) : name;
+            if (name == null || name.isBlank()) {
+                name = String.valueOf(item.getItemId());
+            }
+            return cleanTag(eq) + name;
         }
         int jobId = audience == null || audience.getJob() == null ? 0 : audience.getJob().getId();
         return formatItemSpecifier(item, jobId);
@@ -509,9 +512,15 @@ final class BotOfferManager {
         }
 
         if (tokens.isEmpty()) {
-            return name;
+            return cleanTag(eq) + name;
         }
-        return String.join(" ", tokens) + " " + name;
+        return cleanTag(eq) + String.join(" ", tokens) + " " + name;
+    }
+
+    /** "clean " when the piece has never been scrolled (players say it exactly like that: "clean
+     *  60 att lionheart"); empty otherwise. SSOT predicate: {@link BotScrollManager#isCleanRoll}. */
+    private static String cleanTag(Equip eq) {
+        return BotScrollManager.isCleanRoll(ItemInformationProvider.getInstance(), eq) ? "clean " : "";
     }
 
     private static boolean isMageBranch(int jobId) {

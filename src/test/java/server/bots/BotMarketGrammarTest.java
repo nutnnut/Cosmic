@@ -12,8 +12,10 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import server.bots.BotMarketGrammar.Criterion;
 import server.bots.BotMarketGrammar.Kind;
 import server.bots.BotMarketGrammar.Offer;
+import server.bots.BotMarketGrammar.Stat;
 
 /** Pure structural + resolution tests for the shout grammar — a fake name catalog is injected so no
  *  WZ data is needed (design sec 8.4; ASCII invariant 3). */
@@ -23,7 +25,9 @@ class BotMarketGrammarTest {
             "brown work glove", 1082002,
             "ilbis", 1332006,
             "fish spear", 1442003,
-            "red whip", 1372005);
+            "red whip", 1372005,
+            "work glove", 1082010,
+            "some item", 1902000);
 
     private ToIntFunction<String> savedResolver;
 
@@ -125,5 +129,112 @@ class BotMarketGrammarTest {
         assertEquals("PC> fish spear", BotMarketGrammar.format(Kind.PRICE_CHECK, "fish spear", 1, 0));
         assertEquals("1500k", BotMarketGrammar.mesoShort(1_500_000));
         assertEquals("1234567", BotMarketGrammar.mesoShort(1_234_567));
+    }
+
+    @Test
+    void parsesBuyOfferWithCriterion() {
+        Offer o = BotMarketGrammar.parse("B> 8+ att work glove 500k");
+        assertEquals(new Offer(Kind.BUY, 1082010, 1, 500_000, new Criterion(Stat.ATT, 8)), o);
+    }
+
+    @Test
+    void parsesCriterionSpacingAndAliasVariants() {
+        Offer expectedAtt8 = new Offer(Kind.BUY, 1082010, 1, 500_000, new Criterion(Stat.ATT, 8));
+        assertEquals(expectedAtt8, BotMarketGrammar.parse("b> 8 att work glove 500k"));
+        assertEquals(expectedAtt8, BotMarketGrammar.parse("BUY> 8+watk work glove 500k"));
+        assertEquals(new Offer(Kind.BUY, 1902000, 1, 1_000_000, new Criterion(Stat.STR, 12)),
+                BotMarketGrammar.parse("B> 12+ STR some item 1m"));
+    }
+
+    @Test
+    void parsesCriterionWithQuantity() {
+        Offer o = BotMarketGrammar.parse("B> 8+ att work glove x2 500k");
+        assertEquals(new Offer(Kind.BUY, 1082010, 2, 500_000, new Criterion(Stat.ATT, 8)), o);
+    }
+
+    @Test
+    void criterionRoundTripsThroughFormat() {
+        String line = BotMarketGrammar.format(Kind.BUY, new Criterion(Stat.ATT, 8), "work glove", 1, 500_000);
+        assertEquals("B> 8+ att work glove 500k", line);
+        assertEquals(new Offer(Kind.BUY, 1082010, 1, 500_000, new Criterion(Stat.ATT, 8)),
+                BotMarketGrammar.parse(line));
+    }
+
+    @Test
+    void plainOffersStillHaveNullCriterion() {
+        assertEquals(new Offer(Kind.BUY, 1082010, 1, 500_000, null),
+                BotMarketGrammar.parse("B> work glove 500k"));
+        assertEquals(new Offer(Kind.SELL, 1082010, 1, 500_000, null),
+                BotMarketGrammar.parse("S> work glove 500k"));
+        assertEquals(new Offer(Kind.PRICE_CHECK, 1442003, 1, 0, null),
+                BotMarketGrammar.parse("PC> fish spear"));
+    }
+
+    @Test
+    void parsesCleanBuyCriterion() {
+        Offer o = BotMarketGrammar.parse("B> clean work glove 300k");
+        assertEquals(new Offer(Kind.BUY, 1082010, 1, 300_000, BotMarketGrammar.CLEAN), o);
+    }
+
+    @Test
+    void cleanIsCaseInsensitive() {
+        Offer o = BotMarketGrammar.parse("b> CLEAN work glove 300k");
+        assertEquals(new Offer(Kind.BUY, 1082010, 1, 300_000, BotMarketGrammar.CLEAN), o);
+    }
+
+    @Test
+    void cleanWordIsStrippedButNoCriterionOnSell() {
+        Offer o = BotMarketGrammar.parse("S> clean work glove 300k");
+        assertEquals(new Offer(Kind.SELL, 1082010, 1, 300_000, null), o);
+    }
+
+    @Test
+    void statAndCleanCombineWhenBothPresent() {
+        Criterion expected = new Criterion(Stat.ATT, 8, true);
+        assertEquals(new Offer(Kind.BUY, 1082010, 1, 500_000, expected),
+                BotMarketGrammar.parse("B> 8+ att clean work glove 500k"));
+        assertEquals(new Offer(Kind.BUY, 1082010, 1, 500_000, expected),
+                BotMarketGrammar.parse("B> clean 8+ att work glove 500k"));
+    }
+
+    @Test
+    void statAndCleanCombinedFormatRoundTrips() {
+        String line = BotMarketGrammar.format(Kind.BUY, new Criterion(Stat.STR, 8, true), "work glove", 1, 500_000);
+        assertEquals("B> 8+ str clean work glove 500k", line);
+        assertEquals(new Offer(Kind.BUY, 1082010, 1, 500_000, new Criterion(Stat.STR, 8, true)),
+                BotMarketGrammar.parse(line));
+    }
+
+    @Test
+    void wtbAndWtsPrefixesParse() {
+        assertEquals(new Offer(Kind.BUY, 1082010, 1, 300_000, BotMarketGrammar.CLEAN),
+                BotMarketGrammar.parse("WTB> clean work glove 300k"));
+        assertEquals(new Offer(Kind.SELL, 1082010, 1, 300_000, null),
+                BotMarketGrammar.parse("WTS> work glove 300k"));
+        assertEquals(new Offer(Kind.BUY, 1082010, 1, 300_000, null),
+                BotMarketGrammar.parse("wtb> work glove 300k"));
+    }
+
+    @Test
+    void cleanFormatRoundTrips() {
+        String line = BotMarketGrammar.format(Kind.BUY, BotMarketGrammar.CLEAN, "work glove", 1, 300_000);
+        assertEquals("B> clean work glove 300k", line);
+        assertEquals(new Offer(Kind.BUY, 1082010, 1, 300_000, BotMarketGrammar.CLEAN), BotMarketGrammar.parse(line));
+    }
+
+    @Test
+    void wtbLooksLikeShout() {
+        assertTrue(BotMarketGrammar.looksLikeShout("WTB> anything 1m"));
+    }
+
+    @Test
+    void criterionRequiresLeadingNumber() {
+        ToIntFunction<String> saved = BotMarketGrammar.nameResolver;
+        BotMarketGrammar.nameResolver = name -> "work glove".equalsIgnoreCase(name) ? 1082010 : -1;
+        try {
+            assertNull(BotMarketGrammar.parse("B> att work glove 500k"));
+        } finally {
+            BotMarketGrammar.nameResolver = saved;
+        }
     }
 }

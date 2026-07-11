@@ -2112,20 +2112,66 @@ final class BotScrollManager {
         int maxBand = maxBand(gains, unit, tuc);
         int band = equipQualityBand(ii, eq);
         // Market seed, not raw acquisition: stat-lead premium over the slot's cheapest
-        // alternative, clamped between net-of-byproduct and gross farm cost.
+        // alternative, clamped between net-of-byproduct and gross farm cost. This is the price of a
+        // FLOOR clean drop — the demand-anchored, supply-clamped baseline — and the per-drop cost the
+        // roll-rarity multiplier scales up from.
         double cleanCost = cleanMarketWorthMeso(pc, ii, eq.getItemId());
         java.util.function.DoubleUnaryOperator vf = cachedReproductionValue(
                 baseScore, tuc, marketReproSpecs(pc, ii, eq.getItemId()), cleanCost);
+        // Roll-rarity prior over the clean-drop range: a clean piece's stat surplus is a two-stage
+        // drop roll (plain uniform, then the 20% godly upgrade), so reaching a given surplus costs the
+        // baseline TIMES the expected drops to hit it (BotRollDistribution) — floor roll ~= baseline,
+        // top roll exponentially dear, scale-aware from the piece's own catalog value. Modeled on the
+        // dominant rollable stat (the one that drives the band), the same one wants shout on.
+        RollStat roll = bestRollStat(ii, clean);
+        BotRollDistribution.Stat dist = roll == null ? null : rollDistribution(clean, roll);
+        double rollWeight = roll == null ? 0.0 : marketStatValue(Map.of(roll.key(), 1));
+        double maxRollBand = (dist == null || unit <= 0) ? 0.0
+                : Math.min(maxBand, rollWeight * (dist.max() - clean.getOrDefault(roll.key(), 0)) / unit);
         java.util.function.DoubleUnaryOperator bandCurve = b -> {
-            if (b <= 0 || unit <= 0) {
+            if (unit <= 0) {
                 return cleanCost;
             }
-            // Cap at the slot budget's reachable ceiling: past it the restart DP never terminates
-            // in success and its estimate is meaningless (a wild clean roll prices AT the ceiling).
-            return SECONDHAND_DISCOUNT * vf.applyAsDouble(baseScore + Math.min(b, maxBand) * unit);
+            // Scroll-reproduction cost of an equivalent band, capped at the slot budget's reachable
+            // ceiling (past it the restart DP never terminates in success).
+            double repro = SECONDHAND_DISCOUNT * vf.applyAsDouble(baseScore + Math.min(b, maxBand) * unit);
+            if (dist == null) {
+                // No rollable offense stat: the clean baseline floors the curve, and a scrolled piece
+                // (higher band) never prices below it — the join without a rarity spread.
+                return b <= 0 ? cleanCost : Math.max(cleanCost, repro);
+            }
+            // Acquisition-rarity within the clean-reachable range: baseline x expected drops to reach
+            // this band's stat surplus. Integrates the band over its stat points via the exact discrete
+            // survival at the score threshold, not a single stat sample (unit spans several points).
+            double rarity = cleanCost * BotRollDistribution.expectedDropsForScoreSurplus(
+                    dist, rollWeight, Math.min(b, maxRollBand) * unit);
+            if (b <= maxRollBand) {
+                return rarity;
+            }
+            // Scroll territory (beyond any clean roll): never below the best clean roll so the curve
+            // stays monotone across the join, else the reproduction DP once scrolling costs more.
+            return Math.max(rarity, repro);
         };
-        return new EquipQuote(eq.getItemId(), band, Math.round(bandCurve.applyAsDouble(band)),
+        // Quote the SPECIFIC roll at its fractional band so pieces sharing an integer band still
+        // resolve by quality (a floor roll below the band average, a near-godly one above); the integer
+        // band remains the provenance-blind price key both trade sides agree on.
+        double fracBand = unit > 0 ? Math.max(0.0, (marketStatValueOf(eq) - baseScore) / unit) : 0.0;
+        return new EquipQuote(eq.getItemId(), band, Math.round(bandCurve.applyAsDouble(fracBand)),
                 bandCurve, baseScore, unit);
+    }
+
+    /** Two-stage drop-roll distribution of an equip's dominant rollable stat, from the WZ catalog
+     *  value and the live godly-stat config. Offense stats only (getRandStat maxRange 5, no hp/mp
+     *  base offset). Mirrors {@code ItemInformationProvider.randomizeStats}/{@code randomizeGodlyStats}. */
+    private static BotRollDistribution.Stat rollDistribution(Map<String, Integer> clean, RollStat roll) {
+        int catalog = clean.getOrDefault(roll.key(), 0);
+        double gate = YamlConfig.config.server.GODLY_STATS_ENABLED
+                ? YamlConfig.config.server.GODLY_STATS_DROP_CHANCE / 100.0 : 0.0;
+        int reqLevel = clean.getOrDefault("reqLevel", 0);
+        int maxBonus = Math.max(
+                Math.round((float) (reqLevel * YamlConfig.config.server.GODLY_STATS_BONUS_SCALING)),
+                YamlConfig.config.server.GODLY_STATS_MIN_BONUS);
+        return BotRollDistribution.Stat.of(catalog, 5, gate, maxBonus, 0);
     }
 
     /** What a best-buyer bot pays for a rolled stall equip: its combat upgrade gain over the
@@ -2136,15 +2182,7 @@ final class BotScrollManager {
     static long equipBuyCeilingMeso(Character bot, Equip candidate) {
         ItemInformationProvider ii = ItemInformationProvider.getInstance();
         Short slot = primarySlot(ii, candidate.getItemId());
-        if (slot == null || !ii.canWearEquipment(bot, candidate, slot)) {
-            return 0;
-        }
-        // Off-type weapon (a mace to a knuckle pirate): canWearEquipment passes on raw stats (v83
-        // has no job lock on most 1H weapons) and the offense scorer would count its WATK as pure
-        // upgrade gain — but attack skills need the build's weapon type, so it's never a combat
-        // upgrade, only trade stock. Same gate levelsUntilWearable already applies.
-        if (slot == (short) -11
-                && !BotEquipManager.isPreferredWeapon(bot, ii.getWeaponType(candidate.getItemId()), candidate)) {
+        if (!wearableUpgradeCandidate(bot, ii, candidate, slot)) {
             return 0;
         }
         Equip worn = wornInSlot(bot, ii, slot);
@@ -2155,6 +2193,267 @@ final class BotScrollManager {
         }
         return Math.round(SCROLL_CEILING_PER_EV * gain
                 * slotDurabilityFactor(candidate.getItemId() / 10000 % 100));
+    }
+
+    /** Wearability gate shared by stall/shout buy demand and buy-want selection: physically
+     *  wearable in its primary slot and, for weapons, of the build's preferred type. Off-type
+     *  weapons (a mace to a knuckle pirate): canWearEquipment passes on raw stats (v83 has no job
+     *  lock on most 1H weapons) and the offense scorer would count its WATK as pure upgrade gain —
+     *  but attack skills need the build's weapon type, so it's never a combat upgrade, only trade
+     *  stock. Same gate levelsUntilWearable already applies. */
+    private static boolean wearableUpgradeCandidate(Character bot, ItemInformationProvider ii,
+                                                    Equip candidate, Short slot) {
+        if (slot == null || !ii.canWearEquipment(bot, candidate, slot)) {
+            return false;
+        }
+        return slot != (short) -11
+                || BotEquipManager.isPreferredWeapon(bot, ii.getWeaponType(candidate.getItemId()), candidate);
+    }
+
+    // ---- buy-want selection (living-economy S3: B> emission demand side) -----------------------
+
+    /** One equip the bot is shopping for: what to shout (item + roll criterion + hard WTP cap) and
+     *  the quality band the bid prices at. criterion == null means the clean roll already upgrades
+     *  (plain {@code B> <item> <price>}). */
+    record BuyWant(int itemId, int band, BotMarketGrammar.Criterion criterion, long ceilingMeso) {}
+
+    /** Owner gate (2026-07-11): bots shout buy wants for CLEAN (never-scrolled) pieces only —
+     *  wants for finished scrolled pieces read as bots gambling on other bots' scroll luck. Clean
+     *  pieces still carry DROP-ROLL variance ({@code ItemInformationProvider.getRandStat}: a
+     *  nonzero catalog stat rolls within ±min(ceil(stat×0.1), 5)), so a want may still name a stat
+     *  floor: {@code B> 8+ str clean steel knuckler} asks for a well-rolled unscrolled piece. */
+    /** Deep-evaluated shortlist size after the cheap stat-lead pre-rank (the deep pass runs the
+     *  reproduction DP per band, so the catalog is pruned hard first). */
+    private static final int WANT_SHORTLIST = 24;
+    /** Keep this many finalists and pick one at random so sibling bots don't chant one want. */
+    private static final int WANT_JITTER_POOL = 3;
+
+    /**
+     * Pick the upgrade this bot should shout a buy order for: over the obtainable-equip catalog
+     * (NPC-shop-sold or mob-dropped — what other players plausibly hold), the (item, band) whose
+     * per-roll willingness-to-pay most exceeds its expected market price, within budget. Demand is
+     * computed, not configured: WTP is the same {@link #equipBuyCeilingMeso} stall browsing uses,
+     * run on a hypothetical piece rolled to the band (dominant scroll stat, one success per band,
+     * an upgrade slot consumed per success); expected price is the bot's banded belief, else the
+     * secondhand reproduction curve. Bands whose roll doesn't yet beat the worn piece score no WTP
+     * and drop out, so a bot whose gear already beats clean shops for "8+ att", not for clean —
+     * richer bots reach higher bands simply because higher bands stay inside their budget.
+     * Null = nothing worth shouting for at this budget.
+     */
+    static BuyWant chooseBuyWant(BotEntry entry, Character bot, long spendableMeso, long now) {
+        if (spendableMeso < 1000) {
+            return null;
+        }
+        ItemInformationProvider ii = ItemInformationProvider.getInstance();
+        BotMarketBook book = BotMarketBook.of(entry, bot);
+
+        // Cheap pre-rank: job-neutral stat lead of (clean + reachable bands) over the worn piece.
+        Set<Integer> obtainable = new HashSet<>(shopPrices().keySet());
+        obtainable.addAll(bestDropperByItem().keySet());
+        Map<Short, Double> wornScoreBySlot = new HashMap<>();
+        record Cheap(int itemId, Equip clean, double lead) {}
+        List<Cheap> ranked = new ArrayList<>();
+        for (int id : obtainable) {
+            if (id < 1_000_000 || id >= 2_000_000) {
+                continue;
+            }
+            Map<String, Integer> st;
+            try {
+                st = ii.getEquipStats(id);
+            } catch (RuntimeException e) {
+                continue;
+            }
+            if (st == null || st.getOrDefault("reqLevel", 0) > bot.getLevel()) {
+                continue;
+            }
+            if (!shopPrices().containsKey(id) && !droppedByLiveSpawn(id)) {
+                continue; // event-only / unreachable-dropper items: nobody can farm one to sell
+            }
+            if (!(ii.getEquipById(id) instanceof Equip clean)) {
+                continue;
+            }
+            Short slot = primarySlot(ii, id);
+            if (!wearableUpgradeCandidate(bot, ii, clean, slot)) {
+                continue;
+            }
+            double worn = wornScoreBySlot.computeIfAbsent(slot, s -> {
+                Equip w = wornInSlot(bot, ii, s);
+                return w == null ? 0.0 : marketStatValueOf(w);
+            });
+            // Rank on the best clean-roll lead: the catalog piece with its most valuable rollable
+            // stat at the top of its drop-roll range.
+            RollStat roll = bestRollStat(ii, st);
+            double lead = marketStatValueOfClean(id, st) - worn
+                    + (roll == null ? 0.0 : roll.range() * marketStatValue(Map.of(roll.key(), 1)));
+            if (lead > 0) {
+                ranked.add(new Cheap(id, clean, lead));
+            }
+        }
+        ranked.sort((a, b) -> Double.compare(b.lead(), a.lead()));
+
+        // Deep pass on the shortlist: real per-roll WTP vs. expected price, band by band.
+        List<BuyWant> pool = new ArrayList<>();
+        List<Double> poolSurplus = new ArrayList<>();
+        for (Cheap c : ranked.subList(0, Math.min(WANT_SHORTLIST, ranked.size()))) {
+            Map<String, Integer> st = ii.getEquipStats(c.itemId());
+            int tuc = st.getOrDefault("tuc", 0);
+            // Scan the CLEAN DROP-ROLL space: delta = points of the piece's most valuable rollable
+            // stat above catalog average, capped at the real roll range so the criterion is always
+            // droppable. Slots stay untouched — these are unscrolled pieces.
+            RollStat roll = bestRollStat(ii, st);
+            for (int delta = 0; delta <= (roll == null ? 0 : roll.range()); delta++) {
+                Equip hyp = cleanRollCopy(c.clean(), roll, delta);
+                long wtp = equipBuyCeilingMeso(bot, hyp);
+                if (wtp <= 0) {
+                    continue; // not an upgrade over worn at this roll yet
+                }
+                EquipQuote quote = equipMarketQuote(entry, bot, hyp);
+                if (quote == null || quote.curveQuoteMeso() <= 0) {
+                    break;
+                }
+                double perceived = book.perceivedPrice(BotMarketMath.priceKey(c.itemId(), quote.band()), now);
+                double cost = perceived > 0 ? perceived : quote.curveQuoteMeso();
+                if (cost > spendableMeso) {
+                    break; // better rolls only get dearer
+                }
+                double surplus = wtp - cost;
+                if (surplus <= 0) {
+                    continue;
+                }
+                // The want SAYS clean and MATCHES clean (tuc==0 pieces have no scrolled variant to
+                // exclude, so the flag would only reject everything); a positive delta adds the
+                // stat floor: "8+ str clean steel knuckler".
+                boolean cleanFlag = tuc > 0;
+                BotMarketGrammar.Criterion crit;
+                if (delta > 0) {
+                    BotMarketGrammar.Stat stat = grammarStat(roll.key());
+                    if (stat == null) {
+                        continue; // rollable stat isn't shoutable — plain clean want only
+                    }
+                    crit = new BotMarketGrammar.Criterion(stat,
+                            st.getOrDefault(roll.key(), 0) + delta, cleanFlag);
+                } else {
+                    crit = cleanFlag ? BotMarketGrammar.CLEAN : null;
+                }
+                keepTop(pool, poolSurplus, new BuyWant(c.itemId(), quote.band(), crit, wtp), surplus);
+            }
+        }
+        if (pool.isEmpty()) {
+            return null;
+        }
+        return pool.get(java.util.concurrent.ThreadLocalRandom.current().nextInt(pool.size()));
+    }
+
+    /** Keep the top {@link #WANT_JITTER_POOL} wants by surplus (tiny insertion sort). */
+    private static void keepTop(List<BuyWant> pool, List<Double> surpluses, BuyWant w, double s) {
+        int at = 0;
+        while (at < surpluses.size() && surpluses.get(at) >= s) {
+            at++;
+        }
+        pool.add(at, w);
+        surpluses.add(at, s);
+        if (pool.size() > WANT_JITTER_POOL) {
+            pool.remove(pool.size() - 1);
+            surpluses.remove(surpluses.size() - 1);
+        }
+    }
+
+    /** The clean piece's most valuable ROLLABLE stat and its drop-roll half-range — what turns a
+     *  roll-space want into a human-legible criterion ("8+ str"). Mirrors the drop randomizer
+     *  ({@code ItemInformationProvider.getRandStat}): only nonzero catalog stats roll, within
+     *  ±min(ceil(stat×0.1), 5). Null when no shoutable stat rolls on this piece. */
+    private record RollStat(String key, int range) {}
+
+    private static final String[] ROLLABLE_KEYS = {"PAD", "MAD", "STR", "DEX", "INT", "LUK"};
+
+    private static RollStat bestRollStat(ItemInformationProvider ii, Map<String, Integer> st) {
+        RollStat best = null;
+        double bestWorth = 0;
+        for (String k : ROLLABLE_KEYS) {
+            int base = st.getOrDefault(k, 0);
+            if (base <= 0) {
+                continue; // a zero catalog stat never rolls
+            }
+            int range = (int) Math.min(Math.ceil(base * 0.1), 5); // getRandStat's half-range
+            double worth = range * marketStatValue(Map.of(k, 1));
+            if (worth > bestWorth) {
+                bestWorth = worth;
+                best = new RollStat(k, range);
+            }
+        }
+        return best;
+    }
+
+    /** True when an equip has never been scrolled: every catalog upgrade slot is still open (a
+     *  scroll always consumes a slot, pass or fail). NOTE clean does NOT mean catalog stats —
+     *  drop rolls vary a clean piece's stats within the randomizer range, which is why a want can
+     *  say "8+ str clean". tuc==0 pieces (no scrolled variant exists) are NOT called clean — the
+     *  tag only means something where a scrolled alternative could exist. SSOT for the "clean"
+     *  word everywhere a bot speaks or matches it (item specifier, B> wants, criterion checks). */
+    static boolean isCleanRoll(ItemInformationProvider ii, Equip eq) {
+        Map<String, Integer> st;
+        try {
+            st = ii.getEquipStats(eq.getItemId());
+        } catch (RuntimeException e) {
+            return false;
+        }
+        int tuc = st == null ? 0 : st.getOrDefault("tuc", 0);
+        return tuc > 0 && eq.getUpgradeSlots() == tuc;
+    }
+
+    /** True when the item's best dropper actually spawns somewhere bots/players can farm — an
+     *  event-only or unreachable dropper row in {@code drop_data} doesn't make an item obtainable,
+     *  and shouting a want for it is asking for something nobody can go get. Fails OPEN when the
+     *  spawn index isn't available (unit tests). */
+    private static boolean droppedByLiveSpawn(int itemId) {
+        int[] dropper = bestDropperByItem().get(itemId);
+        if (dropper == null) {
+            return false;
+        }
+        try {
+            BotSpawnIndex.Index index = BotSpawnIndex.get();
+            for (BotSpawnIndex.SpawnSite site : BotSpawnIndex.spawnSites(dropper[0])) {
+                BotSpawnIndex.MapSpawns map = index.byMap().get(site.mapId());
+                if (map != null && !map.town() && site.spawnPoints() > 0) {
+                    return true;
+                }
+            }
+        } catch (RuntimeException e) {
+            return true; // index unavailable — don't silently starve wants in tests/boot
+        }
+        return false;
+    }
+
+    private static BotMarketGrammar.Stat grammarStat(String wzKey) {
+        return switch (wzKey) {
+            case "PAD" -> BotMarketGrammar.Stat.ATT;
+            case "MAD" -> BotMarketGrammar.Stat.MATT;
+            case "STR" -> BotMarketGrammar.Stat.STR;
+            case "DEX" -> BotMarketGrammar.Stat.DEX;
+            case "INT" -> BotMarketGrammar.Stat.INT;
+            case "LUK" -> BotMarketGrammar.Stat.LUK;
+            default -> null;
+        };
+    }
+
+    /** A hypothetical NEVER-SCROLLED piece at {@code delta} roll points above catalog on its most
+     *  valuable rollable stat — upgrade slots untouched (rolls don't consume them). The concrete
+     *  equip the demand math (WTP, quote, band) runs on. */
+    private static Equip cleanRollCopy(Equip clean, RollStat roll, int delta) {
+        Equip hyp = (Equip) clean.copy();
+        if (delta <= 0 || roll == null) {
+            return hyp;
+        }
+        switch (roll.key()) {
+            case "PAD" -> hyp.setWatk((short) (hyp.getWatk() + delta));
+            case "MAD" -> hyp.setMatk((short) (hyp.getMatk() + delta));
+            case "STR" -> hyp.setStr((short) (hyp.getStr() + delta));
+            case "DEX" -> hyp.setDex((short) (hyp.getDex() + delta));
+            case "INT" -> hyp.setInt((short) (hyp.getInt() + delta));
+            case "LUK" -> hyp.setLuk((short) (hyp.getLuk() + delta));
+            default -> { }
+        }
+        return hyp;
     }
 
     /** Quality band of a rolled equip — the price-key dimension both sides of a trade must agree
