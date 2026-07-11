@@ -552,6 +552,11 @@ public class BotEntry {
     long fmPhaseDeadlineAtMs = 0L;       // per-phase watchdog
     long nextFmScanAtMs = 0L;            // scan cadence + post-trip satiation
     long nextStallServiceAtMs = 0L;      // when the live stall wants a service visit
+    // Per-banded-key censored market outcomes. Surviving hourly service checks accumulate supply
+    // pressure; a clearing resets it. Last offer time identifies unusually fast demand after an
+    // open/reprice. Concurrent because HiredMerchant.buy reports sales from the buyer's thread.
+    final ConcurrentHashMap<Long, Integer> fmUnsoldPressureByKey = new ConcurrentHashMap<>();
+    final ConcurrentHashMap<Long, Long> fmLastOfferAtMsByKey = new ConcurrentHashMap<>();
     long fmBrowseUntilMs = 0L;           // humanlike browse dwell
     int fmPlaceTries = 0;                // bounded stall-spot attempts
     int fmBargainBuys = 0;               // bounded impulse purchases per trip

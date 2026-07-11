@@ -108,4 +108,25 @@ class BotFreeMarketManagerTest {
         double floored = BotFreeMarketManager.repriceWithUndercut(600_000, 1_200_000, 0, 590_000, 100_000);
         assertTrue(floored >= 590_000, "never crosses the seller's reservation");
     }
+
+    @Test
+    void hourlyUnsoldExposureStartsSmallAndScalesWithPressure() {
+        double firstHour = BotFreeMarketManager.repriceUnsold(
+                1_000_000, 1_500_000, 0, 500_000, 2_000_000, 1);
+        double crowdedOrRepeated = BotFreeMarketManager.repriceUnsold(
+                1_000_000, 1_500_000, 0, 500_000, 2_000_000, 5);
+
+        assertTrue(firstHour < 1_000_000 && firstHour > 950_000,
+                "one unsold hour makes a small markdown even when beliefs and competitors are high");
+        assertTrue(crowdedOrRepeated < firstHour,
+                "larger accumulated supply pressure makes a larger markdown");
+        assertTrue(crowdedOrRepeated >= 500_000,
+                "pressure never crosses the seller's reservation");
+    }
+
+    @Test
+    void onlyAnUnusuallyQuickSaleAddsDemandPressure() {
+        assertTrue(BotFreeMarketManager.isFastSaleElapsed(10 * 60_000L));
+        assertFalse(BotFreeMarketManager.isFastSaleElapsed(30 * 60_000L));
+    }
 }

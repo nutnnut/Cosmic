@@ -1968,6 +1968,11 @@ public class BotManager {
             BotEntry seller = getEntryByBotCharId(ownerId);
             if (seller != null && seller.bot != null) {
                 BotMarketBook.of(seller, seller.bot).observe(key, unitPrice, BotMarketMath.W_TRADE, now);
+                if (BotFreeMarketManager.recordSaleOutcome(seller, key, now)) {
+                    BotMarketLedger.getInstance().append(BotMarketLedger.EventKind.SOLD_FAST,
+                            itemId, band, Math.max(1, units), unitPrice, ownerId,
+                            buyer != null ? buyer.getId() : null, mapId);
+                }
             }
             if (buyer != null) {
                 BotEntry buyerEntry = getEntryByBotCharId(buyer.getId());

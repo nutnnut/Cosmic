@@ -209,6 +209,75 @@ class BotMarketSimTest {
                 "an advertisement must not move a clearing-derived market price");
     }
 
+    @Test
+    void exposedUnsoldSupplyLowersConsensusAndFastSalesRaiseIt() {
+        BotMarketConsensus unsoldMarket = consensusAt(1_000_000);
+        double beforeUnsold = unsoldMarket.consensus(KEY);
+        MarketEvent unsold = new MarketEvent(10, T0 + ROUND_MS, EventKind.UNSOLD,
+                1082089, 0, 1, 900_000, 1, -1, 910000001);
+
+        unsoldMarket.sweep(List.of(unsold), T0 + ROUND_MS);
+        assertTrue(unsoldMarket.consensus(KEY) < beforeUnsold,
+                "an exposed listing that survives the interval pushes consensus down");
+
+        BotMarketConsensus ordinaryMarket = consensusAt(1_000_000);
+        BotMarketConsensus hotMarket = consensusAt(1_000_000);
+        MarketEvent sale = new MarketEvent(11, T0 + ROUND_MS, EventKind.STALL_SALE,
+                1082089, 0, 1, 1_000_000, 1, 2, 910000001);
+        MarketEvent soldFast = new MarketEvent(12, T0 + ROUND_MS, EventKind.SOLD_FAST,
+                1082089, 0, 1, 1_000_000, 1, 2, 910000001);
+
+        ordinaryMarket.sweep(List.of(sale), T0 + ROUND_MS);
+        hotMarket.sweep(List.of(sale, soldFast), T0 + ROUND_MS);
+        assertTrue(hotMarket.consensus(KEY) > ordinaryMarket.consensus(KEY),
+                "a fast sale adds upward demand pressure beyond the clearing itself");
+    }
+
+    @Test
+    void outcomePressureIsDampedInLiquidMarketsAndQuietNearEquilibrium() {
+        MarketEvent nearEquilibrium = new MarketEvent(20, T0 + ROUND_MS, EventKind.UNSOLD,
+                1082089, 0, 1, 960_000, 1, -1, 910000001);
+        BotMarketConsensus quietMarket = consensusAt(1_000_000);
+        double stable = quietMarket.consensus(KEY);
+        quietMarket.sweep(List.of(nearEquilibrium), T0 + ROUND_MS);
+        assertEquals(stable, quietMarket.consensus(KEY),
+                "a small outcome signal inside the equilibrium band must not create price noise");
+
+        MarketEvent meaningfullyUnsold = new MarketEvent(21, T0 + ROUND_MS, EventKind.UNSOLD,
+                1082089, 0, 1, 850_000, 1, -1, 910000001);
+        BotMarketConsensus thin = consensusAt(1_000_000, 1);
+        BotMarketConsensus liquid = consensusAt(1_000_000, 40);
+        thin.sweep(List.of(meaningfullyUnsold), T0 + ROUND_MS);
+        liquid.sweep(List.of(meaningfullyUnsold), T0 + ROUND_MS);
+        double thinMove = 1_000_000 - thin.consensus(KEY);
+        double liquidMove = 1_000_000 - liquid.consensus(KEY);
+        assertTrue(liquidMove < thinMove / 5,
+                "high clearing volume damps isolated outcome pressure");
+
+        BotMarketConsensus oneSeller = consensusAt(1_000_000);
+        BotMarketConsensus crowdedSupply = consensusAt(1_000_000);
+        oneSeller.sweep(List.of(meaningfullyUnsold), T0 + ROUND_MS);
+        crowdedSupply.sweep(List.of(meaningfullyUnsold, meaningfullyUnsold, meaningfullyUnsold,
+                meaningfullyUnsold, meaningfullyUnsold), T0 + ROUND_MS);
+        assertTrue(crowdedSupply.consensus(KEY) < oneSeller.consensus(KEY),
+                "more unsold supply creates a larger downward correction");
+    }
+
+    private static BotMarketConsensus consensusAt(long price) {
+        return consensusAt(price, 1);
+    }
+
+    private static BotMarketConsensus consensusAt(long price, int volume) {
+        BotMarketConsensus consensus = new BotMarketConsensus(null, null);
+        List<MarketEvent> clearings = new ArrayList<>();
+        for (int i = 0; i < volume; i++) {
+            clearings.add(new MarketEvent(9 + i, T0, EventKind.STALL_SALE,
+                    1082089, 0, 1, price, 1, 2, 910000001));
+        }
+        consensus.sweep(clearings, T0);
+        return consensus;
+    }
+
     // (b, sag half): cheap supply entering undercuts and drags clearings + consensus down,
     // but never below the entrants' own cost floor. (The recovery half needs S4 supply steering.)
     @Test

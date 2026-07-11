@@ -1,5 +1,6 @@
 package server.bots;
 
+import server.bots.BotMarketLedger.EventKind;
 import server.bots.BotMarketLedger.MarketEvent;
 import server.bots.BotMarketMath.Belief;
 import server.bots.BotMarketMath.PricePoint;
@@ -104,18 +105,25 @@ public final class BotMarketConsensus implements BotMarketBook.ConsensusSource {
      * Pure sweep core: fold a window of events into the per-key statistics. Per key —
      * decay the standing volume for elapsed silence (half-life from the key's own event
      * spacing), build the recency-weighted median of realized clearing prices, then take one
-     * volume-damped step toward it. Listing and shout asks remain ledger/audit data, never shared
-     * price evidence: letting an advertisement seed consensus creates a self-reinforcing rumor loop.
-     * Returns the keys that moved.
+     * volume-damped step toward it. Exposed unsold supply and unusually fast sales then apply
+     * directional pressure to an established price. Listing and shout asks remain ledger/audit data,
+     * never shared price evidence: letting an advertisement seed consensus creates a self-reinforcing
+     * rumor loop. Returns the keys that moved.
      */
     List<Long> sweep(List<MarketEvent> window, long nowMs) {
         Map<Long, List<MarketEvent>> clearingByKey = new HashMap<>();
+        Map<Long, List<MarketEvent>> unsoldByKey = new HashMap<>();
+        Map<Long, List<MarketEvent>> fastSaleByKey = new HashMap<>();
         for (MarketEvent e : window) {
             if (e.unitPrice() <= 0) {
                 continue;
             }
             if (e.kind().isClearing()) {
                 clearingByKey.computeIfAbsent(e.priceKey(), k -> new ArrayList<>()).add(e);
+            } else if (e.kind() == EventKind.UNSOLD) {
+                unsoldByKey.computeIfAbsent(e.priceKey(), k -> new ArrayList<>()).add(e);
+            } else if (e.kind() == EventKind.SOLD_FAST) {
+                fastSaleByKey.computeIfAbsent(e.priceKey(), k -> new ArrayList<>()).add(e);
             }
         }
 
@@ -154,7 +162,61 @@ public final class BotMarketConsensus implements BotMarketBook.ConsensusSource {
             updatedAtMs.put(key, nowMs);
             moved.add(key);
         }
+        applyDirectionalOutcomes(unsoldByKey, nowMs, false, moved);
+        applyDirectionalOutcomes(fastSaleByKey, nowMs, true, moved);
         return moved;
+    }
+
+    /** Fold exposed-supply/demand outcomes after clearings. They are directional bounds, not trades:
+     *  an unsold repriced ask may only lower an established consensus, while a quick sale may only
+     *  raise it. Multiple outcomes increase {@code totalWeight}, making larger pressure move farther. */
+    private void applyDirectionalOutcomes(Map<Long, List<MarketEvent>> byOutcomeKey, long nowMs,
+                                          boolean upward, List<Long> moved) {
+        for (Map.Entry<Long, List<MarketEvent>> entry : byOutcomeKey.entrySet()) {
+            long key = entry.getKey();
+            Belief current = byKey.getOrDefault(key, Belief.NONE);
+            if (current.isEmpty()) {
+                continue; // a directional bound cannot invent a price for a market that never cleared
+            }
+
+            List<MarketEvent> evidence = entry.getValue();
+            List<Long> stamps = new ArrayList<>(evidence.size());
+            for (MarketEvent e : evidence) {
+                stamps.add(e.atMs());
+            }
+            stamps.sort(Long::compare);
+            long halfLife = BotMarketMath.halfLifeMs(BotMarketMath.medianInterEventGapMs(stamps));
+
+            List<PricePoint> points = new ArrayList<>(evidence.size());
+            double totalWeight = 0;
+            for (MarketEvent e : evidence) {
+                double recency = Math.pow(0.5, (double) Math.max(0, nowMs - e.atMs()) / halfLife);
+                double w = BotMarketMath.W_OUTCOME * recency;
+                double signal = upward
+                        ? e.unitPrice() * (1.0 + BotMarketMath.FAST_SALE_PROBE_UP)
+                        : e.unitPrice();
+                points.add(new PricePoint(signal, w));
+                totalWeight += w;
+            }
+            double target = BotMarketMath.weightedMedian(points);
+            double boundary = current.estimate() * (upward
+                    ? 1.0 + BotMarketMath.OUTCOME_DEADBAND
+                    : 1.0 - BotMarketMath.OUTCOME_DEADBAND);
+            if (target <= 0 || totalWeight <= 0
+                    || (upward ? target <= boundary : target >= boundary)) {
+                continue;
+            }
+
+            long updatedAt = updatedAtMs.getOrDefault(key, 0L);
+            if (updatedAt > 0) {
+                current = BotMarketMath.decay(current, Math.max(0, nowMs - updatedAt), halfLife);
+            }
+            byKey.put(key, BotMarketMath.moveConsensus(current, target, totalWeight));
+            updatedAtMs.put(key, nowMs);
+            if (!moved.contains(key)) {
+                moved.add(key);
+            }
+        }
     }
 
     private void ensureLoaded() {

@@ -156,16 +156,19 @@ final class BotFreeMarketManager {
     private static final int MAX_STALL_SLOT_STEPS = 8;
     /** Give up walking to one candidate spot after this long without net progress. */
     private static final long PLACE_WALK_STUCK_MS = 12_000L;
-    /** Re-visit an open stall every few hours to reprice/restock (living-economy S2). Short vs the
+    /** Re-visit an open stall about hourly to reprice/restock (living-economy S2). Short vs the
      *  ~24h forceClose so sold-out slots refill and stale asks track belief across a market day —
      *  the visit rides the same break/satiation cadence, so it's a detour on a town break, not a
      *  dedicated trek. */
-    private static final int STALL_SERVICE_MIN_MS = 3 * 3_600_000;
-    private static final int STALL_SERVICE_MAX_MS = 6 * 3_600_000;
-    /** Reprice step aggressiveness (fraction of the ask→belief gap closed per visit) and the floor
-     *  on how far one visit may cut an ask (never below half, nor the NPC sell-back). */
-    private static final double REPRICE_PRESSURE = 0.5;
+    private static final int STALL_SERVICE_MIN_MS = 55 * 60_000;
+    private static final int STALL_SERVICE_MAX_MS = 65 * 60_000;
+    /** Frequent unsold checks start gentle; repeated exposure and same-key supply accumulate pressure,
+     *  which closes a larger fraction of the ask gap. One visit is still bounded by the reservation. */
+    private static final double UNSOLD_PRESSURE_PER_OBSERVATION = 0.06;
+    private static final double MAX_UNSOLD_PRESSURE = 0.5;
     private static final double REPRICE_MAX_DROP = 0.5;
+    /** A sale this soon after opening/repricing is unusually fast relative to the hourly cadence. */
+    private static final long FAST_SALE_WINDOW_MS = 15 * 60_000L;
     /** Undercut margin below the cheapest visible competing ask (design sec 5); matches BotMarketSimTest. */
     private static final double UNDERCUT_FRACTION = 0.02;
 
@@ -317,6 +320,8 @@ final class BotFreeMarketManager {
             return (long) unitPrice * Math.max(1, perBundle);
         }
     }
+
+    private record UnsoldOutcome(int itemId, int band, int quantity, int unitPrice) {}
 
     /** One SHELF stack's evaluation trail: the ask math plus why it did or didn't make the stall
      *  (the market debug endpoint renders these verbatim). {@code plan == null} -> not listed. */
@@ -1409,6 +1414,7 @@ final class BotFreeMarketManager {
                 BotMarketLedger.getInstance().append(BotMarketLedger.EventKind.LIST,
                         plan.item().getItemId(), bandOf(plan.item()), plan.bundles() * plan.perBundle(),
                         plan.unitPrice(), bot.getId(), null, bot.getMapId());
+                markOffer(entry, BotMarketMath.priceKey(plan.item().getItemId(), bandOf(plan.item())), now);
                 listed++;
             }
             if (listed == 0) {
@@ -1445,7 +1451,14 @@ final class BotFreeMarketManager {
         try {
             BotMarketBook book = BotMarketBook.of(entry, bot);
             Map<Long, Long> competingAsks = scanCompetingAsks(bot);
-            int free = merchant.botServiceReprice(psi -> serviceReprice(bot, book, psi, competingAsks, now));
+            List<UnsoldOutcome> unsoldOutcomes = new ArrayList<>();
+            int free = merchant.botServiceReprice(
+                    psi -> serviceReprice(entry, bot, book, psi, competingAsks, now, unsoldOutcomes));
+            for (UnsoldOutcome outcome : unsoldOutcomes) {
+                BotMarketLedger.getInstance().append(BotMarketLedger.EventKind.UNSOLD,
+                        outcome.itemId(), outcome.band(), outcome.quantity(), outcome.unitPrice(),
+                        bot.getId(), null, bot.getMapId());
+            }
             int restocked = 0;
             for (ListingPlan plan : validPlans(bot, entry.fmPlannedListings)) {
                 if (restocked >= free) {
@@ -1464,6 +1477,7 @@ final class BotFreeMarketManager {
                 BotMarketLedger.getInstance().append(BotMarketLedger.EventKind.LIST,
                         plan.item().getItemId(), bandOf(plan.item()), plan.bundles() * plan.perBundle(),
                         plan.unitPrice(), bot.getId(), null, bot.getMapId());
+                markOffer(entry, BotMarketMath.priceKey(plan.item().getItemId(), bandOf(plan.item())), now);
                 restocked++;
             }
             try {
@@ -1515,23 +1529,31 @@ final class BotFreeMarketManager {
      * slot's banded key — the bot's own belief undercut just below the cheapest visible competing
      * ask ({@link BotMarketMath#undercutTarget}, {@link #UNDERCUT_FRACTION}; never chasing above the
      * bot's own perceived value) — by {@link #REPRICE_PRESSURE}, floored so one visit never cuts an
-     * ask below {@link #REPRICE_MAX_DROP} of itself nor below the per-unit NPC sell-back. A
-     * belief-less slot with no competition keeps its price. Reuses {@link BotMarketMath#repriceAsk}
+     * ask below {@link #REPRICE_MAX_DROP} of itself nor below the per-unit NPC sell-back. Every
+     * surviving hourly interval also supplies directional evidence: even a belief-less or poisoned
+     * uncontested slot walks down until demand clears it. Reuses {@link BotMarketMath#repriceAsk}
      * and {@link BotMarketMath#undercutTarget} — no parallel pricing.
      */
-    private static int serviceReprice(Character bot, BotMarketBook book, PlayerShopItem psi,
-                                      Map<Long, Long> competingAsks, long now) {
+    private static int serviceReprice(BotEntry entry, Character bot, BotMarketBook book,
+                                      PlayerShopItem psi, Map<Long, Long> competingAsks, long now,
+                                      List<UnsoldOutcome> outcomes) {
         Item it = psi.getItem();
         int perBundle = Math.max(1, it.getQuantity());
-        long key = BotMarketMath.priceKey(it.getItemId(), bandOf(it));
+        int band = bandOf(it);
+        long key = BotMarketMath.priceKey(it.getItemId(), band);
         double perceived = book.perceivedPrice(key, now);
         double confidence = book.privateConfidence(key, now);
         double curUnitAsk = psi.getPrice() / (double) perBundle;
         long npcUnit = npcSell.price(it.getItemId(), 1);
         double reservation = Math.max(npcUnit, curUnitAsk * REPRICE_MAX_DROP);
         long competingUnitAsk = competingAsks.getOrDefault(key, 0L);
-        double newUnit = repriceWithUndercut(curUnitAsk, perceived, confidence, reservation, competingUnitAsk);
+        int pressureObservations = entry.fmUnsoldPressureByKey.merge(key, 1, Integer::sum);
+        double newUnit = repriceUnsold(curUnitAsk, perceived, confidence, reservation,
+                competingUnitAsk, pressureObservations);
         long humanUnit = BotMarketMath.humanizeAsk(Math.round(newUnit), bot.getId());
+        outcomes.add(new UnsoldOutcome(it.getItemId(), band,
+                Math.max(1, psi.getBundles()) * perBundle, (int) Math.min(Integer.MAX_VALUE, humanUnit)));
+        markOffer(entry, key, now);
         long newBundle = humanUnit * perBundle;
         return (int) Math.min(Integer.MAX_VALUE, Math.max(1, newBundle));
     }
@@ -1545,7 +1567,35 @@ final class BotFreeMarketManager {
     static double repriceWithUndercut(double curUnitAsk, double perceived, double confidence,
                                       double reservation, double competingUnitAsk) {
         double evidence = BotMarketMath.undercutTarget(perceived, competingUnitAsk, UNDERCUT_FRACTION);
-        return BotMarketMath.repriceAsk(curUnitAsk, evidence, confidence, REPRICE_PRESSURE, reservation);
+        return BotMarketMath.repriceAsk(curUnitAsk, evidence, confidence, MAX_UNSOLD_PRESSURE, reservation);
+    }
+
+    /** Hourly non-clearing price discovery. Surviving supply must move down even when a poisoned
+     *  belief or equally-high competitor says otherwise; repeated exposure / more same-key stock
+     *  raises pressure and therefore the step size. */
+    static double repriceUnsold(double curUnitAsk, double perceived, double confidence,
+                                double reservation, double competingUnitAsk, int pressureObservations) {
+        double marketEvidence = BotMarketMath.undercutTarget(perceived, competingUnitAsk, UNDERCUT_FRACTION);
+        double downwardEvidence = Math.min(marketEvidence > 0 ? marketEvidence : reservation, reservation);
+        double pressure = Math.min(MAX_UNSOLD_PRESSURE,
+                Math.max(1, pressureObservations) * UNSOLD_PRESSURE_PER_OBSERVATION);
+        return BotMarketMath.repriceAsk(curUnitAsk, downwardEvidence, confidence, pressure, reservation);
+    }
+
+    static boolean isFastSaleElapsed(long elapsedMs) {
+        return elapsedMs >= 0 && elapsedMs <= FAST_SALE_WINDOW_MS;
+    }
+
+    private static void markOffer(BotEntry entry, long key, long now) {
+        entry.fmLastOfferAtMsByKey.put(key, now);
+    }
+
+    /** A clearing consumes accumulated unsold pressure. Returns whether demand cleared the latest
+     *  offered price unusually quickly relative to the hourly service interval. */
+    static boolean recordSaleOutcome(BotEntry entry, long key, long now) {
+        entry.fmUnsoldPressureByKey.remove(key);
+        Long offeredAt = entry.fmLastOfferAtMsByKey.remove(key); // one demand signal per offered price epoch
+        return offeredAt != null && isFastSaleElapsed(now - offeredAt);
     }
 
     /** Browse every other stall on this room map: observations always, bargains sparingly.

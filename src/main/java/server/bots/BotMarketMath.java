@@ -19,7 +19,14 @@ final class BotMarketMath {
     static final double W_ASK = 0.4;        // ask physically browsed: bounds from above
     static final double W_SHOUT = 0.15;     // advertisement heard, not a clearing
     static final double W_GOSSIP = 0.15;    // secondhand line from another bot
-    static final double W_OUTCOME = 0.3;    // own listing sold-fast / expired-unsold signal
+    static final double W_OUTCOME = 0.3;    // exposed-unsold / sold-fast signal
+
+    /** A fast clearing says the ask was a lower bound; probe one modest step above it. Repeated
+     *  fast sales carry more outcome weight, so demand pressure controls the actual move size. */
+    static final double FAST_SALE_PROBE_UP = 0.10;
+
+    /** Ignore small censored-outcome deviations around consensus; real clearings remain unbanded. */
+    static final double OUTCOME_DEADBAND = 0.05;
 
     /** Smoothing horizon: half-life = HALF_LIFE_GAPS x the key's median inter-event gap ... */
     static final double HALF_LIFE_GAPS = 3.0;

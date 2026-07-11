@@ -37,7 +37,7 @@ public final class BotMarketLedger {
     /** Event kinds; codes are the {@code bot_market_event.kind} column values (stable, append-only). */
     public enum EventKind {
         TRADE(0), STALL_SALE(1), LIST(2), DELIST(3), EXPIRE(4), SHOUT(5),
-        NPC_SELL(6), NPC_BUY(7), SINK(8), FAUCET(9);
+        NPC_SELL(6), NPC_BUY(7), SINK(8), FAUCET(9), UNSOLD(10), SOLD_FAST(11);
 
         final int code;
 
