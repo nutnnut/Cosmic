@@ -12,10 +12,13 @@ import tools.Pair;
 
 import java.util.List;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.mockStatic;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class BotBuffManagerTest {
@@ -56,6 +59,22 @@ class BotBuffManagerTest {
         assertFalse(BotBuffManager.exceedsCheapAtkCap(warrior, fxWith(BuffStat.MATK, 99)));
         // Non-atk stats are never capped.
         assertFalse(BotBuffManager.exceedsCheapAtkCap(warrior, fxWith(BuffStat.ACC, 99)));
+    }
+
+    @Test
+    void idleLeechPausesBuffPots() {
+        Character bot = mock(Character.class);
+        MapleMap map = mock(MapleMap.class);
+        when(bot.getMap()).thenReturn(map);
+
+        BotEntry entry = new BotEntry(bot, null, null);
+        entry.buffConsumablesEnabled = true;
+        entry.idleLeech = true;
+
+        BotBuffManager.tick(entry, bot);
+
+        assertEquals("idle-leech: buff pots paused", entry.lastBuffActionSummary);
+        verify(map, never()).getAllMonsters();
     }
 
     @Test

@@ -62,6 +62,12 @@ final class BotBuffManager {
         if (now - entry.lastBuffScanMs < TICK_MS) return;
         entry.lastBuffScanMs = now;
 
+        // Party level-gap idle-leech: parked, not fighting — buff pots are wasted items.
+        if (entry.idleLeech) {
+            noteDecision(entry, "idle-leech: buff pots paused");
+            return;
+        }
+
         if (bot.getMap().getAllMonsters().stream().noneMatch(Monster::isAlive)) return;
 
         List<SelectedBuff> selected = buildSelection(bot, entry.buffCheapMode);

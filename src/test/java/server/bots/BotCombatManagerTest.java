@@ -1178,6 +1178,58 @@ class BotCombatManagerTest {
     }
 
     @Test
+    void shouldSkipSelfRebuffsWhileIdleLeeching() {
+        MapleMap map = mock(MapleMap.class);
+        when(map.getSpawnedMonstersOnMap()).thenReturn(1);
+        Character bot = mockBot(new Point(100, 200), map, 20_000, null);
+
+        BotEntry entry = new BotEntry(bot, null, null);
+        entry.grinding = true;
+        entry.idleLeech = true;
+        entry.buffSkillIds.add(Magician.MAGIC_GUARD); // critical survival self-buff, due now
+
+        BotCombatManager.tickBuffs(entry, bot);
+
+        assertEquals("idle-leech: self rebuffs paused", entry.lastSkillBuffActionSummary);
+    }
+
+    @Test
+    void shouldStillRebuffNearbyAllyWhileIdleLeeching() {
+        MapleMap map = mock(MapleMap.class);
+        when(map.getSpawnedMonstersOnMap()).thenReturn(1);
+
+        Character bot = mockBot(new Point(100, 200), map, 20_000, null);
+        Character ally = mock(Character.class);
+        when(ally.getId()).thenReturn(2);
+        when(ally.isAlive()).thenReturn(true);
+        when(ally.getPosition()).thenReturn(new Point(120, 200));
+        when(ally.getBuffedValue(BuffStat.WATK)).thenReturn(null);
+        when(bot.getPartyMembersOnSameMap()).thenReturn(List.of(ally));
+
+        BotEntry entry = new BotEntry(bot, null, null);
+        entry.grinding = true;
+        entry.idleLeech = true;
+        entry.buffSkillIds.add(Cleric.BLESS);
+
+        Skill bless = new Skill(Cleric.BLESS);
+        StatEffect effect = mock(StatEffect.class);
+        when(effect.getStatups()).thenReturn(List.of(new tools.Pair<>(BuffStat.WATK, 10)));
+        bless.addLevelEffect(effect);
+        when(bot.getSkillLevel(any(Skill.class))).thenReturn((byte) 1);
+
+        try (MockedStatic<SkillFactory> skillFactory = Mockito.mockStatic(SkillFactory.class)) {
+            skillFactory.when(() -> SkillFactory.getSkill(Cleric.BLESS)).thenReturn(bless);
+
+            BotCombatManager.tickBuffs(entry, bot);
+        }
+
+        // The ally-support path still ran (it reached the MP-cost check on the cast) even though
+        // the idle-leech gate pauses self rebuffs right after it.
+        verify(effect).canPaySkillCost(bot);
+        assertEquals("idle-leech: self rebuffs paused", entry.lastSkillBuffActionSummary);
+    }
+
+    @Test
     void shouldMatchOpenStoryGroundMobKnockbackWhenHitFromRight() {
         MapleMap map = mock(MapleMap.class);
         when(map.isObservedByPlayer()).thenReturn(true);

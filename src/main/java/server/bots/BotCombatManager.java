@@ -720,6 +720,14 @@ class BotCombatManager {
             return;
         }
 
+        // Party level-gap idle-leech: parked doing nothing while the lower-level cohort catches up,
+        // so self rebuffs are wasted MP. Gated AFTER trySupportBuff so an ally that walks into
+        // support range still gets their rebuff. Pot buffs pause too (BotBuffManager.tick).
+        if (entry.idleLeech) {
+            noteSkillBuffDecision(entry, "idle-leech: self rebuffs paused");
+            return;
+        }
+
         for (int skillId : CRITICAL_SURVIVAL_BUFFS) {
             if (!entry.buffSkillIds.contains(skillId)) continue;
             if (now < entry.nextBuffAt.getOrDefault(skillId, 0L)) continue;
@@ -3317,6 +3325,7 @@ class BotCombatManager {
         if (entry.attackCooldownMs > 0) return false;
         if (entry.inAir || entry.climbing) return false;
         if (!entry.skillBuffsEnabled) return false;
+        if (entry.idleLeech) return false; // parked leecher: self rebuffs paused (see tickBuffs)
         if (bot == null || !bot.isAlive()) return false;
 
         // Throttle the buff-state probe to ~1s. getBuffedValue takes two fair ReentrantLocks; at hundreds
