@@ -543,9 +543,11 @@ final class BotScrollManager {
         double base = baseOffenseValue(bot, ii, itemId);
         DoubleUnaryOperator vf = cachedReproductionValue(
                 base, tuc, reproSpecs(pc, opts), cleanBaseCostMeso(pc, ii, itemId));
-        // wornRivalValue 0 / not-dominated / no fallback: a fresh clean base valued on its own.
+        // A fresh clean base valued on its OWN curve for both lenses (no worn rival baked in): this
+        // asks "how good could the farmed base get", not "does it beat the current worn piece" —
+        // shouldHoldForFarmableBase does that comparison itself.
         BotScrollPlanner.EquipCandidate c = new BotScrollPlanner.EquipCandidate(
-                itemId, equipName(ii, itemId), base, tuc, tuc, 0.0, false, false, false, opts, vf);
+                itemId, equipName(ii, itemId), base, tuc, tuc, false, false, opts, vf, vf, 0.0);
         BotScrollPlanner.ScrollPlan p = BotScrollPlanner.planBest(List.of(c));
         return p == null ? vf.applyAsDouble(base) : p.achievableValue();
     }
@@ -561,6 +563,13 @@ final class BotScrollManager {
                 slotOf.put(e, slot);
             }
         }
+        // Scroll options depend only on the item id (applicability + this bot's per-stat gains), so
+        // compute them once per distinct id — candidates and the slot curves below share them.
+        Map<Integer, List<BotScrollPlanner.ScrollOption>> optionsById = new HashMap<>();
+        for (Equip e : all) {
+            optionsById.computeIfAbsent(e.getItemId(), id -> buildOptions(pc, bot, ii, e));
+        }
+        Map<Short, DoubleUnaryOperator> slotCurves = buildSlotCurves(pc, bot, ii, all, slotOf, optionsById);
 
         List<BotScrollPlanner.EquipCandidate> candidates = new ArrayList<>();
         for (Equip eq : all) {
@@ -568,7 +577,7 @@ final class BotScrollManager {
             if (slot == null || eq.getUpgradeSlots() < 1) {
                 continue;
             }
-            List<BotScrollPlanner.ScrollOption> options = buildOptions(pc, bot, ii, eq);
+            List<BotScrollPlanner.ScrollOption> options = optionsById.get(eq.getItemId());
             if (options.isEmpty()) {
                 continue;
             }
@@ -577,42 +586,106 @@ final class BotScrollManager {
             // to fill the slot, so scrolling here can never make it the bot's best.
             boolean betterAvailable = isDominated(bot, eq, value, slot, all, slotOf,
                     slotCapacity(ii, eq.getItemId()));
-            // Per-candidate value = the meso reproduction-cost curve (convex above the clean base):
-            // how much this item is worth = cheapest expected meso to reproduce one this good. Built
-            // from the item's clean-base score + total upgrade slots + the obtainable scroll set, with
-            // a stubbed clean-base cost. This is what makes the DP snowball winners / abandon losers.
+            // Profit/market lens = this item's own meso reproduction-cost curve (convex above the clean
+            // base): how much the ASSET is worth = cheapest expected meso to reproduce one this good.
             DoubleUnaryOperator valueFn = cachedReproductionValue(
                     baseOffenseValue(bot, ii, eq.getItemId()), totalSlots(ii, eq.getItemId()),
                     reproSpecs(pc, options), cleanBaseCostMeso(pc, ii, eq.getItemId()));
-            // Self-combat floor: value of the item the bot WEARS in this slot (no decay). For a worn
-            // candidate this equals its own stop-now; for a bag piece it's the rival it must beat.
+            // Combat lens: what a piece is worth to FIGHT WITH is what the cheapest substitute
+            // providing the same stats costs — the slot-substitution curve — NOT its own reproduction
+            // curve, whose clean-base anchor tracks rarity (a score-0 pricey-base Green Napoleon
+            // out-valued the worn score-10 cheap-base cape and was proposed "as an upgrade"; see
+            // scroll-debug-Preston.txt). For a bag spare the bot keeps wearing the better of (spare,
+            // worn), so terminal value is slotCurve(max(v, wornScore)) and a boom only forfeits the
+            // spare. This bakes "must beat the worn item" into the value itself: hopeless catch-ups
+            // price out naturally (every sub-worn state is worth exactly the worn state, so attempts
+            // are pure cost), while a cheap low-odds parlay whose convex upside beats its ticket price
+            // — the endgame play — stays alive. Replaces the dominatedByWorn hard gate and its two
+            // patched bugs (slot-count proxy, scroll-debug-Mage.txt; all-success ceiling, Preston).
+            DoubleUnaryOperator slotCurve = slotCurves.get(slot);
             Equip worn = wornInSlot(bot, ii, slot);
-            double wornRivalValue = worn == null ? 0.0 : reproValueNow(pc, bot, ii, worn);
-            // dominatedByWorn: this is a BAG spare whose full COMBAT ceiling (current offense + the best
-            // owned per-slot scroll gain * free slots) still can't reach what the worn copy scores NOW —
-            // so scrolling it can never make it the better piece to fight with; never worth scrolling.
-            // Compared on combat score, NOT reproduction-meso value: a rarer/pricier base inflates the
-            // meso curve but is irrelevant to which piece the bot should actually wear. (Was a slot-count
-            // proxy: `worn.slots >= eq.slots`, which passed a weaker base purely for having one more slot
-            // — that let a 60-score Hall Staff out-rank the worn 87-score Maple Wisdom Staff. See
-            // scroll-debug-Mage.txt; the extra slot is worthless when the base is too weak to catch up.)
-            double maxScrollGain = 0.0;
-            for (BotScrollPlanner.ScrollOption op : options) {
-                maxScrollGain = Math.max(maxScrollGain, op.statGain());
+            DoubleUnaryOperator combatFn;
+            double destroyedValue;
+            if (worn == null || worn == eq) {
+                // The worn piece itself (or an empty slot): plain slot curve; a boom is a real loss
+                // (fallback quality unmodeled — the hasFallbackForSlot gate still guards it).
+                combatFn = slotCurve;
+                destroyedValue = 0.0;
+            } else {
+                double wornScore = offenseValue(bot, worn);
+                combatFn = v -> slotCurve.applyAsDouble(Math.max(v, wornScore));
+                destroyedValue = slotCurve.applyAsDouble(wornScore);
             }
-            double scrollCeiling = value + maxScrollGain * eq.getUpgradeSlots();
-            boolean dominatedByWorn = worn != null && worn != eq
-                    && offenseValue(bot, worn) >= scrollCeiling;
             // slotsRemaining = free upgrade slots = the DP horizon; totalSlots = catalog tuc, so
             // (totalSlots - slotsRemaining) = slots already consumed (the profit-decay exponent).
             BotScrollPlanner.EquipCandidate c = new BotScrollPlanner.EquipCandidate(
                     eq.getItemId(), equipName(ii, eq.getItemId()),
-                    value, eq.getUpgradeSlots(), totalSlots(ii, eq.getItemId()), wornRivalValue,
-                    betterAvailable, dominatedByWorn, hasFallbackForSlot(all, slotOf, eq, slot), options, valueFn);
+                    value, eq.getUpgradeSlots(), totalSlots(ii, eq.getItemId()),
+                    betterAvailable, hasFallbackForSlot(all, slotOf, eq, slot), options,
+                    valueFn, combatFn, destroyedValue);
             candidates.add(c);
             backing.put(c, eq);
         }
         return candidates;
+    }
+
+    /** One owned base's contribution to a slot's substitution curve: its reproduction curve, valid up
+     *  to the score its slot budget can actually reach with the bot's owned no-boom scrolls. */
+    private record SlotBase(double ceiling, DoubleUnaryOperator curve) {}
+
+    /**
+     * Slot-substitution value curves: for each equip slot the bot owns gear for, {@code value(v)} =
+     * cheapest expected meso to put a piece of stat-score {@code >= v} in that slot — the pointwise
+     * MIN over the distinct owned bases' reproduction curves. This is the combat lens's SSOT: two
+     * same-slot items at the same score are worth the same to fight with, whatever their bases cost.
+     * A base only substitutes up to its reachable ceiling (clean score + tuc * best owned scroll
+     * gain); past every ceiling the curve clamps flat at the best reachable score's value —
+     * unreachable scores have no reproduction price, and a finite clamp keeps the planner's EV math
+     * sane where an infinity would dominate every branch it touches (same reachability cap the
+     * market bandCurve applies).
+     */
+    private static Map<Short, DoubleUnaryOperator> buildSlotCurves(ProducerCombat pc, Character bot,
+            ItemInformationProvider ii, List<Equip> all, Map<Equip, Short> slotOf,
+            Map<Integer, List<BotScrollPlanner.ScrollOption>> optionsById) {
+        Map<Short, Map<Integer, Equip>> basesBySlot = new HashMap<>();
+        for (Equip e : all) {
+            Short slot = slotOf.get(e);
+            if (slot != null) {
+                basesBySlot.computeIfAbsent(slot, k -> new HashMap<>()).putIfAbsent(e.getItemId(), e);
+            }
+        }
+        Map<Short, DoubleUnaryOperator> curves = new HashMap<>();
+        for (Map.Entry<Short, Map<Integer, Equip>> slotEntry : basesBySlot.entrySet()) {
+            List<SlotBase> bases = new ArrayList<>(slotEntry.getValue().size());
+            double top = 0.0;
+            for (int itemId : slotEntry.getValue().keySet()) {
+                double baseScore = baseOffenseValue(bot, ii, itemId);
+                int tuc = totalSlots(ii, itemId);
+                List<BotScrollValuer.ScrollSpec> specs =
+                        reproSpecs(pc, optionsById.getOrDefault(itemId, List.of()));
+                double maxGain = 0.0;
+                for (BotScrollValuer.ScrollSpec spec : specs) {
+                    maxGain = Math.max(maxGain, spec.statGain());
+                }
+                double ceiling = baseScore + Math.max(0, tuc) * maxGain;
+                bases.add(new SlotBase(ceiling, cachedReproductionValue(
+                        baseScore, tuc, specs, cleanBaseCostMeso(pc, ii, itemId))));
+                top = Math.max(top, ceiling);
+            }
+            List<SlotBase> frozen = List.copyOf(bases);
+            double topCeiling = top;
+            curves.put(slotEntry.getKey(), v -> {
+                double q = Math.min(v, topCeiling);
+                double best = Double.MAX_VALUE;
+                for (SlotBase b : frozen) {
+                    if (b.ceiling() >= q - 1e-9) {
+                        best = Math.min(best, b.curve().applyAsDouble(q));
+                    }
+                }
+                return best;
+            });
+        }
+        return curves;
     }
 
     /**
@@ -635,8 +708,11 @@ final class BotScrollManager {
 
         sb.append("\ncandidates (").append(candidates.size()).append("):\n");
         for (BotScrollPlanner.EquipCandidate c : candidates) {
-            sb.append(String.format("  %-22s score=%.1f slots=%d value@now=%,.0f%s%n",
+            // combat@now = the combat lens's do-nothing value (a bag spare shows the worn state's
+            // worth, since the bot wears the better of the two); market@now = own reproduction value.
+            sb.append(String.format("  %-22s score=%.1f slots=%d combat@now=%,.0f market@now=%,.0f%s%n",
                     c.equipName(), c.currentStatScore(), c.slotsRemaining(),
+                    c.combatValue().applyAsDouble(c.currentStatScore()),
                     c.value().applyAsDouble(c.currentStatScore()),
                     c.betterItemAvailable() ? " [out-classed -> combat pass skips; profit pass may still scroll-to-sell]" : ""));
             appendWornRival(sb, pc, bot, ii, c.equipItemId());
@@ -654,7 +730,7 @@ final class BotScrollManager {
                     .append(plan.scroll().scrollName()).append("'\n");
             sb.append("  driver: ").append(plan.profitDriven()
                     ? "PROFIT (scroll-to-sell, market value decayed 0.9^slots-used)"
-                    : "SELF-COMBAT (must beat the worn item in this slot)").append('\n');
+                    : "SELF-COMBAT (slot-substitution lens: the bot wears the better of this piece vs the worn rival)").append('\n');
             sb.append(String.format("  expected play value (EV at current state): ~%,.0f%n", plan.achievableValue()));
             sb.append(String.format("  value gained vs alternative: %,.0f%n", plan.expectedValue()));
             appendWornRival(sb, pc, bot, ii, plan.equip().equipItemId());
@@ -740,11 +816,11 @@ final class BotScrollManager {
     }
 
     /**
-     * Show the item the bot is ACTUALLY WEARING in this candidate's slot, with its reproduction
-     * value@now. This is the rival the bot keeps if it does nothing — for a single-capacity slot the
-     * scroll play only helps if the candidate's <em>achievable</em> value exceeds this. The planner
-     * does NOT use this as a floor today (it measures improvement against the candidate's own current
-     * value), so a bag piece can be proposed even when its ceiling stays below the worn item.
+     * Show the item the bot is ACTUALLY WEARING in this candidate's slot, with its own-curve
+     * reproduction value@now (reference only — own-curve value tracks base rarity, not combat
+     * usefulness). The planner needs no separate floor or gate for this rival: the combat lens bakes
+     * it in, valuing a bag candidate's end state as {@code slotCurve(max(v, wornScore))}, so "beat
+     * the worn item" is priced by the value function itself.
      */
     private static void appendWornRival(StringBuilder sb, ProducerCombat pc, Character bot,
             ItemInformationProvider ii, int candidateItemId) {
