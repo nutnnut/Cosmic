@@ -606,13 +606,17 @@ class BotMovementManager {
             }
 
             targetPos = adjustGrindingTargetPosition(entry, currentFh, targetPos);
+            boolean walkOffWaypoint = false;
             if (entry.graphWarmupFallback && targetPos != null) {
                 if (BotFallbackMovementManager.tryImmediateAction(entry, botPos, targetPos)) {
                     return;
                 }
-                targetPos = BotFallbackMovementManager.resolveSteeringTarget(entry, botPos, targetPos);
+                BotFallbackMovementManager.Steering steering =
+                        BotFallbackMovementManager.resolveSteeringTarget(entry, botPos, targetPos);
+                targetPos = steering.target();
+                walkOffWaypoint = steering.walkOffLedge();
             }
-            MoveAction action = planGroundAction(entry, currentFh, botPos, targetPos);
+            MoveAction action = planGroundAction(entry, currentFh, botPos, targetPos, walkOffWaypoint);
             applyGroundAction(entry, currentFh, action);
         } finally {
             BotPerformanceMonitor.record("move-ground", System.nanoTime() - startedAt);
@@ -673,16 +677,19 @@ class BotMovementManager {
         return currentRegion.pointAt(clampedX);
     }
 
-    private static MoveAction planGroundAction(BotEntry entry, Foothold currentFh, Point botPos, Point targetPos) {
+    private static MoveAction planGroundAction(BotEntry entry, Foothold currentFh, Point botPos, Point targetPos,
+                                               boolean walkOffWaypoint) {
         boolean directionalDrop = isDirectionalDropEdge(entry.navEdge);
         boolean footholdDetour = entry.navFootholdDetourTarget != null;
-        int stopDist = directionalDrop || footholdDetour ? 0
+        // A fallback walk-off waypoint sits walkStep px PAST the foothold end — the bot must walk
+        // through it (ground runs out first), so any stop/follow radius parks it at the ledge forever.
+        int stopDist = directionalDrop || footholdDetour || walkOffWaypoint ? 0
                 : entry.navPreciseTarget ? preciseNavStopDist(entry.navEdge) : cfg.STOP_DIST;
         // No hysteresis when navigating to an edge — always move toward the waypoint. FOLLOW_DIST
         // hysteresis exists to stop owner-follow spacing jitter; a grind-wander/objective target must be
         // reached, so it restarts at stopDist (else the bot parks within 80px of its goal and never
         // closes the gap — pathlog-duiuganda: stalled 49px short with nav=same-region edge=none).
-        int followDist = directionalDrop ? 0
+        int followDist = directionalDrop || walkOffWaypoint ? 0
                 : (entry.navEdge != null || entry.navPreciseTarget) ? stopDist
                 : entry.grinding ? stopDist
                 : cfg.FOLLOW_DIST;

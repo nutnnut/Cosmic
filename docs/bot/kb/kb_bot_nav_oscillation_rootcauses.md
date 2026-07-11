@@ -437,6 +437,37 @@ Fix: mob-avoid dodge is suppressed while explicitly parking for break, idle-leec
 (`breakUntilMs`, `idleLeech`, `hpResting`). Normal grind/follow/travel ground movement still
 keeps dodge behavior. Regression: `BotMovementManagerTest.shouldNotMobDodgeWhileParkingOnBreak`.
 
+## 17. Fallback walk-off waypoint inside the stop radius — permanent ledge park (200082300 swim, FIXED)
+
+Symptom (live 2026-07-11, `pathlog-John-2026-07-11T044509` / `pathlog-Leroy-...T044511`): two
+transit-follow party members frozen at literally the same pixel (35,-1975) — the right endpoint of
+the top platform of swim map 200082300 — while the cohesion leader holds at the next-hop portal
+(223,122) ~2100px below, waiting for them (`STRAGGLER(px)` both ways = deadlock). Pathlog header
+shows the triple blind spot that made it invisible: `Ticks: 0 recorded` (the swim short-circuit in
+`resolveTarget` returns before any `pathLogger.record`), `Stuck: no` (stuck detection is disarmed
+under `graphWarmupFallback`), and a valid-looking A* drop path (diagnostic only — swim maps never
+execute the graph).
+
+Root cause: on the platform, the target (253,122) is far below AND 218px aside, so the fallback's
+swim down-jump is rejected (`|dx|` over its ~80px band) and no rope reaches. The fallback then
+steers at its walk-off waypoint — authored `walkStep` (9px at 140%) PAST the foothold endpoint
+(`walkOffTarget`: endpoint + step). But `resolveGroundStepX` clamps the fallback stop radius to
+12px, and a bot standing at the endpoint is only 9px from the waypoint → `stepX=0` →
+`MoveAction.idle()` every tick. The waypoint is walk-THROUGH by design (ground runs out before it),
+yet the planner applied stop-at arrival hysteresis to it: 9 < 12 = park forever. Not swim-specific
+— any `graphWarmupFallback` map with a ledge descent can hit it; swim maps just live in fallback
+permanently.
+
+Fix (planner/fallback interface, not a runtime physics aid): `resolveSteeringTarget` returns a
+`Steering(target, walkOffLedge)` record; `planGroundAction` steers at a flagged walk-off waypoint
+with stop/follow distance 0 (same treatment as directional drops / foothold detours), so the bot
+walks until physics loses the ground and the swim/fall integrator takes over. Regression:
+`BotMovementManagerTest.shouldWalkOffLedgeWaypointInsteadOfParkingAtFootholdEnd` (verified failing
+pre-fix). No GRAPH_VERSION bump (runtime-only).
+
+Debugging note: don't read `Ticks: 0 recorded` as "bot not ticking" on a swim map — the swim
+branch records nothing; use repeated `pos` reads from `/api/botdebug?id=` instead.
+
 ## Files
 - `BotNavigationGraph.java` — `Region.surfaceCoversPoint` + `SHARED_GROUND_Y_PX` (#8)
 - `BotNavigationGraphProvider.java` — `addJumpEdges`/`addFlashJumpEdges` shared-ground guard,
@@ -461,6 +492,8 @@ keeps dodge behavior. Regression: `BotMovementManagerTest.shouldNotMobDodgeWhile
   `BotNavigationGraphProvider.addTeleportEdgeForIntent` shared-ground guard,
   `GRAPH_VERSION` 69→70 (#15); `BotNavigationManager.nextCommittedRouteEdge` target-pos
   staleness + `trackBlockedPositionGate` route-served `*-pos` (#15)
+- `BotFallbackMovementManager.resolveSteeringTarget` → `Steering` record,
+  `BotMovementManager.planGroundAction` walk-off waypoint stop/follow 0 (#17)
 - `BotPhysicsEngine.walkOffLandingVariants` + `addDirectionalDropEdge` variant-stability guard,
   `GRAPH_VERSION` 68→69 (#14); `BotFreeMarketEntranceDescentTest` (WZ-backed 910000000, #14)
 - Tests in `BotNavigationGraphProviderTest` (fast synthetic + Henesys WZ graph),

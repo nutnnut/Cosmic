@@ -114,6 +114,8 @@ the map's mapinfo into one report (add `-X <x> -Y <y>` to append a navprobe).
 - Walk-in-place against a committed edge from the wrong foothold → live walk-off sim gate
   (`selectDropWaypoint`).
 - Region oscillation at joined forks / shared-ground phantom jumps → builder chain rules (#5b/#8).
+- Fallback/swim bot parked at a foothold end (pathlog `Ticks: 0` + `Stuck: no`) → walk-off
+  waypoint vs stop radius (#17); on swim maps the pathlog recorder is blind — poll `pos` instead.
 
 ## Testing
 

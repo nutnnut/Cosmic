@@ -589,6 +589,30 @@ class BotMovementManagerTest {
     }
 
     @Test
+    void shouldWalkOffLedgeWaypointInsteadOfParkingAtFootholdEnd() {
+        // pathlog-John/Leroy 2026-07-11 (swim map 200082300): transit-follow target ~2100px below and
+        // 218px aside. Down-jump rejected (|dx| over the band), no rope, so the fallback authors a
+        // walk-off waypoint walkStep px past the foothold endpoint — but the fallback stop radius
+        // (12px) is larger than that overhang, so the bot parked at the ledge end forever.
+        MapleMap map = new MapleMap(910000061, 0, 0, 910000061, 1.0f);
+        map.setSwim(true);
+        server.maps.FootholdTree footholds = new server.maps.FootholdTree(new Point(-2000, -2000), new Point(2000, 2000));
+        footholds.insert(new Foothold(new Point(-37, -100), new Point(35, -100), 1)); // top platform, right end = ledge
+        footholds.insert(new Foothold(new Point(33, 100), new Point(300, 100), 2));   // floor far below
+        map.setFootholds(footholds);
+
+        Character bot = mockBot(new Point(35, -100), map); // parked exactly at the foothold endpoint
+        BotEntry entry = new BotEntry(bot, null, null);
+        entry.graphWarmupFallback = true;
+        entry.following = true; // transit-follow: grinding=false, follow hysteresis branch
+
+        BotMovementManager.tickGrounded(entry, new Point(253, 100)); // far below AND beyond FOLLOW_DIST aside
+
+        assertTrue(entry.inAir || bot.getPosition().x > 35,
+                "fallback must walk through the ledge waypoint instead of parking at the foothold end");
+    }
+
+    @Test
     void shouldJumpOntoReachablePlatformWhenFallbackWalksIntoWall() {
         MapleMap map = new MapleMap(910000050, 0, 0, 910000050, 1.0f);
         server.maps.FootholdTree footholds = new server.maps.FootholdTree(new Point(-2000, -2000), new Point(2000, 2000));
