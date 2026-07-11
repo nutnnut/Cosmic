@@ -21,6 +21,25 @@ import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.ThreadLocalRandom;
 
 public class BotEntry {
+    static final class MarketOfferState {
+        private int unsoldObservations;
+        private long offeredAtMs;
+
+        synchronized void markOffer(long nowMs) {
+            offeredAtMs = nowMs;
+        }
+
+        synchronized int markUnsold(long nowMs) {
+            offeredAtMs = nowMs;
+            return ++unsoldObservations;
+        }
+
+        synchronized long recordSaleElapsed(long nowMs) {
+            unsoldObservations = 0;
+            return offeredAtMs > 0 ? nowMs - offeredAtMs : -1;
+        }
+    }
+
     static final class ScrollReactionStreakState {
         int streak = 0;
         boolean lastWasSuccess = false;
@@ -552,11 +571,9 @@ public class BotEntry {
     long fmPhaseDeadlineAtMs = 0L;       // per-phase watchdog
     long nextFmScanAtMs = 0L;            // scan cadence + post-trip satiation
     long nextStallServiceAtMs = 0L;      // when the live stall wants a service visit
-    // Per-banded-key censored market outcomes. Surviving hourly service checks accumulate supply
-    // pressure; a clearing resets it. Last offer time identifies unusually fast demand after an
-    // open/reprice. Concurrent because HiredMerchant.buy reports sales from the buyer's thread.
-    final ConcurrentHashMap<Long, Integer> fmUnsoldPressureByKey = new ConcurrentHashMap<>();
-    final ConcurrentHashMap<Long, Long> fmLastOfferAtMsByKey = new ConcurrentHashMap<>();
+    // Per-banded-key censored market outcomes. Concurrent because HiredMerchant.buy reports sales
+    // from the buyer's thread while stall service runs on the seller's tick/market threads.
+    final ConcurrentHashMap<Long, MarketOfferState> fmMarketOfferByKey = new ConcurrentHashMap<>();
     long fmBrowseUntilMs = 0L;           // humanlike browse dwell
     int fmPlaceTries = 0;                // bounded stall-spot attempts
     int fmBargainBuys = 0;               // bounded impulse purchases per trip

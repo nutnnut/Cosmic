@@ -10,6 +10,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.ToDoubleFunction;
 
 /**
  * Layer 1 of the belief model (docs/bot/economy.md): the shared, damped,
@@ -56,6 +57,8 @@ public final class BotMarketConsensus implements BotMarketBook.ConsensusSource {
     private final Map<Long, Long> updatedAtMs = new ConcurrentHashMap<>();
     private volatile boolean loaded;
     private volatile long lastSweepMs;
+
+    private record WeightedEvidence(double median, double totalWeight, long halfLifeMs) {}
 
     /** Package ctor for tests (pass null ledger/store and drive {@link #sweep} directly). */
     BotMarketConsensus(BotMarketLedger ledger, BotMarketStore store) {
@@ -133,31 +136,18 @@ public final class BotMarketConsensus implements BotMarketBook.ConsensusSource {
             List<MarketEvent> evidence = entry.getValue();
             Belief current = byKey.getOrDefault(key, Belief.NONE);
 
-            List<Long> stamps = new ArrayList<>(evidence.size());
-            for (MarketEvent e : evidence) {
-                stamps.add(e.atMs());
-            }
-            stamps.sort(Long::compare);
-            long halfLife = BotMarketMath.halfLifeMs(BotMarketMath.medianInterEventGapMs(stamps));
-
-            List<PricePoint> points = new ArrayList<>(evidence.size());
-            double totalWeight = 0;
-            for (MarketEvent e : evidence) {
-                double recency = Math.pow(0.5, (double) Math.max(0, nowMs - e.atMs()) / halfLife);
-                double w = BotMarketMath.W_TRADE * recency;
-                points.add(new PricePoint(e.unitPrice(), w));
-                totalWeight += w;
-            }
-            double median = BotMarketMath.weightedMedian(points);
-            if (median <= 0 || totalWeight <= 0) {
+            WeightedEvidence aggregate = weightedEvidence(evidence, nowMs,
+                    MarketEvent::unitPrice, ignored -> BotMarketMath.W_TRADE);
+            if (aggregate.median() <= 0 || aggregate.totalWeight() <= 0) {
                 continue;
             }
 
             long updatedAt = updatedAtMs.getOrDefault(key, 0L);
             if (!current.isEmpty() && updatedAt > 0) {
-                current = BotMarketMath.decay(current, Math.max(0, nowMs - updatedAt), halfLife);
+                current = BotMarketMath.decay(current, Math.max(0, nowMs - updatedAt),
+                        aggregate.halfLifeMs());
             }
-            Belief next = BotMarketMath.moveConsensus(current, median, totalWeight);
+            Belief next = BotMarketMath.moveConsensus(current, aggregate.median(), aggregate.totalWeight());
             byKey.put(key, next);
             updatedAtMs.put(key, nowMs);
             moved.add(key);
@@ -179,44 +169,51 @@ public final class BotMarketConsensus implements BotMarketBook.ConsensusSource {
                 continue; // a directional bound cannot invent a price for a market that never cleared
             }
 
-            List<MarketEvent> evidence = entry.getValue();
-            List<Long> stamps = new ArrayList<>(evidence.size());
-            for (MarketEvent e : evidence) {
-                stamps.add(e.atMs());
-            }
-            stamps.sort(Long::compare);
-            long halfLife = BotMarketMath.halfLifeMs(BotMarketMath.medianInterEventGapMs(stamps));
-
-            List<PricePoint> points = new ArrayList<>(evidence.size());
-            double totalWeight = 0;
-            for (MarketEvent e : evidence) {
-                double recency = Math.pow(0.5, (double) Math.max(0, nowMs - e.atMs()) / halfLife);
-                double w = BotMarketMath.W_OUTCOME * recency;
-                double signal = upward
-                        ? e.unitPrice() * (1.0 + BotMarketMath.FAST_SALE_PROBE_UP)
-                        : e.unitPrice();
-                points.add(new PricePoint(signal, w));
-                totalWeight += w;
-            }
-            double target = BotMarketMath.weightedMedian(points);
+            WeightedEvidence aggregate = weightedEvidence(entry.getValue(), nowMs,
+                    e -> upward ? e.unitPrice() * (1.0 + BotMarketMath.FAST_SALE_PROBE_UP)
+                            : e.unitPrice(),
+                    e -> BotMarketMath.W_OUTCOME * BotMarketMath.outcomeQuantityWeight(e.qty()));
+            double target = aggregate.median();
             double boundary = current.estimate() * (upward
                     ? 1.0 + BotMarketMath.OUTCOME_DEADBAND
                     : 1.0 - BotMarketMath.OUTCOME_DEADBAND);
-            if (target <= 0 || totalWeight <= 0
+            if (target <= 0 || aggregate.totalWeight() <= 0
                     || (upward ? target <= boundary : target >= boundary)) {
                 continue;
             }
 
             long updatedAt = updatedAtMs.getOrDefault(key, 0L);
             if (updatedAt > 0) {
-                current = BotMarketMath.decay(current, Math.max(0, nowMs - updatedAt), halfLife);
+                current = BotMarketMath.decay(current, Math.max(0, nowMs - updatedAt),
+                        aggregate.halfLifeMs());
             }
-            byKey.put(key, BotMarketMath.moveConsensus(current, target, totalWeight));
+            byKey.put(key, BotMarketMath.moveConsensus(current, target, aggregate.totalWeight()));
             updatedAtMs.put(key, nowMs);
             if (!moved.contains(key)) {
                 moved.add(key);
             }
         }
+    }
+
+    private static WeightedEvidence weightedEvidence(List<MarketEvent> evidence, long nowMs,
+                                                      ToDoubleFunction<MarketEvent> signal,
+                                                      ToDoubleFunction<MarketEvent> sourceWeight) {
+        List<Long> stamps = new ArrayList<>(evidence.size());
+        for (MarketEvent e : evidence) {
+            stamps.add(e.atMs());
+        }
+        stamps.sort(Long::compare);
+        long halfLife = BotMarketMath.halfLifeMs(BotMarketMath.medianInterEventGapMs(stamps));
+
+        List<PricePoint> points = new ArrayList<>(evidence.size());
+        double totalWeight = 0;
+        for (MarketEvent e : evidence) {
+            double recency = Math.pow(0.5, (double) Math.max(0, nowMs - e.atMs()) / halfLife);
+            double weight = sourceWeight.applyAsDouble(e) * recency;
+            points.add(new PricePoint(signal.applyAsDouble(e), weight));
+            totalWeight += weight;
+        }
+        return new WeightedEvidence(BotMarketMath.weightedMedian(points), totalWeight, halfLife);
     }
 
     private void ensureLoaded() {

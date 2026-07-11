@@ -115,11 +115,15 @@ class BotFreeMarketManagerTest {
                 1_000_000, 1_500_000, 0, 500_000, 2_000_000, 1);
         double crowdedOrRepeated = BotFreeMarketManager.repriceUnsold(
                 1_000_000, 1_500_000, 0, 500_000, 2_000_000, 5);
+        double liquidMarket = BotFreeMarketManager.repriceUnsold(
+                1_000_000, 1_500_000, 10, 500_000, 2_000_000, 5);
 
         assertTrue(firstHour < 1_000_000 && firstHour > 950_000,
                 "one unsold hour makes a small markdown even when beliefs and competitors are high");
         assertTrue(crowdedOrRepeated < firstHour,
                 "larger accumulated supply pressure makes a larger markdown");
+        assertTrue(liquidMarket > crowdedOrRepeated,
+                "established clearing confidence damps the visible ask correction");
         assertTrue(crowdedOrRepeated >= 500_000,
                 "pressure never crosses the seller's reservation");
     }

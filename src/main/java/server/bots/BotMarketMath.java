@@ -28,6 +28,12 @@ final class BotMarketMath {
     /** Ignore small censored-outcome deviations around consensus; real clearings remain unbanded. */
     static final double OUTCOME_DEADBAND = 0.05;
 
+    /** Quantity contributes sublinearly: a large stack is stronger supply/demand evidence than one
+     *  unit, but bulk consumables must not overwhelm a long clearing history in one observation. */
+    static double outcomeQuantityWeight(int quantity) {
+        return Math.min(8.0, 1.0 + Math.log(Math.max(1, quantity)) / Math.log(2.0));
+    }
+
     /** Smoothing horizon: half-life = HALF_LIFE_GAPS x the key's median inter-event gap ... */
     static final double HALF_LIFE_GAPS = 3.0;
     /** ... clamped to [floor, cap] so dead keys neither flap nor remember forever. */

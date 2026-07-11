@@ -261,6 +261,17 @@ class BotMarketSimTest {
                 meaningfullyUnsold, meaningfullyUnsold), T0 + ROUND_MS);
         assertTrue(crowdedSupply.consensus(KEY) < oneSeller.consensus(KEY),
                 "more unsold supply creates a larger downward correction");
+
+        BotMarketConsensus singleUnit = consensusAt(1_000_000);
+        BotMarketConsensus largeStack = consensusAt(1_000_000);
+        MarketEvent oneUnit = new MarketEvent(22, T0 + ROUND_MS, EventKind.UNSOLD,
+                1082089, 0, 1, 850_000, 1, -1, 910000001);
+        MarketEvent sixtyFourUnits = new MarketEvent(23, T0 + ROUND_MS, EventKind.UNSOLD,
+                1082089, 0, 64, 850_000, 1, -1, 910000001);
+        singleUnit.sweep(List.of(oneUnit), T0 + ROUND_MS);
+        largeStack.sweep(List.of(sixtyFourUnits), T0 + ROUND_MS);
+        assertTrue(largeStack.consensus(KEY) < singleUnit.consensus(KEY),
+                "larger exposed quantity creates more pressure without requiring duplicate events");
     }
 
     private static BotMarketConsensus consensusAt(long price) {

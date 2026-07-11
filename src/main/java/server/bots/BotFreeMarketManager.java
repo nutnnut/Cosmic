@@ -167,6 +167,9 @@ final class BotFreeMarketManager {
     private static final double UNSOLD_PRESSURE_PER_OBSERVATION = 0.06;
     private static final double MAX_UNSOLD_PRESSURE = 0.5;
     private static final double REPRICE_MAX_DROP = 0.5;
+    /** Shared clearing volume damps visible asks too, but stays capped so sustained non-clearing
+     *  pressure can still heal a stale persisted consensus over successive hourly checks. */
+    private static final double REPRICE_CONFIDENCE_CAP = 10.0;
     /** A sale this soon after opening/repricing is unusually fast relative to the hourly cadence. */
     private static final long FAST_SALE_WINDOW_MS = 15 * 60_000L;
     /** Undercut margin below the cheapest visible competing ask (design sec 5); matches BotMarketSimTest. */
@@ -1542,18 +1545,19 @@ final class BotFreeMarketManager {
         int band = bandOf(it);
         long key = BotMarketMath.priceKey(it.getItemId(), band);
         double perceived = book.perceivedPrice(key, now);
-        double confidence = book.privateConfidence(key, now);
+        double confidence = Math.min(REPRICE_CONFIDENCE_CAP, book.perceivedConfidence(key, now));
         double curUnitAsk = psi.getPrice() / (double) perBundle;
         long npcUnit = npcSell.price(it.getItemId(), 1);
         double reservation = Math.max(npcUnit, curUnitAsk * REPRICE_MAX_DROP);
         long competingUnitAsk = competingAsks.getOrDefault(key, 0L);
-        int pressureObservations = entry.fmUnsoldPressureByKey.merge(key, 1, Integer::sum);
+        int pressureObservations = entry.fmMarketOfferByKey
+                .computeIfAbsent(key, ignored -> new BotEntry.MarketOfferState())
+                .markUnsold(now);
         double newUnit = repriceUnsold(curUnitAsk, perceived, confidence, reservation,
                 competingUnitAsk, pressureObservations);
         long humanUnit = BotMarketMath.humanizeAsk(Math.round(newUnit), bot.getId());
         outcomes.add(new UnsoldOutcome(it.getItemId(), band,
                 Math.max(1, psi.getBundles()) * perBundle, (int) Math.min(Integer.MAX_VALUE, humanUnit)));
-        markOffer(entry, key, now);
         long newBundle = humanUnit * perBundle;
         return (int) Math.min(Integer.MAX_VALUE, Math.max(1, newBundle));
     }
@@ -1587,15 +1591,23 @@ final class BotFreeMarketManager {
     }
 
     private static void markOffer(BotEntry entry, long key, long now) {
-        entry.fmLastOfferAtMsByKey.put(key, now);
+        entry.fmMarketOfferByKey.computeIfAbsent(key, ignored -> new BotEntry.MarketOfferState())
+                .markOffer(now);
     }
 
     /** A clearing consumes accumulated unsold pressure. Returns whether demand cleared the latest
      *  offered price unusually quickly relative to the hourly service interval. */
     static boolean recordSaleOutcome(BotEntry entry, long key, long now) {
-        entry.fmUnsoldPressureByKey.remove(key);
-        Long offeredAt = entry.fmLastOfferAtMsByKey.remove(key); // one demand signal per offered price epoch
-        return offeredAt != null && isFastSaleElapsed(now - offeredAt);
+        BotEntry.MarketOfferState state = entry.fmMarketOfferByKey.get(key);
+        if (state == null) {
+            return false;
+        }
+        long elapsed = state.recordSaleElapsed(now);
+        if (!isFastSaleElapsed(elapsed)) {
+            entry.fmMarketOfferByKey.remove(key, state);
+            return false;
+        }
+        return true; // keep the price epoch so multiple rapid purchases add real demand pressure
     }
 
     /** Browse every other stall on this room map: observations always, bargains sparingly.

@@ -57,6 +57,8 @@ Do not copy a graph version from a KB note. The current value and full schema hi
 - [`kb_bot_equip_optimizer.md`](kb_bot_equip_optimizer.md) and
   [`kb_bot_grind_gear_valuation.md`](kb_bot_grind_gear_valuation.md): equipment decision seams.
 - [`kb_bot_use_value_shelf.md`](kb_bot_use_value_shelf.md): USE inventory tiers.
+- [`kb_bot_market_price_discovery.md`](kb_bot_market_price_discovery.md): clearing-seeded consensus,
+  hourly unsold/fast-sale pressure, and equilibrium damping.
 - [`kb_bot_trade_dupe_loss_audit.md`](kb_bot_trade_dupe_loss_audit.md): open-trade concurrency hazards.
 
 ## Population, social, and operations
