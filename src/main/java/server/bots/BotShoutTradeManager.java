@@ -85,11 +85,17 @@ public final class BotShoutTradeManager {
             // An incoming invite may be a sibling's negotiated deal; else, while standing to
             // shout-sell, a walk-up buyer (human or bot) clicking to invite us for our ad — or,
             // while our B> is fresh, a walk-up seller bringing the piece we shouted for.
+            // A human doesn't accept the popup the instant it appears — notice-and-click beat
+            // first (SSOT: BotTradePacing; the owner/commander manual tick paces itself).
+            if (stepBeat(entry, now)) {
+                return;
+            }
             if (!tryClaimResponder(entry, bot, now) && !tryAnswerWalkupBuyer(entry, bot, now)) {
                 tryAnswerWalkupSeller(entry, bot, now);
             }
             return;
         }
+        entry.shoutTradeStepAtMs = 0L; // no window — drop any beat armed for an invite that died
         if (!runAiTick || entry.marketBusy) {
             return;
         }
@@ -104,6 +110,22 @@ public final class BotShoutTradeManager {
 
     private static final int DELIBERATE_MIN_MS = 2_000;  // "think about it" before acting on a shout
     private static final int DELIBERATE_MAX_MS = 6_000;
+
+    /** One-shot human beat before the next trade-window step (accept the invite popup, drag the
+     *  piece in / type the meso). Arms on first call, holds while running, clears when served —
+     *  so each step pays exactly one {@link BotTradePacing#stepDelayMs()} pause. Returns true
+     *  while the caller should wait. */
+    private static boolean stepBeat(BotEntry entry, long now) {
+        if (entry.shoutTradeStepAtMs == 0L) {
+            entry.shoutTradeStepAtMs = now + BotTradePacing.stepDelayMs();
+            return true;
+        }
+        if (now < entry.shoutTradeStepAtMs) {
+            return true;
+        }
+        entry.shoutTradeStepAtMs = 0L;
+        return false;
+    }
 
     /** Bank a heard shout as the pending decision — the bot mulls it over for a couple seconds rather
      *  than pouncing the same tick (SoloMapling human-pacing borrow). One at a time. */
@@ -562,6 +584,9 @@ public final class BotShoutTradeManager {
             return; // waiting for the partner to accept
         }
         if (!entry.shoutTradeStaged) {
+            if (stepBeat(entry, now)) {
+                return; // finding + dragging the piece / typing the meso takes a human a moment
+            }
             if (!entry.shoutTradeSelling && entry.shoutTradeHaggle) {
                 stageHagglingBuyer(entry, bot, trade, now); // waits to SEE the piece first
             } else if (stageMySide(entry, bot, trade)) {
@@ -577,7 +602,7 @@ public final class BotShoutTradeManager {
         }
         if (partnerMeetsTerms(entry, bot, trade)) {
             if (entry.shoutTradeConfirmAtMs == 0L) {
-                entry.shoutTradeConfirmAtMs = now + BotManager.randMs(1_500, 3_000); // a human beat
+                entry.shoutTradeConfirmAtMs = now + BotTradePacing.confirmDelayMs(); // a human beat
                 trade.chat(BotMarketChatter.confirm());
                 return;
             }
@@ -929,6 +954,7 @@ public final class BotShoutTradeManager {
         entry.shoutTradeStaged = false;
         entry.shoutTradeLocked = false;
         entry.shoutTradeConfirmAtMs = 0L;
+        entry.shoutTradeStepAtMs = 0L;
         entry.shoutTradeHaggle = false;
         entry.haggleTheirPrice = 0;
         entry.haggleTheirPriceSeen = 0;

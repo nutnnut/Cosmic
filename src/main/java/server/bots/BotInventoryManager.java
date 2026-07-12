@@ -386,11 +386,11 @@ class BotInventoryManager {
                 manualTradeGreetingSent.remove(bot.getId());
                 return;
             }
-            // Accept invite if not yet joined — small delay so it feels human
+            // Accept invite if not yet joined — human notice-and-click beat (SSOT: BotTradePacing)
             if (!trade.isFullTrade()) {
                 if (trade.getNumber() != 1) return;
                 if (entry.manualTradeAcceptDelayMs == 0)
-                    entry.manualTradeAcceptDelayMs = 500 + BotMovementManager.cfg.TICK_MS;
+                    entry.manualTradeAcceptDelayMs = (int) BotTradePacing.stepDelayMs();
                 entry.manualTradeAcceptDelayMs = BotMovementManager.tickDown(entry.manualTradeAcceptDelayMs);
                 if (entry.manualTradeAcceptDelayMs > 0) return;
                 Trade.visitTrade(bot, partner.getChr());
@@ -410,7 +410,7 @@ class BotInventoryManager {
             // When bot is slot 0 (bot initiated via "trade me"), wait for commander to accept.
             if (trade.getNumber() != 1) return;
             if (entry.manualTradeAcceptDelayMs == 0)
-                entry.manualTradeAcceptDelayMs = 500 + BotMovementManager.cfg.TICK_MS;
+                entry.manualTradeAcceptDelayMs = (int) BotTradePacing.stepDelayMs();
             entry.manualTradeAcceptDelayMs = BotMovementManager.tickDown(entry.manualTradeAcceptDelayMs);
             if (entry.manualTradeAcceptDelayMs > 0) return;
             Trade.visitTrade(bot, commander);

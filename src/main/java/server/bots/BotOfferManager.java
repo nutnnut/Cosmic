@@ -295,7 +295,7 @@ final class BotOfferManager {
                 entry.pendingLootOfferExpiresAt = 0L;
                 entry.pendingLootOfferBotRequesting = false;
                 entry.pendingLootOfferRecipientId = 0;
-                BotManager.after(BotManager.randMs(900, 1100), () -> {
+                BotManager.after(BotTradePacing.stepDelayMs(), () -> {
                     entry.pendingLootOfferItem = null;
                     BotInventoryManager.startTradeTransfer(item, speaker, entry, entry.bot);
                 });

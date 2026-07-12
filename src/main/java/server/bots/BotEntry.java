@@ -998,6 +998,7 @@ public class BotEntry {
     boolean shoutTradeLocked;                           // I confirmed my side (completeTrade called)
     long shoutTradeDeadlineMs;                          // give-up wall clock
     long shoutTradeConfirmAtMs;                         // human "beat" before locking once terms are met
+    long shoutTradeStepAtMs;                            // human "beat" before the next window step (accept/stage)
     long nextShoutEmitMs;                               // emission cooldown
     // Deliberation before acting on a heard shout (don't buy/sell the instant a match is seen —
     // bank the candidate, "think about it" 2-6s, then re-validate + claim). One pending at a time.
