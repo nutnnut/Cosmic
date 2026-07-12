@@ -322,9 +322,10 @@ public class BotManager {
         // feel alive (more foot traffic = more browsing + shout-trade chances). Satiation still gates
         // repeats, so this is a per-break bias, not a treadmill.
         public double FM_SOCIAL_BREAK_CHANCE = 0.4;
-        // Console line per market-tape event (list/sale/trade/...) - the live debugging feed for
-        // the economy; the tape itself (bot_market_event) is always written regardless.
-        public boolean MARKET_TX_CONSOLE = true;
+        // Console line per market-tape event (list/sale/trade/...) plus the fm[] trip-phase
+        // traces - the live debugging feed for the economy; the tape itself (bot_market_event)
+        // is always written regardless. Off by default (noisy); flip via !botcfg when digging.
+        public boolean MARKET_TX_CONSOLE = false;
         // Keep at least this much account NX in reserve - bots gamble only the surplus above it.
         public int GACHA_NX_RESERVE = 1_000;
         // EV planning horizon: how many rolls a trip is assumed to do when ranking towns (plannedRolls,

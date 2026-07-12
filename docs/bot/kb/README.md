@@ -66,6 +66,8 @@ Do not copy a graph version from a KB note. The current value and full schema hi
   hourly unsold/fast-sale pressure, and equilibrium damping.
 - [`kb_bot_market_shout_haggle.md`](kb_bot_market_shout_haggle.md): `B>` criteria shouts and the S4
   trade-chat haggle protocol — floor-priced criteria, spoken-position parsing, structural commitments.
+- [`kb_bot_market_stall_funnel.md`](kb_bot_market_stall_funnel.md): trip→publish funnel losses —
+  permit NX economics, placement geometry (spacing, multi-floor strips), restart seeding.
 - [`kb_bot_trade_dupe_loss_audit.md`](kb_bot_trade_dupe_loss_audit.md): open-trade concurrency hazards.
 
 ## Population, social, and operations

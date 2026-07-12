@@ -104,9 +104,10 @@ final class BotFreeMarketManager {
     static final int MIN_LISTINGS_TO_TRIP = 3;
 
     /** Chance a login-time bot with a closed stall / uncollected proceeds at Fredrick starts its
-     *  market day immediately. High on purpose: at steady state nearly all of these bots would
-     *  HAVE a live stall — a restart closed it — so this is state restoration, not phase seeding. */
-    private static final double STALL_REBUILD_LOGIN_CHANCE = 0.5;
+     *  market day immediately. Near-certain on purpose: at steady state nearly all of these bots
+     *  would HAVE a live stall — a restart closed it — so this is state restoration, not phase
+     *  seeding, and a half-empty market after every restart reads as a dead server (owner). */
+    private static final double STALL_REBUILD_LOGIN_CHANCE = 0.9;
     /** Mean minutes of one market trip (travel + browse + setup), for the steady-state
      *  mid-trip-at-login fraction — same shape as {@link BotBreakManager#loginBreakChance}. */
     private static final double MARKET_TRIP_MEAN_MIN = 15.0;
@@ -149,13 +150,17 @@ final class BotFreeMarketManager {
     static final int STALL_SPACING_PX = 170;
     /** Min gap to any other stall (distance-squared). The server's canPlaceStore blocks at ~151px
      *  (23000 sq) but its check isn't atomic with publish, so two bots that clear it in the same beat
-     *  stack illegally; the bot enforces a wider 200px both when picking a slot AND again right before
-     *  publishing, so a stall that appeared mid-walk bumps it to the next slot instead of overlapping. */
-    private static final int STALL_MIN_SPACING_SQ = 200 * 200;
+     *  stack illegally; the bot enforces 160px both when picking a slot AND again right before
+     *  publishing, so a stall that appeared mid-walk bumps it to the next slot instead of overlapping.
+     *  MUST stay below {@link #STALL_SPACING_PX}: a gap wider than one column rejects every adjacent
+     *  slot and doubles the effective spacing (live bug: rows spread 340-465px apart). */
+    private static final int STALL_MIN_SPACING_SQ = 160 * 160;
     /** How far out (in slot columns, each way) to hunt for a free spot on the floor strip. */
     private static final int MAX_STALL_SLOT_STEPS = 8;
-    /** Give up walking to one candidate spot after this long without net progress. */
-    private static final long PLACE_WALK_STUCK_MS = 12_000L;
+    /** Give up walking to one candidate spot after this long without net progress. Wide enough
+     *  for a cross-floor leg: routing to an up/dn portal can walk AWAY from the target (manhattan
+     *  distance rising the whole stretch) for most of a room's width before the jump. */
+    private static final long PLACE_WALK_STUCK_MS = 20_000L;
     /** Re-visit an open stall about hourly to reprice/restock (living-economy S2). Short vs the
      *  ~24h forceClose so sold-out slots refill and stale asks track belief across a market day —
      *  the visit rides the same break/satiation cadence, so it's a detour on a town break, not a
@@ -1381,31 +1386,37 @@ final class BotFreeMarketManager {
     }
 
     /**
-     * A stall spot on the floor strip the bot is standing on: slot columns every
-     * {@link #STALL_SPACING_PX} out from where it entered (per-bot fill direction for variety),
-     * ground-snapped to the SAME walking level and screened by the same rules
+     * A stall spot somewhere in the room, floors included: pick a walkable floor strip (bottom
+     * favored for foot traffic, weighted by estimated free slots so full rows overflow upward -
+     * the SoloMapling merchant borrow: spread over ALL main platforms, not just the arrival
+     * floor; the up/dn portals joining FM-room floors are baked PORTAL edges, so the setup walk
+     * routes there), then slot columns every {@link #STALL_SPACING_PX} out from a random anchor
+     * on it, ground-snapped to that strip's level and screened by the same rules
      * {@link PlayerInteractionHandler#canPlaceStore} enforces (portal buffer, merchant spacing)
-     * so the final check passes. A purely horizontal walk converges - the old cross-platform
-     * targets anchored off the exit portal were often unreachable and timed the phase out
-     * (live-observed fizzle loop). {@code fmPlaceTries} skips slots already consumed this
-     * session. Null = no free slot on this floor.
+     * so the final check passes. Each placement try re-rolls strip + anchor, so a refused or
+     * unreachable slot naturally lands elsewhere next try. Null = nowhere free this try.
      */
     private static Point pickStallSpot(BotEntry entry, Character bot) {
         server.maps.MapleMap map = bot.getMap();
         if (map == null || map.getFootholds() == null) {
             return null;
         }
-        Point pos = bot.getPosition();
-        List<MapObject> stalls = map.getMapObjectsInRange(pos, Double.POSITIVE_INFINITY,
-                List.of(MapObjectType.HIRED_MERCHANT));
-        boolean rightFirst = (bot.getId() & 1) == 0;
-        int skipped = 0;
+        List<MapObject> stalls = map.getMapObjectsInRange(bot.getPosition(),
+                Double.POSITIVE_INFINITY, List.of(MapObjectType.HIRED_MERCHANT));
+        FloorStrip strip = pickFloorStrip(map, stalls);
+        if (strip == null) {
+            return null;
+        }
+        ThreadLocalRandom rnd = ThreadLocalRandom.current();
+        int margin = STALL_SPACING_PX / 2;
+        int anchor = strip.minX() + margin + rnd.nextInt(Math.max(1, strip.width() - 2 * margin));
+        boolean rightFirst = rnd.nextBoolean();
         for (int step = 0; step <= MAX_STALL_SLOT_STEPS; step++) {
             for (int side = 0; side < (step == 0 ? 1 : 2); side++) {
                 int dir = (side == 0) == rightFirst ? 1 : -1;
                 Point spot = BotPhysicsEngine.pointBelowIndexed(map,
-                        new Point(pos.x + dir * step * STALL_SPACING_PX, pos.y - 30));
-                if (spot == null || Math.abs(spot.y - pos.y) > 60) {
+                        new Point(anchor + dir * step * STALL_SPACING_PX, strip.y() - 30));
+                if (spot == null || Math.abs(spot.y - strip.y()) > 20) {
                     continue; // ran off this floor strip (edge, stairwell gap, lower level)
                 }
                 if (nearAnyPortal(map, spot)) {
@@ -1415,13 +1426,83 @@ final class BotFreeMarketManager {
                 if (nearStall(stalls, spot)) {
                     continue;
                 }
-                if (skipped++ < entry.fmPlaceTries) {
-                    continue; // consumed on an earlier try this session
-                }
                 return spot;
             }
         }
         return null;
+    }
+
+    /** A walkable floor of the room: one merged span of flat footholds at one level. */
+    record FloorStrip(int y, int minX, int maxX) {
+        int width() {
+            return maxX - minX;
+        }
+    }
+
+    /** Flat foothold spans grouped by level and merged, kept only when wide enough for a couple
+     *  of stall columns — drops decorative ledges and stair segments (e.g. room 10's chopped-up
+     *  top floor) while keeping every real store floor. */
+    static List<FloorStrip> floorStrips(server.maps.MapleMap map) {
+        Map<Integer, List<int[]>> byLevel = new HashMap<>();
+        for (server.maps.Foothold fh : map.getFootholds().getAllFootholds()) {
+            if (fh.isWall() || fh.getY1() != fh.getY2() || fh.getX1() == fh.getX2()) {
+                continue;
+            }
+            byLevel.computeIfAbsent(fh.getY1(), k -> new ArrayList<>())
+                    .add(new int[]{Math.min(fh.getX1(), fh.getX2()), Math.max(fh.getX1(), fh.getX2())});
+        }
+        List<FloorStrip> strips = new ArrayList<>();
+        for (Map.Entry<Integer, List<int[]>> level : byLevel.entrySet()) {
+            List<int[]> spans = level.getValue();
+            spans.sort(java.util.Comparator.comparingInt(a -> a[0]));
+            int lo = spans.get(0)[0], hi = spans.get(0)[1];
+            for (int i = 1; i <= spans.size(); i++) {
+                if (i < spans.size() && spans.get(i)[0] <= hi + 8) {
+                    hi = Math.max(hi, spans.get(i)[1]);
+                    continue;
+                }
+                if (hi - lo >= 2 * STALL_SPACING_PX) {
+                    strips.add(new FloorStrip(level.getKey(), lo, hi));
+                }
+                if (i < spans.size()) {
+                    lo = spans.get(i)[0];
+                    hi = spans.get(i)[1];
+                }
+            }
+        }
+        return strips;
+    }
+
+    /** Roulette over the room's floors by estimated FREE slots (columns minus stalls already
+     *  there), bottom floor double-weighted — the ground floor is where foot traffic lands, so
+     *  it fills first, and upper floors take the overflow instead of turning bots away. */
+    private static FloorStrip pickFloorStrip(server.maps.MapleMap map, List<MapObject> stalls) {
+        List<FloorStrip> strips = floorStrips(map);
+        if (strips.isEmpty()) {
+            return null;
+        }
+        int bottomY = strips.stream().mapToInt(FloorStrip::y).max().getAsInt();
+        double[] weights = new double[strips.size()];
+        double total = 0;
+        for (int i = 0; i < strips.size(); i++) {
+            FloorStrip strip = strips.get(i);
+            long occupied = stalls.stream()
+                    .filter(o -> Math.abs(o.getPosition().y - strip.y()) <= 20).count();
+            double free = Math.max(0, strip.width() / STALL_SPACING_PX - occupied);
+            weights[i] = free * (strip.y() == bottomY ? 2.0 : 1.0);
+            total += weights[i];
+        }
+        if (total <= 0) {
+            return null; // room genuinely full
+        }
+        double roll = ThreadLocalRandom.current().nextDouble(total);
+        for (int i = 0; i < strips.size(); i++) {
+            roll -= weights[i];
+            if (roll < 0) {
+                return strips.get(i);
+            }
+        }
+        return strips.get(strips.size() - 1);
     }
 
     private static boolean nearAnyPortal(server.maps.MapleMap map, Point spot) {
@@ -1455,6 +1536,15 @@ final class BotFreeMarketManager {
             }
         }
         return false;
+    }
+
+    /** True while this bot should be saving NX for its store permit: market enabled, the last
+     *  listing plan was trip-worthy (a stall's worth of surplus), and no permit owned yet. Gacha
+     *  treats the permit price as reserved NX so gambling can't starve the stall — the dominant
+     *  live cause of trips fizzling to browse-only was "no permit" with the NX gambled away. */
+    static boolean savingForPermit(BotEntry entry, Character bot) {
+        return BotManager.cfg.FM_MARKET_ENABLED && entry != null && entry.fmLastTripWorthy
+                && bot.getInventory(InventoryType.CASH).countById(PERMIT_ITEM) == 0;
     }
 
     /** The permit check + gacha-style NX purchase abstraction (design sec 8.2, resolution 8). */
