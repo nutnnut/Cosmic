@@ -259,8 +259,15 @@ public final class BotMarketGrammar {
 
     /** Compact meso string a human reads and {@link BotChatManager#parseMesoAmount} accepts back. */
     static String mesoShort(int meso) {
-        if (meso >= 1_000_000 && meso % 1_000_000 == 0) {
-            return (meso / 1_000_000) + "m";
+        // Millions scale: keep up to 3 significant decimals (round-to-thousand) so no digit is lost
+        // (92_500_000 -> "92.5m", 1_250_000 -> "1.25m", 1_200_000 -> "1.2m"). Non-round tails fall through.
+        if (meso >= 1_000_000 && meso % 1_000 == 0) {
+            int frac = (meso % 1_000_000) / 1_000; // 0..999 thousandths of a million
+            if (frac == 0) {
+                return (meso / 1_000_000) + "m";
+            }
+            String decimals = String.format("%03d", frac).replaceAll("0+$", "");
+            return (meso / 1_000_000) + "." + decimals + "m";
         }
         if (meso >= 1_000 && meso % 1_000 == 0) {
             return (meso / 1_000) + "k";

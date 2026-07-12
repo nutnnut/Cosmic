@@ -127,7 +127,13 @@ class BotMarketGrammarTest {
         assertEquals(new Offer(Kind.BUY, 1332006, 4, 300_000), BotMarketGrammar.parse(buyQty));
 
         assertEquals("PC> fish spear", BotMarketGrammar.format(Kind.PRICE_CHECK, "fish spear", 1, 0));
-        assertEquals("1500k", BotMarketGrammar.mesoShort(1_500_000));
+        assertEquals("1.5m", BotMarketGrammar.mesoShort(1_500_000));
+        assertEquals("92.5m", BotMarketGrammar.mesoShort(92_500_000));
+        assertEquals("1.25m", BotMarketGrammar.mesoShort(1_250_000));
+        assertEquals("1.2m", BotMarketGrammar.mesoShort(1_200_000));
+        assertEquals("1.234m", BotMarketGrammar.mesoShort(1_234_000));
+        assertEquals("5m", BotMarketGrammar.mesoShort(5_000_000));
+        assertEquals("300k", BotMarketGrammar.mesoShort(300_000));
         assertEquals("1234567", BotMarketGrammar.mesoShort(1_234_567));
     }
 
