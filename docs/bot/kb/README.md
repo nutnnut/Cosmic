@@ -69,6 +69,8 @@ Do not copy a graph version from a KB note. The current value and full schema hi
 - [`kb_bot_market_stall_funnel.md`](kb_bot_market_stall_funnel.md): trip→publish funnel losses —
   permit NX economics, placement geometry (spacing, multi-floor strips), restart seeding.
 - [`kb_bot_trade_dupe_loss_audit.md`](kb_bot_trade_dupe_loss_audit.md): open-trade concurrency hazards.
+- [`kb_bot_market_event_time_tz.md`](kb_bot_market_event_time_tz.md): read the tape's `at` TIMESTAMP via
+  `UNIX_TIMESTAMP` — `getTimestamp().getTime()` is skewed by the JVM-vs-MySQL timezone offset.
 
 ## Population, social, and operations
 

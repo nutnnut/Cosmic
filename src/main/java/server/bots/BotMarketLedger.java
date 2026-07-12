@@ -8,7 +8,6 @@ import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
-import java.sql.Timestamp;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -122,13 +121,17 @@ public final class BotMarketLedger {
     /** Events at/after {@code sinceMs}, ascending by time. Optionally filtered to clearing kinds. */
     public List<MarketEvent> recentEvents(long sinceMs, boolean clearingOnly) {
         List<MarketEvent> out = new ArrayList<>();
-        String sql = "SELECT id, at, kind, item_id, quality, qty, unit_price, seller_id, buyer_id, map_id"
-                + " FROM bot_market_event WHERE at >= ?"
+        // Read/compare the tape time as a true Unix epoch (UNIX_TIMESTAMP), never via getTimestamp():
+        // the JVM default tz differs from the MySQL SYSTEM tz, so getTimestamp().getTime() on this
+        // TIMESTAMP column comes out skewed by that offset (events landed hours in the "future" on the
+        // web tape). UNIX_TIMESTAMP resolves the instant server-side, tz-agnostic and Date.now()-comparable.
+        String sql = "SELECT id, UNIX_TIMESTAMP(at) at_epoch, kind, item_id, quality, qty, unit_price, seller_id, buyer_id, map_id"
+                + " FROM bot_market_event WHERE UNIX_TIMESTAMP(at) >= ?"
                 + (clearingOnly ? " AND kind IN (0, 1)" : "")
                 + " ORDER BY at ASC";
         try (Connection con = DatabaseConnection.getConnection();
              PreparedStatement ps = con.prepareStatement(sql)) {
-            ps.setTimestamp(1, new Timestamp(sinceMs));
+            ps.setLong(1, sinceMs / 1000L);
             try (ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) {
                     EventKind kind = EventKind.fromCode(rs.getInt("kind"));
@@ -137,7 +140,7 @@ public final class BotMarketLedger {
                     }
                     out.add(new MarketEvent(
                             rs.getLong("id"),
-                            rs.getTimestamp("at").getTime(),
+                            rs.getLong("at_epoch") * 1000L,
                             kind,
                             rs.getInt("item_id"),
                             rs.getInt("quality"),
@@ -159,10 +162,10 @@ public final class BotMarketLedger {
         List<MarketEvent> out = new ArrayList<>();
         try (Connection con = DatabaseConnection.getConnection();
              PreparedStatement ps = con.prepareStatement(
-                     "SELECT id, at, kind, item_id, quality, qty, unit_price, seller_id, buyer_id, map_id"
-                             + " FROM bot_market_event WHERE item_id = ? AND at >= ? ORDER BY at ASC")) {
+                     "SELECT id, UNIX_TIMESTAMP(at) at_epoch, kind, item_id, quality, qty, unit_price, seller_id, buyer_id, map_id"
+                             + " FROM bot_market_event WHERE item_id = ? AND UNIX_TIMESTAMP(at) >= ? ORDER BY at ASC")) {
             ps.setInt(1, itemId);
-            ps.setTimestamp(2, new Timestamp(sinceMs));
+            ps.setLong(2, sinceMs / 1000L);
             try (ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) {
                     EventKind kind = EventKind.fromCode(rs.getInt("kind"));
@@ -171,7 +174,7 @@ public final class BotMarketLedger {
                     }
                     out.add(new MarketEvent(
                             rs.getLong("id"),
-                            rs.getTimestamp("at").getTime(),
+                            rs.getLong("at_epoch") * 1000L,
                             kind,
                             rs.getInt("item_id"),
                             rs.getInt("quality"),
@@ -196,7 +199,7 @@ public final class BotMarketLedger {
         List<TradedItem> out = new ArrayList<>();
         try (Connection con = DatabaseConnection.getConnection();
              PreparedStatement ps = con.prepareStatement(
-                     "SELECT item_id, SUM(kind IN (0, 1)) sales, COUNT(*) events, MAX(at) last_at,"
+                     "SELECT item_id, SUM(kind IN (0, 1)) sales, COUNT(*) events, UNIX_TIMESTAMP(MAX(at)) last_at,"
                              + " SUBSTRING_INDEX(GROUP_CONCAT(unit_price ORDER BY at DESC), ',', 1) last_price"
                              + " FROM bot_market_event GROUP BY item_id"
                              + " ORDER BY sales DESC, events DESC LIMIT ?")) {
@@ -204,7 +207,7 @@ public final class BotMarketLedger {
             try (ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) {
                     out.add(new TradedItem(rs.getInt("item_id"), rs.getInt("sales"), rs.getInt("events"),
-                            rs.getTimestamp("last_at").getTime(), rs.getLong("last_price")));
+                            rs.getLong("last_at") * 1000L, rs.getLong("last_price")));
                 }
             }
         } catch (SQLException e) {

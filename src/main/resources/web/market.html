@@ -109,6 +109,8 @@ const fmt = n => { n = Number(n); const a = Math.abs(n);
 const full = n => Number(n).toLocaleString("en-US");
 const ago = t => { const s = (Date.now()-t)/1000; return s<90 ? Math.round(s)+"s" : s<5400 ? Math.round(s/60)+"m" : s<172800 ? Math.round(s/3600)+"h" : Math.round(s/86400)+"d"; };
 const when = t => new Date(t).toLocaleString("en-US",{month:"short",day:"numeric",hour:"2-digit",minute:"2-digit"});
+// "PlaceName (id)" when the server resolved the map's String.wz name, else the bare "map id".
+const mapLabel = (m, maps) => { if (m < 0) return ""; const nm = maps && maps[m]; return nm ? esc(nm)+" ("+m+")" : "map "+m; };
 
 // item-id -> placeholder tag + color (used until real client sprites land in /web/item-icons)
 function placeholder(id){
@@ -182,7 +184,7 @@ async function loadHist(){
   if (!sel) return;
   const r = await fetch("/api/market/history?item=" + sel + "&hours=" + hours);
   hist = await r.json();
-  hist.clearings = hist.clearings || []; hist.asks = hist.asks || []; hist.shouts = hist.shouts || []; hist.names = hist.names || {}; hist.bands = hist.bands || [];
+  hist.clearings = hist.clearings || []; hist.asks = hist.asks || []; hist.shouts = hist.shouts || []; hist.names = hist.names || {}; hist.maps = hist.maps || {}; hist.bands = hist.bands || [];
   const t = document.getElementById("title");
   t.innerHTML = ""; t.appendChild(iconEl(sel));
   const nm = document.createElement("span"); nm.textContent = hist.name || hist.item;
@@ -229,13 +231,14 @@ async function loadListings(){
     const r = await fetch("/api/market/listings?item=" + sel);
     listings = r.ok ? await r.json() : {listings:[]};
   } catch { listings = {listings:[]}; }
+  listings.maps = listings.maps || {};
   renderListings();
 }
 function renderListings(){
   const div = document.getElementById("listings");
   if (!listings || !listings.listings.length){ div.innerHTML = "<div class='empty'>no open stalls hold this item right now</div>"; return; }
   const rows = listings.listings.slice().sort((a,b)=>a.unit-b.unit).map(l =>
-    "<tr><td>" + (l.stats||"") + "<div class='meta'>" + esc(l.owner) + " &middot; map " + l.map + " ch" + l.ch + "</div></td>"
+    "<tr><td>" + (l.stats||"") + "<div class='meta'>" + esc(l.owner) + " &middot; " + mapLabel(l.map, listings.maps) + " ch" + l.ch + "</div></td>"
     + "<td class='n'>" + fmt(l.unit) + (l.per>1 ? "<div class='meta'>x"+l.per+" @ "+fmt(l.price)+"</div>" : "") + "</td>"
     + "<td class='n'>" + l.bundles + "</td></tr>").join("");
   div.innerHTML = "<table><thead><tr><th>listing</th><th class='n'>unit</th><th class='n'>qty</th></tr></thead><tbody>" + rows + "</tbody></table>";
@@ -245,7 +248,7 @@ function renderRecent(){
   const asks = hist.asks.concat(hist.shouts).sort((a,b)=>b.t-a.t).slice(0,25);
   if (!asks.length){ div.innerHTML = "<div class='empty'>no recent asks</div>"; return; }
   const rows = asks.map(a =>
-    "<tr><td>" + (a.k==="h"?"shout":"stall") + qchip(a.d) + "<div class='meta'>" + ago(a.t) + " ago" + (a.m>=0?" &middot; map "+a.m:"") + "</div></td>"
+    "<tr><td>" + (a.k==="h"?"shout":"stall") + qchip(a.d) + "<div class='meta'>" + ago(a.t) + " ago" + (a.m>=0?" &middot; "+mapLabel(a.m, hist.maps):"") + "</div></td>"
     + "<td class='n " + (a.p>=1e9?"stat":"") + "'>" + fmt(a.p) + "</td></tr>").join("");
   div.innerHTML = "<table><tbody>" + rows + "</tbody></table>";
 }
@@ -412,7 +415,7 @@ function tipHtml(pt){
   if (pt.q>1) s += rowt("qty", pt.q);
   if (pt.s>=0) s += rowt("seller", esc(nm(pt.s)));
   if (pt.b>=0) s += rowt("buyer", esc(nm(pt.b)));
-  if (pt.m>=0) s += rowt("map", pt.m);
+  if (pt.m>=0) s += rowt("map", mapLabel(pt.m, hist.maps));
   return s;
 }
 function rowt(k,v){ return "<div class='rowt'><span>"+k+"</span><b>"+v+"</b></div>"; }

@@ -21,6 +21,7 @@ import server.life.LifeFactory;
 import server.life.MonsterInformationProvider;
 import server.life.NPC;
 import server.maps.HiredMerchant;
+import server.maps.MapFactory;
 import server.maps.MapObject;
 import server.maps.MapObjectType;
 import server.maps.MapleMap;
@@ -2276,6 +2277,12 @@ public final class BotWorldGraphWebServer {
         appendMarketPoints(sb, listAsks);
         sb.append(",\"shouts\":");
         appendMarketPoints(sb, shouts);
+        List<Integer> mapIds = new ArrayList<>();
+        for (BotMarketLedger.MarketEvent e : clearings) mapIds.add(e.mapId());
+        for (BotMarketLedger.MarketEvent e : listAsks) mapIds.add(e.mapId());
+        for (BotMarketLedger.MarketEvent e : shouts) mapIds.add(e.mapId());
+        sb.append(',');
+        appendMapNames(sb, mapIds);
         sb.append(",\"names\":{");
         boolean firstName = true;
         for (Map.Entry<Integer, String> en : names.entrySet()) {
@@ -2312,6 +2319,30 @@ public final class BotWorldGraphWebServer {
         sb.append(']');
     }
 
+    /** Append a {@code "maps":{ "<id>":"<place name>", ... }} object resolving the given map ids to
+     *  their String.wz place names (MapFactory SSOT, cached). Ids that don't resolve are omitted, so
+     *  the page falls back to the bare id. Deduped; nulls/negatives skipped. */
+    private static void appendMapNames(StringBuilder sb, java.util.Collection<Integer> mapIds) {
+        sb.append("\"maps\":{");
+        boolean first = true;
+        java.util.Set<Integer> seen = new java.util.HashSet<>();
+        for (Integer id : mapIds) {
+            if (id == null || id < 0 || !seen.add(id)) {
+                continue;
+            }
+            String name = MapFactory.loadPlaceName(id);
+            if (name == null || name.isBlank()) {
+                continue;
+            }
+            if (!first) {
+                sb.append(',');
+            }
+            first = false;
+            sb.append('"').append(id).append("\":").append(jsonStr(name));
+        }
+        sb.append('}');
+    }
+
     private static String marketKindCode(BotMarketLedger.EventKind k) {
         return switch (k) {
             case TRADE -> "t";
@@ -2340,6 +2371,7 @@ public final class BotWorldGraphWebServer {
                 .append(",\"name\":").append(jsonStr(itemName(itemId)))
                 .append(",\"listings\":[");
         boolean first = true;
+        List<Integer> mapIds = new ArrayList<>();
         for (World w : Server.getInstance().getWorlds()) {
             for (HiredMerchant hm : w.getActiveMerchants()) {
                 for (PlayerShopItem psi : hm.getItems()) {
@@ -2350,6 +2382,7 @@ public final class BotWorldGraphWebServer {
                         sb.append(',');
                     }
                     first = false;
+                    mapIds.add(hm.getMapId());
                     int per = Math.max(1, psi.getItem().getQuantity());
                     String specifier = BotOfferManager.formatItemSpecifier(psi.getItem(), 0);
                     sb.append("{\"owner\":").append(jsonStr(hm.getOwner()))
@@ -2364,7 +2397,10 @@ public final class BotWorldGraphWebServer {
                 }
             }
         }
-        send(ex, 200, "application/json", sb.append("]}").toString().getBytes(StandardCharsets.UTF_8));
+        sb.append("],");
+        appendMapNames(sb, mapIds);
+        sb.append('}');
+        send(ex, 200, "application/json", sb.toString().getBytes(StandardCharsets.UTF_8));
     }
 
     /** {@code ?item=<id>}: the item's sprite PNG. Sprite integration seam — serves
