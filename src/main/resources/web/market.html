@@ -269,7 +269,13 @@ function candles(clr, t0){
   for (const p of clr){ if (p.t<t0) continue; const b=Math.floor(p.t/w)*w;
     let c=byB.get(b); if(!c){ c={t:b,o:p.p,h:p.p,l:p.p,c:p.p,v:0}; byB.set(b,c); }
     c.h=Math.max(c.h,p.p); c.l=Math.min(c.l,p.p); c.c=p.p; c.v+=p.q; }
-  return [...byB.values()].sort((a,b)=>a.t-b.t);
+  const out = [...byB.values()].sort((a,b)=>a.t-b.t);
+  // Sparse tape: chain each candle's open to the LAST KNOWN close, however many empty buckets
+  // ago that was — a 10m trade on day 1 followed by an 8m trade on day 4 must render day 4 as
+  // a red 10m->8m candle, not an isolated dash that ignores history. Wick covers the gap move.
+  for (let i=1;i<out.length;i++){ const c=out[i]; c.o=out[i-1].c;
+    c.h=Math.max(c.h,c.o); c.l=Math.min(c.l,c.o); }
+  return out;
 }
 function pctile(vals, p){
   if (!vals.length) return 0;
