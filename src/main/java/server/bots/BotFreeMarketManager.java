@@ -134,11 +134,21 @@ final class BotFreeMarketManager {
      *  trip whose whole point is to go stand and shout-sell — rarer on a break, common on a chill day
      *  (chill already always trips, so the exit-leg stand covers it). */
     private static final double SHOUT_SELL_BREAK_TRIP_CHANCE = 0.15;
-    /** Reposition cadence while standing: every so often the bot ambles to a NEW random spot on the
-     *  entrance floor — humanlike "move around" and, more importantly, un-bunches bots that arrive on
-     *  the same portal (owner: don't stack; pick random spots and occasionally reposition). */
+    /** Reposition cadence while standing: every so often the bot ambles to a NEW random spot near
+     *  its current one — humanlike "move around" and, more importantly, un-bunches bots that settled
+     *  next to each other (owner: don't stack; pick random spots and occasionally reposition). */
     private static final long SHOUT_REPOSITION_MIN_MS = 12_000L;
     private static final long SHOUT_REPOSITION_MAX_MS = 30_000L;
+    /** Shout-stand spot picking (owner spec): spread over the WHOLE entrance map the way real
+     *  players clutter it — loose clusters beside every portal (room doors, stairs, the entrance),
+     *  the bottom market level favored, and never stacked on another player/bot so a shopper can
+     *  click each one to trade. */
+    private static final double SHOUT_LOWER_LEVEL_WEIGHT = 3.0; // bottom level vs upper floors
+    private static final int SHOUT_ANCHOR_OFF_MIN_PX = 40;      // stand beside the portal, not on it
+    private static final int SHOUT_ANCHOR_OFF_MAX_PX = 220;
+    private static final int SHOUT_PORTAL_CLEAR_PX = 40;        // keep-out around ANY portal center
+    private static final int SHOUT_PERSONAL_SPACE_PX = 30;      // min gap to another player/bot
+    private static final int SHOUT_SPOT_TRIES = 12;
     /** Stall slot cap (HiredMerchant.addItem refuses past 16). */
     static final int STALL_SLOT_CAP = 16;
     /** Bounded bargain purchases per trip (wallet + WTP are the real limits; this bounds dwell). */
@@ -157,6 +167,8 @@ final class BotFreeMarketManager {
     private static final int STALL_MIN_SPACING_SQ = 160 * 160;
     /** How far out (in slot columns, each way) to hunt for a free spot on the floor strip. */
     private static final int MAX_STALL_SLOT_STEPS = 8;
+    /** Stall keep-out around portals (canPlaceStore's own buffer misses script exits like out00). */
+    private static final double STALL_PORTAL_CLEAR_PX = 130.0;
     /** Give up walking to one candidate spot after this long without net progress. Wide enough
      *  for a cross-floor leg: routing to an up/dn portal can walk AWAY from the target (manhattan
      *  distance rising the whole stretch) for most of a room's width before the jump. */
@@ -1113,9 +1125,10 @@ final class BotFreeMarketManager {
     }
 
     /**
-     * Stand at the FM entrance advertising surplus gear (owner spec: a deliberate shout-sell state so
-     * shoppers can click-invite). Walk to a RANDOM spot on the entrance floor (bots that arrive on the
-     * same portal must not stack — owner), hold there while {@link BotShoutTradeManager#emitAtStand}
+     * Stand in the FM entrance map advertising surplus gear (owner spec: a deliberate shout-sell
+     * state so shoppers can click-invite). Walk to a random spot beside one of the map's portals
+     * (lower market level favored, never stacked on another bot — owner; see
+     * {@link #pickStandSpot}), hold there while {@link BotShoutTradeManager#emitAtStand}
      * shouts on a fast cadence and answers walk-up buyers, and every so often amble to a new random
      * spot so it moves around instead of freezing. A trade in progress freezes the dwell (never walk
      * off mid-sale). Then exit to out00.
@@ -1145,7 +1158,7 @@ final class BotFreeMarketManager {
             entry.fmPhaseDeadlineAtMs = now + dwell + PHASE_DEADLINE_MS; // don't let the watchdog cut it short
             entry.nextShoutEmitMs = now + BotManager.randMs(2_000, 8_000); // first shout shortly after settling
             entry.fmFidgetAtMs = now + BotManager.randMs((int) SHOUT_REPOSITION_MIN_MS, (int) SHOUT_REPOSITION_MAX_MS);
-            entry.fmStandSpot = pickStandSpot(bot);
+            entry.fmStandSpot = pickStandSpot(bot, true);
             entry.fmStandBestDist = Integer.MAX_VALUE;
             entry.fmStandStuckSinceMs = now;
             reply.accept(entry, BotMarketChatter.shoutStand());
@@ -1154,8 +1167,11 @@ final class BotFreeMarketManager {
         boolean settled = stand != null && !entry.inAir && !entry.climbing
                 && Math.abs(bot.getPosition().x - stand.x) + Math.abs(bot.getPosition().y - stand.y) <= 24;
         // Occasionally amble to a new random spot (move around + un-bunch), leaving time to settle.
-        if (settled && now >= entry.fmFidgetAtMs && now < entry.fmShoutUntilMs - 6_000L) {
-            entry.fmStandSpot = pickStandSpot(bot);
+        // Cosmetic, so only while somebody can see it — an unobserved stander holds its spot (idle
+        // ticks are near-free) instead of paying nav/physics walks every 12-30s.
+        if (settled && now >= entry.fmFidgetAtMs && now < entry.fmShoutUntilMs - 6_000L
+                && bot.getMap().isObservedByPlayer()) {
+            entry.fmStandSpot = pickStandSpot(bot, false);
             entry.fmStandBestDist = Integer.MAX_VALUE;
             entry.fmStandStuckSinceMs = now;
             entry.fmFidgetAtMs = now + BotManager.randMs((int) SHOUT_REPOSITION_MIN_MS, (int) SHOUT_REPOSITION_MAX_MS);
@@ -1189,34 +1205,88 @@ final class BotFreeMarketManager {
     }
 
     /**
-     * A RANDOM reachable ground spot on the entrance floor strip (columns every
-     * {@link #STALL_SPACING_PX}, same ground-snap + same-level guard as {@link #pickStallSpot}, kept
-     * clear of portals). Random rather than a fixed "best" so bots arriving on the same portal spread
-     * out instead of all converging on one spot (owner). Falls back to a one-column step off the
-     * arrival point (never the portal itself), then to standing put.
+     * A random ground spot beside a portal, the way real players clutter a market map. mapWide=true
+     * (arming a fresh stand) rolls an anchor over ALL of the map's portals — room doors, stairs,
+     * the entrance — via {@link #rollStandAnchor} so standers spread across the whole map instead
+     * of piling at the arrival point; false (the periodic reposition) ambles locally around the
+     * current spot. Candidates are ground-snapped to the anchor's level, kept a small margin off
+     * every portal center, and rejected while another player/bot stands there (the whole point of
+     * standing is being easy to click-trade). Falls back to standing put when everything is taken.
      */
-    private static Point pickStandSpot(Character bot) {
+    private static Point pickStandSpot(Character bot, boolean mapWide) {
         server.maps.MapleMap map = bot.getMap();
         Point pos = bot.getPosition();
         if (map == null || map.getFootholds() == null) {
             return new Point(pos);
         }
-        List<Point> candidates = new ArrayList<>();
-        for (int step = 1; step <= MAX_STALL_SLOT_STEPS; step++) {
-            for (int dir : new int[] {1, -1}) {
-                Point spot = BotPhysicsEngine.pointBelowIndexed(map,
-                        new Point(pos.x + dir * step * STALL_SPACING_PX, pos.y - 30));
-                if (spot != null && Math.abs(spot.y - pos.y) <= 60 && !nearAnyPortal(map, spot)) {
-                    candidates.add(spot);
-                }
+        ThreadLocalRandom rnd = ThreadLocalRandom.current();
+        List<Point> anchors = mapWide ? standAnchors(map) : List.of();
+        for (int attempt = 0; attempt < SHOUT_SPOT_TRIES; attempt++) {
+            Point center = anchors.isEmpty() ? pos : rollStandAnchor(anchors, rnd);
+            int off = rnd.nextInt(SHOUT_ANCHOR_OFF_MIN_PX, SHOUT_ANCHOR_OFF_MAX_PX + 1)
+                    * (rnd.nextBoolean() ? 1 : -1);
+            Point spot = BotPhysicsEngine.pointBelowIndexed(map, new Point(center.x + off, center.y - 30));
+            if (spot == null || Math.abs(spot.y - center.y) > 60) {
+                continue; // fell off the anchor's level (ledge, stairwell gap, lower floor)
+            }
+            if (nearAnyPortal(map, spot, SHOUT_PORTAL_CLEAR_PX)) {
+                continue; // beside the doorway, never on it (also covers a NEIGHBOUR door)
+            }
+            if (nearOtherCharacter(map, bot, spot)) {
+                continue; // don't stack — shoppers must be able to click each bot
+            }
+            return spot;
+        }
+        return new Point(pos); // everything nearby taken — stand where we are
+    }
+
+    /** Ground spot under every real portal — the anchors players naturally clutter around. Trap
+     *  pads (pt 3, invisible auto-teleports) and floating spawn points with no floor at their own
+     *  level are dropped. */
+    private static List<Point> standAnchors(server.maps.MapleMap map) {
+        List<Point> anchors = new ArrayList<>();
+        for (Portal p : map.getPortals()) {
+            Point pp = p.getPosition();
+            if (pp == null || p.getType() == 3) { // pt 3 = invisible collision/trap pad
+                continue;
+            }
+            Point ground = BotPhysicsEngine.pointBelowIndexed(map, new Point(pp.x, pp.y - 30));
+            if (ground != null && Math.abs(ground.y - pp.y) <= 60) {
+                anchors.add(ground);
             }
         }
-        if (!candidates.isEmpty()) {
-            return candidates.get(ThreadLocalRandom.current().nextInt(candidates.size()));
+        return anchors;
+    }
+
+    /** Roulette over the portal anchors with the map's bottom level (in the FM entrance: the
+     *  ground + the lower market platform, one visual level) weighted
+     *  {@link #SHOUT_LOWER_LEVEL_WEIGHT}x over the upper floors — that's where the crowd hangs
+     *  out (owner: high weight on the whole lower region, not one foothold). */
+    private static Point rollStandAnchor(List<Point> anchors, ThreadLocalRandom rnd) {
+        int bottomY = anchors.stream().mapToInt(a -> a.y).max().getAsInt();
+        double total = 0;
+        for (Point a : anchors) {
+            total += bottomY - a.y <= 60 ? SHOUT_LOWER_LEVEL_WEIGHT : 1.0;
         }
-        int dir = ThreadLocalRandom.current().nextBoolean() ? 1 : -1; // no clear column: at least step off the portal
-        Point off = BotPhysicsEngine.pointBelowIndexed(map, new Point(pos.x + dir * STALL_SPACING_PX, pos.y - 30));
-        return off != null && Math.abs(off.y - pos.y) <= 60 ? off : new Point(pos);
+        double roll = rnd.nextDouble(total);
+        for (Point a : anchors) {
+            roll -= bottomY - a.y <= 60 ? SHOUT_LOWER_LEVEL_WEIGHT : 1.0;
+            if (roll < 0) {
+                return a;
+            }
+        }
+        return anchors.get(anchors.size() - 1);
+    }
+
+    private static boolean nearOtherCharacter(server.maps.MapleMap map, Character self, Point spot) {
+        for (Character c : map.getAllPlayers()) {
+            if (c.getId() != self.getId()
+                    && Math.abs(c.getPosition().x - spot.x) < SHOUT_PERSONAL_SPACE_PX
+                    && Math.abs(c.getPosition().y - spot.y) <= 60) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
@@ -1419,7 +1489,7 @@ final class BotFreeMarketManager {
                 if (spot == null || Math.abs(spot.y - strip.y()) > 20) {
                     continue; // ran off this floor strip (edge, stairwell gap, lower level)
                 }
-                if (nearAnyPortal(map, spot)) {
+                if (nearAnyPortal(map, spot, STALL_PORTAL_CLEAR_PX)) {
                     continue; // keep every doorway/arrival point clear (canPlaceStore only checks
                               // teleport portals, which misses script exits like out00 - live bug)
                 }
@@ -1505,9 +1575,9 @@ final class BotFreeMarketManager {
         return strips.get(strips.size() - 1);
     }
 
-    private static boolean nearAnyPortal(server.maps.MapleMap map, Point spot) {
+    private static boolean nearAnyPortal(server.maps.MapleMap map, Point spot, double radius) {
         for (Portal p : map.getPortals()) {
-            if (p.getPosition() != null && p.getPosition().distance(spot) < 130.0) {
+            if (p.getPosition() != null && p.getPosition().distance(spot) < radius) {
                 return true;
             }
         }
