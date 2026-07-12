@@ -4086,14 +4086,18 @@ public class BotManager {
      * packet still showed motion, settle the bot to STAND once so observers don't extrapolate a stale
      * WALK into walk-in-place. Gated tightly so it fires exactly on the stop tick and never spams:
      *  - {@code broadcastedThisTick}: an actively-moving tick already broadcast — never force-stop it.
-     *  - last broadcast velocity 0: already at rest — nothing to settle (this is what makes it one-shot).
+     *  - last broadcast at rest AND not a walk stance: nothing to settle (this is what makes it
+     *    one-shot). A rest-velocity packet can still carry a WALK stance (walking blocked against a
+     *    wall/ledge broadcasts velocity 0 with the walk key held) — going silent on that leaves
+     *    observers rendering walk-in-place forever, so it settles too.
      *  - dead / spawn-warmup / skip-delay / airshow / air / climb: not a grounded resting state.
      */
     private void settleIdleIfUnbroadcast(BotEntry entry) {
         if (entry == null || entry.broadcastedThisTick) {
             return;
         }
-        if (entry.lastBroadcastVelX == 0 && entry.lastBroadcastVelY == 0) {
+        if (entry.lastBroadcastVelX == 0 && entry.lastBroadcastVelY == 0
+                && !CharacterStance.isWalking(entry.lastBroadcastStance)) {
             return; // already broadcast at rest — settling again would be a no-op (and the dedup eats it)
         }
         Character bot = entry.bot;
@@ -7062,6 +7066,14 @@ public class BotManager {
                 && (targetPos == null || BotCombatManager.withinAttackYReach(entry.bot.getPosition(), targetPos))) {
             tickMotionPlan(entry, targetPos);
             return;
+        }
+        // Real physics owns movement from here on. A LOD1 bot that falls through (market/gacha
+        // errand, fidget, climb/swim, cross-level target) moves for REAL, so the motion plan frozen
+        // at the LOD downgrade is stale from this tick on — drop it, or materializeBotToLod0 would
+        // rewind the bot to the freeze point (a visible teleport-back when a player loads the map).
+        if (entry.lod == BotEntry.Lod.LOD1) {
+            entry.motionFrom = null;
+            entry.motionTo = null;
         }
         BotNavigationManager.NavigationDirective navDirective = BotNavigationManager.resolveTarget(entry, targetPos, runAiTick);
         if (navDirective.consumedTick) {

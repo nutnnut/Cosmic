@@ -198,6 +198,11 @@ class BotMovementManager {
         BotFidgetManager.clear(entry);
         clearNavigationState(entry);
         entry.movementBroadcastValid = false;
+        // The position just jumped (map change / teleport): a frozen LOD1 motion plan still points
+        // at the PRE-jump coordinates — possibly another map's space. Drop it so the LOD0
+        // materialize snap keeps the real position instead of rewinding there.
+        entry.motionFrom = null;
+        entry.motionTo = null;
     }
 
     static void clearNavigationState(BotEntry entry) {
@@ -1087,6 +1092,15 @@ class BotMovementManager {
         // ponytail: O(chars) scan per tick per bot; make MapleMap track a non-bot count if it ever shows up hot.
         if (!bot.getMap().isObservedByPlayer()) {
             entry.movementBroadcastValid = false;
+            // Still reconcile the snapshot cache (no packet): settleIdleIfUnbroadcast keys off
+            // lastBroadcast* to know the bot came to rest — stale motion values here would re-run
+            // the settle every tick for the whole unobserved resting population, and the stance
+            // side-effect in movementSnapshot keeps the enter-map spawn pose honest (no bot frozen
+            // mid-walk-stride when a player loads in).
+            BotPhysicsEngine.MovementSnapshot idle = BotPhysicsEngine.movementSnapshot(entry);
+            entry.lastBroadcastVelX = idle.velX();
+            entry.lastBroadcastVelY = idle.velY();
+            entry.lastBroadcastStance = idle.stance();
             return;
         }
         int x = bot.getPosition().x;
