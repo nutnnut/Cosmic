@@ -1142,8 +1142,8 @@ final class BotGrindAdvisor {
      * (ensemble - best top), not an empty pants slot; a shield drop on a 2H build competes
      * against the weapon itself (and is hard-gated by levelsUntilWearable anyway).
      */
-    private static double gearBar(Character bot, ItemInformationProvider ii, int itemId, short slot,
-                                  Map<Short, Double> cache) {
+    static double gearBar(Character bot, ItemInformationProvider ii, int itemId, short slot,
+                          Map<Short, Double> cache) {
         switch (slot) {
             case -5, -6 -> {
                 double top = cache.computeIfAbsent(KEY_BEST_TOP,
@@ -1232,7 +1232,7 @@ final class BotGrindAdvisor {
      * advisor's own attack-cycle anchor, so a typical-speed weapon keeps its raw score;
      * 1.0 when WZ timing is unavailable (unit tests, odd items).
      */
-    private static double weaponSpeedFactor(int itemId) {
+    static double weaponSpeedFactor(int itemId) {
         int cycleMs = BotEquipManager.weaponCycleMs(itemId);
         return cycleMs > 0 ? ATTACK_CYCLE_SECONDS * 1000.0 / cycleMs : 1.0;
     }

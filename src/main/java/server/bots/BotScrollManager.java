@@ -2186,9 +2186,15 @@ final class BotScrollManager {
         if (!wearableUpgradeCandidate(bot, ii, candidate, slot)) {
             return 0;
         }
-        Equip worn = wornInSlot(bot, ii, slot);
-        double gain = potentialValue(bot, ii, candidate)
-                - (worn == null ? 0.0 : potentialValue(bot, ii, worn));
+        // Gain over the best OWNED ensemble for the slot family ({@link BotGrindAdvisor#gearBar},
+        // the same cross-slot bar drop-farming uses): honors the equip DP's exclusivity rules —
+        // a pants candidate under a worn overall competes against (ensemble − best owned top),
+        // an overall/2H displaces BOTH partner pieces — instead of reading an empty blocked slot
+        // as pure profit. Bagged better copies count too, so a bot never buys below what it owns.
+        double candidateValue = potentialValue(bot, ii, candidate)
+                * (slot == (short) -11 ? BotGrindAdvisor.weaponSpeedFactor(candidate.getItemId()) : 1.0);
+        double gain = candidateValue
+                - BotGrindAdvisor.gearBar(bot, ii, candidate.getItemId(), slot, new HashMap<>());
         if (gain <= 0) {
             return 0;
         }
@@ -2196,19 +2202,14 @@ final class BotScrollManager {
                 * slotDurabilityFactor(candidate.getItemId() / 10000 % 100));
     }
 
-    /** Wearability gate shared by stall/shout buy demand and buy-want selection: physically
-     *  wearable in its primary slot and, for weapons, of the build's preferred type. Off-type
-     *  weapons (a mace to a knuckle pirate): canWearEquipment passes on raw stats (v83 has no job
-     *  lock on most 1H weapons) and the offense scorer would count its WATK as pure upgrade gain —
-     *  but attack skills need the build's weapon type, so it's never a combat upgrade, only trade
-     *  stock. Same gate levelsUntilWearable already applies. */
+    /** Wearability gate shared by stall/shout buy demand and buy-want selection — the same
+     *  {@link #wearable} SSOT the farm/scroll paths use, so all of its rules apply here too:
+     *  job/level/stat requirements, the preferred-weapon gate (an off-type mace is never a combat
+     *  upgrade for a knuckle pirate, only trade stock), and the 2H↔shield exclusivity (a shield
+     *  is never wearable on a two-handed build). */
     private static boolean wearableUpgradeCandidate(Character bot, ItemInformationProvider ii,
                                                     Equip candidate, Short slot) {
-        if (slot == null || !ii.canWearEquipment(bot, candidate, slot)) {
-            return false;
-        }
-        return slot != (short) -11
-                || BotEquipManager.isPreferredWeapon(bot, ii.getWeaponType(candidate.getItemId()), candidate);
+        return slot != null && wearable(bot, ii, candidate);
     }
 
     // ---- buy-want selection (living-economy S3: B> emission demand side) -----------------------
