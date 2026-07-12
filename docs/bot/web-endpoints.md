@@ -157,9 +157,13 @@ drops them. Use this to measure a ground-truth kill rate on a few maps (`tools/l
 Trading-site style market view. Left: searchable item picker (most-cleared first) with sprite tiles.
 Center: a price chart with **OHLC candlesticks** bucketed client-side from clearings (green up / red
 down; wick = high/low; body = open/close), stall asks (hollow blue) and shout asks (faint) as dot
-clouds, and the consensus estimate (dashed gold). Hover any datapoint for a tooltip; a clearing shows
-kind/price/qty/when and the resolved **seller/buyer/map** (transaction detail). Right: the live open-stall
-listings table for the selected item (unit price, stats, owner, location) + a recent-asks list. Header
+clouds, the clean-band consensus estimate (dashed gold), and — for equips traded at more than one
+quality band — a shaded **roll-quality range** from the lowest-band estimate (base/clean-ish price)
+up to the best observed roll's estimate. Hover any datapoint for a tooltip; a clearing shows
+kind/price/quality/qty/when and the resolved **seller/buyer/map** (transaction detail). Right: the
+live open-stall listings table for the selected item (unit price, stats, owner, location), a
+recent-asks list, and a recent-trades list — ask/trade rows carry a gold roll-quality chip in the
+band's dominant-stat terms (`+5 str`, `+7 att`; generic `+N roll` when untranslatable). Header
 toggles (all client-side): **candles/line**, **log y**, **clip outliers** (y-range keys off clearings so a
 few 2.1b asks don't flatten the candles — clamped points get a count note), **asks** on/off, **shouts**
 on/off. Range buttons 24h/3d/7d/30d/1y; auto-refreshes. Linked from the landing page.
@@ -175,14 +179,19 @@ Items with any tape activity, most-cleared first (max 300): the chart's item pic
 ### `/api/market/history?item=<itemId>[&hours=168]`
 One item's price series from `bot_market_event`: clearings (TRADE + STALL_SALE), stall list asks and
 shout asks (shouts capped to the most recent 1500), plus the live consensus estimate + damping volume
-for band 0. Each point carries its detail — `k` kind (`t`rade/stall `s`ale/`l`ist/s`h`out), `s`eller /
+for band 0 and a per-quality-band consensus list (`bands`: every band observed in the window, plus
+band 0 — the chart's roll-quality price range; `lbl` is the band's dominant-stat equivalent, e.g.
+"+5 str" / "+7 att", from `BotScrollManager.bandStatLabel`, omitted when untranslatable). Each
+point carries its detail — `k` kind
+(`t`rade/stall `s`ale/`l`ist/s`h`out), `d` equip quality band (0 = clean/non-equip), `s`eller /
 `b`uyer / `m`ap ids (-1 = none) — and `names` resolves the clearing party ids for the detail popup.
 ```
 {"item","name","consensus","volume",
- "clearings":[{"t","p","q","k","s","b","m"}, ...],   // unit price p at time t, qty q
- "asks":[{"t","p","q","k","s","b","m"}, ...],        // stall LIST asks
- "shouts":[{"t","p","q","k","s","b","m"}, ...],      // shout ads (most recent 1500)
- "names":{"<charId>":"<name>", ...}}                 // seller/buyer ids seen in clearings
+ "bands":[{"b","est","vol","lbl"?}, ...],                 // per-band consensus (band 0 always present)
+ "clearings":[{"t","p","q","k","d","s","b","m"}, ...],   // unit price p at time t, qty q, band d
+ "asks":[{"t","p","q","k","d","s","b","m"}, ...],        // stall LIST asks
+ "shouts":[{"t","p","q","k","d","s","b","m"}, ...],      // shout ads (most recent 1500)
+ "names":{"<charId>":"<name>", ...}}                     // seller/buyer ids seen in clearings
 ```
 
 ### `/api/market/listings?item=<itemId>`

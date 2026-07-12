@@ -2527,6 +2527,44 @@ final class BotScrollManager {
         return specs;
     }
 
+    /**
+     * Human-legible stat equivalent of a quality band for this item: the band's score surplus
+     * (band x {@link #bandUnit}) re-expressed in points of the piece's dominant rollable stat —
+     * the SAME stat that drives band pricing and shout criteria ({@link #bestRollStat}) — e.g.
+     * band 5 on a warrior topwear -> "+5 str", on a weapon -> "+7 att". Null when the item has
+     * no band unit or no rollable stat (callers fall back to the generic "+N roll").
+     */
+    static String bandStatLabel(ItemInformationProvider ii, int itemId, int band) {
+        if (band <= 0) {
+            return null;
+        }
+        Map<String, Integer> clean;
+        try {
+            clean = ii.getEquipStats(itemId);
+        } catch (RuntimeException e) {
+            return null; // WZ unavailable
+        }
+        if (clean == null) {
+            return null;
+        }
+        double unit = bandUnit(catalogGains(ii, itemId));
+        RollStat roll = bestRollStat(ii, clean);
+        if (unit <= 0 || roll == null) {
+            return null;
+        }
+        double perPoint = marketStatValue(Map.of(roll.key(), 1));
+        if (perPoint <= 0) {
+            return null;
+        }
+        long pts = Math.max(1, Math.round(band * unit / perPoint));
+        String stat = switch (roll.key()) {
+            case "PAD" -> "att";
+            case "MAD" -> "matt";
+            default -> roll.key().toLowerCase(java.util.Locale.US);
+        };
+        return "+" + pts + " " + stat;
+    }
+
     /** Sorted positive job-neutral gains of the slot's applicable catalog scrolls. */
     private static double[] catalogGains(ItemInformationProvider ii, int equipId) {
         List<Double> gains = new ArrayList<>();

@@ -2236,12 +2236,41 @@ public final class BotWorldGraphWebServer {
             if (e.buyerId() != null) partyIds.add(e.buyerId());
         }
         Map<Integer, String> names = BotMarketLedger.getInstance().charNames(partyIds);
+        // Per-quality-band consensus: band 0 is the clean-ish baseline, higher bands are better
+        // rolls (BotMarketMath.bandOf) - the page draws the min..max estimate as a price RANGE for
+        // equips, where one line would conflate a 3-STR and a 10-STR piece of the same id.
+        java.util.TreeSet<Integer> bands = new java.util.TreeSet<>();
+        bands.add(0);
+        for (BotMarketLedger.MarketEvent e : clearings) bands.add(e.quality());
+        for (BotMarketLedger.MarketEvent e : listAsks) bands.add(e.quality());
+        for (BotMarketLedger.MarketEvent e : shouts) bands.add(e.quality());
         long key = BotMarketMath.priceKey(itemId, 0);
         StringBuilder sb = new StringBuilder("{\"item\":").append(itemId)
                 .append(",\"name\":").append(jsonStr(itemName(itemId)))
                 .append(",\"consensus\":").append(Math.round(BotMarketConsensus.getInstance().consensus(key)))
                 .append(",\"volume\":").append(String.format(Locale.US, "%.2f", BotMarketConsensus.getInstance().volume(key)))
-                .append(",\"clearings\":");
+                .append(",\"bands\":[");
+        boolean firstBand = true;
+        for (int band : bands) {
+            long bandKey = BotMarketMath.priceKey(itemId, band);
+            long est = Math.round(BotMarketConsensus.getInstance().consensus(bandKey));
+            if (!firstBand) {
+                sb.append(',');
+            }
+            firstBand = false;
+            // lbl: the band's dominant-stat equivalent ("+5 str" / "+7 att") - the page's
+            // human-legible replacement for the generic "+N roll" (BotScrollManager SSOT).
+            String lbl = BotScrollManager.bandStatLabel(
+                    ItemInformationProvider.getInstance(), itemId, band);
+            sb.append("{\"b\":").append(band).append(",\"est\":").append(est)
+                    .append(",\"vol\":").append(String.format(Locale.US, "%.2f",
+                            BotMarketConsensus.getInstance().volume(bandKey)));
+            if (lbl != null) {
+                sb.append(",\"lbl\":").append(jsonStr(lbl));
+            }
+            sb.append('}');
+        }
+        sb.append("],\"clearings\":");
         appendMarketPoints(sb, clearings);
         sb.append(",\"asks\":");
         appendMarketPoints(sb, listAsks);
@@ -2260,8 +2289,9 @@ public final class BotWorldGraphWebServer {
         send(ex, 200, "application/json", sb.toString().getBytes(StandardCharsets.UTF_8));
     }
 
-    /** Serialize a tape series as {@code [{t,p,q,k,s,b,m}, ...]}: time, unit price, qty, kind code
-     *  ({@code t}rade/{@code s}tall/{@code l}ist/s{@code h}out), seller/buyer/map ids (-1 = none). */
+    /** Serialize a tape series as {@code [{t,p,q,k,d,s,b,m}, ...]}: time, unit price, qty, kind code
+     *  ({@code t}rade/{@code s}tall/{@code l}ist/s{@code h}out), quality band (equip roll quality;
+     *  0 = clean/non-equip), seller/buyer/map ids (-1 = none). */
     private static void appendMarketPoints(StringBuilder sb, List<BotMarketLedger.MarketEvent> pts) {
         sb.append('[');
         for (int i = 0; i < pts.size(); i++) {
@@ -2273,6 +2303,7 @@ public final class BotWorldGraphWebServer {
                     .append(",\"p\":").append(e.unitPrice())
                     .append(",\"q\":").append(e.qty())
                     .append(",\"k\":\"").append(marketKindCode(e.kind())).append('"')
+                    .append(",\"d\":").append(e.quality())
                     .append(",\"s\":").append(e.sellerId() == null ? -1 : e.sellerId())
                     .append(",\"b\":").append(e.buyerId() == null ? -1 : e.buyerId())
                     .append(",\"m\":").append(e.mapId() == null ? -1 : e.mapId())

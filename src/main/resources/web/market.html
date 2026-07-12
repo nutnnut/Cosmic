@@ -89,7 +89,8 @@
       <span class="lg"><span class="sw" style="background:var(--down)"></span>clearing down</span>
       <span class="lg"><span class="sw" style="background:var(--blue)"></span>stall ask</span>
       <span class="lg"><span class="sw" style="background:#4a5a76"></span>shout ask</span>
-      <span class="lg"><span class="sw" style="background:var(--gold)"></span>consensus</span>
+      <span class="lg"><span class="sw" style="background:var(--gold)"></span>consensus (clean)</span>
+      <span class="lg"><span class="sw" style="background:rgba(224,180,92,.35)"></span>roll-quality range</span>
     </div>
   </div>
   <div id="right">
@@ -97,6 +98,8 @@
     <div id="listings"></div>
     <h2>Recent asks</h2>
     <div id="recent"></div>
+    <h2>Recent trades</h2>
+    <div id="trades"></div>
   </div>
 </main>
 <script>
@@ -179,7 +182,7 @@ async function loadHist(){
   if (!sel) return;
   const r = await fetch("/api/market/history?item=" + sel + "&hours=" + hours);
   hist = await r.json();
-  hist.clearings = hist.clearings || []; hist.asks = hist.asks || []; hist.shouts = hist.shouts || []; hist.names = hist.names || {};
+  hist.clearings = hist.clearings || []; hist.asks = hist.asks || []; hist.shouts = hist.shouts || []; hist.names = hist.names || {}; hist.bands = hist.bands || [];
   const t = document.getElementById("title");
   t.innerHTML = ""; t.appendChild(iconEl(sel));
   const nm = document.createElement("span"); nm.textContent = hist.name || hist.item;
@@ -188,6 +191,19 @@ async function loadHist(){
   renderStats();
   draw();
   renderRecent();
+  renderTrades();
+}
+// quality band label: the server translates a band to its dominant-stat equivalent ("+5 str",
+// "+7 att") when it can; fall back to the generic roll count. 0 = clean/non-equip.
+const blab = d => { const b=(hist&&hist.bands||[]).find(x=>x.b===d); return b&&b.lbl ? b.lbl : (d>0 ? "+"+d+" roll" : "clean"); };
+const qchip = d => d>0 ? " <span class='stat'>"+blab(d)+"</span>" : "";
+// per-band consensus range (est>0 only): [loBand, hiBand] or null when a single price tells the story
+function bandRange(){
+  const bs = (hist.bands||[]).filter(b=>b.est>0);
+  if (bs.length < 2) return null;
+  let lo=bs[0], hi=bs[0];
+  for (const b of bs){ if (b.est<lo.est) lo=b; if (b.est>hi.est) hi=b; }
+  return lo.est<hi.est ? [lo,hi] : null;
 }
 function renderStats(){
   const clr = hist.clearings, lastC = clr.length ? clr[clr.length-1] : null;
@@ -195,10 +211,13 @@ function renderStats(){
   const median = prices.length ? prices[Math.floor(prices.length/2)] : 0;
   const asks = hist.asks.concat(hist.shouts);
   const lowAsk = asks.length ? Math.min(...asks.map(a=>a.p)) : 0;
+  const br = bandRange();
   document.getElementById("stats").innerHTML =
       "last clearing <b>" + (lastC ? fmt(lastC.p) : "-") + "</b>"
     + "<span>median clearing <b>" + (median ? fmt(median) : "-") + "</b></span>"
-    + "<span>consensus <b>" + (hist.consensus>0 ? fmt(hist.consensus) : "-") + "</b></span>"
+    + (br ? "<span>consensus range <b>" + fmt(br[0].est) + " &ndash; " + fmt(br[1].est) + "</b>"
+            + " <span class='meta'>(" + blab(br[0].b) + " &rarr; " + blab(br[1].b) + ")</span></span>"
+          : "<span>consensus <b>" + (hist.consensus>0 ? fmt(hist.consensus) : "-") + "</b></span>")
     + "<span>lowest ask <b>" + (lowAsk ? fmt(lowAsk) : "-") + "</b></span>"
     + "<span>volume(damping) <b>" + hist.volume + "</b></span>"
     + "<span>" + clr.length + " clearings / " + hist.asks.length + " stall + " + hist.shouts.length + " shout asks</span>";
@@ -226,8 +245,19 @@ function renderRecent(){
   const asks = hist.asks.concat(hist.shouts).sort((a,b)=>b.t-a.t).slice(0,25);
   if (!asks.length){ div.innerHTML = "<div class='empty'>no recent asks</div>"; return; }
   const rows = asks.map(a =>
-    "<tr><td>" + (a.k==="h"?"shout":"stall") + "<div class='meta'>" + ago(a.t) + " ago" + (a.m>=0?" &middot; map "+a.m:"") + "</div></td>"
+    "<tr><td>" + (a.k==="h"?"shout":"stall") + qchip(a.d) + "<div class='meta'>" + ago(a.t) + " ago" + (a.m>=0?" &middot; map "+a.m:"") + "</div></td>"
     + "<td class='n " + (a.p>=1e9?"stat":"") + "'>" + fmt(a.p) + "</td></tr>").join("");
+  div.innerHTML = "<table><tbody>" + rows + "</tbody></table>";
+}
+function renderTrades(){
+  const div = document.getElementById("trades");
+  const trades = hist.clearings.slice().sort((a,b)=>b.t-a.t).slice(0,25);
+  if (!trades.length){ div.innerHTML = "<div class='empty'>no trades in range</div>"; return; }
+  const rows = trades.map(c =>
+    "<tr><td>" + (c.k==="t"?"trade":"stall sale") + qchip(c.d) + (c.q>1?" x"+c.q:"")
+    + "<div class='meta'>" + ago(c.t) + " ago"
+    + (c.s>=0 ? " &middot; " + esc(nm(c.s)) : "") + (c.b>=0 ? " &rarr; " + esc(nm(c.b)) : "") + "</div></td>"
+    + "<td class='n'>" + fmt(c.p) + "</td></tr>").join("");
   div.innerHTML = "<table><tbody>" + rows + "</tbody></table>";
 }
 function esc(s){ return String(s==null?"":s).replace(/[&<>]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c])); }
@@ -266,20 +296,24 @@ function draw(){
   const askP = askPts.map(p=>p.p).filter(v=>v>0);
   let vals = clrP.concat(askP);
   if (hist.consensus>0) vals.push(hist.consensus);
+  const br = bandRange();
+  if (br) vals.push(br[0].est, br[1].est);
   if (!vals.length){ g.fillStyle="#5c6a82"; g.font="13px system-ui"; g.textAlign="center"; g.fillText("no data in range",W/2,H/2); return; }
   let lo = Math.min(...vals), hi;
   if (opt.clip){
     const base = clrP.length ? pctile(clrP,0.95) : pctile(askP.length?askP:vals, 0.9);
     hi = base*1.25;
     if (hist.consensus>0) hi = Math.max(hi, hist.consensus);
+    if (br) hi = Math.max(hi, br[0].est); // low bound always visible; a huge best-roll est may clamp
     hi = Math.max(hi, lo*1.1, 1);
   } else {
     hi = Math.max(...vals);
   }
   const clipped = askPts.filter(p=>p.p>hi).length + clr.filter(p=>p.p>hi).length;
   let pmin, pmax;
-  if (opt.log){ pmin = Math.log10(Math.max(1,lo)); pmax = Math.log10(Math.max(10,hi)); }
-  else { const pad=(hi-lo)*0.08||hi*0.1||1; pmin=Math.max(0,lo-pad); pmax=hi+pad; }
+  // linear y always starts at 0 meso (owner spec); log y can't reach 0, so it starts at 1
+  if (opt.log){ pmin = 0; pmax = Math.log10(Math.max(10,hi)); }
+  else { const pad=(hi-lo)*0.08||hi*0.1||1; pmin=0; pmax=hi+pad; }
   if (pmin===pmax){ pmax=pmin+1; }
   const X = t => L + (W-L-R)*(t-t0)/(now-t0);
   const Yv = p => opt.log ? Math.log10(Math.max(1,p)) : p;
@@ -295,7 +329,22 @@ function draw(){
   for (let i=0;i<=6;i++){ const t=t0+(now-t0)*i/6, x=X(t), d=new Date(t);
     g.fillText(hours<=72 ? d.getHours()+":"+String(d.getMinutes()).padStart(2,"0") : (d.getMonth()+1)+"/"+d.getDate(), x, H-8); }
 
-  // consensus line
+  // roll-quality consensus range (equips with >1 traded band): shaded region from the lowest-band
+  // estimate (base/clean-ish price) up to the best observed roll's estimate - a single line would
+  // conflate a 3-STR and a 10-STR piece of the same item id.
+  if (br){
+    const yTop = Y(Math.min(br[1].est, hi)), yBot = Y(Math.min(br[0].est, hi));
+    g.fillStyle = "rgba(224,180,92,.10)";
+    g.fillRect(L, Math.min(yTop,yBot), W-L-R, Math.max(1, Math.abs(yBot-yTop)));
+    g.strokeStyle = "rgba(224,180,92,.5)"; g.setLineDash([3,4]);
+    g.beginPath(); g.moveTo(L,yTop); g.lineTo(W-R,yTop); g.stroke();
+    g.beginPath(); g.moveTo(L,yBot); g.lineTo(W-R,yBot); g.stroke();
+    g.setLineDash([]);
+    g.fillStyle = "rgba(224,180,92,.75)"; g.font="10px system-ui"; g.textAlign="left";
+    g.fillText(blab(br[1].b)+" "+fmt(br[1].est), L+4, yTop-3);
+    g.fillText(blab(br[0].b)+" "+fmt(br[0].est), L+4, yBot+11);
+  }
+  // consensus line (clean band)
   if (hist.consensus>0 && hist.consensus<=Math.max(...vals)){
     g.strokeStyle="#e0b45c"; g.setLineDash([5,5]); g.beginPath(); g.moveTo(L,Y(hist.consensus)); g.lineTo(W-R,Y(hist.consensus)); g.stroke(); g.setLineDash([]); }
 
@@ -353,6 +402,7 @@ function tipHtml(pt){
       + rowt("open",fmt(c.o)) + rowt("high",fmt(c.h)) + rowt("low",fmt(c.l)) + rowt("close",fmt(c.c)) + rowt("volume",c.v); }
   const kind = {t:"trade",s:"stall sale",l:"stall ask",h:"shout ask"}[pt.k] || pt.k;
   let s = "<div class='kk'>" + kind + " &middot; " + full(pt.p) + "</div>" + rowt("when", when(pt.t) + " ("+ago(pt.t)+")");
+  if (pt.d>0) s += rowt("quality", blab(pt.d));
   if (pt.q>1) s += rowt("qty", pt.q);
   if (pt.s>=0) s += rowt("seller", esc(nm(pt.s)));
   if (pt.b>=0) s += rowt("buyer", esc(nm(pt.b)));
