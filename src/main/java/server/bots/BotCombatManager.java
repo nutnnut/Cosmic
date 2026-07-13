@@ -500,6 +500,10 @@ class BotCombatManager {
             return;
         }
 
+        // A real hit knocks the bot out of any idle chair (like a real player), so the knockback and
+        // normal physics below resume from a standing pose.
+        BotChairManager.knockOutOfChair(entry, bot, System.currentTimeMillis());
+
         Integer magicGuard = bot.getBuffedValue(BuffStat.MAGIC_GUARD);
         if (magicGuard != null) {
             int mploss = (int) (dmg * (magicGuard.doubleValue() / 100.0));

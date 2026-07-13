@@ -43,23 +43,56 @@ final class BotMarketChatter {
             "%1$s - %2$s", "%1$s, %2$s", "that's %2$s for the %1$s", "%1$s for %2$s", "%2$s for the %1$s");
 
     /** A styled sell-shout line: the bot's per-id prefix + stat-preview item + clean k/m price, with an
-     *  occasional suffix and a rare full-uppercase — SoloMapling's shout-variety trick. */
-    static String sellShout(String preview, int price, int botId) {
+     *  occasional suffix and a rare full-uppercase — SoloMapling's shout-variety trick. {@code obnoxiousness}
+     *  drives the {@code @@@} bubble padding (see {@link #padShout}). */
+    static String sellShout(String preview, int price, int botId, double obnoxiousness) {
         String prefix = SELL_PREFIXES[Math.floorMod(botId, SELL_PREFIXES.length)];
         String suffix = pick(SELL_SUFFIXES);
         String line = prefix + " " + preview + " " + BotMarketGrammar.mesoShort(price)
                 + (suffix.isEmpty() ? "" : " " + suffix);
-        return ThreadLocalRandom.current().nextInt(100) < 15 ? line.toUpperCase(Locale.ROOT) : line;
+        if (ThreadLocalRandom.current().nextInt(100) < 15) {
+            line = line.toUpperCase(Locale.ROOT);
+        }
+        return padShout(line, obnoxiousness);
     }
 
     /** A styled buy-shout line: the bot's per-id prefix + item label + clean k/m price, with an
      *  occasional suffix and a rare full-uppercase — mirrors sellShout but for buy orders. */
-    static String buyShout(String itemLabel, int price, int botId) {
+    static String buyShout(String itemLabel, int price, int botId, double obnoxiousness) {
         String prefix = BUY_PREFIXES[Math.floorMod(botId, BUY_PREFIXES.length)];
         String suffix = pick(BUY_SUFFIXES);
         String line = prefix + " " + itemLabel + " " + BotMarketGrammar.mesoShort(price)
                 + (suffix.isEmpty() ? "" : " " + suffix);
-        return ThreadLocalRandom.current().nextInt(100) < 15 ? line.toUpperCase(Locale.ROOT) : line;
+        if (ThreadLocalRandom.current().nextInt(100) < 15) {
+            line = line.toUpperCase(Locale.ROOT);
+        }
+        return padShout(line, obnoxiousness);
+    }
+
+    /** General-chat length ceiling the client/server enforce (GeneralChatHandler: {@code > Byte.MAX_VALUE}
+     *  is rejected). An obnoxious bot pads right up to it. */
+    private static final int CHAT_MAX_LEN = Byte.MAX_VALUE; // 127
+    /** Only bots at least this obnoxious bother padding at all. */
+    private static final double PAD_MIN_OBNOX = 0.5;
+
+    /**
+     * Pad a shout with a trailing run of {@code @} to inflate the chat bubble — the real-player habit of
+     * spamming filler so the balloon puffs up bigger and floats higher above the crowd. Only the
+     * obnoxious do it, and how OFTEN (per-utterance roll) and how FAR toward the {@link #CHAT_MAX_LEN}
+     * ceiling they push both scale with {@code obnoxiousness}. Kept ASCII (invariant 3) and never over
+     * the length the server would reject.
+     */
+    private static String padShout(String line, double obnoxiousness) {
+        if (obnoxiousness < PAD_MIN_OBNOX || line.length() + 2 >= CHAT_MAX_LEN
+                || ThreadLocalRandom.current().nextDouble() > obnoxiousness) {
+            return line;
+        }
+        // How close to the ceiling this one goes: a 0.5 bot pads to ~mid, a 1.0 bot slams the cap.
+        int room = CHAT_MAX_LEN - line.length() - 1; // -1 for the separating space
+        double reach = 0.4 + 0.6 * obnoxiousness;     // 0.4..1.0 of the remaining room
+        int pad = Math.max(3, (int) Math.round(room * reach));
+        pad = Math.min(pad, room);
+        return line + " " + "@".repeat(pad);
     }
 
     static String confirm() {

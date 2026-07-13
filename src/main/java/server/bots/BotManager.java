@@ -1502,6 +1502,7 @@ public class BotManager {
      * with a cross-region anchor stuck in place until the linger deadline.
      */
     private void tickLogout(BotEntry entry, Character bot, Point botPos, boolean runAiTick) {
+        BotChairManager.standIfSeated(bot); // don't walk to a logout spot / warp while parked in a chair
         if (System.currentTimeMillis() >= entry.logoutLingerUntilMs) {
             finishLoggingOut(entry, bot);
             return;
@@ -4619,6 +4620,13 @@ public class BotManager {
                 entry.leechIdleAnchor = resolveIdleSpot(entry, bot, botPos); // SSOT idle-spot destack
                 entry.idleAnchorHp = bot.getHp(); // snapshot at the fresh spot; a later drop => got hit
             }
+            // Rest in a chair while leeching (same hitbox as standing; a hit knocks it out of the chair
+            // via applyDamage, and the HP-drop check above then relocates it to a fresh safe spot).
+            boolean leechSettled = !entry.inAir && !entry.climbing
+                    && isNear(botPos, entry.leechIdleAnchor, BotMovementManager.cfg.STOP_DIST);
+            if (leechSettled && BotChairManager.tickIdleSit(entry, bot, System.currentTimeMillis())) {
+                return new LocalOpportunityAttackResult(true, botPos);
+            }
             return walkToOrIdleAt(entry, bot, botPos, entry.leechIdleAnchor, runAiTick);
         }
         // In-session break: a personality-driven pause from grinding (managed bots only — non-managed
@@ -4634,6 +4642,15 @@ public class BotManager {
             entry.grindTarget = null;
             if (entry.breakIdleAnchor == null) {
                 entry.breakIdleAnchor = resolveIdleSpot(entry, bot, botPos); // SSOT idle-spot destack
+            }
+            // Once settled at the idle spot, maybe plop into a chair the bot owns instead of standing.
+            // Eligible on grind maps too: sitting doesn't change the touch hitbox (getBotTouchBounds is
+            // foot-position only), and a hit knocks the bot out of the chair back to normal physics
+            // (applyDamage). Held here so we skip the idle-move broadcast that fights the pose.
+            boolean settled = !entry.inAir && !entry.climbing
+                    && isNear(botPos, entry.breakIdleAnchor, BotMovementManager.cfg.STOP_DIST);
+            if (settled && BotChairManager.tickIdleSit(entry, bot, breakNow)) {
+                return new LocalOpportunityAttackResult(true, botPos);
             }
             return walkToOrIdleAt(entry, bot, botPos, entry.breakIdleAnchor, runAiTick);
         } else if (entry.breakUntilMs != 0L) {
@@ -6405,6 +6422,9 @@ public class BotManager {
      * no movement input (no follow, grind, teleport, shop visit, or attack).
      */
     private void tickTradePhysicsOnly(BotEntry entry, Character bot) {
+        if (bot.getChair() >= 0) {
+            return; // trading from a chair: hold the sit pose, don't broadcast an idle-move over it
+        }
         if (isSwimMap(entry) && entry.inAir && !entry.climbing) {
             BotMovementManager.tickSwimming(entry, null);
         } else if (entry.inAir) {
@@ -6458,6 +6478,14 @@ public class BotManager {
         }
         if (entry.idleDestackSpot == null) {
             return false;
+        }
+        // Chill / inert town idle: once settled at the spread spot, maybe plop into a chair the bot owns
+        // (the map is already gated safe + self-driving above). Held here so the idle-move broadcast that
+        // fights the sit pose is skipped. stepMovementCore stands it before any later real movement.
+        boolean settled = !entry.inAir && !entry.climbing
+                && isNear(botPos, entry.idleDestackSpot, BotMovementManager.cfg.STOP_DIST);
+        if (settled && BotChairManager.tickIdleSit(entry, bot, System.currentTimeMillis())) {
+            return true;
         }
         loiterAtAnchor(entry, bot, botPos, entry.idleDestackSpot, runAiTick); // walk-near + settle SSOT
         return true;
@@ -7052,6 +7080,10 @@ public class BotManager {
     void stepMovementCore(BotEntry entry,
                           Point targetPos,
                           boolean runAiTick) {
+        // Central guard: a bot parked in an idle chair (break/chill/inert/FM shout) must stand before it
+        // navigates anywhere. The sit branches all return before reaching movement, so this only fires on
+        // a genuine move — the single chokepoint that covers every path that resumes locomotion.
+        BotChairManager.standIfSeated(entry.bot);
         // LOD1 (unobserved) movement: replace nav-resolve + physics with a motion-plan lerp. Gated to
         // covered states so airborne/special-state bots keep real physics. This zeroes the move/nav
         // tick cost for the unobserved population (design §3).

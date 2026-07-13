@@ -1049,7 +1049,9 @@ public final class BotShoutTradeManager {
                 offer.priceMeso(), bot.getId(), null, bot.getMapId());
         String preview = BotInventoryManager.describeAutoSellItem(
                 ItemInformationProvider.getInstance(), null, eq); // "+7 att <name>", item-class perspective
-        BotManager.getInstance().botSay(bot, BotMarketChatter.sellShout(preview, offer.priceMeso(), bot.getId()));
+        BotPersonality pers = entry.personality != null ? entry.personality : BotPersonality.defaults();
+        BotManager.getInstance().botSay(bot,
+                BotMarketChatter.sellShout(preview, offer.priceMeso(), bot.getId(), pers.obnoxiousness()));
         return true;
     }
 
@@ -1102,7 +1104,9 @@ public final class BotShoutTradeManager {
             }
         }
         String label = crit + (name != null ? name : "#" + offer.itemId());
-        BotManager.getInstance().botSay(bot, BotMarketChatter.buyShout(label, offer.priceMeso(), bot.getId()));
+        BotPersonality pers = entry.personality != null ? entry.personality : BotPersonality.defaults();
+        BotManager.getInstance().botSay(bot,
+                BotMarketChatter.buyShout(label, offer.priceMeso(), bot.getId(), pers.obnoxiousness()));
         return true;
     }
 

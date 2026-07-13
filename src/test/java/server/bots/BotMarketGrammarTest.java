@@ -109,10 +109,14 @@ class BotMarketGrammarTest {
 
     @Test
     void styledSellShoutsStayRecognizableShouts() {
-        // Every styled chatter line (varied prefix/suffix/case) must still read as a shout.
+        // Every styled chatter line (varied prefix/suffix/case, and the obnoxious @@@ bubble padding)
+        // must still read as a shout, stay ASCII, and never exceed the general-chat length ceiling.
         for (int bot = 0; bot < 200; bot++) {
-            String line = BotMarketChatter.sellShout("red whip", 5_000_000, bot);
+            double obnox = (bot % 5) / 4.0; // 0, .25, .5, .75, 1 across the population
+            String line = BotMarketChatter.sellShout("red whip", 5_000_000, bot, obnox);
             assertTrue(BotMarketGrammar.looksLikeShout(line), "not a recognizable shout: " + line);
+            assertTrue(line.length() <= Byte.MAX_VALUE, "over chat length cap: " + line);
+            assertTrue(StandardCharsets.US_ASCII.newEncoder().canEncode(line), "non-ascii: " + line);
         }
     }
 

@@ -75,6 +75,9 @@ Do not copy a graph version from a KB note. The current value and full schema hi
 ## Population, social, and operations
 
 - [`kb_bot_player_party_social.md`](kb_bot_player_party_social.md): real-player party safeguards.
+- [`kb_bot_chair_sit_and_shout_padding.md`](kb_bot_chair_sit_and_shout_padding.md): idle chair sitting
+  (owned-via-gacha, sprite-size hog bias) and obnoxious `@@@` shout-bubble padding — the `obnoxiousness`
+  / `sitAppetite` personality traits and the stand-before-acting invariant.
 - [`kb_bot_self_owned_owner_assumptions.md`](kb_bot_self_owned_owner_assumptions.md): ownership audit.
 - [`kb_bot_double_register_botpop_race.md`](kb_bot_double_register_botpop_race.md): population registry race.
 - [`kb_bot_inert_autopilot_recovery.md`](kb_bot_inert_autopilot_recovery.md): leaked-off autopilot,

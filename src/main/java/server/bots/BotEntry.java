@@ -468,6 +468,11 @@ public class BotEntry {
     long breakUntilMs = 0L;
     long nextBreakRollAtMs = 0L;
     java.awt.Point breakIdleAnchor = null;
+    // Idle chair sitting (BotChairManager): while parked and idling in a town break or FM shout stand,
+    // the bot may plop into a chair it owns. chairSitUntilMs = when the current sit ends (stand + rethink);
+    // nextChairRollAtMs gates the sit-decision cadence. Seated state itself lives on Character.getChair().
+    long chairSitUntilMs = 0L;
+    long nextChairRollAtMs = 0L;
     // Pure-idle (inert autopilot) town destack: a held spread spot so idle bots don't stack on the
     // spawn portal (the NPC-approach loiter SSOT). Re-picked on map change.
     java.awt.Point idleDestackSpot = null;

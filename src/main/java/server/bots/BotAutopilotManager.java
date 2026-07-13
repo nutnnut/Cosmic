@@ -815,9 +815,15 @@ final class BotAutopilotManager {
         if (!operatorPinned) {
             for (DetourErrand errand : DETOUR_ERRANDS) {
                 errand.maybeStart(entry, bot);
-                if (errand.active(entry) && !errand.yieldForResupply(entry, bot)
-                        && errand.tick(entry, bot, runAiTick)) {
-                    return true;
+                if (errand.active(entry) && !errand.yieldForResupply(entry, bot)) {
+                    // An errand that travels must never do so parked in a break-time chair. The FM
+                    // shout-stand is the one errand sub-state that deliberately sits, so leave it be.
+                    if (!BotFreeMarketManager.isShoutStanding(entry)) {
+                        BotChairManager.standIfSeated(bot);
+                    }
+                    if (errand.tick(entry, bot, runAiTick)) {
+                        return true;
+                    }
                 }
             }
         }

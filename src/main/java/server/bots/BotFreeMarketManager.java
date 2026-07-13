@@ -1135,12 +1135,14 @@ final class BotFreeMarketManager {
      */
     private static boolean tickShout(BotEntry entry, Character bot, boolean runAiTick, long now) {
         if (bot.getMapId() != FM_ENTRANCE) {
+            BotChairManager.standIfSeated(bot);
             entry.fmStandSpot = null; // bumped off the entrance — just head out
             advancePhase(entry, PHASE_EXIT, now);
             return true;
         }
         // A shopper's trade window owns the bot now: hold still, keep the stand + watchdog alive, and
-        // linger a touch after so a quick follow-up sale can happen.
+        // linger a touch after so a quick follow-up sale can happen. The bot trades right from its chair
+        // (server allows it — no stance gate), so we don't stand it up for a sale.
         if (entry.shoutTradeActive() || bot.getTrade() != null) {
             BotTravelManager.clearMoveTargetPin(entry);
             entry.fmErrandProgress.touch(now);
@@ -1169,7 +1171,7 @@ final class BotFreeMarketManager {
         // Occasionally amble to a new random spot (move around + un-bunch), leaving time to settle.
         // Cosmetic, so only while somebody can see it — an unobserved stander holds its spot (idle
         // ticks are near-free) instead of paying nav/physics walks every 12-30s.
-        if (settled && now >= entry.fmFidgetAtMs && now < entry.fmShoutUntilMs - 6_000L
+        if (settled && bot.getChair() < 0 && now >= entry.fmFidgetAtMs && now < entry.fmShoutUntilMs - 6_000L
                 && bot.getMap().isObservedByPlayer()) {
             entry.fmStandSpot = pickStandSpot(bot, false);
             entry.fmStandBestDist = Integer.MAX_VALUE;
@@ -1196,8 +1198,12 @@ final class BotFreeMarketManager {
         }
         BotTravelManager.clearMoveTargetPin(entry);
         entry.fmErrandProgress.touch(now);
+        // Posted up and settled: maybe rest in a chair the bot owns (real players hawk their wares from
+        // a relaxer). Sitting doesn't stop the shouting — it just holds the pose between fidgets.
+        BotChairManager.tickIdleSit(entry, bot, now);
         BotShoutTradeManager.emitAtStand(entry, bot, now);
         if (now >= entry.fmShoutUntilMs) {
+            BotChairManager.standIfSeated(bot);
             entry.fmStandSpot = null;
             advancePhase(entry, PHASE_EXIT, now);
         }

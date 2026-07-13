@@ -333,6 +333,23 @@ public class ItemInformationProvider {
         return ret;
     }
 
+    /**
+     * The sit-sprite footprint (width*height px) of a chair's {@code effect/0} canvas — a proxy for
+     * how big/imposing the chair looks in-world. 0 when unknown. Bot-only (chair-status picking:
+     * obnoxious bots hog the biggest seat), so it reads the Install graphic dimensions directly
+     * rather than any gameplay stat.
+     */
+    public int getChairSpriteArea(int itemId) {
+        Data item = getItemData(itemId);
+        Data effect = item == null ? null : item.getChildByPath("effect/0");
+        if (effect == null) {
+            return 0;
+        }
+        int w = Math.max(0, DataTool.getInt("width", effect, 0));
+        int h = Math.max(0, DataTool.getInt("height", effect, 0));
+        return w * h;
+    }
+
     public List<Integer> getItemIdsInRange(int minId, int maxId, boolean ignoreCashItem) {
         List<Integer> list = new ArrayList<>();
 

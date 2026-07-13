@@ -168,6 +168,8 @@ final class BotBreakManager {
     static void endBreak(BotEntry entry, Character bot) {
         entry.breakUntilMs = 0L;
         entry.breakIdleAnchor = null;
+        BotChairManager.standIfSeated(bot); // never resume grind/travel parked in a chair
+        entry.chairSitUntilMs = 0L;
         BotPersonality p = entry.personality != null ? entry.personality : BotPersonality.defaults();
         if (bot != null && ThreadLocalRandom.current().nextDouble() < p.chattiness()) {
             BotManager.getInstance().botSay(bot, BotManager.randomReply(RESUME_MSGS));

@@ -285,6 +285,32 @@ public record BotPersonality(
         return 0.02 + 0.04 * haggleTemper();
     }
 
+    // ---- social-presence traits (chair sitting + shout obnoxiousness) ----
+    // Seed-derived with distinct salts (same trick as gachaAppetite/haggleTemper): stable per bot
+    // across restarts with no stored field, uncorrelated with the other trait rolls.
+    private static final long OBNOX_SALT = 0x0B0F0E0D0C0B0A09L;
+    private static final long SIT_SALT   = 0x5117C4A17ED0F00DL;
+
+    /**
+     * Stable 0..1 "obnoxiousness": how much of a loud, space-hogging presence the bot is. Drives the
+     * padded shout bubble (obnoxious players spam {@code @@@@} to inflate their chat balloon) and a
+     * bias toward plopping into the BIGGEST chair it owns. Neutral 0 for the seed-0 default profile —
+     * non-managed bots are never obnoxious.
+     */
+    public double obnoxiousness() {
+        return seed == 0 ? 0.0 : new Random(seed ^ OBNOX_SALT).nextDouble();
+    }
+
+    /**
+     * Stable 0..1 chair-sitting appetite: how readily the bot plops into a chair it owns while idling
+     * (town break / FM shout stand). Used as the per-idle-window sit probability, so a low roll is a
+     * bot that essentially never sits and a high roll is one that sits at almost every idle chance.
+     * Neutral 0.3 for the seed-0 default profile.
+     */
+    public double sitAppetite() {
+        return seed == 0 ? 0.3 : new Random(seed ^ SIT_SALT).nextDouble();
+    }
+
     // ---- serialization (flat key=value; tolerant on read) ----
 
     public String serialize() {
