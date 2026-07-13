@@ -31,13 +31,17 @@ Live occupancy of every online character, bucketed by map. Cached ~750 ms.
 ```
 {"maps":{"<mapId>":{
    "players":[{"id","n","l","j","c","p","g"}, ...],
-   "bots":[{"id","n","l","j","c","p","g","a","status"}, ...]
+   "bots":[{"id","n","l","j","c","p","g","a","stuck"?,"status"}, ...]
 }}}
 ```
 `n`=name, `l`=level, `j`=job, `c`=commandable (1 = managed/RTS-controllable bot), `p`=party id (0=none),
 `g`=crew id (0=none). `a`=coarse activity bucket (`"grind"`|`"break"`|`"chill"`; chill = whole-session
 chill login, gacha/idle/logging-off → break, resupply/travel/quest → grind) for the roster tally (bots
-only). `status`=the
+only). `stuck`=short wedge reason, present only when the bot is detectably stuck
+(`BotAutopilotManager.stuckReason`: "can't find anywhere to grind" / "job advance route unreachable" /
+"autopilot leaked off") —
+drives the roster's "possibly stuck" counter+filter. Transient travel retry cooldowns are intentionally
+excluded because they do not establish a wedge. `status`=the
 @botstatus line (bots only; drives the roster-hover tooltip and the right-panel detail — omitted for
 players and for bots with no registry entry).
 
@@ -89,8 +93,14 @@ Read-only per-bot autopilot internals for live debugging (party cohesion, follow
   "id","n","map","lvl",
   "party","crew","owner",          // owner: "null" | "self" | <human name>
   "apParty","dst","errand",        // apParty = party-autopilot on; dst = travel target map; errand = resupply map (-1 none)
-  "grinding","following","followTo","transit","waiting",
+  "grinding","lod","tickMs","absKills","realKills","following","followTo","transit","waiting",
   "op",                            // operator override command name ("" = none)
+                                   // lod: unobserved-map level of detail "LOD0" (full fidelity) | "LOD1" (unobserved/coarse)
+                                   // tickMs: live tick interval (50 = LOD0/full; 500 = LOD1 coarse cadence, Stage 3)
+                                   // absKills: cumulative Stage-3 abstract kills emitted by this bot while unobserved
+                                   // realKills: cumulative real-combat kills while grinding (raw, AoE multi-kills included).
+                                   //   absKills/realKills are the audit pair: pin the map to LOD0 via /api/lod for the
+                                   //   real rate, release for the abstract rate (see tools/lod_grind_audit.py).
   "wt","atk","aoe","noAmmo",       // combat-readiness: weapon type; resolved single-target/aoe skill ids (atk=0 => no offensive skill => basic swing only); ammo gate
   "status",                        // the @botstatus line
   "detail":{                       // only when ?id= given
@@ -104,6 +114,124 @@ Read-only per-bot autopilot internals for live debugging (party cohesion, follow
   }
 }, ...],
 "routeCache":{"hits","misses","rate"}}             // region-route cache effectiveness, cumulative since server start (rate = hits/(hits+misses)); A/B vs pathfind count in bot-perf CSV
+```
+
+### `/api/killcalib`
+Read-only kill-rate calibration summary for unobserved-map LOD; see
+[`living-server-design.md`](living-server-design.md):
+the aggregate measured-vs-model kill-rate ratio bucketed by `(jobId, level band)`, plus tracked-bot/sample
+totals. The durable store is `logs/bot-kill-calibration.tsv` (flushed every 60s, loaded on boot). `ratio` < 1
+means the advisor model over-predicts kills/hr for that bucket; Stage 3 uses it as the correction factor.
+```
+{"enabled":bool,
+ "trackedBots","trackedRates","rateSamples",       // per-(bot,map,mob) rate store size + total rate samples
+ "buckets":[{"jobId","levelBand","ratio","samples"}, ...]}   // ratio = measured/model (1.0 default = no data)
+```
+The measured side is a SUSTAINED rate (decayed `kills / activeMs`); the model side is
+`BotGrindAdvisor.modeledKillsPerHour` for the same bot on the same map — the same model whose output the
+abstract grind replays (× this ratio), so a healthy `ratio` sits near 1.0 and the model's systematic
+error cancels in replay.
+
+### `/api/grindmodel?id=<botCharId>`
+The abstract-grind rate model for one bot on its CURRENT map, decomposed — the measured-vs-model
+debugging surface. A wildly wrong `/api/killcalib` bucket means one of these components is wrong for
+that bot's context; this shows which.
+```
+{"botId","mapId","level","jobId","warm",
+ "modelKph","blendKillSeconds","seekSeconds","spawnPoints","areaPx","supplyKph","attackCycleSeconds",
+ "mobs":[{"mobId","name","level","points","killSeconds","rawKillSeconds"}, ...],
+ "freshRateKph",   // bot's own measured sustained rate here (0 = none/stale)
+ "bucketFactor"}   // (job, level-band) measured/model correction the abstract grind will apply
+```
+
+### `/api/lod[?maps=<id,...>][&force=0|1][&clear=1]`
+Pin maps to full fidelity (LOD0) on demand, as if a real player were standing on each: their bots run real
+combat, real physics and the 50ms tick, while every other map stays coarse. `maps=` pins (`force=0` releases),
+`clear=1` releases everything, and a bare GET reports the pinned set. Pins live in memory only — a restart
+drops them. Use this to measure a ground-truth kill rate on a few maps (`tools/lod_grind_audit.py --arm real
+--maps ...`) without putting the whole server back on full fidelity, which does not fit in the CPU budget.
+```
+{"forcedLod0":[<mapId>, ...]}
+```
+
+### `/market` (page)
+Trading-site style market view. Left: searchable item picker (most-cleared first) with sprite tiles.
+Center: a price chart with **OHLC candlesticks** bucketed client-side from clearings (green up / red
+down; wick = high/low; body = open/close), stall asks (hollow blue) and shout asks (faint) as dot
+clouds, the clean-band consensus estimate (dashed gold), and — for equips traded at more than one
+quality band — a shaded **roll-quality range** from the lowest-band estimate (base/clean-ish price)
+up to the best observed roll's estimate. Hover any datapoint for a tooltip; a clearing shows
+kind/price/quality/qty/when and the resolved **seller/buyer/map** (transaction detail). Right: the
+live open-stall listings table for the selected item (unit price, stats, owner, location), a
+recent-asks list, and a recent-trades list — ask/trade rows carry a gold roll-quality chip in the
+band's dominant-stat terms (`+5 str`, `+7 att`; generic `+N roll` when untranslatable). Header
+toggles (all client-side): **candles/line**, **log y**, **clip outliers** (y-range keys off clearings so a
+few 2.1b asks don't flatten the candles — clamped points get a count note), **asks** on/off, **shouts**
+on/off. Range buttons 24h/3d/7d/30d/1y; auto-refreshes. Linked from the landing page.
+
+### `/api/market/items`
+Items with any tape activity, most-cleared first (max 300): the chart's item picker.
+`farmMesoPerSecond` is the live effort→meso anchor (median sampled bot farming income,
+`BotScrollManager.farmMesoPerSecond`) — the calibration surface for seed prices.
+```
+{"farmMesoPerSecond":123.4,"items":[{"item","name","sales","events","lastAt","lastPrice"}, ...]}
+```
+
+### `/api/market/history?item=<itemId>[&hours=168]`
+One item's price series from `bot_market_event`: clearings (TRADE + STALL_SALE), stall list asks and
+shout asks (shouts capped to the most recent 1500), plus the live consensus estimate + damping volume
+for band 0 and a per-quality-band consensus list (`bands`: every band observed in the window, plus
+band 0 — the chart's roll-quality price range; `lbl` is the band's dominant-stat equivalent, e.g.
+"+5 str" / "+7 att", from `BotScrollManager.bandStatLabel`, omitted when untranslatable). Each
+point carries its detail — `k` kind
+(`t`rade/stall `s`ale/`l`ist/s`h`out), `d` equip quality band (0 = clean/non-equip), `s`eller /
+`b`uyer / `m`ap ids (-1 = none) — and `names` resolves the clearing party ids for the detail popup.
+```
+{"item","name","consensus","volume",
+ "bands":[{"b","est","vol","lbl"?}, ...],                 // per-band consensus (band 0 always present)
+ "clearings":[{"t","p","q","k","d","s","b","m"}, ...],   // unit price p at time t, qty q, band d
+ "asks":[{"t","p","q","k","d","s","b","m"}, ...],        // stall LIST asks
+ "shouts":[{"t","p","q","k","d","s","b","m"}, ...],      // shout ads (most recent 1500)
+ "names":{"<charId>":"<name>", ...}}                     // seller/buyer ids seen in clearings
+```
+
+### `/api/market/listings?item=<itemId>`
+The live "on sale" order book for one item: every OPEN stall (bot- or player-owned) currently holding it,
+cheapest unit first on the page. `stats` is the same equip stat specifier the offer/shout previews use
+(`BotOfferManager.formatItemSpecifier`; item name for non-equips).
+```
+{"item","name","listings":[{"owner","map","ch","bundles","per","price","unit","stats"}, ...]}
+```
+
+### `/api/market/icon?item=<itemId>`
+Item sprite PNG. **Sprite-integration seam:** serves `/web/item-icons/<id>.png` from the classpath when
+present, else 404 (the page falls back to a placeholder tile). Drop extracted client icons into that
+resource folder — or repoint the handler at a WZ canvas reader once real client WZ with `basedata` is
+loaded — and sprites light up with no page change. (The repo's WZ dump has icon canvas nodes stripped of
+`basedata`, so no icons are available from WZ today.)
+
+### `/api/market/stalls`
+Every OPEN hired merchant in every world (bot- and player-owned alike): position, description and
+full stock. The live-debug view for stall placement/pricing (living-economy design sec 11).
+```
+{"stalls":[{
+  "owner","n","desc","map","ch","x","y","mesos",
+  "items":[{"item","name","bundles","per","price","unit","live"}, ...]  // price = per-bundle; unit = price/per; live=false => sold out
+}, ...]}
+```
+
+### `/api/market/bot?id=<botCharId>` or `?name=<botName>`
+One bot's market brain: FM errand state, wallet split (BotAssetView incl. Fredrick), bag
+classification, the stall dry-run with per-stack verdicts, and its persisted price beliefs.
+Beliefs/pricing use a DETACHED book replica loaded from `bot_market_belief` — never the
+tick-thread-owned live book — so numbers can lag the live book by up to a flush (~4min).
+```
+{"id","n","map",
+ "fm":{"errandTown","phase","room","placeTries","standX","standY","marketBusy","nextScanInS","stallServiceInS"},
+ "meso":{"liquid","merchant","storage","escrow","total"},
+ "listings":[{"item","name","qty","ask","npcSellBack","npcShop","premium","verdict"}, ...],  // verdict: list | crowded out (slot cap) | premium not worth a slot | npc sale pays better | no price basis | untradeable
+ "bag":[{"item","name","qty","tier","keep"}, ...],                                           // classifyBagUse tiers + keep-value SSOT
+ "beliefs":[{"key","item","name","band","est","conf","obs","ageS","consensus"}, ...]}
 ```
 
 ### `/api/bot/pathlog?id=<botCharId>`
@@ -140,6 +268,18 @@ character that already has the build you want, then `/api/command moveto x y` to
 or load failed.
 ```
 {"results":[{"id":767,"spawned":true},{"id":814,"spawned":false,"note":"already online or load failed"}]}
+```
+
+### `/api/economyreset?confirm=1`
+**Destructive, test-server only.** Wipes the bot-market economy so prices reseed from scratch:
+clears `bot_market_event` (tape), `bot_market_consensus` and `bot_market_belief` (both persisted
+belief layers), drops every bot's in-memory `BotMarketBook` and unsold-pressure state
+(`fmMarketOfferByKey`, `fmPlannedListings`), and force-closes every bot's open hired-merchant
+stall so the next market trip relists from fresh seeds. Requires `?confirm=1` (missing/wrong ->
+400, no mutation). A book flushing concurrently on another thread may re-save a handful of stale
+rows after the clear; call it twice if that matters. State-changing GET (LAN debug only).
+```
+{"cleared":true,"books":<n>,"stalls":<n>}
 ```
 
 ### `/api/navprobe?id=<botCharId>&x=<>&y=<>[&skills=1][&mode=normal|exhaustive]`
@@ -203,14 +343,15 @@ Live admin/tuning surface behind `/admin`. Same SSOT as the GM commands: `BotCon
 
 **GET** — snapshot of every tunable group:
 ```
-{"manager":[{"name","value","type"}, ...],   // BotManager.cfg public fields (POPULATION_MULTIPLIER, break/loot/autopilot/party knobs)
+{"manager":[{"name","value","type"}, ...],   // BotManager.cfg public fields (POPULATION_MULTIPLIER, break/loot/autopilot/party knobs, SIMPLIFY_UNOBSERVED_BOTS_* LOD toggles)
  "combat":[{"name","value","type"}, ...],     // BotCombatManager.cfg public fields (the !botcfg set)
+ "log":[{"name","value","type"}, ...],        // BotLogConfig.cfg — SSOT for bot debug-log toggles (bot-sell:, bot-sellblock:, fm[...]/MARKET_TX_CONSOLE, ENTRY_REMOVED)
  "pop":{"enabled":bool,"multiplier":num,"status":[lines...]},
  "llm":{"enabled":bool,"debug":bool}}
 ```
 
 **POST** — mutate one knob; dispatch on `cmd`:
-- `{"cmd":"set","group":"manager|combat","field","value"}` → set a config field (case-insensitive). Returns `{"ok","msg"}` (`msg` starts with `OK` on success, mirrors `!botcfg`).
+- `{"cmd":"set","group":"manager|combat|log","field","value"}` → set a config field (case-insensitive). Returns `{"ok","msg"}` (`msg` starts with `OK` on success, mirrors `!botcfg`).
 - `{"cmd":"pop","mult"?,"enabled"?,"sweep"?}` → set multiplier / toggle scheduler / force a sweep. Returns `{"ok","status":[lines...]}`.
 - `{"cmd":"llm","enabled"?,"debug"?}` → toggle LLM chat (`debug:true` implies on). Returns `{"ok","enabled","debug"}`.
 - `{"cmd":"perflog","seconds":1-300,"html"?}` → enable `BotPerformanceMonitor`, capture one clean window for `seconds`, export `logs/bot-perf/bot-perf-<ts>.csv`; `html:true` also runs `tools/botperf_report.py` to write the `.html` report next to it. Blocks for `seconds`. Returns `{"ok","msg":"CSV: ...|HTML: ..."}`.

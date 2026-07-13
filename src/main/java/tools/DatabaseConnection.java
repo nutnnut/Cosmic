@@ -67,6 +67,16 @@ public class DatabaseConnection {
         config.addDataSourceProperty("cachePrepStmts", true);
         config.addDataSourceProperty("prepStmtCacheSize", 25);
         config.addDataSourceProperty("prepStmtCacheSqlLimit", 2048);
+        // Collapse executeBatch() INSERTs into one multi-row statement (one round trip instead of
+        // one per row) - the char-save item rewrite depends on this. No concurrent server save path
+        // reads getGeneratedKeys() off a batch; the offline CodeCouponGenerator does so serially for
+        // unique inserts, where Connector/J's contiguous-key inference is sufficient. Rewritten batch
+        // keys are not safe for the concurrent item-save attachment problem under
+        // innodb_autoinc_lock_mode=2. Gotcha: batches the driver can't
+        // VALUES-rewrite (INSERT..ON DUPLICATE KEY UPDATE, REPLACE - e.g. monsterbook, skills) get
+        // semicolon-JOINED instead, so their SQL must not carry a trailing ';' (would form an empty
+        // ';;' statement the server rejects, failing the save).
+        config.addDataSourceProperty("rewriteBatchedStatements", true);
 
         return config;
     }

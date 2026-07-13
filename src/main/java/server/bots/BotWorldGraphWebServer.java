@@ -15,13 +15,17 @@ import provider.DataProvider;
 import provider.DataProviderFactory;
 import provider.DataTool;
 import provider.wz.WZFiles;
+import server.ItemInformationProvider;
 import server.bots.llm.BotLlmConfig;
 import server.life.LifeFactory;
 import server.life.MonsterInformationProvider;
 import server.life.NPC;
+import server.maps.HiredMerchant;
+import server.maps.MapFactory;
 import server.maps.MapObject;
 import server.maps.MapObjectType;
 import server.maps.MapleMap;
+import server.maps.PlayerShopItem;
 import server.maps.Portal;
 
 import java.awt.Point;
@@ -171,9 +175,20 @@ public final class BotWorldGraphWebServer {
             s.createContext("/api/mapinfo", BotWorldGraphWebServer::serveMapInfo);
             s.createContext("/api/command", BotWorldGraphWebServer::serveCommand);
             s.createContext("/api/botdebug", BotWorldGraphWebServer::serveBotDebug);
+            s.createContext("/api/killcalib", BotWorldGraphWebServer::serveKillCalib);
+            s.createContext("/api/grindmodel", BotWorldGraphWebServer::serveGrindModel);
+            s.createContext("/api/lod", BotWorldGraphWebServer::serveLod);
+            s.createContext("/api/market/stalls", BotWorldGraphWebServer::serveMarketStalls);
+            s.createContext("/api/market/bot", BotWorldGraphWebServer::serveMarketBot);
+            s.createContext("/api/market/items", BotWorldGraphWebServer::serveMarketItems);
+            s.createContext("/api/market/history", BotWorldGraphWebServer::serveMarketHistory);
+            s.createContext("/api/market/listings", BotWorldGraphWebServer::serveMarketListings);
+            s.createContext("/api/market/icon", BotWorldGraphWebServer::serveMarketIcon);
+            s.createContext("/market", BotWorldGraphWebServer::serveMarketPage);
             s.createContext("/api/bot/pathlog", BotWorldGraphWebServer::servePathLog);
             s.createContext("/api/perf", BotWorldGraphWebServer::servePerf);
             s.createContext("/api/spawnbot", BotWorldGraphWebServer::serveSpawnBot);
+            s.createContext("/api/economyreset", BotWorldGraphWebServer::serveEconomyReset);
             s.createContext("/api/navprobe", BotWorldGraphWebServer::serveNavProbe);
             s.createContext("/mapgraph", BotWorldGraphWebServer::serveMapGraphPage);
             s.createContext("/api/mapgraph", BotWorldGraphWebServer::serveMapGraph);
@@ -203,6 +218,7 @@ public final class BotWorldGraphWebServer {
             + "a{color:#6cc6ff;font-size:20px;text-decoration:none;padding:14px 24px;border:1px solid #3a4761;"
             + "border-radius:8px}a:hover{background:#171c26}</style></head>"
             + "<body><h1>Bot World</h1><a href=\"/map\">Open the World Map &rarr;</a>"
+            + "<a href=\"/market\">Market Prices &rarr;</a>"
             + "<a href=\"/admin\">Admin / Settings &rarr;</a></body></html>";
 
     private static void servePage(HttpExchange ex) throws IOException {
@@ -290,44 +306,61 @@ public final class BotWorldGraphWebServer {
         Map<String, String> wmParent = new HashMap<>(); // child worldmap id -> parent (overview) worldmap id
         Map<String, Set<Integer>> wmMaps = new HashMap<>(); // worldmap id -> the maps it shows
         for (String id : worldMapIds()) {
-            Data wm = dp.getData("WorldMap/WorldMap" + id + ".img");
+            Data wm;
+            try {
+                wm = dp.getData("WorldMap/WorldMap" + id + ".img");
+            } catch (RuntimeException e) {
+                log.warn("Bot world-graph web view: skipping unreadable WorldMap{}: {}", id, e.toString());
+                continue;
+            }
             if (wm == null) {
                 continue;
             }
-            Point origin = DataTool.getPoint("BaseImg/0/origin", wm, new Point(0, 0)); // canvas is named "0"
-            Data mapList = wm.getChildByPath("MapList");
-            if (mapList == null) {
-                continue;
-            }
-            String pm = DataTool.getString("parentMap", wm, null); // detail worldmaps point at their overview
-            if (pm != null && pm.startsWith("WorldMap")) {
-                wmParent.put(id, pm.substring("WorldMap".length()));
-            }
-            List<WorldSpot> spots = new ArrayList<>();
-            Set<Integer> primaries = new HashSet<>();  // dedup repeated entries within this worldmap
-            Set<Integer> onThisWm = new HashSet<>();    // distinct maps on this worldmap
-            for (Data entry : mapList.getChildren()) {
-                Point spot = DataTool.getPoint("spot", entry, null);
-                Data mapNo = entry.getChildByPath("mapNo");
-                if (spot == null || mapNo == null) {
+            try {
+                Point origin = safePoint("BaseImg/0/origin", wm, new Point(0, 0)); // canvas is named "0"
+                Data mapList = wm.getChildByPath("MapList");
+                if (mapList == null) {
                     continue;
                 }
-                List<Integer> maps = new ArrayList<>();
-                for (Data mn : mapNo.getChildren()) {
-                    int mapId = DataTool.getInt(mn, -1);
-                    if (mapId >= 0 && !maps.contains(mapId)) {
-                        maps.add(mapId);
+                String pm = DataTool.getString("parentMap", wm, null); // detail worldmaps point at their overview
+                if (pm != null && pm.startsWith("WorldMap")) {
+                    wmParent.put(id, pm.substring("WorldMap".length()));
+                }
+                List<WorldSpot> spots = new ArrayList<>();
+                Set<Integer> primaries = new HashSet<>();  // dedup repeated entries within this worldmap
+                Set<Integer> onThisWm = new HashSet<>();    // distinct maps on this worldmap
+                for (Data entry : mapList.getChildren()) {
+                    try {
+                        Point spot = safePoint("spot", entry, null);
+                        Data mapNo = entry.getChildByPath("mapNo");
+                        if (spot == null || mapNo == null) {
+                            continue;
+                        }
+                        List<Integer> maps = new ArrayList<>();
+                        for (Data mn : mapNo.getChildren()) {
+                            int mapId = safeInt(mn, -1);
+                            if (mapId >= 0 && !maps.contains(mapId)) {
+                                maps.add(mapId);
+                            }
+                        }
+                        if (maps.isEmpty() || !primaries.add(maps.get(0))) {
+                            continue;
+                        }
+                        spots.add(new WorldSpot(List.copyOf(maps), origin.x + spot.x, origin.y + spot.y));
+                        onThisWm.addAll(maps);
+                    } catch (RuntimeException e) {
+                        log.warn("Bot world-graph web view: skipping bad WorldMap{} MapList entry {}: {}",
+                                id, entry.getName(), e.toString());
+                        continue;
                     }
                 }
-                if (maps.isEmpty() || !primaries.add(maps.get(0))) {
-                    continue;
-                }
-                spots.add(new WorldSpot(List.copyOf(maps), origin.x + spot.x, origin.y + spot.y));
-                onThisWm.addAll(maps);
+                wmIds.add(id);
+                byWm.put(id, spots);
+                wmMaps.put(id, onThisWm);
+            } catch (RuntimeException e) {
+                log.warn("Bot world-graph web view: skipping bad WorldMap{}: {}", id, e.toString());
+                continue;
             }
-            wmIds.add(id);
-            byWm.put(id, spots);
-            wmMaps.put(id, onThisWm);
         }
         // dup = a map shown on more than one INDEPENDENT worldmap; an overview and its zoomed detail
         // (linked by parentMap) collapse to a single root, so they don't count as duplicates.
@@ -346,6 +379,22 @@ public final class BotWorldGraphWebServer {
             spotMaps.addAll(ms);
         }
         return new WorldSpots(wmIds, byWm, occur, spotMaps);
+    }
+
+    private static Point safePoint(String path, Data data, Point def) {
+        try {
+            return DataTool.getPoint(path, data, def);
+        } catch (RuntimeException e) {
+            return def;
+        }
+    }
+
+    private static int safeInt(Data data, int def) {
+        try {
+            return DataTool.getInt(data, def);
+        } catch (RuntimeException e) {
+            return def;
+        }
     }
 
     /**
@@ -614,18 +663,35 @@ public final class BotWorldGraphWebServer {
     private static List<String> worldMapIds() {
         List<String> ids = new ArrayList<>();
         java.util.regex.Pattern pat = java.util.regex.Pattern.compile("^WorldMap(\\d+)\\.img\\.xml$");
+        int missingImages = 0;
         try (var files = Files.list(Path.of(WZFiles.MAP.getFilePath(), "WorldMap"))) {
             for (Path p : (Iterable<Path>) files::iterator) {
                 java.util.regex.Matcher m = pat.matcher(p.getFileName().toString());
                 if (m.matches()) {
-                    ids.add(m.group(1));
+                    if (hasWorldMapImage(m.group(1))) {
+                        ids.add(m.group(1));
+                    } else {
+                        missingImages++;
+                    }
                 }
             }
         } catch (IOException e) {
             log.warn("Bot world-graph web view: can't list WorldMap dir: {}", e.toString());
         }
+        if (missingImages > 0) {
+            log.warn("Bot world-graph web view: skipped {} WorldMap XML file(s) without wz-WorldMap PNG exports",
+                    missingImages);
+        }
         Collections.sort(ids);
         return ids;
+    }
+
+    static boolean hasWorldMapImage(String id) {
+        return Files.isRegularFile(worldMapImagePath(id));
+    }
+
+    private static Path worldMapImagePath(String id) {
+        return Path.of("wz-WorldMap", id + ".png");
     }
 
     /** Serve a worldmap's BaseImg PNG from {@code wz-WorldMap/<id>.png} (committed, sibling to wz/). */
@@ -636,7 +702,7 @@ public final class BotWorldGraphWebServer {
             send(ex, 404, "text/plain", "bad id".getBytes(StandardCharsets.UTF_8));
             return;
         }
-        Path file = Path.of("wz-WorldMap", id + ".png");
+        Path file = worldMapImagePath(id);
         if (!Files.isRegularFile(file)) {
             send(ex, 404, "text/plain", "no image".getBytes(StandardCharsets.UTF_8));
             return;
@@ -697,6 +763,24 @@ public final class BotWorldGraphWebServer {
         send(ex, 200, "application/json", sb.append("]}").toString().getBytes(StandardCharsets.UTF_8));
     }
 
+    /** Wipes the bot-market economy (tape + consensus + beliefs + in-memory books + open bot
+     *  stalls) so prices reseed from scratch. Test-server tool; requires ?confirm=1. */
+    private static void serveEconomyReset(HttpExchange ex) throws IOException {
+        if (!"1".equals(queryParams(ex.getRequestURI().getRawQuery()).get("confirm"))) {
+            send(ex, 400, "application/json",
+                    "{\"error\":\"economy reset wipes all market state; call with ?confirm=1\"}"
+                            .getBytes(StandardCharsets.UTF_8));
+            return;
+        }
+        try {
+            send(ex, 200, "application/json",
+                    BotFreeMarketManager.resetEconomyForReseed().getBytes(StandardCharsets.UTF_8));
+        } catch (RuntimeException e) {
+            send(ex, 500, "application/json",
+                    ("{\"error\":" + jsonStr(e.toString()) + "}").getBytes(StandardCharsets.UTF_8));
+        }
+    }
+
     private static void serveAdminPage(HttpExchange ex) throws IOException {
         byte[] body;
         try (InputStream in = BotWorldGraphWebServer.class.getResourceAsStream("/web/admin.html")) {
@@ -711,8 +795,8 @@ public final class BotWorldGraphWebServer {
 
     /**
      * Admin settings menu API. GET = snapshot of every tunable group; POST = mutate one knob.
-     * GET shape: {@code {"manager":[{name,value,type}],"combat":[...],"pop":{enabled,multiplier,status:[...]},
-     * "llm":{enabled,debug}}}. POST dispatches on {@code cmd}: {@code set}{group,field,value} |
+     * GET shape: {@code {"manager":[{name,value,type}],"combat":[...],"log":[...],"pop":{enabled,multiplier,
+     * status:[...]},"llm":{enabled,debug}}}. POST dispatches on {@code cmd}: {@code set}{group,field,value} |
      * {@code pop}{mult?,enabled?,sweep?} | {@code llm}{enabled?,debug?} | {@code perflog}{seconds,html?} |
      * {@code disconnectAll}{confirm:"DISCONNECT"} | {@code wipe}{confirm:"WIPE"}. Reuses the same reflection
      * ({@link BotConfigReflect}) as {@code !botcfg}
@@ -734,7 +818,7 @@ public final class BotWorldGraphWebServer {
             case "set" -> {
                 Object cfg = configGroup(jsonField(body, "group"));
                 if (cfg == null) {
-                    result = "{\"error\":\"unknown group (manager|combat)\"}";
+                    result = "{\"error\":\"unknown group (manager|combat|log)\"}";
                 } else {
                     String msg = BotConfigReflect.setField(cfg, jsonField(body, "field"), jsonField(body, "value"));
                     boolean ok = msg.startsWith("OK");
@@ -855,6 +939,9 @@ public final class BotWorldGraphWebServer {
         if ("combat".equalsIgnoreCase(group)) {
             return BotCombatManager.config();
         }
+        if ("log".equalsIgnoreCase(group)) {
+            return BotLogConfig.cfg;
+        }
         return null;
     }
 
@@ -862,6 +949,7 @@ public final class BotWorldGraphWebServer {
         BotScheduler sched = BotScheduler.getInstance();
         return "{\"manager\":" + fieldsJson(BotManager.cfg)
                 + ",\"combat\":" + fieldsJson(BotCombatManager.config())
+                + ",\"log\":" + fieldsJson(BotLogConfig.cfg)
                 + ",\"pop\":{\"enabled\":" + BotManager.cfg.POPULATION_SCHED_ENABLED
                 + ",\"multiplier\":" + sched.getMultiplier()
                 + ",\"status\":" + jsonStrArr(sched.statusLines()) + "}"
@@ -1087,6 +1175,73 @@ public final class BotWorldGraphWebServer {
         }
     }
 
+    /** Kill-rate calibration summary (docs/bot/living-server-design.md): the aggregate
+     *  measured/predicted ratio buckets by (jobId, level band) plus tracked-bot/sample totals. Read-only
+     *  JSON; the durable store lives in {@code logs/bot-kill-calibration.tsv}. */
+    private static void serveKillCalib(HttpExchange ex) throws IOException {
+        send(ex, 200, "application/json", BotKillCalibration.summaryJson().getBytes(StandardCharsets.UTF_8));
+    }
+
+    /** {@code ?id=<botCharId>}: the abstract-grind rate model for that bot on its current map,
+     *  decomposed (per-mob kill times, blend, seek, supply cap) plus the live calibration inputs
+     *  (fresh own rate, bucket factor). The measured-vs-model debugging surface: a wildly wrong
+     *  {@code /api/killcalib} bucket means one of these components is wrong for that bot's context. */
+    private static void serveGrindModel(HttpExchange ex) throws IOException {
+        int id = 0;
+        try {
+            id = Integer.parseInt(queryParams(ex.getRequestURI().getRawQuery()).getOrDefault("id", "0").trim());
+        } catch (NumberFormatException ignore) { /* falls through to the 404 below */ }
+        BotEntry entry = null;
+        for (BotEntry e : BotManager.getInstance().allEntries()) {
+            if (e.bot != null && e.bot.getId() == id) {
+                entry = e;
+                break;
+            }
+        }
+        if (entry == null || entry.bot == null) {
+            send(ex, 404, "application/json", "{\"error\":\"no bot with that id\"}".getBytes(StandardCharsets.UTF_8));
+            return;
+        }
+        String model = BotGrindAdvisor.modelDebugJson(entry, entry.bot);
+        int jobId = entry.bot.getJob() != null ? entry.bot.getJob().getId() : 0;
+        double freshRate = BotKillCalibration.freshBotRate(id, entry.bot.getMapId(), 10 * 60_000L);
+        double bucket = BotKillCalibration.bucketFactor(jobId, entry.bot.getLevel() / 10);
+        String out = model.substring(0, model.length() - 1)  // splice calibration inputs into the model json
+                + ",\"freshRateKph\":" + Math.round(freshRate)
+                + ",\"bucketFactor\":" + Math.round(bucket * 1000.0) / 1000.0 + "}";
+        send(ex, 200, "application/json", out.getBytes(StandardCharsets.UTF_8));
+    }
+
+    /** Pin maps to full fidelity (LOD0) on demand, as if a real player were standing on each one: their
+     *  bots run real combat, real physics and the 50ms tick while the rest of the server stays coarse.
+     *  {@code ?maps=<id,..>[&force=0|1]} pins (default) or releases; {@code ?clear=1} releases everything;
+     *  a bare GET reports the pinned set. Pins are in-memory and a restart drops them. */
+    private static void serveLod(HttpExchange ex) throws IOException {
+        Map<String, String> q = queryParams(ex.getRequestURI().getRawQuery());
+        if (q.containsKey("clear")) {
+            BotManager.clearForcedLod0();
+        }
+        String maps = q.getOrDefault("maps", "").trim();
+        if (!maps.isEmpty()) {
+            boolean pin = !"0".equals(q.getOrDefault("force", "1"));
+            for (String tok : maps.split(",")) {
+                try {
+                    BotManager.forceLod0(Integer.parseInt(tok.trim()), pin);
+                } catch (NumberFormatException ignored) {
+                    // skip junk ids rather than failing the whole request
+                }
+            }
+        }
+        List<Integer> pinned = new ArrayList<>(BotManager.forcedLod0Maps());
+        Collections.sort(pinned);
+        StringBuilder sb = new StringBuilder("{\"forcedLod0\":[");
+        for (int i = 0; i < pinned.size(); i++) {
+            sb.append(i == 0 ? "" : ",").append(pinned.get(i));
+        }
+        sb.append("]}");
+        send(ex, 200, "application/json", sb.toString().getBytes(StandardCharsets.UTF_8));
+    }
+
     private static void serveBotDebug(HttpExchange ex) throws IOException {
         int filterId = 0;
         try {
@@ -1130,6 +1285,10 @@ public final class BotWorldGraphWebServer {
                     .append(",\"dst\":").append(e.autopilotMapId)
                     .append(",\"errand\":").append(e.autopilotErrandMapId)
                     .append(",\"grinding\":").append(e.grinding)
+                    .append(",\"lod\":").append(jsonStr(e.lod.name()))
+                    .append(",\"tickMs\":").append(e.tickIntervalMs)
+                    .append(",\"absKills\":").append(e.abstractKillCount)
+                    .append(",\"realKills\":").append(e.realKillCount)
                     .append(",\"following\":").append(e.following)
                     .append(",\"followTo\":").append(e.followTargetId)
                     .append(",\"transit\":").append(e.autopilotTransitFollow)
@@ -1838,6 +1997,446 @@ public final class BotWorldGraphWebServer {
     // --- live occupancy ---
 
     /** Every character currently online across all worlds/channels (bots included). */
+    // --- living-economy debug surface (docs/bot/economy.md) ---
+
+    /** Every OPEN hired merchant in every world: where it stands, whose it is, what it sells. */
+    private static void serveMarketStalls(HttpExchange ex) throws IOException {
+        StringBuilder sb = new StringBuilder("{\"stalls\":[");
+        boolean first = true;
+        for (World w : Server.getInstance().getWorlds()) {
+            for (HiredMerchant hm : w.getActiveMerchants()) {
+                if (!first) {
+                    sb.append(',');
+                }
+                first = false;
+                Point pos = hm.getPosition();
+                sb.append("{\"owner\":").append(hm.getOwnerId())
+                        .append(",\"n\":").append(jsonStr(hm.getOwner()))
+                        .append(",\"desc\":").append(jsonStr(hm.getDescription()))
+                        .append(",\"map\":").append(hm.getMapId())
+                        .append(",\"ch\":").append(hm.getChannel())
+                        .append(",\"x\":").append(pos.x)
+                        .append(",\"y\":").append(pos.y)
+                        .append(",\"mesos\":").append(hm.getMesos())
+                        .append(",\"items\":[");
+                List<PlayerShopItem> items = hm.getItems();
+                for (int i = 0; i < items.size(); i++) {
+                    PlayerShopItem psi = items.get(i);
+                    if (i > 0) {
+                        sb.append(',');
+                    }
+                    int per = Math.max(1, psi.getItem().getQuantity());
+                    sb.append("{\"item\":").append(psi.getItem().getItemId())
+                            .append(",\"name\":").append(jsonStr(itemName(psi.getItem().getItemId())))
+                            .append(",\"bundles\":").append(psi.getBundles())
+                            .append(",\"per\":").append(per)
+                            .append(",\"price\":").append(psi.getPrice())
+                            .append(",\"unit\":").append(Math.round((double) psi.getPrice() / per))
+                            .append(",\"live\":").append(psi.isExist())
+                            .append('}');
+                }
+                sb.append("]}");
+            }
+        }
+        send(ex, 200, "application/json", sb.append("]}").toString().getBytes(StandardCharsets.UTF_8));
+    }
+
+    /**
+     * {@code ?id=<charId>} or {@code ?name=<botName>}: one bot's market brain — FM errand state,
+     * wallet split, bag classification and the stall dry-run with per-stack verdicts. Prices come
+     * from a DETACHED book replica loaded from the persisted beliefs (never the tick-thread-owned
+     * book on the entry), so the numbers can lag the live book by up to a flush interval (~4min).
+     */
+    private static void serveMarketBot(HttpExchange ex) throws IOException {
+        Map<String, String> q = queryParams(ex.getRequestURI().getRawQuery());
+        int id = 0;
+        try {
+            id = Integer.parseInt(q.getOrDefault("id", "0").trim());
+        } catch (NumberFormatException ignore) { /* fall through to name lookup */ }
+        String name = q.getOrDefault("name", "").trim();
+        Character bot = null;
+        for (Character chr : onlineCharacters()) {
+            if (!(chr.getClient() instanceof BotClient)) {
+                continue;
+            }
+            if ((id > 0 && chr.getId() == id) || (!name.isEmpty() && chr.getName().equalsIgnoreCase(name))) {
+                bot = chr;
+                break;
+            }
+        }
+        BotEntry e = bot == null ? null : lookupBotEntry(bot.getId());
+        if (bot == null || e == null) {
+            send(ex, 404, "application/json",
+                    "{\"error\":\"bot not found (use ?id= or ?name=)\"}".getBytes(StandardCharsets.UTF_8));
+            return;
+        }
+        long now = System.currentTimeMillis();
+        StringBuilder sb = new StringBuilder("{\"id\":").append(bot.getId())
+                .append(",\"n\":").append(jsonStr(bot.getName()))
+                .append(",\"map\":").append(bot.getMapId())
+                .append(",\"fm\":{\"errandTown\":").append(e.fmErrandMapId)
+                .append(",\"phase\":").append(e.fmPhase)
+                .append(",\"room\":").append(e.fmRoomMapId)
+                .append(",\"placeTries\":").append(e.fmPlaceTries)
+                .append(",\"standX\":").append(e.fmStandSpot != null ? e.fmStandSpot.x : 0)
+                .append(",\"standY\":").append(e.fmStandSpot != null ? e.fmStandSpot.y : 0)
+                .append(",\"marketBusy\":").append(e.marketBusy)
+                .append(",\"nextScanInS\":").append(Math.max(0, (e.nextFmScanAtMs - now) / 1000))
+                .append(",\"stallServiceInS\":").append(e.nextStallServiceAtMs == 0 ? -1
+                        : Math.max(0, (e.nextStallServiceAtMs - now) / 1000))
+                .append("},");
+        BotAssetView.Snapshot snap = BotAssetView.snapshotWithFredrick(bot);
+        sb.append("\"meso\":{\"liquid\":").append(snap.liquidMeso())
+                .append(",\"merchant\":").append(snap.merchantMeso())
+                .append(",\"storage\":").append(snap.storageMeso())
+                .append(",\"escrow\":").append(snap.tradeEscrowMeso())
+                .append(",\"total\":").append(snap.totalMeso()).append("},");
+        BotPersonality p = e.personality != null ? e.personality : BotPersonality.defaults();
+        double informed = BotMarketMath.clamp01(0.5 * p.sociability() + 0.5 * p.chattiness());
+        Map<Long, BotMarketStore.StoredBelief> rows = BotMarketStore.getInstance().loadBeliefs(bot.getId());
+        BotMarketBook replica = new BotMarketBook(bot.getId(), informed, BotMarketConsensus.getInstance());
+        replica.loadFrom(rows);
+        sb.append("\"listings\":[");
+        boolean first = true;
+        for (BotFreeMarketManager.ListingVerdict v : BotFreeMarketManager.evaluateListings(bot, replica, now)) {
+            if (!first) {
+                sb.append(',');
+            }
+            first = false;
+            sb.append("{\"item\":").append(v.itemId())
+                    .append(",\"name\":").append(jsonStr(itemName(v.itemId())))
+                    .append(",\"qty\":").append(v.quantity())
+                    .append(",\"ask\":").append(v.ask())
+                    .append(",\"npcSellBack\":").append(v.npcSellBack())
+                    .append(",\"npcShop\":").append(v.npcShopPrice())
+                    .append(",\"premium\":").append(v.premium())
+                    .append(",\"verdict\":").append(jsonStr(v.verdict()))
+                    .append('}');
+        }
+        sb.append("],\"bag\":[");
+        first = true;
+        for (Map.Entry<client.inventory.Item, BotInventoryManager.UseClass> b
+                : BotInventoryManager.classifyBagUse(bot).entrySet()) {
+            if (!first) {
+                sb.append(',');
+            }
+            first = false;
+            sb.append("{\"item\":").append(b.getKey().getItemId())
+                    .append(",\"name\":").append(jsonStr(itemName(b.getKey().getItemId())))
+                    .append(",\"qty\":").append(b.getKey().getQuantity())
+                    .append(",\"tier\":").append(jsonStr(b.getValue().tier().name()))
+                    .append(",\"keep\":").append(Math.round(b.getValue().keepValue()))
+                    .append('}');
+        }
+        sb.append("],\"beliefs\":[");
+        first = true;
+        for (BotMarketStore.StoredBelief b : rows.values()) {
+            if (!first) {
+                sb.append(',');
+            }
+            first = false;
+            int itemId = (int) (b.priceKey() >> 8); // priceKey = itemId*256 + qualityBand
+            sb.append("{\"key\":").append(b.priceKey())
+                    .append(",\"item\":").append(itemId)
+                    .append(",\"name\":").append(jsonStr(itemName(itemId)))
+                    .append(",\"band\":").append((int) (b.priceKey() & 0xFF))
+                    .append(",\"est\":").append(b.estimate())
+                    .append(",\"conf\":").append(String.format(Locale.US, "%.2f", b.confidence()))
+                    .append(",\"obs\":").append(b.obs())
+                    .append(",\"ageS\":").append(Math.max(0, (now - b.lastSeenMs()) / 1000))
+                    .append(",\"consensus\":").append(Math.round(
+                            BotMarketConsensus.getInstance().consensus(b.priceKey())))
+                    .append('}');
+        }
+        sb.append("]}");
+        send(ex, 200, "application/json", sb.toString().getBytes(StandardCharsets.UTF_8));
+    }
+
+    private static String itemName(int itemId) {
+        String n = ItemInformationProvider.getInstance().getName(itemId);
+        return n == null ? "" : n;
+    }
+
+    /** The trading-site style price history page ({@code market.html}); data via the two APIs below. */
+    private static void serveMarketPage(HttpExchange ex) throws IOException {
+        byte[] body;
+        try (InputStream in = BotWorldGraphWebServer.class.getResourceAsStream("/web/market.html")) {
+            if (in == null) {
+                send(ex, 500, "text/plain", "market.html resource missing".getBytes(StandardCharsets.UTF_8));
+                return;
+            }
+            body = in.readAllBytes();
+        }
+        send(ex, 200, "text/html; charset=utf-8", body);
+    }
+
+    /** Items with tape activity, most-cleared first — the chart's item picker. Also carries the
+     *  live effort→meso anchor so the sampled farming income is observable for calibration. */
+    private static void serveMarketItems(HttpExchange ex) throws IOException {
+        StringBuilder sb = new StringBuilder("{\"farmMesoPerSecond\":")
+                .append(Math.round(BotScrollManager.farmMesoPerSecond() * 10) / 10.0)
+                .append(",\"items\":[");
+        boolean first = true;
+        for (BotMarketLedger.TradedItem t : BotMarketLedger.getInstance().tradedItems(300)) {
+            if (!first) {
+                sb.append(',');
+            }
+            first = false;
+            sb.append("{\"item\":").append(t.itemId())
+                    .append(",\"name\":").append(jsonStr(itemName(t.itemId())))
+                    .append(",\"sales\":").append(t.clearings())
+                    .append(",\"events\":").append(t.events())
+                    .append(",\"lastAt\":").append(t.lastAtMs())
+                    .append(",\"lastPrice\":").append(t.lastUnitPrice())
+                    .append('}');
+        }
+        send(ex, 200, "application/json", sb.append("]}").toString().getBytes(StandardCharsets.UTF_8));
+    }
+
+    /** Cap on the shout-ask points returned for one item so a very chatty item stays a bounded
+     *  payload; the most recent are the informative ones. Clearings/list-asks are never capped. */
+    private static final int SHOUT_POINT_CAP = 1500;
+
+    /** {@code ?item=<id>[&hours=168]}: the item's tape series — clearings (trades + stall sales),
+     *  list asks, shout asks and the current consensus estimate (band 0). Every point carries its
+     *  detail (kind, seller/buyer/map) and a {@code names} map resolves the party ids for the
+     *  transaction-detail popup. */
+    private static void serveMarketHistory(HttpExchange ex) throws IOException {
+        Map<String, String> q = queryParams(ex.getRequestURI().getRawQuery());
+        int itemId;
+        try {
+            itemId = Integer.parseInt(q.getOrDefault("item", "0").trim());
+        } catch (NumberFormatException e) {
+            itemId = 0;
+        }
+        if (itemId <= 0) {
+            send(ex, 400, "application/json", "{\"error\":\"?item=<itemId> required\"}".getBytes(StandardCharsets.UTF_8));
+            return;
+        }
+        long hours;
+        try {
+            hours = Long.parseLong(q.getOrDefault("hours", "168").trim());
+        } catch (NumberFormatException e) {
+            hours = 168;
+        }
+        long sinceMs = System.currentTimeMillis() - Math.max(1, hours) * 3_600_000L;
+        List<BotMarketLedger.MarketEvent> events = BotMarketLedger.getInstance().itemHistory(itemId, sinceMs);
+        List<BotMarketLedger.MarketEvent> clearings = new ArrayList<>();
+        List<BotMarketLedger.MarketEvent> listAsks = new ArrayList<>();
+        List<BotMarketLedger.MarketEvent> shouts = new ArrayList<>();
+        for (BotMarketLedger.MarketEvent e : events) {
+            switch (e.kind()) {
+                case TRADE, STALL_SALE -> clearings.add(e);
+                case LIST -> listAsks.add(e);
+                case SHOUT -> shouts.add(e);
+                default -> { /* delist/expire/flow rows aren't price points */ }
+            }
+        }
+        if (shouts.size() > SHOUT_POINT_CAP) {
+            shouts = shouts.subList(shouts.size() - SHOUT_POINT_CAP, shouts.size()); // keep the most recent
+        }
+        java.util.Set<Integer> partyIds = new java.util.HashSet<>();
+        for (BotMarketLedger.MarketEvent e : clearings) {
+            if (e.sellerId() != null) partyIds.add(e.sellerId());
+            if (e.buyerId() != null) partyIds.add(e.buyerId());
+        }
+        Map<Integer, String> names = BotMarketLedger.getInstance().charNames(partyIds);
+        // Per-quality-band consensus: band 0 is the clean-ish baseline, higher bands are better
+        // rolls (BotMarketMath.bandOf) - the page draws the min..max estimate as a price RANGE for
+        // equips, where one line would conflate a 3-STR and a 10-STR piece of the same id.
+        java.util.TreeSet<Integer> bands = new java.util.TreeSet<>();
+        bands.add(0);
+        for (BotMarketLedger.MarketEvent e : clearings) bands.add(e.quality());
+        for (BotMarketLedger.MarketEvent e : listAsks) bands.add(e.quality());
+        for (BotMarketLedger.MarketEvent e : shouts) bands.add(e.quality());
+        long key = BotMarketMath.priceKey(itemId, 0);
+        StringBuilder sb = new StringBuilder("{\"item\":").append(itemId)
+                .append(",\"name\":").append(jsonStr(itemName(itemId)))
+                .append(",\"consensus\":").append(Math.round(BotMarketConsensus.getInstance().consensus(key)))
+                .append(",\"volume\":").append(String.format(Locale.US, "%.2f", BotMarketConsensus.getInstance().volume(key)))
+                .append(",\"bands\":[");
+        boolean firstBand = true;
+        for (int band : bands) {
+            long bandKey = BotMarketMath.priceKey(itemId, band);
+            long est = Math.round(BotMarketConsensus.getInstance().consensus(bandKey));
+            if (!firstBand) {
+                sb.append(',');
+            }
+            firstBand = false;
+            // lbl: the band's dominant-stat equivalent ("+5 str" / "+7 att") - the page's
+            // human-legible replacement for the generic "+N roll" (BotScrollManager SSOT).
+            String lbl = BotScrollManager.bandStatLabel(
+                    ItemInformationProvider.getInstance(), itemId, band);
+            sb.append("{\"b\":").append(band).append(",\"est\":").append(est)
+                    .append(",\"vol\":").append(String.format(Locale.US, "%.2f",
+                            BotMarketConsensus.getInstance().volume(bandKey)));
+            if (lbl != null) {
+                sb.append(",\"lbl\":").append(jsonStr(lbl));
+            }
+            sb.append('}');
+        }
+        sb.append("],\"clearings\":");
+        appendMarketPoints(sb, clearings);
+        sb.append(",\"asks\":");
+        appendMarketPoints(sb, listAsks);
+        sb.append(",\"shouts\":");
+        appendMarketPoints(sb, shouts);
+        List<Integer> mapIds = new ArrayList<>();
+        for (BotMarketLedger.MarketEvent e : clearings) mapIds.add(e.mapId());
+        for (BotMarketLedger.MarketEvent e : listAsks) mapIds.add(e.mapId());
+        for (BotMarketLedger.MarketEvent e : shouts) mapIds.add(e.mapId());
+        sb.append(',');
+        appendMapNames(sb, mapIds);
+        sb.append(",\"names\":{");
+        boolean firstName = true;
+        for (Map.Entry<Integer, String> en : names.entrySet()) {
+            if (!firstName) {
+                sb.append(',');
+            }
+            firstName = false;
+            sb.append('"').append(en.getKey()).append("\":").append(jsonStr(en.getValue()));
+        }
+        sb.append("}}");
+        send(ex, 200, "application/json", sb.toString().getBytes(StandardCharsets.UTF_8));
+    }
+
+    /** Serialize a tape series as {@code [{t,p,q,k,d,s,b,m}, ...]}: time, unit price, qty, kind code
+     *  ({@code t}rade/{@code s}tall/{@code l}ist/s{@code h}out), quality band (equip roll quality;
+     *  0 = clean/non-equip), seller/buyer/map ids (-1 = none). */
+    private static void appendMarketPoints(StringBuilder sb, List<BotMarketLedger.MarketEvent> pts) {
+        sb.append('[');
+        for (int i = 0; i < pts.size(); i++) {
+            BotMarketLedger.MarketEvent e = pts.get(i);
+            if (i > 0) {
+                sb.append(',');
+            }
+            sb.append("{\"t\":").append(e.atMs())
+                    .append(",\"p\":").append(e.unitPrice())
+                    .append(",\"q\":").append(e.qty())
+                    .append(",\"k\":\"").append(marketKindCode(e.kind())).append('"')
+                    .append(",\"d\":").append(e.quality())
+                    .append(",\"s\":").append(e.sellerId() == null ? -1 : e.sellerId())
+                    .append(",\"b\":").append(e.buyerId() == null ? -1 : e.buyerId())
+                    .append(",\"m\":").append(e.mapId() == null ? -1 : e.mapId())
+                    .append('}');
+        }
+        sb.append(']');
+    }
+
+    /** Append a {@code "maps":{ "<id>":"<place name>", ... }} object resolving the given map ids to
+     *  their String.wz place names (MapFactory SSOT, cached). Ids that don't resolve are omitted, so
+     *  the page falls back to the bare id. Deduped; nulls/negatives skipped. */
+    private static void appendMapNames(StringBuilder sb, java.util.Collection<Integer> mapIds) {
+        sb.append("\"maps\":{");
+        boolean first = true;
+        java.util.Set<Integer> seen = new java.util.HashSet<>();
+        for (Integer id : mapIds) {
+            if (id == null || id < 0 || !seen.add(id)) {
+                continue;
+            }
+            String name = MapFactory.loadPlaceName(id);
+            if (name == null || name.isBlank()) {
+                continue;
+            }
+            if (!first) {
+                sb.append(',');
+            }
+            first = false;
+            sb.append('"').append(id).append("\":").append(jsonStr(name));
+        }
+        sb.append('}');
+    }
+
+    private static String marketKindCode(BotMarketLedger.EventKind k) {
+        return switch (k) {
+            case TRADE -> "t";
+            case STALL_SALE -> "s";
+            case LIST -> "l";
+            case SHOUT -> "h";
+            default -> "?";
+        };
+    }
+
+    /** {@code ?item=<id>}: every OPEN stall (bot- or player-owned) currently holding this item, with
+     *  per-piece stat preview — the live "listings on sale" order book for the selected item. */
+    private static void serveMarketListings(HttpExchange ex) throws IOException {
+        Map<String, String> q = queryParams(ex.getRequestURI().getRawQuery());
+        int itemId;
+        try {
+            itemId = Integer.parseInt(q.getOrDefault("item", "0").trim());
+        } catch (NumberFormatException e) {
+            itemId = 0;
+        }
+        if (itemId <= 0) {
+            send(ex, 400, "application/json", "{\"error\":\"?item=<itemId> required\"}".getBytes(StandardCharsets.UTF_8));
+            return;
+        }
+        StringBuilder sb = new StringBuilder("{\"item\":").append(itemId)
+                .append(",\"name\":").append(jsonStr(itemName(itemId)))
+                .append(",\"listings\":[");
+        boolean first = true;
+        List<Integer> mapIds = new ArrayList<>();
+        for (World w : Server.getInstance().getWorlds()) {
+            for (HiredMerchant hm : w.getActiveMerchants()) {
+                for (PlayerShopItem psi : hm.getItems()) {
+                    if (psi.getItem().getItemId() != itemId || !psi.isExist() || psi.getBundles() <= 0) {
+                        continue;
+                    }
+                    if (!first) {
+                        sb.append(',');
+                    }
+                    first = false;
+                    mapIds.add(hm.getMapId());
+                    int per = Math.max(1, psi.getItem().getQuantity());
+                    String specifier = BotOfferManager.formatItemSpecifier(psi.getItem(), 0);
+                    sb.append("{\"owner\":").append(jsonStr(hm.getOwner()))
+                            .append(",\"map\":").append(hm.getMapId())
+                            .append(",\"ch\":").append(hm.getChannel())
+                            .append(",\"bundles\":").append(psi.getBundles())
+                            .append(",\"per\":").append(per)
+                            .append(",\"price\":").append(psi.getPrice())
+                            .append(",\"unit\":").append(Math.round((double) psi.getPrice() / per))
+                            .append(",\"stats\":").append(jsonStr(specifier))
+                            .append('}');
+                }
+            }
+        }
+        sb.append("],");
+        appendMapNames(sb, mapIds);
+        sb.append('}');
+        send(ex, 200, "application/json", sb.toString().getBytes(StandardCharsets.UTF_8));
+    }
+
+    /** {@code ?item=<id>}: the item's sprite PNG. Sprite integration seam — serves
+     *  {@code /web/item-icons/<id>.png} from the classpath when present, else 404 so the page falls
+     *  back to a placeholder tile. Drop extracted client icons into that resource folder (or repoint
+     *  this at a WZ canvas reader once real client WZ with basedata is loaded) and sprites light up
+     *  with no page change. */
+    private static void serveMarketIcon(HttpExchange ex) throws IOException {
+        Map<String, String> q = queryParams(ex.getRequestURI().getRawQuery());
+        int itemId;
+        try {
+            itemId = Integer.parseInt(q.getOrDefault("item", "0").trim());
+        } catch (NumberFormatException e) {
+            itemId = 0;
+        }
+        byte[] png = null;
+        if (itemId > 0) {
+            String path = "/web/item-icons/" + itemId + ".png";
+            try (InputStream in = BotWorldGraphWebServer.class.getResourceAsStream(path)) {
+                if (in != null) {
+                    png = in.readAllBytes();
+                }
+            }
+        }
+        if (png == null) {
+            send(ex, 404, "application/json", "{\"error\":\"no icon\"}".getBytes(StandardCharsets.UTF_8));
+            return;
+        }
+        ex.getResponseHeaders().set("Cache-Control", "public, max-age=86400");
+        send(ex, 200, "image/png", png);
+    }
+
     private static List<Character> onlineCharacters() {
         List<Character> out = new ArrayList<>();
         for (World w : Server.getInstance().getWorlds()) {
@@ -1882,7 +2481,7 @@ public final class BotWorldGraphWebServer {
         // an online player owner). g = persistent crew id (0 = none). p = game party id (0 = solo). The
         // roster nests party (outer) > crew (inner) > loose; commands target managed bots only.
         int commandable = 0, crew = 0;
-        String status = null, activity = null;
+        String status = null, activity = null, stuck = null;
         if (bot) {
             BotEntry e = lookupBotEntry(chr.getId());
             if (e != null) {
@@ -1890,6 +2489,7 @@ public final class BotWorldGraphWebServer {
                 crew = e.crewGroupId != null ? e.crewGroupId : 0;
                 status = BotAutopilotManager.statusReport(e, chr); // hover/right-panel @status (cheap: field reads)
                 activity = BotAutopilotManager.activityCategory(e, chr); // grind/break bucket for the roster tally
+                stuck = BotAutopilotManager.stuckReason(e, chr); // wedged-bot detector for "possibly stuck"
             }
         }
         int party = Math.max(0, chr.getPartyId());
@@ -1897,6 +2497,7 @@ public final class BotWorldGraphWebServer {
                 + ",\"j\":" + jsonStr(j == null ? "" : j.toString())
                 + ",\"c\":" + commandable + ",\"p\":" + party + ",\"g\":" + crew
                 + (activity != null ? ",\"a\":" + jsonStr(activity) : "")
+                + (stuck != null ? ",\"stuck\":" + jsonStr(stuck) : "")
                 + (status != null ? ",\"status\":" + jsonStr(status) : "") + "}";
     }
 
@@ -1908,10 +2509,13 @@ public final class BotWorldGraphWebServer {
         }
     }
 
-    /** A managed (RTS-commandable) bot: ownerless, self-owned, or whose player owner is offline. */
+    /** A managed (RTS-commandable) bot: ownerless, self-owned, whose player owner is offline, or whose
+     *  owner is itself a bot (an @botparty owner that botified — its companions self-drive until it
+     *  reclaims; {@link BotManager#ownerIsBot}). Without the last case those companions lingered
+     *  mis-classified as companions of a "logged-in" owner that is actually a bot. */
     private static boolean commandableEntry(BotEntry e) {
         Character o = e.owner;
-        return o == null || o == e.bot || !o.isLoggedin();
+        return o == null || o == e.bot || !o.isLoggedin() || BotManager.ownerIsBot(e);
     }
 
     // --- RTS command endpoint (write) ---

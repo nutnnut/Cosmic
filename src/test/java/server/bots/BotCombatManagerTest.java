@@ -16,6 +16,7 @@ import constants.skills.Bowmaster;
 import constants.skills.Cleric;
 import constants.skills.DragonKnight;
 import constants.skills.Hunter;
+import constants.skills.ILMage;
 import constants.skills.ILWizard;
 import constants.skills.Magician;
 import constants.skills.Rogue;
@@ -1177,6 +1178,58 @@ class BotCombatManagerTest {
     }
 
     @Test
+    void shouldSkipSelfRebuffsWhileIdleLeeching() {
+        MapleMap map = mock(MapleMap.class);
+        when(map.getSpawnedMonstersOnMap()).thenReturn(1);
+        Character bot = mockBot(new Point(100, 200), map, 20_000, null);
+
+        BotEntry entry = new BotEntry(bot, null, null);
+        entry.grinding = true;
+        entry.idleLeech = true;
+        entry.buffSkillIds.add(Magician.MAGIC_GUARD); // critical survival self-buff, due now
+
+        BotCombatManager.tickBuffs(entry, bot);
+
+        assertEquals("idle-leech: self rebuffs paused", entry.lastSkillBuffActionSummary);
+    }
+
+    @Test
+    void shouldStillRebuffNearbyAllyWhileIdleLeeching() {
+        MapleMap map = mock(MapleMap.class);
+        when(map.getSpawnedMonstersOnMap()).thenReturn(1);
+
+        Character bot = mockBot(new Point(100, 200), map, 20_000, null);
+        Character ally = mock(Character.class);
+        when(ally.getId()).thenReturn(2);
+        when(ally.isAlive()).thenReturn(true);
+        when(ally.getPosition()).thenReturn(new Point(120, 200));
+        when(ally.getBuffedValue(BuffStat.WATK)).thenReturn(null);
+        when(bot.getPartyMembersOnSameMap()).thenReturn(List.of(ally));
+
+        BotEntry entry = new BotEntry(bot, null, null);
+        entry.grinding = true;
+        entry.idleLeech = true;
+        entry.buffSkillIds.add(Cleric.BLESS);
+
+        Skill bless = new Skill(Cleric.BLESS);
+        StatEffect effect = mock(StatEffect.class);
+        when(effect.getStatups()).thenReturn(List.of(new tools.Pair<>(BuffStat.WATK, 10)));
+        bless.addLevelEffect(effect);
+        when(bot.getSkillLevel(any(Skill.class))).thenReturn((byte) 1);
+
+        try (MockedStatic<SkillFactory> skillFactory = Mockito.mockStatic(SkillFactory.class)) {
+            skillFactory.when(() -> SkillFactory.getSkill(Cleric.BLESS)).thenReturn(bless);
+
+            BotCombatManager.tickBuffs(entry, bot);
+        }
+
+        // The ally-support path still ran (it reached the MP-cost check on the cast) even though
+        // the idle-leech gate pauses self rebuffs right after it.
+        verify(effect).canPaySkillCost(bot);
+        assertEquals("idle-leech: self rebuffs paused", entry.lastSkillBuffActionSummary);
+    }
+
+    @Test
     void shouldMatchOpenStoryGroundMobKnockbackWhenHitFromRight() {
         MapleMap map = mock(MapleMap.class);
         when(map.isObservedByPlayer()).thenReturn(true);
@@ -2087,6 +2140,56 @@ class BotCombatManagerTest {
             assertEquals(105, profile.minDamage());
             assertEquals(507, profile.maxDamage());
             assertTrue(profile.noCrit());
+        }
+    }
+
+    @Test
+    void shouldRefreshCachedMagicDamageProfileWhenElementAmplificationLevelChanges() {
+        Character bot = mock(Character.class);
+        when(bot.getJob()).thenReturn(Job.IL_MAGE);
+        when(bot.getLevel()).thenReturn(70);
+        when(bot.getTotalWatk()).thenReturn(0);
+        when(bot.getTotalMagic()).thenReturn(3000);
+        when(bot.getTotalStr()).thenReturn(4);
+        when(bot.getTotalDex()).thenReturn(4);
+        when(bot.getTotalInt()).thenReturn(0);
+        when(bot.getTotalLuk()).thenReturn(4);
+
+        Skill attackSkill = mock(Skill.class);
+        StatEffect attackEffect = mock(StatEffect.class);
+        when(attackSkill.getEffect(1)).thenReturn(attackEffect);
+        when(attackEffect.getX()).thenReturn(50);
+        when(attackEffect.getMatk()).thenReturn((short) 5);
+
+        Skill amplificationSkill = mock(Skill.class);
+        when(amplificationSkill.getId()).thenReturn(ILMage.ELEMENT_AMPLIFICATION);
+        StatEffect amplificationEffect = mock(StatEffect.class);
+        when(amplificationSkill.getEffect(10)).thenReturn(amplificationEffect);
+        when(amplificationEffect.getY()).thenReturn(150);
+
+        AtomicInteger amplificationLevel = new AtomicInteger(0);
+        when(bot.getSkills()).thenReturn(Collections.singletonMap(amplificationSkill, null));
+        when(bot.getSkillLevel(amplificationSkill)).thenAnswer(invocation -> (byte) amplificationLevel.get());
+
+        BotEntry entry = new BotEntry(bot, null, null);
+        try (MockedStatic<SkillFactory> skillFactory = Mockito.mockStatic(SkillFactory.class);
+             MockedStatic<BotAttackExecutionProvider> attackExecution =
+                     Mockito.mockStatic(BotAttackExecutionProvider.class, Mockito.CALLS_REAL_METHODS)) {
+            skillFactory.when(() -> SkillFactory.getSkill(ILWizard.COLD_BEAM)).thenReturn(attackSkill);
+            skillFactory.when(() -> SkillFactory.getSkill(ILMage.ELEMENT_AMPLIFICATION)).thenReturn(amplificationSkill);
+            attackExecution.when(() -> BotAttackExecutionProvider.getEquippedWeaponType(bot))
+                    .thenReturn(WeaponType.WAND);
+
+            server.combat.CombatFormulaProvider.DamageProfile before =
+                    BotCombatManager.resolveAttackDamageProfile(entry, bot, ILWizard.COLD_BEAM, 1,
+                            BotCombatManager.AttackRoute.MAGIC, WeaponType.WAND);
+            amplificationLevel.set(10);
+            server.combat.CombatFormulaProvider.DamageProfile after =
+                    BotCombatManager.resolveAttackDamageProfile(entry, bot, ILWizard.COLD_BEAM, 1,
+                            BotCombatManager.AttackRoute.MAGIC, WeaponType.WAND);
+
+            assertEquals(2_000, before.maxDamage());
+            assertEquals(3_000, after.maxDamage());
         }
     }
 

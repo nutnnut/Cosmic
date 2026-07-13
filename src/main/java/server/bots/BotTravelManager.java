@@ -134,7 +134,11 @@ final class BotTravelManager {
     }
 
     static MovementStep movementStep =
-            (entry, targetPos, runAiTick) -> BotManager.getInstance().stepMovementCore(entry, targetPos, runAiTick);
+            (entry, targetPos, runAiTick) -> {
+                if (!BotManager.getInstance().recoverTeleportDistance(entry, entry.bot, targetPos)) {
+                    BotManager.getInstance().stepMovementCore(entry, targetPos, runAiTick);
+                }
+            };
     static EnRouteAttack enRouteAttack =
             (entry, bot) -> BotManager.getInstance().tryEnRouteOpportunityAttack(entry, bot);
     static RouteLookup routeLookup = BotWorldGraph::route;
@@ -304,7 +308,14 @@ final class BotTravelManager {
                 return false;
             }
             refreshTravelDeadlineOnProgress(entry, bot, map, portalApproachTarget(map, portal), now);
-            if (now > entry.followTravelDeadlineMs) {
+            // LOD1 execution does not walk toward the portal: it deliberately holds position for the
+            // modeled hop dwell, then enters the real portal below. Applying the physical walk deadline
+            // first can expire during that dwell (25s portal price), abandon the correct hop, and send
+            // the bot wandering through a different exit forever. Script/landing failures still give up
+            // in lod1TimedWarp; only the inapplicable approach deadline is skipped.
+            boolean lod1TimedHop = entry.lod == BotEntry.Lod.LOD1
+                    && BotManager.cfg.SIMPLIFY_UNOBSERVED_BOTS_TRAVEL;
+            if (!lod1TimedHop && now > entry.followTravelDeadlineMs) {
                 giveUp(entry, now, "deadline");
                 return false;
             }
@@ -324,7 +335,7 @@ final class BotTravelManager {
             if (portal == null) {
                 BotWorldGraph.RouteOptions options = new BotWorldGraph.RouteOptions(
                         returnScrollCount.applyAsInt(bot) > 0, bot.getMeso(), allowFerry, bot.getJob().getId() == 0,
-                        bot.getLevel(), BotAutopilotManager.worldTourReturn(bot));
+                        bot.getLevel(), BotAutopilotManager.worldTourReturn(bot), BotAutopilotManager.fmReturn(bot));
                 java.util.function.IntPredicate blocked = BotAutopilotManager.routeBlockFor(bot);
                 List<Integer> route = null;
                 // Partition routing is needed when the current platform is constrained, and also when a
@@ -403,6 +414,13 @@ final class BotTravelManager {
     }
 
     static boolean walkToPortalAndEnter(BotEntry entry, Character bot, Portal portal, long now, boolean runAiTick) {
+        // LOD1 (unobserved) travel (design §2.2): don't walk to the portal — dwell the modeled hop
+        // seconds, then warp through the real portal. Hop planning (which portal) is unchanged upstream;
+        // only execution is abstracted. The dwell uses the SSOT travel price so abstract time matches
+        // what the planner charged.
+        if (entry.lod == BotEntry.Lod.LOD1 && BotManager.cfg.SIMPLIFY_UNOBSERVED_BOTS_TRAVEL) {
+            return lod1TimedWarp(entry, bot, portal, now, BotTravelCost.PORTAL_HOP_SECONDS);
+        }
         Point portalPos = portalApproachTarget(bot.getMap(), portal);
         Point botPos = bot.getPosition();
         // A portal at the top of (or on) a rope is only reachable by climbing - the bot arrives in the
@@ -449,6 +467,37 @@ final class BotTravelManager {
             enRouteAttack.attack(entry, bot);
         }
         movementStep.step(entry, portalPos, runAiTick);
+        return true;
+    }
+
+    /**
+     * LOD1 timed-warp of one hop (design §2.2): dwell {@code hopSeconds} (±20% jitter) then fire the
+     * REAL {@link Portal#enterPortal} so destination addPlayer, portal scripts and map-change bookkeeping
+     * all still run — only the walk is skipped. Mirrors the enter block of {@link #walkToPortalAndEnter}.
+     */
+    private static boolean lod1TimedWarp(BotEntry entry, Character bot, Portal portal, long now, double hopSeconds) {
+        if (now < entry.portalUseCooldownUntilMs) {
+            return true; // brief breather between portals
+        }
+        if (entry.lod1TravelDwellUntilMs == 0L) {
+            double jitter = 0.8 + ThreadLocalRandom.current().nextDouble() * 0.4; // ±20%
+            entry.lod1TravelDwellUntilMs = now + Math.max(1L, (long) (hopSeconds * 1000.0 * jitter));
+            return true; // start the dwell
+        }
+        if (now < entry.lod1TravelDwellUntilMs) {
+            return true; // still dwelling out the modeled hop time
+        }
+        entry.lod1TravelDwellUntilMs = 0L;
+        int beforeMapId = bot.getMapId();
+        String script = portal.getScriptName();
+        boolean scripted = script != null && !script.isEmpty();
+        entry.followTravelEnteredAtMs = now;
+        entry.portalUseCooldownUntilMs = now + PORTAL_USE_COOLDOWN_MS;
+        portal.enterPortal(bot.getClient());
+        if (scripted && bot.getMapId() == beforeMapId) {
+            giveUp(entry, now, "script-no-land");
+            return false;
+        }
         return true;
     }
 
@@ -614,7 +663,7 @@ final class BotTravelManager {
         if (portal == null) {
             BotWorldGraph.RouteOptions options = new BotWorldGraph.RouteOptions(
                     returnScrollCount.applyAsInt(bot) > 0, bot.getMeso(), false, bot.getJob().getId() == 0,
-                    bot.getLevel(), BotAutopilotManager.worldTourReturn(bot));
+                    bot.getLevel(), BotAutopilotManager.worldTourReturn(bot), BotAutopilotManager.fmReturn(bot));
             List<Integer> route = routeLookup.route(bot.getMapId(), targetMapId, maxHops, options,
                     BotAutopilotManager.routeBlockFor(bot)); // SSOT danger gate: no <15 route through Sleepywood
             if (route == null || route.isEmpty()) {

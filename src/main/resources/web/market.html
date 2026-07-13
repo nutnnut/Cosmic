@@ -1,0 +1,429 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Bot Market</title>
+<style>
+  :root{
+    --bg:#10141c; --panel:#171c26; --panel2:#1b2436; --line:#232c3d; --line2:#1d2534;
+    --txt:#cdd6e4; --txt2:#e6edf7; --mut:#8494ad; --mut2:#5c6a82;
+    --blue:#6cc6ff; --green:#8fd18f; --gold:#e0b45c; --up:#4bbf73; --down:#e06c75; --btn:#3a4761;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--txt);font:14px system-ui,sans-serif;display:flex;flex-direction:column}
+  header{display:flex;align-items:center;gap:14px;padding:9px 16px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+  header h1{font-size:16px;font-weight:600;color:#9fb0c8;margin:0}
+  header a{color:var(--blue);text-decoration:none;font-size:13px}
+  .grp{display:flex;gap:5px;align-items:center}
+  .grp .lbl{color:var(--mut2);font-size:11px;text-transform:uppercase;letter-spacing:.04em;margin-right:2px}
+  button.tg{background:var(--panel);color:var(--mut);border:1px solid var(--btn);border-radius:5px;padding:3px 9px;cursor:pointer;font:12px system-ui}
+  button.tg.on{color:var(--bg);background:var(--blue);border-color:var(--blue)}
+  header .spacer{margin-left:auto}
+  main{flex:1;display:flex;min-height:0}
+  #list{width:300px;flex-shrink:0;overflow-y:auto;border-right:1px solid var(--line);display:flex;flex-direction:column}
+  #search{margin:8px;padding:6px 9px;background:var(--panel);border:1px solid var(--btn);border-radius:5px;color:var(--txt);font:13px system-ui}
+  #search::placeholder{color:var(--mut2)}
+  #rows{overflow-y:auto}
+  .row{padding:7px 12px;cursor:pointer;display:flex;gap:9px;align-items:center;border-bottom:1px solid #161c28}
+  .row:hover{background:var(--panel)}
+  .row.sel{background:var(--panel2)}
+  .ic{width:30px;height:30px;flex-shrink:0;border-radius:5px;object-fit:contain;background:#0c0f16}
+  .icph{width:30px;height:30px;flex-shrink:0;border-radius:5px;display:flex;align-items:center;justify-content:center;font:700 9px system-ui;color:#0c0f16}
+  .row .body{flex:1;min-width:0}
+  .nm{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--txt)}
+  .meta{color:var(--mut2);font-size:11px}
+  .px{color:var(--green);font-variant-numeric:tabular-nums;white-space:nowrap;text-align:right}
+  #center{flex:1;display:flex;flex-direction:column;min-width:0}
+  #title{padding:10px 16px 0;font-size:15px;color:var(--txt2);display:flex;gap:10px;align-items:center}
+  #title .idtag{color:var(--mut2);font-size:12px;font-variant-numeric:tabular-nums}
+  #stats{padding:3px 16px 6px;font-size:12px;color:var(--mut);display:flex;flex-wrap:wrap;gap:14px}
+  #stats b{color:var(--txt);font-variant-numeric:tabular-nums}
+  #chartwrap{flex:1;position:relative;min-height:0}
+  canvas{position:absolute;inset:0;width:100%;height:100%}
+  #tip{position:absolute;pointer-events:none;display:none;background:#0b0e15;border:1px solid var(--btn);border-radius:6px;padding:7px 9px;font-size:12px;color:var(--txt);box-shadow:0 4px 14px #0008;z-index:5;max-width:230px}
+  #tip .kk{font-weight:600}
+  #tip .rowt{display:flex;justify-content:space-between;gap:12px;color:var(--mut)}
+  #tip .rowt b{color:var(--txt);font-variant-numeric:tabular-nums}
+  #legend{padding:6px 16px 8px;font-size:12px;color:var(--mut);display:flex;gap:16px;flex-wrap:wrap}
+  .lg{display:inline-flex;align-items:center;gap:5px}
+  .sw{width:11px;height:11px;border-radius:2px;display:inline-block}
+  #right{width:340px;flex-shrink:0;border-left:1px solid var(--line);overflow-y:auto;display:flex;flex-direction:column}
+  #right h2{font-size:12px;text-transform:uppercase;letter-spacing:.04em;color:var(--mut2);margin:0;padding:11px 14px 5px}
+  table{width:100%;border-collapse:collapse;font-size:12px}
+  th{text-align:left;color:var(--mut2);font-weight:500;padding:4px 14px;border-bottom:1px solid var(--line);position:sticky;top:0;background:var(--bg)}
+  td{padding:5px 14px;border-bottom:1px solid #161c28;color:var(--txt)}
+  td.n{text-align:right;font-variant-numeric:tabular-nums}
+  .empty{color:var(--mut2);padding:8px 14px;font-size:12px}
+  .stat{color:var(--gold)}
+</style>
+</head>
+<body>
+<header>
+  <h1>Bot Market</h1>
+  <a href="/">&larr; home</a>
+  <div class="grp"><span class="lbl">range</span><span id="range" class="grp"></span></div>
+  <div class="grp"><span class="lbl">view</span>
+    <button class="tg on" id="tCandle">candles</button>
+    <button class="tg" id="tLog">log&nbsp;y</button>
+    <button class="tg on" id="tClip">clip&nbsp;outliers</button>
+    <button class="tg on" id="tAsks">asks</button>
+    <button class="tg" id="tShouts">shouts</button>
+  </div>
+  <span class="spacer"></span>
+  <a href="/api/market/stalls" target="_blank">stalls json</a>
+</header>
+<main>
+  <div id="list">
+    <input id="search" placeholder="filter items...">
+    <div id="rows"></div>
+  </div>
+  <div id="center">
+    <div id="title">pick an item</div>
+    <div id="stats"></div>
+    <div id="chartwrap">
+      <canvas id="c"></canvas>
+      <div id="tip"></div>
+    </div>
+    <div id="legend">
+      <span class="lg"><span class="sw" style="background:var(--up)"></span>clearing up</span>
+      <span class="lg"><span class="sw" style="background:var(--down)"></span>clearing down</span>
+      <span class="lg"><span class="sw" style="background:var(--blue)"></span>stall ask</span>
+      <span class="lg"><span class="sw" style="background:#4a5a76"></span>shout ask</span>
+      <span class="lg"><span class="sw" style="background:var(--gold)"></span>consensus (clean)</span>
+      <span class="lg"><span class="sw" style="background:rgba(224,180,92,.35)"></span>roll-quality range</span>
+    </div>
+  </div>
+  <div id="right">
+    <h2>Live listings (open stalls)</h2>
+    <div id="listings"></div>
+    <h2>Recent asks</h2>
+    <div id="recent"></div>
+    <h2>Recent trades</h2>
+    <div id="trades"></div>
+  </div>
+</main>
+<script>
+"use strict";
+const fmt = n => { n = Number(n); const a = Math.abs(n);
+  return a >= 1e9 ? (n/1e9).toFixed(2)+"b" : a >= 1e6 ? (n/1e6).toFixed(2)+"m" : a >= 1e3 ? (n/1e3).toFixed(1)+"k" : String(Math.round(n)); };
+const full = n => Number(n).toLocaleString("en-US");
+const ago = t => { const s = (Date.now()-t)/1000; return s<90 ? Math.round(s)+"s" : s<5400 ? Math.round(s/60)+"m" : s<172800 ? Math.round(s/3600)+"h" : Math.round(s/86400)+"d"; };
+const when = t => new Date(t).toLocaleString("en-US",{month:"short",day:"numeric",hour:"2-digit",minute:"2-digit"});
+// "PlaceName (id)" when the server resolved the map's String.wz name, else the bare "map id".
+const mapLabel = (m, maps) => { if (m < 0) return ""; const nm = maps && maps[m]; return nm ? esc(nm)+" ("+m+")" : "map "+m; };
+
+// item-id -> placeholder tag + color (used until real client sprites land in /web/item-icons)
+function placeholder(id){
+  const cat = Math.floor(id/1e6), sub = Math.floor(id/1e4)%100;
+  if (cat === 1) return sub >= 30 ? ["WPN","#c98b5a"] : ["ARM","#5a86c9"];
+  if (cat === 2) return ["USE","#5ac98b"];
+  if (cat === 3) return ["SET","#9a7fd0"];
+  if (cat === 4) return ["ETC","#8a94a8"];
+  if (cat === 5) return ["CSH","#d05f9a"];
+  return ["?","#5c6a82"];
+}
+function iconEl(id){
+  const [tag,col] = placeholder(id);
+  const img = new Image();
+  img.className = "ic";
+  img.alt = tag;
+  img.onerror = () => { const d = document.createElement("div"); d.className="icph"; d.style.background=col; d.textContent=tag; img.replaceWith(d); };
+  img.src = "/api/market/icon?item=" + id;
+  return img;
+}
+
+let items = [], sel = 0, hours = 168, hist = null, listings = null, filter = "";
+const opt = { candle:true, log:false, clip:true, asks:true, shouts:false };
+let hover = null;   // {x,y,pt} for tooltip
+let plot = null;    // last draw geometry for hit-testing
+
+// range buttons
+const RANGES = [[24,"24h"],[72,"3d"],[168,"7d"],[720,"30d"],[8760,"1y"]];
+const rangeDiv = document.getElementById("range");
+for (const [h,label] of RANGES){
+  const b = document.createElement("button"); b.className="tg"; b.textContent=label; b.dataset.h=h;
+  b.onclick = () => { hours=h; renderRange(); loadHist(); };
+  rangeDiv.appendChild(b);
+}
+function renderRange(){ for (const b of rangeDiv.children) b.classList.toggle("on", Number(b.dataset.h)===hours); }
+renderRange();
+
+// toggles
+function bindTg(id,key,after){ const b=document.getElementById(id);
+  b.onclick=()=>{ opt[key]=!opt[key]; b.classList.toggle("on",opt[key]); (after||draw)(); }; }
+bindTg("tCandle","candle"); bindTg("tLog","log"); bindTg("tClip","clip"); bindTg("tAsks","asks"); bindTg("tShouts","shouts");
+
+document.getElementById("search").addEventListener("input", e => { filter = e.target.value.toLowerCase(); renderList(); });
+
+async function loadItems(){
+  const r = await fetch("/api/market/items");
+  items = (await r.json()).items;
+  if (!sel && items.length){ sel = items[0].item; loadHist(); loadListings(); }
+  renderList();
+}
+function renderList(){
+  const rows = document.getElementById("rows");
+  rows.innerHTML = "";
+  const f = items.filter(it => !filter || (it.name||"").toLowerCase().includes(filter) || String(it.item).includes(filter));
+  for (const it of f){
+    const row = document.createElement("div");
+    row.className = "row" + (it.item===sel ? " sel" : "");
+    row.appendChild(iconEl(it.item));
+    const body = document.createElement("div"); body.className="body";
+    body.innerHTML = "<div class='nm'>" + (it.name||it.item) + "</div>"
+      + "<div class='meta'>" + it.sales + " sales &middot; " + it.events + " events &middot; " + ago(it.lastAt) + " ago</div>";
+    const px = document.createElement("div"); px.className="px"; px.textContent = fmt(it.lastPrice);
+    row.appendChild(body); row.appendChild(px);
+    row.onclick = () => { sel = it.item; renderList(); loadHist(); loadListings(); };
+    rows.appendChild(row);
+  }
+  if (!f.length) rows.innerHTML = "<div class='empty'>no items match</div>";
+}
+
+async function loadHist(){
+  if (!sel) return;
+  const r = await fetch("/api/market/history?item=" + sel + "&hours=" + hours);
+  hist = await r.json();
+  hist.clearings = hist.clearings || []; hist.asks = hist.asks || []; hist.shouts = hist.shouts || []; hist.names = hist.names || {}; hist.maps = hist.maps || {}; hist.bands = hist.bands || [];
+  const t = document.getElementById("title");
+  t.innerHTML = ""; t.appendChild(iconEl(sel));
+  const nm = document.createElement("span"); nm.textContent = hist.name || hist.item;
+  const idt = document.createElement("span"); idt.className="idtag"; idt.textContent = "#" + hist.item;
+  t.appendChild(nm); t.appendChild(idt);
+  renderStats();
+  draw();
+  renderRecent();
+  renderTrades();
+}
+// quality band label: the server translates a band to its dominant-stat equivalent ("+5 str",
+// "+7 att") when it can; fall back to the generic roll count. 0 = clean/non-equip.
+const blab = d => { const b=(hist&&hist.bands||[]).find(x=>x.b===d); return b&&b.lbl ? b.lbl : (d>0 ? "+"+d+" roll" : "clean"); };
+const qchip = d => d>0 ? " <span class='stat'>"+blab(d)+"</span>" : "";
+// per-band consensus range (est>0 only): [loBand, hiBand] or null when a single price tells the story
+function bandRange(){
+  const bs = (hist.bands||[]).filter(b=>b.est>0);
+  if (bs.length < 2) return null;
+  let lo=bs[0], hi=bs[0];
+  for (const b of bs){ if (b.est<lo.est) lo=b; if (b.est>hi.est) hi=b; }
+  return lo.est<hi.est ? [lo,hi] : null;
+}
+function renderStats(){
+  const clr = hist.clearings, lastC = clr.length ? clr[clr.length-1] : null;
+  const prices = clr.map(p=>p.p).sort((a,b)=>a-b);
+  const median = prices.length ? prices[Math.floor(prices.length/2)] : 0;
+  const asks = hist.asks.concat(hist.shouts);
+  const lowAsk = asks.length ? Math.min(...asks.map(a=>a.p)) : 0;
+  const br = bandRange();
+  document.getElementById("stats").innerHTML =
+      "last clearing <b>" + (lastC ? fmt(lastC.p) : "-") + "</b>"
+    + "<span>median clearing <b>" + (median ? fmt(median) : "-") + "</b></span>"
+    + (br ? "<span>consensus range <b>" + fmt(br[0].est) + " &ndash; " + fmt(br[1].est) + "</b>"
+            + " <span class='meta'>(" + blab(br[0].b) + " &rarr; " + blab(br[1].b) + ")</span></span>"
+          : "<span>consensus <b>" + (hist.consensus>0 ? fmt(hist.consensus) : "-") + "</b></span>")
+    + "<span>lowest ask <b>" + (lowAsk ? fmt(lowAsk) : "-") + "</b></span>"
+    + "<span>volume(damping) <b>" + hist.volume + "</b></span>"
+    + "<span>" + clr.length + " clearings / " + hist.asks.length + " stall + " + hist.shouts.length + " shout asks</span>";
+}
+
+async function loadListings(){
+  if (!sel) return;
+  try {
+    const r = await fetch("/api/market/listings?item=" + sel);
+    listings = r.ok ? await r.json() : {listings:[]};
+  } catch { listings = {listings:[]}; }
+  listings.maps = listings.maps || {};
+  renderListings();
+}
+function renderListings(){
+  const div = document.getElementById("listings");
+  if (!listings || !listings.listings.length){ div.innerHTML = "<div class='empty'>no open stalls hold this item right now</div>"; return; }
+  const rows = listings.listings.slice().sort((a,b)=>a.unit-b.unit).map(l =>
+    "<tr><td>" + (l.stats||"") + "<div class='meta'>" + esc(l.owner) + " &middot; " + mapLabel(l.map, listings.maps) + " ch" + l.ch + "</div></td>"
+    + "<td class='n'>" + fmt(l.unit) + (l.per>1 ? "<div class='meta'>x"+l.per+" @ "+fmt(l.price)+"</div>" : "") + "</td>"
+    + "<td class='n'>" + l.bundles + "</td></tr>").join("");
+  div.innerHTML = "<table><thead><tr><th>listing</th><th class='n'>unit</th><th class='n'>qty</th></tr></thead><tbody>" + rows + "</tbody></table>";
+}
+function renderRecent(){
+  const div = document.getElementById("recent");
+  const asks = hist.asks.concat(hist.shouts).sort((a,b)=>b.t-a.t).slice(0,25);
+  if (!asks.length){ div.innerHTML = "<div class='empty'>no recent asks</div>"; return; }
+  const rows = asks.map(a =>
+    "<tr><td>" + (a.k==="h"?"shout":"stall") + qchip(a.d) + "<div class='meta'>" + ago(a.t) + " ago" + (a.m>=0?" &middot; "+mapLabel(a.m, hist.maps):"") + "</div></td>"
+    + "<td class='n " + (a.p>=1e9?"stat":"") + "'>" + fmt(a.p) + "</td></tr>").join("");
+  div.innerHTML = "<table><tbody>" + rows + "</tbody></table>";
+}
+function renderTrades(){
+  const div = document.getElementById("trades");
+  const trades = hist.clearings.slice().sort((a,b)=>b.t-a.t).slice(0,25);
+  if (!trades.length){ div.innerHTML = "<div class='empty'>no trades in range</div>"; return; }
+  const rows = trades.map(c =>
+    "<tr><td>" + (c.k==="t"?"trade":"stall sale") + qchip(c.d) + (c.q>1?" x"+c.q:"")
+    + "<div class='meta'>" + ago(c.t) + " ago"
+    + (c.s>=0 ? " &middot; " + esc(nm(c.s)) : "") + (c.b>=0 ? " &rarr; " + esc(nm(c.b)) : "") + "</div></td>"
+    + "<td class='n'>" + fmt(c.p) + "</td></tr>").join("");
+  div.innerHTML = "<table><tbody>" + rows + "</tbody></table>";
+}
+function esc(s){ return String(s==null?"":s).replace(/[&<>]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c])); }
+
+// ---- charting ----------------------------------------------------------------
+function bucketMs(){ return hours<=24?36e5 : hours<=72?108e5 : hours<=168?216e5 : hours<=720?864e5 : 6048e5; }
+function candles(clr, t0){
+  const w = bucketMs(), byB = new Map();
+  for (const p of clr){ if (p.t<t0) continue; const b=Math.floor(p.t/w)*w;
+    let c=byB.get(b); if(!c){ c={t:b,o:p.p,h:p.p,l:p.p,c:p.p,v:0}; byB.set(b,c); }
+    c.h=Math.max(c.h,p.p); c.l=Math.min(c.l,p.p); c.c=p.p; c.v+=p.q; }
+  const out = [...byB.values()].sort((a,b)=>a.t-b.t);
+  // Sparse tape: chain each candle's open to the LAST KNOWN close, however many empty buckets
+  // ago that was — a 10m trade on day 1 followed by an 8m trade on day 4 must render day 4 as
+  // a red 10m->8m candle, not an isolated dash that ignores history. Wick covers the gap move.
+  for (let i=1;i<out.length;i++){ const c=out[i]; c.o=out[i-1].c;
+    c.h=Math.max(c.h,c.o); c.l=Math.min(c.l,c.o); }
+  return out;
+}
+function pctile(vals, p){
+  if (!vals.length) return 0;
+  const s = vals.slice().sort((a,b)=>a-b);
+  return s[Math.min(s.length-1, Math.floor(s.length*p))];
+}
+
+function draw(){
+  const cv = document.getElementById("c"), dpr = window.devicePixelRatio||1;
+  cv.width = cv.clientWidth*dpr; cv.height = cv.clientHeight*dpr;
+  const g = cv.getContext("2d"); g.scale(dpr,dpr);
+  const W = cv.clientWidth, H = cv.clientHeight, L=76, R=14, T=12, B=26;
+  g.clearRect(0,0,W,H);
+  plot = null;
+  if (!hist) return;
+  const now = Date.now(), t0 = now - hours*36e5;
+  const clr = hist.clearings.filter(p=>p.t>=t0);
+  const askPts = (opt.asks ? hist.asks : []).concat(opt.shouts ? hist.shouts : []).filter(p=>p.t>=t0);
+  const cnd = candles(clr, t0);
+
+  // y-range. Clip keys off CLEARINGS (real trades) so the candles stay readable even when stall/
+  // shout asks sit hundreds of millions above the last clearing; asks past hi are clamped to the top.
+  const clrP = clr.map(p=>p.p).filter(v=>v>0);
+  const askP = askPts.map(p=>p.p).filter(v=>v>0);
+  let vals = clrP.concat(askP);
+  if (hist.consensus>0) vals.push(hist.consensus);
+  const br = bandRange();
+  if (br) vals.push(br[0].est, br[1].est);
+  if (!vals.length){ g.fillStyle="#5c6a82"; g.font="13px system-ui"; g.textAlign="center"; g.fillText("no data in range",W/2,H/2); return; }
+  let lo = Math.min(...vals), hi;
+  if (opt.clip){
+    const base = clrP.length ? pctile(clrP,0.95) : pctile(askP.length?askP:vals, 0.9);
+    hi = base*1.25;
+    if (hist.consensus>0) hi = Math.max(hi, hist.consensus);
+    if (br) hi = Math.max(hi, br[0].est); // low bound always visible; a huge best-roll est may clamp
+    hi = Math.max(hi, lo*1.1, 1);
+  } else {
+    hi = Math.max(...vals);
+  }
+  const clipped = askPts.filter(p=>p.p>hi).length + clr.filter(p=>p.p>hi).length;
+  let pmin, pmax;
+  // linear y always starts at 0 meso (owner spec); log y can't reach 0, so it starts at 1
+  if (opt.log){ pmin = 0; pmax = Math.log10(Math.max(10,hi)); }
+  else { const pad=(hi-lo)*0.08||hi*0.1||1; pmin=0; pmax=hi+pad; }
+  if (pmin===pmax){ pmax=pmin+1; }
+  const X = t => L + (W-L-R)*(t-t0)/(now-t0);
+  const Yv = p => opt.log ? Math.log10(Math.max(1,p)) : p;
+  const Y = p => T + (H-T-B)*(1-(Yv(p)-pmin)/(pmax-pmin));
+
+  // grid + y labels
+  g.strokeStyle="#1d2534"; g.fillStyle="#5c6a82"; g.font="11px system-ui"; g.textAlign="right";
+  for (let i=0;i<=4;i++){ const frac=i/4; const y=T+(H-T-B)*(1-frac);
+    const val = opt.log ? Math.pow(10, pmin+(pmax-pmin)*frac) : pmin+(pmax-pmin)*frac;
+    g.beginPath(); g.moveTo(L,y); g.lineTo(W-R,y); g.stroke(); g.fillText(fmt(val), L-6, y+4); }
+  // x labels
+  g.textAlign="center";
+  for (let i=0;i<=6;i++){ const t=t0+(now-t0)*i/6, x=X(t), d=new Date(t);
+    g.fillText(hours<=72 ? d.getHours()+":"+String(d.getMinutes()).padStart(2,"0") : (d.getMonth()+1)+"/"+d.getDate(), x, H-8); }
+
+  // roll-quality consensus range (equips with >1 traded band): shaded region from the lowest-band
+  // estimate (base/clean-ish price) up to the best observed roll's estimate - a single line would
+  // conflate a 3-STR and a 10-STR piece of the same item id.
+  if (br){
+    const yTop = Y(Math.min(br[1].est, hi)), yBot = Y(Math.min(br[0].est, hi));
+    g.fillStyle = "rgba(224,180,92,.10)";
+    g.fillRect(L, Math.min(yTop,yBot), W-L-R, Math.max(1, Math.abs(yBot-yTop)));
+    g.strokeStyle = "rgba(224,180,92,.5)"; g.setLineDash([3,4]);
+    g.beginPath(); g.moveTo(L,yTop); g.lineTo(W-R,yTop); g.stroke();
+    g.beginPath(); g.moveTo(L,yBot); g.lineTo(W-R,yBot); g.stroke();
+    g.setLineDash([]);
+    g.fillStyle = "rgba(224,180,92,.75)"; g.font="10px system-ui"; g.textAlign="left";
+    g.fillText(blab(br[1].b)+" "+fmt(br[1].est), L+4, yTop-3);
+    g.fillText(blab(br[0].b)+" "+fmt(br[0].est), L+4, yBot+11);
+  }
+  // consensus line (clean band)
+  if (hist.consensus>0 && hist.consensus<=Math.max(...vals)){
+    g.strokeStyle="#e0b45c"; g.setLineDash([5,5]); g.beginPath(); g.moveTo(L,Y(hist.consensus)); g.lineTo(W-R,Y(hist.consensus)); g.stroke(); g.setLineDash([]); }
+
+  // ask dots (hollow) — shout faint, stall blue
+  const hit = [];
+  for (const a of askPts){ const yv = Math.min(a.p,hi);
+    g.strokeStyle = a.k==="h" ? "#4a5a76" : "#6cc6ff";
+    const x=X(a.t), y=Y(yv); g.beginPath(); g.arc(x,y,2.5,0,7); g.stroke();
+    hit.push({x,y,pt:a}); }
+
+  // candles or line
+  if (opt.candle && cnd.length){
+    const bw = Math.max(3, Math.min(16, (W-L-R)/(Math.max(1,(now-t0)/bucketMs()))*0.7));
+    for (const c of cnd){ const x=X(c.t+bucketMs()/2), up=c.c>=c.o;
+      g.strokeStyle = up?"#4bbf73":"#e06c75"; g.fillStyle = up?"#4bbf73":"#e06c75";
+      g.beginPath(); g.moveTo(x,Y(Math.min(c.h,hi))); g.lineTo(x,Y(Math.min(c.l,hi))); g.stroke();
+      const yo=Y(Math.min(c.o,hi)), yc=Y(Math.min(c.c,hi));
+      g.fillRect(x-bw/2, Math.min(yo,yc), bw, Math.max(2,Math.abs(yc-yo)));
+      hit.push({x,y:(yo+yc)/2,pt:{candle:c}}); }
+  } else {
+    g.strokeStyle="#8fd18f"; g.lineWidth=1.5; g.beginPath();
+    clr.forEach((p,i)=>{ const x=X(p.t), y=Y(Math.min(p.p,hi)); i?g.lineTo(x,y):g.moveTo(x,y); });
+    g.stroke(); g.lineWidth=1; g.fillStyle="#8fd18f";
+    for (const p of clr){ const x=X(p.t), y=Y(Math.min(p.p,hi)); g.beginPath(); g.arc(x,y,Math.min(7,2+Math.sqrt(p.q)),0,7); g.fill();
+      hit.push({x,y,pt:p}); }
+  }
+
+  if (opt.clip && clipped>0){ g.fillStyle="#5c6a82"; g.font="11px system-ui"; g.textAlign="left";
+    g.fillText(clipped+" point(s) above "+fmt(hi)+" clipped", L+4, T+12); }
+
+  plot = { hit, L, R, T, B, W, H };
+}
+
+// hover tooltip + click detail share the nearest-point hit test
+function nearest(mx,my){
+  if (!plot) return null; let best=null, bd=18*18;
+  for (const h of plot.hit){ const dx=h.x-mx, dy=h.y-my, d=dx*dx+dy*dy; if (d<bd){ bd=d; best=h; } }
+  return best;
+}
+const cv = document.getElementById("c"), tip = document.getElementById("tip");
+cv.addEventListener("mousemove", e => {
+  const r=cv.getBoundingClientRect(), mx=e.clientX-r.left, my=e.clientY-r.top;
+  const h = nearest(mx,my);
+  if (!h){ tip.style.display="none"; return; }
+  tip.innerHTML = tipHtml(h.pt);
+  tip.style.display="block";
+  const tx = Math.min(mx+14, cv.clientWidth-tip.offsetWidth-6), ty = Math.max(6, my-10);
+  tip.style.left = tx+"px"; tip.style.top = ty+"px";
+});
+cv.addEventListener("mouseleave", () => tip.style.display="none");
+function nm(id){ return hist && hist.names && hist.names[id] ? hist.names[id] : (id>=0 ? "#"+id : "-"); }
+function tipHtml(pt){
+  if (pt.candle){ const c=pt.candle;
+    return "<div class='kk'>" + when(c.t) + "</div>"
+      + rowt("open",fmt(c.o)) + rowt("high",fmt(c.h)) + rowt("low",fmt(c.l)) + rowt("close",fmt(c.c)) + rowt("volume",c.v); }
+  const kind = {t:"trade",s:"stall sale",l:"stall ask",h:"shout ask"}[pt.k] || pt.k;
+  let s = "<div class='kk'>" + kind + " &middot; " + full(pt.p) + "</div>" + rowt("when", when(pt.t) + " ("+ago(pt.t)+")");
+  if (pt.d>0) s += rowt("quality", blab(pt.d));
+  if (pt.q>1) s += rowt("qty", pt.q);
+  if (pt.s>=0) s += rowt("seller", esc(nm(pt.s)));
+  if (pt.b>=0) s += rowt("buyer", esc(nm(pt.b)));
+  if (pt.m>=0) s += rowt("map", mapLabel(pt.m, hist.maps));
+  return s;
+}
+function rowt(k,v){ return "<div class='rowt'><span>"+k+"</span><b>"+v+"</b></div>"; }
+
+window.addEventListener("resize", draw);
+loadItems();
+setInterval(loadItems, 60000);
+setInterval(() => { loadHist(); loadListings(); }, 30000);
+</script>
+</body>
+</html>

@@ -98,7 +98,7 @@ public final class ScrollHandler extends AbstractPacketHandler {
                 }
 
                 if (!ItemConstants.isChaosScroll(scroll.getItemId()) && !ItemConstants.isCleanSlate(scroll.getItemId())) {
-                    if (!canScroll(scroll.getItemId(), toScroll.getItemId())) {
+                    if (!ItemConstants.canScroll(scroll.getItemId(), toScroll.getItemId())) {
                         announceCannotScroll(c, legendarySpirit);
                         return;
                     }
@@ -185,19 +185,6 @@ public final class ScrollHandler extends AbstractPacketHandler {
             c.sendPacket(PacketCreator.getScrollEffect(c.getPlayer().getId(), Equip.ScrollResult.FAIL, false, false));
         } else {
             c.sendPacket(PacketCreator.getInventoryFull());
-        }
-    }
-
-    private static boolean canScroll(int scrollid, int itemid) {
-        int sid = scrollid / 100;
-
-        switch (sid) {
-            case 20492: //scroll for accessory (pendant, belt, ring)
-                return canScroll(ItemId.RING_STR_100_SCROLL, itemid) || canScroll(ItemId.DRAGON_STONE_SCROLL, itemid) ||
-                        canScroll(ItemId.BELT_STR_100_SCROLL, itemid);
-
-            default:
-                return (scrollid / 100) % 100 == (itemid / 10000) % 100;
         }
     }
 }

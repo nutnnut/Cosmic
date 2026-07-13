@@ -530,6 +530,34 @@ class BotInventoryManagerTest {
         }
     }
 
+    @Test
+    void returnScrollRunwayReservesResupplyTargetSoItDoesNotRebuy() {
+        Character bot = mock(Character.class);
+        Inventory use = new Inventory(bot, InventoryType.USE, (byte) 96);
+        Item reserved = Items.itemWithQuantity(2030000, BotShopManager.returnScrollReserveTarget()); // resupply target
+        Item surplus = Items.itemWithQuantity(2030000, 5);   // beyond target -> shelf
+        use.addItem(reserved);
+        use.addItem(surplus);
+        when(bot.getInventory(InventoryType.USE)).thenReturn(use);
+
+        // Return scrolls are warp scrolls: no heal/cure/buff effect, so they'd fall to the shelf and
+        // sell under pressure without the dedicated runway -> then get rebought (the buy/sell loop).
+        try (AutoCloseable seams = withUseSeams(id -> null, id -> 0, id -> 0, (id, qty) -> 10 * qty);
+             MockedStatic<BotAttackExecutionProvider> attacks = mockStatic(BotAttackExecutionProvider.class)) {
+            attacks.when(() -> BotAttackExecutionProvider.getEquippedWeaponType(bot))
+                    .thenReturn(client.inventory.WeaponType.SWORD1H);
+            var classes = BotInventoryManager.classifyBagUse(bot);
+            assertEquals(BotInventoryManager.UseTier.RUNWAY, classes.get(reserved).tier());
+            assertEquals(BotInventoryManager.UseTier.SHELF, classes.get(surplus).tier());
+            // Under maximum bag pressure only the surplus scroll sells; the reserve is protected.
+            List<Item> sales = BotInventoryManager.collectCrampedUseSales(bot, 99, null);
+            assertEquals(1, sales.size());
+            assertEquals(surplus, sales.get(0));
+        } catch (Exception e) {
+            throw new AssertionError(e);
+        }
+    }
+
     private static StatEffect buffEffect(BuffStat stat, int amount) {
         StatEffect fx = mock(StatEffect.class);
         doReturn(List.of(new Pair<>(stat, amount))).when(fx).getStatups();

@@ -17,4 +17,4 @@ Experimental-branch symptom: ~60 bots online froze the server at 80-90% CPU acro
 
 **Separate bug surfaced & fixed:** `PartySearchEchelon` (`net.server.coordinator.partysearch`) threw `IllegalArgumentException: Illegal Capacity: -1` every ~15s. Lock inversion: `echelon` is a plain `HashMap`, but `attachPlayer`/`detachPlayer` took the shared READ lock while mutating it, so concurrent bot party-search (P4 dynamic party-up) corrupted `size()` negative -> `new ArrayList<>(-1)`. Fix: all three methods mutate, so replaced the `ReadWriteLock` with a plain exclusive `ReentrantLock`.
 
-Profiling primer: `!botperfdebug on`; report `core=` = fraction of one CPU core, `cps=` calls/sec, `max=` worst single call. Always-on stall warnings (>250ms) name the dominant tick phase. Related: [[project_grind_advisor_perf]] (cold-cache tax was already known; this is the boot-race manifestation under 60-bot load).
+Profiling primer: `!botperfdebug on`; report `core=` = fraction of one CPU core, `cps=` calls/sec, `max=` worst single call. Always-on stall warnings (>250ms) name the dominant tick phase. This is the boot-race manifestation of cold-cache tax under fleet load.

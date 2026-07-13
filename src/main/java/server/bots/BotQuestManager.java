@@ -6,8 +6,12 @@ package server.bots;
 
 import client.Character;
 import client.QuestStatus;
+import client.inventory.Equip;
+import client.inventory.Item;
+import constants.inventory.ItemConstants;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import server.ItemInformationProvider;
 import server.life.NPC;
 import server.maps.MapleMap;
 import server.quest.Quest;
@@ -108,18 +112,29 @@ final class BotQuestManager {
         }
         @Override public void complete(Character bot, int questId, int npc) {
             // null selection = the no-choice completion path real players hit (QuestActionHandler
-            // case 2 without a selection short). NOT -1, which would mis-index a reward action.
-            Quest.getInstance(questId).complete(bot, npc, null);
+            // case 2 without a selection short). NOT -1, which would mis-index a reward action. For a
+            // CHOICE-reward quest, pick the best index instead — a null there NPEs in ItemAction.check.
+            Quest quest = Quest.getInstance(questId);
+            Integer selection = pickBestRewardSelection(bot, quest.completeSelectableRewardItemIds(bot));
+            quest.complete(bot, npc, selection);
         }
+        // Read-only status checks use getQuestNoAdd: the plain getQuest() INSERTS a NOT_STARTED
+        // placeholder on every miss, so scanning the whole quest index per bot was inflating every
+        // bot's quest map with hundreds of placeholders (memory + per-kill quest-loop cost).
         @Override public boolean isStarted(Character bot, int questId) {
-            return bot.getQuest(Quest.getInstance(questId)).getStatus() == QuestStatus.Status.STARTED;
+            QuestStatus qs = bot.getQuestNoAdd(Quest.getInstance(questId));
+            return qs != null && qs.getStatus() == QuestStatus.Status.STARTED;
         }
         @Override public boolean isCompleted(Character bot, int questId) {
-            return bot.getQuest(Quest.getInstance(questId)).getStatus() == QuestStatus.Status.COMPLETED;
+            QuestStatus qs = bot.getQuestNoAdd(Quest.getInstance(questId));
+            return qs != null && qs.getStatus() == QuestStatus.Status.COMPLETED;
         }
         @Override public Map<Integer, Integer> currentProgress(Character bot, int questId) {
-            QuestStatus qs = bot.getQuest(Quest.getInstance(questId));
+            QuestStatus qs = bot.getQuestNoAdd(Quest.getInstance(questId));
             java.util.Map<Integer, Integer> out = new java.util.HashMap<>();
+            if (qs == null) {
+                return out; // not started -> no progress (doc: "0 when not started")
+            }
             for (Map.Entry<Integer, String> e : qs.getProgress().entrySet()) {
                 int v;
                 try {
@@ -132,6 +147,50 @@ final class BotQuestManager {
             return out;
         }
     };
+
+    /**
+     * Choose the reward index for a CHOICE-reward quest ({@link Quest#completeSelectableRewardItemIds}):
+     * (1) prefer a reward the bot would keep for itself — an incoming equip it'd reserve, or a use item
+     * (scroll/etc.) with a self-use recommendation — via the equip-reserve SSOT; (2) break ties by
+     * living-economy market value (the bot's perceived market price, NPC-resale fallback) via the
+     * market-book SSOT. Returns null for a no-choice quest (unchanged completion, matching a real player
+     * who sends no selection). Runs on the bot's tick thread (the market book is tick-thread-owned).
+     */
+    static Integer pickBestRewardSelection(Character bot, List<Integer> choices) {
+        if (choices == null || choices.isEmpty()) {
+            return null;
+        }
+        ItemInformationProvider ii = ItemInformationProvider.getInstance();
+        BotEntry entry = BotManager.getInstance().getEntryByBotCharId(bot.getId());
+        BotMarketBook book = entry != null ? BotMarketBook.of(entry, bot) : null;
+        long now = System.currentTimeMillis();
+        int best = 0;
+        double bestScore = Double.NEGATIVE_INFINITY;
+        for (int i = 0; i < choices.size(); i++) {
+            int itemId = choices.get(i);
+            double npc = ii.getPrice(itemId, 1);
+            double market = book != null
+                    ? book.marketValue(BotMarketMath.priceKey(itemId, 0), npc, now) : Math.max(0, npc);
+            // Priority 1 (useful) dominates priority 2 (market value): a tier offset far above any meso
+            // price keeps every useful reward above every non-useful one; market value orders within a tier.
+            double score = (rewardUsefulToBot(bot, ii, itemId) ? 1e15 : 0) + market;
+            if (score > bestScore) {
+                bestScore = score;
+                best = i;
+            }
+        }
+        return best;
+    }
+
+    /** True when the bot would keep this reward for itself: an incoming equip it'd reserve (equip-reserve
+     *  SSOT) or a non-equip with a self-use recommendation. */
+    private static boolean rewardUsefulToBot(Character bot, ItemInformationProvider ii, int itemId) {
+        if (ItemConstants.isEquipment(itemId)) {
+            return ii.getEquipById(itemId) instanceof Equip eq
+                    && BotEquipManager.wouldReserveIncomingItem(bot, ii, eq);
+        }
+        return BotEquipManager.shouldReserveOwnedItem(bot, new Item(itemId, (short) 0, (short) 1));
+    }
 
     /** Mobs spawning on a map (mob id -> spawn points); seam over {@link BotSpawnIndex}. */
     interface MapMobsLookup {

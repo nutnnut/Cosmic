@@ -194,12 +194,13 @@ class BotNavigationGraphProviderTest {
         BotEntry entry = new BotEntry(bot, null, null);
         entry.committedRoute = route;
         entry.committedRouteTargetRegionId = goalRegion;
+        entry.committedRouteTargetPos = new Point(goal);
 
         java.util.Set<Integer> visited = new java.util.HashSet<>();
         int region = startRegion;
         visited.add(region);
         for (int step = 0; step < 64 && region != goalRegion; step++) {
-            BotNavigationGraph.Edge hop = BotNavigationManager.nextCommittedRouteEdge(g, entry, region, goalRegion);
+            BotNavigationGraph.Edge hop = BotNavigationManager.nextCommittedRouteEdge(g, entry, region, goalRegion, goal);
             assertNotNull(hop, "committed route stalls at region " + region);
             assertEquals(region, hop.fromRegionId, "hop must leave the bot's current region");
             region = hop.toRegionId;
@@ -238,22 +239,32 @@ class BotNavigationGraphProviderTest {
         var route = BotNavigationManager.computeCommittedRoute(g, bot, startRegion, goalRegion, goal);
         assertNotNull(route, "best-effort committed route should be represented as an empty or partial route");
 
-        java.util.Set<Integer> visited = new java.util.HashSet<>();
         int region = startRegion;
-        visited.add(region);
         BotEntry entry = new BotEntry(bot, null, null);
         entry.committedRoute = route;
         entry.committedRouteTargetRegionId = goalRegion;
+        entry.committedRouteTargetPos = new Point(goal);
 
-        for (int step = 0; step < 16; step++) {
-            BotNavigationGraph.Edge hop = BotNavigationManager.nextCommittedRouteEdge(g, entry, region, goalRegion);
+        // Routes may legitimately REVISIT a region at different points (portal tours, staircases) —
+        // the follower is cursor-based, so the cycle guard is monotone cursor progress: each served
+        // hop must sit strictly later in the route than the last, and the walk must exhaust within
+        // route.size() hops. A flip-flop (DecembeR r83->r89->r102->r83 recompute-forever) would
+        // re-serve an earlier hop and trip the cursor assertion.
+        int lastCursor = -1;
+        for (int step = 0; step <= route.size(); step++) {
+            BotNavigationGraph.Edge hop = BotNavigationManager.nextCommittedRouteEdge(g, entry, region, goalRegion, goal);
             if (hop == null) {
-                break;
+                return;
             }
             assertEquals(region, hop.fromRegionId, "hop must leave the bot's current region");
+            assertTrue(entry.committedRouteCursor > lastCursor,
+                    "botId " + botId + " route follower re-served hop " + entry.committedRouteCursor
+                            + " (last " + lastCursor + ") — cycle: " + route);
+            lastCursor = entry.committedRouteCursor;
             region = hop.toRegionId;
-            assertTrue(visited.add(region), "botId " + botId + " best-effort route revisits region " + region + ": " + route);
         }
+        org.junit.jupiter.api.Assertions.fail("botId " + botId + " route walk did not exhaust within "
+                + route.size() + " hops — cycle: " + route);
     }
 
     @Test

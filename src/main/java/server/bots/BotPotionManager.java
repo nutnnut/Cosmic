@@ -156,6 +156,26 @@ final class BotPotionManager {
         return new int[]{hp, mp};
     }
 
+    // Short-TTL cache for the hot combat-targeting fragility probe (isFragile, evaluated per candidate
+    // mob). countPotions walks getInventory(USE).list() -- a fair-lock + fresh ArrayList -- every call,
+    // and targeting queries it many times per tick per bot. There is no single bot-side USE-mutation
+    // chokepoint to invalidate on (autopot consumption lives in shared Character code, buys/sells in
+    // BotShopManager), so a ~1s TTL bounds staleness instead. Only the fragility probe uses this; every
+    // freshness-sensitive caller (shop restock, chat status, pot-share) keeps the exact countPotions.
+    private static final long POT_COUNT_CACHE_MS = 1000L;
+    private static final Map<Integer, long[]> potCountCache = new ConcurrentHashMap<>();
+
+    static int[] countPotionsCached(Character bot) {
+        long now = System.currentTimeMillis();
+        long[] hit = potCountCache.get(bot.getId());
+        if (hit != null && now < hit[2]) {
+            return new int[]{(int) hit[0], (int) hit[1]};
+        }
+        int[] counts = countPotions(bot);
+        potCountCache.put(bot.getId(), new long[]{counts[0], counts[1], now + POT_COUNT_CACHE_MS});
+        return counts;
+    }
+
     static int[] countPotions(List<Item> items, Function<Integer, StatEffect> effectLookup) {
         long startedAt = BotPerformanceMonitor.start();
         int hp = 0;

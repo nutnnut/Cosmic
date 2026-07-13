@@ -1,4 +1,36 @@
 {
+  "permissions": {
+    "allow": [
+      "Bash(curl -s http://localhost:8089/api/live*)",
+      "Bash(curl -s \"http://localhost:8089/api/live*\")",
+      "Bash(curl -s http://localhost:8089/api/botdebug*)",
+      "Bash(curl -s \"http://localhost:8089/api/botdebug*\")",
+      "Bash(curl -s http://localhost:8089/api/mapinfo*)",
+      "Bash(curl -s \"http://localhost:8089/api/mapinfo*\")",
+      "Bash(curl -s http://localhost:8089/api/mapgraph*)",
+      "Bash(curl -s \"http://localhost:8089/api/mapgraph*\")",
+      "Bash(curl -s http://localhost:8089/api/worldmaps*)",
+      "Bash(curl -s \"http://localhost:8089/api/worldmaps*\")",
+      "Bash(curl -s http://localhost:8089/api/killcalib*)",
+      "Bash(curl -s \"http://localhost:8089/api/killcalib*\")",
+      "Bash(curl -s http://localhost:8089/api/grindmodel*)",
+      "Bash(curl -s \"http://localhost:8089/api/grindmodel*\")",
+      "Bash(curl -s http://localhost:8089/api/navprobe*)",
+      "Bash(curl -s \"http://localhost:8089/api/navprobe*\")",
+      "Bash(curl -s http://localhost:8089/api/pathfind*)",
+      "Bash(curl -s \"http://localhost:8089/api/pathfind*\")",
+      "Bash(curl -s http://localhost:8089/api/perf*)",
+      "Bash(curl -s \"http://localhost:8089/api/perf*\")",
+      "Bash(curl -s http://localhost:8089/api/bot/pathlog*)",
+      "Bash(curl -s \"http://localhost:8089/api/bot/pathlog*\")",
+      "Bash(curl -s http://localhost:8089/api/market/*)",
+      "Bash(curl -s \"http://localhost:8089/api/market/*\")",
+      "Bash(powershell -NoProfile -ExecutionPolicy Bypass -File tools/bot_pathlog.ps1*)",
+      "Bash(powershell -NoProfile -ExecutionPolicy Bypass -File tools/bot_triage.ps1*)",
+      "PowerShell(tools\\bot_pathlog.ps1*)",
+      "PowerShell(tools\\bot_triage.ps1*)"
+    ]
+  },
   "hooks": {
     "PreToolUse": [
       {

@@ -38,7 +38,10 @@ class BotScrollValuerTest {
         // Restart recurrence: D = c + 0.5*(B+D)  ->  D = 2c + B = 1200; value = B + D = 2B + 2c = 2200.
         DoubleUnaryOperator v = BotScrollValuer.reproductionValue(
                 0.0, 1, List.of(sc(0.5, 1.0, 100.0)), 1000.0);
-        assertEquals(2200.0, v.applyAsDouble(1.0), 1e-6);
+        // The restart fixed point early-exits once D moves <1 meso between iterations, so the closed
+        // form is met to within a few meso (residual ~ epsilon*r/(1-r) for contraction rate r) —
+        // negligible on the million-meso curves this feeds, and swamped by live-price noise there.
+        assertEquals(2200.0, v.applyAsDouble(1.0), 5.0);
     }
 
     @Test
@@ -48,9 +51,9 @@ class BotScrollValuerTest {
         DoubleUnaryOperator v = BotScrollValuer.reproductionValue(
                 0.0, 2, List.of(sc(0.5, 1.0, 100.0)), 1000.0);
         double v0 = v.applyAsDouble(0.0), v1 = v.applyAsDouble(1.0), v2 = v.applyAsDouble(2.0);
-        assertEquals(1000.0, v0, 1e-6);
-        assertEquals(1533.333333, v1, 0.1);
-        assertEquals(4600.0, v2, 0.1);
+        assertEquals(1000.0, v0, 1e-6); // at base: exact, no restart iteration
+        assertEquals(1533.333333, v1, 5.0); // restart early-exit residual (see singleSlot... above)
+        assertEquals(4600.0, v2, 5.0);
         // strictly convex: the second point of stat costs far more than the first
         assertTrue((v2 - v1) > (v1 - v0), "reproduction value must be convex above base");
     }

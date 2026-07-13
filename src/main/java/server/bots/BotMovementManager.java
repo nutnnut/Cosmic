@@ -198,6 +198,11 @@ class BotMovementManager {
         BotFidgetManager.clear(entry);
         clearNavigationState(entry);
         entry.movementBroadcastValid = false;
+        // The position just jumped (map change / teleport): a frozen LOD1 motion plan still points
+        // at the PRE-jump coordinates — possibly another map's space. Drop it so the LOD0
+        // materialize snap keeps the real position instead of rewinding there.
+        entry.motionFrom = null;
+        entry.motionTo = null;
     }
 
     static void clearNavigationState(BotEntry entry) {
@@ -210,7 +215,12 @@ class BotMovementManager {
         entry.navFootholdDetourEdge = null;
         entry.navFootholdDetourTarget = null;
         entry.navPreciseTarget = false;
-        entry.navBlockedPosTicks = 0;
+        // NOTE: navBlockedPosTicks is deliberately NOT reset here, for the same reason as
+        // committedRoute below: incidental clears between AI ticks were zeroing the blocked-pos
+        // counter every ~2 ticks while the committed route kept re-serving the same unexecutable
+        // hop, so the ~300-500ms give-up never fired (12min freeze, KB oscillation ledger #15).
+        // The counter self-resets in trackBlockedPositionGate on any non-blocked tick or on
+        // leaving the drift radius, and is consumed by the give-up itself.
         // NOTE: committedRoute is deliberately NOT cleared here. clearNavigationState fires on many
         // incidental ticks — notably tryExecuteCommittedEdgeAfterGroundMovement the instant a jump
         // completes on landing — and wiping the route there degraded "commit one route and follow it"
@@ -230,10 +240,15 @@ class BotMovementManager {
             int dy = targetPos.y - botPos.y;
             int dxOwner = targetPos.x - entry.climbRope.x();
 
-            // If not navigating, allow jumping off when target is far away horizontally
+            // If not navigating, allow jumping off when the target is far away horizontally and
+            // deeper than the rope reaches — but only once the descent is spent (near the rope
+            // bottom). Dismounting the moment the bot attaches at the rope top launches it back
+            // onto the entry platform for zero descent, and the fallback steering walks it right
+            // back to the rope forever (pathlog-BishopDemo-2026-07-03, 551000000 rope@x=200).
             if (runAiTick && entry.navEdge == null
                     && Math.abs(dxOwner) > cfg.FOLLOW_DIST
-                    && entry.climbRope.bottomY() < targetPos.y) {
+                    && entry.climbRope.bottomY() < targetPos.y
+                    && botPos.y >= entry.climbRope.bottomY() - cfg.STOP_DIST) {
                 jumpOffRope(entry, bot, dxOwner);
                 return;
             }
@@ -596,13 +611,17 @@ class BotMovementManager {
             }
 
             targetPos = adjustGrindingTargetPosition(entry, currentFh, targetPos);
+            boolean walkOffWaypoint = false;
             if (entry.graphWarmupFallback && targetPos != null) {
                 if (BotFallbackMovementManager.tryImmediateAction(entry, botPos, targetPos)) {
                     return;
                 }
-                targetPos = BotFallbackMovementManager.resolveSteeringTarget(entry, botPos, targetPos);
+                BotFallbackMovementManager.Steering steering =
+                        BotFallbackMovementManager.resolveSteeringTarget(entry, botPos, targetPos);
+                targetPos = steering.target();
+                walkOffWaypoint = steering.walkOffLedge();
             }
-            MoveAction action = planGroundAction(entry, currentFh, botPos, targetPos);
+            MoveAction action = planGroundAction(entry, currentFh, botPos, targetPos, walkOffWaypoint);
             applyGroundAction(entry, currentFh, action);
         } finally {
             BotPerformanceMonitor.record("move-ground", System.nanoTime() - startedAt);
@@ -663,16 +682,19 @@ class BotMovementManager {
         return currentRegion.pointAt(clampedX);
     }
 
-    private static MoveAction planGroundAction(BotEntry entry, Foothold currentFh, Point botPos, Point targetPos) {
+    private static MoveAction planGroundAction(BotEntry entry, Foothold currentFh, Point botPos, Point targetPos,
+                                               boolean walkOffWaypoint) {
         boolean directionalDrop = isDirectionalDropEdge(entry.navEdge);
         boolean footholdDetour = entry.navFootholdDetourTarget != null;
-        int stopDist = directionalDrop || footholdDetour ? 0
+        // A fallback walk-off waypoint sits walkStep px PAST the foothold end — the bot must walk
+        // through it (ground runs out first), so any stop/follow radius parks it at the ledge forever.
+        int stopDist = directionalDrop || footholdDetour || walkOffWaypoint ? 0
                 : entry.navPreciseTarget ? preciseNavStopDist(entry.navEdge) : cfg.STOP_DIST;
         // No hysteresis when navigating to an edge — always move toward the waypoint. FOLLOW_DIST
         // hysteresis exists to stop owner-follow spacing jitter; a grind-wander/objective target must be
         // reached, so it restarts at stopDist (else the bot parks within 80px of its goal and never
         // closes the gap — pathlog-duiuganda: stalled 49px short with nav=same-region edge=none).
-        int followDist = directionalDrop ? 0
+        int followDist = directionalDrop || walkOffWaypoint ? 0
                 : (entry.navEdge != null || entry.navPreciseTarget) ? stopDist
                 : entry.grinding ? stopDist
                 : cfg.FOLLOW_DIST;
@@ -680,9 +702,9 @@ class BotMovementManager {
         if (stepX == 0) {
             return MoveAction.idle();
         }
-        boolean canWalkStep = BotPhysicsEngine.canWalkGroundStep(entry.bot.getMap(), botPos, stepX);
+        boolean canWalkStep = BotPhysicsEngine.canWalkGroundStep(entry.bot.getMap(), botPos, currentFh, stepX);
         if (!canWalkStep) {
-            boolean blockedByWall = BotPhysicsEngine.isGroundStepBlockedByWall(entry.bot.getMap(), botPos, stepX);
+            boolean blockedByWall = BotPhysicsEngine.isGroundStepBlockedByWall(entry.bot.getMap(), botPos, currentFh, stepX);
             // Swim maps bypass the nav graph (no JUMP/DROP edges), so a grounded bot blocked by a wall
             // toward its target has no authored way off the platform — it would idle forever. Launch into
             // the water ourselves; once airborne, tickSwimming steers it over the obstacle.
@@ -722,7 +744,13 @@ class BotMovementManager {
         // ground walking toward a region exit, so dodging across it is safe: simulatedJumpLandsInCurrentRegion
         // below guarantees the bot lands in the same region and does not derail the path.
         boolean traveling = entry.followTravelTargetMapId != -1;
+        boolean parkingIdle = entry.idleLeech
+                || entry.hpResting
+                || System.currentTimeMillis() < entry.breakUntilMs;
         if (!dodgeModeAllowed(entry.following, entry.grinding, traveling, entry.navEdge, entry.navPreciseTarget)) {
+            return false;
+        }
+        if (parkingIdle) {
             return false;
         }
 
@@ -1064,6 +1092,15 @@ class BotMovementManager {
         // ponytail: O(chars) scan per tick per bot; make MapleMap track a non-bot count if it ever shows up hot.
         if (!bot.getMap().isObservedByPlayer()) {
             entry.movementBroadcastValid = false;
+            // Still reconcile the snapshot cache (no packet): settleIdleIfUnbroadcast keys off
+            // lastBroadcast* to know the bot came to rest — stale motion values here would re-run
+            // the settle every tick for the whole unobserved resting population, and the stance
+            // side-effect in movementSnapshot keeps the enter-map spawn pose honest (no bot frozen
+            // mid-walk-stride when a player loads in).
+            BotPhysicsEngine.MovementSnapshot idle = BotPhysicsEngine.movementSnapshot(entry);
+            entry.lastBroadcastVelX = idle.velX();
+            entry.lastBroadcastVelY = idle.velY();
+            entry.lastBroadcastStance = idle.stance();
             return;
         }
         int x = bot.getPosition().x;
@@ -1127,13 +1164,16 @@ class BotMovementManager {
     }
 
     /** Broadcast a teleport so other clients render a BLINK instead of a glide. Captured client
-     *  teleport packets (logs/monitored-packets-teleport*) carry 4@origin then 3@dest, followed by
-     *  an ordinary absolute landing fragment so observers settle at the arrival side immediately. */
+     *  teleport packets (logs/monitored-packets-teleport*) carry 4@origin (with the origin foothold)
+     *  then 3@dest (fh 0 — arrival is treated as airborne until the settle), followed by an ordinary
+     *  absolute landing fragment so observers settle at the arrival side immediately. */
     static void broadcastTeleport(BotEntry entry, Point origin, Point dest) {
         Character bot = entry.bot;
         BotPhysicsEngine.MovementSnapshot snapshot = BotPhysicsEngine.movementSnapshot(entry);
-        int fhId = resolveBroadcastFhId(entry, bot);
-        byte[] data = buildTeleportMovementData(origin, dest, snapshot, fhId);
+        int fhId = resolveBroadcastFhId(entry, bot); // bot already stands at dest here
+        Foothold originFh = BotPhysicsEngine.findGroundFoothold(bot.getMap(), origin);
+        int originFhId = originFh != null ? originFh.getId() : fhId;
+        byte[] data = buildTeleportMovementData(origin, dest, snapshot, originFhId, fhId);
         InPacket packet = new ByteBufInPacket(Unpooled.wrappedBuffer(data));
         Packet movePacket = PacketCreator.movePlayer(bot.getId(), packet, data.length);
         bot.getMap().broadcastMessage(bot, movePacket, false);
@@ -1151,27 +1191,33 @@ class BotMovementManager {
     static byte[] buildTeleportMovementData(Point origin,
                                             Point dest,
                                             BotPhysicsEngine.MovementSnapshot snapshot,
-                                            int fhId) {
+                                            int originFhId,
+                                            int destFhId) {
         byte[] data = new byte[35];
         int i = 0;
         data[i++] = 3; // teleport origin, teleport destination, landing settle
-        i = putTeleportFrag(data, i, (byte) 4, origin.x, origin.y, snapshot.stance());
-        i = putTeleportFrag(data, i, (byte) 3, dest.x, dest.y, snapshot.stance());
-        putAbsoluteFrag(data, i, dest.x, dest.y, snapshot.velX(), snapshot.velY(), fhId, snapshot.stance());
+        i = putTeleportFrag(data, i, (byte) 4, origin.x, origin.y, originFhId, snapshot.stance());
+        i = putTeleportFrag(data, i, (byte) 3, dest.x, dest.y, 0, snapshot.stance());
+        putAbsoluteFrag(data, i, dest.x, dest.y, snapshot.velX(), snapshot.velY(), destFhId, snapshot.stance());
         return data;
     }
 
-    private static int putTeleportFrag(byte[] data, int i, byte cmd, int x, int y, int stance) {
+    /** Client-true teleport fragment. CMovePath::Decode (v83 @ 0x68a463, cases 3/4) reads
+     *  x, y, fh, stance, elapse — NOT the server-parse layout (x, y, xwobble, ywobble, stance).
+     *  Writing stance as the last byte made observer clients read elapse = stance<<8 ms
+     *  (stance 4 -> ~1s), which kept the teleport frame lingering/stuttering. Real captures
+     *  (logs/monitored-packets-teleport*) always carry elapse 0: the blink is instantaneous. */
+    private static int putTeleportFrag(byte[] data, int i, byte cmd, int x, int y, int fh, int stance) {
         data[i++] = cmd;
         data[i++] = (byte) (x & 0xFF);
         data[i++] = (byte) (x >> 8);
         data[i++] = (byte) (y & 0xFF);
         data[i++] = (byte) (y >> 8);
-        data[i++] = 0; // xwobble
-        data[i++] = 0;
-        data[i++] = 0; // ywobble
-        data[i++] = 0;
+        data[i++] = (byte) (fh & 0xFF);
+        data[i++] = (byte) (fh >> 8);
         data[i++] = (byte) stance;
+        data[i++] = 0; // elapse
+        data[i++] = 0;
         return i;
     }
 

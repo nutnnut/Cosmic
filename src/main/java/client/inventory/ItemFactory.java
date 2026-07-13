@@ -29,7 +29,9 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
 
@@ -208,69 +210,154 @@ public enum ItemFactory {
                 ps.executeUpdate();
             }
 
-            try (PreparedStatement psItem = con.prepareStatement("INSERT INTO `inventoryitems` VALUES (DEFAULT, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", Statement.RETURN_GENERATED_KEYS)) {
-                if (!items.isEmpty()) {
-                    for (Pair<Item, InventoryType> pair : items) {
-                        Item item = pair.getLeft();
-                        InventoryType mit = pair.getRight();
-                        psItem.setInt(1, value);
-                        psItem.setString(2, account ? null : String.valueOf(id));
-                        psItem.setString(3, account ? String.valueOf(id) : null);
-                        psItem.setInt(4, item.getItemId());
-                        psItem.setInt(5, mit.getType());
-                        psItem.setInt(6, item.getPosition());
-                        psItem.setInt(7, item.getQuantity());
-                        psItem.setString(8, item.getOwner());
-                        psItem.setInt(9, item.getPetId());      // thanks Daddy Egg for alerting a case of unique petid constraint breach getting raised
-                        psItem.setInt(10, item.getFlag());
-                        psItem.setLong(11, item.getExpiration());
-                        psItem.setString(12, item.getGiftFrom());
-                        psItem.executeUpdate();
+            if (items.isEmpty()) {
+                return;
+            }
 
-                        if (mit.equals(InventoryType.EQUIP) || mit.equals(InventoryType.EQUIPPED)) {
-                            // NOTE: any column added below must also be added to
-                            // Character.computeInventorySignature, or the unchanged-save skip there
-                            // would silently stop persisting it.
-                            try (PreparedStatement psEquip = con.prepareStatement("INSERT INTO `inventoryequipment` VALUES (DEFAULT, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")) {
-                                try (ResultSet rs = psItem.getGeneratedKeys()) {
-                                    if (!rs.next()) {
-                                        throw new RuntimeException("Inserting item failed.");
-                                    }
-
-                                    psEquip.setInt(1, rs.getInt(1));
-                                }
-
-                                Equip equip = (Equip) item;
-                                psEquip.setInt(2, equip.getUpgradeSlots());
-                                psEquip.setInt(3, equip.getLevel());
-                                psEquip.setInt(4, equip.getStr());
-                                psEquip.setInt(5, equip.getDex());
-                                psEquip.setInt(6, equip.getInt());
-                                psEquip.setInt(7, equip.getLuk());
-                                psEquip.setInt(8, equip.getHp());
-                                psEquip.setInt(9, equip.getMp());
-                                psEquip.setInt(10, equip.getWatk());
-                                psEquip.setInt(11, equip.getMatk());
-                                psEquip.setInt(12, equip.getWdef());
-                                psEquip.setInt(13, equip.getMdef());
-                                psEquip.setInt(14, equip.getAcc());
-                                psEquip.setInt(15, equip.getAvoid());
-                                psEquip.setInt(16, equip.getHands());
-                                psEquip.setInt(17, equip.getSpeed());
-                                psEquip.setInt(18, equip.getJump());
-                                psEquip.setInt(19, 0);
-                                psEquip.setInt(20, equip.getVicious());
-                                psEquip.setInt(21, equip.getItemLevel());
-                                psEquip.setInt(22, equip.getItemExp());
-                                psEquip.setInt(23, equip.getRingId());
-                                psEquip.executeUpdate();
-                            }
-                        }
+            // Equips need their generated inventoryitemid to write the inventoryequipment row.
+            // The batched path below recovers those ids by (inventorytype, position) instead of
+            // getGeneratedKeys() - a rewritten batch's generated keys may interleave with concurrent
+            // inserts under innodb_autoinc_lock_mode=2 - which requires equip slots to be unique.
+            // True for character inventories (one item per slot); not guaranteed for raw item lists
+            // (STORAGE, DUEY, ...), which fall back to the per-row path on collision.
+            Map<Integer, Equip> equipBySlot = new HashMap<>();
+            boolean slotsUnique = true;
+            for (Pair<Item, InventoryType> pair : items) {
+                InventoryType mit = pair.getRight();
+                if (mit.equals(InventoryType.EQUIP) || mit.equals(InventoryType.EQUIPPED)) {
+                    if (equipBySlot.put(slotKey(mit.getType(), pair.getLeft().getPosition()), (Equip) pair.getLeft()) != null) {
+                        slotsUnique = false;
+                        break;
                     }
                 }
             }
+            if (!slotsUnique) {
+                saveItemsCommonPerRow(items, id, con);
+                return;
+            }
+
+            // One multi-row INSERT round trip (rewriteBatchedStatements) instead of one per item -
+            // the item rewrite dominated char-save time at ~150 items per bot.
+            try (PreparedStatement psItem = con.prepareStatement("INSERT INTO `inventoryitems` VALUES (DEFAULT, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")) {
+                for (Pair<Item, InventoryType> pair : items) {
+                    setItemColumns(psItem, pair.getLeft(), pair.getRight(), id);
+                    psItem.addBatch();
+                }
+                psItem.executeBatch();
+            }
+
+            if (equipBySlot.isEmpty()) {
+                return;
+            }
+
+            List<Pair<Integer, Equip>> equipRows = new ArrayList<>(equipBySlot.size());
+            StringBuilder select = new StringBuilder();
+            select.append("SELECT `inventoryitemid`, `inventorytype`, `position` FROM `inventoryitems` WHERE `type` = ? AND `");
+            select.append(account ? "accountid" : "characterid").append("` = ? AND `inventorytype` IN (?, ?)");
+            try (PreparedStatement ps = con.prepareStatement(select.toString())) {
+                ps.setInt(1, value);
+                ps.setInt(2, id);
+                ps.setInt(3, InventoryType.EQUIP.getType());
+                ps.setInt(4, InventoryType.EQUIPPED.getType());
+                try (ResultSet rs = ps.executeQuery()) {
+                    while (rs.next()) {
+                        Equip equip = equipBySlot.get(slotKey((byte) rs.getInt(2), (short) rs.getInt(3)));
+                        if (equip == null) {
+                            throw new SQLException("Equip select-back found unexpected row (type " + value + ", owner " + id + ")");
+                        }
+                        equipRows.add(new Pair<>(rs.getInt(1), equip));
+                    }
+                }
+            }
+            if (equipRows.size() != equipBySlot.size()) {
+                throw new SQLException("Equip select-back matched " + equipRows.size() + " of " + equipBySlot.size() + " rows (type " + value + ", owner " + id + ")");
+            }
+
+            try (PreparedStatement psEquip = con.prepareStatement("INSERT INTO `inventoryequipment` VALUES (DEFAULT, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")) {
+                for (Pair<Integer, Equip> row : equipRows) {
+                    psEquip.setInt(1, row.getLeft());
+                    setEquipColumns(psEquip, row.getRight());
+                    psEquip.addBatch();
+                }
+                psEquip.executeBatch();
+            }
         } finally {
             lock.unlock();
+        }
+    }
+
+    /** (inventorytype, position) -> collision-free int; |position| < 100000 always. */
+    private static int slotKey(byte inventoryType, short position) {
+        return inventoryType * 100000 + position;
+    }
+
+    private void setItemColumns(PreparedStatement psItem, Item item, InventoryType mit, int id) throws SQLException {
+        psItem.setInt(1, value);
+        psItem.setString(2, account ? null : String.valueOf(id));
+        psItem.setString(3, account ? String.valueOf(id) : null);
+        psItem.setInt(4, item.getItemId());
+        psItem.setInt(5, mit.getType());
+        psItem.setInt(6, item.getPosition());
+        psItem.setInt(7, item.getQuantity());
+        psItem.setString(8, item.getOwner());
+        psItem.setInt(9, item.getPetId());      // thanks Daddy Egg for alerting a case of unique petid constraint breach getting raised
+        psItem.setInt(10, item.getFlag());
+        psItem.setLong(11, item.getExpiration());
+        psItem.setString(12, item.getGiftFrom());
+    }
+
+    // NOTE: any column added below must also be added to
+    // Character.computeInventorySignature, or the unchanged-save skip there
+    // would silently stop persisting it.
+    private static void setEquipColumns(PreparedStatement psEquip, Equip equip) throws SQLException {
+        psEquip.setInt(2, equip.getUpgradeSlots());
+        psEquip.setInt(3, equip.getLevel());
+        psEquip.setInt(4, equip.getStr());
+        psEquip.setInt(5, equip.getDex());
+        psEquip.setInt(6, equip.getInt());
+        psEquip.setInt(7, equip.getLuk());
+        psEquip.setInt(8, equip.getHp());
+        psEquip.setInt(9, equip.getMp());
+        psEquip.setInt(10, equip.getWatk());
+        psEquip.setInt(11, equip.getMatk());
+        psEquip.setInt(12, equip.getWdef());
+        psEquip.setInt(13, equip.getMdef());
+        psEquip.setInt(14, equip.getAcc());
+        psEquip.setInt(15, equip.getAvoid());
+        psEquip.setInt(16, equip.getHands());
+        psEquip.setInt(17, equip.getSpeed());
+        psEquip.setInt(18, equip.getJump());
+        psEquip.setInt(19, 0);
+        psEquip.setInt(20, equip.getVicious());
+        psEquip.setInt(21, equip.getItemLevel());
+        psEquip.setInt(22, equip.getItemExp());
+        psEquip.setInt(23, equip.getRingId());
+    }
+
+    /** Legacy per-row insert path: one round trip per item, equip ids via getGeneratedKeys. */
+    private void saveItemsCommonPerRow(List<Pair<Item, InventoryType>> items, int id, Connection con) throws SQLException {
+        try (PreparedStatement psItem = con.prepareStatement("INSERT INTO `inventoryitems` VALUES (DEFAULT, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", Statement.RETURN_GENERATED_KEYS)) {
+            for (Pair<Item, InventoryType> pair : items) {
+                Item item = pair.getLeft();
+                InventoryType mit = pair.getRight();
+                setItemColumns(psItem, item, mit, id);
+                psItem.executeUpdate();
+
+                if (mit.equals(InventoryType.EQUIP) || mit.equals(InventoryType.EQUIPPED)) {
+                    try (PreparedStatement psEquip = con.prepareStatement("INSERT INTO `inventoryequipment` VALUES (DEFAULT, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")) {
+                        try (ResultSet rs = psItem.getGeneratedKeys()) {
+                            if (!rs.next()) {
+                                throw new RuntimeException("Inserting item failed.");
+                            }
+
+                            psEquip.setInt(1, rs.getInt(1));
+                        }
+
+                        setEquipColumns(psEquip, (Equip) pair.getLeft());
+                        psEquip.executeUpdate();
+                    }
+                }
+            }
         }
     }
 

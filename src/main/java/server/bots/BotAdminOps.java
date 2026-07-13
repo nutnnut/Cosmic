@@ -60,7 +60,7 @@ public final class BotAdminOps {
                 lines.add("skip " + r.name() + ": account has other characters (not a dedicated bot account)");
                 continue;
             }
-            bm.removeBotByCharId(r.cid()); // stop the bot AI tick before deleting underneath it
+            bm.removeBotByCharId(r.cid(), "admin bot-delete"); // stop the bot AI tick before deleting underneath it
             Character online = findOnline(r.cid());
             if (online != null && online.getClient() != null) {
                 online.getClient().disconnect(false, false); // leave the world (and final-save) before the DB delete

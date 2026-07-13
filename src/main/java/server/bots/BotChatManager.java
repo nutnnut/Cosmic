@@ -466,7 +466,7 @@ public class BotChatManager {
     private static final String MESO_CMD_VERB = "(?:trade(?:\\s+(?:me|us))?|give(?:\\s+(?:me|us))?|gimme|pass(?:\\s+me)?)";
     private static final String TRANSFER_OWNER = "(?:(?:your|ur|my|all)\\s+)?";
     private static final String TRANSFER_RECIPIENT = "(?:(?:me|us)\\s+)?";
-    private static final String MESO_AMOUNT_TOKEN = "\\d[\\d,]*(?:\\.\\d+)?\\s*[kmb]?";
+    static final String MESO_AMOUNT_TOKEN = "\\d[\\d,]*(?:\\.\\d+)?\\s*[kmb]?";
     private static final Pattern TRADE_MESOS_COMMAND_PATTERN = Pattern.compile(
             "\\b" + MESO_CMD_VERB + "\\s+" + TRANSFER_RECIPIENT
             + "(?:(all)\\s+)?"
@@ -896,6 +896,8 @@ public class BotChatManager {
         if (SUPPORT_ON_PATTERN.matcher(message).find()) {
             BotManager.after(BotManager.randMs(500, 700), () -> {
                 entry.skillBuffsEnabled = true;
+                entry.nextBuffCheckAtMs = 0L;       // re-evaluate buffs at once, don't honor a stale deadline
+                entry.nextMagicGuardCheckMs = 0L;
                 BotManager.getInstance().botReply(entry, "ok, skill buffs on");
             });
             return;
@@ -1159,7 +1161,10 @@ public class BotChatManager {
                 maybeSuggestGearToSiblings(entry, entry.bot);
                 BotManager.getInstance().botReply(entry, BotManager.randomReply(FOLLOW_REPLIES));
                 BotPotionManager.checkPotShareOnModeStart(entry, entry.bot);
-                BotManager.after(BotManager.randMs(250, 750), () -> BotManager.getInstance().issueFollowOwner(entry));
+                BotManager.after(BotManager.randMs(250, 750), () -> {
+                    BotManager.getInstance().issueFollowOwner(entry);
+                    BotManager.getInstance().activateDebugFollowFormation(entry);
+                });
             });
         } else if (isGrindCommand(message)) {
             BotManager.after(BotManager.randMs(1500, 2000), () -> {
@@ -3141,7 +3146,7 @@ public class BotChatManager {
         return "mesos:" + parseMesoAmount(matcher.group(2));
     }
 
-    private static int parseMesoAmount(String amountToken) {
+    static int parseMesoAmount(String amountToken) {
         String normalized = amountToken.toLowerCase().replace(",", "").replaceAll("\\s+", "");
         long multiplier = 1L;
         if (!normalized.isEmpty()) {

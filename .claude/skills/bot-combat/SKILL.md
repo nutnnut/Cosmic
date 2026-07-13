@@ -17,7 +17,7 @@ Triggered by any task that involves the bot's attack pipeline — picking a skil
 
 ## Operating principles (worth knowing before editing)
 
-1. **The v83 client is the source of truth.** Whenever we don't already know how the client behaves, reverse-engineer it (`D:\ReverseEngineer\` IDB toolkit per `reference_reverse_engineering_toolkit`) or **capture packets from a real player** and binary-search the behavior. The wasm reference at `maplestory-wasm` is wrong on physics and we never use it.
+1. **The v83 client is the source of truth.** Whenever we don't already know how the client behaves, reverse-engineer it (`D:\ReverseEngineer\` IDB toolkit per `reference_reverse_engineering_toolkit`) or **capture packets from a real player** and binary-search the behavior.
 2. **Reuse player code paths.** Bot damage/effect/ammo logic should call the same handlers a real player would (`RangedAttackHandler.applyRangedAttackEffects`, `CombatFormulaProvider.makeTarget`, `StatEffect.canPaySkillCost`). When something "doesn't work for bots," nine times out of ten it's a small adapter at the bot-only edge — not new physics inside the shared code. Don't fork shared paths.
 3. **Client-side formulas belong in the bot.** Damage rolls, stance bytes, projectile cosmetic IDs, and packet field encoding are client responsibilities, so we keep them under `server.bots.*` (mainly `BotAttackExecutionProvider` and `BotCombatManager`), never in `StatEffect` or the shared damage handlers.
 4. **Surgical edits.** Don't refactor `AbstractDealDamageHandler` or `PacketCreator.addAttackBody` unless the user is explicitly asking for it. Bot-side adapters are the right level.
@@ -254,6 +254,6 @@ Then check `tmp\mvntest.log` for `Tests run:` and `BUILD SUCCESS / FAILURE` line
 
 ## Where authoritative knowledge lives outside this skill
 
-- Memory: `kb_bot_attack_planning_flow`, `kb_v83_client_combat_internals`, `kb_power_knockback_packet_structure`, `kb_shadow_partner_and_pierce_skills`, `kb_bot_aoe_cluster_target_bias`, `kb_bot_navigation_architecture`, `kb_bot_cleric_heal_architecture`, `kb_bot_alert_stance_emulation`.
+- KB: `kb_bot_aoe_cluster_target_bias`, `kb_bot_cleric_heal_architecture`, `kb_bot_alert_stance_emulation`.
 - `D:\ReverseEngineer\` — IDB disassembly toolkit for verifying client-side facts. See `reference_reverse_engineering_toolkit`.
 - `CLAUDE.md` at the project root — general behavioral guidelines (simplicity, surgical edits, push back when warranted).

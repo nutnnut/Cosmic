@@ -29,5 +29,4 @@ entry.logoutAnchor, ...)` call.
 picker is shared with the operator idle-at-spot path — better to fix the one odd caller
 than reshape the shared SSOT.
 
-Related: [[kb_bot_inert_autopilot_recovery]] (also touches `pickTownLoiterAnchor`),
-[[kb_bot_town_nav_airborne_target]] (other town-nav stranding root causes).
+Related: [[kb_bot_town_nav_airborne_target]] (other town-nav stranding root causes).

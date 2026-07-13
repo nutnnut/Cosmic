@@ -239,6 +239,9 @@ public class Character extends AbstractCharacterObject {
     private transient int equipmaxhp, equipmaxmp, equipstr, equipdex, equipluk, equipint_, equipmagic, equipwatk, equipwdef, equipmdef, localchairhp, localchairmp;
     private int localchairrate;
     private boolean hidden, equipchanged = true, berserk, hasMerchant, hasSandboxItem = false, whiteChat = false, canRecvPartySearchInvite = true;
+    // !hidebot (bot LOD debugging): when set this GM does not count as an observer inside
+    // MapleMap.isObservedByPlayer(), so bots near them stay in their unobserved (LOD1) simulation.
+    private boolean hiddenFromBots = false;
     private boolean equippedMesoMagnet = false, equippedItemPouch = false, equippedPetItemIgnore = false;
     private boolean usedSafetyCharm = false;
     private float autopotHpAlert, autopotMpAlert;
@@ -884,7 +887,11 @@ public class Character extends AbstractCharacterObject {
         if (weapon_item == null) {
             return 1;
         }
-        WeaponType weapon = ItemInformationProvider.getInstance().getWeaponType(weapon_item.getItemId());
+        return calculateMinBaseDamage(watk, mastery,
+                ItemInformationProvider.getInstance().getWeaponType(weapon_item.getItemId()));
+    }
+
+    public int calculateMinBaseDamage(int watk, double mastery, WeaponType weapon) {
         if (getJob().isA(Job.THIEF) && weapon == WeaponType.DAGGER_OTHER) {
             weapon = WeaponType.DAGGER_THIEVES;
         }
@@ -3845,6 +3852,12 @@ public class Character extends AbstractCharacterObject {
 
     public void cancelAllBuffs(boolean softcancel) {
         if (softcancel) {
+            // prtLock BEFORE effLock (same AB-BA class as the updateActiveEffects fix): the
+            // cancelEffectFromBuffStat calls below reach the public cancelEffect wrapper (prtLock) while
+            // this frame still holds effLock+chrLock — inverted vs registerEffect's prt->eff->chr when a
+            // party member is buffing this character concurrently. The inner prtLock reentry is
+            // same-thread safe.
+            prtLock.lock();
             effLock.lock();
             chrLock.lock();
             try {
@@ -3860,6 +3873,7 @@ public class Character extends AbstractCharacterObject {
             } finally {
                 chrLock.unlock();
                 effLock.unlock();
+                prtLock.unlock();
             }
         } else {
             Map<StatEffect, Long> mseBuffs = new LinkedHashMap<>();
@@ -4039,6 +4053,14 @@ public class Character extends AbstractCharacterObject {
     }
 
     public void updateActiveEffects() {
+        // prtLock BEFORE effLock. This method reaches getPartyMembersOnSameMap (which takes prtLock) via
+        // isUpdatingEffect -> StatEffect.isActive while holding effLock — an implicit eff->prt order that
+        // deadlocked AB-BA against registerEffect's prt->eff when a party member buffed this character at
+        // the instant it was map-changing (updateActiveEffects runs from MapleMap.addPlayer). Every other
+        // site that takes both locks (registerEffect, cancelEffect) uses prt->eff; match that convention.
+        // The sole caller (MapleMap.addPlayer) holds neither lock, so hoisting prtLock here is safe, and
+        // the inner prtLock acquisition is reentrant on the same thread.
+        prtLock.lock();
         effLock.lock();     // thanks davidlafriniere, maple006, RedHat for pointing a deadlock occurring here
         try {
             Set<BuffStat> updatedBuffs = new LinkedHashSet<>();
@@ -4064,6 +4086,7 @@ public class Character extends AbstractCharacterObject {
             updateEffects(updatedBuffs);
         } finally {
             effLock.unlock();
+            prtLock.unlock();
         }
     }
 
@@ -4150,6 +4173,13 @@ public class Character extends AbstractCharacterObject {
     }
 
     public void cancelBuffStats(BuffStat stat) {
+        // prtLock BEFORE effLock (same AB-BA class as the updateActiveEffects fix): dropBuffStats below
+        // reaches getPartyMembersOnSameMap (prtLock) via fetchBestEffectFromItemEffectHolder ->
+        // StatEffect.isActive while effLock+chrLock are held — eff->chr->prt, inverted vs registerEffect's
+        // prt->eff->chr. A party member buffing this character (its caster's thread runs registerEffect on
+        // OUR locks) racing our own handler-thread cancelBuffStats (combat state cancels, TakeDamage,
+        // unequip) hangs AB-BA. Callers hold neither lock; the inner prtLock reentry is same-thread safe.
+        prtLock.lock();
         effLock.lock();
         try {
             List<Pair<Integer, BuffStatValueHolder>> cancelList = new LinkedList<>();
@@ -4174,6 +4204,7 @@ public class Character extends AbstractCharacterObject {
             }
         } finally {
             effLock.unlock();
+            prtLock.unlock();
         }
 
         cancelPlayerBuffs(Arrays.asList(stat));
@@ -4852,9 +4883,21 @@ public class Character extends AbstractCharacterObject {
         return client.getAbstractPlayerInteraction();
     }
 
+    // Snapshot of quests.values(), rebuilt lazily after a quest mutation. Kills call
+    // raiseQuestMobCount -> getQuests() constantly (bots included), and copying the whole
+    // ever-growing quest map per kill was a measured whole-server CPU hotspot; quest map
+    // MUTATIONS (start/complete/forfeit/lookup-insert) are rare by comparison. Guarded by
+    // synchronized (quests) like the map itself; immutable so callers can't corrupt it.
+    private List<QuestStatus> questSnapshot = null;
+
     private List<QuestStatus> getQuests() {
         synchronized (quests) {
-            return new ArrayList<>(quests.values());
+            List<QuestStatus> snapshot = questSnapshot;
+            if (snapshot == null) {
+                snapshot = List.copyOf(quests.values());
+                questSnapshot = snapshot;
+            }
+            return snapshot;
         }
     }
 
@@ -4863,7 +4906,7 @@ public class Character extends AbstractCharacterObject {
      *  yields the same string; compared against {@link #savedQuestSignature} to skip an unchanged
      *  re-write. Built from in-memory state only (no DB), so it's cheap relative to the writes it saves. */
     private String computeQuestSignature() {
-        List<QuestStatus> qs = getQuests();
+        List<QuestStatus> qs = new ArrayList<>(getQuests()); // snapshot is immutable; sort a copy
         qs.sort(Comparator.comparingInt(q -> q.getQuest().getId()));
         StringBuilder sb = new StringBuilder(qs.size() * 24);
         for (QuestStatus q : qs) {
@@ -6190,6 +6233,7 @@ public class Character extends AbstractCharacterObject {
             if (qs == null) {
                 qs = new QuestStatus(quest, QuestStatus.Status.NOT_STARTED);
                 quests.put(questid, qs);
+                questSnapshot = null;
             }
             return qs;
         }
@@ -6203,6 +6247,7 @@ public class Character extends AbstractCharacterObject {
                 final QuestStatus stat = new QuestStatus(quest, QuestStatus.Status.getById(status));
                 stat.setCustomData(customData);
                 quests.put(quest.getId(), stat);
+                questSnapshot = null;
             }
         }
     }
@@ -6212,6 +6257,7 @@ public class Character extends AbstractCharacterObject {
             if (!quests.containsKey(quest.getId())) {
                 final QuestStatus status = new QuestStatus(quest, QuestStatus.Status.NOT_STARTED);
                 quests.put(quest.getId(), status);
+                questSnapshot = null;
                 return status;
             }
             return quests.get(quest.getId());
@@ -6226,6 +6272,7 @@ public class Character extends AbstractCharacterObject {
 
     public final QuestStatus getQuestRemove(final Quest quest) {
         synchronized (quests) {
+            questSnapshot = null;
             return quests.remove(quest.getId());
         }
     }
@@ -6590,6 +6637,24 @@ public class Character extends AbstractCharacterObject {
 
     public boolean isHidden() {
         return hidden;
+    }
+
+    public boolean isHiddenFromBots() {
+        return hiddenFromBots;
+    }
+
+    public void setHiddenFromBots(boolean hiddenFromBots) {
+        if (this.hiddenFromBots == hiddenFromBots) {
+            return;
+        }
+        this.hiddenFromBots = hiddenFromBots;
+        // Keep the current map's O(1) observer counter in sync: going hidden drops this player as an
+        // observer, going visible restores it. Only real-client players are ever counted (a bot never
+        // toggles this). addPlayer/removePlayer handle entry/exit; this handles a toggle while on-map.
+        MapleMap map = getMap();
+        if (map != null && !(getClient() instanceof BotClient)) {
+            map.adjustObserverCount(hiddenFromBots ? -1 : +1);
+        }
     }
 
     public boolean isMapObjectVisible(MapObject mo) {
@@ -7583,6 +7648,7 @@ public class Character extends AbstractCharacterObject {
                             status.setForfeited(rs.getInt("forfeited"));
                             status.setCompleted(rs.getInt("completed"));
                             ret.quests.put(q.getId(), status);
+                            ret.questSnapshot = null;
                             loadedQuestStatus.put(rs.getInt("queststatusid"), status);
                         }
                     }
@@ -8700,14 +8766,15 @@ public class Character extends AbstractCharacterObject {
         return false;
     }
 
-    // ponytail: char saves wipe-and-reinsert their rows on shared tables (inventoryitems, skills,
-    // savedlocations); run in parallel (shutdown disconnect loop + periodic autosave + bot logouts)
-    // they deadlock in InnoDB. Gate the DB write so few enough overlap that the bounded retry reliably
-    // wins. Permits = the deadlock/throughput knob: drop to 1 for guaranteed zero deadlock (saves
-    // serialize). SSOT - covers autosave, bot logout, shutdown and despawn.
-    // ponytail: 1 permit = guaranteed zero deadlock (saves serialize). 4 still deadlocked past the
-    // retry budget under bot-logout storms; bump back up only if save throughput becomes the bottleneck.
-    private static final java.util.concurrent.Semaphore SAVE_GATE = new java.util.concurrent.Semaphore(1, true);
+    // ponytail: char saves wipe-and-reinsert their rows on shared tables; run in parallel they used
+    // to deadlock in InnoDB. Root cause (found 2026-07-09, standalone JDBC repro): five save-path
+    // tables had no characterid index, so their per-char DELETEs full-scanned - lock-testing every
+    // row in the table against other saves' uncommitted inserts. Fixed by 032-save-indexes.sql;
+    // with the indexes + READ_UNCOMMITTED, 1600 full-shape saves at 16-way concurrency produced
+    // zero deadlocks. Permits stay as the safety knob: the bounded retry below absorbs any residual
+    // deadlock, and dropping this to 1 re-serializes saves if a storm ever reappears ("Deadlock
+    // saving chr" warnings in the log). SSOT - covers autosave, bot logout, shutdown and despawn.
+    private static final java.util.concurrent.Semaphore SAVE_GATE = new java.util.concurrent.Semaphore(6, true);
 
     public void saveCharToDB() {
         if (YamlConfig.config.server.USE_AUTOSAVE) {
@@ -10095,6 +10162,7 @@ public class Character extends AbstractCharacterObject {
     public void updateQuestStatus(QuestStatus qs) {
         synchronized (quests) {
             quests.put(qs.getQuestID(), qs);
+            questSnapshot = null;
         }
         if (qs.getStatus().equals(QuestStatus.Status.STARTED)) {
             announceUpdateQuest(DelayedQuestUpdate.UPDATE, qs, false);

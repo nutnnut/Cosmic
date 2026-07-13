@@ -10,6 +10,7 @@ import client.inventory.Inventory;
 import client.inventory.InventoryType;
 import client.inventory.Item;
 import client.inventory.WeaponType;
+import constants.skills.ILMage;
 import org.junit.jupiter.api.Test;
 import org.mockito.MockedStatic;
 import org.mockito.Mockito;
@@ -339,6 +340,34 @@ class CombatFormulaProviderTest {
         assertEquals(2_000, profile.maxDamage());
         assertTrue(profile.magicAttack());
         assertFalse(profile.alwaysHit());
+    }
+
+    @Test
+    void shouldApplyElementAmplificationToMagicDamageProfile() {
+        Character bot = mockDamageBot();
+        when(bot.getJob()).thenReturn(Job.IL_MAGE);
+        when(bot.getTotalMagic()).thenReturn(3000);
+        when(bot.getTotalInt()).thenReturn(0);
+
+        StatEffect attackEffect = mock(StatEffect.class);
+        when(attackEffect.getX()).thenReturn(50);
+        when(attackEffect.getMatk()).thenReturn((short) 5);
+
+        Skill amplificationSkill = mock(Skill.class);
+        StatEffect amplificationEffect = mock(StatEffect.class);
+        when(bot.getSkillLevel(amplificationSkill)).thenReturn((byte) 10);
+        when(amplificationSkill.getEffect(10)).thenReturn(amplificationEffect);
+        when(amplificationEffect.getY()).thenReturn(135);
+
+        try (MockedStatic<SkillFactory> skillFactory = Mockito.mockStatic(SkillFactory.class)) {
+            skillFactory.when(() -> SkillFactory.getSkill(ILMage.ELEMENT_AMPLIFICATION)).thenReturn(amplificationSkill);
+
+            CombatFormulaProvider.DamageProfile profile =
+                    provider.resolveDamageProfile(bot, 2101004, attackEffect, true);
+
+            assertEquals(2_325, profile.minDamage());
+            assertEquals(2_700, profile.maxDamage());
+        }
     }
 
     @Test

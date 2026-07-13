@@ -264,10 +264,7 @@ public final class PlayerInteractionHandler extends AbstractPacketHandler {
                         c.getWorldServer().registerPlayerShop(shop);
                         //c.sendPacket(PacketCreator.getPlayerShopRemoveVisitor(1));
                     } else if (ItemConstants.isHiredMerchant(itemId)) {
-                        HiredMerchant merchant = new HiredMerchant(chr, desc, itemId);
-                        chr.setHiredMerchant(merchant);
-                        c.getWorldServer().registerHiredMerchant(merchant);
-                        chr.getClient().getChannelServer().addHiredMerchant(chr.getId(), merchant);
+                        HiredMerchant merchant = HiredMerchant.createFor(chr, desc, itemId);
                         chr.sendPacket(PacketCreator.getHiredMerchant(chr, merchant, true));
                     }
                 }
@@ -384,11 +381,7 @@ public final class PlayerInteractionHandler extends AbstractPacketHandler {
                     chr.getMap().broadcastMessage(PacketCreator.updatePlayerShopBox(shop));
                     shop.setOpen(true);
                 } else if (merchant != null && merchant.isOwner(chr)) {
-                    chr.setHasMerchant(true);
-                    merchant.setOpen(true);
-                    chr.getMap().addMapObject(merchant);
-                    chr.setHiredMerchant(null);
-                    chr.getMap().broadcastMessage(PacketCreator.spawnHiredMerchantBox(merchant));
+                    merchant.publish(chr);
                 }
             } else if (mode == Action.READY.getCode()) {
                 MiniGame game = chr.getMiniGame();
@@ -550,13 +543,8 @@ public final class PlayerInteractionHandler extends AbstractPacketHandler {
                             tradeItem.setQuantity(quantity);
                             tradeItem.setPosition(targetSlot);
 
-                            if (trade.addItem(tradeItem)) {
+                            if (trade.addItem(tradeItem)) { // addItem broadcasts to both windows
                                 InventoryManipulator.removeFromSlot(c, ivType, item.getPosition(), quantity, true);
-
-                                trade.getChr().sendPacket(PacketCreator.getTradeItemAdd((byte) 0, tradeItem));
-                                if (trade.getPartner() != null) {
-                                    trade.getPartner().getChr().sendPacket(PacketCreator.getTradeItemAdd((byte) 1, tradeItem));
-                                }
                             }
                         } catch (Exception e) {
                             log.warn("Chr {} tried to add {}x {} in trade (slot {}), then exception occurred", chr, ii.getName(item.getItemId()), item.getQuantity(), targetSlot, e);
@@ -852,7 +840,8 @@ public final class PlayerInteractionHandler extends AbstractPacketHandler {
         return false;
     }
 
-    private static boolean canPlaceStore(Character chr) {
+    // public: server.bots stall setup runs the same placement rules a real player does
+    public static boolean canPlaceStore(Character chr) {
         try {
             for (MapObject mmo : chr.getMap().getMapObjectsInRange(chr.getPosition(), 23000, Arrays.asList(MapObjectType.HIRED_MERCHANT, MapObjectType.PLAYER))) {
                 if (mmo instanceof Character mc) {

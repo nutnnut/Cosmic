@@ -41,5 +41,5 @@ NOT yet fixed (latent, re-test botpop first — likely duplicate artifacts): gri
 autopilotMapId=-1 zombie-grind in mobless town bypasses `maybeRecoverInertAutopilot` (gated on
 !grinding); `owner-supply-grace` livelock (broke self-owned crew all wait for a pot-share that
 never lands, blocking their own resupply errand — only surfaced in logs AT shutdown, 0 during the
-idle hours). Related: [[kb_bot_inert_autopilot_recovery]], [[kb_bot_self_owned_owner_assumptions]],
+idle hours). Related: [[kb_bot_self_owned_owner_assumptions]],
 [[kb_bot_cold_decide_gc_storm]].

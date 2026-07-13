@@ -19,8 +19,10 @@
   .meta{color:#67748c;font-size:0.85em}
   #fontRow{font-size:11px;color:#8a99b3;margin-bottom:8px}
   #fontRow input{width:130px;margin:0 0 0 6px;padding:0;vertical-align:middle}
-  #tip{position:absolute;display:none;pointer-events:none;background:#0d1017;border:1px solid #3a4761;
-       border-radius:4px;padding:6px 8px;font-size:11px;line-height:1.45;z-index:10;max-width:240px;
+  /* above the roster panels (z 20) and their toggles (z 21): a roster row's status tip must not render
+     behind the panel it was opened from, which is where the panels overlay the map on mobile */
+  #tip{position:fixed;display:none;pointer-events:none;background:#0d1017;border:1px solid #3a4761;
+       border-radius:4px;padding:6px 8px;font-size:11px;line-height:1.45;z-index:25;max-width:240px;
        box-shadow:0 2px 8px rgba(0,0,0,.5)}
   h1{font-size:15px;margin:0 0 2px}
   .sub{color:#67748c;font-size:11px;margin:0 0 10px}
@@ -167,6 +169,8 @@ const edgesByWm = {};   // wmId -> [edgeLine,...]
 let edgeLines = [];     // {ia, ib, line}  — one drawn line per connected instance pair
 let live = {};          // mapId -> {players:[{id,n,l,j,c}], bots:[...]}  (c=1 -> managed/commandable)
 let query = '';
+let stuckOnly = false;    // roster filter: show only server-detected possibly-stuck bots
+function toggleStuck(){ stuckOnly = !stuckOnly; applyStyle(); renderRoster(); }
 let rtsMode = false, moveArmed = false, moveCmd = 'move';   // RTS mode + "click a destination" arming (quiet vs attack)
 let followArm = false;    // "pick a follow target" mode: next node/roster click chooses whom to follow
 let sortMode = 'name';    // roster sort within each type: 'name' (A-Z) or 'level' (high->low)
@@ -460,7 +464,14 @@ function ensureMobs(mapId, cb){
 function tipAt(html, x, y){
   const tip = document.getElementById('tip');
   tip.innerHTML = html; tip.style.display = 'block';
-  tip.style.left = (x + 14) + 'px'; tip.style.top = (y + 14) + 'px';
+  // clamp inside the viewport: on a phone a roster row sits near the screen edge, so the default
+  // down-right offset would push the tip off-screen. Flip to the other side when it doesn't fit.
+  // Measure from the origin first — a shrink-to-fit box squeezed against the right edge under-reports.
+  tip.style.left = '0px'; tip.style.top = '0px';
+  const m = 6, w = tip.offsetWidth, h = tip.offsetHeight;
+  const left = Math.max(m, Math.min(x + 14, innerWidth - w - m));
+  const top = y + 14 + h + m > innerHeight ? Math.max(m, y - 14 - h) : y + 14;
+  tip.style.left = left + 'px'; tip.style.top = top + 'px';
 }
 let tipNode = null, tipXY = {x:0, y:0};
 // merged top-8-by-spawns mob lines for a node's maps — no header (compact), dim. '' while nothing known.
@@ -516,20 +527,27 @@ function renderRoster(){
     for(const c of o.players) items.push({c, map:+map, bot:false});
     for(const c of o.bots)    items.push({c, map:+map, bot:true});
   }
-  const filt = query ? items.filter(it => it.c.n.toLowerCase().includes(query)) : items;
+  let filt = items;
+  // "possibly stuck" = server-side wedge detector (c.stuck reason: can't-find-grind trap /
+  // unreachable job-advance route / inert-autopilot leak) — broader than the old a==='idle' bucket.
+  if(stuckOnly) filt = filt.filter(it => it.bot && it.c.stuck);
+  if(query) filt = filt.filter(it => it.c.n.toLowerCase().includes(query));
   // managed = self-owned/ownerless bots (commandable, c=1); companion = bots following an online owner
-  let players=0, managed=0, companion=0, grinding=0, onBreak=0, chilling=0;
+  let players=0, managed=0, companion=0, grinding=0, onBreak=0, chilling=0, stuck=0;
   for(const it of items){
     if(!it.bot){ players++; continue; }
     if(it.c.c) managed++; else companion++;
-    if(it.c.a==='chill') chilling++; else if(it.c.a==='break') onBreak++; else grinding++;   // tally over all bots
+    if(it.c.stuck) stuck++;   // counted independently of the activity buckets below
+    if(it.c.a==='chill') chilling++; else if(it.c.a==='idle'){} else if(it.c.a==='break') onBreak++; else grinding++;
   }
-  const head = (query ? filt.length+' shown · ' : '') + players + ' online + ' + managed + ' managed + ' + companion + ' companion';
+  const head = ((query||stuckOnly) ? filt.length+' shown · ' : '') + players + ' online + ' + managed + ' managed + ' + companion + ' companion';
+  const stuckHtml = '<span onclick="toggleStuck()" title="wedged bots: can\'t find anywhere to grind, job advance route is unreachable, or autopilot leaked off — click to filter (hover a row for the reason)" style="cursor:pointer;text-decoration:underline;color:'
+    + (stuck?'#ff6b6b':'#8a94a6') + (stuckOnly?';font-weight:bold':'') + '">' + stuck + ' possibly stuck</span>';
   const breakdown = (managed+companion)
-    ? grinding+' grinding · '+onBreak+' taking a break · '+chilling+' just chilling' : '';
+    ? grinding+' grinding · '+onBreak+' taking a break · '+chilling+' just chilling · '+stuckHtml : '';
   document.getElementById('rosterHead').innerHTML = head + (breakdown ? '<br>'+breakdown : '');
   const mapHits = query ? getMapNameIndex().filter(m => m.lower.includes(query)) : [];
-  const sig = query+'#'+rtsMode+'#'+sortMode+'#'+[...selected].join(',')+'#'
+  const sig = query+'#'+stuckOnly+'#'+rtsMode+'#'+sortMode+'#'+[...selected].join(',')+'#'
     + filt.map(it => it.c.n+'@'+it.map+'/'+it.c.l+'/'+(it.c.p||0)+'/'+(it.c.g||0)).join('|')
     + '#M'+mapHits.map(m=>m.id).join(',');
   if(sig === rosterSig) return;               // unchanged -> skip rebuild (keeps scroll position, saves work)
@@ -560,7 +578,9 @@ function rowHtml(it, opts){
   return '<div class="rosterItem'+(sel?' sel':'')+(opts.off?' off':'')+'"'+(it.bot?' data-cid="'+it.c.id+'"':'')
     + ' onmouseenter="rosterTip(event,'+it.c.id+','+it.map+','+(it.bot?1:0)+')" onmouseleave="hideTip()"'
     + ' onclick="'+click+'">'
-    + (it.bot?'&#129302; ':'&#128100; ') + esc(it.c.n) + ' <span class="meta">Lv'+it.c.l+' '+esc(it.c.j)+'</span>'
+    + (it.bot?'&#129302; ':'&#128100; ')
+    + (it.bot && it.c.stuck ? '<span title="'+esc(it.c.stuck)+'" style="color:#ff6b6b">&#9888;</span> ' : '')
+    + esc(it.c.n) + ' <span class="meta">Lv'+it.c.l+' '+esc(it.c.j)+'</span>'
     + (meta!=='' ? '<br><span class="meta">'+meta+'</span>' : '') + '</div>';
 }
 // nesting: party (outer box) > crew (inner box) > loose rows. Boxes only form at >=2 members.

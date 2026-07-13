@@ -223,6 +223,21 @@ class BotCombatManager {
         public int   GRIND_REGION_OCCUPANCY_PENALTY = 1200;
         public int   GRIND_REGION_OCCUPANCY_PENALTY_CAP = 3600;
 
+        // Grind doctrine (BotGrindDoctrine/BotGrindSpots): map-archetype positioning — bots claim
+        // and camp/patrol/stack-work spawn clusters instead of chasing the best-scored mob across
+        // the whole map. Off = pre-doctrine behavior (everything roams).
+        public boolean GRIND_DOCTRINE_ENABLED = true;
+        // Class-aware engage feel: thief-line bots probabilistically jump-attack (and occasionally
+        // hop AWAY mid-engage, throwing backward — the classic mini-kite). Off = plant-and-swing.
+        public boolean ENGAGE_STYLE_ENABLED = true;
+        // Chance a thief engagement opens with a hop-attack, and of that hop going away-from-mob.
+        public double ENGAGE_HOP_CHANCE = 0.68d;
+        public double ENGAGE_KITE_HOP_CHANCE = 0.35d;
+        public long  ENGAGE_HOP_MIN_INTERVAL_MS = 2_500L;
+        // Targeting: penalize mobs the bot hits but barely damages (high WDEF / deep level gap),
+        // so it prefers well-matched mobs on mixed-level maps. Off = pre-penalty targeting.
+        public boolean LOW_DAMAGE_PENALTY_ENABLED = true;
+
         // Mob damage
         public int   MOB_TOUCH_SWEEP_HEIGHT = 50;
         public int   MOB_HIT_COOLDOWN_MS = 1500;
@@ -384,8 +399,8 @@ class BotCombatManager {
             entry.mobHitCooldownMs = BotMovementManager.tickDown(entry.mobHitCooldownMs);
             return;
         }
+        if (!runSweep) return;       // no contact sweep this tick: skip the statRlock HP read too
         if (bot.getHp() <= 0) return;
-        if (!runSweep) return;
 
         Point botPos = bot.getPosition();
         try {
@@ -643,6 +658,16 @@ class BotCombatManager {
             entry.buffSkillIds.add(skill.getId());
             entry.nextBuffAt.putIfAbsent(skill.getId(), 0L);
         }
+
+        entry.hasCriticalSurvivalBuff = false;
+        entry.hasPartySupportBuff = false;
+        for (int skillId : entry.buffSkillIds) {
+            if (CRITICAL_SURVIVAL_BUFFS.contains(skillId)) entry.hasCriticalSurvivalBuff = true;
+            if (isPartySupportSkill(skillId)) entry.hasPartySupportBuff = true;
+        }
+        // Skill set changed: re-evaluate buffs next tick instead of honoring a now-stale deadline.
+        entry.nextBuffCheckAtMs = 0L;
+        entry.nextMagicGuardCheckMs = 0L;
     }
 
     private static int skillCacheSignature(Character bot) {
@@ -673,17 +698,33 @@ class BotCombatManager {
             return;
         }
 
-        // Throttle the (re)buff evaluation. Casting is already gated by the per-skill nextBuffAt /
-        // nextSupportBuffAt timers, so the monster-liveness scan + party-support scan below only need
-        // to run a few times a second, not every tick. Mirrors BotBuffManager.tick's TICK_MS throttle;
-        // without it this scan was ~33% of all bot CPU. A sub-second delay to a rebuff is invisible.
+        // Deadline-driven (re)buff evaluation. Every cast is gated by a per-skill nextBuffAt /
+        // nextSupportBuffAt timer, so between the nearest of those there is nothing to do — sleep the whole
+        // scan (incl. the O(monsters) liveness check that was ~33% of all bot CPU when run per tick) until
+        // then. Casting a buff drops the deadline back to the poll floor so the rest are picked up promptly.
         long now = System.currentTimeMillis();
-        if (now - entry.lastSkillBuffScanMs < SKILL_BUFF_SCAN_MS) return;
+        if (now < entry.nextBuffCheckAtMs) return;
         entry.lastSkillBuffScanMs = now;
+        // Default: re-poll at the fixed cadence; refined to the nearest rebuff deadline at the clean exit.
+        entry.nextBuffCheckAtMs = now + SKILL_BUFF_SCAN_MS;
 
-        if (bot.getMap().getAllMonsters().stream().noneMatch(Monster::isAlive)) return;
+        // Map-global "is anything here to fight" gate. Read the map's O(1) spawned-monster counter
+        // (SSOT) instead of materializing + scanning getAllMonsters() per bot: on a crowded grind map
+        // every bot answered this identical map-global question by taking objectRLock and walking ALL
+        // map objects (mobs+drops+npcs), convoying into the multi-hundred-ms tickBuffs spikes. count==0
+        // is exactly the "map cleared" case this guards; a just-killed mob awaiting removal still counts,
+        // which at worst lets a due, deadline-gated rebuff fire a beat early (harmless while grinding).
+        if (bot.getMap().getSpawnedMonstersOnMap() == 0) return;
 
         if (trySupportBuff(entry, bot, now)) {
+            return;
+        }
+
+        // Party level-gap idle-leech: parked doing nothing while the lower-level cohort catches up,
+        // so self rebuffs are wasted MP. Gated AFTER trySupportBuff so an ally that walks into
+        // support range still gets their rebuff. Pot buffs pause too (BotBuffManager.tick).
+        if (entry.idleLeech) {
+            noteSkillBuffDecision(entry, "idle-leech: self rebuffs paused");
             return;
         }
 
@@ -725,7 +766,29 @@ class BotCombatManager {
                 return;
             }
         }
+        // Nothing due right now: sleep until the nearest self-buff rebuff window (party-support bots keep
+        // the poll floor since a teammate can lose a buff at any time, off any deadline we track).
+        entry.nextBuffCheckAtMs = nextBuffDeadline(entry, now);
         noteSkillBuffDecision(entry, "all skill buffs active or on cooldown");
+    }
+
+    /** Earliest epoch-ms a self-buff rebuff can next fire (min over {@code nextBuffAt}), floored by the
+     *  poll cadence for support bots and for any buff already due but not cast this pass. */
+    private static long nextBuffDeadline(BotEntry entry, long now) {
+        long deadline = Long.MAX_VALUE;
+        boolean dueButUncast = false;
+        for (int skillId : entry.buffSkillIds) {
+            long at = entry.nextBuffAt.getOrDefault(skillId, 0L);
+            if (at <= now) {
+                dueButUncast = true;      // due but skipped (cost/rock/not-worth): retry next cadence
+            } else if (at < deadline) {
+                deadline = at;
+            }
+        }
+        if (dueButUncast || entry.hasPartySupportBuff) {
+            deadline = Math.min(deadline, now + SKILL_BUFF_SCAN_MS);
+        }
+        return deadline == Long.MAX_VALUE ? now + SKILL_BUFF_SCAN_MS : deadline;
     }
 
     /**
@@ -745,11 +808,13 @@ class BotCombatManager {
         }
         Monster target = entry.grindTarget;
         if (target == null || !target.isAlive()) {
-            target = nearestMonster(bot.getMap().getAllMonsters().stream()
-                    .filter(Monster::isAlive).toList(), bot.getPosition().x, bot.getPosition().y);
-        }
-        if (target == null) {
-            return false;                                      // nothing to fight: don't burn a charge
+            // No committed target: defer the rock buff rather than pay an O(all-map-objects)
+            // getAllMonsters scan under objectRLock here — this was the last such scan left in the
+            // tickBuffs hot path after the getSpawnedMonstersOnMap fix, and a candidate for the
+            // multi-second combat-buffs tail-stalls. A rock buff (Shadow Partner etc.) with nothing
+            // committed to fight isn't worth a charge; the bot rebuffs on the next scan once it
+            // commits to a target.
+            return false;
         }
         double perHit = estimateBestSkillHitDamage(entry, bot, target);
         if (perHit <= 0) {
@@ -967,6 +1032,10 @@ class BotCombatManager {
             double rangeSq = (double) BotCombatManager.cfg.GRIND_SEEK_RANGE * BotCombatManager.cfg.GRIND_SEEK_RANGE;
             Foothold botFoothold = findGroundFoothold(botPos, bot);
             List<Monster> candidates = aliveMonstersInRange(bot, botPos, rangeSq);
+            if (candidates.isEmpty()) return null;
+            // Grind doctrine: restrict to the claimed spot/stack; empty = wait beat at the spot
+            // (respawn camping), relocation handled by BotGrindDoctrine's patience timers.
+            candidates = BotGrindDoctrine.filterCandidates(entry, candidates, System.currentTimeMillis());
             if (candidates.isEmpty()) return null;
 
             List<ScoredGrindTarget> scoredTargets = scoreGrindTargets(entry, bot, botPos, botFoothold, candidates);
@@ -1386,8 +1455,8 @@ class BotCombatManager {
         return profile;
     }
 
-    // Cheap fingerprint over every stat the damage profile reads, plus level (covers mastery-passive
-    // gains that level-ups bring). All are stored local-stat field reads, recomputed only on stat change.
+    // Cheap fingerprint over every stat the damage profile reads, plus skill levels for passive
+    // damage modifiers such as weapon mastery and Element Amplification.
     private static int damageStatSignature(Character bot) {
         int sig = bot.getTotalWatk();
         sig = sig * 31 + bot.getTotalMagic();
@@ -1395,7 +1464,28 @@ class BotCombatManager {
         sig = sig * 31 + bot.getTotalDex();
         sig = sig * 31 + bot.getTotalLuk();
         sig = sig * 31 + bot.getLevel();
+        sig = sig * 31 + damageSkillSignature(bot);
         return sig;
+    }
+
+    private static int damageSkillSignature(Character bot) {
+        try {
+            Map<Skill, Character.SkillEntry> skills = bot.getSkills();
+            if (skills == null || skills.isEmpty()) {
+                return 0;
+            }
+
+            int sig = 0;
+            for (Skill skill : skills.keySet()) {
+                if (skill == null) continue;
+                int level = bot.getSkillLevel(skill);
+                if (level <= 0) continue;
+                sig += skill.getId() * 31 + level;
+            }
+            return sig;
+        } catch (Throwable t) {
+            return 0;
+        }
     }
 
     static long damageProfileKey(int skillId, int skillLevel, AttackRoute route, WeaponType weaponType) {
@@ -1562,7 +1652,11 @@ class BotCombatManager {
         int hpBefore = primaryHp(primary);
         int mpBefore = botMp(bot);
         int plannedDamage = plannedAttackDamage(attack.targets);
+        // Stage 0 kill-rate calibration: snapshot which targets are alive, then after the attack any
+        // that died were killed by this bot (BotKillCalibration observes real full-fidelity grind kills).
+        List<Monster> preAliveTargets = BotKillCalibration.aliveTargets(entry, attackPlan.targets);
         BotAttackExecutionProvider.applyAttackRoute(attackPlan.route, attack, bot);
+        BotKillCalibration.observeKills(entry, bot, preAliveTargets);
         int hpAfter = primaryHp(primary);
         int mpAfter = botMp(bot);
         entry.attackCooldownMs = Math.max(entry.attackCooldownMs, attackPlan.cooldownMs);
@@ -1640,7 +1734,7 @@ class BotCombatManager {
         }
     }
 
-    // Matches maplestory-wasm CharLook::set_alerted(5000): called on attack, skill cast, and
+    // Matches the client's 5000ms alerted state: called on attack, skill cast, and
     // damage taken. Always an absolute reset to now+5s (never additive), mirroring TimedBool::set_for.
     private static final long ALERT_DURATION_MS = 5000L;
 
@@ -1696,6 +1790,14 @@ class BotCombatManager {
         StatEffect effect = skill.getEffect(skillLevel);
         if (!effect.canPaySkillCost(bot)) {
             return null;
+        }
+        // Combo finishers (Panic/Coma) are client-gated on holding at least one combo orb — a bot
+        // must play the same rule. COMBO buff value = orbs + 1, so < 2 means no orb to consume.
+        if (GameConstants.isFinisherSkill(skillId)) {
+            Integer combo = bot.getBuffedValue(BuffStat.COMBO);
+            if (combo == null || combo < 2) {
+                return null;
+            }
         }
         WeaponType weaponType = BotAttackExecutionProvider.getEquippedWeaponType(bot);
         if (!canUseAttackSkillWithWeapon(skillId, weaponType)) {
@@ -1988,10 +2090,20 @@ class BotCombatManager {
 
     private static boolean isBasicAttackInRange(Point botPos, Point targetPos) {
         int dx = Math.abs(targetPos.x - botPos.x);
-        int dy = botPos.y - targetPos.y;
         boolean inHRange = dx <= BotCombatManager.cfg.ATTACK_RANGE_X;
-        boolean inVRange = dy >= -BotCombatManager.cfg.ATTACK_DOWN_MAX && dy <= BotCombatManager.cfg.ATTACK_RANGE_Y;
-        return inHRange && inVRange;
+        return inHRange && withinAttackYReach(botPos, targetPos);
+    }
+
+    /**
+     * True when {@code targetPos} is within the bot's basic-attack VERTICAL reach of {@code botPos}
+     * (ignoring X): up to {@code ATTACK_RANGE_Y} above and {@code ATTACK_DOWN_MAX} below. SSOT for the
+     * vertical half of {@link #isBasicAttackInRange}; also the LOD1 motion-plan Y-band gate — a same-Y
+     * glide keeps combat fidelity because the frozen Y still lands the attack, while a target beyond
+     * this band needs a real level change (fall through to physics).
+     */
+    static boolean withinAttackYReach(Point botPos, Point targetPos) {
+        int dy = botPos.y - targetPos.y;
+        return dy >= -BotCombatManager.cfg.ATTACK_DOWN_MAX && dy <= BotCombatManager.cfg.ATTACK_RANGE_Y;
     }
 
     /**
@@ -2194,13 +2306,15 @@ class BotCombatManager {
                                                              List<Monster> candidates) {
         boolean fragile = isFragile(bot); // compute ONCE per scoring pass, not per candidate (USE-bag scan)
         AccuracyContext acc = accuracyContext(bot); // bot accuracy is per-pass, not per-candidate
+        Map<Integer, Long> dmgCache = new HashMap<>(); // per-pass, keyed by mob id (few types per map)
         List<ScoredGrindTarget> scoredTargets = new ArrayList<>(candidates.size());
         for (Monster candidate : candidates) {
             long localScore = grindTargetScore(bot, botPos, botFoothold, candidate)
                     - aoeClusterBonus(entry, candidate, candidates)
                     - questTargetBonus(entry, candidate)
                     + touchDangerPenalty(fragile, bot, candidate)
-                    + lowAccuracyPenalty(acc, candidate);
+                    + lowAccuracyPenalty(acc, candidate)
+                    + lowDamagePenalty(entry, bot, candidate, dmgCache);
             scoredTargets.add(new ScoredGrindTarget(candidate, localScore, localScore,
                     candidate.getPosition().distanceSq(botPos)));
         }
@@ -2215,6 +2329,7 @@ class BotCombatManager {
                                                               List<Monster> candidates) {
         boolean fragile = isFragile(bot); // compute ONCE per scoring pass, not per candidate (USE-bag scan)
         AccuracyContext acc = accuracyContext(bot); // bot accuracy is per-pass, not per-candidate
+        Map<Integer, Long> dmgCache = new HashMap<>(); // per-pass, keyed by mob id (few types per map)
         Map<Integer, GrindTargetGroup> groupsByRegionId = new HashMap<>();
         for (Monster candidate : candidates) {
             Point targetPos = candidate.getPosition();
@@ -2228,7 +2343,8 @@ class BotCombatManager {
                     - aoeClusterBonus(entry, candidate, candidates)
                     - questTargetBonus(entry, candidate)
                     + touchDangerPenalty(fragile, bot, candidate)
-                    + lowAccuracyPenalty(acc, candidate);
+                    + lowAccuracyPenalty(acc, candidate)
+                    + lowDamagePenalty(entry, bot, candidate, dmgCache);
             GrindTargetGroup group = groupsByRegionId.computeIfAbsent(targetRegionId, GrindTargetGroup::new);
             group.add(candidate, localScore, targetPos.distanceSq(botPos));
         }
@@ -2382,6 +2498,34 @@ class BotCombatManager {
         return new AccuracyContext(acc, bot.getLevel(), magic);
     }
 
+    // Low-damage targeting penalty: de-prioritize mobs the bot can HIT but barely dents (high WDEF
+    // and/or deep level gap — a lv70 chipping 1-digit lines into a lv83 Ghost Pirate's 30k HP while
+    // in-band mobs stand nearby). Complements lowAccuracyPenalty, which only sees miss chance: a
+    // reliably-hit-for-nothing mob previously scored identically to a well-matched one. Soft and
+    // proportional (still fights when nothing better is in reach). Shots-to-kill comes from the
+    // same SSOT damage model the grind advisor prices maps with; cached per scoring pass by mob id.
+    static final double DAMAGE_OK_SHOTS = 15.0;   // at/below this shots-to-kill: no penalty
+    static final double DAMAGE_MAX_SHOTS = 60.0;  // at/above this: full penalty
+    static final long LOW_DAMAGE_TARGET_PENALTY = 2000L;
+
+    static long lowDamagePenalty(BotEntry entry, Character bot, Monster target, Map<Integer, Long> cache) {
+        if (!cfg.LOW_DAMAGE_PENALTY_ENABLED || entry == null || bot == null || target == null) {
+            return 0L;
+        }
+        return cache.computeIfAbsent(target.getId(), id -> {
+            double perShot = estimateBestSkillHitDamage(entry, bot, target);
+            if (perShot <= 0) {
+                return 0L; // unknown damage -> no penalty (the accuracy term owns whiffing)
+            }
+            double shots = target.getMaxHp() / perShot;
+            if (shots <= DAMAGE_OK_SHOTS) {
+                return 0L;
+            }
+            double t = Math.min(1.0, (shots - DAMAGE_OK_SHOTS) / (DAMAGE_MAX_SHOTS - DAMAGE_OK_SHOTS));
+            return Math.round(t * LOW_DAMAGE_TARGET_PENALTY);
+        });
+    }
+
     static long lowAccuracyPenalty(AccuracyContext ctx, Monster target) {
         if (ctx == null || target == null) {
             return 0L;
@@ -2429,7 +2573,7 @@ class BotCombatManager {
         if (bot.getMaxHp() <= cfg.TOUCH_FRAGILE_MAXHP) {
             return true;
         }
-        return BotPotionManager.countPotions(bot)[0] < BotManager.cfg.POT_STOP;
+        return BotPotionManager.countPotionsCached(bot)[0] < BotManager.cfg.POT_STOP;
     }
 
     private static long aoeClusterBonus(BotEntry entry, Monster target, List<Monster> candidates) {
@@ -2720,6 +2864,62 @@ class BotCombatManager {
         }
 
         return BotPhysicsEngine.findGroundFoothold(bot.getMap(), position);
+    }
+
+    // ---------------------------------------------------------------- engage-style hop (thieves)
+
+    /** Horizontal reach of an engage hop and the max landing-Y drift that still counts as
+     *  "same ground" for the away-hop safety check. */
+    static final int ENGAGE_HOP_REACH_PX = 60;
+    private static final int ENGAGE_HOP_LAND_Y_TOLERANCE = 40;
+
+    /** Thief lines open engagements with a hop-attack (star throw / stab mid-jump). Warriors stay
+     *  planted; mage/bowman engage feel already comes from teleport-nav and the kiting band. */
+    static boolean isJumpAttackJob(Character bot) {
+        int job = bot.getJob().getId();
+        return (job >= 410 && job <= 412) || (job >= 420 && job <= 422);
+    }
+
+    /**
+     * Class-aware engage feel: roll once per engagement (target change) whether it opens with a
+     * hop-attack; long fights re-roll every {@code ENGAGE_HOP_MIN_INTERVAL_MS} so the liveliness
+     * persists without constant bouncing. The caller executes the hop (initiateJump) and the attack
+     * lands mid-air on the next tick via the existing ascent-attack path.
+     */
+    static boolean shouldEngageHop(BotEntry entry, Character bot, Monster target, long now) {
+        if (!cfg.ENGAGE_STYLE_ENABLED || entry == null || bot == null || target == null
+                || !isJumpAttackJob(bot)) {
+            return false;
+        }
+        int oid = target.getObjectId();
+        if (entry.engageHopTargetOid != oid
+                || now - entry.engageHopLastAtMs >= cfg.ENGAGE_HOP_MIN_INTERVAL_MS) {
+            entry.engageHopTargetOid = oid;
+            entry.engageHopLastAtMs = now;
+            entry.engageHopPlanned = ThreadLocalRandom.current().nextDouble() < cfg.ENGAGE_HOP_CHANCE;
+        }
+        return entry.engageHopPlanned;
+    }
+
+    /**
+     * Direction (signed dx) for a planned engage hop: toward the mob, or with
+     * {@code ENGAGE_KITE_HOP_CHANCE} AWAY from it (throwing backward at the pursuer — the classic
+     * thief mini-kite) — but only when the away landing stays on same-level ground. Toward hops
+     * need no land check (worst case they land on the mob's platform).
+     */
+    static int engageHopDx(Character bot, Point botPos, Point targetPos) {
+        int toward = Integer.signum(targetPos.x - botPos.x);
+        if (toward == 0) {
+            toward = bot.isFacingLeft() ? -1 : 1;
+        }
+        if (ThreadLocalRandom.current().nextDouble() < cfg.ENGAGE_KITE_HOP_CHANCE) {
+            int awayX = botPos.x - toward * ENGAGE_HOP_REACH_PX;
+            Foothold fh = findGroundFoothold(new Point(awayX, botPos.y), bot);
+            if (fh != null && Math.abs(fh.calculateFooting(awayX) - botPos.y) <= ENGAGE_HOP_LAND_Y_TOLERANCE) {
+                return -toward * ENGAGE_HOP_REACH_PX;
+            }
+        }
+        return toward * ENGAGE_HOP_REACH_PX;
     }
 
     private record ScoredGrindTarget(Monster monster, long graphCost, long localScore, double distanceSq) {
@@ -3121,10 +3321,19 @@ class BotCombatManager {
     }
 
     static boolean tryCastMagicGuard(BotEntry entry, Character bot) {
+        if (!entry.hasCriticalSurvivalBuff) return false; // no Magic-Guard-class skill: never probe buff state
         if (entry.attackCooldownMs > 0) return false;
         if (entry.inAir || entry.climbing) return false;
         if (!entry.skillBuffsEnabled) return false;
+        if (entry.idleLeech) return false; // parked leecher: self rebuffs paused (see tickBuffs)
         if (bot == null || !bot.isAlive()) return false;
+
+        // Throttle the buff-state probe to ~1s. getBuffedValue takes two fair ReentrantLocks; at hundreds
+        // of bots that per-tick lock acquisition, not the cast, was the cost. A dispel/expiry is still
+        // caught within one scan interval, well inside Magic Guard's 10% rebuff buffer.
+        long now = System.currentTimeMillis();
+        if (now < entry.nextMagicGuardCheckMs) return false;
+        entry.nextMagicGuardCheckMs = now + SKILL_BUFF_SCAN_MS;
         if (bot.getBuffedValue(BuffStat.MAGIC_GUARD) != null) return false;
 
         for (int skillId : CRITICAL_SURVIVAL_BUFFS) {

@@ -49,7 +49,7 @@ Uses `mimicCloseRangePacketFields("alert2", "alert2", facingLeft)` — BotAttack
 
 Damage per undead target:
 - `CombatFormulaProvider.resolveDamageProfile(bot, healSkillId, lvl, true, healTargetCount=undeadTargets.size()+1)` — new overload, file:line CombatFormulaProvider.java:215.
-- Formula (client-side GMS v83, sources in `feedback_client_side_formulas_in_bot.md` if created):
+- Formula (client-side GMS v83; keep this bot-side rather than changing shared player formulas):
   - `MAX = (INT*1.2 + LUK) * MATK/1000 * (1.5 + 5/N) * HealRate%/100`
   - `MIN = (INT*0.3 + LUK) * MATK/1000 * (1.5 + 5/N) * HealRate%/100`
   - `N = 1 + undeadCount`; `HealRate% = fx.getHp()` (WZ: 10→300 across lv1→30)

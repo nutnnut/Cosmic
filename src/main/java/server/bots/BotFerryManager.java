@@ -559,6 +559,20 @@ final class BotFerryManager {
 
         boolean hasTicket = ticketCheck.hasTicket(bot, route.ticketItemId());
 
+        // Ticketless past the seller's map: walk BACK down the chain and re-buy. Without this leg a
+        // bot standing at the platform/usher with no ticket is a permanent dead end — every re-plan
+        // picks the ferry edge from this boarding map again (the chain "plans forward"), and no other
+        // step ever leads back to the seller. (The live pile-up at the Leafre dock 240000110.)
+        if (!hasTicket && mapId != route.ticketNpcMapId() && route.boardingMapIds().contains(mapId)) {
+            int idx = route.boardingMapIds().indexOf(mapId);
+            int backMapId = idx > 0 ? route.boardingMapIds().get(idx - 1) : route.ticketNpcMapId();
+            Portal back = BotTravelManager.adjacentOrScriptedPortal(bot.getMap(), backMapId, bot.getPosition());
+            if (back == null) {
+                return false;
+            }
+            return BotTravelManager.walkToPortalAndEnter(entry, bot, back, now, runAiTick);
+        }
+
         if (mapId == route.ticketNpcMapId() && !hasTicket) {
             if (bot.getMeso() < route.ticketCost()) {
                 return false;

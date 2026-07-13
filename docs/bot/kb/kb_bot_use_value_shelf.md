@@ -28,7 +28,7 @@ USE-bag hoarding (Preston: 20+ slots cheap recovery pots; Clawer: 28 slots / 191
 
 **Q1 debug:** `inv debug` (`inventoryDebug`) USE section now shows tier (RUNWAY / SHELF#rank / SELL) + unit/stack meso + reason; derived from `classifyBagUse` (no second decision tree). It's the USE/ETC analog of `autoequip debug`.
 
-**Test seams** (BotInventoryManagerTest): `useEffect` (ItemEffectLookup), `projectileWatk`, `ammoSetValue`, `sellPrice` — all swappable to avoid the unrunnable ItemInformationProvider static init. `isRecoveryPotion`/`isBuffConsumable` route through `useEffect`. Skipped the optional chat tuning verb (kept diff surgical; inv debug already gives dry-run visibility). Related: [[kb_bot_independence_infra]], [[kb_bot_maker_economy]], [[kb_bot_grind_gear_valuation]].
+**Test seams** (BotInventoryManagerTest): `useEffect` (ItemEffectLookup), `projectileWatk`, `ammoSetValue`, `sellPrice` — all swappable to avoid the unrunnable ItemInformationProvider static init. `isRecoveryPotion`/`isBuffConsumable` route through `useEffect`. Skipped the optional chat tuning verb (kept diff surgical; inv debug already gives dry-run visibility). Related: [[kb_bot_grind_gear_valuation]].
 
 **ETC declutter pass (2026-06-27 — ValorHills bag of dead clutter):** `collectSellTrashEtcItems` keep-list tightened + made genuinely-empties-the-bag:
 - **Crystal leftovers** kept only when actually convertible: `getMakerCrystalFromLeftover != -1` (SSOT) AND `qty >= 100` AND **the bot has the Maker skill** (`makerSkillLevel` seam → `MakerProcessor.getMakerSkillLevel >= 1`, the `generateLeftoverCrystalEntry` reqMakerLevel). `keepCrystalLeftover(bot,item)` helper. A non-Maker bot now sheds all those Tree Branch / Slime Bubble stacks.

@@ -181,10 +181,13 @@ public final class MonsterBook {
     }
 
     public void saveCards(Connection con, int chrId) throws SQLException {
+        // No trailing semicolon: with rewriteBatchedStatements the driver joins large batches
+        // into one multi-statement string with ';' separators, and a trailing ';' here produces
+        // an empty statement (';;') the server rejects, failing the whole char save.
         final String query = """
                 INSERT INTO monsterbook (charid, cardid, level)
                 VALUES (?, ?, ?)
-                ON DUPLICATE KEY UPDATE level = ?;
+                ON DUPLICATE KEY UPDATE level = ?
                 """;
         try (final PreparedStatement ps = con.prepareStatement(query)) {
             for (Map.Entry<Integer, Integer> cardAndLevel : cards.entrySet()) {

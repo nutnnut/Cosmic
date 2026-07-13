@@ -44,12 +44,16 @@ import java.sql.SQLException;
 import java.util.HashMap;
 import java.util.LinkedList;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 import static java.util.concurrent.TimeUnit.SECONDS;
 
 public class MapFactory {
     private static final Data nameData;
     private static final DataProvider mapSource;
+    private static final Map<Integer, String> placeNameCache = new ConcurrentHashMap<>();
+    private static final Map<Integer, String> streetNameCache = new ConcurrentHashMap<>();
 
     static {
         nameData = DataProviderFactory.getDataProvider(WZFiles.STRING).getData("Map.img");
@@ -206,6 +210,8 @@ public class MapFactory {
                     fh.setPrev(DataTool.getInt(footHold.getChildByPath("prev")));
                     fh.setNext(DataTool.getInt(footHold.getChildByPath("next")));
                     fh.setForbidFallDown(DataTool.getInt(footHold.getChildByPath("forbidFallDown"), 0) != 0);
+                    fh.setLayer(parseFootholdGroupId(footRoot.getName()));
+                    fh.setZMass(parseFootholdGroupId(footCat.getName()));
                     if (fh.getX1() < lBound.x) {
                         lBound.x = fh.getX1();
                     }
@@ -350,6 +356,16 @@ public class MapFactory {
         return map;
     }
 
+    /** WZ foothold path is foothold/&lt;layer&gt;/&lt;zMass group&gt;/&lt;id&gt;; both path components are
+     *  numeric names. -1 when malformed (collision code treats unknown as always-collidable). */
+    private static int parseFootholdGroupId(String name) {
+        try {
+            return Integer.parseInt(name);
+        } catch (NumberFormatException e) {
+            return -1;
+        }
+    }
+
     private static AbstractLoadedLife loadLife(int id, String type, int cy, int f, int fh, int rx0, int rx1, int x, int y, int hide) {
         AbstractLoadedLife myLife = LifeFactory.getLife(id, type);
         myLife.setCy(cy);
@@ -428,19 +444,57 @@ public class MapFactory {
     }
 
     public static String loadPlaceName(int mapid) {
+        return loadStringName(mapid, "mapName", placeNameCache);
+    }
+
+    public static String loadStreetName(int mapid) {
+        return loadStringName(mapid, "streetName", streetNameCache);
+    }
+
+    private static String loadStringName(int mapid, String field, Map<Integer, String> cache) {
+        String cached = cache.get(mapid);
+        if (cached != null) {
+            return cached;
+        }
+
+        String name = loadStringNameDirect(mapid, field);
+        if (name.isBlank()) {
+            name = loadStringNameByScan(mapid, field);
+        }
+        if (!name.isBlank()) {
+            cache.put(mapid, name);
+        }
+        return name;
+    }
+
+    private static String loadStringNameDirect(int mapid, String field) {
         try {
-            return DataTool.getString("mapName", nameData.getChildByPath(getMapStringName(mapid)), "");
+            return DataTool.getString(field, nameData.getChildByPath(getMapStringName(mapid)), "");
         } catch (Exception e) {
             return "";
         }
     }
 
-    public static String loadStreetName(int mapid) {
-        try {
-            return DataTool.getString("streetName", nameData.getChildByPath(getMapStringName(mapid)), "");
-        } catch (Exception e) {
+    private static String loadStringNameByScan(int mapid, String field) {
+        if (nameData == null) {
             return "";
         }
+        String key = String.valueOf(mapid);
+        try {
+            for (Data section : nameData) {
+                Data mapNameData = section.getChildByPath(key);
+                if (mapNameData == null) {
+                    continue;
+                }
+                String name = DataTool.getString(field, mapNameData, "");
+                if (!name.isBlank()) {
+                    return name;
+                }
+            }
+        } catch (Exception ignored) {
+            return "";
+        }
+        return "";
     }
 
 }

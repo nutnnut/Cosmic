@@ -11,16 +11,25 @@ final class BotFallbackMovementManager {
     private BotFallbackMovementManager() {
     }
 
-    static Point resolveSteeringTarget(BotEntry entry, Point botPos, Point targetPos) {
+    /** Resolved fallback steering. {@code walkOffLedge} marks a walk-off waypoint (a point just past
+     *  the foothold end, over the void): it exists to be walked THROUGH — ground runs out first — so
+     *  the ground planner must steer at it with zero stop/follow hysteresis. Any stop radius larger
+     *  than the waypoint's overhang (walkStep px past the endpoint) parks the bot at the ledge forever
+     *  (pathlog-John/Leroy 2026-07-11: swim map 200082300, endpoint (35,-1975), waypoint 9px out,
+     *  fallback stop radius 12 -> permanent idle). */
+    record Steering(Point target, boolean walkOffLedge) {
+    }
+
+    static Steering resolveSteeringTarget(BotEntry entry, Point botPos, Point targetPos) {
         Rope rope = selectNearbyRope(entry, botPos, targetPos);
         Point ledgeTarget = resolveFallbackLedgeTarget(entry, botPos, targetPos, rope);
         if (ledgeTarget != null) {
-            return ledgeTarget;
+            return new Steering(ledgeTarget, true);
         }
         if (rope == null) {
-            return targetPos;
+            return new Steering(targetPos, false);
         }
-        return new Point(rope.x(), botPos.y);
+        return new Steering(new Point(rope.x(), botPos.y), false);
     }
 
     static boolean tryImmediateAction(BotEntry entry, Point botPos, Point targetPos) {

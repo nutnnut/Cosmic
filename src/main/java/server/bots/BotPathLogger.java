@@ -284,6 +284,31 @@ final class BotPathLogger {
                 .append("  resupplyMap=").append(entry.autopilotErrandMapId)
                 .append("  returningFromErrand=").append(entry.autopilotReturningFromErrand)
                 .append("  shopVisitPending=").append(entry.shopVisitPending).append("\n");
+        // Inert-leak triage: when autopilot is OFF, spell out exactly what stops the self-heal
+        // (BotManager.maybeRecoverInertAutopilot) from re-deciding this bot. Reachability guards
+        // (tickIdleEntry/tickTownIdleDestack skip recovery) + the recovery gates themselves. Empty =
+        // ELIGIBLE (it should re-decide next idle tick — if it doesn't, the tick isn't reaching idle).
+        // See kb_bot_inert_autopilot_recovery.
+        if (!BotAutopilotManager.isActive(entry)) {
+            long now = System.currentTimeMillis();
+            java.util.List<String> blocks = new java.util.ArrayList<>();
+            if (entry.following) blocks.add("following");
+            if (entry.grinding) blocks.add("grinding");
+            if (entry.moveTarget != null) blocks.add("moveTarget");
+            if (entry.farmAnchor != null) blocks.add("farmAnchor");
+            if (entry.shopVisitPending) blocks.add("shopVisitPending");
+            if (entry.autopilotWaitAnchor != null) blocks.add("waitAnchor");
+            if (entry.operatorCmd != null) blocks.add("operatorCmd");
+            if (entry.deadUntil != 0L) blocks.add("dead");
+            if (entry.autopilotDecisionInFlight) blocks.add("decisionInFlight");
+            if (now < entry.autopilotNextDecisionAtMs) {
+                blocks.add("nextDecideIn=" + ((entry.autopilotNextDecisionAtMs - now) / 1000) + "s");
+            }
+            sb.append("Recovery:   ")
+                    .append(blocks.isEmpty() ? "ELIGIBLE (re-decides next idle tick)"
+                            : "BLOCKED by " + String.join(",", blocks))
+                    .append("\n");
+        }
         appendCohesionState(sb, entry);
         appendTravelState(sb, entry);
         if (entry.loggingOut || entry.breakUntilMs > 0L) {
@@ -485,27 +510,28 @@ final class BotPathLogger {
         boolean isLeader = leader == entry;
         String leaderName = leader == null ? "none(all resupplying)"
                 : leader.bot != null ? leader.bot.getName() : "?";
+        BotEntry waitState = leader != null ? leader : entry;
         sb.append("Cohesion:   leader=").append(leaderName)
                 .append(isLeader ? " (THIS BOT)" : "")
                 .append("  members=").append(members.size())
-                .append("  waitingForStragglers=").append(entry.autopilotWaitingForStragglers)
+                .append("  waitingForStragglers=").append(waitState.autopilotWaitingForStragglers)
                 .append("\n");
         sb.append("Cohesion cfg: waitHops=").append(BotManager.cfg.STRAGGLER_WAIT_HOPS)
                 .append("  sameMapPx=").append(BotManager.cfg.SAME_MAP_STRAGGLER_PX)
                 .append("  resumePx=").append(BotManager.cfg.SAME_MAP_STRAGGLER_RESUME_PX)
                 .append("  nextCheckInMs=")
-                .append(Math.max(0L, entry.autopilotNextStragglerCheckAtMs - System.currentTimeMillis()))
+                .append(Math.max(0L, waitState.autopilotNextStragglerCheckAtMs - System.currentTimeMillis()))
                 .append("\n");
         // The verdict the LAST real recompute reached (<=3s stale). If this says a member tripped the
         // hold but the live per-member mirror below shows everyone present, the group is oscillating
         // (members briefly far/off-map at the check instant) -- not a stuck flag.
-        sb.append("Last straggler verdict: ").append(entry.autopilotStragglerReason != null
-                ? "WAIT - " + entry.autopilotStragglerReason
+        sb.append("Last straggler verdict: ").append(waitState.autopilotStragglerReason != null
+                ? "WAIT - " + waitState.autopilotStragglerReason
                 : "no straggler (would release)").append("\n");
-        if (entry.autopilotWaitAnchor != null) {
-            sb.append("Wait anchor: (").append(entry.autopilotWaitAnchor.x).append(",")
-                    .append(entry.autopilotWaitAnchor.y).append(")  map=")
-                    .append(entry.autopilotWaitAnchorMapId).append("  [holding at next-hop portal]\n");
+        if (waitState.autopilotWaitAnchor != null) {
+            sb.append("Wait anchor: (").append(waitState.autopilotWaitAnchor.x).append(",")
+                    .append(waitState.autopilotWaitAnchor.y).append(")  map=")
+                    .append(waitState.autopilotWaitAnchorMapId).append("  [holding at next-hop portal]\n");
         }
         // The hold is computed from the LEADER's position/map; show the breakdown from there even
         // when a follower captured the log. While already waiting, the resume band is the tighter
@@ -517,7 +543,7 @@ final class BotPathLogger {
         int destMapId = entry.autopilotMapId;
         int leaderHopsToDest = leaderMap < 0 ? Integer.MAX_VALUE
                 : BotAutopilotManager.hopDistance.hops(leaderMap, destMapId);
-        int band = entry.autopilotWaitingForStragglers
+        int band = waitState.autopilotWaitingForStragglers
                 ? BotManager.cfg.SAME_MAP_STRAGGLER_RESUME_PX
                 : BotManager.cfg.SAME_MAP_STRAGGLER_PX;
         for (BotEntry m : members) {

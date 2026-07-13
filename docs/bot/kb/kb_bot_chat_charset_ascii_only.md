@@ -15,4 +15,4 @@ Bot chat (and most v83 client text) is encoded with `CharsetConstants.CHARSET`, 
 
 Gotcha: `BotManager` imports `client.Character`, so a `Map<Character,String>` field resolves to the wrong type — qualify as `java.lang.Character`.
 
-Source encoding is UTF-8 (`pom.xml` `project.build.sourceEncoding`), so char literals like `'—'` in the fallback map compile fine. Related: [[feedback_client_side_formulas_in_bot]].
+Source encoding is UTF-8 (`pom.xml` `project.build.sourceEncoding`), so non-ASCII literals compile, but player-visible bot text must still be sanitized to US-ASCII.

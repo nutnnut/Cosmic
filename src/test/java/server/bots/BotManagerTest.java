@@ -334,6 +334,28 @@ class BotManagerTest {
     }
 
     @Test
+    void shouldRecoverTravelPinnedBotBeforeOffGraphFallConsumesTravelTick() {
+        MapleMap map = createEmptyTestMap(910000055);
+        map.setMapLineBoundings(-500, 500, -500, 500);
+        Point travelTarget = new Point(-700, -898);
+        map.getFootholds().insert(new Foothold(new Point(-800, -898), new Point(-600, -898), 1));
+        Character bot = mockMovingBot(new Point(100, 1700), map);
+        BotEntry entry = new BotEntry(bot, bot, null);
+        entry.lastMapId = map.getId();
+        entry.grinding = true;
+        entry.inAir = true;
+        entry.moveTarget = new Point(travelTarget);
+        entry.moveTargetPrecise = true;
+        entry.moveTargetSource = "travel-pin";
+
+        BotTravelManager.movementStep.step(entry, travelTarget, true);
+
+        assertEquals(travelTarget, bot.getPosition());
+        assertFalse(entry.inAir);
+        assertFalse(entry.climbing);
+    }
+
+    @Test
     void shouldRespawnDeadBotEvenWhenOwnerIsUnavailable() throws Exception {
         MapleMap map = createEmptyTestMap(910000053);
         Character bot = mockMovingBot(new Point(100, 100), map);
@@ -795,6 +817,42 @@ class BotManagerTest {
     }
 
     @Test
+    void shouldTrimRopeIdleWindowAboveMobTouchReachAndBelowTopHeadClearance() {
+        Rope rope = new Rope(100, 0, 200, false);
+        Monster lowerMob = mockMob(new Point(100, 200), 9999999);
+
+        BotManager.RopeIdleWindow window = BotManager.safestIdleWindowOnRope(rope, List.of(lowerMob));
+
+        assertNotNull(window);
+        assertEquals(100, window.x());
+        assertEquals(50, window.minY());
+        assertEquals(169, window.maxY());
+    }
+
+    @Test
+    void shouldUseSafeRopeSpotWhenEveryGroundRegionHasTouchDanger() {
+        MapleMap realMap = createEmptyTestMap(910000136);
+        realMap.getFootholds().insert(new Foothold(new Point(0, 200), new Point(200, 200), 1));
+        realMap.addRope(new Rope(100, 0, 200, false));
+        BotNavigationGraphProvider.rebuildGraph(realMap);
+        MapleMap map = spy(realMap);
+        Monster lowerMob = mockMob(new Point(100, 200), 9999999);
+        when(lowerMob.getPADamage()).thenReturn(100);
+        when(lowerMob.getLevel()).thenReturn(1);
+        when(lowerMob.getAccuracy()).thenReturn(999);
+        doReturn(List.of(lowerMob)).when(map).getAllMonsters();
+        Character bot = mockMovingBot(new Point(10, 200), map);
+        when(bot.getLevel()).thenReturn(1);
+        when(bot.getCurrentMaxHp()).thenReturn(100);
+        BotEntry entry = new BotEntry(bot, bot, null);
+
+        Point spot = BotManager.resolveSafeIdleRegion(entry, bot, bot.getPosition(), true);
+
+        assertEquals(100, spot.x);
+        assertTrue(spot.y >= 50 && spot.y <= 169, "expected rope y inside safe window, got " + spot);
+    }
+
+    @Test
     void shouldReuseWanderDirectionWhenGrindHasNoTarget() {
         Character bot = mockMovingBot(new Point(100, 100), createEmptyTestMap(910000030));
         BotEntry entry = new BotEntry(bot, mock(Character.class), null);
@@ -908,6 +966,66 @@ class BotManagerTest {
         // Only an explicit admin follow command anchors it to the admin.
         entry.debugCommanderFollow = true;
         assertEquals(admin, BotManager.getInstance().resolveFollowAnchor(entry, bot));
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void debugFollowFormationSplitsSelfOwnedManagedBotsAcrossSameGm() throws Exception {
+        BotManager manager = BotManager.getInstance();
+        Character admin = mock(Character.class);
+        when(admin.getId()).thenReturn(506);
+
+        net.server.world.World ws = mock(net.server.world.World.class);
+        net.server.PlayerStorage ps = mock(net.server.PlayerStorage.class);
+        when(ws.getPlayerStorage()).thenReturn(ps);
+        when(ps.getCharacterById(506)).thenReturn(admin);
+
+        Character firstBot = mock(Character.class);
+        when(firstBot.getId()).thenReturn(88);
+        when(firstBot.getWorldServer()).thenReturn(ws);
+        Character secondBot = mock(Character.class);
+        when(secondBot.getId()).thenReturn(99);
+        when(secondBot.getWorldServer()).thenReturn(ws);
+
+        BotEntry first = new BotEntry(firstBot, firstBot, null);
+        BotEntry second = new BotEntry(secondBot, secondBot, null);
+
+        Map<Integer, List<BotEntry>> bots = (Map<Integer, List<BotEntry>>) field(BotManager.class, "bots").get(manager);
+        bots.put(firstBot.getId(), new CopyOnWriteArrayList<>(List.of(first)));
+        bots.put(secondBot.getId(), new CopyOnWriteArrayList<>(List.of(second)));
+        try {
+            BotManager.bindDebugCommander(first, admin);
+            BotManager.bindDebugCommander(second, admin);
+
+            manager.issueFollowOwner(first);
+            manager.activateDebugFollowFormation(first);
+            manager.issueFollowOwner(second);
+            manager.activateDebugFollowFormation(second);
+
+            assertTrue(first.debugCommanderFollow);
+            assertTrue(second.debugCommanderFollow);
+            assertEquals(BotManager.cfg.FOLLOW_STAGGER, first.followOffsetX);
+            assertEquals(-BotManager.cfg.FOLLOW_STAGGER, second.followOffsetX);
+            assertEquals(admin, manager.resolveFollowAnchor(first, firstBot));
+            assertEquals(admin, manager.resolveFollowAnchor(second, secondBot));
+        } finally {
+            bots.remove(firstBot.getId());
+            bots.remove(secondBot.getId());
+        }
+    }
+
+    @Test
+    void clearingInactiveDebugCommanderPreservesOwnedBotFormationSlot() {
+        Character owner = mock(Character.class);
+        when(owner.getId()).thenReturn(77);
+        Character bot = mock(Character.class);
+        when(bot.getId()).thenReturn(88);
+        BotEntry entry = new BotEntry(bot, owner, null);
+        entry.followOffsetX = BotManager.cfg.FOLLOW_STAGGER;
+
+        BotManager.clearDebugCommander(entry);
+
+        assertEquals(BotManager.cfg.FOLLOW_STAGGER, entry.followOffsetX);
     }
 
     @Test

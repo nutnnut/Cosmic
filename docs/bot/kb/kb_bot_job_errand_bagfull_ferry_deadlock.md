@@ -46,4 +46,4 @@ check (`inventoryitems` grouped by `inventorytype`) confirmed the ETC bag was ge
 inventory reads as corroborating, not primary, evidence for a live bot.
 
 See [[kb_bot_npc_hop_hail_map_wide]] (a different ferry-stuck root cause — dock NPC proximity, not bag
-space) and [[kb_bot_maker_economy]] (the general ETC-bag-jam problem class).
+space) and the general ETC-bag-pressure problem class.

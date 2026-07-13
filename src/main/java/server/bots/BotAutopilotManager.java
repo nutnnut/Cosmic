@@ -206,6 +206,12 @@ final class BotAutopilotManager {
         entry.autopilotMapId = -1;            // drop the pick; BotManager.maybeRecoverInertAutopilot re-decides
         entry.autopilotDestinationName = "";
         entry.autopilotErrandMapId = -1;
+        // Clear the 12-min grind-redecide clock: maybeRecoverInertAutopilot reuses it as its backoff
+        // gate, so leaving it at the last plan's `decide_time + DECISION_INTERVAL_MS` would block
+        // recovery for up to 12 min after a death-loop — the bot idles inert that whole window. Mirror
+        // escapeTrappedRegion/clear() which zero it to re-plan next tick. (Root cause of the town-idle
+        // pile-up: every death-loop = up to 12 min forced idle. See kb_bot_inert_autopilot_recovery.)
+        entry.autopilotNextDecisionAtMs = 0L;
         entry.autopilotDeathStreak = 0;       // gave it an escape; count fresh from here
         reply.accept(entry, "i keep dying getting there - heading to town to find somewhere safer");
         // Revive at the forced-return town, UNLESS that's itself in a region this bot is walled out of
@@ -236,14 +242,28 @@ final class BotAutopilotManager {
      *  BotTravelCost.floodSeconds. */
     static int worldTourReturn(Character bot) {
         boolean inZipangu = bot.getMapId() / 100000000 == BotWorldGraph.MUSHROOM_SHRINE / 100000000;
-        return inZipangu ? bot.peekSavedLocation("WORLDTOUR") : -1;
+        if (!inZipangu) {
+            return -1;
+        }
+        // Match scripts/npc/9000020.js: Spinel sends a player with no saved WORLDTOUR
+        // location to Lith Harbor rather than leaving them in Mushroom Shrine.
+        int saved = bot.peekSavedLocation("WORLDTOUR");
+        return saved != -1 ? saved : MapId.LITH_HARBOUR;
+    }
+
+    /** The Free Market's per-bot exit edge (BotWorldGraph FM_ENTRANCE -> saved town): present only
+     *  while the bot stands inside the FM maps — mirrors {@link #worldTourReturn} so the market can
+     *  only ever be routed OUT of, never THROUGH. */
+    static int fmReturn(Character bot) {
+        return BotFreeMarketManager.isFmMap(bot.getMapId())
+                ? BotFreeMarketManager.fmReturnTownMapId(bot) : -1;
     }
 
     /** What the bot can spend on travel right now: scrolls if carried, taxis per meso,
      *  ferries per the caller's owner-permission gate ({@link #ferryAllowed}). */
     static BotWorldGraph.RouteOptions travelOptions(Character bot, boolean withFerry) {
         return new BotWorldGraph.RouteOptions(BotShopManager.countReturnScrolls(bot) > 0, bot.getMeso(), withFerry,
-                bot.getJob().getId() == 0, bot.getLevel(), worldTourReturn(bot));
+                bot.getJob().getId() == 0, bot.getLevel(), worldTourReturn(bot), fmReturn(bot));
     }
 
     /**
@@ -412,6 +432,8 @@ final class BotAutopilotManager {
         entry.autopilotDecisionInFlight = false;
         BotQuestManager.clearQuestErrand(entry); // a canceled autopilot abandons any quest detour
         BotGachaponManager.clearGachaErrand(entry); // ...and any gachapon trip
+        BotFreeMarketManager.clearFmErrand(entry); // ...and any market session (if the bot is still
+        // inside the FM, the stranded-exit recovery re-arms a bare exit walk next tick)
         BotStarterKitManager.clearJobErrand(entry); // ...and any job-change instructor walk
         BotTravelManager.resetForModeChange(entry); // drop the in-flight hop AND the give-up cooldown,
         // so a re-command (follow/grind/move) isn't silently gated by a stale travel give-up window.
@@ -474,14 +496,33 @@ final class BotAutopilotManager {
             return;
         }
         int[] epochs = members.stream().mapToInt(m -> m.activityEpoch).toArray();
+        // Quiesce every member while the shared decide runs off-thread: without this, a member's own
+        // per-bot recovery/redecide (maybeRecoverInertAutopilot / maybeRedecide, both gated on this flag)
+        // could fire mid-decide, call issueGrind, bump activityEpoch, and drop the whole party plan
+        // (epoch-changed-mid-decide). Mirrors redecideParty. Cleared first thing in the callback below.
+        for (BotEntry m : members) {
+            m.autopilotDecisionInFlight = true;
+        }
         decisionRunner.run(() -> decideParty(members), result -> {
+            for (BotEntry m : members) {
+                m.autopilotDecisionInFlight = false;
+            }
             PartyPlan plan = (PartyPlan) result;
             for (int i = 0; i < members.size(); i++) {
                 if (members.get(i).activityEpoch != epochs[i]) {
+                    // Silent drop -> the party never engaged and stayed idle. Surface it so a
+                    // command that keeps "not working" is diagnosable (see kb_bot_inert_autopilot_recovery).
+                    Character mb = members.get(i).bot;
+                    log.debug("party plan dropped: {} epoch changed mid-decide ({} members)",
+                            mb != null ? mb.getName() : "?", members.size());
                     return; // somebody got a newer directive mid-decision — drop the stale plan
                 }
             }
             if (plan == null) {
+                // decideParty already logs the exception case; this covers a genuine no-reachable-spot.
+                Character lb = members.get(0).bot;
+                log.debug("party autopilot found no shared spot for {} ({} members)",
+                        lb != null ? lb.getName() : "?", members.size());
                 reply.accept(members.get(0), "can't find a spot we can all reach that's worth it");
                 return;
             }
@@ -545,6 +586,9 @@ final class BotAutopilotManager {
         if (BotBreakManager.onBreak(entry, now) || entry.restErrand || now < entry.nextBreakRollAtMs) {
             return true; // a group break is already running / just rolled
         }
+        if (cohortTransitActive(cohort)) {
+            return true; // do not strand portal waiters by starting a break mid-cohort travel
+        }
         entry.nextBreakRollAtMs = now + 60_000L;
         double avgFreq = 0, avgIdle = 0;
         for (BotEntry m : cohort) {
@@ -561,10 +605,8 @@ final class BotAutopilotManager {
         // leader picks ONE break spot (town or a nearby safe map) so the party rests as a group rather
         // than each member rolling its own destination and scattering.
         int dest = decideBreakDestination(entry, bot);
-        int[] levels = cohort.stream().filter(m -> m.bot != null).mapToInt(m -> m.bot.getLevel()).sorted().toArray();
-        int trigger = BotManager.cfg.PARTY_LEECH_GAP_TRIGGER;
         for (BotEntry m : cohort) {
-            if (m.bot == null || BotBreakManager.catchUpSplit(m.bot.getLevel(), levels, trigger)) {
+            if (m.bot == null || catchesUpThroughRest(m, cohort)) {
                 continue; // behind the pack -> skip the break, grind solo to catch up
             }
             if (dest != -1 && dest != m.bot.getMapId()) {
@@ -575,6 +617,64 @@ final class BotAutopilotManager {
             }
         }
         return true;
+    }
+
+    /**
+     * Whether {@code member} sits far enough below its cohort's pack to sit out the group's rest and keep
+     * grinding to catch up. The single expression of that rule: the leader-triggered group break and the
+     * crew-wide chill session both call it, so they can never disagree about who keeps grinding.
+     * {@code cohort} is the party for a live group break, or a crew's live entries at session start
+     * (before the party has formed) — the levels are the same set either way.
+     */
+    static boolean catchesUpThroughRest(BotEntry member, List<BotEntry> cohort) {
+        if (member == null || member.bot == null || cohort == null || cohort.size() < 2) {
+            return false;
+        }
+        int[] levels = cohort.stream().filter(m -> m.bot != null)
+                .mapToInt(m -> m.bot.getLevel()).sorted().toArray();
+        return BotBreakManager.catchUpSplit(member.bot.getLevel(), levels,
+                BotManager.cfg.PARTY_LEECH_GAP_TRIGGER);
+    }
+
+    /**
+     * True when this bot is grinding alone because its COHORT is resting — a crew-wide chill session or a
+     * leader-triggered group break — and it is behind enough to catch up. Purely derived (no flag of its
+     * own): a catch-up member is never marked {@code chillSession}, so the roster already buckets it as
+     * grinding; this only names the reason it's out there by itself.
+     */
+    static boolean catchingUpWhileCohortRests(BotEntry entry) {
+        if (entry == null || !entry.autopilotParty) {
+            return false;
+        }
+        List<BotEntry> cohort = partyMembers.members(entry);
+        if (!catchesUpThroughRest(entry, cohort)) {
+            return false;
+        }
+        long now = System.currentTimeMillis();
+        for (BotEntry m : cohort) {
+            if (m != entry && (m.chillSession || m.restErrand || now < m.breakUntilMs)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    static boolean cohortTransitActive(List<BotEntry> cohort) {
+        if (cohort == null) {
+            return false;
+        }
+        for (BotEntry m : cohort) {
+            if (m == null) {
+                continue;
+            }
+            if (m.followTravelTargetMapId != -1
+                    || m.autopilotTransitFollow
+                    || m.autopilotWaitAnchor != null
+                    || m.autopilotWaitingForStragglers) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** Owner ordered "farm <item>": same autopilot, objective pinned to the item. */
@@ -662,6 +762,16 @@ final class BotAutopilotManager {
                     return BotQuestManager.tickErrand(entry, bot, runAiTick);
                 }
             },
+            new DetourErrand() { // free-market session: stall + browse trip during a rest break
+                @Override public boolean active(BotEntry entry) { return entry.fmErrandMapId != -1; }
+                @Override public boolean tick(BotEntry entry, Character bot, boolean runAiTick) {
+                    return BotFreeMarketManager.tickErrand(entry, bot, runAiTick);
+                }
+                // Stall setup may need bag/CASH space for the permit; let a cramped bag resupply first.
+                @Override public boolean yieldForResupply(BotEntry entry, Character bot) {
+                    return bagFull.bagFull(entry, bot);
+                }
+            },
             new DetourErrand() { // gachapon trip: detour to a gacha NPC, buy + roll tickets, then resume
                 @Override public boolean active(BotEntry entry) { return entry.gachaErrandMapId != -1; }
                 @Override public boolean tick(BotEntry entry, Character bot, boolean runAiTick) {
@@ -690,6 +800,7 @@ final class BotAutopilotManager {
         // anchor is set; clearWaitAnchor restores grinding=true.
         if (entry.autopilotWaitAnchor != null
                 && (entry.questErrandMapId != -1 || entry.gachaErrandMapId != -1
+                    || entry.fmErrandMapId != -1
                     || entry.autopilotErrandMapId != -1 || entry.jobErrandMapId != -1)) {
             clearWaitAnchor(entry);
         }
@@ -897,10 +1008,15 @@ final class BotAutopilotManager {
         int grindMap = entry.autopilotMapId != -1 ? entry.autopilotMapId : bot.getMapId();
         int townHops = BotBreakManager.hopsBack(town, grindMap);
         if (ThreadLocalRandom.current().nextDouble() < BotBreakManager.townBreakChance(townHops)) {
-            return town;
+            // Trade break rides the normal break: with pending market intent, land the SAME break
+            // trip at an FM-portal town when one is a small detour away (never a separate trek).
+            Integer fmTown = BotFreeMarketManager.preferFmBreakTown(entry, bot, town,
+                    System.currentTimeMillis());
+            return fmTown != null ? fmTown : town;
         }
         int nearby = BotBreakManager.findNearbyBreakMap(grindMap, townHops);
-        return nearby != -1 ? nearby : town; // no closer safe map -> town anyway
+        return nearby != -1 ? nearby : town; // no closer safe map -> town anyway (deep spots rest
+                                             // nearby and skip the market until a townside break)
     }
 
     static boolean requestResupplyErrand(BotEntry entry, Character bot) {
@@ -1034,9 +1150,11 @@ final class BotAutopilotManager {
     }
 
     /** Coarse activity bucket for the roster summary: {@code "chill"} for a whole-session chill login;
-     *  {@code "break"} when otherwise resting and not working (in-session break, gachapon trip,
-     *  idle/idle-leech, or winding down to log off); else {@code "grind"} for everything productive
-     *  (grinding, traveling there, resupplying, quest/job errands). Mirrors {@link #statusReport}. */
+     *  {@code "break"} when otherwise resting/on a chore (in-session break, gacha/FM/quest/job/rest
+     *  errand, idle-leech, or winding down to log off); {@code "idle"} for the inert-autopilot LEAK
+     *  (autopilot off with NO rest reason — status "idle rn", a bug, NOT a break; see
+     *  {@link #statusReport} and kb_bot_inert_autopilot_recovery); else {@code "grind"} (productive).
+     *  The {@code idle} split lets the roster surface and filter to genuinely-stuck bots. */
     static String activityCategory(BotEntry entry, Character bot) {
         if (entry == null || bot == null) {
             return "grind";
@@ -1044,12 +1162,52 @@ final class BotAutopilotManager {
         if (entry.chillSession) {
             return "chill";
         }
-        if (entry.loggingOut || entry.gachaErrandMapId != -1
-                || System.currentTimeMillis() < entry.breakUntilMs
-                || entry.idleLeech || !isActive(entry)) {
+        // Explained non-grind states -> "break" (resting or travelling on a chore, not stuck). Mirror
+        // statusReport's gating so an errand-bound bot is never mislabelled as the leak.
+        if (entry.loggingOut || entry.gachaErrandMapId != -1 || entry.fmErrandMapId != -1
+                || entry.questErrandMapId != -1 || entry.jobErrandMapId != -1 || entry.restErrand
+                || System.currentTimeMillis() < entry.breakUntilMs || entry.idleLeech) {
             return "break";
         }
+        // Autopilot leaked OFF with no reason above = the inert-leak bug (status "idle rn").
+        if (!isActive(entry)) {
+            return "idle";
+        }
         return "grind";
+    }
+
+    /**
+     * Short reason when the bot is detectably WEDGED — conditions that are easy to detect but that
+     * the bot cannot fix by itself (or only escapes slowly) — else null. Powers the roster's
+     * "possibly stuck" counter/filter; strictly broader than the {@code "idle"} activity bucket,
+     * which missed e.g. the Pyramid-Dunes trap bots because their chill/break state hid them.
+     */
+    static String stuckReason(BotEntry entry, Character bot) {
+        if (entry == null || bot == null) {
+            return null;
+        }
+        // Decide loop can't find anywhere to grind (one-way-map trap class: Pyramid Dunes, Leafre
+        // dock). The LAST decision failed and no plan was installed since — a successful decide
+        // overwrites the reason ("grind <dest> ..."), so a lingering failure = still failing.
+        String reason = entry.autopilotLastDecisionReason;
+        if (!isActive(entry) && reason != null
+                && (reason.startsWith("no reachable grind spot") || reason.startsWith("decide failed"))) {
+            return "can't find anywhere to grind";
+        }
+        // A committed job errand with no world route cannot make progress. This is distinct from a
+        // transient travel give-up: tickJobErrand records the route-null verdict after its full route
+        // check, so the web roster can surface the wedge without re-running world routing per poll.
+        if (entry.jobErrandMapId != -1 && entry.jobErrandTarget != null && entry.jobErrandRouteUnreachable) {
+            return "job advance route unreachable";
+        }
+        // A travel give-up cooldown is deliberately transient and cannot establish a wedge. The bot may
+        // legally wait (ferry), retry, or take a different hop while the old destination-scoped cooldown
+        // remains set. Live sampling showed those bots moving across maps while falsely flagged here.
+        // Inert-autopilot leak (the original possibly-stuck bucket, kb_bot_inert_autopilot_recovery).
+        if ("idle".equals(activityCategory(entry, bot))) {
+            return "autopilot leaked off";
+        }
+        return null;
     }
 
     static String statusReport(BotEntry entry, Character bot) {
@@ -1083,6 +1241,12 @@ final class BotAutopilotManager {
                     ? "im at " + currentMap + ", at the gachapon"
                     : "im at " + currentMap + ", heading to the gachapon";
         }
+        if (entry.fmErrandMapId != -1) {
+            return constants.game.GameConstants.isFreeMarketRoom(bot.getMapId())
+                    || bot.getMapId() == BotFreeMarketManager.FM_ENTRANCE
+                    ? "im at the free market, doing some shopping"
+                    : "im at " + currentMap + ", heading to the free market";
+        }
         // Transient sub-states sit on top of grind mode (entry.grinding stays true), so report them
         // first — otherwise a town break or level-gap idle-leech misreads as "grinding here".
         if (System.currentTimeMillis() < entry.breakUntilMs) {
@@ -1099,6 +1263,11 @@ final class BotAutopilotManager {
                     ? "im at " + currentMap + ", idle rn"
                     : "im at " + currentMap + ", " + activity;
             return base + lastDecisionSuffix(entry);
+        }
+        // Grinding on while the rest of the cohort chills/breaks — checked after the leak arm above so a
+        // wedged catch-up bot still reports "idle rn" instead of claiming it's out there working.
+        if (catchingUpWhileCohortRests(entry)) {
+            return "im at " + currentMap + ", grinding to catch up with my group";
         }
 
         String destination = entry.autopilotDestinationName == null || entry.autopilotDestinationName.isBlank()
@@ -1277,7 +1446,8 @@ final class BotAutopilotManager {
 
     /** Decision-dispatch seam: a group member's destination is chosen by its cohort leader (shared
      *  plan via {@link #redecideParty}); a self-deciding bot runs its own advisor pass (grind /
-     *  farm-item + ferry teaser, via {@link #redecideSolo}). Stage 5's player-led policy plugs in
+     *  farm-item + ferry teaser, via {@link #redecideSolo}). TODO(bot-player-led-party): the
+     *  player-led policy plugs in
      *  here — one branch — instead of being smeared across the decision call sites. */
     private static void redecide(BotEntry entry, Character bot) {
         if (decidesAsGroupMember(entry)) {
@@ -1335,8 +1505,14 @@ final class BotAutopilotManager {
             return new Decision(local, ferryTeaser(local, recommendOnce(entry, bot, true)));
         } catch (RuntimeException e) {
             // Visible, not swallowed: distinguishes a real failure here from a legitimate null rec
-            // (no reachable worthwhile spot), which returns a non-null Decision below.
-            log.warn("bot decide failed for {}", bot != null ? bot.getName() : "?", e);
+            // (no reachable worthwhile spot), which returns a non-null Decision below. Each such throw
+            // fails a recovery (null decide -> no plan), so the bot stays inert-leaked -> the whole
+            // grind:idle ratio degrades over hours (see kb_bot_inert_autopilot_recovery). Log the map so
+            // the failing site is narrowable even when the JVM strips the stack (fast-throw NPEs come
+            // back stackless; relaunch with -XX:-OmitStackTraceInFastThrow for the exact line).
+            log.warn("bot decide failed for {} (map {}){}", bot != null ? bot.getName() : "?",
+                    bot != null ? bot.getMapId() : -1,
+                    e.getStackTrace().length == 0 ? " [stackless fast-throw]" : "", e);
             return null;
         }
     }
@@ -1920,6 +2096,17 @@ final class BotAutopilotManager {
         try {
             return partyDecider.decide(members);
         } catch (RuntimeException e) {
+            // Was silently swallowed -> a party-decide NPE turned "grind together" into a no-op and the
+            // whole cohort sat idle with no visible reason. Log it like decide() does (same fast-throw
+            // caveat: relaunch with -XX:-OmitStackTraceInFastThrow for the exact line). The party leader
+            // names the cohort; see kb_bot_inert_autopilot_recovery.
+            BotEntry lead = members != null && !members.isEmpty() ? members.get(0) : null;
+            Character leadBot = lead != null ? lead.bot : null;
+            log.warn("party decide failed for {} (leader map {}, {} members){}",
+                    leadBot != null ? leadBot.getName() : "?",
+                    leadBot != null ? leadBot.getMapId() : -1,
+                    members != null ? members.size() : 0,
+                    e.getStackTrace().length == 0 ? " [stackless fast-throw]" : "", e);
             return null;
         }
     }

@@ -369,13 +369,25 @@ final class BotGachaponManager {
     /** Cap on how far (portal hops from the break spot) a bot will travel for a gacha trip. */
     static final int GACHA_MAX_HOPS = 5;
 
+    /** The NX floor gacha never dips below: the flat reserve, plus the store-permit price while
+     *  the bot is saving for one ({@link BotFreeMarketManager#savingForPermit}) — a would-be
+     *  merchant funds its stall before it gambles. */
+    static int nxFloor(Character bot) {
+        int floor = BotManager.cfg.GACHA_NX_RESERVE;
+        BotEntry entry = BotManager.getInstance().getEntryByBotCharId(bot.getId());
+        if (BotFreeMarketManager.savingForPermit(entry, bot)) {
+            floor += BotFreeMarketManager.permitPrice.nx();
+        }
+        return floor;
+    }
+
     /** Rolls the bot can afford above the reserve, capped at the per-trip ceiling - the count travel
      *  is amortized over, so saving up enables (and justifies) a longer / farther trip. */
     static int plannedRolls(Character bot, int price) {
         if (price <= 0) {
             return 0;
         }
-        int spendable = nxBalance.nx(bot) - BotManager.cfg.GACHA_NX_RESERVE;
+        int spendable = nxBalance.nx(bot) - nxFloor(bot);
         return Math.max(0, Math.min(BotManager.cfg.GACHA_TICKETS_PER_TRIP, spendable / price));
     }
 
@@ -407,12 +419,12 @@ final class BotGachaponManager {
         if (!BotBreakManager.onRestBreak(entry, bot, now)) {
             return;
         }
-        if (entry.gachaErrandMapId != -1 || entry.questErrandMapId != -1) {
+        if (entry.gachaErrandMapId != -1 || entry.questErrandMapId != -1 || entry.fmErrandMapId != -1) {
             return; // one errand at a time
         }
-        // Spend only spare NX above the reserve, enough for at least one ticket.
+        // Spend only spare NX above the floor (reserve + permit savings), enough for one ticket.
         int price = ticketPrice.nx();
-        int spendable = nxBalance.nx(bot) - BotManager.cfg.GACHA_NX_RESERVE;
+        int spendable = nxBalance.nx(bot) - nxFloor(bot);
         if (price <= 0 || spendable < price) {
             return;
         }
@@ -470,7 +482,7 @@ final class BotGachaponManager {
         entry.gachaSpentThisTrip = 0;
         entry.gachaStandSpot = null;
         BotPersonality p = entry.personality != null ? entry.personality : BotPersonality.defaults();
-        long spare = nxBalance.nx(bot) - BotManager.cfg.GACHA_NX_RESERVE;
+        long spare = nxBalance.nx(bot) - nxFloor(bot);
         entry.gachaTripBudgetNx = Math.max(0L, Math.round(spare * p.gachaSpendFrac()));
     }
 
@@ -560,7 +572,7 @@ final class BotGachaponManager {
         // Personality NX budget (a fraction of spare NX) is the spend cap, replacing the old flat ticket
         // count. Also never dip the reserve regardless of budget.
         if (entry.gachaSpentThisTrip + price > entry.gachaTripBudgetNx
-                || nxBalance.nx(bot) - BotManager.cfg.GACHA_NX_RESERVE < price) {
+                || nxBalance.nx(bot) - nxFloor(bot) < price) {
             return false;
         }
         // Inventory-space guard BEFORE charging (mirrors gachapon.js, which checks one free slot in

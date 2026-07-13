@@ -73,7 +73,7 @@ final class BotGrindAdvisor {
     private static final Logger log = LoggerFactory.getLogger(BotGrindAdvisor.class);
 
     /** Same producer anchors as the scroll farming-cost model. */
-    private static final double ATTACK_CYCLE_SECONDS = 0.72;
+    static final double ATTACK_CYCLE_SECONDS = 0.72;
     private static final double DROP_CHANCE_DENOMINATOR = 1_000_000.0;
     private static final int MIN_SPAWN_POINTS = 3;
     private static final int INSTANCED_MAPID_FLOOR = 900000000;
@@ -384,8 +384,150 @@ final class BotGrindAdvisor {
         return buildCandidates(entry, bot, mapAllowed);
     }
 
+    /**
+     * The advisor's modeled sustained kills/hr for {@code bot} grinding {@code mapId}, or 0 when the
+     * model cannot answer (caches not warmed yet, a town/instanced map, or nothing grindable there).
+     * The same SSOT math a committed plan prediction carries ({@link #profileFor} →
+     * {@link #blendCandidate} → {@link BotGrindPlanner#killsPerHour}), restricted to the one map the
+     * bot is standing on: no gear valuation, no aspirational-mob caching, no admission gates — those
+     * exist to PICK a map, and this map is already picked. Cheap enough for a bot tick thread (a
+     * handful of cached mob profiles), so the abstract grind can rate a spot no fresh plan ever priced
+     * (directed !goto pins never re-decide; owner-commanded grinds and restarts install no prediction).
+     */
+    /** How long an entry-cached modeled rate stays valid. Long enough to amortize the mob profiling,
+     *  short enough to track level-ups and gear swaps while a bot camps one map for hours. */
+    private static final long MODEL_CACHE_TTL_MS = 10 * 60_000L;
+
+    /** Entry-cached {@link #modeledKillsPerHour} for the bot's CURRENT map: recomputes on map change,
+     *  TTL expiry, or while the model has no answer yet (cold caches — cheap to re-ask). Also stashes
+     *  the modeled attack duty (fraction of wall time spent casting = blended kill seconds × kph/3600,
+     *  supply caps included) for the abstract grind's time-based MP charge. Cache fields live on the
+     *  entry and are touched only by the bot's own tick thread. */
+    static double modeledKillsPerHourCached(BotEntry entry, Character bot) {
+        int mapId = bot.getMapId();
+        long now = System.currentTimeMillis();
+        if (entry.abstractModelMapId != mapId || entry.abstractModelKph <= 0
+                || now - entry.abstractModelAtMs > MODEL_CACHE_TTL_MS) {
+            MobCandidate c = modeledCandidate(entry, bot, mapId);
+            double kph = c == null ? 0.0 : BotGrindPlanner.killsPerHour(c);
+            entry.abstractModelKph = kph;
+            entry.abstractModelAttackDuty = c == null ? 0.0 : Math.min(1.0, c.killSeconds() * kph / 3600.0);
+            entry.abstractModelMapId = mapId;
+            entry.abstractModelAtMs = now;
+        }
+        return entry.abstractModelKph;
+    }
+
+    static double modeledKillsPerHour(BotEntry entry, Character bot, int mapId) {
+        MobCandidate c = modeledCandidate(entry, bot, mapId);
+        return c == null ? 0.0 : BotGrindPlanner.killsPerHour(c);
+    }
+
+    /** The single-map candidate behind {@link #modeledKillsPerHour}, or null when the model cannot
+     *  answer. Package-visible: the market's live farm-income anchor samples it
+     *  ({@code BotScrollManager.farmMesoPerSecond}). */
+    static MobCandidate modeledCandidate(BotEntry entry, Character bot, int mapId) {
+        Map<MobProfile, Integer> pointsByMob = profilePointsFor(entry, bot, mapId);
+        if (pointsByMob == null || pointsByMob.isEmpty()) {
+            return null;
+        }
+        BotSpawnIndex.MapSpawns map = BotSpawnIndex.get().byMap().get(mapId);
+        return blendCandidate(mapId, mapName(mapId), map.areaPx(), pointsByMob);
+    }
+
+    /** Per-mob (profile → spawn points) for one map, or null when the model cannot answer (caches not
+     *  warm, town/instanced map, no grindable spawn). Shared by the modeled rate and its debug view. */
+    private static Map<MobProfile, Integer> profilePointsFor(BotEntry entry, Character bot, int mapId) {
+        if (!isWarm()) {
+            return null; // never pay the cold WZ scan on a tick thread; the caller re-checks shortly
+        }
+        BotSpawnIndex.MapSpawns map = BotSpawnIndex.get().byMap().get(mapId);
+        if (map == null || map.town() || mapId >= INSTANCED_MAPID_FLOOR) {
+            return null;
+        }
+        MonsterInformationProvider mi = MonsterInformationProvider.getInstance();
+        Map<MobProfile, Integer> pointsByMob = new HashMap<>();
+        for (Map.Entry<Integer, Integer> e : map.mobCounts().entrySet()) {
+            MobProfile p = profileFor(entry, bot, mi, e.getKey());
+            if (p != null && p.exp() > 0) {
+                pointsByMob.put(p, e.getValue());
+            }
+        }
+        return pointsByMob;
+    }
+
+    /**
+     * JSON decomposition of the abstract-grind rate model for {@code bot} on its CURRENT map — the
+     * measured-vs-model debugging surface behind {@code /api/grindmodel} (a wildly wrong calibration
+     * bucket means one of these components is wrong for that bot's context; this shows which).
+     */
+    static String modelDebugJson(BotEntry entry, Character bot) {
+        int mapId = bot.getMapId();
+        StringBuilder sb = new StringBuilder(512);
+        sb.append("{\"botId\":").append(bot.getId())
+                .append(",\"mapId\":").append(mapId)
+                .append(",\"level\":").append(bot.getLevel())
+                .append(",\"jobId\":").append(bot.getJob() != null ? bot.getJob().getId() : 0)
+                .append(",\"warm\":").append(isWarm());
+        Map<MobProfile, Integer> pointsByMob = profilePointsFor(entry, bot, mapId);
+        if (pointsByMob == null || pointsByMob.isEmpty()) {
+            return sb.append(",\"modelKph\":0,\"reason\":\"no grindable spawn / town / cold caches\"}")
+                    .toString();
+        }
+        BotSpawnIndex.MapSpawns map = BotSpawnIndex.get().byMap().get(mapId);
+        MobCandidate c = blendCandidate(mapId, mapName(mapId), map.areaPx(), pointsByMob);
+        double kph = BotGrindPlanner.killsPerHour(c);
+        double seek = BotGrindPlanner.seekSeconds(c.mapAreaPx(), c.spawnPoints());
+        sb.append(",\"modelKph\":").append(Math.round(kph))
+                .append(",\"blendKillSeconds\":").append(Math.round(c.killSeconds() * 10) / 10.0)
+                .append(",\"seekSeconds\":").append(Math.round(seek * 10) / 10.0)
+                .append(",\"spawnPoints\":").append(c.spawnPoints())
+                .append(",\"areaPx\":").append(c.mapAreaPx())
+                .append(",\"supplyKph\":")
+                .append(Math.round(c.spawnPoints() * 3600.0 / BotGrindPlanner.RESPAWN_PERIOD_SECONDS))
+                .append(",\"attackCycleSeconds\":").append(ATTACK_CYCLE_SECONDS)
+                .append(",\"mobs\":[");
+        boolean first = true;
+        for (Map.Entry<MobProfile, Integer> e : pointsByMob.entrySet()) {
+            MobProfile p = e.getKey();
+            if (!first) {
+                sb.append(',');
+            }
+            first = false;
+            sb.append("{\"mobId\":").append(p.mobId())
+                    .append(",\"name\":\"").append(p.mobName().replace("\"", "'")).append('"')
+                    .append(",\"level\":").append(p.level())
+                    .append(",\"points\":").append(e.getValue())
+                    .append(",\"killSeconds\":").append(Math.round(p.killSeconds() * 10) / 10.0)
+                    .append(",\"rawKillSeconds\":").append(Math.round(p.rawKillSeconds() * 10) / 10.0)
+                    .append('}');
+        }
+        return sb.append("]}").toString();
+    }
+
+    /** Two-sided level-band admission for a candidate mob: [level-DOWN, level+UP] with a CONSTANT
+     *  look-down span, so a low-level bot floors at mob level 1 while a level-80's floor sits at 55.
+     *  A cheap pre-filter in front of the emergent exp/hit-chance/survivability scoring (which still
+     *  does the fine selection inside the band). */
+    static boolean levelBandAllows(int botLevel, int mobLevel) {
+        return mobLevel >= Math.max(1, botLevel - BotManager.cfg.GRIND_LEVEL_BAND_DOWN)
+                && mobLevel <= botLevel + BotManager.cfg.GRIND_LEVEL_BAND_UP;
+    }
+
     private static List<MobCandidate> buildCandidates(BotEntry entry, Character bot,
                                                       java.util.function.IntPredicate mapAllowed) {
+        boolean band = BotManager.cfg.GRIND_LEVEL_BAND_ENABLED && bot != null;
+        List<MobCandidate> candidates = buildCandidates(entry, bot, mapAllowed, band ? bot.getLevel() : 0);
+        if (candidates.isEmpty() && band) {
+            // Never strand: no map holds a single in-band mob -> fall back to the full pool.
+            candidates = buildCandidates(entry, bot, mapAllowed, 0);
+        }
+        return candidates;
+    }
+
+    private static List<MobCandidate> buildCandidates(BotEntry entry, Character bot,
+                                                      java.util.function.IntPredicate mapAllowed,
+                                                      int bandLevel) {
         awaitWarm(); // hold the decide thread until the boot warm is done — never run a cold pass under load
         ItemInformationProvider ii = ItemInformationProvider.getInstance();
         BotSpawnIndex.Index index = BotSpawnIndex.get();
@@ -427,10 +569,19 @@ final class BotGrindAdvisor {
         List<MobCandidate> candidates = new ArrayList<>();
         for (BotSpawnIndex.MapSpawns map : maps) {
             Map<MobProfile, Integer> pointsByMob = new HashMap<>();
+            int inBandPoints = 0;
             for (Map.Entry<Integer, Integer> e : map.mobCounts().entrySet()) {
                 MobProfile p = profiles.get(e.getKey());
                 if (p == null || p.exp() <= 0) { // 0-exp props aren't grinding
                     continue;
+                }
+                // Level band steers map ADMISSION only — out-of-band mobs stay in the blend at
+                // their real (usually dismal) kill rate, because the bot WILL fight them on-site
+                // (target selection is spatial). Dropping them scored mixed maps off a fantasy:
+                // Warped Path of Time<3> priced as 3 in-band Buffoons while 25 out-of-band Ghost
+                // Pirates (2x HP, 2x WDEF) were 89% of what a lv70 actually swung at.
+                if (bandLevel <= 0 || levelBandAllows(bandLevel, p.level())) {
+                    inBandPoints += e.getValue();
                 }
                 long tGear = BotPerformanceMonitor.start();
                 List<GearProspect> gear = gearByMob.computeIfAbsent(e.getKey(), id ->
@@ -440,8 +591,8 @@ final class BotGrindAdvisor {
                 pointsByMob.put(new MobProfile(p.mobId(), p.mobName(), p.level(), p.avoid(), p.exp(),
                         p.killSeconds(), p.rawKillSeconds(), p.touchDanger(), gear), e.getValue());
             }
-            if (totalPoints(pointsByMob) < MIN_SPAWN_POINTS) {
-                continue;
+            if (totalPoints(pointsByMob) < MIN_SPAWN_POINTS || inBandPoints < MIN_SPAWN_POINTS) {
+                continue; // too small, or nothing level-appropriate anchoring the map
             }
             long tBlend = BotPerformanceMonitor.start();
             candidates.add(blendCandidate(map.mapId(), mapName(map.mapId()), map.areaPx(),
@@ -991,8 +1142,8 @@ final class BotGrindAdvisor {
      * (ensemble - best top), not an empty pants slot; a shield drop on a 2H build competes
      * against the weapon itself (and is hard-gated by levelsUntilWearable anyway).
      */
-    private static double gearBar(Character bot, ItemInformationProvider ii, int itemId, short slot,
-                                  Map<Short, Double> cache) {
+    static double gearBar(Character bot, ItemInformationProvider ii, int itemId, short slot,
+                          Map<Short, Double> cache) {
         switch (slot) {
             case -5, -6 -> {
                 double top = cache.computeIfAbsent(KEY_BEST_TOP,
@@ -1081,7 +1232,7 @@ final class BotGrindAdvisor {
      * advisor's own attack-cycle anchor, so a typical-speed weapon keeps its raw score;
      * 1.0 when WZ timing is unavailable (unit tests, odd items).
      */
-    private static double weaponSpeedFactor(int itemId) {
+    static double weaponSpeedFactor(int itemId) {
         int cycleMs = BotEquipManager.weaponCycleMs(itemId);
         return cycleMs > 0 ? ATTACK_CYCLE_SECONDS * 1000.0 / cycleMs : 1.0;
     }

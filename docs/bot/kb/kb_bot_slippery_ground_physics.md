@@ -21,4 +21,4 @@ Slippery ground (map WZ `info/fs` < 1, El Nath 0.2) in BotPhysicsEngine — comm
 - **Approach control + brake stance (fa51f5e3d, evidence pathlog-Preston-2026-06-12T083326.txt)**: all ground walk-toward-target funnels through `BotMovementManager.updateStepX`; on slippery ground `BotPhysicsEngine.slipperyApproachDir(map, profile, hspeed, dx)` is bang-bang — accelerate only while next-tick stop-out (brake+residual glide, 8ms quanta) fits in |dx|, else brake — so bots stop inside 2px launch windows at platform edges instead of sliding off (the Preston fall). Walk-off DROP edges exempt (need momentum). Braking (`desiredDir·hspeed<0`) sets facingDir=input + `BotEntry.groundBrakeDir` → resolveStance renders the visible counter-strafe walk stance.
 - GRAPH_VERSION: 50→51 (kinetic+snowshoes) →52 (brake-to-stop landings) →53 (glide-unless-edge stop policy) →54 (half-momentum landings + air control in jump arcs) →55 (CalcFloat band correction; v55 ≡ v54 content). hspeed units are px per 8ms client step; px/s = hspeed/0.008.
 
-Related: [[kb_bot_nav_costs_and_anchors]], [[kb_bot_swim_and_forbidfalldown]].
+Related: [[kb_bot_swim_and_forbidfalldown]].

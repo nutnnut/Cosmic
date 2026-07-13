@@ -106,8 +106,8 @@ When writing an export/scan script or test over the raw XML:
 3. **`SkillFactory.getSkill(id)` returns null until `SkillFactory.loadAllSkills()` is called** — the map is populated lazily. Call it first in any test/exporter.
 4. **String.img desc extraction needs a *tempered* regex** so a desc-less skill doesn't borrow the next skill's text:
    `<imgdir name="(\d{3,})">(?:(?!<imgdir name="\d{3,}).)*?<string name="desc" value="([^"]*)"`. Descriptions there 4-digit-pad short ids (`getSkillName` prepends `000` for len-4 ids).
-5. **No `python` on this box.** Use PowerShell regex for quick slices, or a JUnit test for anything that needs the loaded objects (the existing `BotSkillClassificationExportTest` is the model — it reuses real predicates as SSOT, writes `tmp/*.{tsv,md}`, always passes; it's a debug dump, not a regression gate). Build/run per [[reference_build_tools]].
-6. **Verify ids/values, don't guess** — cross-check against String.wz or the live DB (`reference_mysql_mcp`), per [[feedback_verify_ids_against_handbook]].
+5. **No `python` on this box.** Use PowerShell regex for quick slices, or a JUnit test for anything that needs the loaded objects (the existing `BotSkillClassificationExportTest` is the model — it reuses real predicates as SSOT, writes `tmp/*.{tsv,md}`, always passes; it's a debug dump, not a regression gate).
+6. **Verify ids/values, don't guess** — cross-check against String.wz, the handbook, or the live DB.
 7. **Per-level vs info-level scope.** Most numeric skill keys (`damage`, `range`, `mobCount`, `mpCon`, `attackCount`) are repeated under *each* `level/<n>` — there is no single info-level value, and they can change across levels (e.g. Slash Blast `range` 130→150). Read the specific level; a first-match slice silently grabs level 1. Melee weapon hit reach is **not** here — it's the per-action `lt`/`rb` in `Character.wz/Afterimage/<weapon>.img.xml`, bucketed by `reqLevel/10`.
 
 ## Cross-references

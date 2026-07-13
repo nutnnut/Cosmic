@@ -32,20 +32,26 @@ class BotMovementManagerTest {
                 new Point(100, 200),
                 new Point(250, 200),
                 new BotPhysicsEngine.MovementSnapshot(0, 0, CharacterStance.STAND_RIGHT_STANCE),
+                77,
                 321);
 
         assertEquals(35, data.length);
         assertEquals(3, u8(data[0]));
 
+        // Client layout for teleport frags (CMovePath::Decode cases 3/4): x, y, fh, stance, elapse.
         assertEquals(4, u8(data[1]));
         assertEquals(100, i16(data, 2));
         assertEquals(200, i16(data, 4));
-        assertEquals(CharacterStance.STAND_RIGHT_STANCE, u8(data[10]));
+        assertEquals(77, i16(data, 6));
+        assertEquals(CharacterStance.STAND_RIGHT_STANCE, u8(data[8]));
+        assertEquals(0, i16(data, 9), "teleport frame must not linger: elapse must be 0");
 
         assertEquals(3, u8(data[11]));
         assertEquals(250, i16(data, 12));
         assertEquals(200, i16(data, 14));
-        assertEquals(CharacterStance.STAND_RIGHT_STANCE, u8(data[20]));
+        assertEquals(0, i16(data, 16), "arrival frag carries fh 0 until the settle, matching captures");
+        assertEquals(CharacterStance.STAND_RIGHT_STANCE, u8(data[18]));
+        assertEquals(0, i16(data, 19), "teleport frame must not linger: elapse must be 0");
 
         assertEquals(0, u8(data[21]));
         assertEquals(250, i16(data, 22));
@@ -430,6 +436,27 @@ class BotMovementManagerTest {
     }
 
     @Test
+    void shouldNotMobDodgeWhileParkingOnBreak() {
+        MapleMap realMap = new MapleMap(910009050, 0, 0, 910009050, 1.0f);
+        server.maps.FootholdTree footholds = new server.maps.FootholdTree(new Point(-2000, -2000), new Point(2000, 2000));
+        footholds.insert(new Foothold(new Point(0, 100), new Point(300, 100), 1));
+        realMap.setFootholds(footholds);
+        BotNavigationGraphProvider.rebuildGraph(realMap);
+        MapleMap map = spy(realMap);
+        doReturn(List.of(mockMob(new Point(130, 100), 100100))).when(map).getAllMonsters();
+
+        Character bot = mockBot(new Point(100, 100), map);
+        BotEntry entry = new BotEntry(bot, null, null);
+        entry.grinding = true;
+        entry.breakUntilMs = System.currentTimeMillis() + 60_000L;
+        BotMovementManager.cfg.MOB_AVOID_REACTION_CHANCE = 1.0;
+
+        BotMovementManager.tickGrounded(entry, new Point(250, 100));
+
+        assertFalse(entry.inAir, "break parking should walk to its held anchor instead of mob-dodge looping");
+    }
+
+    @Test
     void shouldNotJumpOverBlockingMobWhenSimulatedLandingLeavesCurrentRegion() {
         // Build on the bare map before spying — see shouldJumpForwardWhenMobBlocksWalkLaneAndLandingStaysInCurrentRegion
         // for why rebuildGraph through a spy OOMs.
@@ -559,6 +586,30 @@ class BotMovementManagerTest {
 
         assertTrue(entry.inAir, "graph warmup fallback should jump small same-level gaps instead of freezing");
         assertEquals(BotPhysicsEngine.walkStep(map, entry.movementProfile), entry.airVelX);
+    }
+
+    @Test
+    void shouldWalkOffLedgeWaypointInsteadOfParkingAtFootholdEnd() {
+        // pathlog-John/Leroy 2026-07-11 (swim map 200082300): transit-follow target ~2100px below and
+        // 218px aside. Down-jump rejected (|dx| over the band), no rope, so the fallback authors a
+        // walk-off waypoint walkStep px past the foothold endpoint — but the fallback stop radius
+        // (12px) is larger than that overhang, so the bot parked at the ledge end forever.
+        MapleMap map = new MapleMap(910000061, 0, 0, 910000061, 1.0f);
+        map.setSwim(true);
+        server.maps.FootholdTree footholds = new server.maps.FootholdTree(new Point(-2000, -2000), new Point(2000, 2000));
+        footholds.insert(new Foothold(new Point(-37, -100), new Point(35, -100), 1)); // top platform, right end = ledge
+        footholds.insert(new Foothold(new Point(33, 100), new Point(300, 100), 2));   // floor far below
+        map.setFootholds(footholds);
+
+        Character bot = mockBot(new Point(35, -100), map); // parked exactly at the foothold endpoint
+        BotEntry entry = new BotEntry(bot, null, null);
+        entry.graphWarmupFallback = true;
+        entry.following = true; // transit-follow: grinding=false, follow hysteresis branch
+
+        BotMovementManager.tickGrounded(entry, new Point(253, 100)); // far below AND beyond FOLLOW_DIST aside
+
+        assertTrue(entry.inAir || bot.getPosition().x > 35,
+                "fallback must walk through the ledge waypoint instead of parking at the foothold end");
     }
 
     @Test
@@ -880,7 +931,10 @@ class BotMovementManagerTest {
 
     @Test
     void shouldSpamSidewaysDuringFidgetWithoutDroppingFollowMode() {
-        MapleMap map = new MapleMap(910000043, 0, 0, 910000043, 1.0f);
+        // 910000066: unique synthetic id — BotDirectionalDropNavigationTest builds a GRAPH for
+        // 910000043, and sharing its id makes peekGraph resolve THAT map's regions here, so
+        // previewGroundStep's region-constrained sampling rejects every step (bot frozen).
+        MapleMap map = new MapleMap(910000066, 0, 0, 910000066, 1.0f);
         server.maps.FootholdTree footholds = new server.maps.FootholdTree(new Point(-2000, -2000), new Point(2000, 2000));
         footholds.insert(new Foothold(new Point(0, 100), new Point(300, 100), 1));
         map.setFootholds(footholds);

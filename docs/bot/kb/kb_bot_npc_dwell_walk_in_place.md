@@ -23,4 +23,18 @@ Why velocity, not stance: `idleOnGround` always zeroes `moveDir` and velocity to
 
 **SSOT note:** quest/job use `tickApproachNpc` (radius 500). Shop (`BotShopManager.tickShopVisit`) and gachapon (`BotGachaponManager`) are still PARALLEL approach impls — shop has extra machinery (approach-point pick for fenced booths, async purchase sequencing) so full unification was judged out-of-scope/risky; only the settle symptom was unified.
 
+**Second walk-in-place class (2026-07-02, distinct root cause): steering target reachable GROUNDED.**
+A committed directional DROP edge steered at its landing point once the bot's x was "past the
+runway anchor" — but a bot on a *different same-height foothold across a gap* also satisfies that
+x test (NLC 600000000, pathlog-itunes-2026-07-02T071428: DROP (2938,261)->(2898,381) stepX=-6,
+bot grounded at (2899,261)). It walks to endPoint.x, stays grounded (no lip there), and parks
+against the edge forever; travel deadlines and retries the SAME hop in a loop (461s observed).
+Fix in `BotNavigationManager`: the x-only `hasReachedDirectionalDropRunway` shortcut is deleted;
+`matchesDirectionalDrop` (the live `simulateWalkOffLanding` gate) now decides in ALL grounded
+stances, checking (a) the sim's `launchPoint` falls BEFORE the steering point in the launch
+direction (point-steering stops at endPoint.x — a lip beyond it is unreachable) and (b) the
+landing region == edge.toRegionId (exact landing pixel is irrelevant at execution time). A
+rejected stance steers back to edge.startPoint (the authored runway). Regression:
+`BotDirectionalDropNavigationTest#shouldSteerBackToRunwayWhenBotStandsOnWrongFootholdPastTheAnchor`.
+
 **Pre-existing red tests (NOT from this change, verified via stash):** BotQuestManagerTest ×3 (errandArrivalStartsQuestAndClears + talkQuest…RogersApple expect immediate interaction, stale vs the dwell feature; piggybackQueuesStartErrandWhenMobsOverlap map-selection), BotTravelManagerTest ×2 (shouldWalkTowardPortalThenEnterWhenInRange, shouldWalkToCabNpcThenPayAndRide — Mockito strict-stub/order, fail in isolation on clean HEAD too). Surefire XML `<testcase name=>` is offset-by-one from the failure's stack trace — trust the `at server.bots.…Test.<method>` line, not the name attr.

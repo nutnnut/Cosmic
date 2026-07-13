@@ -33,10 +33,7 @@ own `CalcFloat`/`JustJump` formulas (see IDB section below). Bot ticks
 at 50ms (TICK_MS = 50), so all `*_PXS`/`*_PXS2` constants are in
 per-second units and are tick-rate independent.
 
-**Do NOT use maplestory-wasm as a reference.** Its physics model
-diverges from the real v83 client; values copied from it gave a swim
-jump magnitude *lower* than the existing 555 px/s, but the actual
-client value is *higher*. See `feedback_no_wasm_reference.md`.
+The swim constants below are fitted to real v83 client captures.
 
 ## v83 client (Angel.idb) reverse-engineering anchors
 

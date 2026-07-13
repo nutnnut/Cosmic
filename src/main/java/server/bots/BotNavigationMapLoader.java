@@ -7,6 +7,7 @@ import provider.DataTool;
 import provider.wz.WZFiles;
 import server.maps.Foothold;
 import server.maps.FootholdTree;
+import server.maps.MapFactory;
 import server.maps.MapleMap;
 import server.maps.Portal;
 import server.maps.PortalFactory;
@@ -41,6 +42,8 @@ final class BotNavigationMapLoader {
         }
 
         MapleMap map = new MapleMap(mapId, 0, 0, DataTool.getInt("returnMap", infoData, mapId), monsterRate);
+        map.setMapName(MapFactory.loadPlaceName(mapId));
+        map.setStreetName(MapFactory.loadStreetName(mapId));
         map.setFieldLimit(DataTool.getInt(infoData.getChildByPath("fieldLimit"), 0));
         map.setSwim(DataTool.getInt(infoData.getChildByPath("swim"), 0) != 0);
         loadBounds(map, mapData, infoData);
@@ -148,6 +151,8 @@ final class BotNavigationMapLoader {
                     foothold.setPrev(DataTool.getInt(footHold.getChildByPath("prev")));
                     foothold.setNext(DataTool.getInt(footHold.getChildByPath("next")));
                     foothold.setForbidFallDown(DataTool.getInt(footHold.getChildByPath("forbidFallDown"), 0) != 0);
+                    foothold.setLayer(parseFootholdGroupId(footRoot.getName()));
+                    foothold.setZMass(parseFootholdGroupId(footCategory.getName()));
                     footholds.add(foothold);
                     lowerBound.x = Math.min(lowerBound.x, Math.min(x1, x2));
                     lowerBound.y = Math.min(lowerBound.y, Math.min(y1, y2));
@@ -162,6 +167,15 @@ final class BotNavigationMapLoader {
             tree.insert(foothold);
         }
         map.setFootholds(tree);
+    }
+
+    /** Mirrors MapFactory: WZ foothold path is foothold/&lt;layer&gt;/&lt;zMass group&gt;/&lt;id&gt;. */
+    private static int parseFootholdGroupId(String name) {
+        try {
+            return Integer.parseInt(name);
+        } catch (NumberFormatException e) {
+            return -1;
+        }
     }
 
     private static void loadRopes(MapleMap map, Data mapData) {

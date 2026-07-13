@@ -21,6 +21,25 @@ import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.ThreadLocalRandom;
 
 public class BotEntry {
+    static final class MarketOfferState {
+        private int unsoldObservations;
+        private long offeredAtMs;
+
+        synchronized void markOffer(long nowMs) {
+            offeredAtMs = nowMs;
+        }
+
+        synchronized int markUnsold(long nowMs) {
+            offeredAtMs = nowMs;
+            return ++unsoldObservations;
+        }
+
+        synchronized long recordSaleElapsed(long nowMs) {
+            unsoldObservations = 0;
+            return offeredAtMs > 0 ? nowMs - offeredAtMs : -1;
+        }
+    }
+
     static final class ScrollReactionStreakState {
         int streak = 0;
         boolean lastWasSuccess = false;
@@ -29,7 +48,7 @@ public class BotEntry {
 
     final Character bot;
     volatile Character owner;
-    // TODO(party-autopilot-stage4): `following` + `grinding` (line ~114) + the autopilot sub-flags
+    // TODO(bot-party-autopilot-stage4): `following` + `grinding` (line ~114) + the autopilot sub-flags
     // (autopilotTransitFollow/autopilotCohortMember/autopilotWaitAnchor) are a scattered boolean soup
     // (~70 sites, 10 files incl. combat/movement hot paths). High reward (this shape caused the
     // sentry-mode grinding=false regression) but DEFERRED: do NOT enum-ify blind — those hot paths have
@@ -40,7 +59,51 @@ public class BotEntry {
     volatile int followTargetId = 0; // 0 = owner
     volatile boolean airshowActive = false;
     volatile long airshowLastTrailAtMs = 0L;
-    final ScheduledFuture<?> task;
+    // Reassignable so the unobserved-LOD cadence switch (BotManager.retask) can cancel this task and
+    // re-register at a coarser interval. Every register/removal path treats it as the one live task.
+    ScheduledFuture<?> task;
+    // Level-of-detail (unobserved-map LOD, docs/bot/living-server-design.md). LOD0 = today's full
+    // 50ms fidelity; LOD1 = coarse/unobserved. Computed per tick in BotManager.updateLod. Stage 1
+    // wires the field + hysteresis but does NOT change behavior (cadence stays 50ms; §5 stage 1).
+    enum Lod { LOD0, LOD1 }
+    volatile Lod lod = Lod.LOD0;
+    // Wall clock when the bot's map + 1-portal neighborhood first became player-free (0 = observed now).
+    // LOD0->LOD1 only after this has held for the hysteresis window; avoids thrash on map-hopping players.
+    long lodUnobservedSinceMs = 0L;
+    // Current TimerManager tick interval (ms). Set at registration; retask() compares against the
+    // desired cadence so a no-op retask is skipped.
+    int tickIntervalMs = 0;
+    // LOD1 motion plan (unobserved-map movement, docs/bot/living-server-design.md). While
+    // unobserved the bot's in-map position is NOT physics-integrated; it lerps along (from->to) by
+    // wall clock. motionTo == null means no active plan (idle in place at the current spot). Frozen
+    // when a bot drops to LOD1; cleared/re-materialized when a real player observes it (§4).
+    Point motionFrom = null;
+    Point motionTo = null;
+    long motionDepartMs = 0L;
+    long motionArriveMs = 0L;
+    int motionHoldY = 0; // last-known foothold Y, held for Y until arrival (exact Y only matters at the LOD0 transition)
+    // LOD1 cross-map travel (design §2.2): a hop's execution becomes "dwell the modeled hop seconds,
+    // then warp" instead of walking to the portal. This is the dwell deadline for the current hop
+    // (0 = not armed / between hops). Distinct from portalEnterDwellUntilMs (the observed pre-warp pause).
+    long lod1TravelDwellUntilMs = 0L;
+    // LOD1 abstract grind (Stage 3, design §2.3): a covered unobserved bot stops running real combat and
+    // emits calibrated kill events instead. nextAbstractKillAtMs is the wall-clock deadline for the next
+    // abstract kill (0 = not armed). abstractKillCount is telemetry surfaced in /api/botdebug.
+    // realKillCount is its full-fidelity counterpart — every mob this bot killed through real combat
+    // while grinding, counted raw (AoE multi-kills included). The pair is the ground truth for auditing
+    // whether the abstract grind reproduces the real one: pin the map to LOD0 via /api/lod to measure
+    // the real rate, release the pin to measure the abstract rate, and compare. See
+    // tools/lod_grind_audit.py.
+    long nextAbstractKillAtMs = 0L;
+    long abstractKillCount = 0L;
+    long realKillCount = 0L;
+    // On-demand modeled rate for the current map (BotGrindAdvisor.modeledKillsPerHourCached): the
+    // abstract-grind rate denominator/replay model and, via abstractModelAttackDuty (fraction of wall
+    // time spent casting), the time-based MP charge. Only the bot's own tick thread touches these.
+    double abstractModelKph = 0.0;
+    double abstractModelAttackDuty = 0.0;
+    int abstractModelMapId = 0;
+    long abstractModelAtMs = 0L;
     BotMovementProfile movementProfile = BotMovementProfile.base();
 
     // Physics
@@ -144,7 +207,11 @@ public class BotEntry {
     int cachedSkillJob = -1;
     int cachedSkillLevel = -1;
     int cachedSkillSignature = 0;
-    final List<Integer> attackSkillIds = new ArrayList<>();
+    // COW: rebuilt rarely (level/gear signature change, tick thread) but ALSO iterated from the
+    // DECIDE_POOL (BotGrindAdvisor.killProfile -> estimateBestSkillHitDamage) - a plain ArrayList
+    // threw ConcurrentModificationException when a decide overlapped a skill-cache rebuild. A
+    // torn read mid-rebuild (empty/partial for one estimate) is harmless; the crash was not.
+    final List<Integer> attackSkillIds = new java.util.concurrent.CopyOnWriteArrayList<>();
     int attackSkillId = 0;
     int aoeSkillId = 0;
     int aoeSkillMobs = 1;
@@ -166,6 +233,11 @@ public class BotEntry {
     long nextSupportHealAt = 0L;
     boolean supportHealsEnabled = true;
     boolean skillBuffsEnabled = true;
+    // Precomputed from buffSkillIds (BotCombatManager.rebuildSkillCacheIfNeeded): true iff the bot owns
+    // any Magic-Guard-class survival buff / party-support buff. Lets the per-tick buff casters skip the
+    // fair-lock buff-state probe (Character.getBuffedValue) for the majority of bots that own neither.
+    boolean hasCriticalSurvivalBuff = false;
+    boolean hasPartySupportBuff = false;
 
     // Ammo
     boolean noAmmo = false;
@@ -396,6 +468,10 @@ public class BotEntry {
     long breakUntilMs = 0L;
     long nextBreakRollAtMs = 0L;
     java.awt.Point breakIdleAnchor = null;
+    // Pure-idle (inert autopilot) town destack: a held spread spot so idle bots don't stack on the
+    // spawn portal (the NPC-approach loiter SSOT). Re-picked on map change.
+    java.awt.Point idleDestackSpot = null;
+    int idleDestackMapId = -1;
     // "Logged in to chill": rolled once at session start (BotScheduler). The bot heads to town and
     // lingers there the whole (half-length) session instead of grinding — near-zero tick cost.
     boolean chillSession = false;
@@ -465,6 +541,9 @@ public class BotEntry {
     int jobErrandMapId = -1;
     final BotTravelManager.ErrandProgress jobErrandProgress = new BotTravelManager.ErrandProgress();
     long jobErrandLastWarnMs = 0L;     // throttle the "can't reach instructor" error log while stuck
+    volatile boolean jobErrandRouteUnreachable = false; // last job-errand route check found no route
+    long jobErrandFareRetryAtMs = 0L;  // fare-blocked pause: errand won't re-begin until this lapses
+                                       // (the bot grinds meanwhile to earn the taxi/ferry fare)
 
     // Gachapon errand (BotGachaponManager): autopilot-only. When the bot has spare account NX (from
     // looted NX cards), it picks the best-EV reachable gachapon town, travels to the NPC, buys
@@ -481,6 +560,47 @@ public class BotEntry {
     Point gachaStandSpot = null;          // per-bot jittered foothold near the machine (anti-stacking)
     long gachaTripBudgetNx = 0L;          // personality NX budget for this trip; replaces the flat ticket cap
     int gachaSpentThisTrip = 0;           // NX spent so far this trip (vs gachaTripBudgetNx)
+
+    // Free-market session errand (BotFreeMarketManager): autopilot-only. During a rest break a bot
+    // with sellable surplus (or a stall due for service) walks to an FM town, enters, opens/browses
+    // stalls, and returns. fmErrandMapId = the target FM TOWN (-1 = no session); fmPhase drives
+    // travel -> enter -> room -> setup -> browse -> exit. Reset in clearFmErrand().
+    int fmErrandMapId = -1;
+    int fmRoomMapId = -1;
+    int fmPhase = 0;                     // BotFreeMarketManager.PHASE_*
+    final BotTravelManager.ErrandProgress fmErrandProgress = new BotTravelManager.ErrandProgress();
+    long fmPhaseDeadlineAtMs = 0L;       // per-phase watchdog
+    long nextFmScanAtMs = 0L;            // scan cadence + post-trip satiation
+    long nextStallServiceAtMs = 0L;      // when the live stall wants a service visit
+    // Per-banded-key censored market outcomes. Concurrent because HiredMerchant.buy reports sales
+    // from the buyer's thread while stall service runs on the seller's tick/market threads.
+    final ConcurrentHashMap<Long, MarketOfferState> fmMarketOfferByKey = new ConcurrentHashMap<>();
+    long fmBrowseUntilMs = 0L;           // humanlike browse dwell
+    int fmPlaceTries = 0;                // bounded stall-spot attempts
+    int fmBargainBuys = 0;               // bounded impulse purchases per trip
+    Point fmStandSpot = null;            // chosen stall spot in the room
+    int fmStandBestDist = Integer.MAX_VALUE; // walk watchdog: best distance to fmStandSpot so far
+    long fmStandStuckSinceMs = 0L;       // walk watchdog: last time fmStandBestDist improved
+    int fmFredrickState = 0;             // 0 unchecked, 1 retry on the way out, 2 done this trip
+    boolean fmFredrickOnExit = false;    // current Fredrick stop is the exit-leg one
+    long nextFredrickProbeAtMs = 0L;     // slow-cadence "does Fredrick hold my stuff" DB probe
+    boolean fredrickPickupPending = false; // cached probe result; a pickup of its own is a trip reason
+    volatile boolean fmPlanPending = false; // an off-thread listing plan is in flight (tickScan)
+    volatile java.util.List<BotFreeMarketManager.ListingPlan> fmPlannedListings = java.util.List.of();
+    volatile boolean fmLastTripWorthy = false; // cached off-thread verdict for cheap intent checks
+    boolean fmVisitedMarket = false;     // trip reached the FM entrance (fizzles skip satiation)
+    // Shout-sell stand (PHASE_SHOUT): the bot stands still at the FM entrance advertising surplus gear
+    // so shoppers (human or bot) can click-invite to buy. Budget rides the break/chill session.
+    long fmShoutUntilMs = 0L;            // when the stand dwell ends (0 = not yet armed)
+    boolean fmShoutedThisTrip = false;   // exit-leg stand already taken/decided this trip
+    long fmFidgetAtMs = 0L;              // next allowed humanlike fidget while standing
+    volatile boolean fmHasShoutSurplus = false; // cached off-thread: has marketable equips to shout-sell
+    // Browse loop: visit stalls one at a time as a real visitor (walk up, register, dwell, consider,
+    // leave) instead of reading the whole room in one instant tick.
+    long fmBrowseEndMs = 0L;             // overall browse budget for this room (0 = not yet armed)
+    int[] fmBrowseOwners = null;         // shuffled stall owner-ids still to visit this browse
+    int fmBrowseIdx = 0;                 // index into fmBrowseOwners
+    int fmVisitOwnerId = -1;             // stall owner-id we're registered as a visitor to (-1 = none)
 
     // Supervised-mode quest AUTO-SUGGEST (Feature A): when the owner is online and the bot is at
     // their side, the bot occasionally SUGGESTS a standout nearby quest in chat (it never wanders
@@ -523,7 +643,7 @@ public class BotEntry {
     long npcDwellUntilMs = 0L;
     // Client-side alert-stance emulation: when currentTimeMillis < alertedUntilMs the bot's
     // broadcast stance gets STAND→ALERT substituted so observers see the alert pose.
-    // Mirrors CharLook::alerted (TimedBool, 5000ms) in maplestory-wasm. Absolute reset on each
+    // Mirrors the client's 5000ms alerted state. Absolute reset on each
     // trigger (attack/hit/heal/buff), never additive.
     long alertedUntilMs = 0L;
     // Debounce flag for the scheduled stance-reset callback in BotCombatManager.markAlerted.
@@ -544,6 +664,12 @@ public class BotEntry {
     // any admin interaction, e.g. a status question) redirects replies/trade to the admin but must
     // NOT hijack the bot's existing follow anchor - it keeps following its leader and just replies.
     volatile boolean debugCommanderFollow = false;
+
+    // Set true when a REAL player put THIS character on autopilot via @botme / @botparty (never for
+    // disposable population/botpop bots, which are also self-owned). These run the player's real gear
+    // & meso with no human present, so they stay grind-focused: no breaks/gacha/chill/FM/auto-scroll,
+    // only grind + grind-essential resupply/sell. See BotManager.isRealPlayerTakeover.
+    volatile boolean commandAutopilot = false;
 
     // Most recent command the owner issued that handleChat actually matched.
     // Used by SituationBuilder to give the LLM context like "owner told you to
@@ -609,6 +735,8 @@ public class BotEntry {
     Item pendingScrollScroll = null;
     // Next armed auto-scan time (0 = schedule on the next tick); declines push it out.
     volatile long nextSelfScrollScanAtMs = 0L;
+    volatile boolean scrollPlanQueued = false;
+    volatile boolean chaosPlanQueued = false;
     // Autocraft (Maker): armed by command, only proposes while a real owner is online (supervised).
     // pendingCraftPlan holds the proposal while a "craft_confirm" pendingAction is open.
     boolean craftEnabled = false;
@@ -620,6 +748,19 @@ public class BotEntry {
     // and re-fired once the sender's trade clears and the delay expires.
     Runnable pendingBotTradeRetry = null;
     int pendingBotTradeRetryMs = 0;
+
+    // Market work that mutates inventory outside a Trade (staging stall stock into a
+    // HiredMerchant, executing a merchant buy): a HiredMerchant is not a Trade, so the
+    // getTrade() tick gates don't cover it. Set while such an operation is in flight to get
+    // the same physics-only tick + passive-loot suppression a trade window gets.
+    volatile boolean marketBusy = false;
+
+    // This bot's private price book (living economy layer 2) - lazily loaded on first market
+    // touch via BotMarketBook.of, self-flushed on the bot's own tick. Reads/writes cross threads
+    // in practice (HiredMerchant.buy -> notifyStallSale on the buyer's thread; BotFreeMarketManager's
+    // DECIDE_POOL plan), so the book itself is internally thread-safe (see BotMarketBook) and this
+    // field is volatile so a racing lazy-init always publishes-and-sees the same instance.
+    volatile BotMarketBook marketBook = null;
 
     // Trade queue
     String pendingTradeCategory = null;
@@ -689,6 +830,29 @@ public class BotEntry {
     int patrolMapId = -1;
     Point patrolWanderTarget = null;
 
+    // Grind doctrine (BotGrindDoctrine): map-archetype positioning state. Style null = ROAM
+    // (pre-doctrine behavior). All state is per-map; reset by BotGrindDoctrine.clear.
+    int grindDoctrineMapId = -1;
+    BotGrindSpots.Profile grindDoctrineProfile = null;
+    BotGrindDoctrine.Style grindDoctrineStyle = null;
+    Point grindSpotAnchor = null;
+    int grindSpotRadius = 0;
+    long grindSpotClaimKey = 0L;
+    java.awt.Rectangle grindStackBox = null;   // STACK tether box (null for CAMP/PATROL)
+    long grindSpotDrySinceMs = 0L;             // no in-spot candidate since (0 = producing)
+    long grindSpotProgressAtMs = 0L;           // last landed hit at the claimed spot
+    long grindSpotExcludedKey = 0L;            // just-relocated-from spot, on cooldown
+    long grindSpotExcludeUntilMs = 0L;
+    java.util.List<BotGrindSpots.Spot> grindPatrolRing = null;
+    int grindPatrolRingPos = 0;
+    // Engage-style hop (BotCombatManager.shouldEngageHop): per-engagement roll state.
+    int engageHopTargetOid = -1;
+    boolean engageHopPlanned = false;
+    long engageHopLastAtMs = 0L;
+    // Mid-combat rope stall recovery (BotManager.tickGrindMode climb recovery).
+    long climbStallSinceMs = 0L;
+    int climbStallLastY = Integer.MIN_VALUE;
+
     // Buff consumables (toggleable; cheap = weakest buff of each type, max = strongest)
     boolean buffConsumablesEnabled = false;
     boolean buffCheapMode          = true;
@@ -703,6 +867,11 @@ public class BotEntry {
 
     // Skill buff tracking (always enabled; tracks last decision for debug)
     long   lastSkillBuffScanMs        = 0L;
+    // Deadline gates (epoch ms) for the per-tick buff casters: skip the buff-state scan until due.
+    // tickBuffs sleeps until the nearest rebuff window; tryCastMagicGuard throttles its getBuffedValue
+    // probe. Reset to 0 when the skill set changes or skill buffs are re-enabled (re-evaluate at once).
+    long   nextBuffCheckAtMs          = 0L;
+    long   nextMagicGuardCheckMs      = 0L;
     long   lastSkillBuffActionAtMs    = 0L;
     String lastSkillBuffActionSummary = "no skill buff checks yet";
 
@@ -817,6 +986,56 @@ public class BotEntry {
     int manualTradeAcceptDelayMs = 0;
     Trade manualTradeRef = null;
     int manualTradeTimeoutMs = 0;
+
+    // Shout-trade (living-economy S3): a priced equip<->meso swap triggered by a market shout. While
+    // partnerId != -1 this bot owns its Trade window and the manual/queued trade ticks stand down.
+    volatile int shoutTradePartnerId = -1;              // counterparty char id; -1 = no active deal
+    BotMarketGrammar.Offer shoutTradeOffer;             // agreed terms (item, qty, price)
+    boolean shoutTradeSelling;                          // role: true = I stage the equip, false = meso
+    boolean shoutTradeInitiator;                        // true = I matched + invited (I log the tape)
+    client.inventory.Equip shoutTradeSellEquip;        // seller only: the exact piece to hand over
+    boolean shoutTradeInvited;                          // initiator has sent the invite
+    boolean shoutTradeStaged;                           // my side of the window is staged
+    boolean shoutTradeLocked;                           // I confirmed my side (completeTrade called)
+    long shoutTradeDeadlineMs;                          // give-up wall clock
+    long shoutTradeConfirmAtMs;                         // human "beat" before locking once terms are met
+    long shoutTradeStepAtMs;                            // human "beat" before the next window step (accept/stage)
+    long nextShoutEmitMs;                               // emission cooldown
+    // Deliberation before acting on a heard shout (don't buy/sell the instant a match is seen —
+    // bank the candidate, "think about it" 2-6s, then re-validate + claim). One pending at a time.
+    long shoutBuyDecideAtMs;                            // 0 = nothing pending
+    int shoutBuySpeakerId = -1;                         // the shout speaker we're deliberating over
+    BotMarketGrammar.Offer shoutBuyOffer;               // the offer under consideration
+    boolean shoutBuySelling;                            // our role if we act: true = we'd sell to a B>
+    boolean shoutBuyCounter;                            // banked as a COUNTER (haggle), not accept-at-price
+
+    // Haggling (living-economy S4): a negotiation layered over the shout-trade window. The buyer's
+    // staged meso is its binding position (Trade.setMeso is additive — it can only rise); the
+    // seller's position is spoken. haggleTheirPrice is written from the packet thread (trade chat)
+    // and read on the AI tick.
+    boolean shoutTradeHaggle;                           // negotiation (not accept-at-price) in progress
+    volatile int haggleTheirPrice;                      // partner's last spoken price (0 = none yet)
+    int haggleTheirPriceSeen;                           // last partner price my policy acted on
+    int haggleMyPrice;                                  // my last spoken/staged position (0 = none)
+    int haggleMyStagedMeso;                             // buyer only: meso actually staged so far
+    int haggleRoundsLeft;                               // counters I may still make before accept-or-walk
+    long haggleBoundMeso;                               // my hard bound: buyer per-roll WTP / seller reservation
+    boolean haggleFinal;                                // I declared a final offer
+    long haggleActAtMs;                                 // human "typing" beat before my next haggle move
+    int shoutTradeAgreedPrice;                          // settled price (0 = still the offer/negotiating)
+    client.inventory.Equip shoutTradeDealEquip;         // the actual piece changing hands (band observe)
+
+    // Standing buy want (living-economy S3 B> emission): the one upgrade this bot is shopping for.
+    BotMarketGrammar.Offer buyWant;                     // BUY offer (criterion carries the roll floor)
+    int buyWantBand;                                    // quality band the bid was priced at
+    long buyWantCeilingMeso;                            // per-roll WTP at that band — the bid's hard cap
+    long buyWantRecomputeAtMs;                          // lazy recompute wall clock (0 = force)
+    int buyWantNoFills;                                 // consecutive shouts without a fill (bid ladder)
+    long lastBuyShoutAtMs;                              // walk-up sellers accepted while a B> is fresh
+
+    boolean shoutTradeActive() {
+        return shoutTradePartnerId != -1;
+    }
 
     // Movement packet cache so repeated no-op packets are suppressed
     boolean movementBroadcastValid = false;

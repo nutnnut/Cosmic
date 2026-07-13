@@ -37,26 +37,25 @@ class BotScrollPlannerTest {
     private static BotScrollPlanner.EquipCandidate equipV(
             DoubleUnaryOperator value, String name, double score, int slots, boolean betterAvailable,
             boolean fallback, BotScrollPlanner.ScrollOption... options) {
-        // totalSlots = slots (fresh, nothing consumed yet) and no worn rival -> combat floor = stop-now,
-        // so these legacy cases behave exactly as the single-pass planner did.
+        // totalSlots = slots (fresh, nothing consumed yet) and no worn rival -> the combat lens is the
+        // raw value curve, so these legacy cases behave exactly as the single-pass planner did.
         return equipR(value, name, score, slots, slots, 0.0, betterAvailable, fallback, options);
     }
 
-    /** Full candidate with explicit totalSlots + worn-rival floor (for the two-pass behaviours). */
+    /** Full candidate with explicit totalSlots + worn rival (for the two-pass behaviours). Mirrors
+     *  the wiring's combat lens: the bot ends up wearing the better of (this piece, the worn rival at
+     *  {@code wornScore}), so terminal combat value is {@code value(max(v, wornScore))} and a boomed
+     *  spare keeps the worn value. {@code wornScore = 0} = no rival (or this IS the worn piece). */
     private static BotScrollPlanner.EquipCandidate equipR(
             DoubleUnaryOperator value, String name, double score, int slots, int totalSlots,
-            double wornRivalValue, boolean betterAvailable, boolean fallback,
+            double wornScore, boolean betterAvailable, boolean fallback,
             BotScrollPlanner.ScrollOption... options) {
+        DoubleUnaryOperator combat = wornScore > 0.0
+                ? v -> value.applyAsDouble(Math.max(v, wornScore)) : value;
+        double destroyed = wornScore > 0.0 ? value.applyAsDouble(wornScore) : 0.0;
         return new BotScrollPlanner.EquipCandidate(
-                1302000, name, score, slots, totalSlots, wornRivalValue,
-                betterAvailable, false, fallback, List.of(options), value);
-    }
-
-    /** Candidate explicitly flagged as a spare out-classed by the worn copy (worn better, worn slots >=). */
-    private static BotScrollPlanner.EquipCandidate dominatedByWornEquip(
-            String name, double score, int slots, BotScrollPlanner.ScrollOption... options) {
-        return new BotScrollPlanner.EquipCandidate(
-                1302000, name, score, slots, slots, 0.0, true, true, false, List.of(options), LINEAR);
+                1302000, name, score, slots, totalSlots,
+                betterAvailable, fallback, List.of(options), value, combat, destroyed);
     }
 
     /** Run a planning call with the scroll-to-sell profit pass enabled (default off until economy lands). */
@@ -96,9 +95,10 @@ class BotScrollPlannerTest {
 
     @Test
     void selfCombatRefusesPieceThatCannotBeatWornRival() {
-        // The glove bug: a bag glove (5 free slots) whose EXPECTED scrolled value can't reach the worn
-        // glove (worth 1000) is NOT a combat upgrade. The self-combat pass refuses it; only the profit
-        // pass (scroll-to-sell) considers it, so any plan returned must be profit-driven, never combat.
+        // The glove bug: a bag glove (5 free slots) whose scrolled ceiling can't reach the worn glove
+        // (score 1000) is NOT a combat upgrade — under the combat lens every reachable state is worth
+        // exactly the worn state, so scrolling is pure cost. Only the profit pass (scroll-to-sell)
+        // considers it, so any plan returned must be profit-driven, never combat.
         BotScrollPlanner.ScrollPlan plan = withProfit(() -> BotScrollPlanner.planBest(List.of(
                 equipR(LINEAR, "bag glove", 3.0, 5, 5, 1000.0, false, false,
                         scroll("70% att", 0.70, 10.0)))));
@@ -108,13 +108,51 @@ class BotScrollPlannerTest {
 
     @Test
     void selfCombatProposesWhenExpectedValueClearsWornRival() {
-        // Same scroll/shape, but the worn rival is weak (worth 20): the expected scrolled value clears
+        // Same scroll/shape, but the worn rival is weak (score 20): the expected scrolled value clears
         // it, so this IS a combat upgrade and is proposed by the (priority) self-combat pass.
         BotScrollPlanner.ScrollPlan plan = BotScrollPlanner.planBest(List.of(
                 equipR(LINEAR, "bag glove", 10.0, 3, 3, 20.0, false, false,
                         scroll("70% att", 0.70, 10.0))));
         assertNotNull(plan);
         assertFalse(plan.profitDriven(), "beating the worn rival is a combat play, not a profit play");
+    }
+
+    @Test
+    void improbableCatchUpOnAWorseBaseIsRefusedNaturally() {
+        // Preston's Green Napoleon (scroll-debug-Preston.txt): a score-0 bag cape under a worn
+        // score-10 cape, with only 20% +3 scrolls. Beating the worn cape needs a >=4-of-5 parlay
+        // (~0.7%); under the combat lens every sub-10 state is worth exactly the worn cape, so each
+        // attempt is nearly pure cost and the DP refuses — no domination gate needed.
+        assertNull(BotScrollPlanner.planBest(List.of(
+                equipR(CONVEX, "green napoleon", 0.0, 5, 5, 10.0, false, false,
+                        new BotScrollPlanner.ScrollOption(2040000, "cape INT 20%", 0.20, 0.0, 3.0, 2.0)))));
+    }
+
+    @Test
+    void endgameLotteryOnAFreshBaseStaysViable() {
+        // Wearing 14 near the top of the curve, holding a fresh 10-score base with 5 slots and the
+        // same cheap 20% +3 scrolls: the first success already puts it at 13 with convex upside above
+        // the worn 14, every failure keeps the worn piece, and the tickets are cheap — so the
+        // improbable-but-huge chase is EV-positive and MUST survive (a hard expected-ceiling gate
+        // would kill it: expected gain is only +3, ceiling 25 is a fantasy).
+        BotScrollPlanner.ScrollPlan plan = BotScrollPlanner.planBest(List.of(
+                equipR(CONVEX, "fresh cape base", 10.0, 5, 5, 14.0, false, false,
+                        new BotScrollPlanner.ScrollOption(2040000, "cape INT 20%", 0.20, 0.0, 3.0, 2.0))));
+        assertNotNull(plan, "cheap low-odds parlays with convex upside are the rational endgame play");
+        assertFalse(plan.profitDriven());
+    }
+
+    @Test
+    void boomedSpareKeepsTheWornValueInTheDestroyBranch() {
+        // 1 slot, LINEAR, worn rival at 8: boom scroll p=0.5, 40% boom-on-fail, +10.
+        // EV = 0.5*max(10,8) + 0.3*max(0,8) + 0.2*destroyed(=8) = 5 + 2.4 + 1.6 = 9 -> gain 1 over
+        // stop 8. Pricing the boom branch at 0 (the old rule) would read 7.4 and wrongly refuse:
+        // booming a SPARE never costs the bot the piece it actually wears.
+        BotScrollPlanner.ScrollPlan plan = BotScrollPlanner.planBest(List.of(
+                equipR(LINEAR, "spare glove", 0.0, 1, 1, 8.0, false, true,
+                        boomScroll("dark att", 0.50, 0.40, 10.0))));
+        assertNotNull(plan);
+        assertEquals(1.0, plan.expectedValue(), 1e-9);
     }
 
     @Test
@@ -230,25 +268,30 @@ class BotScrollPlannerTest {
 
     @Test
     void dominatedLookingSpareWithMoreSlotsIsScrolledNotPreFiltered() {
-        // Owner's example: worn 10DEX/6ATT/0slot (rival value ~120 here), spare 8DEX/0ATT/5slot.
-        // The spare looks worse as-is (score 80) but has 5 free slots; under a convex (rarity) value
-        // its scrolled potential clears the worn rival, so it IS proposed as a combat upgrade. It must
-        // NOT be pre-skipped: betterAvailable=false (more slots => the worn does not dominate it).
+        // Owner's example: worn 10DEX/6ATT/0slot (score ~11 -> convex value ~121), spare 8DEX/0ATT/
+        // 5slot. The spare looks worse as-is (score 8) but has 5 free slots and decent odds; under a
+        // convex (rarity) value its scrolled potential clears the worn rival, so it IS proposed as a
+        // combat upgrade. It must NOT be pre-skipped: betterAvailable=false (more slots => the worn
+        // does not dominate it).
         BotScrollPlanner.ScrollPlan plan = BotScrollPlanner.planBest(List.of(
-                equipR(CONVEX, "spare cape", 8.0, 5, 5, 120.0, false, false,
+                equipR(CONVEX, "spare cape", 8.0, 5, 5, 11.0, false, false,
                         scroll("60% dex", 0.60, 4.0))));
         assertNotNull(plan, "scrolled potential of a high-slot spare must be considered, not pre-filtered");
         assertFalse(plan.profitDriven(), "it beats the worn rival -> a combat upgrade");
     }
 
     @Test
-    void neverScrollsASpareDominatedByTheWornCopy() {
-        // Two spare weapons, each out-classed by the worn copy (better att + >= slots). Even with a
-        // free, high-odds scroll the planner must NOT scroll them (combat: can't beat worn; profit:
-        // burning scrolls on inferior dupes). Reproduces the 91/7-slot-worn vs 89/87 spares bug.
-        assertNull(BotScrollPlanner.planBest(List.of(
-                dominatedByWornEquip("spare nishada A", 89.0, 7, scroll("100% att", 1.00, 5.0)),
-                dominatedByWornEquip("spare nishada B", 87.0, 7, scroll("100% att", 1.00, 5.0)))));
+    void prefersScrollingTheWornCopyOverItsTrailingSpares() {
+        // The 91/7-slot-worn vs 89/87-spare weapons scenario: all three take the same sure scroll.
+        // The spares CAN overtake the worn as-is score, but every success on them only counts above
+        // 91 while the worn copy gains from its own 91 up — so the planner picks the worn copy, and
+        // the spares' lesser-but-positive plays lose the comparison. Emergent, no domination flag.
+        BotScrollPlanner.ScrollPlan plan = BotScrollPlanner.planBest(List.of(
+                equipR(LINEAR, "worn nishada", 91.0, 7, 7, 0.0, false, false, scroll("100% att", 1.00, 5.0)),
+                equipR(LINEAR, "spare nishada A", 89.0, 7, 7, 91.0, false, false, scroll("100% att", 1.00, 5.0)),
+                equipR(LINEAR, "spare nishada B", 87.0, 7, 7, 91.0, false, false, scroll("100% att", 1.00, 5.0))));
+        assertNotNull(plan);
+        assertEquals("worn nishada", plan.equip().equipName());
     }
 
     // --- item 08, layer 2: per-scroll opportunity-cost margin suppresses trivial-gain plays ---

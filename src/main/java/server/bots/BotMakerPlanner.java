@@ -33,7 +33,7 @@ import java.util.Map;
  * job, and crystals that ADD a stat make that stat godly-eligible (see {@link #reagentStatMap}).
  *
  * <p>This class does NOT craft anything — it only ranks. Execution (spending mesos + consuming
- * materials) is a separate, owner-gated step; see docs/bot/autopilot-independence-audit.md S6c-ter.
+ * materials) is a separate, owner-gated step in {@link BotMakerManager}.
  */
 final class BotMakerPlanner {
     private static final int ROLL_SAMPLES = 32;        // matches BotGrindAdvisor's drop sampling

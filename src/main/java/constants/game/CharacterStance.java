@@ -15,8 +15,8 @@ public final class CharacterStance {
     public static final int SWIM_RIGHT_STANCE = 12;
     public static final int SWIM_LEFT_STANCE = 13;
     // Two pairs: 14/15 = ladder right/left, 16/17 = rope right/left.
-    // Wasm Char.h canonicalises LADDER=14 and ROPE=16; v83 maps such as Kerning
-    // emit 15 and 17 (left-facing variants). Functionally identical for bot AI.
+    // v83 maps such as Kerning also emit 15 and 17 (left-facing variants).
+    // Both pairs are functionally identical for bot AI.
     public static final int LADDER_RIGHT_STANCE = 14;
     public static final int LADDER_LEFT_STANCE = 15;
     public static final int LADDER_STANCE = LADDER_RIGHT_STANCE;
