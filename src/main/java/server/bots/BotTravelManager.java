@@ -531,6 +531,7 @@ final class BotTravelManager {
             if (Math.abs(pos.x - pp.x) <= COLLISION_ENTER_X && Math.abs(pos.y - pp.y) <= COLLISION_ENTER_Y) {
                 entry.portalUseCooldownUntilMs = now + PORTAL_USE_COOLDOWN_MS;
                 portal.enterPortal(bot.getClient());
+                BotMovementManager.resetEntryState(entry);
                 return true;
             }
         }

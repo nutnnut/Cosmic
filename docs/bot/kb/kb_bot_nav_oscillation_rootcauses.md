@@ -468,6 +468,21 @@ pre-fix). No GRAPH_VERSION bump (runtime-only).
 Debugging note: don't read `Ticks: 0 recorded` as "bot not ticking" on a swim map — the swim
 branch records nothing; use repeated `pos` reads from `/api/botdebug?id=` instead.
 
+## 18. Intra-map collision portal kept stale airborne physics — warp then snap-back (910000000, FIXED)
+
+Symptom (live 2026-07-13, `pathlog-BoWrIsE-2026-07-13T125358`): while falling through a Free
+Market trap portal, the character warped to `st00` at `(-649,34)`, then the next tick snapped back
+to the pre-warp descent around `(324,-176)`. The collision portal fired again and the cycle repeated.
+
+Root cause: `BotTravelManager.tickCollisionPortal` called `Portal.enterPortal` but, unlike the normal
+navigation portal executor, did not reset `BotEntry` movement state. Intra-map trap portals do not
+change the map id, so the map-change reset could not catch them. The following airborne tick advanced
+the stale pre-warp `physX`/`physY` and overwrote the portal destination.
+
+Fix (runtime, no graph version bump): after a collision portal enters, call the shared
+`BotMovementManager.resetEntryState` so physics and navigation are rebased on the portal's resulting
+position. Regression: `BotTravelManagerTest.collisionPortalRebasesAirbornePhysicsOnIntraMapWarp`.
+
 ## Files
 - `BotNavigationGraph.java` — `Region.surfaceCoversPoint` + `SHARED_GROUND_Y_PX` (#8)
 - `BotNavigationGraphProvider.java` — `addJumpEdges`/`addFlashJumpEdges` shared-ground guard,
@@ -494,6 +509,7 @@ branch records nothing; use repeated `pos` reads from `/api/botdebug?id=` instea
   staleness + `trackBlockedPositionGate` route-served `*-pos` (#15)
 - `BotFallbackMovementManager.resolveSteeringTarget` → `Steering` record,
   `BotMovementManager.planGroundAction` walk-off waypoint stop/follow 0 (#17)
+- `BotTravelManager.tickCollisionPortal` → full movement-state reset after collision warp (#18)
 - `BotPhysicsEngine.walkOffLandingVariants` + `addDirectionalDropEdge` variant-stability guard,
   `GRAPH_VERSION` 68→69 (#14); `BotFreeMarketEntranceDescentTest` (WZ-backed 910000000, #14)
 - Tests in `BotNavigationGraphProviderTest` (fast synthetic + Henesys WZ graph),

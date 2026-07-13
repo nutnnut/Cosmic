@@ -11,6 +11,7 @@ import server.maps.Portal;
 import java.awt.*;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -19,6 +20,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.mockStatic;
 import static org.mockito.Mockito.never;
@@ -182,6 +184,41 @@ class BotTravelManagerTest {
             assertTrue(BotTravelManager.tickFollowTravel(f.entry(), f.bot(), f.anchor(), true));
             assertEquals(1, movement.steps.size());
         }
+    }
+
+    @Test
+    void collisionPortalRebasesAirbornePhysicsOnIntraMapWarp() {
+        Point trap = new Point(306, -216);
+        Point spawn = new Point(-649, 34);
+        Portal portal = portal(38, HUNTING_GROUND, 3, null, Portal.OPEN, trap);
+        Fixture f = fixture(HUNTING_GROUND, HENESYS, trap, List.of(portal));
+        AtomicReference<Point> position = new AtomicReference<>(trap);
+        when(f.bot().getPosition()).thenAnswer(ignored -> position.get());
+        doAnswer(invocation -> {
+            position.set(invocation.getArgument(0));
+            return null;
+        }).when(f.bot()).setPosition(any(Point.class));
+        doAnswer(ignored -> {
+            position.set(spawn);
+            return null;
+        }).when(portal).enterPortal(any());
+
+        f.entry().inAir = true;
+        f.entry().physX = 337;
+        f.entry().physY = -240;
+        f.entry().velY = 33.5f;
+        f.entry().airVelX = -7;
+        f.entry().fixedAirArc = true;
+
+        assertTrue(BotTravelManager.tickCollisionPortal(f.entry(), f.bot()));
+        assertEquals(spawn, position.get(), "collision portal should warp to its target spawn");
+
+        if (f.entry().inAir) {
+            BotPhysicsEngine.stepAirborne(f.entry(), f.bot());
+        }
+
+        assertEquals(spawn, position.get(),
+                "the next physics tick must continue from the warp, not the pre-warp airborne trajectory");
     }
 
     @Test
