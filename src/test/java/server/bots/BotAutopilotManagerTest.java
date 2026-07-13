@@ -400,6 +400,25 @@ class BotAutopilotManagerTest {
     }
 
     @Test
+    void reportsUnreachableJobAdvanceAsPossiblyStuck() {
+        Fixture f = fixture(800000000);
+        f.entry().jobErrandTarget = Job.CRUSADER;
+        f.entry().jobErrandMapId = 105070001;
+        f.entry().jobErrandRouteUnreachable = true;
+
+        assertEquals("job advance route unreachable",
+                BotAutopilotManager.stuckReason(f.entry(), f.bot()));
+    }
+
+    @Test
+    void missingWorldTourSaveFallsBackToLithHarbourLikeSpinelScript() {
+        Fixture f = fixture(800000000);
+        when(f.bot().peekSavedLocation("WORLDTOUR")).thenReturn(-1);
+
+        assertEquals(104000000, BotAutopilotManager.worldTourReturn(f.bot()));
+    }
+
+    @Test
     void reportsCatchUpGrindOnlyWhileTheCohortIsActuallyResting() {
         Fixture low = fixture(HUNTING_GROUND, onlineOwner());
         Fixture high = fixture(HUNTING_GROUND, onlineOwner());

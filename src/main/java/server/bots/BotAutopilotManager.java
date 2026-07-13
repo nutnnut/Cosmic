@@ -242,7 +242,13 @@ final class BotAutopilotManager {
      *  BotTravelCost.floodSeconds. */
     static int worldTourReturn(Character bot) {
         boolean inZipangu = bot.getMapId() / 100000000 == BotWorldGraph.MUSHROOM_SHRINE / 100000000;
-        return inZipangu ? bot.peekSavedLocation("WORLDTOUR") : -1;
+        if (!inZipangu) {
+            return -1;
+        }
+        // Match scripts/npc/9000020.js: Spinel sends a player with no saved WORLDTOUR
+        // location to Lith Harbor rather than leaving them in Mushroom Shrine.
+        int saved = bot.peekSavedLocation("WORLDTOUR");
+        return saved != -1 ? saved : MapId.LITH_HARBOUR;
     }
 
     /** The Free Market's per-bot exit edge (BotWorldGraph FM_ENTRANCE -> saved town): present only
@@ -1187,6 +1193,12 @@ final class BotAutopilotManager {
         if (!isActive(entry) && reason != null
                 && (reason.startsWith("no reachable grind spot") || reason.startsWith("decide failed"))) {
             return "can't find anywhere to grind";
+        }
+        // A committed job errand with no world route cannot make progress. This is distinct from a
+        // transient travel give-up: tickJobErrand records the route-null verdict after its full route
+        // check, so the web roster can surface the wedge without re-running world routing per poll.
+        if (entry.jobErrandMapId != -1 && entry.jobErrandTarget != null && entry.jobErrandRouteUnreachable) {
+            return "job advance route unreachable";
         }
         // A travel give-up cooldown is deliberately transient and cannot establish a wedge. The bot may
         // legally wait (ferry), retry, or take a different hop while the old destination-scoped cooldown

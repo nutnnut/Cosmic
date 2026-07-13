@@ -169,7 +169,7 @@ const edgesByWm = {};   // wmId -> [edgeLine,...]
 let edgeLines = [];     // {ia, ib, line}  — one drawn line per connected instance pair
 let live = {};          // mapId -> {players:[{id,n,l,j,c}], bots:[...]}  (c=1 -> managed/commandable)
 let query = '';
-let stuckOnly = false;    // roster filter: show only the inert-leak ("idle" bucket, a.k.a. possibly stuck) bots
+let stuckOnly = false;    // roster filter: show only server-detected possibly-stuck bots
 function toggleStuck(){ stuckOnly = !stuckOnly; applyStyle(); renderRoster(); }
 let rtsMode = false, moveArmed = false, moveCmd = 'move';   // RTS mode + "click a destination" arming (quiet vs attack)
 let followArm = false;    // "pick a follow target" mode: next node/roster click chooses whom to follow
@@ -529,7 +529,7 @@ function renderRoster(){
   }
   let filt = items;
   // "possibly stuck" = server-side wedge detector (c.stuck reason: can't-find-grind trap /
-  // inert-autopilot leak) — broader than the old a==='idle' bucket.
+  // unreachable job-advance route / inert-autopilot leak) — broader than the old a==='idle' bucket.
   if(stuckOnly) filt = filt.filter(it => it.bot && it.c.stuck);
   if(query) filt = filt.filter(it => it.c.n.toLowerCase().includes(query));
   // managed = self-owned/ownerless bots (commandable, c=1); companion = bots following an online owner
@@ -541,7 +541,7 @@ function renderRoster(){
     if(it.c.a==='chill') chilling++; else if(it.c.a==='idle'){} else if(it.c.a==='break') onBreak++; else grinding++;
   }
   const head = ((query||stuckOnly) ? filt.length+' shown · ' : '') + players + ' online + ' + managed + ' managed + ' + companion + ' companion';
-  const stuckHtml = '<span onclick="toggleStuck()" title="wedged bots: can\'t find anywhere to grind or autopilot leaked off — click to filter (hover a row for the reason)" style="cursor:pointer;text-decoration:underline;color:'
+  const stuckHtml = '<span onclick="toggleStuck()" title="wedged bots: can\'t find anywhere to grind, job advance route is unreachable, or autopilot leaked off — click to filter (hover a row for the reason)" style="cursor:pointer;text-decoration:underline;color:'
     + (stuck?'#ff6b6b':'#8a94a6') + (stuckOnly?';font-weight:bold':'') + '">' + stuck + ' possibly stuck</span>';
   const breakdown = (managed+companion)
     ? grinding+' grinding · '+onBreak+' taking a break · '+chilling+' just chilling · '+stuckHtml : '';

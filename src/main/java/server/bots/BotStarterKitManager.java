@@ -210,6 +210,7 @@ final class BotStarterKitManager {
         entry.jobErrandTarget = target;
         entry.jobErrandNpcId = instructor.npcId();
         entry.jobErrandMapId = instructor.mapId();
+        entry.jobErrandRouteUnreachable = false;
         entry.jobErrandProgress.begin(System.currentTimeMillis());
         reply.accept(entry, "heading to " + instructor.townName() + " to change job");
     }
@@ -221,6 +222,7 @@ final class BotStarterKitManager {
         entry.jobErrandMapId = -1;
         entry.jobErrandProgress.clear();
         entry.jobErrandLastWarnMs = 0L;
+        entry.jobErrandRouteUnreachable = false;
     }
 
     /**
@@ -248,6 +250,10 @@ final class BotStarterKitManager {
                 entry, bot, entry.jobErrandMapId, entry.jobErrandNpcId,
                 JOB_ERRAND_MAX_TRAVEL_HOPS, runAiTick, true, NPC_TRIGGER_RADIUS_PX); // ferry: instructor may be cross-continent
         long now = System.currentTimeMillis();
+        if (status == BotTravelManager.ApproachStatus.TRAVELING
+                || status == BotTravelManager.ApproachStatus.WALKING) {
+            entry.jobErrandRouteUnreachable = false;
+        }
         entry.jobErrandProgress.record(bot, status == BotTravelManager.ApproachStatus.TRAVELING, now);
         boolean noProgressTooLong = forceFallback && entry.jobErrandProgress.stalled(now, ERRAND_NO_PROGRESS_MS);
         switch (status) {
@@ -363,6 +369,7 @@ final class BotStarterKitManager {
                 new BotWorldGraph.RouteOptions(false, bot.getMeso(), true, bot.getJob().getId() == 0,
                         bot.getLevel(), BotAutopilotManager.worldTourReturn(bot), BotAutopilotManager.fmReturn(bot)));
         boolean reachable = liveRoute != null;
+        entry.jobErrandRouteUnreachable = !reachable;
         // Surface WHY travel actually gave up (deadline / taxi-fare-fail / ferry-board-fail / portal-closed
         // / route-null) plus the failed hop and the bot's meso — "route-reachable=true" alone hides the
         // execution-side cause (e.g. couldn't afford/reach the cab, or a hop the executor can't walk).
