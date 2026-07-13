@@ -38,7 +38,8 @@ Live occupancy of every online character, bucketed by map. Cached ~750 ms.
 `g`=crew id (0=none). `a`=coarse activity bucket (`"grind"`|`"break"`|`"chill"`; chill = whole-session
 chill login, gacha/idle/logging-off → break, resupply/travel/quest → grind) for the roster tally (bots
 only). `stuck`=short wedge reason, present only when the bot is detectably stuck
-(`BotAutopilotManager.stuckReason`: "can't find anywhere to grind" / "autopilot leaked off") —
+(`BotAutopilotManager.stuckReason`: "can't find anywhere to grind" / "job advance route unreachable" /
+"autopilot leaked off") —
 drives the roster's "possibly stuck" counter+filter. Transient travel retry cooldowns are intentionally
 excluded because they do not establish a wedge. `status`=the
 @botstatus line (bots only; drives the roster-hover tooltip and the right-panel detail — omitted for
@@ -344,12 +345,13 @@ Live admin/tuning surface behind `/admin`. Same SSOT as the GM commands: `BotCon
 ```
 {"manager":[{"name","value","type"}, ...],   // BotManager.cfg public fields (POPULATION_MULTIPLIER, break/loot/autopilot/party knobs, SIMPLIFY_UNOBSERVED_BOTS_* LOD toggles)
  "combat":[{"name","value","type"}, ...],     // BotCombatManager.cfg public fields (the !botcfg set)
+ "log":[{"name","value","type"}, ...],        // BotLogConfig.cfg — SSOT for bot debug-log toggles (bot-sell:, bot-sellblock:, fm[...]/MARKET_TX_CONSOLE, ENTRY_REMOVED)
  "pop":{"enabled":bool,"multiplier":num,"status":[lines...]},
  "llm":{"enabled":bool,"debug":bool}}
 ```
 
 **POST** — mutate one knob; dispatch on `cmd`:
-- `{"cmd":"set","group":"manager|combat","field","value"}` → set a config field (case-insensitive). Returns `{"ok","msg"}` (`msg` starts with `OK` on success, mirrors `!botcfg`).
+- `{"cmd":"set","group":"manager|combat|log","field","value"}` → set a config field (case-insensitive). Returns `{"ok","msg"}` (`msg` starts with `OK` on success, mirrors `!botcfg`).
 - `{"cmd":"pop","mult"?,"enabled"?,"sweep"?}` → set multiplier / toggle scheduler / force a sweep. Returns `{"ok","status":[lines...]}`.
 - `{"cmd":"llm","enabled"?,"debug"?}` → toggle LLM chat (`debug:true` implies on). Returns `{"ok","enabled","debug"}`.
 - `{"cmd":"perflog","seconds":1-300,"html"?}` → enable `BotPerformanceMonitor`, capture one clean window for `seconds`, export `logs/bot-perf/bot-perf-<ts>.csv`; `html:true` also runs `tools/botperf_report.py` to write the `.html` report next to it. Blocks for `seconds`. Returns `{"ok","msg":"CSV: ...|HTML: ..."}`.

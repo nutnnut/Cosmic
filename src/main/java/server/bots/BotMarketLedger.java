@@ -72,7 +72,7 @@ public final class BotMarketLedger {
     /** Append one event; swallow-and-log on DB trouble (the tape must never break gameplay). */
     public void append(EventKind kind, int itemId, int quality, int qty, long unitPrice,
                        Integer sellerId, Integer buyerId, Integer mapId) {
-        if (BotManager.cfg.MARKET_TX_CONSOLE) {
+        if (BotLogConfig.cfg.MARKET_TX_CONSOLE) {
             String name;
             try {
                 name = server.ItemInformationProvider.getInstance().getName(itemId);

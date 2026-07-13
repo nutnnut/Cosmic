@@ -62,6 +62,7 @@ restoration, not phase seeding), ordinary sellers at their steady-state mid-trip
 
 - `/api/market/stalls` — every open stall with position/stock (spacing + floor spread checks).
 - `/api/market/bot?id=` — one bot's dry-run listing verdicts and FM phase.
-- `!botcfg MARKET_TX_CONSOLE true` — re-enable the `fm[...]` phase traces + tape console lines
-  (default off; the tape DB is always written). `grep "browse-only" cosmic-log.log` then tallies
-  funnel losses by reason.
+- `MARKET_TX_CONSOLE` (BotLogConfig; admin `/admin` "Debug logging" panel, or POST
+  `/api/settings {"cmd":"set","group":"log","field":"MARKET_TX_CONSOLE","value":"true"}`) — re-enable
+  the `fm[...]` phase traces + tape console lines (default off; the tape DB is always written).
+  `grep "browse-only" cosmic-log.log` then tallies funnel losses by reason.

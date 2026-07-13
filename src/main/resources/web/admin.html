@@ -69,6 +69,12 @@
   <table id="combat"></table>
 </div>
 
+<h2>Debug logging</h2>
+<div class="panel">
+  <input class="filter" type="text" placeholder="filter..." oninput="filter('log',this.value)">
+  <table id="log"></table>
+</div>
+
 <h2>Danger zone</h2>
 <div class="panel">
   <div class="row">
@@ -107,6 +113,7 @@ async function load(){
   const s=await(await fetch('/api/settings')).json();
   renderFields('manager',s.manager);
   renderFields('combat',s.combat);
+  renderFields('log',s.log);
   $('popMult').value=s.pop.multiplier;
   $('popStatus').textContent=s.pop.status.join('\n');
   $('llmState').textContent='enabled: '+s.llm.enabled+', debug: '+s.llm.debug;

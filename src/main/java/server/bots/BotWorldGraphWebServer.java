@@ -795,8 +795,8 @@ public final class BotWorldGraphWebServer {
 
     /**
      * Admin settings menu API. GET = snapshot of every tunable group; POST = mutate one knob.
-     * GET shape: {@code {"manager":[{name,value,type}],"combat":[...],"pop":{enabled,multiplier,status:[...]},
-     * "llm":{enabled,debug}}}. POST dispatches on {@code cmd}: {@code set}{group,field,value} |
+     * GET shape: {@code {"manager":[{name,value,type}],"combat":[...],"log":[...],"pop":{enabled,multiplier,
+     * status:[...]},"llm":{enabled,debug}}}. POST dispatches on {@code cmd}: {@code set}{group,field,value} |
      * {@code pop}{mult?,enabled?,sweep?} | {@code llm}{enabled?,debug?} | {@code perflog}{seconds,html?} |
      * {@code disconnectAll}{confirm:"DISCONNECT"} | {@code wipe}{confirm:"WIPE"}. Reuses the same reflection
      * ({@link BotConfigReflect}) as {@code !botcfg}
@@ -818,7 +818,7 @@ public final class BotWorldGraphWebServer {
             case "set" -> {
                 Object cfg = configGroup(jsonField(body, "group"));
                 if (cfg == null) {
-                    result = "{\"error\":\"unknown group (manager|combat)\"}";
+                    result = "{\"error\":\"unknown group (manager|combat|log)\"}";
                 } else {
                     String msg = BotConfigReflect.setField(cfg, jsonField(body, "field"), jsonField(body, "value"));
                     boolean ok = msg.startsWith("OK");
@@ -939,6 +939,9 @@ public final class BotWorldGraphWebServer {
         if ("combat".equalsIgnoreCase(group)) {
             return BotCombatManager.config();
         }
+        if ("log".equalsIgnoreCase(group)) {
+            return BotLogConfig.cfg;
+        }
         return null;
     }
 
@@ -946,6 +949,7 @@ public final class BotWorldGraphWebServer {
         BotScheduler sched = BotScheduler.getInstance();
         return "{\"manager\":" + fieldsJson(BotManager.cfg)
                 + ",\"combat\":" + fieldsJson(BotCombatManager.config())
+                + ",\"log\":" + fieldsJson(BotLogConfig.cfg)
                 + ",\"pop\":{\"enabled\":" + BotManager.cfg.POPULATION_SCHED_ENABLED
                 + ",\"multiplier\":" + sched.getMultiplier()
                 + ",\"status\":" + jsonStrArr(sched.statusLines()) + "}"

@@ -1316,7 +1316,7 @@ final class BotFreeMarketManager {
     /** Trip trace on the MARKET_TX_CONSOLE flag: a handful of lines per trip, invaluable when a
      *  live funnel stalls somewhere between the town portal and a published stall. */
     private static void trace(BotEntry entry, String msg) {
-        if (BotManager.cfg.MARKET_TX_CONSOLE) {
+        if (BotLogConfig.cfg.MARKET_TX_CONSOLE) {
             log.info("fm[{}] {}", entry.bot != null ? entry.bot.getName() : "?", msg);
         }
     }

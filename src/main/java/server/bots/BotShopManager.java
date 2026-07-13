@@ -73,21 +73,8 @@ final class BotShopManager {
     private static final int AUTO_SELL_FREE_SLOT_THRESHOLD = 2; // bag tab "cramped" when this few slots left
     private static final int USE_HEALTHY_FREE_SLOTS = 16; // cramped USE escalation sells down to this many free slots (farming runway)
 
-    static class Config {
-        // Debug/verify aid: after a sell-trash visit, list the USE/ETC items that were sold so
-        // the owner can spot a valuable being misclassified. Equips are excluded (well tested).
-        public boolean REPORT_SOLD_USE_ETC = true;
-        // Per-item sold audit log (bot-sell:), split by why the item left the bag:
-        //  - whitelisted: routine junk the bot wants to sell anyway. Spammy with many bots — off.
-        //  - forced-by-value: an item the bot would otherwise keep, liquidated under bag/value
-        //    pressure (above-base equip shelf overflow, cramped USE shelf sales). The concerning
-        //    case (a good roll liquidated) — on.
-        public boolean LOG_SOLD_WHITELIST = false;
-        public boolean LOG_SOLD_FORCED_BY_VALUE = true;
-        // Cramped-bag "why isn't it selling" diagnostic (bot-sellblock:). Noisy; off by default.
-        public boolean LOG_SELLBLOCK_CRAMPED = false;
-    }
-    static Config cfg = new Config();
+    // Debug-logging toggles for this manager (bot-sell:, bot-sellblock:, sold-item chat report) live
+    // in the BotLogConfig SSOT so every bot log switch is in one place.
 
     private BotShopManager() {}
 
@@ -200,7 +187,7 @@ final class BotShopManager {
      * would otherwise be silent. Grep {@code bot-sellblock}.
      */
     static void logSellBlockIfCramped(BotEntry entry, Character bot) {
-        if (!cfg.LOG_SELLBLOCK_CRAMPED || entry == null || bot == null) {
+        if (!BotLogConfig.cfg.SELLBLOCK_CRAMPED || entry == null || bot == null) {
             return;
         }
         boolean equipCramped = isCramped(bot, InventoryType.EQUIP);
@@ -792,7 +779,7 @@ final class BotShopManager {
             entry.shopSellTrashPending = false;
             if (soldCount > 0) {
                 BotManager.getInstance().botSay(bot, "sold " + soldCount + " junk item" + (soldCount != 1 ? "s" : ""));
-                if (cfg.REPORT_SOLD_USE_ETC) {
+                if (BotLogConfig.cfg.REPORT_SOLD_USE_ETC) {
                     for (String line : buildSoldDetailLines(soldUseEtc)) {
                         BotManager.getInstance().botSay(bot, line);
                     }
@@ -879,7 +866,7 @@ final class BotShopManager {
     }
 
     private static boolean sellLogEnabled(boolean forcedByValue) {
-        return forcedByValue ? cfg.LOG_SOLD_FORCED_BY_VALUE : cfg.LOG_SOLD_WHITELIST;
+        return forcedByValue ? BotLogConfig.cfg.SOLD_FORCED_BY_VALUE : BotLogConfig.cfg.SOLD_WHITELIST;
     }
 
     // One or more ASCII chat lines listing the USE/ETC items sold, e.g. "unloaded: 12 Squid Ink, 3 Blue Potion".
