@@ -4959,28 +4959,8 @@ public class Character extends AbstractCharacterObject {
               .append(it.getGiftFrom());
             if (mit == InventoryType.EQUIP || mit == InventoryType.EQUIPPED) {
                 Equip eq = (Equip) it;
-                sb.append('E')
-                  .append(eq.getUpgradeSlots()).append(',')
-                  .append(eq.getLevel()).append(',')
-                  .append(eq.getStr()).append(',')
-                  .append(eq.getDex()).append(',')
-                  .append(eq.getInt()).append(',')
-                  .append(eq.getLuk()).append(',')
-                  .append(eq.getHp()).append(',')
-                  .append(eq.getMp()).append(',')
-                  .append(eq.getWatk()).append(',')
-                  .append(eq.getMatk()).append(',')
-                  .append(eq.getWdef()).append(',')
-                  .append(eq.getMdef()).append(',')
-                  .append(eq.getAcc()).append(',')
-                  .append(eq.getAvoid()).append(',')
-                  .append(eq.getHands()).append(',')
-                  .append(eq.getSpeed()).append(',')
-                  .append(eq.getJump()).append(',')
-                  .append(eq.getVicious()).append(',')
-                  .append(eq.getItemLevel()).append(',')
-                  .append(eq.getItemExp()).append(',')
-                  .append(eq.getRingId());
+                sb.append('E');
+                Equip.appendPersistentStatsSignature(sb, eq);
             }
             sb.append(';');
         }

@@ -1096,9 +1096,9 @@ final class BotFreeMarketManager {
         return true;
     }
 
-    /** True while the bot is actively standing at the entrance to shout-sell (PHASE_SHOUT of a live
-     *  FM errand). {@link BotShoutTradeManager} reads this to drive the fast emission cadence and to
-     *  accept walk-up buyers — and to stand its opportunistic emission down while the stand owns it. */
+    /** True while the bot is actively standing at the entrance to advertise (PHASE_SHOUT of a live
+     *  FM errand). {@link BotShoutTradeManager} reads this to drive the fast emission cadence and its
+     *  exclusive buyer/seller role — and to stand opportunistic emission down while the stand owns it. */
     static boolean isShoutStanding(BotEntry entry) {
         return entry.fmErrandMapId != -1 && entry.fmPhase == PHASE_SHOUT;
     }
@@ -1129,8 +1129,8 @@ final class BotFreeMarketManager {
      * state so shoppers can click-invite). Walk to a random spot beside one of the map's portals
      * (lower market level favored, never stacked on another bot — owner; see
      * {@link #pickStandSpot}), hold there while {@link BotShoutTradeManager#emitAtStand}
-     * shouts on a fast cadence and answers walk-up buyers, and every so often amble to a new random
-     * spot so it moves around instead of freezing. A trade in progress freezes the dwell (never walk
+     * shouts on a fast cadence, answers walk-up traders for its exclusive advertised role, and every
+     * so often ambles to a new random spot instead of freezing. A trade in progress freezes the dwell (never walk
      * off mid-sale). Then exit to out00.
      */
     private static boolean tickShout(BotEntry entry, Character bot, boolean runAiTick, long now) {

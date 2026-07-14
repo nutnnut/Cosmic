@@ -37,6 +37,19 @@ the ceiling on each re-shout (`BID_LADDER_STEP`, capped rungs) but this ladder i
 state** — an unfilled `B>` usually just means nobody present holds the item, which is much weaker
 evidence than an unsold `S>` stall exposure, so it must never feed shared consensus.
 
+**Advertisement roles are exclusive.** A bot holds one leased `MarketRole` (`BUYER`, `SELLER`, or
+`NONE`) while a spoken advertisement is still actionable. Unsolicited walk-up invites are interpreted
+only through that role: buyers stage mesos, sellers stage their advertised stock, and a neutral bot
+leaves the invite to the manual-trade flow. The FM entrance stand normally acquires `SELLER`, but it
+finishes any still-live `BUYER` lease before switching direction, so a visible `B>` can never be
+answered by the bot unexpectedly inserting unrelated sell stock. Explicit bot-to-bot deals remain
+unambiguous and take priority because `dealsByResponder` already carries the parties and terms. A
+seller lease also retains the exact `Equip` roll behind its `S>`; inventory reranking cannot silently
+substitute another item, while an escrow-refunded copy is reconciled through `Equip`'s shared complete
+persisted-state signature (the same field list used by player inventory dirty-checking). Buying
+an unrelated useful `S>` does not retire a still-visible `B>`; only a purchase that fulfills that want
+ends the buyer lease.
+
 **Haggling (S4).** A trade doesn't have to clear at the shouted number. A seller holding a
 better-than-criteria piece counters ABOVE a `B>` (invites, stages the piece, names an ask in trade
 chat with a stat preview); a buyer counters BELOW an `S>` it can't justify (invites, waits to see the

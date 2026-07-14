@@ -48,6 +48,8 @@ import server.bots.BotMarketLedger.EventKind;
  */
 public final class BotShoutTradeManager {
 
+    enum MarketRole { NONE, BUYER, SELLER }
+
     /** A committed deal the initiator registers so the shout SPEAKER (the responder) recognizes the
      *  incoming invite as this negotiated swap rather than a random trade request. */
     private record Deal(int buyerId, int sellerId, Offer offer, long expiresAt) {}
@@ -66,8 +68,8 @@ public final class BotShoutTradeManager {
     private static final int HAGGLE_GAP_CAP = 3;
     /** Trade-chat meso tokens below this are chatter ("a 9 att one"), not a price position. */
     private static final int MIN_SPOKEN_PRICE = 1_000;
-    /** How long after its last {@code B>} a bot still accepts a walk-up seller's invite. */
-    private static final long WALKUP_SELLER_WINDOW_MS = 3 * 60_000L;
+    /** A spoken market direction remains exclusive while its chat advertisement is still actionable. */
+    private static final long ADVERTISEMENT_ROLE_LEASE_MS = 3 * 60_000L;
     /** Recompute the standing buy want at most this often (the deep pass runs the repro DP). */
     private static final long BUY_WANT_TTL_MS = 10 * 60_000L;
     /** Fraction of the wallet a want may plan to spend. */
@@ -90,8 +92,12 @@ public final class BotShoutTradeManager {
             if (stepBeat(entry, now)) {
                 return;
             }
-            if (!tryClaimResponder(entry, bot, now) && !tryAnswerWalkupBuyer(entry, bot, now)) {
-                tryAnswerWalkupSeller(entry, bot, now);
+            if (!tryClaimResponder(entry, bot, now)) {
+                switch (activeAdvertisedRole(entry, now)) {
+                    case BUYER -> tryAnswerWalkupSeller(entry, bot, now);
+                    case SELLER -> tryAnswerWalkupBuyer(entry, bot, now);
+                    case NONE -> { }
+                }
             }
             return;
         }
@@ -110,6 +116,27 @@ public final class BotShoutTradeManager {
 
     private static final int DELIBERATE_MIN_MS = 2_000;  // "think about it" before acting on a shout
     private static final int DELIBERATE_MAX_MS = 6_000;
+
+    private static MarketRole activeAdvertisedRole(BotEntry entry, long now) {
+        if (entry.advertisedMarketRoleUntilMs <= now) {
+            clearAdvertisement(entry);
+        }
+        return entry.advertisedMarketRole;
+    }
+
+    private static void advertiseAs(BotEntry entry, MarketRole role, long now) {
+        entry.advertisedMarketRole = role;
+        entry.advertisedMarketRoleUntilMs = now + ADVERTISEMENT_ROLE_LEASE_MS;
+        if (role != MarketRole.SELLER) {
+            entry.advertisedSellEquip = null;
+        }
+    }
+
+    private static void clearAdvertisement(BotEntry entry) {
+        entry.advertisedMarketRole = MarketRole.NONE;
+        entry.advertisedMarketRoleUntilMs = 0L;
+        entry.advertisedSellEquip = null;
+    }
 
     /** One-shot human beat before the next trade-window step (accept the invite popup, drag the
      *  piece in / type the meso). Arms on first call, holds while running, clears when served —
@@ -221,6 +248,7 @@ public final class BotShoutTradeManager {
         if (shouts.isEmpty()) {
             return false;
         }
+        MarketRole role = activeAdvertisedRole(entry, now);
         for (BotMarketShoutBus.Shout s : shouts) {
             Offer o = s.offer();
             // A heard shout is an ADVERTISEMENT, not a clearing — it never moves the price belief.
@@ -228,6 +256,10 @@ public final class BotShoutTradeManager {
             // beliefs to billions; only realized trades/stall sales (W_TRADE) set the price now.
             if (!isEquip(o.itemId())) {
                 continue; // v1: equips only
+            }
+            if ((role == MarketRole.BUYER && o.kind() != Kind.SELL)
+                    || (role == MarketRole.SELLER && o.kind() != Kind.BUY)) {
+                continue; // one market direction per advertisement session
             }
             Character speaker = bot.getMap().getCharacterById(s.speakerId());
             if (speaker == null || speaker.getTrade() != null) {
@@ -496,11 +528,11 @@ public final class BotShoutTradeManager {
         if (commander != null && partner.getId() == commander.getId()) {
             return false; // an owner/commander trade is the manual tick's business, not a sale
         }
-        List<Equip> stock = BotInventoryManager.collectMarketableEquips(entry, bot);
-        if (stock.isEmpty()) {
-            return false; // nothing to sell after all — let the invite lapse
+        Equip eq = resolveAdvertisedSellEquip(entry,
+                BotInventoryManager.collectMarketableEquips(entry, bot));
+        if (eq == null) {
+            return false; // advertised piece disappeared; never substitute unrelated stock
         }
-        Equip eq = stock.get(0); // the very piece the stand advertises (top surplus)
         long ask = advertisedAsk(entry, bot, eq, now);
         if (ask <= 0) {
             return false;
@@ -528,7 +560,7 @@ public final class BotShoutTradeManager {
      */
     private static void tryAnswerWalkupSeller(BotEntry entry, Character bot, long now) {
         if (entry.pendingTradeCategory != null || entry.buyWant == null
-                || now - entry.lastBuyShoutAtMs > WALKUP_SELLER_WINDOW_MS
+                || now - entry.lastBuyShoutAtMs > ADVERTISEMENT_ROLE_LEASE_MS
                 || bot.getMeso() < entry.buyWant.priceMeso()) {
             return;
         }
@@ -921,12 +953,17 @@ public final class BotShoutTradeManager {
                 price, BotMarketMath.W_TRADE, now);
         BotManager.getInstance().botSay(bot, BotMarketChatter.thanks(entry.shoutTradeSelling));
         if (!entry.shoutTradeSelling) {
-            // The want filled: wear the upgrade (which retires the want — the worn baseline moves)
-            // and reset the no-fill ladder. Without this the bot would re-buy the same item forever.
-            entry.buyWant = null;
-            entry.buyWantNoFills = 0;
-            entry.buyWantRecomputeAtMs = 0L;
+            // Retire the visible want only when this exact purchase filled it. A buyer may also take
+            // another useful S>; that must not turn its still-visible B> into a sale advertisement.
+            if (fillsBuyWant(entry.buyWant, o, dealt)) {
+                entry.buyWant = null;
+                entry.buyWantNoFills = 0;
+                entry.buyWantRecomputeAtMs = 0L;
+                clearAdvertisement(entry);
+            }
             BotEquipManager.autoEquip(bot, BotManager.getInstance().commanderOrOwner(entry), null, true);
+        } else if (entry.shoutTradeSellEquip == entry.advertisedSellEquip) {
+            clearAdvertisement(entry);
         }
         clear(entry);
     }
@@ -991,14 +1028,19 @@ public final class BotShoutTradeManager {
         emit(entry, bot, now, EMIT_MIN_MS, EMIT_MAX_MS);
     }
 
-    /** Fast-cadence emission driven by the FM-entrance shout-stand state (design: a deliberate
-     *  stand-still-and-advertise activity). Location + audience are guaranteed by the stand phase,
-     *  so the FM-map/audience gates are skipped here. */
+    /** Fast-cadence emission driven by the FM-entrance shout stand. An unexpired buyer
+     *  advertisement keeps the stand buyer-only until its lease ends; otherwise the stand acquires
+     *  and refreshes the seller role. Location + audience are guaranteed by the stand phase. */
     static void emitAtStand(BotEntry entry, Character bot, long now) {
+        MarketRole role = activeAdvertisedRole(entry, now);
+        if (role != MarketRole.BUYER) {
+            advertiseAs(entry, MarketRole.SELLER, now);
+            role = MarketRole.SELLER;
+        }
         if (now < entry.nextShoutEmitMs) {
             return;
         }
-        emit(entry, bot, now, STAND_EMIT_MIN_MS, STAND_EMIT_MAX_MS);
+        emit(entry, bot, now, STAND_EMIT_MIN_MS, STAND_EMIT_MAX_MS, role);
     }
 
     /** Most speaking windows sell; only this fraction may voice the standing buy want. A real FM
@@ -1011,9 +1053,22 @@ public final class BotShoutTradeManager {
      *  cooldown re-arms to a jittered {@code [min,max]} regardless of whether this window actually
      *  speaks (chattiness roll). */
     private static void emit(BotEntry entry, Character bot, long now, int minMs, int maxMs) {
+        emit(entry, bot, now, minMs, maxMs, activeAdvertisedRole(entry, now));
+    }
+
+    private static void emit(BotEntry entry, Character bot, long now, int minMs, int maxMs,
+                             MarketRole role) {
         BotPersonality p = entry.personality != null ? entry.personality : BotPersonality.defaults();
         entry.nextShoutEmitMs = now + BotManager.randMs(minMs, maxMs);
         if (ThreadLocalRandom.current().nextDouble() > p.chattiness()) {
+            return;
+        }
+        if (role == MarketRole.SELLER) {
+            emitSellShout(entry, bot, now);
+            return;
+        }
+        if (role == MarketRole.BUYER) {
+            emitBuyShout(entry, bot, now);
             return;
         }
         if (ThreadLocalRandom.current().nextDouble() < BUY_SHOUT_CHANCE) {
@@ -1037,13 +1092,22 @@ public final class BotShoutTradeManager {
         if (stock.isEmpty()) {
             return false;
         }
-        Equip eq = stock.get(0); // the top valuable surplus piece
+        Equip eq = resolveAdvertisedSellEquip(entry, stock);
+        if (entry.advertisedSellEquip != null && eq == null) {
+            clearAdvertisement(entry);
+            return false; // old S> is still visible; do not silently substitute another piece
+        }
+        if (eq == null) {
+            eq = stock.get(0); // acquire the top valuable surplus piece for this seller lease
+        }
         long ask = advertisedAsk(entry, bot, eq, now);
         if (ask <= 0) {
             return false;
         }
         ask = BotMarketMath.humanizeAskRound(ask, bot.getId()); // shout prices read as clean k/m
         Offer offer = new Offer(Kind.SELL, eq.getItemId(), 1, (int) Math.min(Integer.MAX_VALUE, ask));
+        advertiseAs(entry, MarketRole.SELLER, now);
+        entry.advertisedSellEquip = eq;
         BotMarketShoutBus.getInstance().publish(bot.getMapId(), bot.getId(), offer, now);
         BotMarketLedger.getInstance().append(EventKind.SHOUT, offer.itemId(), 0, 1,
                 offer.priceMeso(), bot.getId(), null, bot.getMapId());
@@ -1088,6 +1152,7 @@ public final class BotShoutTradeManager {
         Offer offer = new Offer(Kind.BUY, want.itemId(), 1,
                 (int) Math.min(Integer.MAX_VALUE, bid), want.criterion());
         entry.buyWant = offer; // keep the live bid on the want (walk-up sellers trade against it)
+        advertiseAs(entry, MarketRole.BUYER, now);
         BotMarketShoutBus.getInstance().publish(bot.getMapId(), bot.getId(), offer, now);
         BotMarketLedger.getInstance().append(EventKind.SHOUT, offer.itemId(), entry.buyWantBand, 1,
                 offer.priceMeso(), null, bot.getId(), bot.getMapId());
@@ -1114,6 +1179,32 @@ public final class BotShoutTradeManager {
 
     private static boolean isEquip(int itemId) {
         return itemId / 1_000_000 == 1;
+    }
+
+    private static Equip resolveAdvertisedSellEquip(BotEntry entry, List<Equip> stock) {
+        Equip wanted = entry.advertisedSellEquip;
+        if (wanted == null) {
+            return null;
+        }
+        for (Equip equip : stock) {
+            if (equip == wanted) {
+                return equip;
+            }
+        }
+        for (Equip equip : stock) {
+            if (Equip.samePersistentStateExceptPosition(equip, wanted)) {
+                entry.advertisedSellEquip = equip; // escrow cancellation restores a copied instance
+                return equip;
+            }
+        }
+        return null;
+    }
+
+    private static boolean fillsBuyWant(Offer want, Offer deal, Equip dealt) {
+        if (want == null || deal == null || want.itemId() != deal.itemId()) {
+            return false;
+        }
+        return want.criterion() == null || dealt != null && meetsCriterion(dealt, want);
     }
 
     private static Equip cleanEquip(int itemId) {

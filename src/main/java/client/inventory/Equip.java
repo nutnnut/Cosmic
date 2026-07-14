@@ -36,6 +36,7 @@ import java.util.HashMap;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 
 public class Equip extends Item {
     private static final Logger log = LoggerFactory.getLogger(Equip.class);
@@ -441,6 +442,52 @@ public class Equip extends Item {
         }
 
         return stats;
+    }
+
+    /** Append every equip-specific field persisted by ItemFactory. Character inventory dirty-checks
+     *  and bot trade escrow reconciliation share this list so adding a persisted field cannot make
+     *  their definitions of the same equip state drift apart. */
+    public static void appendPersistentStatsSignature(StringBuilder sb, Equip equip) {
+        sb.append(equip.getUpgradeSlots()).append(',')
+          .append(equip.getLevel()).append(',')
+          .append(equip.getStr()).append(',')
+          .append(equip.getDex()).append(',')
+          .append(equip.getInt()).append(',')
+          .append(equip.getLuk()).append(',')
+          .append(equip.getHp()).append(',')
+          .append(equip.getMp()).append(',')
+          .append(equip.getWatk()).append(',')
+          .append(equip.getMatk()).append(',')
+          .append(equip.getWdef()).append(',')
+          .append(equip.getMdef()).append(',')
+          .append(equip.getAcc()).append(',')
+          .append(equip.getAvoid()).append(',')
+          .append(equip.getHands()).append(',')
+          .append(equip.getSpeed()).append(',')
+          .append(equip.getJump()).append(',')
+          .append(equip.getVicious()).append(',')
+          .append(equip.getItemLevel()).append(',')
+          .append(equip.getItemExp()).append(',')
+          .append(equip.getRingId());
+    }
+
+    /** Same persisted item/equip state, ignoring only the inventory position changed by escrow. */
+    public static boolean samePersistentStateExceptPosition(Equip a, Equip b) {
+        if (a == null || b == null
+                || a.getItemId() != b.getItemId()
+                || a.getQuantity() != b.getQuantity()
+                || a.getPetId() != b.getPetId()
+                || a.getFlag() != b.getFlag()
+                || a.getExpiration() != b.getExpiration()
+                || !Objects.equals(a.getOwner(), b.getOwner())
+                || !Objects.equals(a.getGiftFrom(), b.getGiftFrom())) {
+            return false;
+        }
+        StringBuilder left = new StringBuilder(96);
+        StringBuilder right = new StringBuilder(96);
+        appendPersistentStatsSignature(left, a);
+        appendPersistentStatsSignature(right, b);
+        return left.toString().contentEquals(right);
     }
 
     public Pair<String, Pair<Boolean, Boolean>> gainStats(List<Pair<StatUpgrade, Integer>> stats) {

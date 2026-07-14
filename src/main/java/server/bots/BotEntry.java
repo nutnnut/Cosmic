@@ -1006,6 +1006,10 @@ public class BotEntry {
     long shoutTradeConfirmAtMs;                         // human "beat" before locking once terms are met
     long shoutTradeStepAtMs;                            // human "beat" before the next window step (accept/stage)
     long nextShoutEmitMs;                               // emission cooldown
+    BotShoutTradeManager.MarketRole advertisedMarketRole =
+            BotShoutTradeManager.MarketRole.NONE;       // one walk-up market direction at a time
+    long advertisedMarketRoleUntilMs;                   // role lease; refreshed by the active advertisement
+    client.inventory.Equip advertisedSellEquip;         // exact S> piece; never reselect stock on invite
     // Deliberation before acting on a heard shout (don't buy/sell the instant a match is seen —
     // bank the candidate, "think about it" 2-6s, then re-validate + claim). One pending at a time.
     long shoutBuyDecideAtMs;                            // 0 = nothing pending
