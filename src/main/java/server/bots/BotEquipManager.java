@@ -2184,6 +2184,10 @@ class BotEquipManager {
     private static int magicScore(StatSnapshot sim) {
         // Weights INT and MAGIC almost equally — INT*1.1 nudges main-stat ties toward INT
         // (matches v83 mage growth where INT scales magic damage and unlocks better gear).
+        // Deliberately speed-blind: in v83 a magician casts as if holding a Normal(6) weapon
+        // regardless of the wand/staff speed tier, so mage weapons are ranked on magic power
+        // alone (only Spell Booster / Speed Infusion change cast speed, and they apply equally
+        // to any mage weapon). See kb_bot_grind_gear_valuation.md.
         return (int) Math.round(sim.int_() * 1.1d) + sim.magic();
     }
 

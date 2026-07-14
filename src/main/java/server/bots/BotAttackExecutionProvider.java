@@ -517,7 +517,7 @@ final class BotAttackExecutionProvider {
         int fallbackHitDelayMs = fallbackAttackData != null ? fallbackAttackData.hitDelayMs() : defaultHitDelayMs(600);
         int fallbackCooldownMs = fallbackAttackData != null ? fallbackAttackData.cooldownMs() : toCooldownMs(600);
         return resolveSkillAttackTiming(action, resolveWeaponAttackProfile(bot), resolveSkillAttackDelayMillis(skill),
-                resolveWeaponAttackSpeed(bot),
+                resolveSkillEffectiveAttackSpeed(skill, bot),
                 fallbackHitDelayMs, fallbackCooldownMs);
     }
 
@@ -714,6 +714,32 @@ final class BotAttackExecutionProvider {
             return 305;
         }
         return Math.max(0, animationDelayMs / 2);
+    }
+
+    // v83 client fact (binary-proven in TryDoingMagicAttack @ 0x00955b24: base grade = literal 6):
+    // a magic spell cast ignores the equipped wand/staff's speed tier and always casts as if the
+    // weapon were Normal(6). Only the Booster buff shifts it (Spell Booster -> grade 4); Speed
+    // Infusion does NOT affect magic. Melee/ranged/basic attacks still read the real weapon speed.
+    // See docs/bot/kb/kb_bot_mage_cast_speed.md.
+    private static final int MAGIC_ATTACK_SPEED_GRADE = 6;
+
+    static int resolveSkillEffectiveAttackSpeed(Skill skill, Character bot) {
+        if (skill != null && isMagicAttackSkill(skill.getId())) {
+            return resolveMagicAttackSpeed(bot);
+        }
+        return resolveWeaponAttackSpeed(bot);
+    }
+
+    static int resolveMagicAttackSpeed(Character bot) {
+        int grade = MAGIC_ATTACK_SPEED_GRADE;
+        if (bot != null) {
+            Integer booster = bot.getBuffedValue(BuffStat.BOOSTER);
+            if (booster != null) {
+                grade += booster;
+            }
+        }
+        // Client clamps the magic grade to [0, 12] (a Booster-only grade never nears the bounds).
+        return Math.max(0, Math.min(12, grade));
     }
 
     private static int resolveWeaponAttackSpeed(Character bot) {

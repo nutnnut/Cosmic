@@ -1521,6 +1521,37 @@ class BotCombatManagerTest {
         assertEquals(406, timing.cooldownMs());
     }
 
+    // v83: a magic spell cast ignores the wand/staff speed tier and always casts as Normal(6)
+    // (binary-proven: TryDoingMagicAttack hardcodes base grade 6). Only Booster shifts it.
+    @Test
+    void magicCastSpeedIsWeaponSpeedBlindNormalSix() {
+        Skill coldBeam = mock(Skill.class);
+        when(coldBeam.getId()).thenReturn(ILWizard.COLD_BEAM);
+        Character bot = mock(Character.class);
+        when(bot.getBuffedValue(BuffStat.BOOSTER)).thenReturn(null);
+
+        // No weapon inventory stubbed: the magic path must not read the equipped weapon at all.
+        assertEquals(6, BotAttackExecutionProvider.resolveSkillEffectiveAttackSpeed(coldBeam, bot));
+    }
+
+    @Test
+    void spellBoosterSpeedsMagicCastToGradeFour() {
+        Character bot = mock(Character.class);
+        when(bot.getBuffedValue(BuffStat.BOOSTER)).thenReturn(-2);
+
+        assertEquals(4, BotAttackExecutionProvider.resolveMagicAttackSpeed(bot));
+    }
+
+    @Test
+    void speedInfusionDoesNotSpeedMagicCast() {
+        Character bot = mock(Character.class);
+        when(bot.getBuffedValue(BuffStat.BOOSTER)).thenReturn(null);
+
+        // Speed Infusion is a melee/ranged party buff; the client never adds it to magic casts,
+        // so resolveMagicAttackSpeed never consults SPEED_INFUSION -> grade stays Normal(6).
+        assertEquals(6, BotAttackExecutionProvider.resolveMagicAttackSpeed(bot));
+    }
+
     @Test
     void shouldUseDegenerateCloseAttackPoolForBowAtPointBlankRange() {
         assertTrue(BotAttackExecutionProvider.shouldDegenerateRangedAttack(WeaponType.BOW, new Point(100, 200), new Point(145, 200)));

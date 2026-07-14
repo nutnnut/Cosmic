@@ -50,6 +50,8 @@ Do not copy a graph version from a KB note. The current value and full schema hi
   [`kb_bot_aoe_reposition_before_fire.md`](kb_bot_aoe_reposition_before_fire.md): AoE selection.
 - [`kb_bot_ranged_spacing_weapons.md`](kb_bot_ranged_spacing_weapons.md) and
   [`kb_bot_thief_claw_dagger_split.md`](kb_bot_thief_claw_dagger_split.md): ranged/no-ammo behavior.
+- [`kb_bot_mage_cast_speed.md`](kb_bot_mage_cast_speed.md): binary-proven — magic casts ignore
+  wand/staff speed (always Normal(6) + Booster); mage weapon scoring is speed-blind.
 - [`kb_bot_quest_commitment_and_danger_targeting.md`](kb_bot_quest_commitment_and_danger_targeting.md):
   quest and survival biases.
 - [`kb_bot_skill_classification.md`](kb_bot_skill_classification.md),
