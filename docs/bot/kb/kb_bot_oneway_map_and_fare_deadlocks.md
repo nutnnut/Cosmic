@@ -24,6 +24,17 @@ Fixed on dev: `3230e69e7` (ferry) + `d3c8c599e` (job errand).
 - NPC 2082003 on the dock (Temple of Time travel) has NO script in the repo — travel not coded
   server-side; deliberately not modeled (owner: don't code it yet).
 
+### Follow-up (2026-07-14): Dragon flight is now bot-routable
+
+- The player script is present at `scripts/npc/2082003.js`: it sends the player to flight map
+  `200090500`; `templeenter.js` lands at Temple of Time arrival `270000100`, while
+  `outTemple.js` and `undodraco.js` implement the return path through `200090510`.
+- `BotWorldGraph` now exposes free `240000110 <-> 270000100` transport edges. The bot walks to
+  the real Leafre NPC or Temple exit portal, then uses the real flight portal scripts.
+- Dragon maps use the existing swim integrator as an explicitly approximate flight controller;
+  a 45-second flight budget releases the hop to the normal direct-warp fallback if a portal or
+  physics step cannot complete.
+
 ### Instance 2 (2026-07-09 late): Nett's Pyramid hub 926010000 "Pyramid Dunes" (`636f89325`)
 - Entry: plain desert portal `piramid00` on 260020500 (script `nets_in`) warps in unconditionally
   and saves the "MIRROR" location — bots wandering/patrolling the Ariant desert stumble in. The

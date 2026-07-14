@@ -209,6 +209,15 @@ class BotWorldGraphTest {
         assertEquals(42000, singaporeToMalaysia.fare());
         assertEquals(551000000, BotWorldGraph.findTaxiEdge(550000000, 551000000).toMapId());
         assertEquals(550000000, BotWorldGraph.findTaxiEdge(551000000, 550000000).toMapId());
+        // Leafre dock's real Dragon NPC route: 2082003 -> flight maps -> Temple of Time arrival.
+        BotWorldGraph.TaxiEdge dragonOut = BotWorldGraph.findTaxiEdge(240000110, 270000100);
+        assertNotNull(dragonOut);
+        assertEquals(2082003, dragonOut.npcId());
+        assertEquals(0, dragonOut.fare());
+        BotWorldGraph.TaxiEdge dragonBack = BotWorldGraph.findTaxiEdge(270000100, 240000110);
+        assertNotNull(dragonBack);
+        assertEquals(2082003, dragonBack.npcId());
+        assertEquals(0, dragonBack.fare());
     }
 
     /** The Mushroom Shrine return is the saved WORLDTOUR origin, injected per-bot — never a static free

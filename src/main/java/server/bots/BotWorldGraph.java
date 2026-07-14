@@ -214,6 +214,13 @@ final class BotWorldGraph {
             new TaxiEdge(200000000, 9000020, 800000000, 3000),
             new TaxiEdge(220000000, 9000020, 800000000, 3000),
             new TaxiEdge(240000000, 9000020, 800000000, 3000),
+            // Leafre dock NPC 2082003: the player uses Dragon Scale (2210016), becomes a dragon,
+            // flies through 200090500/200090510, and enters Temple of Time at 270000100 via
+            // scripts/portal/templeenter.js. The reverse leaves through outTemple.js. Bots execute
+            // the same scripted portal sequence; their flight motion is approximated by the swim
+            // integrator because the server has no separate dragon-flight physics model.
+            new TaxiEdge(240000110, 2082003, 270000100, 0),
+            new TaxiEdge(270000100, 2082003, 240000110, 0),
             new TaxiEdge(250000000, 9000020, 800000000, 3000),
             new TaxiEdge(260000000, 9000020, 800000000, 3000),
             new TaxiEdge(680000000, 9000020, 800000000, 3000),
@@ -231,7 +238,8 @@ final class BotWorldGraph {
     // Malaysia/Singapore travel, Thomas Swift (Henesys <-> Amoria). These stay available even to a poor
     // bot; the Victoria cab edges (shortcuts between towns that ARE walkable) are gated by the taxi tier.
     private static final Set<Integer> CONTINENT_RIDE_NPCS = Set.of(
-            22000, 2060009, 1002002, 1081001, 2090005, 2030000, 9201056, 9000020, 9201135, 9201022);
+            22000, 2060009, 1002002, 1081001, 2090005, 2030000, 9201056, 9000020, 9201135, 9201022,
+            2082003);
 
     private static final Map<Integer, List<TaxiEdge>> TAXI_BY_MAP = buildTaxiByMap();
 

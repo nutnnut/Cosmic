@@ -351,6 +351,9 @@ public class BotEntry {
     int followTravelTaxiNpcId = 0;       // != 0: current hop is a cab ride — walk to this NPC, pay, warp
     Point followTravelTaxiPos = null;    // cab NPC position (static, cached at hop start)
     boolean followTravelFerry = false;   // current hop is a ferry boarding leg (BotFerryManager)
+    // Leafre's Dragon flight is a scripted, free transport rather than an EventManager ferry. The
+    // flight maps use the swim integrator as an intentionally approximate stand-in for fly physics.
+    int dragonFlightTargetMapId = -1;
     // Errand NPC approach: a per-bot reachable spot NEAR the NPC (not the exact, possibly off-floor
     // sprite pos) so bots converging on one NPC don't stack on the same pixel and freeze. Cached so
     // it isn't re-rolled every tick; keyed by npcId, cleared on arrival/abort/map-change.

@@ -221,6 +221,12 @@ final class BotTravelManager {
             clear(entry);
             return false;
         }
+        // Dragon flight is a scripted transport whose intermediate maps are not part of the normal
+        // portal graph. Let its approximate flight controller own the hop until it reaches the real
+        // destination portal; this must run before the ordinary taxi/ferry and portal state gates.
+        if (BotDragonFlightManager.tick(entry, bot, targetMapId, runAiTick)) {
+            return true;
+        }
         // Map just changed and the map-change tick (foothold rebuild, physics reset) hasn't
         // run yet — don't drive movement on stale footholds. Landing in the target map is
         // handled by syncFollowMap before this is called, so reaching here mid-change means
@@ -561,6 +567,20 @@ final class BotTravelManager {
         BotWorldGraph.TaxiEdge taxi = BotWorldGraph.findTaxiEdge(bot.getMapId(), nextHopMapId, bot.getJob().getId() == 0,
                 bot.getLevel());
         if (taxi != null && bot.getMeso() >= taxi.fare()) {
+            if (BotDragonFlightManager.isDragonEdge(taxi)
+                    && bot.getMapId() != BotDragonFlightManager.LEAFRE_DOCK_MAP_ID) {
+                entry.followTravelTargetMapId = targetMapId;
+                entry.followTravelNextHopMapId = nextHopMapId;
+                entry.followTravelFromMapId = bot.getMapId();
+                entry.followTravelPortalId = -1;
+                entry.followTravelTaxiNpcId = taxi.npcId();
+                entry.followTravelTaxiPos = null;
+                entry.followTravelBestDist = Integer.MAX_VALUE;
+                entry.followTravelBestRouteCost = Integer.MAX_VALUE;
+                entry.followTravelProgressPos = null;
+                entry.followTravelDeadlineMs = now + TRAVEL_BUDGET_MAX_MS;
+                return BotDragonFlightManager.tick(entry, bot, targetMapId, runAiTick);
+            }
             Point npcPos = taxiNpcLocator.locate(map, taxi.npcId());
             if (npcPos == null) {
                 return false; // cab NPC missing from the live map — warp fallback
@@ -596,6 +616,11 @@ final class BotTravelManager {
 
     /** Walk toward the cab NPC; once close enough, pay and ride. */
     private static boolean tickTaxiHop(BotEntry entry, Character bot, long now, boolean runAiTick) {
+        if (entry.dragonFlightTargetMapId != -1
+                && entry.followTravelTaxiNpcId == BotDragonFlightManager.DRAGON_NPC_ID
+                && bot.getMapId() == BotDragonFlightManager.LEAFRE_DOCK_MAP_ID) {
+            return BotDragonFlightManager.tick(entry, bot, entry.followTravelTargetMapId, runAiTick);
+        }
         Point npcPos = entry.followTravelTaxiPos;
         Point botPos = bot.getPosition();
         if (npcPos == null) {
@@ -628,7 +653,18 @@ final class BotTravelManager {
             BotWorldGraph.TaxiEdge taxi =
                     BotWorldGraph.findTaxiEdge(entry.followTravelFromMapId, entry.followTravelNextHopMapId,
                             bot.getJob().getId() == 0, bot.getLevel());
-            if (taxi == null || !taxiRide.ride(bot, taxi)) {
+            if (taxi == null) {
+                giveUp(entry, now, "taxi-fare-fail");
+                return false;
+            }
+            if (BotDragonFlightManager.isDragonEdge(taxi)) {
+                if (!BotDragonFlightManager.boardFromLeafreDock(entry, bot, taxi)) {
+                    giveUp(entry, now, "dragon-flight-board-fail");
+                    return false;
+                }
+                return true;
+            }
+            if (!taxiRide.ride(bot, taxi)) {
                 giveUp(entry, now, "taxi-fare-fail"); // fare spent elsewhere mid-walk — don't retry the same hop
                 return false;
             }
@@ -834,6 +870,7 @@ final class BotTravelManager {
         entry.followTravelTaxiNpcId = 0;
         entry.followTravelTaxiPos = null;
         entry.followTravelFerry = false;
+        entry.dragonFlightTargetMapId = -1;
         entry.travelApproachStuck.reset(); // fresh hop -> fresh "stuck near the transport NPC" tracking
         // NOTE: followTravelGiveUpUntilMs is intentionally NOT reset here — the internal retry loop
         // calls clear() every tick during the give-up window and must keep that cooldown. Deliberate
