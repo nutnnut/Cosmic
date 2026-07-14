@@ -1,6 +1,9 @@
 package server.bots;
 
+import client.BuffStat;
 import client.Character;
+import server.ItemInformationProvider;
+import server.StatEffect;
 import server.maps.MapleMap;
 import server.maps.Portal;
 
@@ -9,10 +12,19 @@ import java.awt.Point;
 /**
  * Bot-side execution of the Leafre Dragon flight.
  *
- * <p>The player route is scripted: NPC 2082003 sends the player to 200090500, the player flies
- * across 200090500/200090510, and the portal scripts land at Leafre or 270000100. The client has
- * special fly physics for these maps; bots reuse the existing swim integrator as a deliberately
- * approximate controller until a dedicated dragon model exists.
+ * <p>The player route is scripted: NPC 2082003 uses Dragon Scale (2210016) to morph the player into
+ * a dragon, sends them to 200090500, the player flies across 200090500/200090510, and the exit
+ * portal scripts ({@code templeenter}/{@code undodraco}) cancel the morph and land at 270000100 or
+ * Leafre. The client has special fly physics for these two {@code fly=1} maps; bots have neither the
+ * morph nor a fly integrator, so this manager reproduces both: it applies the same morph the NPC
+ * does and reuses the swim integrator as a deliberately approximate flight controller until a
+ * dedicated dragon model exists.
+ *
+ * <p>{@link #tickFlyMap} is the single per-tick entry for "bot is on a flight map", driven from the
+ * common tick so it covers every way a bot lands there — autopilot travel boarding at the Leafre
+ * dock, and a companion follow-warping in after its owner morphs and flies. It always ensures the
+ * dragon morph; for a committed autopilot flight it yields steering to {@link #tick} (called from
+ * {@link BotTravelManager}), and for a following/stray bot it steers the corridor itself.
  */
 final class BotDragonFlightManager {
 
@@ -22,9 +34,23 @@ final class BotDragonFlightManager {
     static final int LEAFRE_FLIGHT_MAP_ID = 200090500;
     static final int TEMPLE_FLIGHT_MAP_ID = 200090510;
 
+    // Dragon Scale: 30-min morph (morph=16). The Leafre NPC applies it via cm.useItem(2210016); the
+    // two exit portal scripts cancel it. Applied/cancelled through the shared StatEffect path so other
+    // players see the dragon exactly as they would for a real player.
+    private static final int DRAGON_MORPH_ITEM = 2210016;
+
     private static final int FLIGHT_PORTAL_X_TOLERANCE = 18;
     private static final int FLIGHT_PORTAL_Y_TOLERANCE = 60;
     private static final int HIGH_FLIGHT_Y = -450;
+    // The two flight maps chain to each other through collision (pt=3) portals along their far edges:
+    // 200090500's east edge -> 200090510, and 200090510's west edge -> 200090500. Cruise to the edge
+    // x so BotTravelManager.tickCollisionPortal (common tick) fires the hop; the scripted in00/minar00
+    // exits are entered directly instead.
+    private static final int FLY_EAST_EDGE_X = 2765;
+    private static final int FLY_WEST_EDGE_X = -2735;
+    // Following a same-map owner: cap the steer target above the low foothold strip (y ~= 145) so the
+    // approximate swim controller never settles onto it and reverts to ground physics.
+    private static final int FLY_FLOOR_CEILING_Y = 0;
     private static final long FLIGHT_BUDGET_MS = 45_000L;
 
     private BotDragonFlightManager() {
@@ -81,25 +107,107 @@ final class BotDragonFlightManager {
         if (mapId == TEMPLE_ARRIVAL_MAP_ID && inbound) {
             return walkIntoScriptedPortal(entry, bot, "out00", runAiTick);
         }
-        if (mapId == LEAFRE_FLIGHT_MAP_ID && inbound) {
-            return flyToScriptedPortal(entry, bot, "minar00", new Point(-700, -214), runAiTick);
-        }
-        if (mapId == TEMPLE_FLIGHT_MAP_ID && outbound) {
-            return flyToScriptedPortal(entry, bot, "in00", new Point(571, -227), runAiTick);
-        }
-        if (mapId == LEAFRE_FLIGHT_MAP_ID && outbound) {
-            return flyAcross(entry, bot, new Point(2700, HIGH_FLIGHT_Y), runAiTick);
-        }
-        if (mapId == TEMPLE_FLIGHT_MAP_ID && inbound) {
-            return flyAcross(entry, bot, new Point(-2700, HIGH_FLIGHT_Y), runAiTick);
+        if (isFlightMap(mapId)) {
+            return flyCurrentMap(entry, bot, outbound, runAiTick);
         }
 
         // The map-change tick will reconcile the entry after the real portal script lands. Keep the
         // state alive on the two flight maps only; anything else is a failed scripted hop.
-        if (mapId != LEAFRE_FLIGHT_MAP_ID && mapId != TEMPLE_FLIGHT_MAP_ID) {
-            entry.dragonFlightTargetMapId = -1;
+        entry.dragonFlightTargetMapId = -1;
+        return false;
+    }
+
+    static boolean isFlightMap(int mapId) {
+        return mapId == LEAFRE_FLIGHT_MAP_ID || mapId == TEMPLE_FLIGHT_MAP_ID;
+    }
+
+    /**
+     * Common-tick entry: while the bot is on either flight map, keep it a dragon and — for a
+     * following/stray bot with no committed autopilot flight — steer the corridor. Returns true when
+     * it owns the movement tick (so the caller skips the normal follow/grind dispatch); false lets a
+     * committed autopilot flight keep steering through {@link #tick}, or lets normal ticks run once
+     * the bot is off the flight maps.
+     */
+    static boolean tickFlyMap(BotEntry entry, Character bot, Character owner, boolean runAiTick) {
+        if (!isFlightMap(bot.getMapId())) {
+            // Left the corridor by any exit: if a non-scripted exit (a follow-warp) skipped the
+            // portal's cancelItem, drop the morph now so the bot doesn't stay a dragon in town.
+            if (bot.getBuffSource(BuffStat.MORPH) == DRAGON_MORPH_ITEM) {
+                StatEffect fx = ItemInformationProvider.getInstance().getItemEffect(DRAGON_MORPH_ITEM);
+                if (fx != null) {
+                    bot.cancelEffect(fx, false, -1);
+                }
+            }
+            return false;
+        }
+        ensureDragonMorph(bot);
+        if (entry.dragonFlightTargetMapId != -1) {
+            return false; // committed autopilot flight owns steering via BotTravelManager.tickTravel
+        }
+        // Follow-mode / stray: no committed flight. Fly toward the owner when sharing the map, else
+        // toward the corridor exit on the owner's side (defaulting to the Temple exit).
+        if (owner != null && owner.getMapId() == bot.getMapId()) {
+            entry.inAir = true;
+            Point op = owner.getPosition();
+            BotMovementManager.tickSwimming(entry,
+                    new Point(op.x, Math.min(op.y, FLY_FLOOR_CEILING_Y)));
+            return true;
+        }
+        int ownerMapId = owner != null ? owner.getMapId() : -1;
+        return flyCurrentMap(entry, bot, followOutbound(bot.getMapId(), ownerMapId), runAiTick);
+    }
+
+    /** Steer the current flight map toward its outbound (Temple-ward) or inbound (Leafre-ward) exit. */
+    private static boolean flyCurrentMap(BotEntry entry, Character bot, boolean outbound, boolean runAiTick) {
+        int mapId = bot.getMapId();
+        if (mapId == LEAFRE_FLIGHT_MAP_ID) {
+            return outbound
+                    ? flyAcross(entry, bot, new Point(FLY_EAST_EDGE_X, HIGH_FLIGHT_Y), runAiTick)
+                    : flyToScriptedPortal(entry, bot, "minar00", new Point(-700, -214), runAiTick);
+        }
+        if (mapId == TEMPLE_FLIGHT_MAP_ID) {
+            return outbound
+                    ? flyToScriptedPortal(entry, bot, "in00", new Point(571, -227), runAiTick)
+                    : flyAcross(entry, bot, new Point(FLY_WEST_EDGE_X, HIGH_FLIGHT_Y), runAiTick);
         }
         return false;
+    }
+
+    /**
+     * Which way a following bot should exit the flight corridor. The corridor is strictly linear —
+     * Leafre dock (240000110) - 200090500 - 200090510 - Temple (270000100) — so the owner's position
+     * on it, relative to the bot's flight map, gives the direction. Owner off-corridor or on the same
+     * flight map (handled by the caller): default outbound toward Temple.
+     */
+    static boolean followOutbound(int botMapId, int ownerMapId) {
+        int botIdx = corridorIndex(botMapId);
+        int ownerIdx = corridorIndex(ownerMapId);
+        if (ownerIdx >= 0 && ownerIdx != botIdx) {
+            return ownerIdx > botIdx;
+        }
+        return true;
+    }
+
+    private static int corridorIndex(int mapId) {
+        return switch (mapId) {
+            case LEAFRE_DOCK_MAP_ID -> 0;
+            case LEAFRE_FLIGHT_MAP_ID -> 1;
+            case TEMPLE_FLIGHT_MAP_ID -> 2;
+            case TEMPLE_ARRIVAL_MAP_ID -> 3;
+            default -> -1;
+        };
+    }
+
+    /** Apply the Dragon Scale morph if the bot isn't already wearing it — the same shared StatEffect
+     *  path the Leafre NPC's {@code cm.useItem(2210016)} runs, so the transform is legal and visible. */
+    private static void ensureDragonMorph(Character bot) {
+        if (bot.getBuffSource(BuffStat.MORPH) == DRAGON_MORPH_ITEM) {
+            return;
+        }
+        StatEffect fx = ItemInformationProvider.getInstance().getItemEffect(DRAGON_MORPH_ITEM);
+        if (fx != null) {
+            fx.applyTo(bot);
+        }
     }
 
     private static boolean flyAcross(BotEntry entry, Character bot, Point target, boolean runAiTick) {

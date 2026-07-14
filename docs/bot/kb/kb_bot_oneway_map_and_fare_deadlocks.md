@@ -31,9 +31,26 @@ Fixed on dev: `3230e69e7` (ferry) + `d3c8c599e` (job errand).
   `outTemple.js` and `undodraco.js` implement the return path through `200090510`.
 - `BotWorldGraph` now exposes free `240000110 <-> 270000100` transport edges. The bot walks to
   the real Leafre NPC or Temple exit portal, then uses the real flight portal scripts.
-- Dragon maps use the existing swim integrator as an explicitly approximate flight controller;
-  a 45-second flight budget releases the hop to the normal direct-warp fallback if a portal or
-  physics step cannot complete.
+- The two flight maps `200090500`/`200090510` are `fly=1` (NOT `swim`), so the bot's physics
+  dispatch (which keys on `map.isSwim()`) would use ground physics there and the bot would fall
+  onto the low foothold strip. `BotDragonFlightManager.tickFlyMap` — driven from the common tick,
+  so it runs in every mode — owns the movement tick on those two maps and steers with the swim
+  integrator directly (an explicitly approximate flight controller), keeping a high cruise lane
+  clear of the strip. No general "treat fly maps as swim" flag was added; only these two corridor
+  maps are handled, because the exit/direction logic is specific to them.
+- The bot becomes a real dragon: `tickFlyMap` applies Dragon Scale (`2210016`, `morph=16`) through
+  the same `StatEffect.applyTo` path the Leafre NPC's `cm.useItem` runs, so other players see the
+  dragon. The `templeenter`/`undodraco` exit scripts `cancelItem(2210016)` for us; a belt-and-suspenders
+  cleanup in `tickFlyMap` also cancels the morph if the bot leaves the corridor by any non-scripted
+  exit (e.g. a follow-warp), so it never stays a dragon in town.
+- Both directions work for BOTH a committed autopilot flight (which sets
+  `entry.dragonFlightTargetMapId` and steers via `BotTravelManager.tickTravel` -> `tick`) and a
+  companion in FOLLOW mode (no committed flight): when following, `tickFlyMap` flies toward the
+  owner while sharing a flight map, else toward the corridor exit on the owner's side
+  (`followOutbound`, from the strictly-linear corridor order). This was the reported gap — a
+  follow-mode companion warped across after its owner morphed but flew as a normal character.
+- Dragon flight has a 45-second budget on the autopilot path that releases the hop to the normal
+  direct-warp fallback if a portal or physics step cannot complete.
 
 ### Instance 2 (2026-07-09 late): Nett's Pyramid hub 926010000 "Pyramid Dunes" (`636f89325`)
 - Entry: plain desert portal `piramid00` on 260020500 (script `nets_in`) warps in unconditionally

@@ -6358,6 +6358,12 @@ public class BotManager {
         // (climbed/walked onto it, or got knocked into a pit) - runs in every mode, intent-independent.
         BotTravelManager.tickCollisionPortal(entry, bot);
         if (perf) BotPerformanceMonitor.record("common-collision-portal", System.nanoTime() - t);
+        // On a Leafre<->Temple flight map: stay a dragon and (when following/stray) fly the corridor.
+        // Owns the tick so the normal follow/grind/idle dispatch is skipped while airborne. Runs after
+        // the collision-portal hop so a bot that just crossed to the next flight map steers from there.
+        if (BotDragonFlightManager.tickFlyMap(entry, bot, owner, runAiTick)) {
+            return true;
+        }
         if (perf) t = System.nanoTime();
         // Ad-hoc party-up: a solo autopilot bot may offer to party a co-located solo bot (self-gated cooldown).
         BotSocialManager.tick(entry, bot);
