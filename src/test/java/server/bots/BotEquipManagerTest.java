@@ -29,7 +29,10 @@ import java.util.Set;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.anyShort;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class BotEquipManagerTest {
@@ -309,6 +312,38 @@ class BotEquipManagerTest {
                 "1H MAD weapon rivals wands, so the stronger worn staff must not dominate it");
         assertFalse(BotEquipManager.isEquipUsefulToBot(mage, hooks, matkPolearm2H),
                 "2H MAD weapon rivals staves and is dominated by the stronger worn staff");
+    }
+
+    // relocateEquippedStrays: an equip stranded in the EQUIPPED inventory at a POSITIVE position is
+    // invalid state (worn gear is always at a negative slot). It must be moved into the bag, and
+    // legitimately-worn items (negative slots) must never be touched. This is the self-heal that
+    // clears the duplicate-starter-cosmetic corruption (MateIdeal/REGIONS34) that otherwise tripped
+    // a repeated false anti-cheat "tried to equip X into slot N" warning every autoequip pass.
+    @Test
+    void relocateEquippedStraysMovesPositivePositionEquipToBagAndLeavesWornGear() {
+        Character bot = mock(Character.class);
+        when(bot.getName()).thenReturn("TestBot");
+        Inventory eqdInv = mock(Inventory.class);
+        Inventory eqpInv = mock(Inventory.class);
+
+        Equip stray = mock(Equip.class);   // duplicate cosmetic stranded in EQUIPPED at +1
+        when(stray.getItemId()).thenReturn(1040002);
+        when(stray.getPosition()).thenReturn((short) 1);
+        Equip worn = mock(Equip.class);    // legitimately worn top at -5 -> must be untouched
+        when(worn.getItemId()).thenReturn(1040002);
+        when(worn.getPosition()).thenReturn((short) -5);
+        when(eqdInv.list()).thenReturn(List.of(stray, worn));
+        when(eqpInv.getNextFreeSlot()).thenReturn((short) 7);
+
+        BotEquipManager.relocateEquippedStrays(bot, eqpInv, eqdInv);
+
+        // Stray pulled out of EQUIPPED and re-homed in the bag's free slot.
+        verify(eqdInv).removeSlot((short) 1);
+        verify(stray).setPosition((short) 7);
+        verify(eqpInv).addItemFromDB(stray);
+        // Worn gear at a negative slot is left exactly as-is.
+        verify(eqdInv, never()).removeSlot((short) -5);
+        verify(worn, never()).setPosition(anyShort());
     }
 
     @Test

@@ -119,6 +119,12 @@ class BotEquipManager {
         Inventory eqdInv = bot.getInventory(InventoryType.EQUIPPED);
         MapDamageProfile mob = MapDamageProfile.snapshotByAvoid(bot);
 
+        // Repair any invalid state before the DP reads inventory: a worn item always lives at a
+        // NEGATIVE slot, so an equip stranded in the EQUIPPED inventory at a positive position is
+        // orphaned (a duplicate a trade/equip interleave left in the wrong container). Left alone it
+        // can't be worn or sold through normal flow and tripped a false anti-cheat warning each pass.
+        relocateEquippedStrays(bot, eqpInv, eqdInv);
+
         Map<Short, List<Equip>> bySlot = collectAutoEquipCandidates(bot, ii, eqpInv, eqdInv, pendingOffer);
         Map<Short, Equip> currentBySlot = new HashMap<>();
         for (Item it : eqdInv.list()) {
@@ -1846,6 +1852,42 @@ class BotEquipManager {
     }
 
     /**
+     * Repairs the EQUIPPED-inventory invariant: worn gear always lives at a NEGATIVE slot, so any
+     * equip found there at a positive (>= 0) position is orphaned state (observed: a duplicate
+     * starter cosmetic a trade/equip interleave stranded in the wrong container). Such a stray can
+     * never be worn or sold through normal flow, and its positive position tripped a false
+     * anti-cheat warning + autoban alert on every autoequip pass. Relocate each stray into the
+     * EQUIP bag so the bot's normal inventory management (autoequip / junk sell) handles it; skip
+     * (retry next pass) if the bag is full. Runs before the DP so it never sees the bogus slot.
+     */
+    static void relocateEquippedStrays(Character bot, Inventory eqpInv, Inventory eqdInv) {
+        List<Equip> strays = new ArrayList<>();
+        for (Item it : eqdInv.list()) {
+            if (it instanceof Equip e && e.getPosition() >= 0) strays.add(e);
+        }
+        for (Equip stray : strays) {
+            short dst = eqpInv.getNextFreeSlot();
+            if (dst < 0) break; // bag full -- leave the rest for a later pass
+            short from = stray.getPosition();
+            eqdInv.lockInventory();
+            try {
+                eqdInv.removeSlot(from);
+            } finally {
+                eqdInv.unlockInventory();
+            }
+            stray.setPosition(dst);
+            eqpInv.lockInventory();
+            try {
+                eqpInv.addItemFromDB(stray);
+            } finally {
+                eqpInv.unlockInventory();
+            }
+            log.warn("Bot '{}' had stray equip id {} in EQUIPPED at positive slot {}; relocated to bag slot {}",
+                    bot.getName(), stray.getItemId(), from, dst);
+        }
+    }
+
+    /**
      * Unequips any currently-worn non-cash item whose reqs no longer hold against the bot's
      * current totals. Used after {@link #applyEquipPlan} to clean up gear the optimizer chose
      * to leave bare (e.g. boots whose dex prereq was satisfied only by a now-removed overall).
@@ -1856,7 +1898,19 @@ class BotEquipManager {
         for (Item it : eqdInv.list()) {
             if (!(it instanceof Equip e)) continue;
             if (ii.isCash(e.getItemId())) continue;
-            if (!ii.canWearEquipment(bot, e, e.getPosition())) bad.add(e.getPosition());
+            // A worn item lives at a NEGATIVE slot; skip any positive-position stray in the EQUIPPED
+            // inventory (invalid state the sweep can't unequip anyway -- handleItemMove would treat a
+            // positive src as a bag move). Test wearability with the pure requirement check, NOT
+            // canWearEquipment: the latter validates the destination SLOT and, on failure, broadcasts a
+            // GM warning and fires an anti-cheat (PACKET_EDIT) alert -- side effects meant for the equip
+            // packet path, not a read-only feasibility sweep. Passing a positive position there tripped
+            // repeated false "tried to equip X into slot N" warnings + autoban alerts against the bot.
+            if (e.getPosition() >= 0) continue;
+            if (!ii.meetsEquipRequirements(e, bot.getJob(), bot.getLevel(),
+                    bot.getTotalStr(), bot.getTotalDex(), bot.getTotalInt(),
+                    bot.getTotalLuk(), bot.getFame())) {
+                bad.add(e.getPosition());
+            }
         }
         if (bad.isEmpty()) return;
         short[] arr = new short[bad.size()];

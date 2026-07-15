@@ -50,7 +50,8 @@ originSessionId: 6ed0a34e-4345-4dee-8ff6-8b102d66fcfd
 | `scoreNode(node, weapon, wt, mob)` | ~823 |
 | `nakedBase(bot, ii, eqdInv)` | ~785 |
 | `applyEquipPlan(...)` — order: weapon, -5, -6, others incl. rings | ~795 |
-| `unequipInfeasibleEquipped(bot, ii)` — post-apply sweep using `canWearEquipment` | ~825 |
+| `relocateEquippedStrays(bot, ii, eqpInv, eqdInv)` — runs FIRST each pass; moves any positive-position equip out of the EQUIPPED inventory into the bag (invariant repair, see note) | ~1170 |
+| `unequipInfeasibleEquipped(bot, ii)` — post-apply sweep; skips positive-position strays, tests worn items with pure `meetsEquipRequirements` (NOT `canWearEquipment` — that has GM-warn + anti-cheat side effects) | ~825 |
 | `findRecommendedEquips(receiver, holder)` — runs DP with holder items merged | ~875 |
 | `findRecommendationForItem(receiver, holder, item)` — runs DP with single extra | ~915 |
 | `usefulStatSum(equip, job)` — hp/mp ×0.1, mage int*5+matk*4 | ~1450 |
@@ -87,6 +88,13 @@ The following legacy non-DP code is gone — do not try to call or revive:
 - `autoEquipRings`, `findRecommendedRings`, `findRecommendedRingForItem`
 - `findBestWithLookahead`, `scoreEquipFull`, `scoreEquipCombo`, `bestTopPantsCombo`, `TopPantsCombo` record
 - `buildLookaheadBySlot`, `pruneDominated`, `unlockObjective`, `primarySlotOf`, `currentWeaponType`, `isOverall(Item, ii)` overload
+
+## EQUIPPED-inventory invariant + false anti-cheat warning (fixed 2026-07-14)
+- **Invariant**: a worn equip lives in the EQUIPPED inventory (type `-1`) at a NEGATIVE slot; a positive-position entry there is orphaned/invalid state. (`BotInventoryManager.hasItem` resolves EQUIP vs EQUIPPED by position sign — same rule.)
+- **Symptom**: repeated GM warnings `Chr <bot> tried to equip <item> into slot N` (N positive) + `AutobanFactory.PACKET_EDIT` alerts against the bot, every autoequip pass, on `TimerManager` threads. Seen on MateIdeal (White Undershirt `1040002` stuck in EQUIPPED at `+1`) and REGIONS34 (White Bandana `1002019` at `+5`) — each a DUPLICATE of a legitimately-worn item.
+- **Direct cause**: `unequipInfeasibleEquipped` tested worn items with `canWearEquipment(bot, e, e.getPosition())`. That method validates the destination SLOT via `EquipSlot.isAllowed` (false for any positive slot) AND has side effects meant only for the equip packet path (GM broadcast + anti-cheat alert). It also could never clear the item: the follow-up `unequipSlot` → `handleItemMove(EQUIP, positiveSrc, …)` is treated as a bag move (no-op) → infinite retry.
+- **Fix (two parts)**: (1) the sweep now uses the pure `ItemInformationProvider.meetsEquipRequirements` (no slot check, no side effects) and skips positive-position strays; (2) `relocateEquippedStrays` runs FIRST in `autoEquip` and moves any positive-position EQUIPPED equip into the bag (non-destructive repair) so normal autoequip/sell handles it. This self-heals existing corruption and prevents it from persisting.
+- **Origin of the stray (unresolved)**: creation (`BotCreator`) adds each starter equip once (recipe list empty) and every normal single-thread equip/unequip/swap/trade-return path routes swapped-out items to the BAG, so none of them produce a positive-position EQUIPPED item in static analysis. Most likely a cross-thread interleave (AI-tick `autoEquip` vs trade-reset restore/`autoEquip` on the same bot; `autoEquip` throttle is check-then-act, `force=true` bypasses it). The self-heal makes the system source-agnostic/self-correcting; true prevention would need per-bot inventory-op serialization.
 
 ## Pareto stat-gated dominance bug (fixed 2026-05-04)
 - **Symptom**: Clawer Assassin equipped INT glove (Red Marker) over LUK glove (Purple Work Gloves). Log: `equiplog-Clawer-2026-05-03T153709.txt`.
