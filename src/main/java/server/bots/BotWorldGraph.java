@@ -75,7 +75,15 @@ final class BotWorldGraph {
      *  {@code fmReturn} is the same shape for the Free Market: the saved FREE_MARKET town its exit
      *  portal warps to, present only while the bot stands inside the FM maps. */
     record RouteOptions(boolean withReturnScroll, int meso, boolean withFerry, boolean isBeginner,
-                        int riderLevel, int worldTourReturn, int fmReturn) {
+                        int riderLevel, int worldTourReturn, int fmReturn, Set<Integer> unlockedGates) {
+        /** Options without any unlocked quest gates (the Temple-of-Time corridor stays sealed). Every
+         *  shorter constructor funnels through here, so a caller that isn't a specific bot — the web
+         *  view, cost probes, tests — leaves {@link #unlockedGates} empty and the gated timeQuest
+         *  portals never appear, exactly like the per-bot FM/shrine returns. */
+        RouteOptions(boolean withReturnScroll, int meso, boolean withFerry, boolean isBeginner,
+                     int riderLevel, int worldTourReturn, int fmReturn) {
+            this(withReturnScroll, meso, withFerry, isBeginner, riderLevel, worldTourReturn, fmReturn, Set.of());
+        }
         /** Rider options without a Free-Market return (any bot not standing in the FM). */
         RouteOptions(boolean withReturnScroll, int meso, boolean withFerry, boolean isBeginner,
                      int riderLevel, int worldTourReturn) {
@@ -516,6 +524,14 @@ final class BotWorldGraph {
         if (mapId == constants.id.MapId.FM_ENTRANCE && options.fmReturn() != -1) {
             out.add(new WeightedEdge(options.fmReturn(), BotTravelCost.PORTAL_HOP_SECONDS));
         }
+        // Temple-of-Time corridor: each forward timeQuest portal is routable only for a bot that has
+        // unlocked that gate (its quest/item condition, resolved once per query into unlockedGates). Same
+        // per-bot shape as the shrine/FM returns — the gated edge never enters the shared baked Index.
+        for (QuestGatedEntrance g : QUEST_GATED_BY_MAP.getOrDefault(mapId, List.of())) {
+            if (options.unlockedGates().contains(g.gateKey())) {
+                out.add(new WeightedEdge(g.destMap(), BotTravelCost.PORTAL_HOP_SECONDS));
+            }
+        }
         if (options.withFerry()) {
             for (BotFerryManager.FerryRoute ferry : BotFerryManager.routesBoardingAt(mapId)) {
                 if (options.meso() >= ferry.ticketCost()) {
@@ -619,6 +635,54 @@ final class BotWorldGraph {
             new ScriptedEntrance(926010000, "out00", 260020500)
     );
 
+    /** A Temple-of-Time corridor portal (the {@code timeQuest} script portal, always named "in00") whose
+     *  own script warps {@code fromMap -> destMap} only once the stepping player satisfies its condition
+     *  (see {@code scripts/portal/timeQuest.js}). Unlike {@link ScriptedEntrance} this edge is NOT baked
+     *  into the shared {@link Index}: it appears per-bot in {@link #weightedNeighbors} only when the bot's
+     *  {@link RouteOptions#unlockedGates} contains {@link #gateKey}, so the corridor is sealed for a bot
+     *  that hasn't done the quest. {@code gateKey} is the required quest id, except the final Ruins gate
+     *  which uses {@link #TEMPLE_ITEM_GATE} (an item-or-quest condition, resolved per-bot in
+     *  {@link BotAutopilotManager#unlockedTempleGates}). */
+    record QuestGatedEntrance(int fromMap, String portalName, int destMap, int gateKey) {}
+
+    /** Sentinel {@link QuestGatedEntrance#gateKey} for the Ruins hub gate (270040000 -> 270040100): the
+     *  timeQuest script opens it on {@code haveItem(4032002) OR isQuestCompleted(3522)}, not a plain quest
+     *  completion, so it can't carry a real quest id. */
+    static final int TEMPLE_ITEM_GATE = 999999;
+
+    // Temple-of-Time forward corridor gates, mirrored from scripts/portal/timeQuest.js. Each fromMap's
+    // forward portal is the timeQuest script portal (verified named "in00" in Map.wz for all 16). gateKey
+    // is the quest whose completion the script requires to warp to destMap; the last row is the item gate.
+    static final List<QuestGatedEntrance> QUEST_GATED_ENTRANCES = List.of(
+            new QuestGatedEntrance(270010100, "in00", 270010110, 3501),
+            new QuestGatedEntrance(270010200, "in00", 270010210, 3502),
+            new QuestGatedEntrance(270010300, "in00", 270010310, 3503),
+            new QuestGatedEntrance(270010400, "in00", 270010410, 3504),
+            new QuestGatedEntrance(270010500, "in00", 270020000, 3507),
+            new QuestGatedEntrance(270020100, "in00", 270020110, 3508),
+            new QuestGatedEntrance(270020200, "in00", 270020210, 3509),
+            new QuestGatedEntrance(270020300, "in00", 270020310, 3510),
+            new QuestGatedEntrance(270020400, "in00", 270020410, 3511),
+            new QuestGatedEntrance(270020500, "in00", 270030000, 3514),
+            new QuestGatedEntrance(270030100, "in00", 270030110, 3515),
+            new QuestGatedEntrance(270030200, "in00", 270030210, 3516),
+            new QuestGatedEntrance(270030300, "in00", 270030310, 3517),
+            new QuestGatedEntrance(270030400, "in00", 270030410, 3518),
+            new QuestGatedEntrance(270030500, "in00", 270040000, 3519),
+            new QuestGatedEntrance(270040000, "in00", 270040100, TEMPLE_ITEM_GATE)
+    );
+
+    private static final Map<Integer, List<QuestGatedEntrance>> QUEST_GATED_BY_MAP = buildQuestGatedByMap();
+
+    private static Map<Integer, List<QuestGatedEntrance>> buildQuestGatedByMap() {
+        Map<Integer, List<QuestGatedEntrance>> byMap = new HashMap<>();
+        for (QuestGatedEntrance g : QUEST_GATED_ENTRANCES) {
+            byMap.computeIfAbsent(g.fromMap(), k -> new ArrayList<>()).add(g);
+        }
+        byMap.replaceAll((k, v) -> List.copyOf(v));
+        return Collections.unmodifiableMap(byMap);
+    }
+
     /** The scripted-entrance portal name to walk for a {@code fromMap -> destMap} hop, or null when that
      *  hop isn't a known scripted entrance. The travel executor enters it like a normal portal; its own
      *  script does the warp. */
@@ -626,6 +690,13 @@ final class BotWorldGraph {
         for (ScriptedEntrance e : SCRIPTED_ENTRANCES) {
             if (e.fromMap() == fromMap && e.destMap() == destMap) {
                 return e.portalName();
+            }
+        }
+        // Temple corridor timeQuest portals: routing already decided the hop is legal (the gate is
+        // unlocked), so the executor just needs the physical portal to walk — its script re-checks and warps.
+        for (QuestGatedEntrance g : QUEST_GATED_ENTRANCES) {
+            if (g.fromMap() == fromMap && g.destMap() == destMap) {
+                return g.portalName();
             }
         }
         // FM exit is per-bot dynamic (out00's script warps to the SAVED town), so it can't be a

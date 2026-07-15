@@ -58,6 +58,9 @@ Do not copy a graph version from a KB note. The current value and full schema hi
   [`kb_bot_missing_class_sp_builds.md`](kb_bot_missing_class_sp_builds.md), and
   [`kb_bot_passive_mp_hp_regen.md`](kb_bot_passive_mp_hp_regen.md): skill/build/recovery facts.
 - [`kb_bot_alert_stance_emulation.md`](kb_bot_alert_stance_emulation.md): alert presentation.
+- [`kb_bot_temple_of_time.md`](kb_bot_temple_of_time.md): the quest-gated Temple of Time corridor —
+  the per-bot reachability overlay (`QUEST_GATED_ENTRANCES`/`unlockedTempleGates`) and the
+  `BotTempleProgressionManager` questline driver (3500-3521).
 
 ## Items, economy, and trading
 

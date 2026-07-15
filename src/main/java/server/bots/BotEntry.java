@@ -540,6 +540,17 @@ public class BotEntry {
     // it accepted instead of drifting onto other mobs. volatile: written on the scan, read on the tick.
     volatile java.util.Set<Integer> activeQuestMobIds = java.util.Set.of();
 
+    // Temple-of-Time progression errand (BotTempleProgressionManager): a long-horizon autopilot driver
+    // that walks the bot through the Temple questline (3500->3521). templeErrandMapId = -1 when disarmed;
+    // when armed it holds the current step's target map (an NPC map for START/TURNIN, the lane map for a
+    // GRIND step) and doubles as the active() sentinel. templeErrandNpcId is the current approach NPC (0
+    // while grinding). nextTempleScanAtMs gates re-arming AND the crowd step-aside cooldown. Reset in
+    // clearTempleErrand() (called from BotAutopilotManager.clear()).
+    int templeErrandMapId = -1;
+    int templeErrandNpcId = 0;
+    final BotTravelManager.ErrandProgress templeErrandProgress = new BotTravelManager.ErrandProgress(); // NPC-approach stall timer
+    long nextTempleScanAtMs = 0L;
+
     // Job-change errand (BotStarterKitManager): an autopilot bot at a 1st/2nd-job milestone WALKS to
     // its class-town instructor NPC and advances on arrival (instead of changing job instantly,
     // anywhere). Suppresses grinding en route so it doesn't over-level. jobErrandMapId = -1 / target

@@ -136,6 +136,9 @@ public class BotManager {
         // whose kills overlap the current grind. Kill switches - both default on.
         public boolean AUTO_QUESTS = true;
         public boolean QUEST_PIGGYBACK = true;
+        // Temple-of-Time questline driver (BotTempleProgressionManager): a high-level autopilot bot
+        // (past its personal ambition level) works the 3500->3521 corridor on its own. Kill switch.
+        public boolean TEMPLE_PROGRESSION = true;
         // Tell the owner in chat when a quest is skipped as bugged (internal-state debug chatter).
         // Off by default — it leaks "X seems bugged" noise to players.
         public boolean QUEST_BUGGED_CHAT = false;

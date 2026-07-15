@@ -341,7 +341,8 @@ final class BotTravelManager {
             if (portal == null) {
                 BotWorldGraph.RouteOptions options = new BotWorldGraph.RouteOptions(
                         returnScrollCount.applyAsInt(bot) > 0, bot.getMeso(), allowFerry, bot.getJob().getId() == 0,
-                        bot.getLevel(), BotAutopilotManager.worldTourReturn(bot), BotAutopilotManager.fmReturn(bot));
+                        bot.getLevel(), BotAutopilotManager.worldTourReturn(bot), BotAutopilotManager.fmReturn(bot),
+                        BotAutopilotManager.unlockedTempleGates(bot));
                 java.util.function.IntPredicate blocked = BotAutopilotManager.routeBlockFor(bot);
                 List<Integer> route = null;
                 // Partition routing is needed when the current platform is constrained, and also when a
@@ -700,7 +701,8 @@ final class BotTravelManager {
         if (portal == null) {
             BotWorldGraph.RouteOptions options = new BotWorldGraph.RouteOptions(
                     returnScrollCount.applyAsInt(bot) > 0, bot.getMeso(), false, bot.getJob().getId() == 0,
-                    bot.getLevel(), BotAutopilotManager.worldTourReturn(bot), BotAutopilotManager.fmReturn(bot));
+                    bot.getLevel(), BotAutopilotManager.worldTourReturn(bot), BotAutopilotManager.fmReturn(bot),
+                    BotAutopilotManager.unlockedTempleGates(bot));
             List<Integer> route = routeLookup.route(bot.getMapId(), targetMapId, maxHops, options,
                     BotAutopilotManager.routeBlockFor(bot)); // SSOT danger gate: no <15 route through Sleepywood
             if (route == null || route.isEmpty()) {

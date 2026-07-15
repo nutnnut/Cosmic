@@ -5,8 +5,10 @@ import org.junit.jupiter.api.Test;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -255,6 +257,92 @@ class BotWorldGraphTest {
         assertEquals("in01", BotWorldGraph.scriptedEntrancePortal(222020400, 300000100));     // Ellin Forest
         assertNull(BotWorldGraph.scriptedEntrancePortal(101000000, 100000201)); // wrong dest for that map
         assertNull(BotWorldGraph.scriptedEntrancePortal(100000000, 100000201)); // not the entrance map
+    }
+
+    /** The Temple-of-Time timeQuest portals are per-bot conditional edges: routable only when the bot's
+     *  {@link BotWorldGraph.RouteOptions#unlockedGates} holds that gate's key — never baked into the
+     *  shared graph (so the web view / any bot without the quest sees a sealed corridor). */
+    @Test
+    void templeCorridorGateIsRoutableOnlyWhenUnlocked() {
+        // Minimal corridor: the lane entrance walks to Memory Lane 1 by a normal portal, but Lane 1's ONLY
+        // forward link is the quest-gated timeQuest portal (270010100 -> 270010110, gate 3501); past it,
+        // normal portals continue to Memory Lane 2. So 270010200 is reachable iff gate 3501 is unlocked.
+        BotWorldGraph.Index graph = BotWorldGraph.indexOf(Map.of(
+                270010000, new int[]{270010100},
+                270010100, new int[0],
+                270010110, new int[]{270010200},
+                270010200, new int[0]));
+
+        // Empty gate set: the corridor is sealed at Lane 1 — Lane 2 is unreachable.
+        assertFalse(BotWorldGraph.reachableWithin(graph, 270010000, 10, PORTALS_ONLY).contains(270010200));
+
+        // Gate 3501 unlocked: the timeQuest edge appears and Memory Lane 2 becomes reachable.
+        BotWorldGraph.RouteOptions unlocked = new BotWorldGraph.RouteOptions(
+                false, 0, false, false, Integer.MAX_VALUE, -1, -1, Set.of(3501));
+        assertTrue(BotWorldGraph.reachableWithin(graph, 270010000, 10, unlocked).contains(270010200));
+        // And the executor walks the real timeQuest portal (named "in00") for that hop.
+        assertEquals("in00", BotWorldGraph.scriptedEntrancePortal(270010100, 270010110));
+    }
+
+    /** Whole-corridor composition: the synthetic index carries every NORMAL forward portal (entrance ->
+     *  Lane 1, and each gated portal's landing spot -> the next lane map), while the 16 gated timeQuest
+     *  edges come exclusively from {@link BotWorldGraph#QUEST_GATED_ENTRANCES} via {@code unlockedGates}
+     *  — proving the per-gate mechanism from {@link #templeCorridorGateIsRoutableOnlyWhenUnlocked} composes
+     *  end to end into a full sealed-then-open corridor from the Temple entrance to the Ruins. */
+    @Test
+    void wholeTempleCorridorIsRoutableOnlyWithAllGatesUnlocked() {
+        BotWorldGraph.Index graph = BotWorldGraph.indexOf(Map.ofEntries(
+                Map.entry(270000100, new int[]{270010100}), // Temple entrance -> Lane 1 ML1
+                // Lane 1 (Dodo)
+                Map.entry(270010100, new int[0]),
+                Map.entry(270010110, new int[]{270010200}),
+                Map.entry(270010200, new int[0]),
+                Map.entry(270010210, new int[]{270010300}),
+                Map.entry(270010300, new int[0]),
+                Map.entry(270010310, new int[]{270010400}),
+                Map.entry(270010400, new int[0]),
+                Map.entry(270010410, new int[]{270010500}),
+                Map.entry(270010500, new int[0]),
+                // Lane 2 (Lilynouch)
+                Map.entry(270020000, new int[]{270020100}),
+                Map.entry(270020100, new int[0]),
+                Map.entry(270020110, new int[]{270020200}),
+                Map.entry(270020200, new int[0]),
+                Map.entry(270020210, new int[]{270020300}),
+                Map.entry(270020300, new int[0]),
+                Map.entry(270020310, new int[]{270020400}),
+                Map.entry(270020400, new int[0]),
+                Map.entry(270020410, new int[]{270020500}),
+                Map.entry(270020500, new int[0]),
+                // Lane 3 (Lyka)
+                Map.entry(270030000, new int[]{270030100}),
+                Map.entry(270030100, new int[0]),
+                Map.entry(270030110, new int[]{270030200}),
+                Map.entry(270030200, new int[0]),
+                Map.entry(270030210, new int[]{270030300}),
+                Map.entry(270030300, new int[0]),
+                Map.entry(270030310, new int[]{270030400}),
+                Map.entry(270030400, new int[0]),
+                Map.entry(270030410, new int[]{270030500}),
+                Map.entry(270030500, new int[0]),
+                // Ruins hub gate
+                Map.entry(270040000, new int[0]),
+                Map.entry(270040100, new int[0])));
+
+        // Sealed: with no gates unlocked, Lane 1's only forward link is the gated portal, so the corridor
+        // never gets past its very first map.
+        Set<Integer> sealed = BotWorldGraph.reachableWithin(graph, 270000100, 40, PORTALS_ONLY);
+        assertFalse(sealed.contains(270010200));
+
+        // Fully unlocked: every mainline gate quest done (plus the Ruins item gate) opens the whole
+        // corridor end to end, reaching both the last lane-5 miniboss map and the Ruins beyond it.
+        BotWorldGraph.RouteOptions allGates = new BotWorldGraph.RouteOptions(
+                false, 0, false, false, Integer.MAX_VALUE, -1, -1, Set.of(
+                        3501, 3502, 3503, 3504, 3507, 3508, 3509, 3510, 3511,
+                        3514, 3515, 3516, 3517, 3518, 3519, BotWorldGraph.TEMPLE_ITEM_GATE));
+        Set<Integer> open = BotWorldGraph.reachableWithin(graph, 270000100, 40, allGates);
+        assertTrue(open.contains(270030500), "Road to Oblivion 5 (Lyka) should be reachable, got " + open);
+        assertTrue(open.contains(270040100), "Ruins should be reachable, got " + open);
     }
 
     @Test

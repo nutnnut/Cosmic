@@ -311,6 +311,36 @@ public record BotPersonality(
         return seed == 0 ? 0.3 : new Random(seed ^ SIT_SALT).nextDouble();
     }
 
+    // ---- Temple-of-Time ambition (long-horizon questline opt-in) ----
+    // Seed-derived with a distinct salt (same trick as sitAppetite): the level at which this bot decides
+    // the Temple of Time questline is worth chipping at, stable per bot with no stored field. Spreads bots
+    // across a [105,160] band so they trickle into the corridor at different times instead of all at once.
+    // NOTE: unlike sitAppetite this uses a splitmix64 avalanche instead of new Random(seed).nextDouble():
+    // that first-draw correlates hard for CONSECUTIVE seeds (adjacent char ids collapse to ~3 adjacent
+    // levels), which would un-stagger the opt-in — the exact opposite of this trait's purpose. The mix
+    // gives a full band spread even for consecutive char ids while staying a pure, stored-field-free
+    // function of the seed.
+    private static final long TEMPLE_SALT = 0x7E37E10F71E00D5L;
+
+    /**
+     * Stable level in [105,160] at which the bot opts into the Temple of Time questline
+     * ({@link BotTempleProgressionManager}). Neutral bots (seed 0) land mid-band (133).
+     */
+    public int templeAmbitionLevel() {
+        double r = seed == 0 ? 0.5 : templeAmbitionRoll(seed);
+        return BotTempleProgressionManager.AMBITION_MIN_LEVEL
+                + (int) Math.round(r * BotTempleProgressionManager.AMBITION_BAND);
+    }
+
+    /** splitmix64 finalizer over {@code seed ^ TEMPLE_SALT} -> a well-spread [0,1) roll. */
+    private static double templeAmbitionRoll(long seed) {
+        long z = seed ^ TEMPLE_SALT;
+        z = (z ^ (z >>> 30)) * 0xBF58476D1CE4E5B9L;
+        z = (z ^ (z >>> 27)) * 0x94D049BB133111EBL;
+        z = z ^ (z >>> 31);
+        return (z >>> 11) * 0x1.0p-53;
+    }
+
     // ---- serialization (flat key=value; tolerant on read) ----
 
     public String serialize() {

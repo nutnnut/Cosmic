@@ -263,7 +263,27 @@ final class BotAutopilotManager {
      *  ferries per the caller's owner-permission gate ({@link #ferryAllowed}). */
     static BotWorldGraph.RouteOptions travelOptions(Character bot, boolean withFerry) {
         return new BotWorldGraph.RouteOptions(BotShopManager.countReturnScrolls(bot) > 0, bot.getMeso(), withFerry,
-                bot.getJob().getId() == 0, bot.getLevel(), worldTourReturn(bot), fmReturn(bot));
+                bot.getJob().getId() == 0, bot.getLevel(), worldTourReturn(bot), fmReturn(bot),
+                unlockedTempleGates(bot));
+    }
+
+    /** The Temple-of-Time corridor gates this bot has satisfied — the per-bot set threaded into
+     *  {@link BotWorldGraph.RouteOptions#unlockedGates} so each gated timeQuest portal becomes routable
+     *  only once its condition holds. SSOT for the gate condition, shared by every RouteOptions built for
+     *  a bot (here + {@link BotTravelManager}); mirrors {@code scripts/portal/timeQuest.js}: quest
+     *  completion for the corridor gates, {@code haveItem(4032002) OR isQuestCompleted(3522)} for the
+     *  final Ruins item gate. */
+    static Set<Integer> unlockedTempleGates(Character bot) {
+        Set<Integer> gates = new HashSet<>();
+        for (BotWorldGraph.QuestGatedEntrance g : BotWorldGraph.QUEST_GATED_ENTRANCES) {
+            boolean unlocked = g.gateKey() == BotWorldGraph.TEMPLE_ITEM_GATE
+                    ? bot.haveItem(4032002) || BotQuestManager.gate.isCompleted(bot, 3522)
+                    : BotQuestManager.gate.isCompleted(bot, g.gateKey());
+            if (unlocked) {
+                gates.add(g.gateKey());
+            }
+        }
+        return gates;
     }
 
     /**
@@ -435,6 +455,7 @@ final class BotAutopilotManager {
         BotFreeMarketManager.clearFmErrand(entry); // ...and any market session (if the bot is still
         // inside the FM, the stranded-exit recovery re-arms a bare exit walk next tick)
         BotStarterKitManager.clearJobErrand(entry); // ...and any job-change instructor walk
+        BotTempleProgressionManager.clearTempleErrand(entry); // ...and any Temple-questline drive
         BotTravelManager.resetForModeChange(entry); // drop the in-flight hop AND the give-up cooldown,
         // so a re-command (follow/grind/move) isn't silently gated by a stale travel give-up window.
         // autopilotNextErrandAtMs deliberately survives: it rate-limits errands, not the mode.
@@ -754,6 +775,20 @@ final class BotAutopilotManager {
                 // flow below can sell trash first; job errand resumes once space frees up.
                 @Override public boolean yieldForResupply(BotEntry entry, Character bot) {
                     return bagFull.bagFull(entry, bot);
+                }
+            },
+            new DetourErrand() { // Temple of Time: long-horizon questline driver (3500->3521)
+                @Override public void maybeStart(BotEntry entry, Character bot) {
+                    BotTempleProgressionManager.maybeStart(entry, bot);
+                }
+                @Override public boolean active(BotEntry entry) {
+                    return BotTempleProgressionManager.active(entry);
+                }
+                @Override public boolean tick(BotEntry entry, Character bot, boolean runAiTick) {
+                    return BotTempleProgressionManager.tickErrand(entry, bot, runAiTick);
+                }
+                @Override public boolean yieldForResupply(BotEntry entry, Character bot) {
+                    return BotTempleProgressionManager.yieldForResupply(entry, bot);
                 }
             },
             new DetourErrand() { // quest piggyback: detour to a quest NPC to start/turn in, then resume
