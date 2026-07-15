@@ -7,9 +7,12 @@ import server.bots.BotMarketMath.PricePoint;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.IntPredicate;
 import java.util.function.ToDoubleFunction;
 
 /**
@@ -88,7 +91,7 @@ public final class BotMarketConsensus implements BotMarketBook.ConsensusSource {
     void sweepFromLedger(long nowMs) {
         ensureLoaded();
         long since = Math.max(nowMs - WINDOW_MS, lastSweepMs - 60_000); // small overlap, no gaps
-        List<MarketEvent> window = ledger.recentEvents(since, false);
+        List<MarketEvent> window = trustedClearings(ledger.recentEvents(since, false));
         List<Long> moved = sweep(window, nowMs);
         lastSweepMs = nowMs;
         if (!moved.isEmpty() && store != null) {
@@ -105,13 +108,55 @@ public final class BotMarketConsensus implements BotMarketBook.ConsensusSource {
     }
 
     /**
+     * Drop clearings whose settled price a real player could have set, before they reach the shared
+     * consensus. Only the managed-bot population prices via the server's valuation SSOT; a human names
+     * any ask on their own stall and haggles a bot up or down on a shout trade, so folding their prices
+     * into the shared statistic is a data-poisoning lever (a colluding pair can wash-trade a key to any
+     * figure). The dropped rows stay on the tape for the audit/charts — they are just not market truth.
+     * The managed-id set is resolved from {@link ManagedBotService} (persistent, online-independent), so
+     * a clearing from a bot that is merely offline at sweep time is still trusted.
+     */
+    private List<MarketEvent> trustedClearings(List<MarketEvent> window) {
+        Set<Integer> botIds = new HashSet<>();
+        for (ManagedBotService.ManagedBot b : ManagedBotService.getInstance().loadAll()) {
+            botIds.add(b.botCharId());
+        }
+        IntPredicate isBot = botIds::contains;
+        List<MarketEvent> out = new ArrayList<>(window.size());
+        for (MarketEvent e : window) {
+            if (priceSetByBots(e, isBot)) {
+                out.add(e);
+            }
+        }
+        return out;
+    }
+
+    /**
+     * Consensus-eligibility gate for one event. A clearing may seed the shared price only when every
+     * party that could move the settled figure is a managed bot: a {@code STALL_SALE} buyer is a pure
+     * price-taker so only the seller must be a bot, while a haggled {@code TRADE} lets either side push
+     * the price so both must be bots. Non-clearing kinds pass through untouched — {@code UNSOLD} and
+     * {@code SOLD_FAST} are already emitted only from bot-owned stalls. Pure for unit testing.
+     */
+    static boolean priceSetByBots(MarketEvent e, IntPredicate isBot) {
+        return switch (e.kind()) {
+            case STALL_SALE -> e.sellerId() != null && isBot.test(e.sellerId());
+            case TRADE -> e.sellerId() != null && isBot.test(e.sellerId())
+                    && e.buyerId() != null && isBot.test(e.buyerId());
+            default -> true;
+        };
+    }
+
+    /**
      * Pure sweep core: fold a window of events into the per-key statistics. Per key —
      * decay the standing volume for elapsed silence (half-life from the key's own event
      * spacing), build the recency-weighted median of realized clearing prices, then take one
      * volume-damped step toward it. Exposed unsold supply and unusually fast sales then apply
      * directional pressure to an established price. Listing and shout asks remain ledger/audit data,
      * never shared price evidence: letting an advertisement seed consensus creates a self-reinforcing
-     * rumor loop. Returns the keys that moved.
+     * rumor loop. Clearings whose price a real player could have set are already removed upstream by
+     * {@link #trustedClearings} ({@link #priceSetByBots}) — pass only bot-priced clearings here.
+     * Returns the keys that moved.
      */
     List<Long> sweep(List<MarketEvent> window, long nowMs) {
         Map<Long, List<MarketEvent>> clearingByKey = new HashMap<>();

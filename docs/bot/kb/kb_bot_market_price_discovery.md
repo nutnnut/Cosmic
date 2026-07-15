@@ -12,6 +12,22 @@ metadata:
 let reproduction-cost asks seed consensus, which then justified the next generation of equally high
 asks. Only realized `TRADE` / `STALL_SALE` clearings may seed a price key.
 
+A realized clearing seeds the shared price only when every party who could set its settled figure is
+a managed bot — the anti-poisoning gate `BotMarketConsensus.priceSetByBots`, applied by
+`trustedClearings` before the sweep. A real player's price is untrusted evidence: a human names any
+ask on their own stall, and haggles a bot up (selling to it) or down (buying from it) on a shout
+trade, so a colluding pair could wash-trade any key to any figure. The gate is asymmetric by who
+moves the price: a `STALL_SALE` buyer is a pure price-taker, so only the SELLER must be a bot (a
+real player buying from a BOT-owned stall pays the bot's posted ask and is trusted — this is the one
+safe player->bot signal); a haggled `TRADE` lets either side move the figure, so BOTH parties must
+be bots. The rejected rows still land on the tape (audit + `/api/*` charts) — they are simply not
+market truth. Membership comes from `ManagedBotService` (persistent, so a bot that is merely offline
+at sweep time is still trusted; player-registered `@botme`/`@registerbot` characters are NOT managed
+and so never price consensus). Bot-sourced directional outcomes (`UNSOLD`/`SOLD_FAST`) are emitted
+only from bot stalls and pass the gate unconditionally. Private per-bot `BotMarketBook` beliefs are
+deliberately NOT gated: a bot learning from a trade it personally executed is its own lived
+experience, and poisons only that one bot, not the shared statistic.
+
 Clearing-only seeding is not sufficient for autonomous recovery: a persisted bad consensus at a
 quality band with no clearing would otherwise remain forever. Bot stalls therefore emit censored
 outcomes from real exposure:

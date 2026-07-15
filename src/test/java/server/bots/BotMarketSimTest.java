@@ -7,8 +7,10 @@ import server.bots.BotMarketLedger.MarketEvent;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Random;
+import java.util.function.IntPredicate;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -207,6 +209,39 @@ class BotMarketSimTest {
         consensus.sweep(List.of(ask), T0 + 2 * ROUND_MS);
         assertEquals(clearingConsensus, consensus.consensus(KEY),
                 "an advertisement must not move a clearing-derived market price");
+    }
+
+    @Test
+    void onlyBotSetClearingPricesAreConsensusEligible() {
+        IntPredicate isBot = id -> id == 1 || id == 2; // 1,2 = managed bots; 3 = a real player
+
+        // STALL_SALE: the seller posts the ask; the buyer only accepts it (pure price-taker).
+        assertTrue(BotMarketConsensus.priceSetByBots(stall(1, 3), isBot),
+                "player buying from a bot stall pays the bot's posted ask - trusted");
+        assertFalse(BotMarketConsensus.priceSetByBots(stall(3, 1), isBot),
+                "a player-owned stall lets a human name any ask - poisonable, excluded");
+
+        // TRADE: haggling lets either side move the settled price, so both must be bots.
+        assertTrue(BotMarketConsensus.priceSetByBots(trade(1, 2), isBot),
+                "a bot-to-bot trade is priced through the valuation SSOT");
+        assertFalse(BotMarketConsensus.priceSetByBots(trade(1, 3), isBot),
+                "a bot selling to a player can be haggled down - excluded");
+        assertFalse(BotMarketConsensus.priceSetByBots(trade(3, 2), isBot),
+                "a player selling to a bot can be haggled up - excluded");
+
+        // Bot-sourced directional outcomes and ads are never gated by price-setter.
+        assertTrue(BotMarketConsensus.priceSetByBots(
+                new MarketEvent(9, T0, EventKind.SOLD_FAST, 1082089, 0, 1, 1, 1, 3, null), isBot));
+    }
+
+    private static MarketEvent stall(int sellerId, int buyerId) {
+        return new MarketEvent(1, T0, EventKind.STALL_SALE, 1082089, 0, 1,
+                1_000_000, sellerId, buyerId, 910000001);
+    }
+
+    private static MarketEvent trade(int sellerId, int buyerId) {
+        return new MarketEvent(1, T0, EventKind.TRADE, 1082089, 0, 1,
+                1_000_000, sellerId, buyerId, 910000001);
     }
 
     @Test
