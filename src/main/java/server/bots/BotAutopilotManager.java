@@ -509,7 +509,9 @@ final class BotAutopilotManager {
         }
         List<BotEntry> members = new ArrayList<>();
         for (BotEntry e : entries) {
-            if (e != null && e.bot != null && e.bot.getMap() != null) {
+            // A live RTS/goto command is a newer, explicit directive. Periodic party-plan rebuilds
+            // must not silently re-enlist that bot and replace its pinned destination.
+            if (e != null && e.bot != null && e.bot.getMap() != null && e.operatorCmd == null) {
                 members.add(e);
             }
         }

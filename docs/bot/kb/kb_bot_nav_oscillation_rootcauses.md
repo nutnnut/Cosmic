@@ -507,6 +507,36 @@ types; scripted pt=3 portals stay excluded (may gate/dialog — entered intent-b
 Regression: `BotTravelManagerTest.scriptedCollisionPortalFiresWhileHoveringOverWarpStrip`,
 `collisionTriggerBoxMatchesClientDefaultHalfRanges`, `scriptlessTypeNineAndScriptedPitPortalsStayInert`.
 
+## 20. Dragon flight shared-budget expiry + party plan retaking RTS MOVE (200090510, FIXED)
+
+Symptom (live 2026-07-19, HunteR/SuseRug): an RTS MOVE from Leafre to Temple of Time crossed
+200090500, then abandoned flight partway through 200090510 around the floor's `undodraco` collision
+strip and returned to Leafre instead of reaching the real `in00` portal at (571,-227). With normal
+LOD active, a party member could also abandon the RTS destination and walk deeper into Leafre after
+a periodic party plan re-enlisted it. A bot whose scheduled logout armed mid-test could likewise stop
+at the Leafre dock because the logout branch still outranked its live RTS MOVE.
+
+Root causes: (1) `BotDragonFlightManager` gave the whole two-map corridor one 45-second deadline.
+At the flight controller's 140 px/s base speed, the two horizontal legs alone require about 48
+seconds; live HunteR entered 200090510 with about 10 seconds left and roughly 2569 px still to fly.
+Deadline expiry cleared the committed flight, after which the client-true floor collision portal
+correctly ran `undodraco` and returned the bot to Leafre. (2) `BotAutopilotManager.startParty`
+accepted entries with a live operator command, so a later scheduler party-plan rebuild could replace
+an RTS-pinned `autopilotMapId` even though normal tick-time redecides and errands were suppressed.
+(3) Operator commands did not cancel `loggingOut`, so a newly scheduled logout could take over the
+tick after the bot reached the dock and suppress the NPC approach until disconnect.
+
+Fix (runtime, no graph version bump): dragon flights now carry a fresh 45-second budget per flight
+map, while same-leg expiry still aborts a genuinely stalled flight. The Temple->Leafre taxi edge now
+explicitly arms reverse flight before entering `out00`. Party-plan construction excludes bots with a
+live operator command, preserving the newer explicit directive. Any new operator/goto command also
+cancels a pending managed logout before publishing the command, and the population scheduler cannot
+re-arm logout while that command remains live. Regressions:
+`BotDragonFlightManagerTest.enteringSecondOutboundFlightMapGetsFreshLegBudget`,
+`expiredBudgetOnSameFlightLegStillAborts`, `reverseFlightCanBeArmedFromTemple`, and
+`BotAutopilotManagerTest.partyPlanDoesNotRetakeMemberUnderOperatorMove`, plus
+`BotManagerTest.operatorMoveCancelsPendingManagedLogout`.
+
 ## Files
 - `BotNavigationGraph.java` — `Region.surfaceCoversPoint` + `SHARED_GROUND_Y_PX` (#8)
 - `BotNavigationGraphProvider.java` — `addJumpEdges`/`addFlashJumpEdges` shared-ground guard,

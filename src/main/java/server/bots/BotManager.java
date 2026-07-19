@@ -1486,7 +1486,7 @@ public class BotManager {
      */
     public void logoutManagedBot(int charId) {
         BotEntry entry = getEntryByBotCharId(charId);
-        if (entry == null || entry.bot == null || entry.loggingOut) {
+        if (entry == null || entry.bot == null || entry.loggingOut || entry.operatorCmd != null) {
             return;
         }
         entry.loggingOut = true;
@@ -5730,6 +5730,7 @@ public class BotManager {
         if (entry == null || cmd == null) {
             return;
         }
+        cancelScheduledLogout(entry);
         entry.operatorMoveMapId = moveMapId;
         entry.operatorFollowTargetId = followTargetId;
         entry.operatorCmdUntilMs = System.currentTimeMillis() + OPERATOR_CMD_WINDOW_MS;
@@ -5746,6 +5747,7 @@ public class BotManager {
         if (entry == null || mapId <= 0) {
             return;
         }
+        cancelScheduledLogout(entry);
         entry.operatorMovePos = null;                  // go-to-map, not go-to-(x,y): arrival uses idle-at-spot
         entry.operatorMoveMapId = mapId;
         entry.operatorFollowTargetId = 0;
@@ -5762,6 +5764,7 @@ public class BotManager {
         if (entry == null || pos == null || entry.bot == null) {
             return;
         }
+        cancelScheduledLogout(entry);
         entry.operatorMovePos = new Point(pos);
         entry.operatorMoveMapId = entry.bot.getMapId(); // current map => "already arrived" => position-drive branch
         entry.operatorFollowTargetId = 0;
@@ -5769,6 +5772,13 @@ public class BotManager {
         entry.operatorStuck = false;
         entry.operatorCmdPending = true;
         entry.operatorCmd = BotEntry.OperatorCmd.MOVE; // volatile, published last
+    }
+
+    private static void cancelScheduledLogout(BotEntry entry) {
+        entry.loggingOut = false;
+        entry.logoutLingerUntilMs = 0L;
+        entry.logoutAnchor = null;
+        entry.logoutDisconnecting = false;
     }
 
     /** Operator "resume autopilot": end any command now and let autopilot re-decide. */

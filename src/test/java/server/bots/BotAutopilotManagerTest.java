@@ -336,6 +336,28 @@ class BotAutopilotManagerTest {
     }
 
     @Test
+    void partyPlanDoesNotRetakeMemberUnderOperatorMove() {
+        Fixture leader = fixture(TOWN);
+        Fixture commanded = fixture(TOWN);
+        Character owner = mock(Character.class);
+        commanded.entry().operatorCmd = BotEntry.OperatorCmd.MOVE;
+        commanded.entry().autopilotMapId = 270000000;
+
+        try (Seams seams = new Seams(null)) {
+            BotAutopilotManager.partyDecider = members -> new BotGrindPlanner.PartyPlan(
+                    HUNTING_GROUND,
+                    members.stream().map(ignored -> expRec(HUNTING_GROUND, "Henesys Hunting Ground I")).toList());
+
+            BotAutopilotManager.startParty(owner, List.of(leader.entry(), commanded.entry()));
+
+            assertEquals(HUNTING_GROUND, leader.entry().autopilotMapId);
+            assertEquals(270000000, commanded.entry().autopilotMapId);
+            assertFalse(commanded.entry().autopilotParty);
+            assertEquals(BotEntry.OperatorCmd.MOVE, commanded.entry().operatorCmd);
+        }
+    }
+
+    @Test
     void shouldFollowLeaderInFormationWhileTravelingWithParty() {
         Fixture leader = fixture(104000000, onlineOwner());
         Fixture follower = fixture(TOWN, onlineOwner());

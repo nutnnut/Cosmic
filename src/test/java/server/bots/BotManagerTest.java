@@ -50,6 +50,35 @@ import static org.mockito.Mockito.when;
 
 class BotManagerTest {
     @Test
+    @SuppressWarnings("unchecked")
+    void operatorMoveCancelsPendingManagedLogout() throws Exception {
+        Character bot = mock(Character.class);
+        when(bot.getId()).thenReturn(987654320);
+        BotEntry entry = new BotEntry(bot, null, null);
+        entry.loggingOut = true;
+        entry.logoutLingerUntilMs = Long.MAX_VALUE;
+        entry.logoutAnchor = new Point(10, 20);
+        entry.logoutDisconnecting = true;
+
+        BotManager.getInstance().applyOperatorCommand(entry, BotEntry.OperatorCmd.MOVE, 270000000, 0);
+
+        assertFalse(entry.loggingOut);
+        assertEquals(0L, entry.logoutLingerUntilMs);
+        assertNull(entry.logoutAnchor);
+        assertFalse(entry.logoutDisconnecting);
+
+        Map<Integer, BotEntry> byCharId = (Map<Integer, BotEntry>) field(BotManager.class, "botsByCharId")
+                .get(BotManager.getInstance());
+        byCharId.put(bot.getId(), entry);
+        try {
+            BotManager.getInstance().logoutManagedBot(bot.getId());
+            assertFalse(entry.loggingOut, "scheduler must not re-arm logout during a live operator command");
+        } finally {
+            byCharId.remove(bot.getId());
+        }
+    }
+
+    @Test
     void crewCohortEmptyForUnregisteredBot() {
         // Isolation invariant: a bot that isn't in a crew (here, not even registered) has an EMPTY crew
         // cohort, so solo / dynamic-party bots never trade gear/ammo/supplies with strangers.

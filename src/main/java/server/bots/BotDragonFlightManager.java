@@ -73,9 +73,18 @@ final class BotDragonFlightManager {
         if (flight == null || flight.getPortal(0) == null) {
             return false;
         }
-        entry.dragonFlightTargetMapId = TEMPLE_ARRIVAL_MAP_ID;
-        entry.followTravelDeadlineMs = System.currentTimeMillis() + FLIGHT_BUDGET_MS;
+        armFlight(entry, TEMPLE_ARRIVAL_MAP_ID, LEAFRE_FLIGHT_MAP_ID);
         bot.changeMap(flight, flight.getPortal(0));
+        return true;
+    }
+
+    /** Begin the reverse flight before walking into Temple's {@code out00} script portal. */
+    static boolean beginFromTemple(BotEntry entry, Character bot, BotWorldGraph.TaxiEdge edge) {
+        if (!isDragonEdge(edge) || bot.getMapId() != TEMPLE_ARRIVAL_MAP_ID
+                || edge.toMapId() != LEAFRE_DOCK_MAP_ID) {
+            return false;
+        }
+        armFlight(entry, LEAFRE_DOCK_MAP_ID, TEMPLE_ARRIVAL_MAP_ID);
         return true;
     }
 
@@ -84,26 +93,32 @@ final class BotDragonFlightManager {
         if (entry.dragonFlightTargetMapId == -1) {
             return false;
         }
+        int mapId = bot.getMapId();
+        if (isFlightMap(mapId) && entry.dragonFlightMapId != mapId) {
+            // Each flight map is a full traversal leg. A single 45s corridor budget is shorter than
+            // the two maps' combined horizontal distance at the 140px/s flight-controller speed.
+            entry.dragonFlightMapId = mapId;
+            entry.followTravelDeadlineMs = System.currentTimeMillis() + FLIGHT_BUDGET_MS;
+        }
         if (entry.followTravelDeadlineMs > 0
                 && System.currentTimeMillis() > entry.followTravelDeadlineMs) {
             // Let BotTravelManager's normal no-progress path release the hop; its caller then applies
             // the existing direct-warp fallback used for failed taxi/portal travel.
-            entry.dragonFlightTargetMapId = -1;
+            clearFlight(entry);
             return false;
         }
         if (bot.getMapId() == targetMapId && targetMapId == entry.dragonFlightTargetMapId) {
-            entry.dragonFlightTargetMapId = -1;
+            clearFlight(entry);
             return false;
         }
 
         boolean outbound = entry.dragonFlightTargetMapId == TEMPLE_ARRIVAL_MAP_ID;
         boolean inbound = entry.dragonFlightTargetMapId == LEAFRE_DOCK_MAP_ID;
         if (!outbound && !inbound) {
-            entry.dragonFlightTargetMapId = -1;
+            clearFlight(entry);
             return false;
         }
 
-        int mapId = bot.getMapId();
         if (mapId == TEMPLE_ARRIVAL_MAP_ID && inbound) {
             return walkIntoScriptedPortal(entry, bot, "out00", runAiTick);
         }
@@ -113,7 +128,7 @@ final class BotDragonFlightManager {
 
         // The map-change tick will reconcile the entry after the real portal script lands. Keep the
         // state alive on the two flight maps only; anything else is a failed scripted hop.
-        entry.dragonFlightTargetMapId = -1;
+        clearFlight(entry);
         return false;
     }
 
@@ -233,7 +248,7 @@ final class BotDragonFlightManager {
         if (Math.abs(pos.x - portalPos.x) <= FLIGHT_PORTAL_X_TOLERANCE
                 && Math.abs(pos.y - portalPos.y) <= FLIGHT_PORTAL_Y_TOLERANCE) {
             entry.portalUseCooldownUntilMs = System.currentTimeMillis() + 500L;
-            entry.dragonFlightTargetMapId = -1;
+            clearFlight(entry);
             portal.enterPortal(bot.getClient());
             return true;
         }
@@ -256,5 +271,16 @@ final class BotDragonFlightManager {
         return bot.getClient() == null || bot.getClient().getChannelServer() == null
                 ? null
                 : bot.getClient().getChannelServer().getMapFactory().getMap(mapId);
+    }
+
+    private static void armFlight(BotEntry entry, int targetMapId, int mapId) {
+        entry.dragonFlightTargetMapId = targetMapId;
+        entry.dragonFlightMapId = mapId;
+        entry.followTravelDeadlineMs = System.currentTimeMillis() + FLIGHT_BUDGET_MS;
+    }
+
+    private static void clearFlight(BotEntry entry) {
+        entry.dragonFlightTargetMapId = -1;
+        entry.dragonFlightMapId = -1;
     }
 }

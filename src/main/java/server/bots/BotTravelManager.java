@@ -582,6 +582,9 @@ final class BotTravelManager {
         if (taxi != null && bot.getMeso() >= taxi.fare()) {
             if (BotDragonFlightManager.isDragonEdge(taxi)
                     && bot.getMapId() != BotDragonFlightManager.LEAFRE_DOCK_MAP_ID) {
+                if (!BotDragonFlightManager.beginFromTemple(entry, bot, taxi)) {
+                    return false;
+                }
                 entry.followTravelTargetMapId = targetMapId;
                 entry.followTravelNextHopMapId = nextHopMapId;
                 entry.followTravelFromMapId = bot.getMapId();
@@ -885,6 +888,7 @@ final class BotTravelManager {
         entry.followTravelTaxiPos = null;
         entry.followTravelFerry = false;
         entry.dragonFlightTargetMapId = -1;
+        entry.dragonFlightMapId = -1;
         entry.travelApproachStuck.reset(); // fresh hop -> fresh "stuck near the transport NPC" tracking
         // NOTE: followTravelGiveUpUntilMs is intentionally NOT reset here — the internal retry loop
         // calls clear() every tick during the give-up window and must keep that cooldown. Deliberate
