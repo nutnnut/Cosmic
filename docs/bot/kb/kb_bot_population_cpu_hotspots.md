@@ -39,14 +39,23 @@ Hot-spot classes found at 372 bots (~3.2 cores) and their structural fixes, all 
   `defaultLowOnSupplies` now uses `countPotionsCached` (~1s TTL), same as the combat fragility
   probe. Freshness-sensitive callers (restock, chat status, pot-share) still use exact counts.
 
+- **Chaos-play scroll valuation dominated the decide thread at scale.** At 570 bots, 43% of all
+  process CPU was `BotScrollValuer.costFrom` recursion under
+  `maybeChaosPlay → bestChaosPlay → chaosOutcomeMeanValue → equipMarketQuote` on the single
+  `bot-grind-advisor` (DECIDE_POOL) thread — the broken sample window had hidden it despite
+  `chaos-scan` instrumentation. Root cause: the chaos outcome cloud queried the band curve at
+  hundreds of distinct 0.1-scores, and **every distinct score was a full reproduction-DP solve**
+  (nothing shared across targets). Fixed by serving `equipMarketQuote`'s `bandCurve` from a
+  lazily-filled integer-band grid with log-space interpolation (~maxBand solves per cold curve
+  instead of ~spread/0.1), quantizing the chaos convolution to the same 0.1-score resolution, and
+  evicting the repro-curve cache by ~25% segments instead of a wholesale `clear()` cold storm.
+  Bounded loss: interpolation errs a few percent of local value, inside the ±30%-of-cost gambler
+  appetite band and the 10% price bucketing the model already accepts; grid points stay exact.
+  Also fixed there: chaos EV's `vNow` baseline now uses the fractional-band quote instead of the
+  rounded integer band (the rounded baseline systematically inflated EV by convexity).
+
 Known remaining costs (facts, not tasks):
 
-- **Chaos-play scroll valuation dominates the decide thread at scale.** At 570 bots, 43% of all
-  process CPU was `BotScrollValuer.costFrom` recursion under
-  `maybeChaosPlay → bestChaosPlay → chaosOutcomeMeanValue → equipMarketQuote → reproductionValue →
-  productionCost` on the single `bot-grind-advisor` (DECIDE_POOL) thread. It is instrumented
-  (`chaos-scan`, nested in `decide-pool-task`) — the broken sample window hid it. Single-threaded,
-  so it pegs at most one core, but it starves every other decide-pool task behind it.
 - Grind-advisor/scroll-manager mob profiling constructs full `Monster` objects
   (`MonsterStats.copy` reflection field-copy) just to read stats (`farmContext`/`profileFor`).
 - Sibling gear offers run the full equip optimizer from `checkBotStatus`; `Quest.getInstance`

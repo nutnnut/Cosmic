@@ -125,9 +125,9 @@ final class BotScrollManager {
     /** Lazily-loaded cheapest NPC-shop buy price per item id (populate-once cache; all shop items). */
     private static volatile Map<Integer, Integer> shopPrices;
 
-    // Higher cap so the wholesale clear() below is a true last resort, not a recurring cold-storm: with
-    // baseScore bucketed (see cachedReproductionValue) the distinct-key set is small, and each curve is a
-    // light lambda + a 0.1-resolution memo, so tens of thousands fit comfortably in the 8GB heap.
+    // High cap so eviction (a ~25% arbitrary segment at the cap, see cachedReproductionValue) stays
+    // rare: with baseScore bucketed the distinct-key set is small, and each curve is a light lambda +
+    // a 0.1-resolution memo, so tens of thousands fit comfortably in the 8GB heap.
     private static final int REPRO_CURVE_CACHE_MAX = 32768;
     private static final Map<ReproCurveKey, DoubleUnaryOperator> reproCurveCache = new ConcurrentHashMap<>();
 
@@ -1408,7 +1408,15 @@ final class BotScrollManager {
                 priceBucket(Math.max(0.0, baseCostMeso)),
                 List.copyOf(specs));
         if (reproCurveCache.size() > REPRO_CURVE_CACHE_MAX) {
-            reproCurveCache.clear();
+            // Evict a segment, not the world: a wholesale clear() at the cap made every in-flight
+            // scan re-solve its curves cold at once (a recurring cold storm at population scale).
+            // CHM iteration order is arbitrary, so this drops an arbitrary ~25% — imperfect vs LRU,
+            // but survivors stay warm and the storm becomes a trickle.
+            java.util.Iterator<ReproCurveKey> it = reproCurveCache.keySet().iterator();
+            for (int i = 0; i < REPRO_CURVE_CACHE_MAX / 4 && it.hasNext(); i++) {
+                it.next();
+                it.remove();
+            }
         }
         return reproCurveCache.computeIfAbsent(key, ignored -> {
             long t0 = BotPerformanceMonitor.start();
@@ -2129,7 +2137,7 @@ final class BotScrollManager {
         double rollWeight = roll == null ? 0.0 : marketStatValue(Map.of(roll.key(), 1));
         double maxRollBand = (dist == null || unit <= 0) ? 0.0
                 : Math.min(maxBand, rollWeight * (dist.max() - clean.getOrDefault(roll.key(), 0)) / unit);
-        java.util.function.DoubleUnaryOperator bandCurve = b -> {
+        java.util.function.DoubleUnaryOperator bandCurveExact = b -> {
             if (unit <= 0) {
                 return cleanCost;
             }
@@ -2152,6 +2160,38 @@ final class BotScrollManager {
             // Scroll territory (beyond any clean roll): never below the best clean roll so the curve
             // stays monotone across the join, else the reproduction DP once scrolling costs more.
             return Math.max(rarity, repro);
+        };
+        // The curve is only decision-relevant at ~integer-band resolution (prices are traded per band,
+        // inputs are 10%-bucketed, chaos EV carries a +/-30%-of-cost appetite term), but the chaos
+        // convolution reads it at hundreds of distinct fractional scores — and every distinct score on
+        // a cold curve is a full reproduction-DP solve. Serve all reads from a lazily-filled
+        // integer-band grid (exact at grid points, log-space interpolation between them, flat past the
+        // reachable ceiling like the exact curve): a cold chaos scan pays ~maxBand solves instead of
+        // ~spread/0.1, and narrow readers (white-scroll gate, calibration) still pay per point.
+        int gridMax = Math.max(0, maxBand) + 1;
+        double[] grid = new double[gridMax + 1];
+        java.util.Arrays.fill(grid, Double.NaN);
+        java.util.function.IntToDoubleFunction gridAt = i -> {
+            if (Double.isNaN(grid[i])) {
+                grid[i] = bandCurveExact.applyAsDouble(i);
+            }
+            return grid[i];
+        };
+        java.util.function.DoubleUnaryOperator bandCurve = b -> {
+            if (unit <= 0) {
+                return cleanCost;
+            }
+            double clamped = Math.max(0.0, Math.min(b, gridMax));
+            int i = (int) Math.floor(clamped);
+            double f = clamped - i;
+            double lo = gridAt.applyAsDouble(i);
+            if (f <= 0.0 || i >= gridMax) {
+                return lo;
+            }
+            double hi = gridAt.applyAsDouble(i + 1);
+            return lo > 0.0 && hi > 0.0
+                    ? Math.exp((1.0 - f) * Math.log(lo) + f * Math.log(hi))
+                    : lo + f * (hi - lo); // linear fallback around zero values
         };
         // Quote the SPECIFIC roll at its fractional band so pieces sharing an integer band still
         // resolve by quality (a floor roll below the band average, a near-godly one above); the integer
@@ -2651,7 +2691,10 @@ final class BotScrollManager {
             if (q == null || q.band() < CHAOS_MIN_BAND || q.bandUnit() <= 0) {
                 continue;
             }
-            double vNow = q.bandCurve().applyAsDouble(q.band());
+            // vNow at the piece's FRACTIONAL band (its actual roll), not the rounded integer band:
+            // outcomes are convolved from exact stats, so an integer-band baseline understated vNow
+            // by up to half a band of convex curve and inflated every EV by that gap.
+            double vNow = q.curveQuoteMeso();
             double ev = p * (chaosOutcomeMeanValue(eq, q, range) - vNow) - cost;
             if (ev > required && (best == null || ev > best.evMeso())) {
                 best = new ChaosPlay(eq, chaos, ev, equipName(ii, eq.getItemId()));
@@ -2683,19 +2726,23 @@ final class BotScrollManager {
 
         double sum = 0.0;
         for (Map.Entry<Long, Double> outcome : dist.entrySet()) {
-            double score = outcome.getKey() / 1000.0;
+            double score = outcome.getKey() / 10.0;
             double band = Math.max(0.0, (score - q.baseScore()) / q.bandUnit());
             sum += outcome.getValue() * q.bandCurve().applyAsDouble(band);
         }
         return sum;
     }
 
+    // Convolution keys quantize each stat's score contribution to 0.1 — the reproduction DP's own memo
+    // resolution, and finer than the band curve can meaningfully distinguish. This caps the outcome
+    // distribution at ~spread/0.1 entries instead of the raw per-stat product, without sampling (rare
+    // high-ATT tails keep their exact probability mass).
     private static Map<Long, Double> convolveChaosStat(Map<Long, Double> dist, short cur, double weight, int range) {
         if (cur <= 0 || weight <= 0.0) {
             return dist;
         }
         if (range <= 0) {
-            long score = Math.round(weight * cur * 1000.0);
+            long score = Math.round(weight * cur * 10.0);
             Map<Long, Double> next = new HashMap<>(dist.size());
             for (Map.Entry<Long, Double> base : dist.entrySet()) {
                 next.merge(base.getKey() + score, base.getValue(), Double::sum);
@@ -2707,7 +2754,7 @@ final class BotScrollManager {
         Map<Long, Double> next = new HashMap<>(dist.size() * Math.min(outcomes, 8));
         for (Map.Entry<Long, Double> base : dist.entrySet()) {
             for (int delta = -range; delta <= range; delta++) {
-                long score = Math.round(weight * Math.max(0, cur + delta) * 1000.0);
+                long score = Math.round(weight * Math.max(0, cur + delta) * 10.0);
                 next.merge(base.getKey() + score, base.getValue() * p, Double::sum);
             }
         }
