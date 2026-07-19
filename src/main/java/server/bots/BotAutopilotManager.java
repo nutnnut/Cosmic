@@ -1690,10 +1690,12 @@ final class BotAutopilotManager {
 
     /** True when HP or MP pots are below {@code POT_STOP} — the same threshold the reactive
      *  resupply errand triggers on (BotPotionManager.tickPotionCheck). Exception-safe: partial
-     *  character mocks break countPotions, so a failure reads as "not low" and lets travel run. */
+     *  character mocks break countPotions, so a failure reads as "not low" and lets travel run.
+     *  Uses the ~1s-TTL cached count: this gate is polled per travel tick and an inventory walk
+     *  per poll was a profiler hot spot; potion stock can't meaningfully change inside the TTL. */
     private static boolean defaultLowOnSupplies(Character bot) {
         try {
-            int[] pots = BotPotionManager.countPotions(bot);
+            int[] pots = BotPotionManager.countPotionsCached(bot);
             return pots[0] < BotManager.cfg.POT_STOP || pots[1] < BotManager.cfg.POT_STOP;
         } catch (RuntimeException ignored) {
             return false;

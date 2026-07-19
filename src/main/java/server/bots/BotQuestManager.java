@@ -476,17 +476,24 @@ final class BotQuestManager {
         if (botPos == null || entry.inAir || entry.climbing) {
             return;
         }
-        List<String> grabbed = new java.util.ArrayList<>();
-        for (BotQuestIndex.QuestMeta q : BotQuestIndex.get().byId().values()) {
-            if (gate.isStarted(bot, q.id()) || gate.isCompleted(bot, q.id())) {
+        // One sweep over the map's NPCs, then filter quests against it — per-quest getNPCById scans
+        // (a full map-object walk each) across every indexed quest were a profiler hot spot at population.
+        java.util.Set<Integer> nearbyNpcIds = new java.util.HashSet<>();
+        for (server.maps.MapObject obj : map.getMapObjects()) {
+            if (obj.getType() != server.maps.MapObjectType.NPC || obj.getPosition() == null) {
                 continue;
             }
-            NPC npc = map.getNPCById(q.startNpc());
-            if (npc == null || npc.getPosition() == null) {
-                continue; // NPC not on this map - not "passing" it
+            if (manhattan(botPos, obj.getPosition()) <= NPC_TRIGGER_RADIUS_PX) {
+                nearbyNpcIds.add(((NPC) obj).getId());
             }
-            if (manhattan(botPos, npc.getPosition()) > NPC_TRIGGER_RADIUS_PX) {
-                continue; // on the map but not next to it
+        }
+        List<String> grabbed = new java.util.ArrayList<>();
+        for (BotQuestIndex.QuestMeta q : BotQuestIndex.get().byId().values()) {
+            if (!nearbyNpcIds.contains(q.startNpc())) {
+                continue; // start NPC not on this map or not next to the bot - not "passing" it
+            }
+            if (gate.isStarted(bot, q.id()) || gate.isCompleted(bot, q.id())) {
+                continue;
             }
             if (!gate.canStart(bot, q.id(), q.startNpc())) {
                 continue; // level/job/prereq not met

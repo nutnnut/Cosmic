@@ -10,7 +10,9 @@ import server.maps.Portal;
 import java.awt.*;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.stream.Collectors;
 
@@ -1162,15 +1164,21 @@ final class BotTravelManager {
         Point botPos = bot.getPosition();
         int startRegionId = graph != null
                 ? BotNavigationManager.resolveCurrentRegionId(graph, entry, map, botPos) : -1;
+        // Reachability from the bot only depends on the candidate's REGION, and one pick probes many
+        // candidates (often sharing a handful of regions) — memo the per-region A* verdict for this
+        // pick so each distinct region is searched once, across both the close and widened rings.
+        Map<Integer, Boolean> reachMemo = new HashMap<>();
         // Close de-stack ring first: a random reachable foothold within destackPx (unchanged behavior).
-        List<Point> near = approachCandidates(entry, bot, map, graph, startRegionId, botPos, targetPos, destackPx);
+        List<Point> near = approachCandidates(entry, bot, map, graph, startRegionId, botPos, targetPos, destackPx,
+                reachMemo);
         if (!near.isEmpty()) {
             return near.get(ThreadLocalRandom.current().nextInt(near.size()));
         }
         // Nothing reachable close — the NPC is off the graph. Widen to maxPx and take the NEAREST
         // reachable foothold (with a destack band around it) so the bot still lands within reach.
         if (maxPx > destackPx) {
-            List<Point> wide = approachCandidates(entry, bot, map, graph, startRegionId, botPos, targetPos, maxPx);
+            List<Point> wide = approachCandidates(entry, bot, map, graph, startRegionId, botPos, targetPos, maxPx,
+                    reachMemo);
             if (!wide.isEmpty()) {
                 long best = Long.MAX_VALUE;
                 for (Point p : wide) {
@@ -1193,7 +1201,8 @@ final class BotTravelManager {
      *  nav-reachable ones when a graph + start region are available (else all within radius — the
      *  graph-less fallback the old code used). */
     private static List<Point> approachCandidates(BotEntry entry, Character bot, MapleMap map,
-            BotNavigationGraph graph, int startRegionId, Point botPos, Point targetPos, int radiusPx) {
+            BotNavigationGraph graph, int startRegionId, Point botPos, Point targetPos, int radiusPx,
+            Map<Integer, Boolean> reachMemo) {
         List<Point> candidates = new ArrayList<>();
         for (Foothold fh : map.getFootholds().getAllFootholds()) {
             int fx1 = fh.getX1(), fy1 = fh.getY1(), fx2 = fh.getX2(), fy2 = fh.getY2();
@@ -1219,9 +1228,11 @@ final class BotTravelManager {
             if (targetRegionId < 0) {
                 continue;
             }
-            if (startRegionId == targetRegionId
-                    || !BotNavigationManager.findPathForApproachProbe(graph, map, botPos,
-                            startRegionId, targetRegionId, candidate).isEmpty()) {
+            boolean ok = reachMemo.computeIfAbsent(targetRegionId, rid ->
+                    startRegionId == rid
+                            || !BotNavigationManager.findPathForApproachProbe(graph, map, botPos,
+                                    startRegionId, rid, candidate).isEmpty());
+            if (ok) {
                 reachable.add(candidate);
             }
         }

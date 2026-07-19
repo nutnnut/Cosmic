@@ -97,6 +97,9 @@ Do not copy a graph version from a KB note. The current value and full schema hi
   resolved InnoDB deadlock pattern.
 - [`kb_bot_cold_decide_gc_storm.md`](kb_bot_cold_decide_gc_storm.md) and
   [`kb_bot_coldstart_queststatus_fullscan.md`](kb_bot_coldstart_queststatus_fullscan.md): boot warm-up.
+- [`kb_bot_population_cpu_hotspots.md`](kb_bot_population_cpu_hotspots.md): steady-state CPU hot-spot
+  classes at population scale (per-candidate A* probes, cache scans, per-tick WZ parses) and the
+  JFR-vs-`/api/perf` profiling workflow that finds them.
 - [`kb_live_values_view_cme_in_bot_ticks.md`](kb_live_values_view_cme_in_bot_ticks.md): unsafe live-view
   iteration.
 - [`kb_bot_lod_abstract_grind_calibration.md`](kb_bot_lod_abstract_grind_calibration.md): the unobserved-map

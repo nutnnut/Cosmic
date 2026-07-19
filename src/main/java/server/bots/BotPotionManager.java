@@ -160,8 +160,9 @@ final class BotPotionManager {
     // mob). countPotions walks getInventory(USE).list() -- a fair-lock + fresh ArrayList -- every call,
     // and targeting queries it many times per tick per bot. There is no single bot-side USE-mutation
     // chokepoint to invalidate on (autopot consumption lives in shared Character code, buys/sells in
-    // BotShopManager), so a ~1s TTL bounds staleness instead. Only the fragility probe uses this; every
-    // freshness-sensitive caller (shop restock, chat status, pot-share) keeps the exact countPotions.
+    // BotShopManager), so a ~1s TTL bounds staleness instead. Used by the per-tick polls (the fragility
+    // probe, the pre-travel low-supply gate); every freshness-sensitive caller (shop restock, chat
+    // status, pot-share) keeps the exact countPotions.
     private static final long POT_COUNT_CACHE_MS = 1000L;
     private static final Map<Integer, long[]> potCountCache = new ConcurrentHashMap<>();
 

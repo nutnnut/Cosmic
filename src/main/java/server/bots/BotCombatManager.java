@@ -72,6 +72,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.StringJoiner;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ThreadLocalRandom;
 
 class BotCombatManager {
@@ -3244,9 +3245,15 @@ class BotCombatManager {
         return minutes + "m" + seconds + "s";
     }
 
+    // SkillFactory.getSkillName walks WZ String.img XML on every call, and the buff tick labels its
+    // decision every pass — memo the immutable name so bots don't re-parse XML per tick (profiler hot spot).
+    private static final ConcurrentHashMap<Integer, String> SKILL_LABELS = new ConcurrentHashMap<>();
+
     private static String skillLabel(int skillId) {
-        String name = SkillFactory.getSkillName(skillId);
-        return (name != null && !name.isBlank()) ? name : "skill#" + skillId;
+        return SKILL_LABELS.computeIfAbsent(skillId, id -> {
+            String name = SkillFactory.getSkillName(id);
+            return (name != null && !name.isBlank()) ? name : "skill#" + id;
+        });
     }
 
     static String describeDebugStats(BotEntry entry, Character bot) {

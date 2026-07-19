@@ -134,6 +134,10 @@ final class BotNavigationGraphProvider {
     }
 
     private static final Map<GraphCacheKey, BotNavigationGraph> GRAPHS = new ConcurrentHashMap<>();
+    /** mapId -> one cached graph for that map (any profile). O(1) backing for {@link #peekGraph(MapleMap)},
+     *  which physics hits per ground sample — scanning GRAPHS there was a profiler hot spot at population.
+     *  Kept in sync by {@link #putGraph}/{@link #removeGraph}, the only GRAPHS mutation points. */
+    private static final Map<Integer, BotNavigationGraph> ANY_GRAPH_BY_MAP = new ConcurrentHashMap<>();
     private static final Map<GraphCacheKey, CompletableFuture<BotNavigationGraph>> PENDING_GRAPHS = new ConcurrentHashMap<>();
     private static final Map<GraphCacheKey, GraphBuildReport> LAST_BUILD_REPORTS = new ConcurrentHashMap<>();
     private static final Map<Integer, Set<Integer>> COLLIDABLE_FROM_BELOW_IDS_BY_MAP_ID = new ConcurrentHashMap<>();
@@ -446,12 +450,24 @@ final class BotNavigationGraphProvider {
         if (map == null) {
             return null;
         }
+        return ANY_GRAPH_BY_MAP.get(map.getId());
+    }
+
+    private static void putGraph(GraphCacheKey key, BotNavigationGraph graph) {
+        GRAPHS.put(key, graph);
+        ANY_GRAPH_BY_MAP.put(key.mapId(), graph);
+    }
+
+    private static void removeGraph(GraphCacheKey key) {
+        GRAPHS.remove(key);
+        // Another profile's graph for the same map may remain — keep the by-map index pointing at one.
         for (Map.Entry<GraphCacheKey, BotNavigationGraph> entry : GRAPHS.entrySet()) {
-            if (entry.getKey().mapId() == map.getId()) {
-                return entry.getValue();
+            if (entry.getKey().mapId() == key.mapId()) {
+                ANY_GRAPH_BY_MAP.put(key.mapId(), entry.getValue());
+                return;
             }
         }
-        return null;
+        ANY_GRAPH_BY_MAP.remove(key.mapId());
     }
 
     /** Returns the cached graph for the requested profile without triggering a build. */
@@ -535,7 +551,7 @@ final class BotNavigationGraphProvider {
             if (PENDING_GRAPHS.containsKey(key)) {
                 continue; // a build is in flight — don't yank it
             }
-            GRAPHS.remove(key);
+            removeGraph(key);
             LAST_BUILD_REPORTS.remove(key);
             COLLIDABLE_FROM_BELOW_IDS_BY_MAP_ID.remove(key.mapId());
             MAP_LAST_ACTIVE_MS.remove(key.mapId());
@@ -582,7 +598,7 @@ final class BotNavigationGraphProvider {
     static BotNavigationGraph rebuildGraph(MapleMap map, BotMovementProfile movementProfile) {
         GraphCacheKey key = GraphCacheKey.from(map.getId(), movementProfile);
         BotNavigationGraph rebuilt = buildGraph(map, movementProfile);
-        GRAPHS.put(key, rebuilt);
+        putGraph(key, rebuilt);
         graphRebuildListener.accept(map.getId()); // drop partitions derived from the superseded graph
         CompletableFuture<BotNavigationGraph> pending = PENDING_GRAPHS.remove(key);
         if (pending != null) {
@@ -615,7 +631,7 @@ final class BotNavigationGraphProvider {
         Runnable task = () -> {
             try {
                 BotNavigationGraph graph = loadOrBuildGraph(map, movementProfile, key);
-                GRAPHS.put(key, graph);
+                putGraph(key, graph);
                 future.complete(graph);
             } catch (Throwable t) {
                 future.completeExceptionally(t);
