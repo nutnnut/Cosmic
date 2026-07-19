@@ -6357,8 +6357,9 @@ public class BotManager {
             if (perf) BotPerformanceMonitor.record("common-quest-scan", System.nanoTime() - t);
         }
         if (perf) t = System.nanoTime();
-        // Collision/pit portals (WZ pt=3) the client would auto-fire: warp if the bot is sitting on one
-        // (climbed/walked onto it, or got knocked into a pit) - runs in every mode, intent-independent.
+        // Collision/pit portals (WZ pt=3, scripted pt=9) the client would auto-fire: warp if the bot is
+        // sitting on one (climbed/walked onto it, or got knocked into a pit) - runs in every mode,
+        // intent-independent.
         BotTravelManager.tickCollisionPortal(entry, bot);
         if (perf) BotPerformanceMonitor.record("common-collision-portal", System.nanoTime() - t);
         // On a Leafre<->Temple flight map: stay a dragon and (when following/stray) fly the corridor.

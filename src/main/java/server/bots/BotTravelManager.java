@@ -62,12 +62,17 @@ final class BotTravelManager {
     // (the legacy behavior) for this long.
     private static final long GIVE_UP_WARP_WINDOW_MS = 45_000L;
     private static final long PORTAL_USE_COOLDOWN_MS = 250L; // matches BotNavigationManager
-    // WZ portal type "pc" = collision portal: warps the instant the character's hitbox touches it
-    // (pits that drop you to another map, rope-top transitions). Trigger box is a touch wider than the
-    // intent-based enter tolerance so a knockback that lands the bot slightly off-centre still fires.
+    // Collision portals warp the instant the client sees the character's position inside their trigger
+    // box. v83 client truth (CUserLocal::CheckPortal_Collision @0x94dac6 -> CPortalList::FindPortal_
+    // Collision @0x712b61): the check runs every update with no ground/air/swim gate, over portal types
+    // 3 ("pc", plain warp via tm/tn) and 9 ("pcs", touch fires the portal script — e.g. the undodraco
+    // floor strip of the Leafre<->Temple flight maps); the box is pos ± hRange/2 x ± vRange/2 with WZ
+    // defaults hRange = vRange = 100 (PORTAL.nHRange/nVRange). The server-side Portal never loads
+    // hRange/vRange, so the default half-box applies to every portal.
     private static final int COLLISION_PORTAL_TYPE = 3;
-    private static final int COLLISION_ENTER_X = 30;
-    private static final int COLLISION_ENTER_Y = 60;
+    private static final int SCRIPTED_COLLISION_PORTAL_TYPE = 9;
+    private static final int COLLISION_ENTER_X = 50;
+    private static final int COLLISION_ENTER_Y = 50;
     // Walk at most this many portal hops to reach the owner; anything farther warps. Keeps a
     // party bot from being minutes behind when the owner taxis across the world, while the
     // common "owner walked a couple of maps ahead" case stays fully legal.
@@ -511,11 +516,13 @@ final class BotTravelManager {
     }
 
     /**
-     * Collision ("pc", WZ pt=3) portals auto-warp a real player the instant their hitbox overlaps them
-     * — the CLIENT detects the collision and asks to change map; a bot has no client, so the server
-     * never fires it and the bot just sits in the pit / on the rope. Emulate it here every tick,
-     * INTENT-INDEPENDENT: whether the bot walked/climbed onto it or got KNOCKED into a pit, overlapping
-     * a type-3 portal warps it. Plain warp portals only (skip scripted ones — those may gate/dialog).
+     * Collision ("pc" pt=3, "pcs" pt=9) portals auto-warp a real player the instant their position
+     * enters the trigger box — the CLIENT detects the collision and asks to change map (pt=3) or to
+     * run the portal script (pt=9); a bot has no client, so the server never fires it and the bot
+     * just sits in the pit / on the rope / hovers over the warp strip. Emulate it here every tick,
+     * INTENT-INDEPENDENT: whether the bot walked/climbed onto it or got KNOCKED into a pit,
+     * overlapping the portal warps it. For pt=3 only plain warp portals (a scripted pt=3 may
+     * gate/dialog); for pt=9 the script IS the warp (e.g. undodraco), so it is executed.
      * Called from the common tick so it runs in every mode (grind, idle, follow, dead-knockback).
      */
     static boolean tickCollisionPortal(BotEntry entry, Character bot) {
@@ -530,10 +537,13 @@ final class BotTravelManager {
         }
         for (Portal portal : map.getPortals()) {
             String script = portal.getScriptName();
-            if (portal.getType() != COLLISION_PORTAL_TYPE
-                    || portal.getTargetMapId() == NO_DESTINATION_MAPID
-                    || !portal.getPortalStatus()
-                    || (script != null && !script.isEmpty())) {
+            boolean hasScript = script != null && !script.isEmpty();
+            boolean touchWarp = portal.getType() == SCRIPTED_COLLISION_PORTAL_TYPE
+                    ? hasScript
+                    : portal.getType() == COLLISION_PORTAL_TYPE
+                            && portal.getTargetMapId() != NO_DESTINATION_MAPID
+                            && !hasScript;
+            if (!touchWarp || !portal.getPortalStatus()) {
                 continue;
             }
             Point pp = portal.getPosition();

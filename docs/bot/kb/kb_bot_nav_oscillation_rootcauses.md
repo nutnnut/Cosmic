@@ -483,6 +483,30 @@ Fix (runtime, no graph version bump): after a collision portal enters, call the 
 `BotMovementManager.resetEntryState` so physics and navigation are rebased on the portal's resulting
 position. Regression: `BotTravelManagerTest.collisionPortalRebasesAirbornePhysicsOnIntraMapWarp`.
 
+## 19. Scripted collision (pt=9) portals never emulated — bots stranded on the dragon-flight corridor (200090500/200090510, FIXED)
+
+Symptom (live 2026-07-19, 8 bots): bots on the Leafre<->Temple flight maps hovered in a permanent
+swim-integrator limit cycle (x frozen, y sinking at the UP-held terminal 42 px/s then burst-jumping
+~160 px, period ~4.7 s) directly over the floor warp strip and never left the map. A real player has
+two exits: the scripted `in00` portal, or simply falling onto the floor — 37 `undodraco` portals
+(pt=9, y≈145) tile it at ≤100 px spacing and warp to Leafre on touch.
+
+Root cause: `BotTravelManager.tickCollisionPortal` (the bot-side stand-in for the client's touch-warp
+detection) only emulated plain pt=3 portals; the pt=9 strip was excluded three ways — type != 3,
+`tm` = the 999999999 sentinel (a pt=9's script does the warp, so its tm is always the sentinel), and
+the "skip scripted portals" filter. v83 client truth (`CUserLocal::CheckPortal_Collision` @0x94dac6 →
+`CPortalList::FindPortal_Collision` @0x712b61): the check runs every update with no ground/air/swim
+gate over portal types {3, 9} (12/13 are springs, movement effects, not warps), fires the portal
+script for pt=9, and uses a trigger box of pos ± hRange/2 × ± vRange/2 with WZ defaults 100/100 —
+i.e. ±50/±50, which is what lets the ~97 px-spaced strip cover the whole floor. The old emulation's
+guessed ±30/±60 box also left ~40 px dead zones between strip portals.
+
+Fix (runtime): `tickCollisionPortal` now fires scripted pt=9 portals (`enterPortal` runs the script
+server-side, same as the client's packet would) and uses the client-true ±50/±50 default box for both
+types; scripted pt=3 portals stay excluded (may gate/dialog — entered intent-based instead).
+Regression: `BotTravelManagerTest.scriptedCollisionPortalFiresWhileHoveringOverWarpStrip`,
+`collisionTriggerBoxMatchesClientDefaultHalfRanges`, `scriptlessTypeNineAndScriptedPitPortalsStayInert`.
+
 ## Files
 - `BotNavigationGraph.java` — `Region.surfaceCoversPoint` + `SHARED_GROUND_Y_PX` (#8)
 - `BotNavigationGraphProvider.java` — `addJumpEdges`/`addFlashJumpEdges` shared-ground guard,
@@ -509,7 +533,8 @@ position. Regression: `BotTravelManagerTest.collisionPortalRebasesAirbornePhysic
   staleness + `trackBlockedPositionGate` route-served `*-pos` (#15)
 - `BotFallbackMovementManager.resolveSteeringTarget` → `Steering` record,
   `BotMovementManager.planGroundAction` walk-off waypoint stop/follow 0 (#17)
-- `BotTravelManager.tickCollisionPortal` → full movement-state reset after collision warp (#18)
+- `BotTravelManager.tickCollisionPortal` → full movement-state reset after collision warp (#18);
+  scripted pt=9 emulation + client-true ±50/±50 trigger box (#19)
 - `BotPhysicsEngine.walkOffLandingVariants` + `addDirectionalDropEdge` variant-stability guard,
   `GRAPH_VERSION` 68→69 (#14); `BotFreeMarketEntranceDescentTest` (WZ-backed 910000000, #14)
 - Tests in `BotNavigationGraphProviderTest` (fast synthetic + Henesys WZ graph),

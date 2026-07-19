@@ -222,6 +222,47 @@ class BotTravelManagerTest {
     }
 
     @Test
+    void scriptedCollisionPortalFiresWhileHoveringOverWarpStrip() {
+        // Leafre<->Temple flight map 200090510: pt=9 "undodraco" portals tile the floor at y=145 and
+        // their script does the warp to Leafre, so tm is the no-destination sentinel (999999999) —
+        // the sentinel must not filter pt=9 the way it filters pt=3. Bot position is the live stuck
+        // hover's cycle bottom (-846, 101), 30px/44px off the portal — inside the client's default
+        // ±50 trigger box.
+        Portal strip = portal(12, 999999999, 9, "undodraco", Portal.OPEN, new Point(-876, 145));
+        Fixture f = fixture(200090510, HENESYS, new Point(-846, 101), List.of(strip));
+
+        assertTrue(BotTravelManager.tickCollisionPortal(f.entry(), f.bot()));
+        verify(strip).enterPortal(any());
+    }
+
+    @Test
+    void collisionTriggerBoxMatchesClientDefaultHalfRanges() {
+        // Client FindPortal_Collision box = pos ± hRange/2 x ± vRange/2, WZ defaults 100 each → ±50.
+        Portal strip = portal(12, 999999999, 9, "undodraco", Portal.OPEN, new Point(0, 145));
+        Fixture f = fixture(200090510, HENESYS, new Point(0, 94), List.of(strip));
+
+        assertFalse(BotTravelManager.tickCollisionPortal(f.entry(), f.bot()),
+                "51px above the portal is outside the client trigger box");
+        when(f.bot().getPosition()).thenReturn(new Point(0, 95));
+        assertTrue(BotTravelManager.tickCollisionPortal(f.entry(), f.bot()),
+                "50px above the portal is inside the client trigger box");
+        verify(strip).enterPortal(any());
+    }
+
+    @Test
+    void scriptlessTypeNineAndScriptedPitPortalsStayInert() {
+        // A pt=9 without a script has nothing to fire; a scripted pt=3 may gate/dialog and keeps
+        // its pre-existing exclusion.
+        Portal bareNine = portal(1, HENESYS, 9, null, Portal.OPEN, new Point(0, 0));
+        Portal scriptedPit = portal(2, HENESYS, 3, "gate", Portal.OPEN, new Point(0, 0));
+        Fixture f = fixture(HUNTING_GROUND, HENESYS, new Point(0, 0), List.of(bareNine, scriptedPit));
+
+        assertFalse(BotTravelManager.tickCollisionPortal(f.entry(), f.bot()));
+        verify(bareNine, never()).enterPortal(any());
+        verify(scriptedPit, never()).enterPortal(any());
+    }
+
+    @Test
     void lod1TimedPortalHopOutlivesPhysicalWalkDeadline() {
         Portal portal = portal(1, HENESYS, Portal.MAP_PORTAL, null, Portal.OPEN, new Point(300, 0));
         Fixture f = fixture(HUNTING_GROUND, HENESYS, new Point(0, 0), List.of(portal));
