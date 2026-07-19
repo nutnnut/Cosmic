@@ -382,6 +382,16 @@ final class BotWorldGraph {
         if (maxHops <= 0) {
             return null;
         }
+        long perfT0 = BotPerformanceMonitor.start();
+        try {
+            return routeSearch(graph, fromMapId, toMapId, maxHops, options, blocked);
+        } finally {
+            BotPerformanceMonitor.recordSince("world-route", perfT0);
+        }
+    }
+
+    private static List<Integer> routeSearch(Index graph, int fromMapId, int toMapId, int maxHops,
+                                             RouteOptions options, java.util.function.IntPredicate blocked) {
         // Shortest-TIME path (uniform-cost / Dijkstra over the same edges {@link BotTravelCost#floodSeconds}
         // floods), bounded by maxHops. Portal hops are uniform, so a portals-only route is still the
         // fewest-hop one; the difference shows when a return scroll (5s) or town cab (30s) actually beats

@@ -1,11 +1,15 @@
-# Population-scale CPU hot spots (steady-state, ~370 bots)
+# Population-scale CPU hot spots (steady-state, hundreds of bots)
 
 How to catch these: `jcmd <pid> JFR.start settings=profile duration=120s filename=...` then
 `jfr view hot-methods` / aggregate `jdk.ExecutionSample` stacks by the first `server.bots.*` frame.
-The in-repo `/api/perf?durationMs=30000` window reports per-*section* timings only — work outside
-instrumented sections (approach probes, physics lookups) is invisible there while still burning
-cores, so cross-check its `processCpuMs` against the section totals: a big gap means the cost
-lives between sections and needs the JFR view.
+The in-repo `/api/perf?durationMs=30000` window samples in a clear-proof window and reports
+`attributedCpuMs` vs `unattributedCpuMs` (process CPU vs the summed thread-entry sections
+`tick-total`/`decide-pool-task`/`graph-warmup-task`); the periodic 15s console report logs the same
+`bot-perf cpu>` coverage line. A large unattributed remainder means CPU outside every instrumented
+bot entry point — non-bot server work, GC/JIT, or a bot path missing a section — and that is when
+the JFR view is the right tool. (Historical trap, fixed: the endpoint used to race the monitor's
+internal 15s auto-clear, so a 30s window could snapshot milliseconds after a wipe and report
+near-empty garbage counts — sections looked idle while the process burned 3+ cores.)
 
 Hot-spot classes found at 372 bots (~3.2 cores) and their structural fixes, all in place:
 
@@ -35,9 +39,17 @@ Hot-spot classes found at 372 bots (~3.2 cores) and their structural fixes, all 
   `defaultLowOnSupplies` now uses `countPotionsCached` (~1s TTL), same as the combat fragility
   probe. Freshness-sensitive callers (restock, chat status, pot-share) still use exact counts.
 
-Known remaining costs, measured small at 372 bots (facts, not tasks): grind-advisor/scroll-manager
-mob profiling constructs full `Monster` objects (`MonsterStats.copy` reflection field-copy) just to
-read stats; sibling gear offers run the full equip optimizer from `checkBotStatus`; `Quest.getInstance`
-is a synchronized-map hit on several bot paths. The `-Xmx700m` seen on a java process on this box
-belongs to IntelliJ's JPS compile daemon, not the game server — check the command line before
-attributing heap limits.
+Known remaining costs (facts, not tasks):
+
+- **Chaos-play scroll valuation dominates the decide thread at scale.** At 570 bots, 43% of all
+  process CPU was `BotScrollValuer.costFrom` recursion under
+  `maybeChaosPlay → bestChaosPlay → chaosOutcomeMeanValue → equipMarketQuote → reproductionValue →
+  productionCost` on the single `bot-grind-advisor` (DECIDE_POOL) thread. It is instrumented
+  (`chaos-scan`, nested in `decide-pool-task`) — the broken sample window hid it. Single-threaded,
+  so it pegs at most one core, but it starves every other decide-pool task behind it.
+- Grind-advisor/scroll-manager mob profiling constructs full `Monster` objects
+  (`MonsterStats.copy` reflection field-copy) just to read stats (`farmContext`/`profileFor`).
+- Sibling gear offers run the full equip optimizer from `checkBotStatus`; `Quest.getInstance`
+  is a synchronized-map hit on several bot paths.
+- The `-Xmx700m` seen on a java process on this box belongs to IntelliJ's JPS compile daemon, not
+  the game server — check the command line before attributing heap limits.

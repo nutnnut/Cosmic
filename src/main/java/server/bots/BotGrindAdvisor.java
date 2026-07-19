@@ -97,12 +97,59 @@ final class BotGrindAdvisor {
      * scanning) and even warm passes iterate every known mob — on a game thread that reads
      * as a server freeze. Single thread also serializes a party's member passes.
      */
-    static final java.util.concurrent.ExecutorService DECIDE_POOL =
+    static final java.util.concurrent.ExecutorService DECIDE_POOL = instrumentedDecidePool(
             java.util.concurrent.Executors.newSingleThreadExecutor(r -> {
                 Thread t = new Thread(r, "bot-grind-advisor");
                 t.setDaemon(true);
                 return t;
-            });
+            }));
+
+    /** Times EVERY task on the decide thread as the top-level {@code decide-pool-task} section, so
+     *  work submitted without its own section (chat lookups, debug exports, future callers) still
+     *  shows up in the perf log instead of hiding as unattributed thread CPU. Task-specific sections
+     *  (autopilot-decide, chaos-scan, scroll-scan, fm-plan) keep nesting inside it as the breakdown. */
+    private static java.util.concurrent.ExecutorService instrumentedDecidePool(
+            java.util.concurrent.ExecutorService raw) {
+        return new java.util.concurrent.AbstractExecutorService() {
+            @Override
+            public void execute(Runnable command) {
+                raw.execute(() -> {
+                    long t0 = BotPerformanceMonitor.start();
+                    try {
+                        command.run();
+                    } finally {
+                        BotPerformanceMonitor.recordSince("decide-pool-task", t0);
+                    }
+                });
+            }
+
+            @Override
+            public void shutdown() {
+                raw.shutdown();
+            }
+
+            @Override
+            public java.util.List<Runnable> shutdownNow() {
+                return raw.shutdownNow();
+            }
+
+            @Override
+            public boolean isShutdown() {
+                return raw.isShutdown();
+            }
+
+            @Override
+            public boolean isTerminated() {
+                return raw.isTerminated();
+            }
+
+            @Override
+            public boolean awaitTermination(long timeout, java.util.concurrent.TimeUnit unit)
+                    throws InterruptedException {
+                return raw.awaitTermination(timeout, unit);
+            }
+        };
+    }
 
     private static volatile boolean cachesWarmed = false;
     // Released when warmGrindData finishes. A cold full pass is ~16.5s and allocates heavily; if 60 bots

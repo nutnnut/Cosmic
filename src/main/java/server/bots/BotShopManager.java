@@ -155,20 +155,25 @@ final class BotShopManager {
     /** Bags filling up while farming: unload junk at a shop without being told — but only when a
      *  cramped tab actually holds sellable trash (selling can't free slots otherwise). */
     static boolean shouldAutoSellTrash(BotEntry entry, Character bot) {
-        boolean equipCramped = isCramped(bot, InventoryType.EQUIP);
-        boolean useCramped = isCramped(bot, InventoryType.USE);
-        boolean etcCramped = isCramped(bot, InventoryType.ETC);
-        if (!equipCramped && !useCramped && !etcCramped) {
-            return false;
+        long t0 = BotPerformanceMonitor.start();
+        try {
+            boolean equipCramped = isCramped(bot, InventoryType.EQUIP);
+            boolean useCramped = isCramped(bot, InventoryType.USE);
+            boolean etcCramped = isCramped(bot, InventoryType.ETC);
+            if (!equipCramped && !useCramped && !etcCramped) {
+                return false;
+            }
+            if (equipCramped && !BotInventoryManager.collectSellTrashEquips(entry, bot).isEmpty()) {
+                return true;
+            }
+            if (useCramped && (!BotInventoryManager.collectSellTrashUseItems(bot).isEmpty()
+                    || BotInventoryManager.crampedUseSalesAvailable(bot))) {
+                return true;
+            }
+            return etcCramped && !BotInventoryManager.collectSellTrashEtcItems(bot).isEmpty();
+        } finally {
+            BotPerformanceMonitor.recordSince("shop-sell-trash", t0);
         }
-        if (equipCramped && !BotInventoryManager.collectSellTrashEquips(entry, bot).isEmpty()) {
-            return true;
-        }
-        if (useCramped && (!BotInventoryManager.collectSellTrashUseItems(bot).isEmpty()
-                || BotInventoryManager.crampedUseSalesAvailable(bot))) {
-            return true;
-        }
-        return etcCramped && !BotInventoryManager.collectSellTrashEtcItems(bot).isEmpty();
     }
 
     static boolean isCramped(Character bot, InventoryType type) {

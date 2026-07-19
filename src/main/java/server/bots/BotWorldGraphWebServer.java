@@ -1373,20 +1373,20 @@ public final class BotWorldGraphWebServer {
 
     private static String samplePerfJson(int durationMs) {
         synchronized (PERF_SAMPLE_LOCK) {
-            boolean wasEnabled = BotPerformanceMonitor.enabled();
             long startedAtMs = System.currentTimeMillis();
             java.time.Duration cpuBefore = processCpuDuration();
             Runtime rt = Runtime.getRuntime();
             long heapUsedBefore = rt.totalMemory() - rt.freeMemory();
-            BotPerformanceMonitor.setEnabled(true);
+            // Clear-proof window: the monitor's periodic 15s report clears stats from inside record();
+            // a plain setEnabled+sleep window longer than that races the clear and can snapshot a
+            // near-empty stats map (observed live: 19 tick-totals "in 30s" at 372 bots).
+            boolean wasEnabled = BotPerformanceMonitor.openSampleWindow();
             sleepForSample(durationMs);
             List<BotPerformanceMonitor.SectionSnapshot> snap = BotPerformanceMonitor.snapshot();
             long endedAtMs = System.currentTimeMillis();
             java.time.Duration cpuAfter = processCpuDuration();
             long heapUsedAfter = rt.totalMemory() - rt.freeMemory();
-            if (!wasEnabled) {
-                BotPerformanceMonitor.setEnabled(false);
-            }
+            BotPerformanceMonitor.closeSampleWindow(wasEnabled);
             return perfJson(snap, Math.max(1L, endedAtMs - startedAtMs), startedAtMs, endedAtMs,
                     cpuDeltaMs(cpuBefore, cpuAfter), heapUsedAfter - heapUsedBefore);
         }
@@ -1437,6 +1437,19 @@ public final class BotWorldGraphWebServer {
         if (processCpuMs != null) {
             sb.append(",\"processCpuMs\":").append(processCpuMs)
                     .append(",\"processCore\":").append(sampleSeconds > 0.0 ? processCpuMs / (sampleSeconds * 1000.0) : 0.0);
+            // Attribution: process CPU vs the summed thread-entry sections. A large unattributed
+            // remainder = CPU outside every instrumented bot entry point (non-bot server work,
+            // GC/JIT, or an uninstrumented bot path worth a JFR hunt).
+            long attributedMs = 0;
+            for (BotPerformanceMonitor.SectionSnapshot s : sorted) {
+                if (BotPerformanceMonitor.TOP_LEVEL_SECTIONS.contains(s.section())) {
+                    attributedMs += s.totalNs() / 1_000_000L;
+                }
+            }
+            sb.append(",\"attributedCpuMs\":").append(attributedMs)
+                    .append(",\"unattributedCpuMs\":").append(Math.max(0L, processCpuMs - attributedMs))
+                    .append(",\"attributedPct\":")
+                    .append(processCpuMs > 0 ? 100.0 * attributedMs / processCpuMs : 0.0);
         }
         Runtime rt = Runtime.getRuntime();
         sb.append(",\"heapUsedBytes\":").append(rt.totalMemory() - rt.freeMemory())

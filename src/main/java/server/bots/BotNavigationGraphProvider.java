@@ -629,6 +629,7 @@ final class BotNavigationGraphProvider {
         }
 
         Runnable task = () -> {
+            long t0 = BotPerformanceMonitor.start();
             try {
                 BotNavigationGraph graph = loadOrBuildGraph(map, movementProfile, key);
                 putGraph(key, graph);
@@ -639,6 +640,7 @@ final class BotNavigationGraphProvider {
                         key.mapId(), key.totalSpeedStat(), key.totalJumpStat(), t);
             } finally {
                 PENDING_GRAPHS.remove(key, future);
+                BotPerformanceMonitor.recordSince("graph-warmup-task", t0);
             }
         };
 

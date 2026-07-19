@@ -48,6 +48,16 @@ public final class BotPerformanceMonitor {
     private static final Logger log = LoggerFactory.getLogger(BotPerformanceMonitor.class);
     private static final Object LOCK = new Object();
     private static final int MAX_LOGGED_SECTIONS = 12;
+
+    /** Thread-entry sections whose time is NOT nested inside any other section. Summing them
+     *  approximates the total bot CPU the instrumentation can see; the gap to process CPU is
+     *  either non-bot work (GC/JIT/netty/scripts/map respawns) or an uninstrumented bot path worth
+     *  finding with JFR. Keep in sync when instrumenting a new bot-owned thread's entry point. */
+    public static final java.util.Set<String> TOP_LEVEL_SECTIONS = java.util.Set.of(
+            "tick-total",       // bot tick runnables on the TimerManager workers
+            "decide-pool-task", // every task on the single bot-grind-advisor (DECIDE_POOL) thread
+            "graph-warmup-task" // bot-nav-graph-warmup(-fast) executor tasks
+    );
     static Config cfg = new Config();
     private static volatile boolean enabled = cfg.ENABLED;
 
@@ -126,6 +136,10 @@ public final class BotPerformanceMonitor {
         notes.put("quest-active-mobs", "BotQuestManager.activeQuestMobIds refresh (scans started quests, droppersOf lookups)");
         notes.put("autopilot-recover", "BotManager.maybeRecoverInertAutopilot (re-decide gate for inert self-owned bots)");
         notes.put("autopilot-decide", "BotAutopilotManager decide() on the single DECIDE_POOL thread (full grind/quest pass) — core~1.0 means pegged");
+        notes.put("decide-pool-task", "EVERY task on the single DECIDE_POOL thread (decides, scroll/chaos scans, fm plans, chat lookups) — core~1.0 means pegged; large gap vs its named children = uninstrumented decide work");
+        notes.put("graph-warmup-task", "nav-graph load/build on the warmup executors (disk cache read or full build)");
+        notes.put("shop-sell-trash", "BotShopManager.shouldAutoSellTrash (cramped-tab check + sell-trash valuation scans, per autopilot tick)");
+        notes.put("world-route", "BotWorldGraph.route Dijkstra over the world map graph (travel planning, per travel tick)");
         SECTION_NOTES = notes;
     }
 
@@ -437,6 +451,38 @@ public final class BotPerformanceMonitor {
     }
 
     /**
+     * Opens one clean, clear-proof sample window: enables recording, clears stats, and suspends the
+     * periodic 15s auto-clear until {@link #closeSampleWindow}. Without this, any window longer than
+     * {@code LOG_INTERVAL_MS} races the auto-clear inside {@link #record} and a snapshot can land
+     * milliseconds after a wipe, reporting near-empty garbage counts. Returns whether the monitor was
+     * already enabled — pass it back to {@code closeSampleWindow} to restore the prior state.
+     */
+    public static boolean openSampleWindow() {
+        synchronized (LOCK) {
+            boolean wasEnabled = enabled;
+            cfg.ENABLED = true;
+            enabled = true;
+            statsBySection.clear();
+            lastLogAtMs = System.currentTimeMillis();
+            nextLogAtMs = Long.MAX_VALUE; // hold the window open: no mid-capture reset/console line
+            return wasEnabled;
+        }
+    }
+
+    /** Re-arms the periodic report after {@link #openSampleWindow}; disables and clears when the
+     *  monitor was off before the window. */
+    public static void closeSampleWindow(boolean wasEnabled) {
+        synchronized (LOCK) {
+            nextLogAtMs = System.currentTimeMillis() + cfg.LOG_INTERVAL_MS;
+            if (!wasEnabled) {
+                cfg.ENABLED = false;
+                enabled = false;
+                statsBySection.clear();
+            }
+        }
+    }
+
+    /**
      * One-shot timed capture for the admin web button: enables the monitor (if needed), holds a single
      * clean window open for {@code seconds} (suppressing the periodic 15s auto-reset so the whole window
      * is one sample), exports it via {@link #exportCsv()}, then restores the prior enabled state. Blocks
@@ -444,28 +490,14 @@ public final class BotPerformanceMonitor {
      * cached pool, so this is fine). Returns the written CSV, or null if nothing accumulated / IO failed.
      */
     public static java.nio.file.Path captureCsv(int seconds) {
-        boolean wasEnabled = enabled;
-        synchronized (LOCK) {
-            cfg.ENABLED = true;
-            enabled = true;
-            statsBySection.clear();
-            lastLogAtMs = System.currentTimeMillis();
-            nextLogAtMs = Long.MAX_VALUE; // hold the window open: no mid-capture reset/console line
-        }
+        boolean wasEnabled = openSampleWindow();
         try {
             Thread.sleep(Math.max(1L, (long) seconds) * 1000L);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }
         java.nio.file.Path file = exportCsv();
-        synchronized (LOCK) {
-            nextLogAtMs = System.currentTimeMillis() + cfg.LOG_INTERVAL_MS; // re-arm periodic report
-            if (!wasEnabled) {
-                cfg.ENABLED = false;
-                enabled = false;
-                statsBySection.clear();
-            }
-        }
+        closeSampleWindow(wasEnabled);
         return file;
     }
 
@@ -520,6 +552,7 @@ public final class BotPerformanceMonitor {
             statsBySection.clear();
             lastLogAtMs = now;
             nextLogAtMs = now + cfg.LOG_INTERVAL_MS;
+            lastProcessCpu = ProcessHandle.current().info().totalCpuDuration().orElse(null);
             return;
         }
 
@@ -590,11 +623,44 @@ public final class BotPerformanceMonitor {
 
         if (!first) {
             log.info(line.toString());
+            log.info(coverageLine(intervalSeconds));
             log.info(memoryLine());
         }
         statsBySection.clear();
         lastLogAtMs = now;
         nextLogAtMs = now + cfg.LOG_INTERVAL_MS;
+    }
+
+    private static java.time.Duration lastProcessCpu = null;
+
+    /** Attribution check for the interval: process CPU vs the summed {@link #TOP_LEVEL_SECTIONS}.
+     *  A large unattributed remainder means CPU is burning outside every instrumented bot entry
+     *  point (non-bot server work, GC/JIT — or an uninstrumented bot path worth a JFR hunt).
+     *  Caller must hold {@link #LOCK}. */
+    private static String coverageLine(double intervalSeconds) {
+        java.time.Duration cpuNow = ProcessHandle.current().info().totalCpuDuration().orElse(null);
+        java.time.Duration cpuPrev = lastProcessCpu;
+        lastProcessCpu = cpuNow;
+        long attributedMs = 0;
+        for (String section : TOP_LEVEL_SECTIONS) {
+            Stat s = statsBySection.get(section);
+            if (s != null) {
+                attributedMs += s.totalNs / 1_000_000L;
+            }
+        }
+        double attributedCore = attributedMs / (intervalSeconds * 1000.0);
+        if (cpuNow == null || cpuPrev == null) {
+            return "bot-perf cpu> attributed=" + formatCore(attributedCore)
+                    + " core (process delta unavailable this interval)";
+        }
+        long processMs = Math.max(0L, cpuNow.minus(cpuPrev).toMillis());
+        double processCore = processMs / (intervalSeconds * 1000.0);
+        double unattributedCore = Math.max(0.0, processCore - attributedCore);
+        return "bot-perf cpu> process=" + formatCore(processCore)
+                + " core attributed=" + formatCore(attributedCore)
+                + " core (" + formatPct(processCore > 0 ? 100.0 * attributedCore / processCore : 0.0)
+                + "%) unattributed=" + formatCore(unattributedCore)
+                + " core (non-bot threads, GC/JIT, or uninstrumented bot paths)";
     }
 
     /** Heap trend + nav-graph cache size, logged alongside each periodic report. Total heap shows the

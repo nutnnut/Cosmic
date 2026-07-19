@@ -248,11 +248,17 @@ and returns the report. Use briefly to capture why a bot is stuck.
 Live performance snapshot from `BotPerformanceMonitor` (per-subsystem timings, including `scroll-scan`,
 grind decides, movement, pathfind). Monitoring is opt-in/off by default: `?on=1` enables it, `?on=0`
 disables, no param just reports the current aggregate. `durationMs` resets the monitor, samples that
-many milliseconds (capped at 60000), and returns a bounded window sorted by total CPU time; use this for
-repeatable live checks instead of comparing cumulative snapshots. Enable it, let it run, then read to see
-what's hot, or call `durationMs` for a one-shot sample.
+many milliseconds (capped at 60000) in a clear-proof window (the periodic 15s auto-clear is suspended,
+so windows longer than 15s stay intact), and returns it sorted by total CPU time; use this for
+repeatable live checks instead of comparing cumulative snapshots. `attributedCpuMs`/`unattributedCpuMs`
+split `processCpuMs` against the summed thread-entry sections (`BotPerformanceMonitor.TOP_LEVEL_SECTIONS`:
+`tick-total`, `decide-pool-task`, `graph-warmup-task`) — a large unattributed remainder means CPU outside
+every instrumented bot entry point (non-bot server work, GC/JIT, or an uninstrumented bot path worth a
+JFR hunt). Sections nest (e.g. `chaos-scan` inside `decide-pool-task`, `common-*` inside `tick-total`),
+so only the top-level three sum against process CPU.
 ```
 {"enabled":true,"sampleMs":5001,"processCpuMs":123,"processCore":0.025,
+ "attributedCpuMs":100,"unattributedCpuMs":23,"attributedPct":81.3,
  "heapUsedBytes":123,"heapTotalBytes":123,"heapMaxBytes":123,"heapDeltaBytes":123,
  "sections":[{"section":"tick-total","count":N,"totalMs":..,"avgMs":..,"maxMs":..,
               "cpuMsPerSec":..,"core":..,"callsPerSec":..,"sharePct":..,
