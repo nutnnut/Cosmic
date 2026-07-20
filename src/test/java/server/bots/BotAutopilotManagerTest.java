@@ -441,6 +441,14 @@ class BotAutopilotManagerTest {
     }
 
     @Test
+    void zipanguWorldTourSaveFallsBackToLithHarbourInsteadOfLoopingBackIntoZipangu() {
+        Fixture f = fixture(801000000);
+        when(f.bot().peekSavedLocation("WORLDTOUR")).thenReturn(800000000);
+
+        assertEquals(104000000, BotAutopilotManager.worldTourReturn(f.bot()));
+    }
+
+    @Test
     void reportsCatchUpGrindOnlyWhileTheCohortIsActuallyResting() {
         Fixture low = fixture(HUNTING_GROUND, onlineOwner());
         Fixture high = fixture(HUNTING_GROUND, onlineOwner());

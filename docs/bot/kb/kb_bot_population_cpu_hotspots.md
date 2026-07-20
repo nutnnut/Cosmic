@@ -53,6 +53,10 @@ Hot-spot classes found at 372 bots (~3.2 cores) and their structural fixes, all 
   appetite band and the 10% price bucketing the model already accepts; grid points stay exact.
   Also fixed there: chaos EV's `vNow` baseline now uses the fractional-band quote instead of the
   rounded integer band (the rounded baseline systematically inflated EV by convexity).
+- **Grind advisor valued gear before map admission.** Level-band filtering rejected tiny/off-band
+  maps only after their catalog rolls and owned-gear comparisons had already run. The cheap
+  profile/spawn-point predicate now runs first, while out-of-band mobs remain in the blend of every
+  admitted map.
 
 Known remaining costs (facts, not tasks):
 

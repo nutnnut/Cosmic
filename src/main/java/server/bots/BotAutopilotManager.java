@@ -247,8 +247,16 @@ final class BotAutopilotManager {
         }
         // Match scripts/npc/9000020.js: Spinel sends a player with no saved WORLDTOUR
         // location to Lith Harbor rather than leaving them in Mushroom Shrine.
-        int saved = bot.peekSavedLocation("WORLDTOUR");
-        return saved != -1 ? saved : MapId.LITH_HARBOUR;
+        return worldTourReturnOrFallback(bot.peekSavedLocation("WORLDTOUR"));
+    }
+
+    /** A Spinel origin must be outside Zipangu: the ride into Mushroom Shrine is only offered from
+     *  other continents. Treat corrupt/self-referential continent-8 saves like a missing save so the
+     *  route and the ride both follow Spinel's Lith Harbor fallback instead of baking a dead-end loop. */
+    static int worldTourReturnOrFallback(int saved) {
+        boolean validOrigin = saved != -1
+                && saved / 100000000 != BotWorldGraph.MUSHROOM_SHRINE / 100000000;
+        return validOrigin ? saved : MapId.LITH_HARBOUR;
     }
 
     /** The Free Market's per-bot exit edge (BotWorldGraph FM_ENTRANCE -> saved town): present only

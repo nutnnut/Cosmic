@@ -3,6 +3,7 @@ package server.bots;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -85,6 +86,21 @@ class BotGrindAdvisorTest {
         assertTrue(futureBetter > 0.0, "the better future drop must not clamp to zero");
         assertTrue(futureBetter > nowMarginal,
                 "better future drop must out-value a marginal wearable-now one: " + futureBetter + " vs " + nowMarginal);
+    }
+
+    @Test
+    void shouldRejectOffBandMapBeforeBuildingItsGearProspects() {
+        var inBand = profile(1, "in", 10, 2.0);
+        var outOfBand = new BotGrindAdvisor.MobProfile(
+                2, "out", 80, 0, 10, 2.0, 2.0, 0.0, java.util.List.of());
+        var profiles = java.util.Map.of(1, inBand, 2, outOfBand);
+
+        assertFalse(BotGrindAdvisor.passesMapAdmission(
+                java.util.Map.of(1, 2, 2, 20), profiles, 30));
+        assertTrue(BotGrindAdvisor.passesMapAdmission(
+                java.util.Map.of(1, 3, 2, 20), profiles, 30));
+        assertTrue(BotGrindAdvisor.passesMapAdmission(
+                java.util.Map.of(1, 2, 2, 20), profiles, 0));
     }
 
     // ---- scroll prospects: pure EV, no tiering ----

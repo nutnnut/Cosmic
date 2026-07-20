@@ -615,8 +615,12 @@ final class BotGrindAdvisor {
         Map<Integer, List<GearProspect>> gearByMob = new HashMap<>();
         List<MobCandidate> candidates = new ArrayList<>();
         for (BotSpawnIndex.MapSpawns map : maps) {
+            // Admission depends only on the already-built mob profiles. Reject off-band/tiny maps
+            // before gearProspects performs catalog, roll and owned-bar work for their drops.
+            if (!passesMapAdmission(map.mobCounts(), profiles, bandLevel)) {
+                continue;
+            }
             Map<MobProfile, Integer> pointsByMob = new HashMap<>();
-            int inBandPoints = 0;
             for (Map.Entry<Integer, Integer> e : map.mobCounts().entrySet()) {
                 MobProfile p = profiles.get(e.getKey());
                 if (p == null || p.exp() <= 0) { // 0-exp props aren't grinding
@@ -627,9 +631,6 @@ final class BotGrindAdvisor {
                 // (target selection is spatial). Dropping them scored mixed maps off a fantasy:
                 // Warped Path of Time<3> priced as 3 in-band Buffoons while 25 out-of-band Ghost
                 // Pirates (2x HP, 2x WDEF) were 89% of what a lv70 actually swung at.
-                if (bandLevel <= 0 || levelBandAllows(bandLevel, p.level())) {
-                    inBandPoints += e.getValue();
-                }
                 long tGear = BotPerformanceMonitor.start();
                 List<GearProspect> gear = gearByMob.computeIfAbsent(e.getKey(), id ->
                         gearProspects(bot, ii, id, wornScoreBySlot, rollScoreCache, gainByItem,
@@ -638,9 +639,6 @@ final class BotGrindAdvisor {
                 pointsByMob.put(new MobProfile(p.mobId(), p.mobName(), p.level(), p.avoid(), p.exp(),
                         p.killSeconds(), p.rawKillSeconds(), p.touchDanger(), gear), e.getValue());
             }
-            if (totalPoints(pointsByMob) < MIN_SPAWN_POINTS || inBandPoints < MIN_SPAWN_POINTS) {
-                continue; // too small, or nothing level-appropriate anchoring the map
-            }
             long tBlend = BotPerformanceMonitor.start();
             candidates.add(blendCandidate(map.mapId(), mapName(map.mapId()), map.areaPx(),
                     pointsByMob));
@@ -648,6 +646,25 @@ final class BotGrindAdvisor {
         }
         BotPerformanceMonitor.recordSince("grind.build", tBuild);
         return candidates;
+    }
+
+    /** Cheap map-admission half of candidate building, kept ahead of gear valuation. Out-of-band mobs
+     *  remain in an admitted map's blend; they simply cannot be the level-appropriate anchor. */
+    static boolean passesMapAdmission(Map<Integer, Integer> mobCounts,
+                                      Map<Integer, MobProfile> profiles, int bandLevel) {
+        int totalPoints = 0;
+        int inBandPoints = 0;
+        for (Map.Entry<Integer, Integer> e : mobCounts.entrySet()) {
+            MobProfile p = profiles.get(e.getKey());
+            if (p == null || p.exp() <= 0) {
+                continue;
+            }
+            totalPoints += e.getValue();
+            if (bandLevel <= 0 || levelBandAllows(bandLevel, p.level())) {
+                inBandPoints += e.getValue();
+            }
+        }
+        return totalPoints >= MIN_SPAWN_POINTS && inBandPoints >= MIN_SPAWN_POINTS;
     }
 
     /** Cache the aspirational mob's (level, avoid) on the entry for the on-thread AP DEX floor to read

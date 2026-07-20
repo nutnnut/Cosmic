@@ -169,7 +169,7 @@ final class BotTravelManager {
             // what the script does. No saved origin -> the script's Lith Harbor fallback. Reusing the
             // player's saved-location store keeps this stateful across restart.
             int origin = bot.getSavedLocation("WORLDTOUR");
-            destMapId = origin != -1 ? origin : MapId.LITH_HARBOUR;
+            destMapId = BotAutopilotManager.worldTourReturnOrFallback(origin);
         }
         MapleMap dest = bot.getClient().getChannelServer().getMapFactory().getMap(destMapId);
         if (dest == null) {
