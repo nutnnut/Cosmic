@@ -157,20 +157,29 @@ final class BotShopManager {
     static boolean shouldAutoSellTrash(BotEntry entry, Character bot) {
         long t0 = BotPerformanceMonitor.start();
         try {
+            // Whole-verdict TTL: this runs every autopilot tick, and both halves are population-scale
+            // hot spots — the free-slot cramped probes walk three inventory tabs, and the sellable-
+            // trash scans below run full bag valuations (scroll market value, equip reserve checks).
+            // A cramped grinder that can't sell anything stays cramped, so without a TTL the scans
+            // re-ran forever. Bags fill on a minutes scale; a completed sell sequence invalidates
+            // eagerly (runSellTrashStep/startSellTrashSequence), so a few seconds of staleness is
+            // behavior-neutral.
+            long now = System.currentTimeMillis();
+            if (entry != null && now < entry.sellTrashScanValidUntilMs) {
+                return entry.sellTrashScanVerdict;
+            }
             boolean equipCramped = isCramped(bot, InventoryType.EQUIP);
             boolean useCramped = isCramped(bot, InventoryType.USE);
             boolean etcCramped = isCramped(bot, InventoryType.ETC);
-            if (!equipCramped && !useCramped && !etcCramped) {
-                return false;
+            boolean verdict = (equipCramped && !BotInventoryManager.collectSellTrashEquips(entry, bot).isEmpty())
+                    || (useCramped && (!BotInventoryManager.collectSellTrashUseItems(bot).isEmpty()
+                            || BotInventoryManager.crampedUseSalesAvailable(bot)))
+                    || (etcCramped && !BotInventoryManager.collectSellTrashEtcItems(bot).isEmpty());
+            if (entry != null) {
+                entry.sellTrashScanVerdict = verdict;
+                entry.sellTrashScanValidUntilMs = now + 4_000L;
             }
-            if (equipCramped && !BotInventoryManager.collectSellTrashEquips(entry, bot).isEmpty()) {
-                return true;
-            }
-            if (useCramped && (!BotInventoryManager.collectSellTrashUseItems(bot).isEmpty()
-                    || BotInventoryManager.crampedUseSalesAvailable(bot))) {
-                return true;
-            }
-            return etcCramped && !BotInventoryManager.collectSellTrashEtcItems(bot).isEmpty();
+            return verdict;
         } finally {
             BotPerformanceMonitor.recordSince("shop-sell-trash", t0);
         }
@@ -743,6 +752,7 @@ final class BotShopManager {
         }
         if (items.isEmpty()) {
             sequence.entry().shopSellTrashPending = false;
+            sequence.entry().sellTrashScanValidUntilMs = 0L; // re-scan fresh after the visit
             if (explicitSell) {
                 BotManager.getInstance().botSay(sequence.bot(), "no junk worth selling");
                 finishPurchaseSequence(sequence, false);
@@ -782,6 +792,7 @@ final class BotShopManager {
                 .toList();
         if (items.isEmpty()) {
             entry.shopSellTrashPending = false;
+            entry.sellTrashScanValidUntilMs = 0L; // inventory just changed: next verdict recomputes
             if (soldCount > 0) {
                 BotManager.getInstance().botSay(bot, "sold " + soldCount + " junk item" + (soldCount != 1 ? "s" : ""));
                 if (BotLogConfig.cfg.REPORT_SOLD_USE_ETC) {

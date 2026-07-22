@@ -1031,7 +1031,7 @@ class BotCombatManager {
 
     /** Returns the most convenient reachable target (deterministic — closest/best score wins). */
     static Monster findGrindTarget(BotEntry entry, Character bot) {
-        long startedAt = System.nanoTime();
+        long startedAt = BotPerformanceMonitor.start();
         try {
             Point botPos = bot.getPosition();
             double rangeSq = (double) BotCombatManager.cfg.GRIND_SEEK_RANGE * BotCombatManager.cfg.GRIND_SEEK_RANGE;
@@ -1062,7 +1062,7 @@ class BotCombatManager {
 
             return selectable.get(0).monster();
         } finally {
-            BotPerformanceMonitor.record("combat-target-search", System.nanoTime() - startedAt);
+            BotPerformanceMonitor.recordSince("combat-target-search", startedAt);
         }
     }
 
@@ -1072,7 +1072,7 @@ class BotCombatManager {
      * adjacent regions only when the home region has no candidates.
      */
     static Monster findPatrolTarget(BotEntry entry, Character bot) {
-        long startedAt = System.nanoTime();
+        long startedAt = BotPerformanceMonitor.start();
         try {
             if (entry == null || bot == null || entry.patrolRegionId < 0) {
                 return null;
@@ -1135,13 +1135,13 @@ class BotCombatManager {
             }
             return selectable.get(0).monster();
         } finally {
-            BotPerformanceMonitor.record("combat-target-search", System.nanoTime() - startedAt);
+            BotPerformanceMonitor.recordSince("combat-target-search", startedAt);
         }
     }
 
     /** Follow mode should only attack local mobs; it should not run pathfinding or chase across the map. */
     static Monster findFollowAttackTarget(BotEntry entry, Character bot) {
-        long startedAt = System.nanoTime();
+        long startedAt = BotPerformanceMonitor.start();
         try {
             Point botPos = bot.getPosition();
             double range = Math.max(CLIENT_PROJECTILE_BASE_RANGE + passiveProjectileRangeBonus(bot),
@@ -1166,7 +1166,7 @@ class BotCombatManager {
             }
             return pickFromBestTargets(localTargets);
         } finally {
-            BotPerformanceMonitor.record("combat-target-search", System.nanoTime() - startedAt);
+            BotPerformanceMonitor.recordSince("combat-target-search", startedAt);
         }
     }
 
@@ -1186,7 +1186,7 @@ class BotCombatManager {
     }
 
     static AttackPlan planAttack(BotEntry entry, Character bot, Monster target) {
-        long startedAt = System.nanoTime();
+        long startedAt = BotPerformanceMonitor.start();
         try {
             List<AttackPlan> candidates = new ArrayList<>(3);
 
@@ -1203,7 +1203,7 @@ class BotCombatManager {
             }
             return selectBestAttackPlan(entry, bot, candidates);
         } finally {
-            BotPerformanceMonitor.record("combat-plan", System.nanoTime() - startedAt);
+            BotPerformanceMonitor.recordSince("combat-plan", startedAt);
         }
     }
 

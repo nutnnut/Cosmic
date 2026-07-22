@@ -21,13 +21,20 @@ public enum WZFiles {
     public static final String DIRECTORY = getWzDirectory();
 
     private final String fileName;
+    // Lazy (DIRECTORY is not yet initialized when enum constants construct); benign race, idempotent.
+    private volatile Path file;
 
     WZFiles(String name) {
         this.fileName = name + ".wz";
     }
 
     public Path getFile() {
-        return Path.of(DIRECTORY, fileName);
+        Path cached = file;
+        if (cached == null) {
+            cached = Path.of(DIRECTORY, fileName);
+            file = cached;
+        }
+        return cached;
     }
 
     public String getFilePath() {

@@ -1568,9 +1568,7 @@ public class BotChatManager {
         } else {
             BotBuildManager.autoAssignAp(entry, bot);
         }
-        maybeSuggestRecommendedGear(entry, bot);
-        maybeSuggestGearToSiblings(entry, bot);
-        maybeOfferUselessScroll(entry, bot);
+        maybeRunGearSuggestions(entry, bot);
         if (!entry.spawnUpgradeCheckDone) {
             entry.spawnUpgradeCheckDone = true;
             Character owner = entry.owner;
@@ -2535,42 +2533,35 @@ public class BotChatManager {
         });
     }
 
-    private static void maybeSuggestRecommendedGear(BotEntry entry, Character bot) {
+    /** Gear/scroll suggestion pass: owner upgrade offer, then sibling gear, then useless-scroll
+     *  handoff — first hit wins the window. The gate advances on ATTEMPT, not just success: each
+     *  probe runs the full equip optimizer, and a fruitless scan re-running on every status check
+     *  (spawn / grind start / level-up) was a population-scale CPU hot spot. Event paths (loot
+     *  pickup, mode entry) still force an immediate scan by resetting the gate first. */
+    private static void maybeRunGearSuggestions(BotEntry entry, Character bot) {
         Character owner = entry.owner;
         long now = System.currentTimeMillis();
         if (owner == null || now < entry.nextGearSuggestionAt) {
             return;
         }
-
-        if (BotOfferManager.offerBestRecommendedGear(entry, bot, owner)) {
-            entry.nextGearSuggestionAt = now + 60_000L;
+        entry.nextGearSuggestionAt = now + 60_000L;
+        if (!BotOfferManager.offerBestRecommendedGear(entry, bot, owner)) {
+            if (!BotOfferManager.offerBestGearToSibling(entry, bot)) {
+                BotOfferManager.offerUselessScrollToCohort(entry, bot);
+            }
         }
     }
 
-    /** Check if this bot has gear that would be an upgrade for a sibling bot. */
+    /** Check if this bot has gear that would be an upgrade for a sibling bot. Advances the shared
+     *  suggestion gate on attempt (see {@link #maybeRunGearSuggestions}). */
     private static void maybeSuggestGearToSiblings(BotEntry entry, Character bot) {
         Character owner = entry.owner;
         long now = System.currentTimeMillis();
         if (owner == null || now < entry.nextGearSuggestionAt) {
             return;
         }
-
-        if (BotOfferManager.offerBestGearToSibling(entry, bot)) {
-            entry.nextGearSuggestionAt = now + 60_000L;
-        }
-    }
-
-    /** Offer a scroll that's useless to this bot but useful to a cohort member who can use it. */
-    private static void maybeOfferUselessScroll(BotEntry entry, Character bot) {
-        Character owner = entry.owner;
-        long now = System.currentTimeMillis();
-        if (owner == null || now < entry.nextGearSuggestionAt) {
-            return;
-        }
-
-        if (BotOfferManager.offerUselessScrollToCohort(entry, bot)) {
-            entry.nextGearSuggestionAt = now + 60_000L;
-        }
+        entry.nextGearSuggestionAt = now + 60_000L;
+        BotOfferManager.offerBestGearToSibling(entry, bot);
     }
 
     /**

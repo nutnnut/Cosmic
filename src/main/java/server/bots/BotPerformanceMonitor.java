@@ -19,12 +19,17 @@ public final class BotPerformanceMonitor {
         public double REPORT_MAX_MS = 250.0;
     }
 
+    /** Lock-free accumulation: {@link #record} runs ~25x per bot tick across every tick worker
+     *  thread (tens of thousands of calls/sec at population scale), so a shared lock here measurably
+     *  distorts the numbers it reports. LongAdder/LongAccumulator keep the hot path contention-free;
+     *  reads (report/snapshot/export) are weakly consistent, which is fine for stats. */
     private static final class Stat {
-        long count = 0;
-        long totalNs = 0;
-        long maxNs = 0;
-        long slowCount = 0;
-        long slowTotalNs = 0;
+        final java.util.concurrent.atomic.LongAdder count = new java.util.concurrent.atomic.LongAdder();
+        final java.util.concurrent.atomic.LongAdder totalNs = new java.util.concurrent.atomic.LongAdder();
+        final java.util.concurrent.atomic.LongAccumulator maxNs =
+                new java.util.concurrent.atomic.LongAccumulator(Math::max, 0L);
+        final java.util.concurrent.atomic.LongAdder slowCount = new java.util.concurrent.atomic.LongAdder();
+        final java.util.concurrent.atomic.LongAdder slowTotalNs = new java.util.concurrent.atomic.LongAdder();
     }
 
     /** Immutable snapshot of one section's stats — returned by {@link #snapshot()}. */
@@ -61,9 +66,10 @@ public final class BotPerformanceMonitor {
     static Config cfg = new Config();
     private static volatile boolean enabled = cfg.ENABLED;
 
-    private static long lastLogAtMs = System.currentTimeMillis();
-    private static long nextLogAtMs = lastLogAtMs + cfg.LOG_INTERVAL_MS;
-    private static final Map<String, Stat> statsBySection = new LinkedHashMap<>();
+    private static volatile long lastLogAtMs = System.currentTimeMillis();
+    private static volatile long nextLogAtMs = lastLogAtMs + cfg.LOG_INTERVAL_MS;
+    private static final java.util.concurrent.ConcurrentHashMap<String, Stat> statsBySection =
+            new java.util.concurrent.ConcurrentHashMap<>();
     private static final Map<String, String> SECTION_NOTES;
     static {
         Map<String, String> notes = new LinkedHashMap<>();
@@ -162,17 +168,32 @@ public final class BotPerformanceMonitor {
         return next;
     }
 
-    /** Returns a start timestamp suitable for {@link #recordSince}, or 0 if no tracing is active. */
+    /**
+     * Returns a start token for {@link #recordSince}, or 0 if no tracing is active.
+     *
+     * <p>CLOCK CHOICE IS LOAD-BEARING ON THIS HOST: {@code System.nanoTime()} costs ~15µs per call
+     * on the QEMU box (emulated HPET; {@code currentTimeMillis} is ~6ns), so an always-on nanoTime
+     * pair per section was itself a population-scale CPU cost. Monitoring enabled → nanoTime
+     * (positive token, ns precision for the report). Monitoring off but the per-tick stall trace
+     * active → NEGATED epoch-millis token (ms precision is plenty for ≥1ms stall phases). Neither →
+     * 0. Never compare tokens across modes.
+     */
     static long start() {
-        return enabled || STALL_PHASE_TRACE.get().active ? System.nanoTime() : 0L;
+        if (enabled) {
+            return System.nanoTime();
+        }
+        return STALL_PHASE_TRACE.get().active ? -System.currentTimeMillis() : 0L;
     }
 
-    /** Records elapsed time since the matching {@link #start} call. No-op when start returned 0. */
-    static void recordSince(String section, long startedAtNs) {
-        if (startedAtNs != 0L) {
-            long elapsedNs = System.nanoTime() - startedAtNs;
+    /** Records elapsed time since the matching {@link #start} call. No-op when start returned 0.
+     *  Positive token = ns clock (full perf recording); negative token = ms clock (stall trace only). */
+    static void recordSince(String section, long startedAt) {
+        if (startedAt > 0L) {
+            long elapsedNs = System.nanoTime() - startedAt;
             recordStallPhaseElapsed(section, elapsedNs);
             record(section, elapsedNs);
+        } else if (startedAt < 0L) {
+            recordStallPhaseElapsed(section, (System.currentTimeMillis() + startedAt) * 1_000_000L);
         }
     }
 
@@ -208,15 +229,17 @@ public final class BotPerformanceMonitor {
         trace.active = true;
     }
 
+    /** Millis clock, negated token (see {@link #start}): nanoTime is ~15µs/call on this host, far
+     *  too expensive for an always-on per-tick trace; ms resolution covers the ≥1ms phase floor. */
     static long startStallPhase() {
-        return STALL_PHASE_TRACE.get().active ? System.nanoTime() : 0L;
+        return STALL_PHASE_TRACE.get().active ? -System.currentTimeMillis() : 0L;
     }
 
-    static void recordStallPhase(String section, long startedAtNs) {
-        if (startedAtNs == 0L) {
+    static void recordStallPhase(String section, long startedAt) {
+        if (startedAt >= 0L) {
             return;
         }
-        recordStallPhaseElapsed(section, System.nanoTime() - startedAtNs);
+        recordStallPhaseElapsed(section, (System.currentTimeMillis() + startedAt) * 1_000_000L);
     }
 
     static void recordStallPhaseElapsed(String section, long elapsedNs) {
@@ -343,17 +366,21 @@ public final class BotPerformanceMonitor {
         if (!enabled || elapsedNs < 0) {
             return;
         }
-
-        synchronized (LOCK) {
-            Stat stat = statsBySection.computeIfAbsent(section, ignored -> new Stat());
-            stat.count++;
-            stat.totalNs += elapsedNs;
-            stat.maxNs = Math.max(stat.maxNs, elapsedNs);
-            if (elapsedNs >= slowThresholdNs()) {
-                stat.slowCount++;
-                stat.slowTotalNs += elapsedNs;
+        Stat stat = statsBySection.get(section);
+        if (stat == null) {
+            stat = statsBySection.computeIfAbsent(section, ignored -> new Stat());
+        }
+        stat.count.increment();
+        stat.totalNs.add(elapsedNs);
+        stat.maxNs.accumulate(elapsedNs);
+        if (elapsedNs >= slowThresholdNs()) {
+            stat.slowCount.increment();
+            stat.slowTotalNs.add(elapsedNs);
+        }
+        if (System.currentTimeMillis() >= nextLogAtMs) {
+            synchronized (LOCK) {
+                maybeLog();
             }
-            maybeLog();
         }
     }
 
@@ -372,7 +399,8 @@ public final class BotPerformanceMonitor {
             List<SectionSnapshot> snapshots = new ArrayList<>(statsBySection.size());
             for (Map.Entry<String, Stat> entry : statsBySection.entrySet()) {
                 Stat s = entry.getValue();
-                snapshots.add(new SectionSnapshot(entry.getKey(), s.count, s.totalNs, s.maxNs, s.slowCount, s.slowTotalNs));
+                snapshots.add(new SectionSnapshot(entry.getKey(), s.count.sum(), s.totalNs.sum(),
+                        s.maxNs.get(), s.slowCount.sum(), s.slowTotalNs.sum()));
             }
             return snapshots;
         }
@@ -384,12 +412,12 @@ public final class BotPerformanceMonitor {
      *  must hold {@link #LOCK}. */
     private static long shareDenomNs() {
         Stat tickTotal = statsBySection.get("tick-total");
-        if (tickTotal != null && tickTotal.totalNs > 0) {
-            return tickTotal.totalNs;
+        if (tickTotal != null && tickTotal.totalNs.sum() > 0) {
+            return tickTotal.totalNs.sum();
         }
         long sum = 0;
         for (Stat s : statsBySection.values()) {
-            sum += s.totalNs;
+            sum += s.totalNs.sum();
         }
         return Math.max(1L, sum);
     }
@@ -411,25 +439,28 @@ public final class BotPerformanceMonitor {
             double intervalSeconds = Math.max(0.001, (now - lastLogAtMs) / 1000.0);
             long denomNs = shareDenomNs();
             List<Map.Entry<String, Stat>> rows = new ArrayList<>(statsBySection.entrySet());
-            rows.sort(Comparator.comparingLong((Map.Entry<String, Stat> e) -> e.getValue().totalNs).reversed());
+            rows.sort(Comparator.comparingLong((Map.Entry<String, Stat> e) -> e.getValue().totalNs.sum()).reversed());
 
             StringBuilder sb = new StringBuilder(
                     "section,cpu_core,cpu_ms_per_s,share_pct,avg_ms,max_ms,calls_per_s,count,slow_pct,slow_avg_ms,note\n");
             for (Map.Entry<String, Stat> e : rows) {
                 Stat s = e.getValue();
-                double totalMs = s.totalNs / 1_000_000.0;
+                long count = s.count.sum();
+                long totalNs = s.totalNs.sum();
+                long slowCount = s.slowCount.sum();
+                double totalMs = totalNs / 1_000_000.0;
                 double cpuMsPerSec = totalMs / intervalSeconds;
-                double avgMs = s.totalNs / (double) Math.max(1L, s.count) / 1_000_000.0;
-                double slowPct = s.slowCount * 100.0 / Math.max(1L, s.count);
-                double slowAvgMs = s.slowTotalNs / (double) Math.max(1L, s.slowCount) / 1_000_000.0;
+                double avgMs = totalNs / (double) Math.max(1L, count) / 1_000_000.0;
+                double slowPct = slowCount * 100.0 / Math.max(1L, count);
+                double slowAvgMs = s.slowTotalNs.sum() / (double) Math.max(1L, slowCount) / 1_000_000.0;
                 sb.append(csv(e.getKey())).append(',')
                         .append(fmt6(cpuMsPerSec / 1000.0)).append(',')
                         .append(fmt6(cpuMsPerSec)).append(',')
-                        .append(fmt6(100.0 * s.totalNs / denomNs)).append(',')
+                        .append(fmt6(100.0 * totalNs / denomNs)).append(',')
                         .append(fmt6(avgMs)).append(',')
-                        .append(fmt6(s.maxNs / 1_000_000.0)).append(',')
-                        .append(fmt6(s.count / intervalSeconds)).append(',')
-                        .append(s.count).append(',')
+                        .append(fmt6(s.maxNs.get() / 1_000_000.0)).append(',')
+                        .append(fmt6(count / intervalSeconds)).append(',')
+                        .append(count).append(',')
                         .append(fmt6(slowPct)).append(',')
                         .append(fmt6(slowAvgMs)).append(',')
                         .append(csv(noteFor(e.getKey())))
@@ -542,11 +573,11 @@ public final class BotPerformanceMonitor {
         long cumulativeFloorNs = (long) (CUMULATIVE_FLOOR_MS_PER_SEC * intervalSeconds * 1_000_000.0);
         List<Map.Entry<String, Stat>> reportSections = new ArrayList<>();
         for (Map.Entry<String, Stat> entry : statsBySection.entrySet()) {
-            if (entry.getValue().maxNs >= reportThresholdNs() || entry.getValue().totalNs >= cumulativeFloorNs) {
+            if (entry.getValue().maxNs.get() >= reportThresholdNs() || entry.getValue().totalNs.sum() >= cumulativeFloorNs) {
                 reportSections.add(entry);
             }
         }
-        reportSections.sort(Comparator.comparingLong((Map.Entry<String, Stat> entry) -> entry.getValue().totalNs).reversed());
+        reportSections.sort(Comparator.comparingLong((Map.Entry<String, Stat> entry) -> entry.getValue().totalNs.sum()).reversed());
 
         if (reportSections.isEmpty()) {
             statsBySection.clear();
@@ -576,36 +607,39 @@ public final class BotPerformanceMonitor {
             first = false;
             loggedSections++;
 
-            double averageMs = stat.totalNs / (double) Math.max(1L, stat.count) / 1_000_000.0;
-            double totalMs = stat.totalNs / 1_000_000.0;
+            long statCount = stat.count.sum();
+            long statTotalNs = stat.totalNs.sum();
+            long statSlowCount = stat.slowCount.sum();
+            double averageMs = statTotalNs / (double) Math.max(1L, statCount) / 1_000_000.0;
+            double totalMs = statTotalNs / 1_000_000.0;
             double cpuMsPerSec = totalMs / intervalSeconds;
             double cpuCore = cpuMsPerSec / 1000.0;
-            double maxMs = stat.maxNs / 1_000_000.0;
-            double slowAverageMs = stat.slowTotalNs / (double) Math.max(1L, stat.slowCount) / 1_000_000.0;
-            double slowPct = stat.slowCount * 100.0 / Math.max(1L, stat.count);
+            double maxMs = stat.maxNs.get() / 1_000_000.0;
+            double slowAverageMs = stat.slowTotalNs.sum() / (double) Math.max(1L, statSlowCount) / 1_000_000.0;
+            double slowPct = statSlowCount * 100.0 / Math.max(1L, statCount);
             line.append(entry.getKey())
                     .append(" avg=")
                     .append(formatMs(averageMs))
                     .append("ms")
                     .append(" cps=")
-                    .append(String.format(Locale.ROOT, "%.1f", stat.count / intervalSeconds))
+                    .append(String.format(Locale.ROOT, "%.1f", statCount / intervalSeconds))
                     .append(" cpu=")
                     .append(formatMs(cpuMsPerSec))
                     .append("ms/s")
                     .append(" core=")
                     .append(formatCore(cpuCore))
                     .append(" share=")
-                    .append(formatPct(100.0 * stat.totalNs / denomNs))
+                    .append(formatPct(100.0 * statTotalNs / denomNs))
                     .append("%")
                     .append(" max=")
                     .append(formatMs(maxMs))
                     .append("ms")
                     .append(" n=")
-                    .append(stat.count)
+                    .append(statCount)
                     .append(" slow=")
-                    .append(stat.slowCount)
+                    .append(statSlowCount)
                     .append("/")
-                    .append(stat.count)
+                    .append(statCount)
                     .append(" slow%=")
                     .append(formatPct(slowPct))
                     .append("%")
@@ -645,7 +679,7 @@ public final class BotPerformanceMonitor {
         for (String section : TOP_LEVEL_SECTIONS) {
             Stat s = statsBySection.get(section);
             if (s != null) {
-                attributedMs += s.totalNs / 1_000_000L;
+                attributedMs += s.totalNs.sum() / 1_000_000L;
             }
         }
         double attributedCore = attributedMs / (intervalSeconds * 1000.0);

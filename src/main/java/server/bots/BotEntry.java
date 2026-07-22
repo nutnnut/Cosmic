@@ -329,6 +329,11 @@ public class BotEntry {
     // full bag, so a cramped bot re-classifying every tick melts a timer thread. Volatile so a
     // trade running on a timer thread and the bot tick read one consistent immutable holder.
     volatile BotInventoryManager.EquipTradeGroupsCache cachedEquipTradeGroups = null;
+    // Cached auto-sell-trash scan verdict (BotShopManager.shouldAutoSellTrash): a chronically cramped
+    // grinder re-ran the full USE/EQUIP/ETC bag valuation every autopilot tick. The cheap cramped
+    // check stays fresh; only the expensive sellable-trash scans ride this short TTL.
+    boolean sellTrashScanVerdict = false;
+    long sellTrashScanValidUntilMs = 0L;
 
     // Follow-mode cross-map travel (BotTravelManager): instead of warping straight to the
     // owner, walk to a portal in the current map that leads to the owner's map and enter it
@@ -551,6 +556,9 @@ public class BotEntry {
     int templeErrandNpcId = 0;
     final BotTravelManager.ErrandProgress templeErrandProgress = new BotTravelManager.ErrandProgress(); // NPC-approach stall timer
     long nextTempleScanAtMs = 0L;
+    // Gates the O(all-bots) BotOccupancy crowd scan while pinned on a Temple lane: the pin itself is
+    // re-asserted every tick, but the crowd re-evaluation only needs a seconds-level cadence.
+    long templeCrowdCheckDueMs = 0L;
 
     // Job-change errand (BotStarterKitManager): an autopilot bot at a 1st/2nd-job milestone WALKS to
     // its class-town instructor NPC and advances on arrival (instead of changing job instantly,

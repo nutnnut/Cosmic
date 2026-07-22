@@ -231,7 +231,7 @@ class BotMovementManager {
     }
 
     static void tickClimbing(BotEntry entry, Point targetPos, boolean runAiTick) {
-        long startedAt = System.nanoTime();
+        long startedAt = BotPerformanceMonitor.start();
         try {
             Character bot = entry.bot;
             // Null rope is handled inside advanceClimb/holdClimb — they call beginFall internally.
@@ -287,7 +287,7 @@ class BotMovementManager {
                     : dy > 0 ? MoveAction.climbDown() : MoveAction.idle();
             applyClimbAction(entry, bot, action);
         } finally {
-            BotPerformanceMonitor.record("move-climb", System.nanoTime() - startedAt);
+            BotPerformanceMonitor.recordSince("move-climb", startedAt);
         }
     }
 
@@ -350,7 +350,7 @@ class BotMovementManager {
     }
 
     static void tickAirborne(BotEntry entry, Point targetPos) {
-        long startedAt = System.nanoTime();
+        long startedAt = BotPerformanceMonitor.start();
         try {
             entry.swimming = false;
             BotPhysicsEngine.tickMotionTimers(entry);
@@ -410,7 +410,7 @@ class BotMovementManager {
                 broadcastMovement(entry);
             }
         } finally {
-            BotPerformanceMonitor.record("move-air", System.nanoTime() - startedAt);
+            BotPerformanceMonitor.recordSince("move-air", startedAt);
         }
     }
 
@@ -469,14 +469,14 @@ class BotMovementManager {
     }
 
     static void tickSwimming(BotEntry entry, Point targetPos) {
-        long startedAt = System.nanoTime();
+        long startedAt = BotPerformanceMonitor.start();
         try {
             BotPhysicsEngine.tickMotionTimers(entry);
             computeSwimIntents(entry, targetPos);
             BotPhysicsEngine.applySwimMotion(entry);
             broadcastMovement(entry);
         } finally {
-            BotPerformanceMonitor.record("move-swim", System.nanoTime() - startedAt);
+            BotPerformanceMonitor.recordSince("move-swim", startedAt);
         }
     }
 
@@ -587,7 +587,7 @@ class BotMovementManager {
     }
 
     static void tickGrounded(BotEntry entry, Point targetPos) {
-        long startedAt = System.nanoTime();
+        long startedAt = BotPerformanceMonitor.start();
         try {
             entry.swimming = false;
             Character bot = entry.bot;
@@ -624,7 +624,7 @@ class BotMovementManager {
             MoveAction action = planGroundAction(entry, currentFh, botPos, targetPos, walkOffWaypoint);
             applyGroundAction(entry, currentFh, action);
         } finally {
-            BotPerformanceMonitor.record("move-ground", System.nanoTime() - startedAt);
+            BotPerformanceMonitor.recordSince("move-ground", startedAt);
         }
     }
 

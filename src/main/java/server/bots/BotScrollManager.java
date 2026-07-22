@@ -1602,8 +1602,15 @@ final class BotScrollManager {
 
     /** Per-kill seek overhead from the dropper's REAL spawn density: its best (densest) farmable
      *  map via the spawn index, scored with the grind planner's seek model — replaces the flat
-     *  placeholder whenever spawn data exists for the mob. */
+     *  placeholder whenever spawn data exists for the mob. Memoized per mob: spawn data is static,
+     *  and this sits on the per-item farm-cost path the shelf valuation hammers. */
+    private static final Map<Integer, Double> seekOverheadCache = new ConcurrentHashMap<>();
+
     private static double seekOverheadSeconds(int mobId) {
+        Double cached = seekOverheadCache.get(mobId);
+        if (cached != null) {
+            return cached;
+        }
         double best = Double.NaN;
         try {
             BotSpawnIndex.Index index = BotSpawnIndex.get();
@@ -1620,7 +1627,9 @@ final class BotScrollManager {
         } catch (RuntimeException e) {
             // spawn index unavailable (unit tests) — keep the flat placeholder
         }
-        return Double.isNaN(best) ? FARM_SEEK_OVERHEAD_SECONDS : best;
+        double result = Double.isNaN(best) ? FARM_SEEK_OVERHEAD_SECONDS : best;
+        seekOverheadCache.put(mobId, result);
+        return result;
     }
 
     /**
@@ -1866,10 +1875,30 @@ final class BotScrollManager {
     }
 
     /** USE-bag shelf valuation hook: kept scrolls should be protected by the same market/farm value
-     *  self-scrolling uses, not by their usually-low NPC sell-back price. */
+     *  self-scrolling uses, not by their usually-low NPC sell-back price. TTL-cached per
+     *  (bot, scroll): the underlying farm-cost path (dropper Monster construction + combat estimate)
+     *  is far too heavy for the bag-scan frequency, and belief-book prices drift on a seconds-to-
+     *  minutes scale, so a short-TTL read is behaviorally identical for sell-ordering. */
+    private record CachedScrollValue(double value, long computedAtMs) {}
+
+    private static final long SHELF_SCROLL_VALUE_TTL_MS = 15_000L;
+    private static final int SHELF_SCROLL_VALUE_CACHE_CAP = 50_000;
+    private static final Map<Long, CachedScrollValue> shelfScrollValueCache = new ConcurrentHashMap<>();
+
     static double scrollMarketValueMeso(Character bot, int scrollId) {
+        long now = System.currentTimeMillis();
+        long key = bot == null ? scrollId : ((long) bot.getId() << 32) | (scrollId & 0xFFFFFFFFL);
+        CachedScrollValue cached = shelfScrollValueCache.get(key);
+        if (cached != null && now - cached.computedAtMs() < SHELF_SCROLL_VALUE_TTL_MS) {
+            return cached.value();
+        }
         BotEntry entry = bot == null ? null : BotManager.getInstance().getEntryByBotCharId(bot.getId());
-        return scrollPriceMeso(resolveProducerCombat(entry, bot), scrollId);
+        double value = scrollPriceMeso(resolveProducerCombat(entry, bot), scrollId);
+        if (shelfScrollValueCache.size() > SHELF_SCROLL_VALUE_CACHE_CAP) {
+            shelfScrollValueCache.clear(); // bots churn; a rare cold refill beats unbounded growth
+        }
+        shelfScrollValueCache.put(key, new CachedScrollValue(value, now));
+        return value;
     }
 
     /** Combat-demand ceiling for an equip scroll, in meso: the most a best-buyer pays for the combat

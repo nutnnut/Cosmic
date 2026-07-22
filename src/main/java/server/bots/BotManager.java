@@ -4064,7 +4064,11 @@ public class BotManager {
     // -------------------------------------------------------------------------
 
     private void tick(BotEntry entry, int ownerCharId, int botCharId) {
-        long startedAt = System.nanoTime();
+        // Clock choice: nanoTime is ~15µs/call on this host (QEMU HPET) — only pay it while the
+        // monitor records. The always-on stall watch (250ms threshold) is fine on the ms clock.
+        boolean perf = BotPerformanceMonitor.enabled();
+        long startedAtNs = perf ? System.nanoTime() : 0L;
+        long startedAtMs = perf ? 0L : System.currentTimeMillis();
         BotPerformanceMonitor.beginTickTrace();
         try {
             tickCore(entry, ownerCharId, botCharId);
@@ -4073,8 +4077,10 @@ public class BotManager {
         } catch (Throwable t) {
             handleBotTickFailure(entry, ownerCharId, botCharId, t);
         } finally {
-            long elapsedNs = System.nanoTime() - startedAt;
-            if (BotPerformanceMonitor.enabled()) {
+            long elapsedNs = perf
+                    ? System.nanoTime() - startedAtNs
+                    : (System.currentTimeMillis() - startedAtMs) * 1_000_000L;
+            if (perf) {
                 BotPerformanceMonitor.record("tick-total", elapsedNs);
             }
             BotPerformanceMonitor.noteTickStall(entry, elapsedNs);

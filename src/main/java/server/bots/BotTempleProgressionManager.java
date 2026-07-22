@@ -299,13 +299,19 @@ final class BotTempleProgressionManager {
         if (now < entry.nextTempleScanAtMs) {
             return false; // in a step-aside window: normal grind runs elsewhere
         }
-        double penalty = BotManager.cfg.CROWD_PENALTY_FACTOR;
-        double surcharge = BotOccupancy.extraCompetitors(bot, penalty).applyAsDouble(laneMap);
-        int competitors = penalty > 0 ? (int) Math.round(surcharge / penalty) : 0;
-        if (competitors >= CROWD_DEFER_THRESHOLD) {
-            entry.nextTempleScanAtMs = now + BotManager.randMs(CROWD_DEFER_MIN_MS, CROWD_DEFER_MAX_MS);
-            entry.autopilotNextDecisionAtMs = 0L; // re-pick now, honoring the crowd surcharge -> disperse
-            return false;
+        // Crowd re-check on a seconds cadence, not per tick: BotOccupancy walks every online
+        // character, so a per-tick scan from every lane-pinned bot is O(bots^2) at population scale.
+        // The pin bookkeeping below still runs every tick.
+        if (now >= entry.templeCrowdCheckDueMs) {
+            entry.templeCrowdCheckDueMs = now + BotManager.randMs(2_500, 4_500);
+            double penalty = BotManager.cfg.CROWD_PENALTY_FACTOR;
+            double surcharge = BotOccupancy.extraCompetitors(bot, penalty).applyAsDouble(laneMap);
+            int competitors = penalty > 0 ? (int) Math.round(surcharge / penalty) : 0;
+            if (competitors >= CROWD_DEFER_THRESHOLD) {
+                entry.nextTempleScanAtMs = now + BotManager.randMs(CROWD_DEFER_MIN_MS, CROWD_DEFER_MAX_MS);
+                entry.autopilotNextDecisionAtMs = 0L; // re-pick now, honoring the crowd surcharge -> disperse
+                return false;
+            }
         }
         entry.autopilotMapId = laneMap; // pin the lane; kills accrue via the normal grind/combat flow
         entry.autopilotNextDecisionAtMs = Math.max(entry.autopilotNextDecisionAtMs, now + PIN_HOLD_MS);

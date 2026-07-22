@@ -161,7 +161,7 @@ final class BotNavigationManager {
     }
 
     static NavigationDirective resolveTarget(BotEntry entry, Point rawTargetPos, boolean runAiTick) {
-        long startedAt = System.nanoTime();
+        long startedAt = BotPerformanceMonitor.start();
         try {
             Character bot = entry.bot;
             if (bot.getMap().getFootholds() == null) {
@@ -367,7 +367,7 @@ final class BotNavigationManager {
             }
             return new NavigationDirective(new Point(entry.navTargetPos), false);
         } finally {
-            BotPerformanceMonitor.record("nav-resolve", System.nanoTime() - startedAt);
+            BotPerformanceMonitor.recordSince("nav-resolve", startedAt);
         }
     }
 
