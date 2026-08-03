@@ -2547,7 +2547,9 @@ public class BotChatManager {
         entry.nextGearSuggestionAt = now + 60_000L;
         if (!BotOfferManager.offerBestRecommendedGear(entry, bot, owner)) {
             if (!BotOfferManager.offerBestGearToSibling(entry, bot)) {
-                BotOfferManager.offerUselessScrollToCohort(entry, bot);
+                if (!BotOfferManager.offerNeededSkillBookToCohort(entry, bot)) {
+                    BotOfferManager.offerUselessScrollToCohort(entry, bot);
+                }
             }
         }
     }
@@ -2561,7 +2563,9 @@ public class BotChatManager {
             return;
         }
         entry.nextGearSuggestionAt = now + 60_000L;
-        BotOfferManager.offerBestGearToSibling(entry, bot);
+        if (!BotOfferManager.offerBestGearToSibling(entry, bot)) {
+            BotOfferManager.offerNeededSkillBookToCohort(entry, bot);
+        }
     }
 
     /**

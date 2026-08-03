@@ -193,7 +193,8 @@ class BotInventoryManager {
                     if (hasItem(bot, pickedItem)) {
                         BotOfferManager.scheduleLootOfferPrompt(entry, bot, pickedItem, 5_000L);
                     }
-                } else if (ItemConstants.isThrowingStar(pickedItemId)) {
+                } else if (ItemConstants.isThrowingStar(pickedItemId)
+                        || BotSkillBookManager.isSkillBook(pickedItemId)) {
                     BotOfferManager.scheduleLootOfferPrompt(entry, bot, pickedItem, 5_000L);
                 }
             }
@@ -550,6 +551,11 @@ class BotInventoryManager {
     }
 
     static void startTradeTransfer(Item item, Character recipient, BotEntry entry, Character bot) {
+        startTradeTransfer(item, recipient, entry, bot, (short) 0);
+    }
+
+    static void startTradeTransfer(Item item, Character recipient, BotEntry entry, Character bot,
+                                   short maxQuantity) {
         if (recipient == null) {
             BotManager.getInstance().botReply(entry, "can't find who to trade!");
             return;
@@ -560,11 +566,12 @@ class BotInventoryManager {
         }
         if (bot.getTrade() != null || entry.pendingTradeCategory != null || recipient.getTrade() != null) {
             if (entry.pendingBotTradeRetry == null) {
-                entry.pendingBotTradeRetry = () -> startTradeTransfer(item, recipient, entry, bot);
+                entry.pendingBotTradeRetry = () -> startTradeTransfer(item, recipient, entry, bot, maxQuantity);
                 entry.pendingBotTradeRetryMs = BotMovementManager.delayAfterCurrentTick(10_000);
             }
             return;
         }
+        entry.pendingTradeQuantityBudget = maxQuantity;
         startTradeSequence("loot_offer", recipient, List.of(item), 0, true, entry, bot);
     }
 
@@ -966,7 +973,7 @@ class BotInventoryManager {
         entry.pendingTradeBotDone  = false;
         entry.pendingTradeSingleBatch = false;
         entry.pendingTradeInviteAnnounced = false;
-        entry.pendingPotShareBudget = 0;
+        entry.pendingTradeQuantityBudget = 0;
         entry.ownerGivenItems.clear();
         // Safety net: if any items were temporarily unequipped for a trade that ended without
         // completing (declined invite / cancel / timeout), the per-slot restore above may fail
@@ -986,11 +993,11 @@ class BotInventoryManager {
     }
 
     static short capTradeQuantityByShareBudget(BotEntry entry, short availableQty) {
-        if (entry.pendingPotShareBudget <= 0) {
+        if (entry.pendingTradeQuantityBudget <= 0) {
             return availableQty;
         }
-        short tradeQty = (short) Math.min(availableQty, entry.pendingPotShareBudget);
-        entry.pendingPotShareBudget -= tradeQty;
+        short tradeQty = (short) Math.min(availableQty, entry.pendingTradeQuantityBudget);
+        entry.pendingTradeQuantityBudget -= tradeQty;
         return tradeQty;
     }
 
@@ -2064,6 +2071,7 @@ class BotInventoryManager {
      *  decision tree). */
     static Map<Item, UseClass> classifyBagUse(Character bot) {
         WeaponType ownAmmoType = tradeAmmoWeaponType(bot);
+        BotEntry botEntry = BotManager.getInstance().getEntryByBotCharId(bot.getId());
         List<Item> all = new ArrayList<>();
         // botAwareSafety: stale quest items pass the quest exclusion so they can be classified JUNK.
         collectFromBag(bot, all, InventoryType.USE, item -> true, true);
@@ -2079,6 +2087,11 @@ class BotInventoryManager {
 
         for (Item item : all) {
             int id = item.getItemId();
+            if (BotSkillBookManager.isSkillBook(id)
+                    && BotSkillBookManager.wantsBook(botEntry, bot, id)) {
+                out.put(item, new UseClass(UseTier.RUNWAY, 0, 0, "skillbook-needed"));
+                continue;
+            }
             if (isUseJunk(bot, id)) {
                 out.put(item, new UseClass(UseTier.JUNK, 0, 0, junkReason(bot, id)));
                 continue;
@@ -2314,6 +2327,10 @@ class BotInventoryManager {
             double worth = ceiling > 0 ? Math.min(obtain, ceiling) : obtain;
             return Math.max(sellPrice.price(id, it.getQuantity()), worth * it.getQuantity());
         }
+        if (BotSkillBookManager.isSkillBook(id)) {
+            return Math.max(sellPrice.price(id, it.getQuantity()),
+                    BotScrollManager.useItemMarketValueMeso(bot, id) * it.getQuantity());
+        }
         return sellPrice.price(id, it.getQuantity());
     }
 
@@ -2363,6 +2380,7 @@ class BotInventoryManager {
             return value <= 0 ? "ammo-dup-set" : "ammo-shelf";
         }
         if (ItemConstants.isEquipScroll(id)) return "scroll";
+        if (BotSkillBookManager.isSkillBook(id)) return "skillbook";
         if (isBuffConsumable(id)) return "buff";
         if (isRecoveryPotion(id)) return "recovery-extra";
         if (isAllCurePotion(id)) return "allcure-extra";
@@ -3427,7 +3445,7 @@ class BotInventoryManager {
             }
             return;
         }
-        entry.pendingPotShareBudget = maxQty;
+        entry.pendingTradeQuantityBudget = maxQty;
         startTradeSequence("pot_share", recipient, items, 0, true, entry, bot);
     }
 
@@ -3467,7 +3485,7 @@ class BotInventoryManager {
             }
             return;
         }
-        entry.pendingPotShareBudget = maxQty;
+        entry.pendingTradeQuantityBudget = maxQty;
         startTradeSequence("ammo_share", recipient, items, 0, true, entry, bot);
     }
 
@@ -3495,7 +3513,7 @@ class BotInventoryManager {
             }
             return;
         }
-        entry.pendingPotShareBudget = maxQty;
+        entry.pendingTradeQuantityBudget = maxQty;
         startTradeSequence("rock_share", recipient, items, 0, true, entry, bot);
     }
 

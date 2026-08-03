@@ -633,7 +633,7 @@ final class BotGrindAdvisor {
                 // Pirates (2x HP, 2x WDEF) were 89% of what a lv70 actually swung at.
                 long tGear = BotPerformanceMonitor.start();
                 List<GearProspect> gear = gearByMob.computeIfAbsent(e.getKey(), id ->
-                        gearProspects(bot, ii, id, wornScoreBySlot, rollScoreCache, gainByItem,
+                        gearProspects(entry, bot, ii, id, wornScoreBySlot, rollScoreCache, gainByItem,
                                 totalWornOffense, asp, baseHit, botAcc));
                 BotPerformanceMonitor.recordSince("grind.gear", tGear);
                 pointsByMob.put(new MobProfile(p.mobId(), p.mobName(), p.level(), p.avoid(), p.exp(),
@@ -1070,9 +1070,10 @@ final class BotGrindAdvisor {
         return new double[]{killSeconds, rawKill};
     }
 
-    /** Gear-progression drops of this mob: wearable equips valued as expected improvement over
-     *  the worn item, equip scrolls valued by {@link #scrollExpectedGain}. */
-    private static List<GearProspect> gearProspects(Character bot, ItemInformationProvider ii, int mobId,
+    /** Progression drops of this mob: wearable equips, equip scrolls, and a currently-needed
+     *  fourth-job skill/mastery book. */
+    private static List<GearProspect> gearProspects(BotEntry entry, Character bot,
+                                                    ItemInformationProvider ii, int mobId,
                                                     Map<Short, Double> wornScoreBySlot,
                                                     Map<Integer, double[]> rollScoreCache,
                                                     Map<Integer, Double> gainByItem,
@@ -1089,7 +1090,10 @@ final class BotGrindAdvisor {
             // dropping from N mobs is valued once, not N times (equipGain re-derives catalog stats,
             // accuracy hit-factor, and the acquire-gain roll each call).
             double gain = gainByItem.computeIfAbsent(itemId, id ->
-                    id / 10000 == BotScrollManager.SCROLL_ITEM_PREFIX
+                    BotSkillBookManager.isSkillBook(id)
+                            ? BotSkillBookManager.needFraction(entry, bot, id)
+                                    * Math.max(1.0, totalWornOffense)
+                            : id / 10000 == BotScrollManager.SCROLL_ITEM_PREFIX
                             ? scrollGains.gain(bot, id)
                             : equipGain(bot, ii, id, wornScoreBySlot, rollScoreCache, asp, baseHit, botAcc));
             if (gain < MIN_GEAR_GAIN_SCORE) {
@@ -1643,7 +1647,7 @@ final class BotGrindAdvisor {
         return name != null ? name : ("item " + itemId);
     }
 
-    /** Equip + equip-scroll drops per mob from {@code drop_data} (populate-once, same pattern
+    /** Equip + equip-scroll + fourth-job book drops per mob from {@code drop_data} (populate-once, same pattern
      *  as shopPrices). */
     private static Map<Integer, List<int[]>> gearDropsByMob() {
         Map<Integer, List<int[]>> cached = gearDropsByMob;
@@ -1655,7 +1659,11 @@ final class BotGrindAdvisor {
              PreparedStatement ps = con.prepareStatement(
                      "SELECT dropperid, itemid, chance FROM drop_data"
                              + " WHERE chance > 0 AND (itemid BETWEEN 1000000 AND 1999999"
-                             + " OR itemid BETWEEN 2040000 AND 2049999)");
+                             + " OR itemid BETWEEN 2040000 AND 2049999"
+                             + " OR itemid BETWEEN " + ItemConstants.SKILL_BOOK_FIRST
+                             + " AND " + ItemConstants.SKILL_BOOK_LAST
+                             + " OR itemid BETWEEN " + ItemConstants.MASTERY_BOOK_FIRST
+                             + " AND " + ItemConstants.MASTERY_BOOK_LAST + ")");
              ResultSet rs = ps.executeQuery()) {
             while (rs.next()) {
                 m.computeIfAbsent(rs.getInt("dropperid"), k -> new ArrayList<>())

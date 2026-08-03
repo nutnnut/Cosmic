@@ -162,6 +162,24 @@ final class BotOfferManager {
         return false;
     }
 
+    /** Offer one surplus skill/mastery book to a same-map owner or trusted bot cohort member who
+     * can use it now. The donor always keeps books required by its own selected build. */
+    static boolean offerNeededSkillBookToCohort(BotEntry entry, Character bot) {
+        Character owner = entry.owner;
+        if (owner == null || bot.getTrade() != null || entry.pendingAction != null
+                || entry.pendingTradeCategory != null || hasOfferReservation(entry)) {
+            return false;
+        }
+        for (Item item : bot.getInventory(InventoryType.USE).list()) {
+            Character recipient = findSkillBookRecipient(entry, bot, item);
+            if (recipient != null
+                    && offerGearItem(entry, bot, recipient, item, GearOfferNeed.CURRENT)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     /** An equip scroll worth routing by category (skips universally-valuable meta scrolls). */
     private static boolean isOfferableScroll(ItemInformationProvider ii, int sid) {
         if (!ItemConstants.isEquipScroll(sid)) {
@@ -265,11 +283,7 @@ final class BotOfferManager {
             return;
         }
 
-        entry.pendingDropCategory = null;
-        entry.pendingLootOfferItem = item;
-        entry.pendingLootOfferRecipientId = recipient.getId();
-        entry.pendingLootOfferExpiresAt = 0L;
-        entry.pendingLootOfferBotRequesting = false;
+        reserveLootOffer(entry, item, recipient.getId(), 0L);
 
         long scheduledAt = now + Math.max(0L, delayMs);
         entry.pendingGearPromptAt = scheduledAt;
@@ -291,13 +305,15 @@ final class BotOfferManager {
                         BotManager.getInstance().botReply(entry, "ty! inv me?"));
             } else {
                 Item item = entry.pendingLootOfferItem;
+                short quantity = entry.pendingLootOfferQuantity;
                 entry.pendingDropCategory = null;
                 entry.pendingLootOfferExpiresAt = 0L;
                 entry.pendingLootOfferBotRequesting = false;
                 entry.pendingLootOfferRecipientId = 0;
+                entry.pendingLootOfferQuantity = 0;
                 BotManager.after(BotTradePacing.stepDelayMs(), () -> {
                     entry.pendingLootOfferItem = null;
-                    BotInventoryManager.startTradeTransfer(item, speaker, entry, entry.bot);
+                    BotInventoryManager.startTradeTransfer(item, speaker, entry, entry.bot, quantity);
                 });
             }
             return true;
@@ -354,11 +370,7 @@ final class BotOfferManager {
                 || !BotInventoryManager.hasItem(bot, item)) {
             return false;
         }
-        entry.pendingDropCategory = null;
-        entry.pendingLootOfferItem = item;
-        entry.pendingLootOfferRecipientId = recipient.getId();
-        entry.pendingLootOfferExpiresAt = System.currentTimeMillis() + 30_000L;
-        entry.pendingLootOfferBotRequesting = false;
+        reserveLootOffer(entry, item, recipient.getId(), System.currentTimeMillis() + 30_000L);
         long promptDelayMs = BotChatManager.queueBotSayWithEstimatedDelay(entry,
                 buildLootOfferPrompt(recipient, entry.owner, item, need == GearOfferNeed.FUTURE));
         scheduleBotLootOfferAutoAccept(entry, recipient, promptDelayMs);
@@ -392,16 +404,17 @@ final class BotOfferManager {
             clearPendingOffer(entry);
             return;
         }
+        if (BotSkillBookManager.isSkillBook(item.getItemId())
+                && !canOfferSkillBookTo(entry, bot, recipient, item)) {
+            clearPendingOffer(entry);
+            return;
+        }
         GearOfferNeed need = gearOfferNeed(entry, recipient, bot, item);
         if (ItemConstants.getInventoryType(item.getItemId()) == InventoryType.EQUIP && need == null) {
             clearPendingOffer(entry);
             return;
         }
-        entry.pendingDropCategory = null;
-        entry.pendingLootOfferItem = item;
-        entry.pendingLootOfferRecipientId = recipient.getId();
-        entry.pendingLootOfferExpiresAt = System.currentTimeMillis() + 30_000L;
-        entry.pendingLootOfferBotRequesting = false;
+        reserveLootOffer(entry, item, recipient.getId(), System.currentTimeMillis() + 30_000L);
         String offerPrompt = buildLootOfferPrompt(recipient, owner, item, need == GearOfferNeed.FUTURE);
         // The loot can be offered to a sibling bot; the hint overlay is owner-facing, so only attach it
         // when the owner is the one being asked.
@@ -574,6 +587,9 @@ final class BotOfferManager {
         // Self-owned bot: never offer to itself; its cohort is its CREW (eligibleBotRecipients returns
         // crewmates, empty for soloists / dynamic-party bots). A human-owned bot can also offer to the owner.
         boolean selfOwned = owner == bot;
+        if (BotSkillBookManager.isSkillBook(item.getItemId())) {
+            return findSkillBookRecipient(entry, bot, item);
+        }
         if (ItemConstants.isThrowingStar(item.getItemId())) {
             if (!selfOwned && isBetterThrowingStarForRecipient(owner, bot, item)) {
                 return owner;
@@ -594,6 +610,69 @@ final class BotOfferManager {
             }
         }
         return null;
+    }
+
+    private static boolean recipientNeedsSkillBook(Character recipient, int itemId) {
+        BotEntry recipientEntry = BotManager.getInstance().getEntryByBotCharId(recipient.getId());
+        return recipientEntry != null
+                ? BotSkillBookManager.needsBookAcquisition(recipientEntry, recipient, itemId)
+                : ItemInformationProvider.getInstance().canUseSkillBook(recipient, itemId);
+    }
+
+    private static Character findSkillBookRecipient(BotEntry entry, Character donor, Item item) {
+        if (!BotSkillBookManager.isSkillBook(item.getItemId())
+                || BotSkillBookManager.wantsBook(entry, donor, item.getItemId())) {
+            return null;
+        }
+        for (Character recipient : skillBookRecipients(entry.owner, donor)) {
+            if (canOfferSkillBookTo(entry, donor, recipient, item)) {
+                return recipient;
+            }
+        }
+        return null;
+    }
+
+    private static boolean canOfferSkillBookTo(BotEntry entry, Character donor,
+                                                Character recipient, Item item) {
+        return recipient != null && recipient != donor
+                && recipient.getMapId() == donor.getMapId()
+                && BotInventoryManager.hasItem(donor, item)
+                && !BotSkillBookManager.wantsBook(entry, donor, item.getItemId())
+                && recipientNeedsSkillBook(recipient, item.getItemId());
+    }
+
+    /** Owner, real party members, and stable/crew siblings; human peers still accept manually. */
+    static List<Character> skillBookRecipients(Character owner, Character donor) {
+        List<Character> out = new ArrayList<>();
+        if (owner != null && owner != donor && owner.getMapId() == donor.getMapId()) {
+            out.add(owner);
+        }
+        for (Character member : donor.getPartyMembersOnSameMap()) {
+            if (member != null && member != donor && !out.contains(member)) {
+                out.add(member);
+            }
+        }
+        if (owner != null) {
+            for (Character member : eligibleBotRecipients(owner, donor)) {
+                if (member.getMapId() == donor.getMapId() && !out.contains(member)) {
+                    out.add(member);
+                }
+            }
+        }
+        return out;
+    }
+
+    static short lootOfferQuantity(Item item) {
+        return BotSkillBookManager.isSkillBook(item.getItemId()) ? (short) 1 : (short) 0;
+    }
+
+    static void reserveLootOffer(BotEntry entry, Item item, int recipientId, long expiresAt) {
+        entry.pendingDropCategory = null;
+        entry.pendingLootOfferItem = item;
+        entry.pendingLootOfferRecipientId = recipientId;
+        entry.pendingLootOfferExpiresAt = expiresAt;
+        entry.pendingLootOfferBotRequesting = false;
+        entry.pendingLootOfferQuantity = lootOfferQuantity(item);
     }
 
     private static GearOfferChoice findBestGearOffer(BotEntry entry, Character recipient, Character donor) {
@@ -850,6 +929,7 @@ final class BotOfferManager {
         entry.pendingLootOfferRecipientId = 0;
         entry.pendingLootOfferExpiresAt = 0L;
         entry.pendingLootOfferBotRequesting = false;
+        entry.pendingLootOfferQuantity = 0;
         entry.pendingGearPromptAt = 0L;
     }
 }

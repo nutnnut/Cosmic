@@ -400,6 +400,13 @@ final class BotFreeMarketManager {
         }
     }
 
+    static ListingPlan stackListingPlan(Item item, int quantity, int unitAsk) {
+        boolean skillBook = BotSkillBookManager.isSkillBook(item.getItemId());
+        return new ListingPlan(item,
+                skillBook ? (short) Math.min(Short.MAX_VALUE, quantity) : (short) 1,
+                skillBook ? (short) 1 : (short) quantity, unitAsk);
+    }
+
     /**
      * Buyer-facing slot price: the whole-bundle total styled as ONE human number (price charm
      * belongs on the figure the buyer reads; a charmed unit multiplied back out reads like
@@ -504,9 +511,10 @@ final class BotFreeMarketManager {
                         "premium not worth a slot", null));
                 continue;
             }
-            // One merchant slot per bag stack: a single bundle holding the whole stack.
+            // Skill books sell one-at-a-time so a stacked drop does not become an unaffordable
+            // all-or-nothing lot. Other USE stacks retain the existing whole-stack bundle shape.
             out.add(new ListingVerdict(id, qty, ask, npcWhole, shopPrice, premium, "list",
-                    new ListingPlan(item, (short) 1, (short) qty, ask)));
+                    stackListingPlan(item, qty, ask)));
         }
         evaluateEquipListings(bot, book, now, out);
         out.sort(java.util.Comparator.comparingLong(ListingVerdict::premium).reversed());
@@ -613,6 +621,13 @@ final class BotFreeMarketManager {
         return n;
     }
 
+    static boolean hasTripReason(boolean stallServiceDue, boolean fredrickDue,
+                                 int tripWorthyListings, boolean bookWanted,
+                                 boolean chilling, boolean social, boolean shoutTrip) {
+        return stallServiceDue || fredrickDue || tripWorthyListings >= MIN_LISTINGS_TO_TRIP
+                || bookWanted || chilling || social || shoutTrip;
+    }
+
     // ---- scan: decide whether to start a market session ---------------------------------------
 
     static void tickScan(BotEntry entry, Character bot) {
@@ -648,12 +663,14 @@ final class BotFreeMarketManager {
         BotGrindAdvisor.DECIDE_POOL.execute(() -> {
             boolean stallServiceDue;
             boolean fredrickDue;
+            boolean bookWanted;
             List<ListingPlan> listable;
             long t0 = BotPerformanceMonitor.start();
             try {
                 long planNow = System.currentTimeMillis();
                 stallServiceDue = entry.nextStallServiceAtMs > 0 && planNow >= entry.nextStallServiceAtMs;
                 fredrickDue = fredrickPickupDue(entry, bot, planNow);
+                bookWanted = BotSkillBookManager.isMissingAnyWantedBook(entry, bot);
                 listable = selectListings(entry, bot, planNow);
                 entry.fmHasShoutSurplus = !BotInventoryManager.collectMarketableEquips(entry, bot).isEmpty();
             } catch (RuntimeException e) {
@@ -663,12 +680,14 @@ final class BotFreeMarketManager {
                 BotPerformanceMonitor.recordSince("fm-plan", t0);
             }
             entry.fmLastTripWorthy = tripWorthyCount(listable) >= MIN_LISTINGS_TO_TRIP;
+            entry.fmWantsSkillBook = bookWanted;
             boolean sd = stallServiceDue;
             boolean fd = fredrickDue;
+            boolean bw = bookWanted;
             List<ListingPlan> plans = listable;
             BotManager.after(0, () -> {
                 entry.fmPlanPending = false;
-                startMarketTrip(entry, bot, sd, fd, plans);
+                startMarketTrip(entry, bot, sd, fd, bw, plans);
             });
         });
     }
@@ -676,7 +695,8 @@ final class BotFreeMarketManager {
     /** Arm the market errand from a computed plan — scheduler thread. Re-checks the gating state
      *  (it may have moved while the plan computed off-thread); a stale plan just no-ops. */
     private static void startMarketTrip(BotEntry entry, Character bot, boolean stallServiceDue,
-                                        boolean fredrickDue, List<ListingPlan> listable) {
+                                        boolean fredrickDue, boolean bookWanted,
+                                        List<ListingPlan> listable) {
         long now = System.currentTimeMillis();
         if (!BotAutopilotManager.isActive(entry) || bot.getMap() == null) {
             return;
@@ -702,8 +722,8 @@ final class BotFreeMarketManager {
         // (owner spec). The exit-leg shout stand then does the actual selling.
         boolean shoutTrip = !chilling && entry.fmHasShoutSurplus
                 && ThreadLocalRandom.current().nextDouble() < SHOUT_SELL_BREAK_TRIP_CHANCE;
-        if (!stallServiceDue && !fredrickDue && tripWorthyCount(listable) < MIN_LISTINGS_TO_TRIP
-                && !chilling && !social && !shoutTrip) {
+        if (!hasTripReason(stallServiceDue, fredrickDue, tripWorthyCount(listable), bookWanted,
+                chilling, social, shoutTrip)) {
             return; // nothing worth the walk. ponytail: S4 adds the own-income-rate travel gate
         }
 
@@ -727,7 +747,8 @@ final class BotFreeMarketManager {
         entry.fmPhaseDeadlineAtMs = now + ERRAND_TIMEOUT_MS;
         trace(entry, "trip armed: town=" + town + " listable=" + listable.size()
                 + " tripworthy=" + tripWorthyCount(listable)
-                + " stallService=" + stallServiceDue + " fredrick=" + fredrickDue);
+                + " stallService=" + stallServiceDue + " fredrick=" + fredrickDue
+                + " bookWanted=" + bookWanted);
         reply.accept(entry, stallServiceDue ? BotMarketChatter.tripService()
                 : fredrickDue && tripWorthyCount(listable) < MIN_LISTINGS_TO_TRIP
                         ? BotMarketChatter.tripFredrick()
@@ -846,7 +867,7 @@ final class BotFreeMarketManager {
         }
         // Cached verdict from the last off-thread listing plan — this runs on break-destination
         // decides (tick thread), which must never pay the full pricing scan.
-        return entry.fmLastTripWorthy;
+        return entry.fmLastTripWorthy || entry.fmWantsSkillBook;
     }
 
     /** Slow-cadence probe (one DB read per bot-hour): is Fredrick holding proceeds worth a trip?
@@ -2029,6 +2050,14 @@ final class BotFreeMarketManager {
                 return; // not wearable / no upgrade / priced above its combat worth to this bot
             }
             gearUpgrade = true;
+        } else if (BotSkillBookManager.isSkillBook(psi.getItem().getItemId())) {
+            int bookId = psi.getItem().getItemId();
+            double ceiling = BotScrollManager.useItemMarketValueMeso(bot, bookId);
+            double perceived = book.perceivedPrice(key, now);
+            if (!skillBookBuyWorthwhile(BotSkillBookManager.needsBookAcquisition(entry, bot, bookId),
+                    unitAsk, ceiling, perceived, book.privateConfidence(key, now))) {
+                return;
+            }
         } else if (psi.getItem().getItemId() / 10000 == BotScrollManager.SCROLL_ITEM_PREFIX) {
             // Scroll demand: like the equip branch, a fresh scroll market can't clear on belief alone.
             // Buy under a real willingness-to-pay ceiling = min over positive values of the combat-demand
@@ -2083,6 +2112,18 @@ final class BotFreeMarketManager {
         } finally {
             entry.marketBusy = false;
         }
+    }
+
+    static boolean skillBookBuyWorthwhile(boolean needed, double unitAsk, double replacementCost,
+                                           double perceived, double confidence) {
+        if (!needed || replacementCost <= 0 || unitAsk > replacementCost) {
+            return false;
+        }
+        if (perceived <= 0) {
+            return true;
+        }
+        double margin = BotMarketMath.openingMargin(0.5, confidence);
+        return unitAsk <= perceived * (1.0 - Math.min(0.5, margin));
     }
 
     /** Deterministic per-bot stall sign (ASCII, invariant 3). A flavor corpus so a room of stalls

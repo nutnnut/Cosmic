@@ -45,6 +45,44 @@ import static org.mockito.Mockito.when;
 
 class BotInventoryManagerTest {
     @Test
+    void skillBookLootTransferQueuesExactlyOneFromAStack() {
+        Character bot = mock(Character.class);
+        Character recipient = mock(Character.class);
+        Inventory use = mock(Inventory.class);
+        Item stack = mock(Item.class);
+        BotEntry entry = new BotEntry(bot, recipient, null);
+        BotManager manager = spy(BotManager.getInstance());
+
+        when(recipient.getId()).thenReturn(42);
+        when(recipient.getTrade()).thenReturn(null);
+        when(bot.getTrade()).thenReturn(null);
+        when(bot.getInventory(InventoryType.USE)).thenReturn(use);
+        when(stack.getItemId()).thenReturn(2290000);
+        when(stack.getInventoryType()).thenReturn(InventoryType.USE);
+        when(stack.getPosition()).thenReturn((short) 2);
+        when(use.getItem((short) 2)).thenReturn(stack);
+        doAnswer(invocation -> null).when(manager).botReply(eq(entry), anyString());
+
+        try (MockedStatic<BotManager> botManagers = mockStatic(BotManager.class, org.mockito.Mockito.CALLS_REAL_METHODS);
+             MockedStatic<Trade> trades = mockStatic(Trade.class)) {
+            botManagers.when(BotManager::getInstance).thenReturn(manager);
+
+            botManagers.when(() -> BotManager.after(anyLong(), any(Runnable.class))).thenAnswer(invocation -> {
+                invocation.<Runnable>getArgument(1).run();
+                return null;
+            });
+
+            BotOfferManager.reserveLootOffer(entry, stack, recipient.getId(), Long.MAX_VALUE);
+            assertTrue(BotOfferManager.handlePendingOfferResponse(entry, recipient, "yes"));
+
+            assertEquals(1, BotInventoryManager.capTradeQuantityByShareBudget(entry, (short) 100));
+            assertEquals(0, entry.pendingTradeQuantityBudget);
+            trades.verify(() -> Trade.startTrade(bot));
+            trades.verify(() -> Trade.inviteTrade(bot, recipient));
+        }
+    }
+
+    @Test
     void shouldOnlyAnnounceTradeInviteOnFirstBatchOfSequence() throws Exception {
         BotEntry entry = new BotEntry(mock(Character.class), mock(Character.class), null);
         Character bot = entry.bot;

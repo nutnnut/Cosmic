@@ -87,6 +87,28 @@ class BotFreeMarketManagerTest {
     }
 
     @Test
+    void skillBookStacksListAsIndividualBooks() {
+        var item = new client.inventory.Item(2_290_001, (short) 0, (short) 7);
+        var plan = BotFreeMarketManager.stackListingPlan(item, 7, 800_000);
+
+        assertEquals(7, plan.bundles());
+        assertEquals(1, plan.perBundle());
+        assertEquals(800_000, plan.bundlePrice());
+    }
+
+    @Test
+    void missingSkillBookIsAMarketTripReasonAndCanClearWithoutPriorBelief() {
+        assertTrue(BotFreeMarketManager.hasTripReason(false, false, 0,
+                true, false, false, false));
+        assertTrue(BotFreeMarketManager.skillBookBuyWorthwhile(
+                true, 700_000, 800_000, 0, 0));
+        assertFalse(BotFreeMarketManager.skillBookBuyWorthwhile(
+                false, 700_000, 800_000, 0, 0));
+        assertFalse(BotFreeMarketManager.skillBookBuyWorthwhile(
+                true, 900_000, 800_000, 0, 0));
+    }
+
+    @Test
     void priceStylingAppliesToTheBuyerFacingBundleTotal() {
         BotFreeMarketManager.NpcSellLookup realSell = BotFreeMarketManager.npcSell;
         BotFreeMarketManager.NpcShopPrice realShop = BotFreeMarketManager.npcShopPrice;

@@ -621,6 +621,7 @@ public class BotEntry {
     volatile boolean fmPlanPending = false; // an off-thread listing plan is in flight (tickScan)
     volatile java.util.List<BotFreeMarketManager.ListingPlan> fmPlannedListings = java.util.List.of();
     volatile boolean fmLastTripWorthy = false; // cached off-thread verdict for cheap intent checks
+    volatile boolean fmWantsSkillBook = false; // cached off-thread missing planned book demand
     boolean fmVisitedMarket = false;     // trip reached the FM entrance (fizzles skip satiation)
     // Shout-sell stand (PHASE_SHOUT): the bot stands still at the FM entrance advertising surplus gear
     // so shoppers (human or bot) can click-invite to buy. Budget rides the break/chill session.
@@ -758,6 +759,7 @@ public class BotEntry {
     Item pendingLootOfferItem = null;
     int pendingLootOfferRecipientId = 0;
     long pendingLootOfferExpiresAt = 0L;
+    short pendingLootOfferQuantity = 0; // 0 = whole stack; skill-book sharing sets one
     int lootInhibitMs = 0;
 
     // Bot self-scrolling (companion scope; owner confirms each item). When enabled the bot proposes
@@ -768,6 +770,7 @@ public class BotEntry {
     Item pendingScrollScroll = null;
     // Next armed auto-scan time (0 = schedule on the next tick); declines push it out.
     volatile long nextSelfScrollScanAtMs = 0L;
+    volatile long nextSkillBookUseAtMs = 0L;
     volatile boolean scrollPlanQueued = false;
     volatile boolean chaosPlanQueued = false;
     // Autocraft (Maker): armed by command, only proposes while a real owner is online (supervised).
@@ -808,7 +811,7 @@ public class BotEntry {
     boolean pendingTradeSingleBatch = false;
     boolean pendingTradeInviteAnnounced = false;
     String  pendingTradeCategoryMsg = null;
-    int     pendingPotShareBudget = 0; // max total qty to donate; 0 = no cap (normal trades)
+    int     pendingTradeQuantityBudget = 0; // max total stack qty; 0 = no cap
     Map<Item, Short> pendingTradeRestoreSlots = new IdentityHashMap<>();
 
     // Message queue

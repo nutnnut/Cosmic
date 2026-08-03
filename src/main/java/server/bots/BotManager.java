@@ -4209,6 +4209,7 @@ public class BotManager {
         // Real-player takeover (@botme/@botparty) stays grind-focused: never auto-scroll real gear or
         // auto-craft with real materials without the human present. Population bots do both freely.
         if (!isRealPlayerTakeover(entry)) {
+            BotSkillBookManager.tick(entry, bot, nowMs);
             BotScrollManager.tickAutoScroll(entry, bot, nowMs);
             BotMakerManager.tickAutoCraft(entry, bot, nowMs);
         }

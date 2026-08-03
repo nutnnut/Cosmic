@@ -1653,12 +1653,12 @@ class BotManagerTest {
     @Test
     void shouldSplitSingleAmmoStackByShareBudget() {
         BotEntry entry = new BotEntry(mock(Character.class), mock(Character.class), null);
-        entry.pendingPotShareBudget = 2250;
+        entry.pendingTradeQuantityBudget = 2250;
 
         short tradeQty = BotInventoryManager.capTradeQuantityByShareBudget(entry, (short) 5000);
 
         assertEquals(2250, tradeQty);
-        assertEquals(0, entry.pendingPotShareBudget);
+        assertEquals(0, entry.pendingTradeQuantityBudget);
     }
 
     @Test

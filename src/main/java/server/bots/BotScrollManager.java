@@ -1815,14 +1815,14 @@ final class BotScrollManager {
     }
 
     /** Meso price of a scroll, blending the bot's own perceived market price (belief book — see
-     *  {@link #perceivedScrollPrice}) so scroll USE-cost tracks the tape (a glut lowers apply-cost →
+     *  {@link #perceivedItemPrice}) so scroll USE-cost tracks the tape (a glut lowers apply-cost →
      *  usage rises; scarcity raises it). Chaos/White: max(10M cold-market floor, perceived). Shop-sold:
      *  min(NPC shop price, perceived) when there IS a read — the NPC's infinite supply caps the price,
      *  but a glut trading below shop passes through; else the shop price. Not shop-sold: the perceived
      *  price when there is one, else the drop-farm cost (rarity→meso), else a flat default. Returns 0
      *  with no evidence — safe to branch on. */
     private static double scrollPriceMeso(ProducerCombat pc, int scrollId) {
-        double perceived = perceivedScrollPrice(pc, scrollId);
+        double perceived = perceivedItemPrice(pc, scrollId);
         // Chaos/White now have real consumption (chaos gambles, white protection), so the live
         // market prices them; the old 10M stopgap survives only as a cold-market floor
         // until the tape has clearings.
@@ -1850,8 +1850,8 @@ final class BotScrollManager {
      *  scroll pricing perfectly synchronized, defeating the heterogeneous-belief model). Falls back to
      *  raw consensus only when no bot context exists (offline valuation / unit-test paths). Like
      *  consensus(), returns 0 with no evidence — callers branch on that. */
-    private static double perceivedScrollPrice(ProducerCombat pc, int scrollId) {
-        long key = BotMarketMath.priceKey(scrollId, 0);
+    private static double perceivedItemPrice(ProducerCombat pc, int itemId) {
+        long key = BotMarketMath.priceKey(itemId, 0);
         if (pc != null && pc.entry() != null && pc.bot() != null) {
             return BotMarketBook.of(pc.entry(), pc.bot()).perceivedPrice(key, System.currentTimeMillis());
         }
@@ -1896,6 +1896,36 @@ final class BotScrollManager {
         double value = scrollPriceMeso(resolveProducerCombat(entry, bot), scrollId);
         if (shelfScrollValueCache.size() > SHELF_SCROLL_VALUE_CACHE_CAP) {
             shelfScrollValueCache.clear(); // bots churn; a rare cold refill beats unbounded growth
+        }
+        shelfScrollValueCache.put(key, new CachedScrollValue(value, now));
+        return value;
+    }
+
+    /** Generic USE-item acquisition value for market goods such as skill books: private belief,
+     * then an NPC counter when one exists, then targeted-farm replacement cost. Scroll-only combat
+     * ceilings and Chaos/White floors deliberately stay in {@link #scrollMarketValueMeso}. */
+    static double useItemMarketValueMeso(Character bot, int itemId) {
+        long now = System.currentTimeMillis();
+        long key = bot == null ? itemId : ((long) bot.getId() << 32) | (itemId & 0xFFFFFFFFL);
+        CachedScrollValue cached = shelfScrollValueCache.get(key);
+        if (cached != null && now - cached.computedAtMs() < SHELF_SCROLL_VALUE_TTL_MS) {
+            return cached.value();
+        }
+        BotEntry entry = bot == null ? null : BotManager.getInstance().getEntryByBotCharId(bot.getId());
+        ProducerCombat pc = resolveProducerCombat(entry, bot);
+        double perceived = perceivedItemPrice(pc, itemId);
+        Integer shop = shopPrices().get(itemId);
+        double value;
+        if (shop != null) {
+            value = perceived > 0 ? Math.min(shop, perceived) : shop;
+        } else if (perceived > 0) {
+            value = perceived;
+        } else {
+            double farm = farmingCostMeso(pc, itemId);
+            value = Double.isFinite(farm) ? farm : DEFAULT_SCROLL_COST_MESO;
+        }
+        if (shelfScrollValueCache.size() > SHELF_SCROLL_VALUE_CACHE_CAP) {
+            shelfScrollValueCache.clear();
         }
         shelfScrollValueCache.put(key, new CachedScrollValue(value, now));
         return value;

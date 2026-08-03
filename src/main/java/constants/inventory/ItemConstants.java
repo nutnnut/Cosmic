@@ -35,6 +35,16 @@ import java.util.Set;
  * @author Ronan
  */
 public final class ItemConstants {
+    public static final int SKILL_BOOK_FIRST = 2_280_000;
+    public static final int SKILL_BOOK_LAST = 2_280_019;
+    public static final int MASTERY_BOOK_FIRST = 2_290_000;
+    public static final int MASTERY_BOOK_LAST = 2_290_139;
+
+    public static boolean isSkillBook(int itemId) {
+        return itemId >= SKILL_BOOK_FIRST && itemId <= SKILL_BOOK_LAST
+                || itemId >= MASTERY_BOOK_FIRST && itemId <= MASTERY_BOOK_LAST;
+    }
+
     protected static Map<Integer, InventoryType> inventoryTypeCache = new HashMap<>();
 
     public final static short LOCK = 0x01;

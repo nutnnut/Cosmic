@@ -772,6 +772,24 @@ class BotBuildManager {
         return MageBuilds.getBuildOrder(job);
     }
 
+    /** Planned cap for a skill in this bot's selected build; 0 means the build does not use it. */
+    static int plannedSkillTarget(BotEntry entry, Character bot, int skillId) {
+        if (entry == null || bot == null || skillId <= 0) {
+            return 0;
+        }
+        List<BuildStep> steps = getBuildOrder(bot.getJob(), entry.spVariant);
+        if (steps == null) {
+            return 0;
+        }
+        int target = 0;
+        for (BuildStep step : steps) {
+            if (step.skillId() == skillId) {
+                target = Math.max(target, step.targetLevel());
+            }
+        }
+        return target;
+    }
+
     private static String apPromptForJob(Job job) {
         if (job == null) {
             return null;
