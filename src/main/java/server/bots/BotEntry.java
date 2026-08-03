@@ -48,6 +48,11 @@ public class BotEntry {
 
     final Character bot;
     volatile Character owner;
+    final int ownerCharId;
+    // Ownership classification survives the live owner reference being cleared while a human is
+    // offline. True ownerless/self-owned bots are created that way; companions are not promoted to
+    // managed autonomy merely because resolveTickOwner temporarily cannot find their owner.
+    final boolean selfDrivingOwnership;
     // TODO(bot-party-autopilot-stage4): `following` + `grinding` (line ~114) + the autopilot sub-flags
     // (autopilotTransitFollow/autopilotCohortMember/autopilotWaitAnchor) are a scattered boolean soup
     // (~70 sites, 10 files incl. combat/movement hot paths). High reward (this shape caused the
@@ -1084,8 +1089,14 @@ public class BotEntry {
     boolean broadcastedThisTick = false;
 
     BotEntry(Character bot, Character owner, ScheduledFuture<?> task) {
+        this(bot, owner, task, owner != null ? owner.getId() : bot != null ? bot.getId() : -1);
+    }
+
+    BotEntry(Character bot, Character owner, ScheduledFuture<?> task, int ownerCharId) {
         this.bot = bot;
         this.owner = owner;
+        this.ownerCharId = ownerCharId;
+        this.selfDrivingOwnership = owner == null || owner == bot;
         this.task = task;
     }
 

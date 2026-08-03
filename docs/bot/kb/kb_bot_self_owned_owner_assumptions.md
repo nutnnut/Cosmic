@@ -13,6 +13,14 @@ Bots were first designed assuming `entry.owner` is a distinct, online, real huma
 1. An early `owner == bot` bail/guard that fires BEFORE resolving the real intent (leader, crew). Archetype fixed in `BotManager.resolveFollowAnchor` (commit 8fcccd719): moved explicit `followTargetId` party/sibling resolution ahead of the self-owned null guard so self-owned transit-followers get an anchor and catch up across maps via `syncFollowMap` (legal portal route ≤ MAX_FOLLOW_TRAVEL_HOPS=4, else warp).
 2. `getBotEntries(owner.getId())` to find "my group" — for a self-owned bot `owner.getId()==bot.getId()`, so it returns a group of ONE (its crewmates are keyed under their own ids). SSOT fix: `BotManager.shareCandidateEntries(ownerId, needyEntry)` = owner stable PLUS, for a crew bot (`crewGroupId != null`), same-map `crewMatesOnMap`. Used by potion/ammo/rock share donor picks.
 
+**Offline-owner identity:** `BotEntry.owner` is only the live character reference and becomes null when a
+human owner logs out. It must not be used to infer that the bot was created ownerless. `BotEntry` records
+both the stable `ownerCharId` (used by ticks/retasking and the owner-away town cluster) and the creation-time
+`selfDrivingOwnership` classification. `BotManager.isSelfDrivingBot` uses that classification plus the
+dynamic `ownerIsBot` takeover case. Otherwise a logged-out player's companions are misclassified as
+managed bots, inert-autopilot self-heal restarts their grind, and the normal owner-away town-idle flow is
+bypassed.
+
 **Gate idiom for self-owned supply share** (potion/ammo/rock): bail on `owner == null || (owner == bot && entry.crewGroupId == null)` — solo self-owned skips, crew self-owned shares like an owned party. Owner perks stay gated, not removed.
 
 **Fixed:** resolveFollowAnchor (8fcccd719); BotRockManager rock-share (ff7e531ac, matches BotPotionManager:537 / BotAmmoManager:74); grind region-occupancy now party-weighted (0538b83a2 — every live char in region: same-game-Party weight 1, outsiders weight 2 for kill-steal avoidance; crews/owner/dynamic all share a real Party so getPartyId() covers all sources); handleWhisperToBot (0538b83a2 — resolves entry under active owner so gm6 admin can whisper-command a foreign/self-owned bot, binds admin as debug commander so reply whispers back to the command giver not owner==bot).

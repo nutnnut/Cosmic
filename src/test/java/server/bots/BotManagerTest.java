@@ -2134,7 +2134,17 @@ class BotManagerTest {
             assertEquals(1, runs.get());
 
             // owned companion (a real, distinct owner) -> never fires; its idle may be owner-intended.
-            BotEntry owned = new BotEntry(bot, mock(Character.class), null);
+            Character humanOwner = mock(Character.class);
+            when(humanOwner.getId()).thenReturn(77);
+            BotEntry owned = new BotEntry(bot, humanOwner, null);
+            recover.invoke(BotManager.getInstance(), owned, bot);
+            assertEquals(1, runs.get());
+
+            // Owner lookup clears the live reference after logout. That must not reclassify the
+            // companion as an ownerless managed bot and restart grinding through the inert self-heal.
+            owned.owner = null;
+            assertEquals(77, owned.ownerCharId,
+                    "the owner-away flow must retain its stable owner key after logout");
             recover.invoke(BotManager.getInstance(), owned, bot);
             assertEquals(1, runs.get());
         } finally {

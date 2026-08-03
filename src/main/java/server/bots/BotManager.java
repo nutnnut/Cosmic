@@ -1017,8 +1017,7 @@ public class BotManager {
             return;
         }
         int botCharId = entry.bot.getId();
-        int ownerCharId = entry.owner != null ? entry.owner.getId() : botCharId;
-        retask(entry, ownerCharId, botCharId, BotMovementManager.cfg.TICK_MS);
+        retask(entry, entry.ownerCharId, botCharId, BotMovementManager.cfg.TICK_MS);
     }
 
     record LodDecision(BotEntry.Lod lod, long unobservedSinceMs) {}
@@ -1184,7 +1183,7 @@ public class BotManager {
         BotEntry[] ref = new BotEntry[1];
         ScheduledFuture<?> task = TimerManager.getInstance().register(
                 () -> tick(ref[0], ownerCharId, botCharId), BotMovementManager.cfg.TICK_MS);
-        BotEntry entry = new BotEntry(bot, owner, task);
+        BotEntry entry = new BotEntry(bot, owner, task, ownerCharId);
         ref[0] = entry;
         entry.tickIntervalMs = BotMovementManager.cfg.TICK_MS; // matches the interval the task registered at
         entry.movementProfile = BotMovementProfile.fromCharacter(bot);
@@ -2680,12 +2679,13 @@ public class BotManager {
                 && entry.owner.getClient() instanceof BotClient;
     }
 
-    /** A self-driving managed bot: no live human owner steering it — ownerless population bot, a
-     *  self-owned takeover (owner == bot), or a companion whose owner botified ({@link #ownerIsBot}).
+    /** A self-driving managed bot: ownerless population bot, a self-owned takeover (owner == bot),
+     *  or a companion whose owner botified ({@link #ownerIsBot}). The creation-time ownership flag
+     *  keeps an offline human-owned companion distinct after its live owner reference becomes null.
      *  SSOT for "self-owned" across the inert-autopilot self-heal and the web RTS-commandable check. */
     static boolean isSelfDrivingBot(BotEntry entry) {
         return entry != null
-                && (entry.owner == null || entry.owner == entry.bot || ownerIsBot(entry));
+                && (entry.selfDrivingOwnership || ownerIsBot(entry));
     }
 
     /** A REAL player's character running on autopilot with no live human present: the char a player
@@ -2825,8 +2825,8 @@ public class BotManager {
         if (hasOnlinePlayerOwner(entry)) {
             issueFollowOwner(entry);
         } else {
-            int ownerCharId = entry.owner != null ? entry.owner.getId() : entry.bot.getId();
-            enterOwnerInactiveSafeMode(entry, entry.bot, ownerCharId, shouldTownWarpForOwnerInactive(entry));
+            enterOwnerInactiveSafeMode(entry, entry.bot, entry.ownerCharId,
+                    shouldTownWarpForOwnerInactive(entry));
         }
     }
 
@@ -4135,10 +4135,9 @@ public class BotManager {
             return;
         }
         int botCharId = entry.bot.getId();
-        int ownerCharId = entry.owner != null ? entry.owner.getId() : -1;
         long startedAt = BotPerformanceMonitor.enabled() ? System.nanoTime() : 0L;
         try {
-            tickCore(entry, ownerCharId, botCharId);
+            tickCore(entry, entry.ownerCharId, botCharId);
             settleIdleIfUnbroadcast(entry);
         } catch (Throwable t) {
             log.warn("runTickForTest: tickCore threw for bot {}", entry.bot.getName(), t);
