@@ -374,6 +374,39 @@ class BotTravelManagerTest {
         assertEquals(townwardPortal.getId(), f.entry().followTravelPortalId);
     }
 
+    /** A recheck that clears the hop and then re-pins the SAME portal must not restart the walk budget.
+     *  Resetting it every second would mean the deadline never expires, and the give-up/warp fallback
+     *  could never rescue a bot walking at a portal it can't actually reach. */
+    @Test
+    void shouldKeepWalkDeadlineWhenRecheckRepinsTheSamePortal() {
+        int startMap = 240030100;
+        int detourMap = 240030000;
+        Portal direct = portal(7, HENESYS, Portal.MAP_PORTAL, null, Portal.OPEN, new Point(-1650, -958));
+        Fixture f = fixture(startMap, HENESYS, new Point(-1590, -478), List.of(direct));
+        long deadline = 12_345_678_000L;
+        f.entry().followTravelTargetMapId = HENESYS;
+        f.entry().followTravelNextHopMapId = HENESYS;
+        f.entry().followTravelFromMapId = startMap;
+        f.entry().followTravelPortalId = direct.getId();
+        f.entry().followTravelDeadlineMs = deadline;
+        // Mid-walk with no NEW progress this tick, so the progress-aware refresh stays out of it and the
+        // assertion isolates whether the re-pin itself restarted the budget.
+        f.entry().followTravelBestDist = 0;
+        f.entry().followTravelBestRouteCost = 0;
+        f.entry().followTravelProgressPos = new Point(-1590, -478);
+
+        // The world graph prefers a detour, so the recheck disagrees with the committed direct hop and
+        // drops it — but the re-plan finds the same adjacent portal and re-pins it.
+        try (MovementRecorder movement = new MovementRecorder();
+             RouteStub route = new RouteStub((from, to, maxHops, options, blocked) ->
+                     List.of(detourMap, HENESYS))) {
+            assertTrue(BotTravelManager.tickFollowTravel(f.entry(), f.bot(), f.anchor(), true));
+        }
+
+        assertEquals(direct.getId(), f.entry().followTravelPortalId);
+        assertEquals(deadline, f.entry().followTravelDeadlineMs);
+    }
+
     @Test
     void shouldUsePartitionRouteEvenWhenCurrentMapCanReachAllExits() {
         int startMap = 1;

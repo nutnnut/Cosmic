@@ -553,6 +553,40 @@ caches warmed, travel clears the old commitment and replans in the same tick. Ta
 portal landings retain their dedicated ownership. Regression:
 `BotTravelManagerTest.shouldReplaceCommittedHopWhenBestRouteChanges`.
 
+## 21. Drop waypoint bang-bang at a knife-edge walk-off — 100000102 r14 (DIAGNOSED, OPEN)
+
+Symptom (`logs/bot-nav/pathlog-Jason-2026-08-07T085354.txt`, live repro of the failing
+`BotHenesysDeptStoreDescentTest.descentFromEverySmallPlatformReachesExitPortal`): the bot never
+descends, oscillating in a ~12px band on r14 with an exactly periodic 12-tick cycle. Header shows
+`Graph: exact version=70`, `Stuck: YES`, committed `DROP r14->r19 (61,72)->(149,103) stepX=8`. The
+steering waypoint alternates between the edge's landing point `(149,103)` and its launch anchor
+`(61,72)` — the two are in OPPOSITE directions, so the bot is driven left and right forever:
+
+    x=85..90  -> steer (149,103)  walk right
+    x=92..97  -> steer (61,72)    walk left
+
+Root cause: `BotNavigationManager.selectDropWaypoint` calls
+`BotPhysicsEngine.simulateWalkOffLanding` ONCE from the live stance each tick and uses
+`matchesDirectionalDrop` on that single sample as a bang-bang switch between the two targets. The
+walk-off outcome on this map is knife-edge — the comment on `matchesDirectionalDrop` already says so
+("1px flips which shelf catches the fall — 100000102 r17 lands r18 or r23 depending on stance") — and
+because the sample depends on `physX`/`hspeed`/`groundPhysicsCarryMs`, the verdict flips within the
+band the bot can occupy. The switching surface sits INSIDE the reachable band, which is a stable
+limit cycle by construction. This is iron rule 2 ("author the whole outcome envelope or nothing")
+violated on the executor side: a knife-edge outcome is fine as an *authored* edge property, but must
+never be a per-tick *control input*.
+
+Bisected to `235b6aefa` "Fix overlapped foothold ground continuity" (2026-07-04, touches
+`BotPhysicsEngine`/`BotMovementManager`); `cc1a170fb` passes, `235b6aefa` fails identically. Broken
+silently for ~5 weeks — 2 of 12 start points, `(-147,98)` and `(-160,141)`, both park at ~`(90,73)`.
+
+Not yet fixed. The candidate fix is to stop re-deriving the launch point at runtime: `edge.startPoint`
+IS the authored launch anchor, so the executor should steer to it and then feed the authored direction,
+using the live sim only as a one-way "already past the point of no return" gate — never as a selector
+between two opposing targets. Note the guard the current code deliberately added (a bot on a DIFFERENT
+same-height foothold beyond the gap must not be fed `endPoint`, see `pathlog-itunes-2026-07-02T071428`)
+must be preserved by requiring same-foothold-as-anchor rather than by re-simulating.
+
 ## Files
 - `BotNavigationGraph.java` — `Region.surfaceCoversPoint` + `SHARED_GROUND_Y_PX` (#8)
 - `BotNavigationGraphProvider.java` — `addJumpEdges`/`addFlashJumpEdges` shared-ground guard,

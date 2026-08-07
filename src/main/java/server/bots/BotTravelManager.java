@@ -289,15 +289,23 @@ final class BotTravelManager {
         boolean canCheck = navGraph != null && botRegion >= 0;
         boolean useGroundReachability = canCheck && !map.isSwim();
 
-        if (active && entry.followTravelEnteredAtMs == 0L && !entry.followTravelFerry
-                && entry.followTravelTaxiNpcId == 0 && now >= entry.followTravelRouteRecheckAtMs) {
+        // Refresh a committed hop only while its route inputs were still COLD: a hop pinned before the
+        // nav graph / partition cache warmed can name the wrong first map. Once a resolve runs warm the
+        // answer cannot change, so the recheck retires itself rather than re-running the exit scan +
+        // partition search every second for the whole trip (population-scale cost, cf. e7f8658).
+        if (active && !entry.followTravelRouteWarm && entry.followTravelEnteredAtMs == 0L
+                && !entry.followTravelFerry && entry.followTravelTaxiNpcId == 0
+                && now >= entry.followTravelRouteRecheckAtMs) {
             java.util.function.IntPredicate blocked = BotAutopilotManager.routeBlockFor(bot);
             List<Integer> currentRoute = resolveRoute(bot, map, navGraph, botRegion,
                     useGroundReachability, targetMapId, maxHops, allowFerry, blocked);
             entry.followTravelRouteRecheckAtMs = now + ROUTE_RECHECK_INTERVAL_MS;
+            entry.followTravelRouteWarm = useGroundReachability;
             if (currentRoute != null && !currentRoute.isEmpty()
                     && currentRoute.get(0) != entry.followTravelNextHopMapId) {
-                clear(entry);
+                // Re-plan below. Deliberately NOT clear(entry): keeping the existing pin lets the
+                // commit recognise a same-portal re-commit and preserve the walk deadline, so a
+                // recheck that lands back on this hop can't reset the give-up timer forever.
                 active = false;
             }
         }
@@ -382,15 +390,20 @@ final class BotTravelManager {
                     return tryConsumableHop(entry, bot, map, targetMapId, nextHopMapId, now, runAiTick);
                 }
             }
+            boolean samePin = entry.followTravelFromMapId == bot.getMapId()
+                    && entry.followTravelPortalId == portal.getId();
             entry.followTravelTargetMapId = targetMapId;
             entry.followTravelNextHopMapId = nextHopMapId;
             entry.followTravelFromMapId = bot.getMapId();
             entry.followTravelPortalId = portal.getId();
-            entry.followTravelBestDist = Integer.MAX_VALUE; // fresh hop — first walk tick seeds progress
-            entry.followTravelBestRouteCost = Integer.MAX_VALUE;
-            entry.followTravelProgressPos = null;
-            entry.followTravelDeadlineMs = now + travelBudgetMs(manhattan(bot.getPosition(), portal.getPosition()));
             entry.followTravelRouteRecheckAtMs = now + ROUTE_RECHECK_INTERVAL_MS;
+            entry.followTravelRouteWarm = useGroundReachability;
+            if (!samePin) {
+                entry.followTravelBestDist = Integer.MAX_VALUE; // fresh hop — first walk tick seeds progress
+                entry.followTravelBestRouteCost = Integer.MAX_VALUE;
+                entry.followTravelProgressPos = null;
+                entry.followTravelDeadlineMs = now + travelBudgetMs(manhattan(bot.getPosition(), portal.getPosition()));
+            }
         }
 
         // Progress-aware deadline: refresh from committed-route progress, not raw portal distance.
@@ -898,6 +911,7 @@ final class BotTravelManager {
         entry.followTravelFromMapId = -1;
         entry.followTravelDeadlineMs = 0L;
         entry.followTravelRouteRecheckAtMs = 0L;
+        entry.followTravelRouteWarm = false;
         entry.followTravelEnteredAtMs = 0L;
         entry.followTravelBestDist = Integer.MAX_VALUE;
         entry.followTravelBestRouteCost = Integer.MAX_VALUE;

@@ -349,6 +349,7 @@ public class BotEntry {
     int followTravelFromMapId = -1;     // map the walk started in — landing anywhere else re-plans
     long followTravelDeadlineMs = 0L;   // give up walking and warp once this passes
     long followTravelRouteRecheckAtMs = 0L; // refresh a committed hop after route caches warm
+    boolean followTravelRouteWarm = false;  // hop was resolved with warm nav/partition inputs — stop rechecking
     long followTravelEnteredAtMs = 0L;  // enterPortal fired; waiting for the map change to land
     long followTravelGiveUpUntilMs = 0L; // after a failed attempt, warp directly for a while
     int followTravelGiveUpTargetMapId = -1; // the DESTINATION that failed: the give-up only blocks retravel to THIS map, so a doomed errand (e.g. an unreachable quest NPC) can't poison another consumer's travel to a different map

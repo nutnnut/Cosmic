@@ -1698,8 +1698,12 @@ final class BotAutopilotManager {
     }
 
     static SupplyLevel supplyLevel = BotAutopilotManager::defaultLowOnSupplies;
+    /** Errand trigger for a thin return-scroll runway. Affordability-gated like the pot and ammo
+     *  triggers: a bot that can't cover a scroll must keep grinding rather than peel to town every
+     *  cooldown to buy nothing. */
     static java.util.function.Predicate<Character> returnScrollRunwayLow =
-            BotShopManager::shouldBuyReturnScrollWhileShopping;
+            bot -> BotShopManager.returnScrollRunwayLow(bot)
+                    && BotShopManager.canAffordReturnScrollResupply(bot);
 
     /** True when HP or MP pots are below {@code POT_STOP} — the same threshold the reactive
      *  resupply errand triggers on (BotPotionManager.tickPotionCheck). Exception-safe: partial

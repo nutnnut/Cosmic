@@ -2898,6 +2898,12 @@ final class BotScrollManager {
      * its NPC sell-back value (that would be free arbitrage), so any listing with
      * {@code buyPrice <= sellBack} (e.g. the 1-meso GM shops) is dropped before taking the min.
      */
+    /** Cheapest legitimate NPC-shop buy price for an item, or null when no shop sells it. Exposed so
+     *  errand triggers can gate on affordability without duplicating the shop-price scan. */
+    static Integer npcShopPrice(int itemId) {
+        return shopPrices().get(itemId);
+    }
+
     private static Map<Integer, Integer> shopPrices() {
         Map<Integer, Integer> cached = shopPrices;
         if (cached != null) {

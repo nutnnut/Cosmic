@@ -1091,7 +1091,10 @@ final class BotGrindAdvisor {
             // accuracy hit-factor, and the acquire-gain roll each call).
             double gain = gainByItem.computeIfAbsent(itemId, id ->
                     BotSkillBookManager.isSkillBook(id)
-                            ? BotSkillBookManager.needFraction(entry, bot, id)
+                            // capGainFraction returns a fraction of worn offense (like dpsGainFraction
+                            // below); scale it back up so scoreGain stays in absolute offense units for
+                            // the MIN_GEAR_GAIN_SCORE gate, exactly as equips and scrolls are.
+                            ? BotSkillBookManager.capGainFraction(entry, bot, id, totalWornOffense)
                                     * Math.max(1.0, totalWornOffense)
                             : id / 10000 == BotScrollManager.SCROLL_ITEM_PREFIX
                             ? scrollGains.gain(bot, id)

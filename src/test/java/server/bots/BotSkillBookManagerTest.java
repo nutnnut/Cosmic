@@ -1,13 +1,19 @@
 package server.bots;
 
+import client.BuffStat;
 import client.Character;
 import client.Job;
+import client.Skill;
 import client.inventory.Inventory;
 import client.inventory.InventoryType;
 import client.inventory.Item;
 import client.processor.stat.SkillBookProcessor;
 import constants.skills.Bishop;
 import org.junit.jupiter.api.Test;
+import server.StatEffect;
+import tools.Pair;
+
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -88,13 +94,54 @@ class BotSkillBookManagerTest {
         assertFalse(BotSkillBookManager.raisesPlannedCap(1_122_001, 0, 0));
     }
 
+    /** Flat statups map straight onto the equip-stat keys the shared scorer reads, so a buff book is
+     *  priced by the same function as an equip drop rather than a book-specific constant. */
     @Test
-    void grindWeightIncludesUnlockedLevelsAndApplicationChance() {
-        double masteryTwenty = BotSkillBookManager.needFraction(70, 20, 10, 30);
-        double masteryThirty = BotSkillBookManager.needFraction(50, 30, 20, 30);
+    void flatStatBuffGrantsMapOntoEquipStatKeys() {
+        Character bot = mock(Character.class);
+        Skill skill = mock(Skill.class);
+        StatEffect effect = mock(StatEffect.class);
+        when(skill.getEffect(30)).thenReturn(effect);
+        when(effect.getStatups()).thenReturn(java.util.List.of(
+                new Pair<>(BuffStat.WATK, 30), new Pair<>(BuffStat.AVOID, 12)));
 
-        assertEquals(0.70 * (0.20 + 10.0 / 60.0), masteryTwenty, 1e-9);
-        assertEquals(0.50 * (0.20 + 10.0 / 60.0), masteryThirty, 1e-9);
-        assertEquals(0.0, BotSkillBookManager.needFraction(0, 30, 20, 30), 1e-9);
+        Map<String, Integer> grant = BotSkillBookManager.statGrantAt(bot, skill, 30);
+
+        assertEquals(30, grant.get("PAD"));
+        assertEquals(12, grant.get("EVA"));
+    }
+
+    /** Maple Warrior is a percentage of the bot's OWN base stats — resolved the same way
+     *  Character.recalcLocalStats applies it, so a stronger bot values the book more. */
+    @Test
+    void mapleWarriorGrantScalesWithTheBotsOwnBaseStats() {
+        Character bot = mock(Character.class);
+        Skill skill = mock(Skill.class);
+        StatEffect effect = mock(StatEffect.class);
+        when(bot.getStr()).thenReturn(400);
+        when(bot.getDex()).thenReturn(120);
+        when(bot.getInt()).thenReturn(4);
+        when(bot.getLuk()).thenReturn(4);
+        when(skill.getEffect(30)).thenReturn(effect);
+        when(effect.getStatups()).thenReturn(java.util.List.of(new Pair<>(BuffStat.MAPLE_WARRIOR, 15)));
+
+        Map<String, Integer> grant = BotSkillBookManager.statGrantAt(bot, skill, 30);
+
+        assertEquals(60, grant.get("STR"));
+        assertEquals(18, grant.get("DEX"));
+    }
+
+    /** A skill whose grant the offense model cannot see (utility buffs, packed crit) scores nothing
+     *  rather than a fabricated weight. */
+    @Test
+    void grantsWithNoEquipStatEquivalentScoreNothing() {
+        Character bot = mock(Character.class);
+        Skill skill = mock(Skill.class);
+        StatEffect effect = mock(StatEffect.class);
+        when(skill.getEffect(30)).thenReturn(effect);
+        when(effect.getStatups()).thenReturn(java.util.List.of(new Pair<>(BuffStat.SHARP_EYES, 0x1408)));
+
+        assertTrue(BotSkillBookManager.statGrantAt(bot, skill, 30).isEmpty());
+        assertTrue(BotSkillBookManager.statGrantAt(bot, skill, 0).isEmpty());
     }
 }

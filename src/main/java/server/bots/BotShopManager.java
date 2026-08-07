@@ -67,6 +67,10 @@ final class BotShopManager {
     private static final int AMMO_TARGET_THRESHOLD = 10; // full target when buying at shop
     private static final int RETURN_SCROLL_NEAREST_TOWN = 2030000;
     private static final int RETURN_SCROLL_TARGET_QTY = 10;
+    // Trigger well below the target, like POT_TRIGGER_THRESHOLD vs POT_TARGET_THRESHOLD: topping up to
+    // 10 is worth doing while already at a shop, but it must never be the REASON for a trip or a stop —
+    // otherwise a bot at 9 scrolls walks to town to buy one.
+    private static final int RETURN_SCROLL_TRIGGER_QTY = 3;
     private static final int RECHARGE_MAX_SETS = 10; // cap recharge to the best N own-type stacks
     private static final int AUTO_SELL_FREE_SLOT_THRESHOLD = 2; // bag tab "cramped" when this few slots left
     private static final int USE_HEALTHY_FREE_SLOTS = 16; // cramped USE escalation sells down to this many free slots (farming runway)
@@ -132,7 +136,7 @@ final class BotShopManager {
         int potTrigger = BotManager.cfg.POT_LOW_WARN * POT_TRIGGER_THRESHOLD;
         boolean needsHpPots = pots[0] < potTrigger && findPotionItem(match.shop, bot, true) != null;
         boolean needsMpPots = pots[1] < potTrigger && findPotionItem(match.shop, bot, false) != null;
-        boolean needsReturnScrolls = shouldBuyReturnScrollWhileShopping(bot)
+        boolean needsReturnScrolls = returnScrollRunwayLow(bot)
                 && findReturnScrollItem(match.shop) != null;
         boolean needsPreferredWeapon = findNeededPreferredWeaponItem(bot, match.shop) != null;
         if (!needsRecharge && !needsAmmoForShop && !needsHpPots && !needsMpPots
@@ -526,7 +530,7 @@ final class BotShopManager {
             if (needsPreferredWeaponForCurrentJob(bot)) {
                 return true;
             }
-            if (shouldBuyReturnScrollWhileShopping(bot)) {
+            if (returnScrollRunwayLow(bot)) {
                 return true;
             }
             if (potsLow(bot)) {
@@ -997,8 +1001,30 @@ final class BotShopManager {
         return buyFixedCostItem(bot, shop, ammo, 1, 1);
     }
 
+    /** Worth topping the runway up while the bot is ALREADY buying at a shop. Never a reason to start
+     *  a trip or stop at a shop — see {@link #returnScrollRunwayLow} for that. */
     static boolean shouldBuyReturnScrollWhileShopping(Character bot) {
         return countReturnScrolls(bot) < RETURN_SCROLL_TARGET_QTY;
+    }
+
+    /** Runway thin enough that restocking is worth a trip/stop on its own. */
+    static boolean returnScrollRunwayLow(Character bot) {
+        return countReturnScrolls(bot) < RETURN_SCROLL_TRIGGER_QTY;
+    }
+
+    /** SSOT affordability gate for a return-scroll resupply ERRAND, the sibling of
+     *  {@link #canAffordPotResupply}: a bot that can't cover one scroll would walk to a shop, fail on
+     *  NOT_ENOUGH_MESO and bounce back forever. Only the trip is gated — {@link
+     *  #shouldBuyReturnScrollWhileShopping} stays price-free so a bot already at a shop still tops up
+     *  whatever it can afford. Unknown price (no shop sells it here) reads as affordable so the gate
+     *  can never strand a legitimate restock. */
+    static boolean canAffordReturnScrollResupply(Character bot) {
+        try {
+            Integer price = BotScrollManager.npcShopPrice(RETURN_SCROLL_NEAREST_TOWN);
+            return price == null || spendableMeso(bot) >= price;
+        } catch (RuntimeException ex) {
+            return true;
+        }
     }
 
     private static boolean isRechargeWeaponType(WeaponType wt) {

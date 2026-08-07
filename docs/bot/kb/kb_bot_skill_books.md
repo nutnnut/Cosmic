@@ -15,9 +15,25 @@ Actual consumption is shared with players through `client.processor.stat.SkillBo
 Bots consume one book per jittered attempt and immediately run SP assignment after a successful cap
 increase. Do not reproduce skill-book validation or success rolls in bot code.
 
-Needed book drops join the grind advisor's existing progression prospects. Their value scales with
-the planned cap levels unlocked and the book's application chance; ordinary drop probability and
-attainability remain owned by `BotGrindPlanner`.
+Needed book drops join the grind advisor's existing progression prospects, on the SAME scale as gear
+rather than a parallel lens: `BotSkillBookManager.capGainFraction` returns a fraction of the bot's
+worn offense, which is exactly the `GearProspect.dpsGainFraction` unit an equip drop produces, so
+`BotGrindPlanner` keeps one gear term with no book-specific branch. The fraction has two SSOT-scored
+halves, summed:
+
+- **stat grants** (Maple Warrior, Sharp Eyes, Hyper Body, flat WATK/WDEF/...) — the `StatEffect`
+  statup delta between the current and new cap, translated into the equip-stat vocabulary and priced
+  by `BotScrollManager.equipValueFromStats`, the same scorer equips and scrolls use. Percentage buffs
+  resolve against the bot's own base stats the way `Character.recalcLocalStats` applies them, so a
+  stronger bot values Maple Warrior 30 more. `ACC` is deliberately not mapped: `equipValueFromStats`
+  has no accuracy term either, and the grind path already prices accuracy via `accuracyHitFactor`.
+- **attack power** (Genesis, Dragon Roar, ...) — damage% across the skill's lines at the new cap,
+  measured against the bot's best current attack, which is a fractional DPS gain by construction.
+
+Both are scaled by the book's application chance. A skill whose gain the offense model cannot see —
+pure mitigation passives such as Achilles, whose effect lives in `getX()` rather than statups —
+scores zero and is not farmed for. That is a known coverage gap, not a tuning knob; do not paper over
+it with a constant. Ordinary drop probability and attainability remain owned by `BotGrindPlanner`.
 
 Surplus books are USE-shelf market goods valued through the existing belief/farm-cost price path.
 The owner, same-map party members, and trusted stable/crew siblings get first refusal through the

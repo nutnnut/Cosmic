@@ -1319,7 +1319,7 @@ class BotCombatManager {
         return targetExp < cfg.OPPORTUNITY_MIN_EXP_FRACTION * entry.aspirationalMobExp;
     }
 
-    private static List<Integer> cachedAttackSkillIds(BotEntry entry) {
+    static List<Integer> cachedAttackSkillIds(BotEntry entry) {
         if (!entry.attackSkillIds.isEmpty()) {
             return entry.attackSkillIds;
         }
