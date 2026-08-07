@@ -83,6 +83,8 @@ class BotAutopilotManagerTest {
         private final BotAutopilotManager.PartyMembersLookup previousPartyMembers = BotAutopilotManager.partyMembers;
         private final BotAutopilotManager.HopDistance previousHopDistance = BotAutopilotManager.hopDistance;
         private final BotAutopilotManager.SupplyLevel previousSupplyLevel = BotAutopilotManager.supplyLevel;
+        private final java.util.function.Predicate<Character> previousReturnScrollRunwayLow =
+                BotAutopilotManager.returnScrollRunwayLow;
         private final BotAutopilotManager.BagFull previousBagFull = BotAutopilotManager.bagFull;
         private final java.util.function.IntPredicate previousEquipStatsExist = BotAutopilotManager.equipStatsExist;
         private final java.util.function.Predicate<Character> previousNeedsPreferredWeapon = BotShopManager.needsPreferredWeaponForCurrentJobSeam;
@@ -104,6 +106,7 @@ class BotAutopilotManagerTest {
             // Default: well-stocked, so the pre-travel resupply gate never trips for the
             // travel/formation/portal-wait tests. The pre-travel test overrides this.
             BotAutopilotManager.supplyLevel = bot -> false;
+            BotAutopilotManager.returnScrollRunwayLow = bot -> false;
             // Default: bag has room, so the bag-full pre-travel gate never trips either.
             BotAutopilotManager.bagFull = (entry, bot) -> false;
             // Default: any wanted-gear id is a real equip, so installPlan records it without
@@ -124,6 +127,7 @@ class BotAutopilotManagerTest {
             BotAutopilotManager.partyMembers = previousPartyMembers;
             BotAutopilotManager.hopDistance = previousHopDistance;
             BotAutopilotManager.supplyLevel = previousSupplyLevel;
+            BotAutopilotManager.returnScrollRunwayLow = previousReturnScrollRunwayLow;
             BotAutopilotManager.bagFull = previousBagFull;
             BotAutopilotManager.equipStatsExist = previousEquipStatsExist;
             BotShopManager.needsPreferredWeaponForCurrentJobSeam = previousNeedsPreferredWeapon;
@@ -988,6 +992,30 @@ class BotAutopilotManagerTest {
             assertEquals(-1, f.entry().autopilotErrandMapId);
             travel.verify(() -> BotTravelManager.tickTravel(any(), any(),
                     org.mockito.ArgumentMatchers.eq(HUNTING_GROUND), anyInt(), anyBoolean(), anyBoolean()));
+        }
+    }
+
+    @Test
+    void shouldStockReturnScrollRunwayBeforeLongTripEvenWhenOtherSuppliesAreFine() {
+        Fixture f = fixture(104010000);
+        f.entry().autopilotMapId = HUNTING_GROUND;
+        f.entry().autopilotNextDecisionAtMs = Long.MAX_VALUE;
+        f.entry().grinding = true;
+        MapleMap town = mock(MapleMap.class);
+        when(town.getId()).thenReturn(TOWN);
+        when(f.bot().getMap().getReturnMap()).thenReturn(town);
+
+        try (Seams seams = new Seams(null);
+             MockedStatic<BotTravelManager> travel = mockStatic(BotTravelManager.class)) {
+            travel.when(() -> BotTravelManager.tickTravel(any(), any(), anyInt(), anyInt(), anyBoolean(), anyBoolean()))
+                    .thenReturn(true);
+            BotAutopilotManager.supplyLevel = bot -> false;
+            BotAutopilotManager.returnScrollRunwayLow = bot -> true;
+
+            assertTrue(BotAutopilotManager.tick(f.entry(), f.bot(), true));
+            assertEquals(TOWN, f.entry().autopilotErrandMapId);
+            travel.verify(() -> BotTravelManager.tickTravel(any(), any(),
+                    org.mockito.ArgumentMatchers.eq(TOWN), anyInt(), anyBoolean(), anyBoolean()));
         }
     }
 

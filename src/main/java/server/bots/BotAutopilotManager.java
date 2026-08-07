@@ -949,8 +949,10 @@ final class BotAutopilotManager {
         // swing) to earn the meso first rather than bouncing to town forever.
         boolean ammoStranded = BotShopManager.isOutOfUsableAmmo(bot) && BotShopManager.canRecoverAmmo(entry, bot);
         boolean needsPreferredWeapon = BotShopManager.needsPreferredWeaponForCurrentJob(bot);
+        boolean needsReturnScrolls = returnScrollRunwayLow.test(bot);
         if (!operatorPinned && entry.autopilotErrandMapId == -1 && !entry.autopilotReturningFromErrand
-                && (lowAndCanBuy || ammoStranded || needsPreferredWeapon || bagFull.bagFull(entry, bot))) {
+                && (lowAndCanBuy || ammoStranded || needsPreferredWeapon || needsReturnScrolls
+                        || bagFull.bagFull(entry, bot))) {
             requestResupplyErrand(entry, bot);
             if (entry.autopilotErrandMapId != -1) {
                 destination = entry.autopilotErrandMapId; // head to town this tick, not the grind map
@@ -1049,7 +1051,7 @@ final class BotAutopilotManager {
         if (bot.getMap() == null) {
             return -1;
         }
-        Integer shopMap = BotShopManager.findNearestShopMap(entry, bot, !BotShopManager.needsToBuySupplies(entry, bot));
+        Integer shopMap = BotShopManager.findNearestShopMap(bot, !BotShopManager.needsToBuySupplies(entry, bot));
         int town = shopMap != null && shopMap != bot.getMapId()
                 ? shopMap
                 : (bot.getMap().getReturnMap() != null ? bot.getMap().getReturnMap().getId() : -1);
@@ -1089,12 +1091,11 @@ final class BotAutopilotManager {
         }
         // Seek the nearest reachable SHOP that fits the need, not just "nearest town". A bot stranded
         // in a town hub whose own map has no shop NPC (Orbis 200000000 -> department store 200000002,
-        // one portal away) used to bail here on "return map == self" and never sell/restock. Pots are
-        // the only need that requires a specific (potion-stocking) shop; a full bag or low ammo is fine
-        // at any shop. Falls back to the old return-map town when no shop is reachable in range.
+        // one portal away) used to bail here on "return map == self" and never sell/restock. Candidate
+        // shops are ranked against current needs; fall back to the return map if none is found.
         int targetMapId;
         boolean needsPreferredWeapon = BotShopManager.needsPreferredWeaponForCurrentJob(bot);
-        Integer shopMapId = BotShopManager.findNearestShopMap(entry, bot, !BotShopManager.needsToBuySupplies(entry, bot));
+        Integer shopMapId = BotShopManager.findNearestShopMap(bot, !BotShopManager.needsToBuySupplies(entry, bot));
         if (shopMapId != null && shopMapId != bot.getMapId()) {
             targetMapId = shopMapId;
         } else {
@@ -1697,6 +1698,8 @@ final class BotAutopilotManager {
     }
 
     static SupplyLevel supplyLevel = BotAutopilotManager::defaultLowOnSupplies;
+    static java.util.function.Predicate<Character> returnScrollRunwayLow =
+            BotShopManager::shouldBuyReturnScrollWhileShopping;
 
     /** True when HP or MP pots are below {@code POT_STOP} — the same threshold the reactive
      *  resupply errand triggers on (BotPotionManager.tickPotionCheck). Exception-safe: partial

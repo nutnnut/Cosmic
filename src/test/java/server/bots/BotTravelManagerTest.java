@@ -350,6 +350,31 @@ class BotTravelManagerTest {
     }
 
     @Test
+    void shouldReplaceCommittedHopWhenBestRouteChanges() {
+        int startMap = 240030100;
+        int staleHiddenMap = 240030103;
+        int townwardMap = 240030000;
+        Portal stalePortal = portal(16, staleHiddenMap, 3, null, Portal.OPEN, new Point(-1485, -226));
+        Portal townwardPortal = portal(3, townwardMap, Portal.MAP_PORTAL, null, Portal.OPEN,
+                new Point(-1650, -958));
+        Fixture f = fixture(startMap, HENESYS, new Point(-1590, -478), List.of(stalePortal, townwardPortal));
+        f.entry().followTravelTargetMapId = HENESYS;
+        f.entry().followTravelNextHopMapId = staleHiddenMap;
+        f.entry().followTravelFromMapId = startMap;
+        f.entry().followTravelPortalId = stalePortal.getId();
+        f.entry().followTravelDeadlineMs = Long.MAX_VALUE;
+
+        try (MovementRecorder movement = new MovementRecorder();
+             RouteStub route = new RouteStub((from, to, maxHops, options, blocked) ->
+                     List.of(townwardMap, HENESYS))) {
+            assertTrue(BotTravelManager.tickFollowTravel(f.entry(), f.bot(), f.anchor(), true));
+        }
+
+        assertEquals(townwardMap, f.entry().followTravelNextHopMapId);
+        assertEquals(townwardPortal.getId(), f.entry().followTravelPortalId);
+    }
+
+    @Test
     void shouldUsePartitionRouteEvenWhenCurrentMapCanReachAllExits() {
         int startMap = 1;
         int badSplitArrivalMap = 2;

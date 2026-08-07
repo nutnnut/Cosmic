@@ -537,6 +537,22 @@ re-arm logout while that command remains live. Regressions:
 `BotAutopilotManagerTest.partyPlanDoesNotRetakeMemberUnderOperatorMove`, plus
 `BotManagerTest.operatorMoveCancelsPendingManagedLogout`.
 
+## 20. Committed cross-map hop outlived a changed best route — 240030100/240030103 loop (FIXED)
+
+TankPulse, FijiVolley, and Later repeatedly crossed between Dragon Forest (240030100) and its hidden
+tomb (240030103) while resupplying. LOD was not involved. The pathlog exposed two simultaneous truths:
+the freshly resolved Leafre route began at townward map 240030000, but the active travel commitment still
+held `nextHop=240030103 portalId=16`. Because that old portal remained locally reachable, the existing
+reachability-only revalidation kept executing it. A WZ-backed A* probe separately verified that the real
+townward path reaches `west00` through `r15 -> r40 -> r5`; it does not cross `in02`. The live climb toward
+`r18` was therefore execution of the stale hidden-map goal, not accidental collision interception.
+
+Fix (runtime, no graph version bump): an active ordinary portal hop re-resolves through the same
+partition-first/world-route policy once per second. If the best first hop changed after route/partition
+caches warmed, travel clears the old commitment and replans in the same tick. Taxi, ferry, and in-flight
+portal landings retain their dedicated ownership. Regression:
+`BotTravelManagerTest.shouldReplaceCommittedHopWhenBestRouteChanges`.
+
 ## Files
 - `BotNavigationGraph.java` — `Region.surfaceCoversPoint` + `SHARED_GROUND_Y_PX` (#8)
 - `BotNavigationGraphProvider.java` — `addJumpEdges`/`addFlashJumpEdges` shared-ground guard,
@@ -564,7 +580,8 @@ re-arm logout while that command remains live. Regressions:
 - `BotFallbackMovementManager.resolveSteeringTarget` → `Steering` record,
   `BotMovementManager.planGroundAction` walk-off waypoint stop/follow 0 (#17)
 - `BotTravelManager.tickCollisionPortal` → full movement-state reset after collision warp (#18);
-  scripted pt=9 emulation + client-true ±50/±50 trigger box (#19)
+  scripted pt=9 emulation + client-true ±50/±50 trigger box (#19); periodic committed-hop route
+  revalidation (#20)
 - `BotPhysicsEngine.walkOffLandingVariants` + `addDirectionalDropEdge` variant-stability guard,
   `GRAPH_VERSION` 68→69 (#14); `BotFreeMarketEntranceDescentTest` (WZ-backed 910000000, #14)
 - Tests in `BotNavigationGraphProviderTest` (fast synthetic + Henesys WZ graph),

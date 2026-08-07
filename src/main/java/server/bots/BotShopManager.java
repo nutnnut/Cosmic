@@ -30,9 +30,7 @@ import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.IntUnaryOperator;
-import java.util.function.Predicate;
 
 final class BotShopManager {
     private static final Logger log = LoggerFactory.getLogger(BotShopManager.class);
@@ -78,7 +76,7 @@ final class BotShopManager {
 
     private BotShopManager() {}
 
-    private record NpcShopMatch(NPC npc, Shop shop, Point npcPos) {}
+    private record NpcShopMatch(NPC npc, Shop shop, Point npcPos, int needCoverage) {}
 
     private enum ShortfallReason { NONE, NO_MESO, NO_SPACE, OTHER }
 
@@ -122,7 +120,7 @@ final class BotShopManager {
         clearShopState(entry);
 
         boolean wantsSellTrash = shouldAutoSellTrash(entry, bot);
-        NpcShopMatch match = findBestShop(entry, bot, wantsSellTrash);
+        NpcShopMatch match = findBestShop(bot, wantsSellTrash);
         if (match == null) {
             return;
         }
@@ -134,9 +132,11 @@ final class BotShopManager {
         int potTrigger = BotManager.cfg.POT_LOW_WARN * POT_TRIGGER_THRESHOLD;
         boolean needsHpPots = pots[0] < potTrigger && findPotionItem(match.shop, bot, true) != null;
         boolean needsMpPots = pots[1] < potTrigger && findPotionItem(match.shop, bot, false) != null;
+        boolean needsReturnScrolls = shouldBuyReturnScrollWhileShopping(bot)
+                && findReturnScrollItem(match.shop) != null;
         boolean needsPreferredWeapon = findNeededPreferredWeaponItem(bot, match.shop) != null;
         if (!needsRecharge && !needsAmmoForShop && !needsHpPots && !needsMpPots
-                && !needsPreferredWeapon && !wantsSellTrash) {
+                && !needsReturnScrolls && !needsPreferredWeapon && !wantsSellTrash) {
             return;
         }
 
@@ -250,7 +250,7 @@ final class BotShopManager {
             return;
         }
 
-        NpcShopMatch match = findBestShop(entry, bot, true);
+        NpcShopMatch match = findBestShop(bot, true);
         if (match == null) {
             entry.shopSellTrashPending = false;
             BotManager.getInstance().botReply(entry, "can't find a shop here");
@@ -350,18 +350,14 @@ final class BotShopManager {
         return Math.abs(a.x - b.x) + Math.abs(a.y - b.y);
     }
 
-    /** On-arrival visit decision: is the shop in front of the bot worth stopping at? Sell-trash =>
-     *  any shop; otherwise it must stock something the bot actually needs right now (pots OR ammo) —
-     *  this is the granular, bag-state-aware check, distinct from the looser potion-only filter the
-     *  cross-map errand destination search uses. */
-    private static NpcShopMatch findBestShop(BotEntry entry, Character bot, boolean allowAnyShop) {
-        return findBestShop(bot.getMap(), allowAnyShop ? shop -> true : shop -> shopHasAnythingNeeded(entry, bot, shop));
+    /** Best shop on the current map by current-need coverage; a sell trip may use a zero-coverage shop. */
+    private static NpcShopMatch findBestShop(Character bot, boolean allowAnyShop) {
+        return findBestShop(bot, bot.getMap(), allowAnyShop, snapshotShopNeeds(bot));
     }
 
-    /** First shop NPC on {@code map} whose shop the {@code accept} predicate matches. Generalized
-     *  over an arbitrary map and criterion so both the on-arrival visit decision and the cross-map
-     *  nearest-shop search share one NPC scan. */
-    private static NpcShopMatch findBestShop(MapleMap map, Predicate<Shop> accept) {
+    /** Best shop NPC on {@code map}, sharing the same need scorer as cross-map shop discovery. */
+    private static NpcShopMatch findBestShop(Character bot, MapleMap map, boolean allowAnyShop,
+                                             ShopNeeds needs) {
         if (map == null) {
             return null;
         }
@@ -369,6 +365,8 @@ final class BotShopManager {
                 new Point(0, 0), Double.POSITIVE_INFINITY,
                 Arrays.asList(MapObjectType.NPC));
 
+        NpcShopMatch best = null;
+        int bestCoverage = -1;
         for (MapObject obj : objects) {
             NPC npc = (NPC) obj;
             if (!npc.hasShop()) {
@@ -378,101 +376,76 @@ final class BotShopManager {
             if (shop == null) {
                 continue;
             }
-            if (accept.test(shop)) {
-                return new NpcShopMatch(npc, shop, npc.getPosition());
+            int coverage = shopNeedCoverage(bot, shop, needs);
+            if ((coverage > 0 || allowAnyShop) && coverage > bestCoverage) {
+                best = new NpcShopMatch(npc, shop, npc.getPosition(), coverage);
+                bestCoverage = coverage;
             }
         }
-        return null;
+        return best;
     }
 
-    // How far (portal hops) the bot will look for a shop when its own map has none. Towns and their
-    // shop sub-maps (e.g. Orbis 200000000 -> department store 200000002) are 1-2 hops apart, so a
-    // modest cap finds them while bounding the map-load cost of the search.
-    private static final int SHOP_SEARCH_MAX_HOPS = 6;
-    private static final int NO_SHOP_MAP = Integer.MIN_VALUE;
-    // Cache of "nearest reachable map with a matching shop" per source map, one map per criterion.
-    // Both the world graph and shop catalogs are static, and neither criterion depends on live bag
-    // state (any shop for a sell trip; a potion-stocking shop for a supply run), so these answers
-    // never change — compute each (map-loading) flood once per (source map, criterion).
-    private static final Map<Integer, Integer> nearestAnyShopMapCache = new ConcurrentHashMap<>();
-    private static final Map<Integer, Integer> nearestPotionShopMapCache = new ConcurrentHashMap<>();
-
+    // Compare a bounded local ring with the return-town hub's shop submaps.
+    private static final int LOCAL_SHOP_SEARCH_HOPS = 6;
+    private static final int HUB_SHOP_SEARCH_HOPS = 3;
     /**
-     * The nearest reachable map (current map first, then by portal-hop distance) that has a shop the
-     * bot needs, or {@code null} if none within {@link #SHOP_SEARCH_MAX_HOPS}. This is the fix for a
-     * bot stranded in a town hub whose own map has no shop NPC (the shop sits one portal away): rather
-     * than only ever heading to {@code getReturnMap()} ("nearest town"), the bot seeks the nearest
-     * actual shop that fits the criteria. Both criteria — any shop (sell trip) and potion-stocking
-     * (supply run) — are bag-state-independent, so each is cached per source map.
+     * Best reachable shop in the union of six hops from the bot and three hops from its return-town
+     * hub. Current-need coverage outranks travel distance, so department-store submaps win when their
+     * stock satisfies more of the loadout without encoding any NPC, item-store, or map location here.
      */
     static Integer findNearestShopMap(Character bot, boolean allowAnyShop) {
-        return findNearestShopMap(null, bot, allowAnyShop);
-    }
-
-    static Integer findNearestShopMap(BotEntry entry, Character bot, boolean allowAnyShop) {
         if (bot == null || bot.getMap() == null || bot.getClient() == null) {
             return null;
         }
         int from = bot.getMapId();
-        boolean needsPreferredWeapon = needsPreferredWeaponForCurrentJob(bot);
-        if (needsPreferredWeapon) {
-            return findNearestUncachedShopMap(bot, shop -> shopHasAnythingNeeded(entry, bot, shop));
-        }
-        // Sell-trash trip => any shop; supply run => a potion-stocking shop (also carries ammo).
-        Map<Integer, Integer> cache = allowAnyShop ? nearestAnyShopMapCache : nearestPotionShopMapCache;
-        Integer cached = cache.get(from);
-        if (cached != null) {
-            return cached == NO_SHOP_MAP ? null : cached;
-        }
-        Predicate<Shop> accept = allowAnyShop ? shop -> true : BotShopManager::shopSellsAnyPotion;
-        Integer found = null;
         try {
             var factory = bot.getClient().getChannelServer().getMapFactory();
-            Set<Integer> seen = new HashSet<>();
-            // Nearest-first: widen the reachable radius one hop at a time and only probe maps that newly
-            // entered range, so the first shop hit is the closest. Early-return keeps map loading minimal.
-            outer:
-            for (int hops = 0; hops <= SHOP_SEARCH_MAX_HOPS; hops++) {
-                for (int mapId : BotAutopilotManager.reachableForBot(bot, from, hops, BotWorldGraph.RouteOptions.PORTALS_ONLY)) {
-                    if (!seen.add(mapId)) {
+            ShopNeeds needs = snapshotShopNeeds(bot);
+            Set<Integer> candidates = new HashSet<>(BotAutopilotManager.reachableForBot(
+                    bot, from, LOCAL_SHOP_SEARCH_HOPS, BotWorldGraph.RouteOptions.PORTALS_ONLY));
+            MapleMap returnMap = bot.getMap().getReturnMap();
+            if (returnMap != null) {
+                candidates.addAll(BotAutopilotManager.reachableForBot(
+                        bot, returnMap.getId(), HUB_SHOP_SEARCH_HOPS, BotWorldGraph.RouteOptions.PORTALS_ONLY));
+            }
+            int bestMap = -1;
+            int bestCoverage = -1;
+            int bestHops = Integer.MAX_VALUE;
+            for (int mapId : candidates) {
+                NpcShopMatch match = findBestShop(bot, factory.getMap(mapId), allowAnyShop, needs);
+                if (match == null) {
+                    continue;
+                }
+                int coverage = match.needCoverage;
+                if (coverage == 0 && !allowAnyShop) {
+                    continue;
+                }
+                int hops;
+                if (mapId == from) {
+                    hops = 0;
+                } else {
+                    List<Integer> route = BotAutopilotManager.routeForBot(bot, from, mapId,
+                            BotAutopilotManager.MAX_TRAVEL_HOPS, BotWorldGraph.RouteOptions.PORTALS_ONLY);
+                    if (route == null) {
                         continue;
                     }
-                    if (findBestShop(factory.getMap(mapId), accept) != null) {
-                        found = mapId;
-                        break outer;
-                    }
+                    hops = route.size();
+                }
+                if (coverage > bestCoverage
+                        || (coverage == bestCoverage && hops < bestHops)
+                        || (coverage == bestCoverage && hops == bestHops && mapId < bestMap)) {
+                    bestMap = mapId;
+                    bestCoverage = coverage;
+                    bestHops = hops;
                 }
             }
+            return bestMap == -1 ? null : bestMap;
         } catch (RuntimeException ex) {
-            return null; // best-effort: world graph / map load unavailable -> caller falls back to return map
+            return null; // best-effort: caller falls back to the return map
         }
-        cache.put(from, found == null ? NO_SHOP_MAP : found);
-        return found;
     }
 
-    private static Integer findNearestUncachedShopMap(Character bot, Predicate<Shop> accept) {
-        int from = bot.getMapId();
-        try {
-            var factory = bot.getClient().getChannelServer().getMapFactory();
-            Set<Integer> seen = new HashSet<>();
-            for (int hops = 0; hops <= SHOP_SEARCH_MAX_HOPS; hops++) {
-                for (int mapId : BotAutopilotManager.reachableForBot(bot, from, hops, BotWorldGraph.RouteOptions.PORTALS_ONLY)) {
-                    if (!seen.add(mapId)) {
-                        continue;
-                    }
-                    if (findBestShop(factory.getMap(mapId), accept) != null) {
-                        return mapId;
-                    }
-                }
-            }
-        } catch (RuntimeException ex) {
-            return null;
-        }
-        return null;
-    }
-
-    /** Pots low enough to need restocking. Per the errand policy this is the ONLY need that requires a
-     *  specific shop (one that stocks potions); a full bag or low ammo can be handled at any shop. */
+    /** Pots low enough to need restocking. */
     static boolean potsLow(Character bot) {
         try {
             int[] pots = BotPotionManager.countPotions(bot);
@@ -539,11 +512,9 @@ final class BotShopManager {
         }
     }
 
-    /** True when the bot needs to BUY a consumable (HP/MP potions or ammo) — i.e. the errand is a
-     *  supply run, not a pure sell-trash / bag-dump. Drives the errand-destination shop filter: a
-     *  supply run must reach a potion-stocking shop (which also carries ammo), while a sell-only trip
-     *  uses any shop. Reuses the same low-supply predicates the shopping flow uses (SSOT); the ammo
-     *  checks are shop-independent (recharge takes no shop; fixed-ammo treats a null shop as "any").
+    /** True when the bot needs to buy a weapon or consumable, rather than making a pure sell trip.
+     *  Drives need-aware destination selection; the ammo checks are shop-independent (recharge takes
+     *  no shop; fixed-ammo treats a null shop as "any").
      *  Best-effort: a partial character mock that breaks a count reads as "doesn't need to buy", so
      *  the bot falls back to any shop rather than stranding the errand. */
     static boolean needsToBuySupplies(Character bot) {
@@ -553,6 +524,9 @@ final class BotShopManager {
     static boolean needsToBuySupplies(BotEntry entry, Character bot) {
         try {
             if (needsPreferredWeaponForCurrentJob(bot)) {
+                return true;
+            }
+            if (shouldBuyReturnScrollWhileShopping(bot)) {
                 return true;
             }
             if (potsLow(bot)) {
@@ -568,10 +542,7 @@ final class BotShopManager {
         }
     }
 
-    /** True if the shop sells at least one recovery potion (HP or MP) at a real price. The cross-map
-     *  errand-destination filter for a supply trip — a potion-stocking shop reliably also stocks the
-     *  other consumables, so it's a sufficient, bag-state-independent proxy for "can resupply here".
-     *  {@link BotInventoryManager#isRecoveryPotion} is the recovery-potion SSOT. */
+    /** True if the shop sells at least one recovery potion at a real price. */
     static boolean shopSellsAnyPotion(Shop shop) {
         for (ShopItem si : shop.getItems()) {
             if (si.getPrice() > 0 && BotInventoryManager.isRecoveryPotion(si.getItemId())) {
@@ -581,31 +552,43 @@ final class BotShopManager {
         return false;
     }
 
-    /** On-arrival visit criterion: does this shop stock something the bot needs RIGHT NOW (ammo to
-     *  recharge/buy, or a potion type it's low on that the shop sells)? Bag-state-aware, unlike the
-     *  potion-only errand-destination filter. */
-    private static boolean shopHasAnythingNeeded(BotEntry entry, Character bot, Shop shop) {
-        if (findNeededPreferredWeaponItem(bot, shop) != null) {
-            return true;
-        }
+    private record ShopNeeds(WeaponType weaponType, boolean preferredWeapon, boolean recharge,
+                             boolean fixedAmmo, boolean starterAmmo, boolean hpPots, boolean mpPots,
+                             boolean returnScrolls) {}
+
+    private static ShopNeeds snapshotShopNeeds(Character bot) {
         WeaponType wt = BotAttackExecutionProvider.getEquippedWeaponType(bot);
-        if (needsFixedAmmoForShop(bot, shop, wt, ammoTriggerThreshold())) {
-            return true;
-        }
-        if (needsRechargeForShop(bot, wt, ammoTriggerThreshold())) {
-            return true;
-        }
-        if (shouldBuyStarterAmmoSet(bot, wt) && findAmmoItem(shop, wt) != null) {
-            return true;
-        }
+        int ammoThreshold = ammoTriggerThreshold();
         int[] pots = BotPotionManager.countPotions(bot);
-        if (pots[0] < BotManager.cfg.POT_LOW_WARN * 5 && findPotionItem(shop, bot, true) != null) {
-            return true;
+        return new ShopNeeds(wt, needsPreferredWeaponForCurrentJob(bot),
+                needsRechargeForShop(bot, wt, ammoThreshold),
+                needsFixedAmmoForShop(bot, null, wt, ammoThreshold), shouldBuyStarterAmmoSet(bot, wt),
+                pots[0] < BotManager.cfg.POT_LOW_WARN * 5, pots[1] < BotManager.cfg.POT_LOW_WARN * 5,
+                shouldBuyReturnScrollWhileShopping(bot));
+    }
+
+    /** Number of the snapshotted current needs this shop can satisfy. */
+    private static int shopNeedCoverage(Character bot, Shop shop, ShopNeeds needs) {
+        int coverage = 0;
+        if (findNeededPreferredWeaponItem(bot, shop, needs.preferredWeapon) != null) {
+            coverage++;
         }
-        if (pots[1] < BotManager.cfg.POT_LOW_WARN * 5 && findPotionItem(shop, bot, false) != null) {
-            return true;
+        if (needs.recharge) {
+            coverage++;
         }
-        return false;
+        if ((needs.fixedAmmo || needs.starterAmmo) && findAmmoItem(shop, needs.weaponType) != null) {
+            coverage++;
+        }
+        if (needs.hpPots && findPotionItem(shop, bot, true) != null) {
+            coverage++;
+        }
+        if (needs.mpPots && findPotionItem(shop, bot, false) != null) {
+            coverage++;
+        }
+        if (needs.returnScrolls && findReturnScrollItem(shop) != null) {
+            coverage++;
+        }
+        return coverage;
     }
 
     private static void executePurchases(BotEntry entry, Character bot, Point npcPos) {
@@ -1280,7 +1263,11 @@ final class BotShopManager {
     }
 
     private static ShopSlotItem findNeededPreferredWeaponItem(Character bot, Shop shop) {
-        if (bot == null || shop == null || !needsPreferredWeaponForCurrentJob(bot)) {
+        return findNeededPreferredWeaponItem(bot, shop, needsPreferredWeaponForCurrentJob(bot));
+    }
+
+    private static ShopSlotItem findNeededPreferredWeaponItem(Character bot, Shop shop, boolean needsWeapon) {
+        if (bot == null || shop == null || !needsWeapon) {
             return null;
         }
         long budget = preferredWeaponBudget(bot);

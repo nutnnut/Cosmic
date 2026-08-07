@@ -58,6 +58,7 @@ final class BotTravelManager {
     // enterPortal fired but the map change lands asynchronously; if it never lands the
     // portal was blocked (e.g. closed mid-walk) and the warp fallback takes over.
     private static final long PORTAL_LAND_GRACE_MS = 2_000L;
+    private static final long ROUTE_RECHECK_INTERVAL_MS = 1_000L;
     // After a failed attempt, don't immediately retry the same doomed walk — warp directly
     // (the legacy behavior) for this long.
     private static final long GIVE_UP_WARP_WINDOW_MS = 45_000L;
@@ -288,6 +289,19 @@ final class BotTravelManager {
         boolean canCheck = navGraph != null && botRegion >= 0;
         boolean useGroundReachability = canCheck && !map.isSwim();
 
+        if (active && entry.followTravelEnteredAtMs == 0L && !entry.followTravelFerry
+                && entry.followTravelTaxiNpcId == 0 && now >= entry.followTravelRouteRecheckAtMs) {
+            java.util.function.IntPredicate blocked = BotAutopilotManager.routeBlockFor(bot);
+            List<Integer> currentRoute = resolveRoute(bot, map, navGraph, botRegion,
+                    useGroundReachability, targetMapId, maxHops, allowFerry, blocked);
+            entry.followTravelRouteRecheckAtMs = now + ROUTE_RECHECK_INTERVAL_MS;
+            if (currentRoute != null && !currentRoute.isEmpty()
+                    && currentRoute.get(0) != entry.followTravelNextHopMapId) {
+                clear(entry);
+                active = false;
+            }
+        }
+
         // Revalidate a committed cross-map portal once the graph is warm. An earlier hop may have pinned it
         // while the graph was cold (canCheck false, canReach unavailable); if this platform actually can't
         // walk to it, drop the pin and re-plan THIS tick instead of walking at an unreachable portal until
@@ -346,34 +360,9 @@ final class BotTravelManager {
                 portal = null; // direct exit exists but this platform can't reach it — must route around
             }
             if (portal == null) {
-                BotWorldGraph.RouteOptions options = new BotWorldGraph.RouteOptions(
-                        returnScrollCount.applyAsInt(bot) > 0, bot.getMeso(), allowFerry, bot.getJob().getId() == 0,
-                        bot.getLevel(), BotAutopilotManager.worldTourReturn(bot), BotAutopilotManager.fmReturn(bot),
-                        BotAutopilotManager.unlockedTempleGates(bot));
                 java.util.function.IntPredicate blocked = BotAutopilotManager.routeBlockFor(bot);
-                List<Integer> route = null;
-                // Partition routing is needed when the current platform is constrained, and also when a
-                // fully-connected current map would enter a downstream split map on the wrong arrival
-                // platform. It honors the SAME danger gate as the map-level route.
-                // Resolve the channel MapFactory once and guard it: a real bot always carries a client
-                // (BotManager sets it at creation), but a mid-logout/despawned bot or an offline sim mock
-                // may not — skip partition routing and fall back to the map-level route rather than NPE.
-                client.Client botClient = bot.getClient();
-                MapManager mapFactory = botClient != null && botClient.getChannelServer() != null
-                        ? botClient.getChannelServer().getMapFactory() : null;
-                if (useGroundReachability && mapFactory != null) {
-                    List<BotMapPartition.PortalRef> reachableExits = reachableCrossMapExits(map, navGraph, botRegion);
-                    List<BotWorldPartitionRouter.Node> proute = partitionRouteLookup.route(
-                            id -> BotMapPartitionProvider.forMapId(mapFactory, id), bot.getMapId(), reachableExits,
-                            targetMapId, maxHops, blocked);
-                    if (proute != null && !proute.isEmpty()) {
-                        route = proute.stream().map(BotWorldPartitionRouter.Node::mapId).collect(Collectors.toList());
-                    }
-                }
-                if (route == null) {
-                    route = routeLookup.route(bot.getMapId(), targetMapId, maxHops, options,
-                            blocked); // SSOT danger gate: no <15 route through Sleepywood
-                }
+                List<Integer> route = resolveRoute(bot, map, navGraph, botRegion,
+                        useGroundReachability, targetMapId, maxHops, allowFerry, blocked);
                 if (route == null || route.isEmpty()) {
                     return false; // too far or unreachable by walking — warp fallback
                 }
@@ -401,12 +390,40 @@ final class BotTravelManager {
             entry.followTravelBestRouteCost = Integer.MAX_VALUE;
             entry.followTravelProgressPos = null;
             entry.followTravelDeadlineMs = now + travelBudgetMs(manhattan(bot.getPosition(), portal.getPosition()));
+            entry.followTravelRouteRecheckAtMs = now + ROUTE_RECHECK_INTERVAL_MS;
         }
 
         // Progress-aware deadline: refresh from committed-route progress, not raw portal distance.
         // Legal routes can initially move away from the portal in screen space (Ludibrium station climb).
         refreshTravelDeadlineOnProgress(entry, bot, map, portalApproachTarget(map, portal), now);
         return walkToPortalAndEnter(entry, bot, portal, now, runAiTick);
+    }
+
+    /** Resolve with the same partition-first policy used when a fresh hop is committed. */
+    private static List<Integer> resolveRoute(Character bot, MapleMap map, BotNavigationGraph navGraph,
+                                              int botRegion, boolean useGroundReachability,
+                                              int targetMapId, int maxHops, boolean allowFerry,
+                                              java.util.function.IntPredicate blocked) {
+        BotWorldGraph.RouteOptions options = new BotWorldGraph.RouteOptions(
+                returnScrollCount.applyAsInt(bot) > 0, bot.getMeso(), allowFerry, bot.getJob().getId() == 0,
+                bot.getLevel(), BotAutopilotManager.worldTourReturn(bot), BotAutopilotManager.fmReturn(bot),
+                BotAutopilotManager.unlockedTempleGates(bot));
+        List<Integer> route = null;
+        client.Client botClient = bot.getClient();
+        MapManager mapFactory = botClient != null && botClient.getChannelServer() != null
+                ? botClient.getChannelServer().getMapFactory() : null;
+        if (useGroundReachability && mapFactory != null) {
+            List<BotMapPartition.PortalRef> reachableExits = reachableCrossMapExits(map, navGraph, botRegion);
+            List<BotWorldPartitionRouter.Node> partitionRoute = partitionRouteLookup.route(
+                    id -> BotMapPartitionProvider.forMapId(mapFactory, id), bot.getMapId(), reachableExits,
+                    targetMapId, maxHops, blocked);
+            if (partitionRoute != null && !partitionRoute.isEmpty()) {
+                route = partitionRoute.stream().map(BotWorldPartitionRouter.Node::mapId)
+                        .collect(Collectors.toList());
+            }
+        }
+        return route != null ? route
+                : routeLookup.route(bot.getMapId(), targetMapId, maxHops, options, blocked);
     }
 
     /**
@@ -880,6 +897,7 @@ final class BotTravelManager {
         entry.followTravelPortalId = -1;
         entry.followTravelFromMapId = -1;
         entry.followTravelDeadlineMs = 0L;
+        entry.followTravelRouteRecheckAtMs = 0L;
         entry.followTravelEnteredAtMs = 0L;
         entry.followTravelBestDist = Integer.MAX_VALUE;
         entry.followTravelBestRouteCost = Integer.MAX_VALUE;

@@ -1,6 +1,7 @@
 package server.bots;
 
 import client.BuffStat;
+import client.Client;
 import client.Character;
 import client.inventory.Inventory;
 import client.inventory.InventoryType;
@@ -8,9 +9,12 @@ import client.inventory.Item;
 import client.inventory.WeaponType;
 import org.junit.jupiter.api.Test;
 import org.mockito.MockedStatic;
+import net.server.channel.Channel;
 import server.Shop;
 import server.ShopFactory;
+import server.ShopItem;
 import server.life.NPC;
+import server.maps.MapManager;
 import server.maps.MapleMap;
 import testutil.Items;
 
@@ -26,6 +30,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyDouble;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
@@ -35,6 +40,74 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class BotShopManagerTest {
+    @Test
+    void shouldPreferLeafreSlyDepartmentStoreByNeedCoverageNotLocation() {
+        int field = 240_030_100;
+        int localShopMapId = 240_030_106;
+        int returnTown = 240_000_000;
+        int townShopMapId = 240_000_002;
+
+        Character bot = bowBotWithArrows(0);
+        MapleMap currentMap = bot.getMap();
+        MapleMap townMap = mock(MapleMap.class);
+        MapleMap localShopMap = shopMap(9100001);
+        MapleMap townShopMap = shopMap(2080001); // Sly
+        Shop localShop = shopWithItems(2060000);
+        Shop townShop = shopWithItems(2060000, 2030000);
+        Client client = mock(Client.class);
+        Channel channel = mock(Channel.class);
+        MapManager maps = mock(MapManager.class);
+
+        when(bot.getId()).thenReturn(777001);
+        when(bot.getMapId()).thenReturn(field);
+        when(bot.getClient()).thenReturn(client);
+        when(currentMap.getId()).thenReturn(field);
+        when(currentMap.getReturnMap()).thenReturn(townMap);
+        when(townMap.getId()).thenReturn(returnTown);
+        when(client.getChannelServer()).thenReturn(channel);
+        when(channel.getMapFactory()).thenReturn(maps);
+        when(maps.getMap(localShopMapId)).thenReturn(localShopMap);
+        when(maps.getMap(townShopMapId)).thenReturn(townShopMap);
+
+        try (MockedStatic<BotAutopilotManager> routes =
+                     mockStatic(BotAutopilotManager.class, org.mockito.Mockito.CALLS_REAL_METHODS);
+             MockedStatic<BotAttackExecutionProvider> attacks =
+                     mockStatic(BotAttackExecutionProvider.class, org.mockito.Mockito.CALLS_REAL_METHODS);
+             MockedStatic<BotPotionManager> potions = mockStatic(BotPotionManager.class);
+             MockedStatic<BotInventoryManager> inventories =
+                     mockStatic(BotInventoryManager.class, org.mockito.Mockito.CALLS_REAL_METHODS);
+             MockedStatic<ShopFactory> shops = mockStatic(ShopFactory.class)) {
+            ShopFactory factory = mock(ShopFactory.class);
+            shops.when(ShopFactory::getInstance).thenReturn(factory);
+            when(factory.getShopForNPC(9100001)).thenReturn(localShop);
+            when(factory.getShopForNPC(2080001)).thenReturn(townShop);
+            attacks.when(() -> BotAttackExecutionProvider.getEquippedWeaponType(bot)).thenReturn(WeaponType.BOW);
+            potions.when(() -> BotPotionManager.countPotions(bot)).thenReturn(new int[]{9999, 9999});
+            inventories.when(() -> BotInventoryManager.isRecoveryPotion(anyInt())).thenReturn(false);
+            routes.when(() -> BotAutopilotManager.reachableForBot(eq(bot), anyInt(), anyInt(), any()))
+                    .thenAnswer(inv -> {
+                        int from = inv.getArgument(1);
+                        int hops = inv.getArgument(2);
+                        if (from == field) {
+                            return hops >= 6 ? Set.of(field, localShopMapId) : Set.of(field);
+                        }
+                        if (from == returnTown) {
+                            return hops >= 2 ? Set.of(returnTown, townShopMapId) : Set.of(returnTown);
+                        }
+                        return Set.of(from);
+                    });
+            routes.when(() -> BotAutopilotManager.routeForBot(eq(bot), eq(field), anyInt(), anyInt(), any()))
+                    .thenAnswer(inv -> {
+                        int to = inv.getArgument(2);
+                        if (to == localShopMapId) return List.of(1, 2, 3, 4, 5, localShopMapId);
+                        if (to == townShopMapId) return List.of(11, 12, 13, 14, 15, 16, 17, returnTown, 240000001, townShopMapId);
+                        return null;
+                    });
+
+            assertEquals(townShopMapId, BotShopManager.findNearestShopMap(bot, false));
+        }
+    }
+
     @Test
     void shouldNotTriggerClawShopVisitWhenBestStarIsAboveThreshold() {
         Character bot = clawBotWithStars(800, 1000, 1000, 1000, 1000, 1000); // 5800 of the best star
@@ -371,6 +444,29 @@ class BotShopManagerTest {
         when(bot.getInventory(InventoryType.USE)).thenReturn(use);
         when(bot.getBuffedValue(any(BuffStat.class))).thenReturn(null);
         return bot;
+    }
+
+    private static MapleMap shopMap(int npcId) {
+        MapleMap map = mock(MapleMap.class);
+        NPC npc = mock(NPC.class);
+        when(npc.hasShop()).thenReturn(true);
+        when(npc.getId()).thenReturn(npcId);
+        when(npc.getPosition()).thenReturn(new Point(0, 0));
+        when(map.getMapObjectsInRange(any(Point.class), anyDouble(), any())).thenReturn(List.of(npc));
+        return map;
+    }
+
+    private static Shop shopWithItems(int... itemIds) {
+        Shop shop = mock(Shop.class);
+        List<ShopItem> items = new ArrayList<>();
+        for (int itemId : itemIds) {
+            ShopItem item = mock(ShopItem.class);
+            when(item.getItemId()).thenReturn(itemId);
+            when(item.getPrice()).thenReturn(itemId == 2030000 ? 400 : 1);
+            items.add(item);
+        }
+        when(shop.getItems()).thenReturn(items);
+        return shop;
     }
 
     private static boolean entryWouldTriggerShopVisit(Character bot, WeaponType weaponType) {
