@@ -553,7 +553,7 @@ caches warmed, travel clears the old commitment and replans in the same tick. Ta
 portal landings retain their dedicated ownership. Regression:
 `BotTravelManagerTest.shouldReplaceCommittedHopWhenBestRouteChanges`.
 
-## 21. Drop waypoint bang-bang at a knife-edge walk-off — 100000102 r14 (DIAGNOSED, OPEN)
+## 21. Drop waypoint bang-bang — the walk-off sim started on an OVERHEAD platform (100000102 r14, FIXED, v71)
 
 Symptom (`logs/bot-nav/pathlog-Jason-2026-08-07T085354.txt`, live repro of the failing
 `BotHenesysDeptStoreDescentTest.descentFromEverySmallPlatformReachesExitPortal`): the bot never
@@ -565,27 +565,46 @@ steering waypoint alternates between the edge's landing point `(149,103)` and it
     x=85..90  -> steer (149,103)  walk right
     x=92..97  -> steer (61,72)    walk left
 
-Root cause: `BotNavigationManager.selectDropWaypoint` calls
-`BotPhysicsEngine.simulateWalkOffLanding` ONCE from the live stance each tick and uses
-`matchesDirectionalDrop` on that single sample as a bang-bang switch between the two targets. The
-walk-off outcome on this map is knife-edge — the comment on `matchesDirectionalDrop` already says so
-("1px flips which shelf catches the fall — 100000102 r17 lands r18 or r23 depending on stance") — and
-because the sample depends on `physX`/`hspeed`/`groundPhysicsCarryMs`, the verdict flips within the
-band the bot can occupy. The switching surface sits INSIDE the reachable band, which is a stable
-limit cycle by construction. This is iron rule 2 ("author the whole outcome envelope or nothing")
-violated on the executor side: a knife-edge outcome is fine as an *authored* edge property, but must
-never be a per-tick *control input*.
+Root cause is NOT launch-state knife-edge sensitivity (the first diagnosis) — it is a **second,
+coordinate-based ground lookup that disagrees with the motor about which platform the bot is on.**
+`BotNavigationManager.selectDropWaypoint` sims the dismount with
+`BotPhysicsEngine.simulateWalkOffLanding(map, botPos, dir, ...)`, which resolved the standing
+foothold internally with `findGroundFoothold(botPos)`. That helper is a nearest-ground heuristic
+that ALSO probes `MAX_SLOPE_UP` (26px) **above** the query point for truncated-slope cases, so an
+unrelated platform overhead can win the vote. On r14 (surface y=72/73) the r12 shelf sits at y=57,
+16px up and spanning x>=91: every stance x>=91 resolved to **r12**, so the gate simulated a walk
+along r12, dismounting at its lip x≈179 and failing `launchPoint.x <= endPoint.x + slack`
+(179 > 145), while x<=90 resolved to r14 correctly and passed. Verdict flip inside the region =
+switching surface inside the reachable band = stable limit cycle (measured: AI-tick decisions at
+x=94 -> steer `(69,72)` left, at x=85 -> steer `(137,103)` right, 12-tick period). Probe evidence:
+`findGroundFoothold` mis-resolves 290/4319 r-surface pixels on 100000102 and 327/21937 on 600020100.
 
-Bisected to `235b6aefa` "Fix overlapped foothold ground continuity" (2026-07-04, touches
-`BotPhysicsEngine`/`BotMovementManager`); `cc1a170fb` passes, `235b6aefa` fails identically. Broken
-silently for ~5 weeks — 2 of 12 start points, `(-147,98)` and `(-160,141)`, both park at ~`(90,73)`.
+Why `235b6aefa` ("Fix overlapped foothold ground continuity") is the bisect point and is CORRECT:
+it made the motor (`syncAndDetectGround`) resolve ground by `BotEntry.lastRegionId` chain
+continuity instead of the raw lookup. Before it, motor and gate were both wrong the same way and
+stayed consistent; after it the motor is right (bot stays on r14) and the gate was still guessing,
+so the two disagreed. The commit fixed only ONE of the two ground-resolution sites.
 
-Not yet fixed. The candidate fix is to stop re-deriving the launch point at runtime: `edge.startPoint`
-IS the authored launch anchor, so the executor should steer to it and then feed the authored direction,
-using the live sim only as a one-way "already past the point of no return" gate — never as a selector
-between two opposing targets. Note the guard the current code deliberately added (a bot on a DIFFERENT
-same-height foothold beyond the gap must not be fed `endPoint`, see `pathlog-itunes-2026-07-02T071428`)
-must be preserved by requiring same-foothold-as-anchor rather than by re-simulating.
+Fix (physics layer, rule #9 — the caller-known ground must not be re-guessed):
+- `BotPhysicsEngine.standingGroundFoothold(entry, map, pos)` is now the SSOT for "which foothold is
+  this bot standing on" (continuity first, raw lookup as fallback); `syncAndDetectGround` uses it.
+- `simulateWalkOffLanding` / `walkOffLandingVariants` take the standing foothold explicitly instead
+  of re-deriving it (null = fall back, for synthetic callers).
+- Executor: `selectDropWaypoint` feeds the sim the motor's continuity foothold, so gate and motor
+  are driven from the same ground. The `pathlog-itunes-2026-07-02` guard is preserved *because* the
+  sim still runs from wherever the bot really stands: a bot on a different same-height foothold
+  beyond the gap resolves to THAT region, finds no descent, and keeps steering to the anchor.
+- Builder: `addDirectionalDropEdge` walks the runway on the SOURCE region's own foothold. The raw
+  lookup was authoring 3 drops on 100000102 from a foreign platform (anchors r7 `(-293,-12)` and
+  r16 `(-308,92)`/`(-238,92)` resolved to r5/r15). **GRAPH_VERSION 70 -> 71.**
+
+Regression: `BotHenesysDeptStoreDescentTest.dropWaypointDoesNotFlipAcrossTheSourceRegionBand` —
+for every authored directional DROP, `selectDropWaypoint` must return ONE waypoint across the whole
+source-region band and all hspeed signs (verified failing pre-fix on r7 and r14).
+
+Rule: a steering gate that selects between two opposing targets must never take a per-tick input
+that varies across the band the bot occupies. If it does, the input is wrong — find the disagreeing
+layer rather than adding hysteresis.
 
 ## Files
 - `BotNavigationGraph.java` — `Region.surfaceCoversPoint` + `SHARED_GROUND_Y_PX` (#8)
@@ -618,8 +637,13 @@ must be preserved by requiring same-foothold-as-anchor rather than by re-simulat
   revalidation (#20)
 - `BotPhysicsEngine.walkOffLandingVariants` + `addDirectionalDropEdge` variant-stability guard,
   `GRAPH_VERSION` 68→69 (#14); `BotFreeMarketEntranceDescentTest` (WZ-backed 910000000, #14)
+- `BotPhysicsEngine.standingGroundFoothold` (continuity-first standing-ground SSOT, used by
+  `syncAndDetectGround`) + `simulateWalkOffLanding`/`walkOffLandingVariants` standing-foothold
+  parameter (#21); `BotNavigationManager.selectDropWaypoint` feeds it the motor's foothold (#21);
+  `BotNavigationGraphProvider.addDirectionalDropEdge` runs the runway on the source region's
+  foothold, `GRAPH_VERSION` 70→71 (#21)
 - Tests in `BotNavigationGraphProviderTest` (fast synthetic + Henesys WZ graph),
   `BotRegion11ForkOscillationTest` (synthetic region-11 fork, #5/#5b),
-  `BotHenesysDeptStoreDescentTest` (WZ-backed 100000102 descent, #9/#10).
+  `BotHenesysDeptStoreDescentTest` (WZ-backed 100000102 descent, #9/#10/#21).
 
 Related: [[kb_bot_downjump_eligibility]], [[kb_bot_town_nav_airborne_target]].

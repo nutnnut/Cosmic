@@ -8,7 +8,9 @@ import java.awt.Point;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -73,6 +75,60 @@ class BotHenesysDeptStoreDescentTest {
         assertTrue(stuck.isEmpty(), "bots never reached the exit portal from: " + stuck);
     }
 
+    /**
+     * The drop-waypoint gate must not switch steering targets inside the band the bot can occupy.
+     * {@code selectDropWaypoint} picks between the edge's landing point and its runway anchor —
+     * two OPPOSITE directions on r14 — so any position-dependent flip on the source region is a
+     * stable limit cycle by construction (live: pathlog-Jason-2026-08-07, 12-tick cycle in a 12px
+     * band at x=85..95, bots from (-147,98)/(-160,141) never descending). The flip came from the
+     * gate simming the dismount off a coordinate-resolved foothold: r14's surface at y=73 sits
+     * within MAX_SLOPE_UP of the r12 shelf at y=57, so every x>=91 resolved to r12 and the sim
+     * walked off r12's lip instead.
+     */
+    @Test
+    void dropWaypointDoesNotFlipAcrossTheSourceRegionBand() {
+        MapleMap map = BotNavigationMapLoader.loadMapGeometry(MAP);
+        BotNavigationGraph graph = BotNavigationGraphProvider.rebuildGraph(map, BotMovementProfile.base());
+        BotMovementSimulationLab lab = BotMovementSimulationLab.fromMap(map);
+
+        int checkedEdges = 0;
+        for (BotNavigationGraph.Region region : graph.regions) {
+            if (region.isRopeRegion) {
+                continue;
+            }
+            for (BotNavigationGraph.Edge edge : graph.getOutgoing(region.id)) {
+                if (edge.type != BotNavigationGraph.EdgeType.DROP || edge.launchStepX == 0) {
+                    continue;
+                }
+                BotEntry entry = lab.spawnBot("W" + region.id + "_" + edge.toRegionId,
+                        9000 + checkedEdges, map, region.pointAt(region.minX));
+                Set<String> waypoints = new LinkedHashSet<>();
+                for (int x = region.minX; x <= region.maxX; x++) {
+                    Point stance = region.pointAt(x);
+                    if (stance.x != x) {
+                        continue;
+                    }
+                    entry.bot.setPosition(new Point(stance));
+                    entry.lastRegionId = region.id;
+                    entry.inAir = false;
+                    entry.physX = stance.x;
+                    entry.groundPhysicsCarryMs = 0.0;
+                    for (double hspeed : new double[]{0.0, 1.0, -1.0}) {
+                        entry.hspeed = hspeed;
+                        Point waypoint = BotNavigationManager.selectDropWaypoint(entry, graph, stance, edge);
+                        waypoints.add(waypoint.x + "," + waypoint.y);
+                    }
+                }
+                assertEquals(1, waypoints.size(),
+                        "DROP r" + edge.fromRegionId + "->r" + edge.toRegionId + " steers to "
+                                + waypoints + " depending on where the bot stands on r" + region.id
+                                + " — a switching surface inside the reachable band");
+                checkedEdges++;
+            }
+        }
+        assertTrue(checkedEdges > 0, "expected at least one directional walk-off DROP on " + MAP);
+    }
+
     /** Builder/executor SSOT: every authored directional walk-off DROP must land in the region the
      *  execution-time walk-off sim actually reaches from the authored runway anchor. */
     @Test
@@ -86,7 +142,14 @@ class BotHenesysDeptStoreDescentTest {
                     continue;
                 }
                 BotPhysicsEngine.WalkOffLanding walkOff = BotPhysicsEngine.simulateWalkOffLanding(
-                        map, edge.startPoint, Integer.signum(edge.launchStepX), BotMovementProfile.base());
+                        map, edge.startPoint, Integer.signum(edge.launchStepX),
+                        // Same standing foothold the executor gate feeds the sim: the source
+                        // region's own ground, not a coordinate lookup that can vote for an
+                        // unrelated platform overhead.
+                        BotPhysicsEngine.findWalkRegionGroundFoothold(map, edge.fromRegionId,
+                                edge.startPoint.x, edge.startPoint.y),
+                        BotPhysicsEngine.initialGroundTravelState(edge.startPoint),
+                        BotMovementProfile.base());
                 assertTrue(walkOff != null && walkOff.landing() != null,
                         "authored walk-off DROP r" + edge.fromRegionId + "->r" + edge.toRegionId
                                 + " has no executable dismount from " + edge.startPoint);

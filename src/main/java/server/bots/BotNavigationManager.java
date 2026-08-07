@@ -1386,8 +1386,17 @@ final class BotNavigationManager {
         // reached that x still grounded (no lip there), and walked in place against the committed
         // edge forever - travel deadlined and retried the identical hop in a loop
         // (pathlog-itunes-2026-07-02T071428, NLC 600000000, DROP (2938,261)->(2898,381)).
+        // Sim the dismount from the foothold the MOTOR is standing on (the same continuity SSOT
+        // applyGroundMotion is driven with), not from a coordinate lookup at botPos: those two
+        // disagree wherever an unrelated platform sits within MAX_SLOPE_UP overhead, and the
+        // disagreement turns this gate into a position-dependent switch between endPoint and
+        // startPoint - two OPPOSITE steering targets - i.e. a guaranteed limit cycle inside the
+        // band where the lookup flips (100000102 r14: every x>=91 resolved to the r12 shelf 16px
+        // above, so the sim walked off r12's lip at x=179 and the gate failed there while it
+        // passed at x<=90).
         BotPhysicsEngine.WalkOffLanding liveOutcome = BotPhysicsEngine.simulateWalkOffLanding(
                 entry.bot.getMap(), botPos, Integer.signum(edge.launchStepX),
+                BotPhysicsEngine.standingGroundFoothold(entry, entry.bot.getMap(), botPos),
                 new BotPhysicsEngine.GroundTravelState(entry.physX, entry.hspeed, entry.groundPhysicsCarryMs),
                 entry.movementProfile);
         if (matchesDirectionalDrop(edge, graph, liveOutcome)) {

@@ -358,14 +358,25 @@ final class BotPhysicsEngine {
      */
     static Foothold syncAndDetectGround(BotEntry entry, Character bot) {
         syncGroundPosition(entry, bot.getPosition().x);
-        Foothold fh = findContinuityGroundFoothold(entry, bot.getMap(), bot.getPosition());
-        if (fh == null) {
-            fh = findGroundFoothold(bot.getMap(), bot.getPosition());
-        }
+        Foothold fh = standingGroundFoothold(entry, bot.getMap(), bot.getPosition());
         if (fh == null) {
             beginFall(entry, bot, 0);
         }
         return fh;
+    }
+
+    /**
+     * SSOT for "which foothold is this bot standing on". The client tracks the standing foothold
+     * and walks its prev/next chain, so live region continuity wins over a raw coordinate lookup:
+     * {@link #findGroundFoothold} is a nearest-ground heuristic that also probes MAX_SLOPE_UP
+     * ABOVE the query point, so a bot standing under an unrelated overhead platform resolves to
+     * that platform (100000102: on r14 at y=73, every x>=91 resolves to the r12 shelf at y=57,
+     * 16px overhead). Any caller that owns a live {@link BotEntry} must use this, never the raw
+     * lookup — otherwise the motor and that caller disagree about the ground under the same bot.
+     */
+    static Foothold standingGroundFoothold(BotEntry entry, MapleMap map, Point position) {
+        Foothold continuity = findContinuityGroundFoothold(entry, map, position);
+        return continuity != null ? continuity : findGroundFoothold(map, position);
     }
 
     private static Foothold findContinuityGroundFoothold(BotEntry entry, MapleMap map, Point position) {
@@ -1326,6 +1337,7 @@ final class BotPhysicsEngine {
     static java.util.List<WalkOffLanding> walkOffLandingVariants(MapleMap map,
                                                                  Point from,
                                                                  int desiredDir,
+                                                                 Foothold standingFoothold,
                                                                  BotMovementProfile profile) {
         java.util.List<WalkOffLanding> outcomes = new java.util.ArrayList<>();
         double terminalHSpeed = maxHSpeedPerClientStep(profile) * desiredDir;
@@ -1335,7 +1347,7 @@ final class BotPhysicsEngine {
         for (double phase : physXPhases) {
             for (double carryMs : carryPhases) {
                 for (double hspeed : launchHSpeeds) {
-                    outcomes.add(simulateWalkOffLanding(map, from, desiredDir,
+                    outcomes.add(simulateWalkOffLanding(map, from, desiredDir, standingFoothold,
                             new GroundTravelState(from.x + phase, hspeed, carryMs), profile));
                 }
             }
@@ -1348,11 +1360,28 @@ final class BotPhysicsEngine {
                                                  int desiredDir,
                                                  GroundTravelState initialState,
                                                  BotMovementProfile profile) {
+        return simulateWalkOffLanding(map, from, desiredDir, null, initialState, profile);
+    }
+
+    /**
+     * {@code standingFoothold} is the ground the walker is actually on. Pass it whenever the
+     * caller knows it ({@link #standingGroundFoothold} for a live bot, the source region's
+     * surface for graph authoring): resolving it from {@code from} alone re-runs the ambiguous
+     * coordinate lookup and can start the walk on a foreign chain — an overhead platform within
+     * MAX_SLOPE_UP wins the nearest-ground vote and the sim then walks off THAT platform's lip
+     * instead. Null falls back to the coordinate lookup (synthetic/test callers with no chain).
+     */
+    static WalkOffLanding simulateWalkOffLanding(MapleMap map,
+                                                 Point from,
+                                                 int desiredDir,
+                                                 Foothold standingFoothold,
+                                                 GroundTravelState initialState,
+                                                 BotMovementProfile profile) {
         if (map == null || from == null || desiredDir == 0 || initialState == null) {
             return null;
         }
 
-        Foothold foothold = findGroundFoothold(map, from);
+        Foothold foothold = standingFoothold != null ? standingFoothold : findGroundFoothold(map, from);
         if (foothold == null) {
             return null;
         }

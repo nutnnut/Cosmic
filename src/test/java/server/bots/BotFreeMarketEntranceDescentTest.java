@@ -50,7 +50,10 @@ class BotFreeMarketEntranceDescentTest {
                     continue;
                 }
                 for (BotPhysicsEngine.WalkOffLanding variant : BotPhysicsEngine.walkOffLandingVariants(
-                        map, edge.startPoint, Integer.signum(edge.launchStepX), BotMovementProfile.base())) {
+                        map, edge.startPoint, Integer.signum(edge.launchStepX),
+                        BotPhysicsEngine.findWalkRegionGroundFoothold(map, edge.fromRegionId,
+                                edge.startPoint.x, edge.startPoint.y),
+                        BotMovementProfile.base())) {
                     int landedRegion = variant == null || variant.landing() == null
                             || variant.landing().foothold() == null
                             ? -1
