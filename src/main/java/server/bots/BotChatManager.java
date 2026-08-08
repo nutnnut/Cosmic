@@ -2540,32 +2540,38 @@ public class BotChatManager {
      *  pickup, mode entry) still force an immediate scan by resetting the gate first. */
     private static void maybeRunGearSuggestions(BotEntry entry, Character bot) {
         Character owner = entry.owner;
-        long now = System.currentTimeMillis();
-        if (owner == null || now < entry.nextGearSuggestionAt) {
+        if (owner == null || !claimGearSuggestionWindow(entry)) {
             return;
         }
-        entry.nextGearSuggestionAt = now + 60_000L;
-        if (!BotOfferManager.offerBestRecommendedGear(entry, bot, owner)) {
-            if (!BotOfferManager.offerBestGearToSibling(entry, bot)) {
-                if (!BotOfferManager.offerNeededSkillBookToCohort(entry, bot)) {
-                    BotOfferManager.offerUselessScrollToCohort(entry, bot);
-                }
-            }
+        if (!BotOfferManager.offerBestRecommendedGear(entry, bot, owner)
+                && !offerSiblingGearOrSkillBook(entry, bot)) {
+            BotOfferManager.offerUselessScrollToCohort(entry, bot);
         }
     }
 
     /** Check if this bot has gear that would be an upgrade for a sibling bot. Advances the shared
      *  suggestion gate on attempt (see {@link #maybeRunGearSuggestions}). */
     private static void maybeSuggestGearToSiblings(BotEntry entry, Character bot) {
-        Character owner = entry.owner;
+        if (entry.owner != null && claimGearSuggestionWindow(entry)) {
+            offerSiblingGearOrSkillBook(entry, bot);
+        }
+    }
+
+    /** SSOT for the suggestion window both entry points share: an owner must be present and the 60s
+     *  gate elapsed. Advances the gate on ATTEMPT, not on success — see {@link #maybeRunGearSuggestions}. */
+    private static boolean claimGearSuggestionWindow(BotEntry entry) {
         long now = System.currentTimeMillis();
-        if (owner == null || now < entry.nextGearSuggestionAt) {
-            return;
+        if (now < entry.nextGearSuggestionAt) {
+            return false;
         }
         entry.nextGearSuggestionAt = now + 60_000L;
-        if (!BotOfferManager.offerBestGearToSibling(entry, bot)) {
-            BotOfferManager.offerNeededSkillBookToCohort(entry, bot);
-        }
+        return true;
+    }
+
+    /** The cohort half of the suggestion chain, shared by both entry points. */
+    private static boolean offerSiblingGearOrSkillBook(BotEntry entry, Character bot) {
+        return BotOfferManager.offerBestGearToSibling(entry, bot)
+                || BotOfferManager.offerNeededSkillBookToCohort(entry, bot);
     }
 
     /**

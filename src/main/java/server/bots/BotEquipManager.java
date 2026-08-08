@@ -1866,15 +1866,25 @@ class BotEquipManager {
             if (it instanceof Equip e && e.getPosition() >= 0) strays.add(e);
         }
         for (Equip stray : strays) {
+            Short key = equippedKeyOf(eqdInv, stray);
+            if (key == null) {
+                log.warn("Bot '{}' stray equip id {} at position {} is not under any known EQUIPPED key;"
+                        + " cannot repair it", bot.getName(), stray.getItemId(), stray.getPosition());
+                continue;
+            }
+            short from = stray.getPosition();
+            if (eqpInv.getItem(from) == stray) {
+                // Live desync: this very instance is ALREADY registered in the bag at `from`, so the
+                // only wrong thing is the leftover EQUIPPED key. Re-adding it to the bag here would
+                // BE the duplication. Drop the stale worn key and leave the bag entry alone.
+                removeEquippedKey(eqdInv, key);
+                log.warn("Bot '{}' equip id {} was registered in both EQUIPPED (key {}) and EQUIP slot {};"
+                        + " dropped the stale worn key", bot.getName(), stray.getItemId(), key, from);
+                continue;
+            }
             short dst = eqpInv.getNextFreeSlot();
             if (dst < 0) break; // bag full -- leave the rest for a later pass
-            short from = stray.getPosition();
-            eqdInv.lockInventory();
-            try {
-                eqdInv.removeSlot(from);
-            } finally {
-                eqdInv.unlockInventory();
-            }
+            removeEquippedKey(eqdInv, key);
             stray.setPosition(dst);
             eqpInv.lockInventory();
             try {
@@ -1884,6 +1894,37 @@ class BotEquipManager {
             }
             log.warn("Bot '{}' had stray equip id {} in EQUIPPED at positive slot {}; relocated to bag slot {}",
                     bot.getName(), stray.getItemId(), from, dst);
+        }
+    }
+
+    /** Lowest EQUIPPED map key scanned when locating a desynced stray (v83 worn slots are -1..-56,
+     *  cash -101..-156). Only walked in the rare corrupt case. */
+    private static final short MIN_EQUIPPED_SLOT_KEY = -200;
+
+    /**
+     * The KEY the EQUIPPED map holds this instance under. Normally that is the item's own position,
+     * but the interleave that strands a stray desyncs the two — and {@link Inventory#removeSlot}
+     * removes by KEY, so removing by position silently no-ops and the stray survives every pass.
+     * Returns null when the instance is no longer in the container.
+     */
+    private static Short equippedKeyOf(Inventory eqdInv, Equip stray) {
+        if (eqdInv.getItem(stray.getPosition()) == stray) {
+            return stray.getPosition();
+        }
+        for (short slot = -1; slot >= MIN_EQUIPPED_SLOT_KEY; slot--) {
+            if (eqdInv.getItem(slot) == stray) {
+                return slot;
+            }
+        }
+        return null;
+    }
+
+    private static void removeEquippedKey(Inventory eqdInv, short key) {
+        eqdInv.lockInventory();
+        try {
+            eqdInv.removeSlot(key);
+        } finally {
+            eqdInv.unlockInventory();
         }
     }
 

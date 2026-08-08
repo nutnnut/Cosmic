@@ -29,6 +29,7 @@ import java.util.Set;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyShort;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -333,6 +334,9 @@ class BotEquipManagerTest {
         when(worn.getItemId()).thenReturn(1040002);
         when(worn.getPosition()).thenReturn((short) -5);
         when(eqdInv.list()).thenReturn(List.of(stray, worn));
+        // A DB-reloaded stray is keyed by its own (positive) position.
+        when(eqdInv.getItem((short) 1)).thenReturn(stray);
+        when(eqdInv.getItem((short) -5)).thenReturn(worn);
         when(eqpInv.getNextFreeSlot()).thenReturn((short) 7);
 
         BotEquipManager.relocateEquippedStrays(bot, eqpInv, eqdInv);
@@ -344,6 +348,32 @@ class BotEquipManagerTest {
         // Worn gear at a negative slot is left exactly as-is.
         verify(eqdInv, never()).removeSlot((short) -5);
         verify(worn, never()).setPosition(anyShort());
+    }
+
+    @Test
+    void relocateEquippedStraysDropsStaleWornKeyWithoutReAddingWhenAlreadyInBag() {
+        // The LIVE desync the equip/unequip interleave produces: ONE instance registered in both
+        // containers -- EQUIPPED under key -5, EQUIP at slot 7 -- with position 7. Removing by
+        // position would no-op (removeSlot is keyed), and re-adding it to the bag would duplicate it.
+        Character bot = mock(Character.class);
+        when(bot.getName()).thenReturn("TestBot");
+        Inventory eqdInv = mock(Inventory.class);
+        Inventory eqpInv = mock(Inventory.class);
+
+        Equip desynced = mock(Equip.class);
+        when(desynced.getItemId()).thenReturn(1002019);
+        when(desynced.getPosition()).thenReturn((short) 7);
+        when(eqdInv.list()).thenReturn(List.of(desynced));
+        when(eqdInv.getItem((short) -5)).thenReturn(desynced); // still under the old worn key
+        when(eqpInv.getItem((short) 7)).thenReturn(desynced);  // and already live in the bag
+        when(eqpInv.getNextFreeSlot()).thenReturn((short) 9);
+
+        BotEquipManager.relocateEquippedStrays(bot, eqpInv, eqdInv);
+
+        verify(eqdInv).removeSlot((short) -5);          // the stale key, found by identity
+        verify(eqdInv, never()).removeSlot((short) 7);  // never the position
+        verify(eqpInv, never()).addItemFromDB(any());   // re-adding would BE the duplication
+        verify(desynced, never()).setPosition(anyShort());
     }
 
     @Test

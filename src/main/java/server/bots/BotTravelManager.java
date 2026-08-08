@@ -565,6 +565,7 @@ final class BotTravelManager {
         if (map == null || pos == null) {
             return false;
         }
+        Portal touching = null;
         for (Portal portal : map.getPortals()) {
             String script = portal.getScriptName();
             boolean hasScript = script != null && !script.isEmpty();
@@ -578,13 +579,43 @@ final class BotTravelManager {
             }
             Point pp = portal.getPosition();
             if (Math.abs(pos.x - pp.x) <= COLLISION_ENTER_X && Math.abs(pos.y - pp.y) <= COLLISION_ENTER_Y) {
-                entry.portalUseCooldownUntilMs = now + PORTAL_USE_COOLDOWN_MS;
-                portal.enterPortal(bot.getClient());
-                BotMovementManager.resetEntryState(entry);
-                return true;
+                touching = portal;
+                break;
             }
         }
-        return false;
+        if (touching == null) {
+            clearCollisionPortalMemory(entry); // out of every box: the client re-arms here too
+            return false;
+        }
+        // The client fires a collision portal ONCE per contact — it remembers the portal it last
+        // fired and skips it until the character leaves the box. Not emulating that made every
+        // NON-warping pt=9 script (blockPortal, highposition, tutorialNPC) re-run each cooldown for
+        // as long as the bot stood there.
+        if (entry.lastCollisionPortalMapId == map.getId() && entry.lastCollisionPortalId == touching.getId()) {
+            return false;
+        }
+        entry.lastCollisionPortalMapId = map.getId();
+        entry.lastCollisionPortalId = touching.getId();
+        entry.portalUseCooldownUntilMs = now + PORTAL_USE_COOLDOWN_MS;
+
+        int beforeMapId = bot.getMapId();
+        int beforeX = pos.x;
+        int beforeY = pos.y;
+        touching.enterPortal(bot.getClient());
+        // Only a portal that actually MOVED the bot invalidates nav/motion state. A script that
+        // warps nothing must not wipe the grind target and route: that reset firing repeatedly is
+        // what made a bot standing in a no-op box replan continuously.
+        Point after = bot.getPosition();
+        if (bot.getMapId() != beforeMapId || after == null || after.x != beforeX || after.y != beforeY) {
+            BotMovementManager.resetEntryState(entry);
+            clearCollisionPortalMemory(entry); // moved on: nothing to suppress anymore
+        }
+        return true;
+    }
+
+    static void clearCollisionPortalMemory(BotEntry entry) {
+        entry.lastCollisionPortalMapId = -1;
+        entry.lastCollisionPortalId = -1;
     }
 
     /**

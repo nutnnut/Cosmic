@@ -1883,52 +1883,52 @@ final class BotScrollManager {
 
     private static final long SHELF_SCROLL_VALUE_TTL_MS = 15_000L;
     private static final int SHELF_SCROLL_VALUE_CACHE_CAP = 50_000;
+    // One cache PER valuation function, not one shared by item id: scrollMarketValueMeso and
+    // useItemMarketValueMeso answer different questions, so a single map would let whichever ran
+    // first serve the other for the whole TTL if their id spaces ever overlapped.
     private static final Map<Long, CachedScrollValue> shelfScrollValueCache = new ConcurrentHashMap<>();
+    private static final Map<Long, CachedScrollValue> shelfUseItemValueCache = new ConcurrentHashMap<>();
 
-    static double scrollMarketValueMeso(Character bot, int scrollId) {
+    /** TTL-memo shared by the shelf valuations: same key shape, same cap, one cache each. */
+    private static double shelfValue(Map<Long, CachedScrollValue> cache, Character bot, int itemId,
+                                     java.util.function.ToDoubleFunction<BotEntry> compute) {
         long now = System.currentTimeMillis();
-        long key = bot == null ? scrollId : ((long) bot.getId() << 32) | (scrollId & 0xFFFFFFFFL);
-        CachedScrollValue cached = shelfScrollValueCache.get(key);
+        long key = bot == null ? itemId : ((long) bot.getId() << 32) | (itemId & 0xFFFFFFFFL);
+        CachedScrollValue cached = cache.get(key);
         if (cached != null && now - cached.computedAtMs() < SHELF_SCROLL_VALUE_TTL_MS) {
             return cached.value();
         }
         BotEntry entry = bot == null ? null : BotManager.getInstance().getEntryByBotCharId(bot.getId());
-        double value = scrollPriceMeso(resolveProducerCombat(entry, bot), scrollId);
-        if (shelfScrollValueCache.size() > SHELF_SCROLL_VALUE_CACHE_CAP) {
-            shelfScrollValueCache.clear(); // bots churn; a rare cold refill beats unbounded growth
+        double value = compute.applyAsDouble(entry);
+        if (cache.size() > SHELF_SCROLL_VALUE_CACHE_CAP) {
+            cache.clear(); // bots churn; a rare cold refill beats unbounded growth
         }
-        shelfScrollValueCache.put(key, new CachedScrollValue(value, now));
+        cache.put(key, new CachedScrollValue(value, now));
         return value;
+    }
+
+    static double scrollMarketValueMeso(Character bot, int scrollId) {
+        return shelfValue(shelfScrollValueCache, bot, scrollId,
+                entry -> scrollPriceMeso(resolveProducerCombat(entry, bot), scrollId));
     }
 
     /** Generic USE-item acquisition value for market goods such as skill books: private belief,
      * then an NPC counter when one exists, then targeted-farm replacement cost. Scroll-only combat
      * ceilings and Chaos/White floors deliberately stay in {@link #scrollMarketValueMeso}. */
     static double useItemMarketValueMeso(Character bot, int itemId) {
-        long now = System.currentTimeMillis();
-        long key = bot == null ? itemId : ((long) bot.getId() << 32) | (itemId & 0xFFFFFFFFL);
-        CachedScrollValue cached = shelfScrollValueCache.get(key);
-        if (cached != null && now - cached.computedAtMs() < SHELF_SCROLL_VALUE_TTL_MS) {
-            return cached.value();
-        }
-        BotEntry entry = bot == null ? null : BotManager.getInstance().getEntryByBotCharId(bot.getId());
-        ProducerCombat pc = resolveProducerCombat(entry, bot);
-        double perceived = perceivedItemPrice(pc, itemId);
-        Integer shop = shopPrices().get(itemId);
-        double value;
-        if (shop != null) {
-            value = perceived > 0 ? Math.min(shop, perceived) : shop;
-        } else if (perceived > 0) {
-            value = perceived;
-        } else {
+        return shelfValue(shelfUseItemValueCache, bot, itemId, entry -> {
+            ProducerCombat pc = resolveProducerCombat(entry, bot);
+            double perceived = perceivedItemPrice(pc, itemId);
+            Integer shop = shopPrices().get(itemId);
+            if (shop != null) {
+                return perceived > 0 ? Math.min(shop, perceived) : shop;
+            }
+            if (perceived > 0) {
+                return perceived;
+            }
             double farm = farmingCostMeso(pc, itemId);
-            value = Double.isFinite(farm) ? farm : DEFAULT_SCROLL_COST_MESO;
-        }
-        if (shelfScrollValueCache.size() > SHELF_SCROLL_VALUE_CACHE_CAP) {
-            shelfScrollValueCache.clear();
-        }
-        shelfScrollValueCache.put(key, new CachedScrollValue(value, now));
-        return value;
+            return Double.isFinite(farm) ? farm : DEFAULT_SCROLL_COST_MESO;
+        });
     }
 
     /** Combat-demand ceiling for an equip scroll, in meso: the most a best-buyer pays for the combat

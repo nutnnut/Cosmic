@@ -659,6 +659,12 @@ public class BotEntry {
     // Absolute time until which this bot may not take another portal (set on portal use).
     // Portal-only gate: does not block movement, attacks, or any other action.
     long portalUseCooldownUntilMs = 0L;
+    // Last collision portal fired, mirroring the client's own fired-portal memory
+    // (CUserLocal::CheckPortal_Collision): it will not re-fire the same portal until the character
+    // leaves its trigger box. Without this a NON-warping pt=9 script re-ran every cooldown for as
+    // long as the bot stood in the box. Cleared once no trigger box contains the bot.
+    int lastCollisionPortalMapId = -1;
+    int lastCollisionPortalId = -1;
     // Pre-warp pause while standing on a travel portal before stepping through (set in
     // BotTravelManager.walkToPortalAndEnter); the bot keeps centring on the portal until it elapses.
     long portalEnterDwellUntilMs = 0L;
