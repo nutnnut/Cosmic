@@ -1195,7 +1195,7 @@ class BotInventoryManagerTest {
 
         try (AutoCloseable seams = withSellSeams(price, leftover, dropChance, 2 /* has Maker */)) {
             List<Item> trash = BotInventoryManager.collectSellTrashEtcItems(bot);
-            assertEquals(4, trash.size());
+            assertEquals(5, trash.size());
             assertTrue(trash.stream().anyMatch(item -> item.getItemId() == 4000000));
             assertTrue(trash.stream().anyMatch(item ->
                     item.getItemId() == 4000100 && BotInventoryManager.sellTrashQuantity(item) == 45));
@@ -1203,6 +1203,72 @@ class BotInventoryManagerTest {
                     "0-NPC-price clutter should now be sold");
             assertTrue(trash.stream().anyMatch(item -> item.getItemId() == 4030014),
                     "omok pieces are always sold, even when they read as a rare drop");
+            assertTrue(trash.stream().anyMatch(item -> item.getItemId() == 4000001),
+                    "the rare-drop keep is disabled by default, so a rare ETC drop sells");
+            // One row per maker id here, so the per-id shelf keeps them all.
+            assertTrue(trash.stream().noneMatch(item -> isIn(item.getItemId(),
+                            4250000, 4004000, 4005004, 4007003, 4010006, 4011008, 4020007, 4021009,
+                            4130000, 4131000, 4260000)),
+                    "a single row of each maker material is within the per-id shelf");
+        } catch (Exception e) {
+            throw new AssertionError(e);
+        }
+    }
+
+    @Test
+    void rareDropKeepStillProtectsWhenTheFeatureIsEnabled() {
+        // The keep is retained as a feature, just off by default (it reserved so much of the ETC tab
+        // that bots could never free a slot). Flipping the flag must restore the old protection.
+        Character bot = mock(Character.class);
+        Inventory etc = new Inventory(bot, InventoryType.ETC, (byte) 12);
+        etc.addItem(Items.itemWithQuantity(4000000, 50));  // common junk -> trash either way
+        etc.addItem(Items.itemWithQuantity(4000001, 2));   // rare drop (0.5%)
+        when(bot.getInventory(InventoryType.ETC)).thenReturn(etc);
+
+        BotInventoryManager.SellPriceLookup price = (id, qty) -> 10;
+        IntUnaryOperator leftover = id -> -1;
+        IntUnaryOperator dropChance = id -> id == 4000001 ? 5000 : 600000;
+
+        boolean prev = BotInventoryManager.RARE_DROP_KEEP_ENABLED;
+        try (AutoCloseable seams = withSellSeams(price, leftover, dropChance)) {
+            BotInventoryManager.RARE_DROP_KEEP_ENABLED = true;
+            List<Item> trash = BotInventoryManager.collectSellTrashEtcItems(bot);
+            assertTrue(trash.stream().noneMatch(item -> item.getItemId() == 4000001),
+                    "with the feature enabled a rare ETC drop is kept");
+            assertTrue(trash.stream().anyMatch(item -> item.getItemId() == 4000000));
+        } catch (Exception e) {
+            throw new AssertionError(e);
+        } finally {
+            BotInventoryManager.RARE_DROP_KEEP_ENABLED = prev;
+        }
+    }
+
+    @Test
+    void makerMaterialsAreShelfCappedPerIdAndSoldCheapestFirst() {
+        // The ETC deadlock: maker materials used to be kept with NO cap, so a long-lived bot filled
+        // the tab and could never free the one slot a ferry TICKET needs. Keep two rows per id; the
+        // overflow sells like any clutter, cheapest row first.
+        Character bot = mock(Character.class);
+        Inventory etc = new Inventory(bot, InventoryType.ETC, (byte) 24);
+        etc.addItem(Items.itemWithQuantity(4010000, 200));  // ore, fattest -> keep
+        etc.addItem(Items.itemWithQuantity(4010000, 100));  // ore -> keep (2nd row)
+        etc.addItem(Items.itemWithQuantity(4010000, 30));   // ore -> SELL (overflow)
+        etc.addItem(Items.itemWithQuantity(4010000, 10));   // ore -> SELL (overflow, cheapest)
+        etc.addItem(Items.itemWithQuantity(4020000, 50));   // jewel ore, only row -> keep
+        when(bot.getInventory(InventoryType.ETC)).thenReturn(etc);
+
+        // Value scales with stack size, and a jewel ore is worth more per unit than an ore — so the
+        // sell order is the cheapest overflow row first.
+        BotInventoryManager.SellPriceLookup price = (id, qty) -> (id == 4020000 ? 10 : 1) * qty;
+        IntUnaryOperator leftover = id -> -1;
+        IntUnaryOperator dropChance = id -> 600000;
+
+        try (AutoCloseable seams = withSellSeams(price, leftover, dropChance, 2 /* has Maker */)) {
+            List<Item> trash = BotInventoryManager.collectSellTrashEtcItems(bot);
+            assertEquals(2, trash.size(), "only the rows beyond the per-id shelf sell");
+            assertTrue(trash.stream().allMatch(item -> item.getItemId() == 4010000));
+            assertEquals(10, trash.get(0).getQuantity(), "cheapest row sells first");
+            assertEquals(30, trash.get(1).getQuantity());
         } catch (Exception e) {
             throw new AssertionError(e);
         }

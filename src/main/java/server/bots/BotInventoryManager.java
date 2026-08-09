@@ -1891,6 +1891,13 @@ class BotInventoryManager {
     // <=1% yet clean average rolls are NPC fodder — good rolls are already stat-protected
     // (shouldKeepForSellTrash) and self-useful gear is reserved (collectPotentialSelfUpgradeItems).
     private static final int RARE_DROP_KEEP_CHANCE = 10_000;
+    // The rare-drop keep is retained as a feature but DISABLED (owner call): together with uncapped
+    // maker hoarding it reserved so much of the ETC tab that a long-lived bot could never free a
+    // slot, and a bot that cannot free an ETC slot cannot buy a ferry ticket. Flip to re-enable.
+    static boolean RARE_DROP_KEEP_ENABLED = false;
+    // Maker materials are reserved per ID, not wholesale: a recipe needs a couple of stacks, and an
+    // uncapped keep is what filled the tab. Overflow rows sell like any other clutter.
+    static final int MAKER_MATERIAL_KEEP_ROWS = 2;
     private static final int MONSTER_CRYSTAL_LEFTOVER_KEEP_QUANTITY = 100;
 
     // === USE value model tunables (pressure-driven + value shelf) ===
@@ -2492,22 +2499,73 @@ class BotInventoryManager {
     // materials, rare drops, and (only if the bot has the Maker skill) crystal leftovers convertible
     // to monster crystals. Everything else is sold even at 0 NPC price - 0-value clutter (e.g. Pig
     // Vein) only leaves the bag if it's collected here.
+    /**
+     * ETC sell list, shaped like the EQUIP one ({@link #collectSellTrashEquips}): reserve what the
+     * bot genuinely uses, shelf-cap the rest, and sell the overflow cheapest-first.
+     *
+     * <p>Reserved outright: skill-consumed rocks and convertible monster-crystal leftovers. Maker
+     * materials are reserved only up to {@link #MAKER_MATERIAL_KEEP_ROWS} ROWS PER ID — they used to
+     * be kept without any cap, so a long-lived bot accumulated dozens of ore/powder stacks until the
+     * ETC tab was permanently full. A full ETC tab is not cosmetic: an ETC-inventory purchase (the
+     * ferry TICKET) then fails {@code InventoryManipulator.checkSpace} forever, which stranded
+     * level-100+ bots on the Orbis dock with millions of meso and no way to buy a 30k ticket.
+     *
+     * <p>Ordering is least-valuable-first so a partial sell sheds clutter before worth (ores before
+     * plates, jewel ores before refined jewels) — NPC price gives that ranking for free.
+     */
     static List<Item> collectSellTrashEtcItems(Character bot) {
-        List<Item> result = new ArrayList<>();
+        List<Item> candidates = new ArrayList<>();
+        List<Item> makerMaterials = new ArrayList<>();
         // botAwareSafety: stale ETC quest items pass the quest-item exclusion; the keeps below still
         // protect anything with genuine value, so only true clutter is collected.
-        collectFromBag(bot, result, InventoryType.ETC, item -> {
+        collectFromBag(bot, candidates, InventoryType.ETC, item -> {
             int id = item.getItemId();
             if (isOmokItem(id)) {
-                return true; // omok clutter: always sold, overrides the rare-drop/leftover keeps below
+                return true; // omok clutter: always sold, overrides every keep below
             }
-            if (SKILL_CONSUMED_ETC.contains(id) || isMakerMaterial(id) || isRareDrop(id)
-                    || keepCrystalLeftover(bot, item)) {
+            if (SKILL_CONSUMED_ETC.contains(id) || keepCrystalLeftover(bot, item)) {
+                return false;
+            }
+            if (RARE_DROP_KEEP_ENABLED && isRareDrop(id)) {
+                return false;
+            }
+            if (isMakerMaterial(id)) {
+                makerMaterials.add(item); // shelf-capped below rather than kept outright
                 return false;
             }
             return true;
         }, true);
-        return result;
+        candidates.addAll(makerMaterialOverflow(makerMaterials));
+        candidates.sort(Comparator.comparingLong(BotInventoryManager::etcSellValue)
+                .thenComparingInt(Item::getItemId));
+        return candidates;
+    }
+
+    /** NPC worth of one ETC row — the ranking key for the cheapest-first sell order. */
+    private static long etcSellValue(Item item) {
+        return Math.max(0, sellPrice.price(item.getItemId(), item.getQuantity()));
+    }
+
+    /**
+     * Maker-material rows beyond the per-id shelf, cheapest first. Rows of one id are ranked by NPC
+     * worth so the FATTEST stacks are the ones kept (a recipe wants quantity, not slots) and the
+     * thin leftovers sell.
+     */
+    static List<Item> makerMaterialOverflow(List<Item> materials) {
+        Map<Integer, List<Item>> byId = new HashMap<>();
+        for (Item item : materials) {
+            byId.computeIfAbsent(item.getItemId(), k -> new ArrayList<>()).add(item);
+        }
+        List<Item> overflow = new ArrayList<>();
+        for (List<Item> rows : byId.values()) {
+            if (rows.size() <= MAKER_MATERIAL_KEEP_ROWS) {
+                continue;
+            }
+            rows.sort(Comparator.comparingLong(BotInventoryManager::etcSellValue).reversed()
+                    .thenComparingInt(Item::getPosition));
+            overflow.addAll(rows.subList(MAKER_MATERIAL_KEEP_ROWS, rows.size()));
+        }
+        return overflow;
     }
 
     /** Drop disposable quest items the sell pipeline can't clear - untradeable ones a shop refuses -

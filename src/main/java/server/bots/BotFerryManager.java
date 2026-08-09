@@ -3,6 +3,8 @@ package server.bots;
 import client.Character;
 import client.inventory.InventoryType;
 import client.inventory.manipulator.InventoryManipulator;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import scripting.event.EventManager;
 import server.maps.MapleMap;
 import server.maps.Portal;
@@ -27,6 +29,8 @@ import java.util.Map;
  * invasion on deck, which sends the bot through the cabin door like any sane passenger.
  */
 final class BotFerryManager {
+
+    private static final Logger log = LoggerFactory.getLogger(BotFerryManager.class);
 
     // Same approach radius as the cab NPCs: anywhere near the NPC counts as talking to it.
     private static final int NPC_TRIGGER_RADIUS_PX = 500;
@@ -420,6 +424,16 @@ final class BotFerryManager {
 
     static TicketCheck ticketCheck = (bot, ticketItemId) -> bot.haveItem(ticketItemId);
 
+    /** Can the bot actually RECEIVE the ticket? Same space check the seller script runs, hoisted so
+     *  a hopeless purchase is diagnosed before the walk instead of failing at the counter. */
+    @FunctionalInterface
+    interface TicketSpace {
+        boolean hasRoom(Character bot, int ticketItemId);
+    }
+
+    static TicketSpace ticketSpace =
+            (bot, ticketItemId) -> InventoryManipulator.checkSpace(bot.getClient(), ticketItemId, 1, "");
+
     static TicketShop ticketShop = (bot, route) -> {
         // Mirrors the seller script: meso + inventory space check, then pay and receive.
         if (bot.getMeso() < route.ticketCost()
@@ -575,6 +589,16 @@ final class BotFerryManager {
 
         if (mapId == route.ticketNpcMapId() && !hasTicket) {
             if (bot.getMeso() < route.ticketCost()) {
+                return false;
+            }
+            // A ticket is an ETC item, so a full ETC tab fails checkSpace and the purchase can NEVER
+            // succeed — walking to the seller again just re-plans into the same wall (bots sat on the
+            // Orbis dock holding 200M+ meso doing exactly this). Bag pressure is a resupply/sell
+            // errand's job, so ask for one instead of burning the hop.
+            if (!ticketSpace.hasRoom(bot, route.ticketItemId())) {
+                log.warn("Bot '{}' cannot hold ferry ticket {} (inventory full) - requesting a sell trip"
+                        + " instead of retrying the boarding", bot.getName(), route.ticketItemId());
+                BotAutopilotManager.requestResupplyErrand(entry, bot);
                 return false;
             }
             return walkToNpcThenAct(entry, bot, route.ticketNpcId(), now, runAiTick,

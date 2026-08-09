@@ -115,10 +115,14 @@ class BotTravelManagerTest {
         private final BotTravelManager.ReturnScrollUse previousScrollUse = BotTravelManager.returnScrollUse;
         private final BotTravelManager.TaxiNpcLocator previousNpcLocator = BotTravelManager.taxiNpcLocator;
         private final BotTravelManager.TaxiRide previousTaxiRide = BotTravelManager.taxiRide;
+        // The real ticket-space check runs InventoryManipulator.checkSpace, which pulls in
+        // ItemInformationProvider (its <clinit> wants a JDBC pool). Same reason as the seams above.
+        private final BotFerryManager.TicketSpace previousTicketSpace = BotFerryManager.ticketSpace;
         final List<Integer> scrollUses = new ArrayList<>();
         final List<BotWorldGraph.TaxiEdge> rides = new ArrayList<>();
 
         ConsumableSeams() {
+            BotFerryManager.ticketSpace = (bot, ticketItemId) -> true;
             BotTravelManager.scrollTargetLookup = mapId -> -1;
             BotTravelManager.returnScrollCount = bot -> 0;
             BotTravelManager.returnScrollUse = bot -> {
@@ -139,6 +143,7 @@ class BotTravelManagerTest {
             BotTravelManager.returnScrollUse = previousScrollUse;
             BotTravelManager.taxiNpcLocator = previousNpcLocator;
             BotTravelManager.taxiRide = previousTaxiRide;
+            BotFerryManager.ticketSpace = previousTicketSpace;
         }
     }
 
@@ -649,6 +654,29 @@ class BotTravelManagerTest {
             assertTrue(BotTravelManager.tickTravel(f.entry(), f.bot(), orbisStation, 8, true, true));
             assertTrue(f.entry().followTravelFerry);
             assertEquals(List.of(new Point(800, 0)), movement.steps);
+        }
+    }
+
+    @Test
+    void shouldNotWalkToTheTicketSellerWhenTheTicketCannotBeHeld() {
+        // A ferry ticket is an ETC item: with a full ETC tab the purchase can never succeed, so
+        // walking to the seller only re-plans into the same wall (live: lvl-120 bots parked on the
+        // Orbis dock holding 200M+ meso). The hop must fail immediately instead.
+        int elliniaStation = 101000300;
+        int orbisStation = 200000100;
+        Fixture f = fixture(elliniaStation, orbisStation, new Point(0, 0), List.of());
+        when(f.bot().getMeso()).thenReturn(5000);
+
+        try (MovementRecorder movement = new MovementRecorder();
+             ConsumableSeams seams = new ConsumableSeams();
+             RouteStub route = new RouteStub((from, to, maxHops, options, blocked) ->
+                     options.withFerry() ? List.of(orbisStation) : null)) {
+            BotTravelManager.taxiNpcLocator = (map, npcId) -> npcId == 1032007 ? new Point(800, 0) : null;
+            BotFerryManager.ticketSpace = (bot, ticketItemId) -> false; // ETC tab full
+
+            BotTravelManager.tickTravel(f.entry(), f.bot(), orbisStation, 8, true, true);
+            assertTrue(movement.steps.isEmpty(),
+                    "a bot that cannot hold the ticket must not walk to the seller");
         }
     }
 

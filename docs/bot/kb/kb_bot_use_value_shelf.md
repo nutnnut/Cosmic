@@ -34,6 +34,21 @@ USE-bag hoarding (Preston: 20+ slots cheap recovery pots; Clawer: 28 slots / 191
 - **Crystal leftovers** kept only when actually convertible: `getMakerCrystalFromLeftover != -1` (SSOT) AND `qty >= 100` AND **the bot has the Maker skill** (`makerSkillLevel` seam → `MakerProcessor.getMakerSkillLevel >= 1`, the `generateLeftoverCrystalEntry` reqMakerLevel). `keepCrystalLeftover(bot,item)` helper. A non-Maker bot now sheds all those Tree Branch / Slime Bubble stacks.
 - **Generic 0-value sell** — dropped the `sellPrice > 0` gate. Anything not on a keep-list sells even at 0 NPC meso (`Shop.sell` removes regardless of price; `canSell` has no price floor). Pig Vein etc. finally leave.
 - **Omok = SELL whitelist (not keep!)** — `isOmokItem` (pieces `4030000-4030016`, sets `4080000-4080011`) forces the sale, OVERRIDING the rare-drop/leftover keeps. User: "omok whitelist = sell all not keep".
+- **ETC now mirrors the EQUIP shelf** (reserve → shelf-cap → sell overflow cheapest-first), not a flat
+  keep-list. `collectSellTrashEtcItems` reserves only skill-consumed rocks (`SKILL_CONSUMED_ETC`) and
+  convertible crystal leftovers; **maker materials are capped at `MAKER_MATERIAL_KEEP_ROWS = 2` ROWS
+  PER ID** (`makerMaterialOverflow`, fattest rows kept — a recipe wants quantity, not slots), and the
+  whole list is sorted by `sellPrice` ascending so a partial sell sheds ores before plates and jewel
+  ores before refined jewels. **The rare-drop keep (`isRareDrop`) is retained but DISABLED**
+  (`RARE_DROP_KEEP_ENABLED = false`, owner call).
+  **Why:** uncapped maker hoarding + the rare-drop keep reserved ~85 of 96 ETC rows on a mature bot,
+  so the tab was permanently full AND `collectSellTrashEtcItems` returned empty — meaning the
+  `bagFull`/`shouldAutoSellTrash` escape hatch never fired either. A full ETC tab is not cosmetic: a
+  **ferry ticket is an ETC item**, so `InventoryManipulator.checkSpace` failed forever and
+  `BotFerryManager` looped `ferry-board-fail` → replan → same wall. Live: `fictionxD` (lvl 120) sat on
+  the Orbis dock with **217M meso** unable to buy a 30k Leafre ticket, blocking its 4th-job advance;
+  86 characters had a full ETC tab, 55 of them level 100+. `tickBoarding` now also pre-checks ticket
+  space (`ticketSpace` seam) and requests a resupply errand instead of burning the hop.
 - **Quest-item disposal** — `isStaleQuestItem` extended: a using-quest is also disposable when **proven unfinishable** (`questBugged` seam → `BotManager.getEntryByBotCharId(bot).buggedQuestIds`, set by `BotQuestManager.markQuestBugged` for unreachable turn-in NPC / complete()-won't-register). A STARTED quest keeps its item UNLESS bugged. Tradeable disposables sell on the next shop trip; **untradeable ones are DROPPED** via `discardDisposableQuestItems` → `InventoryManipulator.drop` (player path, shares code) on the autopilot hygiene tick (`BotPotionManager.tickPotionCheck`, next to `autoCompactIfCramped`, no town trip). `shouldDiscardQuestItem = questItem && isStaleQuestItem && !isSafeToDrop`.
 - **Quest items always vanish on drop** — fixed `InventoryManipulator.isDisappearingItemDrop`: the `UNTRADEABLE_ITEMS_TRADEABLE → return false` (nothing disappears) early-out now exempts quest items (`&& !ii.isQuestItem`), so a dropped quest item still hits the isDropRestricted SSOT branch and disappears instead of littering. Player-path fix, benefits players too.
 - **Part 4 "walk to NPC to turn in" was already built**: `BotQuestManager.readyToTurnIn` (started + `countsMet`, i.e. items held + counts) queues a TURNIN errand ahead of pickStartable/grinding in `tickScan`. No new priority code needed — held-item completable quests already preempt.
