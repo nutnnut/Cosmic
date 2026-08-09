@@ -36,6 +36,8 @@ final class BotFerryManager {
     private static final int NPC_TRIGGER_RADIUS_PX = 500;
     // Re-armed while waiting legitimately (gate closed); walking legs use it as a fresh budget.
     private static final long LEG_BUDGET_MS = 60_000L;
+    // A bag stays full across many ticks; report the unbuyable ticket at most this often per bot.
+    private static final long TICKET_SPACE_WARN_THROTTLE_MS = 5 * 60_000L;
 
     /**
      * One direction of a ferry line. {@code guideNpcId == 0} means the station has no
@@ -596,8 +598,13 @@ final class BotFerryManager {
             // Orbis dock holding 200M+ meso doing exactly this). Bag pressure is a resupply/sell
             // errand's job, so ask for one instead of burning the hop.
             if (!ticketSpace.hasRoom(bot, route.ticketItemId())) {
-                log.warn("Bot '{}' cannot hold ferry ticket {} (inventory full) - requesting a sell trip"
-                        + " instead of retrying the boarding", bot.getName(), route.ticketItemId());
+                // Throttled: the errand request self-limits (its own cooldown), so an unthrottled
+                // line here fires every tick for as long as the bag stays full.
+                if (now >= entry.ticketSpaceWarnAtMs) {
+                    entry.ticketSpaceWarnAtMs = now + TICKET_SPACE_WARN_THROTTLE_MS;
+                    log.warn("Bot '{}' cannot hold ferry ticket {} (inventory full) - requesting a sell"
+                            + " trip instead of retrying the boarding", bot.getName(), route.ticketItemId());
+                }
                 BotAutopilotManager.requestResupplyErrand(entry, bot);
                 return false;
             }

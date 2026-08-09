@@ -360,6 +360,7 @@ public class BotEntry {
     int followTravelBestRouteCost = Integer.MAX_VALUE; // lowest committed-route remaining cost seen for this portal hop
     Point followTravelProgressPos = null; // last fallback position that refreshed the travel deadline
     Point followTravelMoveTarget = null; // the exact moveTarget instance travel pinned (identity-checked on clear)
+    long ticketSpaceWarnAtMs = 0L;       // throttle for the "can't hold the ferry ticket" report
     int followTravelTaxiNpcId = 0;       // != 0: current hop is a cab ride — walk to this NPC, pay, warp
     Point followTravelTaxiPos = null;    // cab NPC position (static, cached at hop start)
     boolean followTravelFerry = false;   // current hop is a ferry boarding leg (BotFerryManager)
