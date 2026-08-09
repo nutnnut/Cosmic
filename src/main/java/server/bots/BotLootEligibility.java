@@ -41,6 +41,9 @@ public final class BotLootEligibility {
                 || (entry.kpq.couponTarget > 0 && bot.getItemQuantity(KPQ_COUPON, false) >= entry.kpq.couponTarget))) {
             return false;
         }
+        if (itemId == BotZakumPrequestManager.ITEM_KEY && entry.zakumPqChestDropAtMs != 0L) {
+            return false; // the bot's own 7-key stack sits at the Giant Chest awaiting the item reactor
+        }
         if (itemId > 0 && !bot.needQuestItem(drop.getQuest(), itemId)) {
             return false;
         }

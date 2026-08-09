@@ -264,8 +264,11 @@ final class BotTempleProgressionManager {
         if (BotQuestManager.gate.canStart(bot, tq.id(), tq.startNpc())) {
             BotQuestManager.gate.start(bot, tq.id(), tq.startNpc());
             reply.accept(entry, "picked up " + BotQuestManager.questName.name(tq.id()));
+        } else {
+            // A start edge beyond level (unexpected for this data) isn't met: without a pause the
+            // next tick re-arrives and re-tries in a hot loop at the NPC — step aside instead.
+            backOff(entry);
         }
-        // else: a start edge (fieldEnter/level) not met yet — next tick re-resolves and defers.
     }
 
     private static void doComplete(BotEntry entry, Character bot, TQ tq) {
@@ -412,6 +415,10 @@ final class BotTempleProgressionManager {
             ExpAction.runAction(bot, Q3514_EXP);
             Quest.getInstance(Q_SORCERER).forceComplete(bot, SORCERER);
             reply.accept(entry, "the emotions are thawed, moving on");
+        } else {
+            // Couldn't drink (potion lost + USE tab full blocks the re-grant): pause instead of
+            // re-arriving in a hot loop; the resupply flow frees space during the back-off.
+            backOff(entry);
         }
     }
 
@@ -457,6 +464,17 @@ final class BotTempleProgressionManager {
             new Helmet(4000461, 270020500), // Lilynouch
             new Helmet(4000462, 270030500)  // Lyka
     );
+
+    /** Sell/discard guard: the six Force Field turn-in materials must survive inventory hygiene until
+     *  3521 is done. They carry no WZ {@code info/quest} flag, so the generic quest-item guard cannot
+     *  see them — without this, a cramped-ETC sell trip NPCs the masks/helmets mid-questline. */
+    static boolean isQuestCriticalItem(Character bot, int itemId) {
+        boolean forceFieldItem = switch (itemId) {
+            case 4000446, 4000451, 4000456, 4000460, 4000461, 4000462 -> true;
+            default -> false;
+        };
+        return forceFieldItem && bot != null && !BotQuestManager.gate.isCompleted(bot, Q_FORCE_FIELD);
+    }
 
     private static boolean handle3521(BotEntry entry, Character bot, boolean runAiTick, TQ tq) {
         if (!BotQuestManager.gate.isStarted(bot, tq.id())) {

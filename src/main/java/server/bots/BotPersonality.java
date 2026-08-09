@@ -334,7 +334,26 @@ public record BotPersonality(
 
     /** splitmix64 finalizer over {@code seed ^ TEMPLE_SALT} -> a well-spread [0,1) roll. */
     private static double templeAmbitionRoll(long seed) {
-        long z = seed ^ TEMPLE_SALT;
+        return saltedRoll(seed, TEMPLE_SALT);
+    }
+
+    // Same avalanche discipline as TEMPLE_SALT (see the note above): a distinct salt keeps the two
+    // ambition traits independent per bot instead of rank-correlated.
+    private static final long ZAKUM_SALT = 0x2AC0B0551E0FF1CEL;
+
+    /**
+     * Stable level in [70,120] at which the bot opts into the Zakum prequest chain
+     * ({@link BotZakumPrequestManager}). Neutral bots (seed 0) land mid-band (95).
+     */
+    public int zakumAmbitionLevel() {
+        double r = seed == 0 ? 0.5 : saltedRoll(seed, ZAKUM_SALT);
+        return BotZakumPrequestManager.AMBITION_MIN_LEVEL
+                + (int) Math.round(r * BotZakumPrequestManager.AMBITION_BAND);
+    }
+
+    /** splitmix64 finalizer over {@code seed ^ salt} -> a well-spread [0,1) roll. */
+    private static double saltedRoll(long seed, long salt) {
+        long z = seed ^ salt;
         z = (z ^ (z >>> 30)) * 0xBF58476D1CE4E5B9L;
         z = (z ^ (z >>> 27)) * 0x94D049BB133111EBL;
         z = z ^ (z >>> 31);

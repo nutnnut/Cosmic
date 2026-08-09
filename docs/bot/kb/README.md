@@ -61,6 +61,10 @@ Do not copy a graph version from a KB note. The current value and full schema hi
 - [`kb_bot_temple_of_time.md`](kb_bot_temple_of_time.md): the quest-gated Temple of Time corridor —
   the per-bot reachability overlay (`QUEST_GATED_ENTRANCES`/`unlockedTempleGates`) and the
   `BotTempleProgressionManager` questline driver (3500-3521).
+- [`kb_bot_zakum_prequest.md`](kb_bot_zakum_prequest.md): the Zakum prequest driver
+  (`BotZakumPrequestManager`) — 100200/100201 custom-quest mechanics, the solo Zakum PQ
+  (7-key item-trigger Giant Chest), Breath of Lava, the gold-tooth grind, and the
+  script-only quest-item sell guard shared with the Temple driver.
 
 ## Items, economy, and trading
 

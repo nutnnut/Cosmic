@@ -2523,6 +2523,12 @@ class BotInventoryManager {
             if (isOmokItem(id)) {
                 return true; // omok clutter: always sold, overrides every keep below
             }
+            if (BotTempleProgressionManager.isQuestCriticalItem(bot, id)
+                    || BotZakumPrequestManager.isQuestCriticalItem(bot, id)) {
+                // Script-only questline materials (Temple Force Field turn-in, Zakum trials/Eyes):
+                // the WZ-driven quest-item guard can't see these quests, so guard them here.
+                return false;
+            }
             if (SKILL_CONSUMED_ETC.contains(id) || keepCrystalLeftover(bot, item)) {
                 return false;
             }
@@ -3054,6 +3060,10 @@ class BotInventoryManager {
         }
         if (!isSafeToDrop(bot, item)) {
             return isStaleQuestItem(bot, id) ? "quest-stale-but-unsellable" : "quest-or-untradeable";
+        }
+        if (BotTempleProgressionManager.isQuestCriticalItem(bot, id)
+                || BotZakumPrequestManager.isQuestCriticalItem(bot, id)) {
+            return "errand-quest-critical";
         }
         if (SKILL_CONSUMED_ETC.contains(id)) {
             return "skill-consumed";

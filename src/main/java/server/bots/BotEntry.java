@@ -568,6 +568,20 @@ public class BotEntry {
     // re-asserted every tick, but the crowd re-evaluation only needs a seconds-level cadence.
     long templeCrowdCheckDueMs = 0L;
 
+    // Zakum-prequest errand (BotZakumPrequestManager): a long-horizon autopilot driver that earns the
+    // bot its Eyes of Fire (approval quest 100200, the trials 100201: solo Zakum PQ + Breath of Lava
+    // + 30 gold teeth). zakumErrandMapId = -1 when disarmed; armed it holds the current step's target
+    // map and doubles as the active() sentinel. nextZakumScanAtMs gates re-arming AND the crowd/lava
+    // step-aside cooldowns. Reset in clearZakumErrand() (called from BotAutopilotManager.clear()).
+    int zakumErrandMapId = -1;
+    int zakumErrandNpcId = 0;
+    final BotTravelManager.ErrandProgress zakumErrandProgress = new BotTravelManager.ErrandProgress();
+    long nextZakumScanAtMs = 0L;
+    long zakumCrowdCheckDueMs = 0L;    // throttles the O(all-bots) occupancy scan on the tooth grind
+    int zakumPqRoomIdx = 0;            // next key-chest room (index into KEY_ROOMS) inside the PQ
+    long zakumPqChestDropAtMs = 0L;    // 7-key stack dropped at the Giant Chest; waiting for pickup
+    int zakumLavaAttempts = 0;         // failed lava-course runs this arm (gates the long step-aside)
+
     // Job-change errand (BotStarterKitManager): an autopilot bot at a 1st/2nd-job milestone WALKS to
     // its class-town instructor NPC and advances on arrival (instead of changing job instantly,
     // anywhere). Suppresses grinding en route so it doesn't over-level. jobErrandMapId = -1 / target

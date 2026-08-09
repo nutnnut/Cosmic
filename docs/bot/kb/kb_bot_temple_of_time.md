@@ -137,8 +137,10 @@ before quest-piggyback. Each tick recomputes `Q` = the lowest incomplete quest i
     remove, the same three-call shape as `ScrollHandler`/`tryUseReturnScroll` — a targeted item-use
     helper for this one item id, not a new generic primitive) and force-completes once
     `getBuffSource(HPREC) == 2022337` is confirmed, granting the exp itself since Act.img is empty.
-  - `handle3521` defers (keeps grinding) until all 6 items are held, then does a normal data-driven
-    turn-in via `BotQuestManager.gate` — no custom script needed, since 3521 is Act.img-driven.
+  - `handle3521` re-farms the lane-5 map of the first missing helmet (the masks accrue passively
+    through the mainline grind; the helmets' single required miniboss kill leaves a 40% miss each),
+    then does a normal data-driven turn-in via `BotQuestManager.gate` — no custom script needed,
+    since 3521 is Act.img-driven.
 - **Kill switch**: `BotManager.cfg.TEMPLE_PROGRESSION` (default `true`); `maybeStart` also refuses to
   arm for a supervised bot (owner online).
 
@@ -149,12 +151,16 @@ before quest-piggyback. Each tick recomputes `Q` = the lowest incomplete quest i
   the 999th kill, no extra farming.
 - Helmet/horn items (4000460/4000461/4000462) drop at 60% from the lane-5 minibosses
   (Dodo/Lilynouch/Lyka, 8220004/5/6), but each lane-5 quest only requires killing its miniboss once —
-  a 40% chance per boss of not getting the item on that single required kill. The driver's `handle3521`
-  simply defers if a mask/helmet hasn't arrived yet (bot keeps grinding lower lanes' repeat spawns in
-  the meantime); no explicit re-farm loop is implemented, since the corridor grind naturally continues
-  to produce more kills against the same mob pool while other mainline quests are worked. Whether the
-  miniboss rooms are re-enterable for a deliberate retry after the lane quest is turned in was not
-  verified.
+  a 40% chance per boss of not getting the item on that single required kill. `handle3521` therefore
+  re-farms the lane-5 map of the first missing helmet via the same `grindLane` pin. The minibosses
+  RESPAWN on `mobTime` 3600s (verified in Map.wz life data), so a re-farm attempt is one kill per
+  hour per channel — slow but bounded, and the crowd-defer interleaves normal grinding meanwhile.
+- The six turn-in items carry no WZ `info/quest` flag, so the generic quest-item sell guard cannot
+  see them; `BotInventoryManager.collectSellTrashEtcItems` consults
+  `BotTempleProgressionManager.isQuestCriticalItem` (keep until 3521 completes) so an ETC sell trip
+  can't NPC the masks/helmets mid-questline. (This was a latent gap for a while — only 4032002
+  survived, incidentally, via its tradeBlock.) Same seam protects the Zakum trial items, see
+  [[kb_bot_zakum_prequest]].
 - Drop rates and item-to-mob mapping for masks/helmets are **not in WZ** — confirmed only via the live
   `cosmic.drop_data` DB table, not `Mob.wz`. Cross-reference `[[wz-data]]`-style tooling accordingly if
   re-verifying.

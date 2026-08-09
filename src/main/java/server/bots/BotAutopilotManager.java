@@ -464,6 +464,7 @@ final class BotAutopilotManager {
         // inside the FM, the stranded-exit recovery re-arms a bare exit walk next tick)
         BotStarterKitManager.clearJobErrand(entry); // ...and any job-change instructor walk
         BotTempleProgressionManager.clearTempleErrand(entry); // ...and any Temple-questline drive
+        BotZakumPrequestManager.clearZakumErrand(entry); // ...and any Zakum-prequest drive
         BotTravelManager.resetForModeChange(entry); // drop the in-flight hop AND the give-up cooldown,
         // so a re-command (follow/grind/move) isn't silently gated by a stale travel give-up window.
         // autopilotNextErrandAtMs deliberately survives: it rate-limits errands, not the mode.
@@ -785,6 +786,20 @@ final class BotAutopilotManager {
                 // flow below can sell trash first; job errand resumes once space frees up.
                 @Override public boolean yieldForResupply(BotEntry entry, Character bot) {
                     return bagFull.bagFull(entry, bot);
+                }
+            },
+            new DetourErrand() { // Zakum prequests: earn the Eyes of Fire (100200 + trials 100201)
+                @Override public void maybeStart(BotEntry entry, Character bot) {
+                    BotZakumPrequestManager.maybeStart(entry, bot);
+                }
+                @Override public boolean active(BotEntry entry) {
+                    return BotZakumPrequestManager.active(entry);
+                }
+                @Override public boolean tick(BotEntry entry, Character bot, boolean runAiTick) {
+                    return BotZakumPrequestManager.tickErrand(entry, bot, runAiTick);
+                }
+                @Override public boolean yieldForResupply(BotEntry entry, Character bot) {
+                    return BotZakumPrequestManager.yieldForResupply(entry, bot);
                 }
             },
             new DetourErrand() { // Temple of Time: long-horizon questline driver (3500->3521)

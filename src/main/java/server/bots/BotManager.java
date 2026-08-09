@@ -139,6 +139,9 @@ public class BotManager {
         // Temple-of-Time questline driver (BotTempleProgressionManager): a high-level autopilot bot
         // (past its personal ambition level) works the 3500->3521 corridor on its own. Kill switch.
         public boolean TEMPLE_PROGRESSION = true;
+        // Zakum-prequest driver (BotZakumPrequestManager): an autopilot bot (past its personal
+        // ambition level) earns its own Eyes of Fire (approval + trials). Kill switch.
+        public boolean ZAKUM_PREQUEST = true;
         // Tell the owner in chat when a quest is skipped as bugged (internal-state debug chatter).
         // Off by default — it leaks "X seems bugged" noise to players.
         public boolean QUEST_BUGGED_CHAT = false;
@@ -6881,7 +6884,11 @@ public class BotManager {
                 && entry.fidgetMode == BotFidgetMode.NONE
                 && bot.getTrade() == null && !entry.marketBusy
                 && entry.fmErrandMapId == -1 && entry.gachaErrandMapId == -1
-                && entry.operatorCmd == null;
+                && entry.operatorCmd == null
+                // Zakum PQ instance / lava course: instance-blind timed-warp travel and motion-plan
+                // lerps must never fire there (the errand needs real portals/physics). The tooth
+                // grind phase stays LOD-eligible like any other grind.
+                && !BotZakumPrequestManager.inLiveMaps(bot);
     }
 
     /**
