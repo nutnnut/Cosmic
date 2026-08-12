@@ -2714,6 +2714,23 @@ public class MapleMap {
         }
     }
 
+    /**
+     * Remove a stale PLAYER object that no longer corresponds to a live character on this channel —
+     * a leftover from a disconnect racing a map change. Unlike {@link #removePlayer} this touches no
+     * character state (the instance may already be disposed: null client/inventory), only this map's
+     * collections plus the despawn broadcast, so entering clients stop receiving its spawn data.
+     */
+    public void removeStalePlayer(Character chr) {
+        chrWLock.lock();
+        try {
+            characters.remove(chr);
+        } finally {
+            chrWLock.unlock();
+        }
+        removeMapObject(chr.getObjectId());
+        broadcastMessage(PacketCreator.removePlayerFromMap(chr.getId()));
+    }
+
     public void broadcastMessage(Packet packet) {
         broadcastMessage(null, packet, Double.POSITIVE_INFINITY, null);
     }

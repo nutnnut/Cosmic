@@ -1529,17 +1529,21 @@ public class Character extends AbstractCharacterObject {
     public void changeMap(final MapleMap target, Portal pto) {
         canWarpCounter++;
 
-        eventChangedMap(target.getId());    // player can be dropped from an event here, hence the new warping target.
-        MapleMap to = getWarpMap(target.getId());
-        if (pto == null) {
-            pto = to.getPortal(0);
-        }
-        changeMapInternal(to, pto.getPosition(), PacketCreator.getWarpToMap(to, pto.getId(), this));
-        canWarpMap = false;
-
-        canWarpCounter--;
-        if (canWarpCounter == 0) {
-            canWarpMap = true;
+        try {
+            eventChangedMap(target.getId());    // player can be dropped from an event here, hence the new warping target.
+            MapleMap to = getWarpMap(target.getId());
+            if (pto == null) {
+                pto = to.getPortal(0);
+            }
+            changeMapInternal(to, pto.getPosition(), PacketCreator.getWarpToMap(to, pto.getId(), this));
+            canWarpMap = false;
+        } finally {
+            // Exception-safe: a throw mid-warp (e.g. addPlayer failing on the destination map) must not
+            // leak the counter, or canWarpMap sticks false and every later warp silently no-ops.
+            canWarpCounter--;
+            if (canWarpCounter == 0) {
+                canWarpMap = true;
+            }
         }
 
         eventAfterChangedMap(this.getMapId());
@@ -1548,14 +1552,16 @@ public class Character extends AbstractCharacterObject {
     public void changeMap(final MapleMap target, final Point pos) {
         canWarpCounter++;
 
-        eventChangedMap(target.getId());
-        MapleMap to = getWarpMap(target.getId());
-        changeMapInternal(to, pos, PacketCreator.getWarpToMap(to, 0x80, pos, this));
-        canWarpMap = false;
-
-        canWarpCounter--;
-        if (canWarpCounter == 0) {
-            canWarpMap = true;
+        try {
+            eventChangedMap(target.getId());
+            MapleMap to = getWarpMap(target.getId());
+            changeMapInternal(to, pos, PacketCreator.getWarpToMap(to, 0x80, pos, this));
+            canWarpMap = false;
+        } finally {
+            canWarpCounter--;
+            if (canWarpCounter == 0) {
+                canWarpMap = true;
+            }
         }
 
         eventAfterChangedMap(this.getMapId());
@@ -1581,16 +1587,18 @@ public class Character extends AbstractCharacterObject {
             mapEim.registerPlayer(this, false);
         }
 
-        MapleMap to = target; // warps directly to the target intead of the target's map id, this allows GMs to patrol players inside instances.
-        if (pto == null) {
-            pto = to.getPortal(0);
-        }
-        changeMapInternal(to, pto.getPosition(), PacketCreator.getWarpToMap(to, pto.getId(), this));
-        canWarpMap = false;
-
-        canWarpCounter--;
-        if (canWarpCounter == 0) {
-            canWarpMap = true;
+        try {
+            MapleMap to = target; // warps directly to the target intead of the target's map id, this allows GMs to patrol players inside instances.
+            if (pto == null) {
+                pto = to.getPortal(0);
+            }
+            changeMapInternal(to, pto.getPosition(), PacketCreator.getWarpToMap(to, pto.getId(), this));
+            canWarpMap = false;
+        } finally {
+            canWarpCounter--;
+            if (canWarpCounter == 0) {
+                canWarpMap = true;
+            }
         }
 
         eventAfterChangedMap(this.getMapId());
@@ -1861,6 +1869,14 @@ public class Character extends AbstractCharacterObject {
             map = to;
             setPosition(pos);
             map.addPlayer(this);
+            if (client.getChannelServer().getPlayerStorage().getCharacterById(getId()) == null) {
+                // A concurrent disconnect pulled this character from player storage between the check
+                // above and addPlayer (its own map removal saw the OLD map). Unwind, or the disposed
+                // character lingers in the new map's object list and breaks every future addPlayer there.
+                log.warn("Chr {} disconnected mid-warp to map {} - unwinding map entry", getName(), to.getId());
+                map.removePlayer(this);
+                return;
+            }
             visitMap(map);
 
             prtLock.lock();

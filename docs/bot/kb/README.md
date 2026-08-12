@@ -92,6 +92,9 @@ Do not copy a graph version from a KB note. The current value and full schema hi
   / `sitAppetite` personality traits and the stand-before-acting invariant.
 - [`kb_bot_self_owned_owner_assumptions.md`](kb_bot_self_owned_owner_assumptions.md): ownership audit.
 - [`kb_bot_double_register_botpop_race.md`](kb_bot_double_register_botpop_race.md): population registry race.
+- [`kb_bot_poisoned_map_zombie_respawn_loop.md`](kb_bot_poisoned_map_zombie_respawn_loop.md): disconnect vs
+  map-change race leaves a disposed ghost in `mapobjects` (map poisoned, zombie respawn loop) + the
+  `canWarpMap` latch leak that silently freezes a character's warps.
 - [`kb_bot_inert_autopilot_recovery.md`](kb_bot_inert_autopilot_recovery.md): leaked-off autopilot,
   recovery, and stuck classification.
 - [`kb_bot_ops_console.md`](kb_bot_ops_console.md) and

@@ -1136,7 +1136,22 @@ public class BotManager {
         channelServer.addPlayer(botChar);
         channelServer.getWorldServer().addPlayer(botChar);
         botChar.setEnteredChannelWorld();
-        spawnMap.addPlayer(botChar);
+        try {
+            spawnMap.addPlayer(botChar);
+        } catch (RuntimeException | Error e) {
+            // A failed map entry must not strand the character in channel/world storage: it would be
+            // online with no registry entry (a tickless zombie the sweep evicts and the scheduler
+            // respawns into the same failure, forever). Unwind everything and let the caller see the
+            // original failure.
+            try {
+                spawnMap.removePlayer(botChar);
+                channelServer.removePlayer(botChar);
+                channelServer.getWorldServer().removePlayer(botChar);
+            } catch (Exception cleanup) {
+                log.warn("loadOfflineBot: unwind after failed map entry also failed for charId={}", charId, cleanup);
+            }
+            throw e;
+        }
         botChar.visitMap(spawnMap);
         botChar.diseaseExpireTask();
         return botChar;
@@ -1323,9 +1338,49 @@ public class BotManager {
         }
     }
 
+    /** Ghost suspects by INSTANCE (identity, not charId — the same character can be legitimately
+     *  online again as a new instance while its old one lingers). Guarded by its own monitor. */
+    private final java.util.Map<Character, Long> ghostSuspectSinceMs =
+            java.util.Collections.synchronizedMap(new java.util.IdentityHashMap<>());
+
+    /**
+     * Ghost sweep: a disconnect racing a map change can leave the character's old instance inside a
+     * map's object list after it left player storage. Once its 5-min disposal timer nulls the
+     * inventory, every subsequent addPlayer on that map NPEs while serializing the ghost's equips —
+     * the map is poisoned and every bot spawned into it becomes a zombie. Self-heal: purge any
+     * PLAYER map object whose instance is no longer the one in channel player storage, after a grace
+     * window so a character mid-login/transition is never touched.
+     */
+    private void sweepGhostPlayerObjects() {
+        long now = System.currentTimeMillis();
+        java.util.Set<Character> seen = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+        for (net.server.world.World w : net.server.Server.getInstance().getWorlds()) {
+            for (net.server.channel.Channel ch : net.server.Server.getInstance().getChannelsFromWorld(w.getId())) {
+                for (MapleMap map : ch.getMapFactory().getMaps().values()) {
+                    for (Character chr : map.getAllPlayers()) {
+                        if (ch.getPlayerStorage().getCharacterById(chr.getId()) == chr) {
+                            continue; // the live instance, right where it belongs
+                        }
+                        seen.add(chr);
+                        Long since = ghostSuspectSinceMs.putIfAbsent(chr, now);
+                        if (since == null || now - since < ZOMBIE_GRACE_MS) {
+                            continue;
+                        }
+                        ghostSuspectSinceMs.remove(chr);
+                        log.warn("Ghost player object '{}' (id {}) purged from map {} - stale instance left behind by a disconnect race",
+                                chr.getName(), chr.getId(), map.getId());
+                        map.removeStalePlayer(chr);
+                    }
+                }
+            }
+        }
+        ghostSuspectSinceMs.keySet().removeIf(chr -> !seen.contains(chr));
+    }
+
     /** Evict in-memory nav graphs for maps no bot is in or traveling to, capping bot heap growth. */
     private void sweepIdleGraphs() {
         sweepZombieBotCharacters();
+        sweepGhostPlayerObjects();
         java.util.Set<Integer> activeMapIds = new java.util.HashSet<>();
         for (BotEntry e : botsByCharId.values()) {
             if (e.bot != null) {
@@ -1462,7 +1517,9 @@ public class BotManager {
             startTakeoverAutopilot(entry, botChar);
             ManagedBotService.getInstance().touchOnline(charId);
             return true;
-        } catch (SQLException e) {
+        } catch (SQLException | RuntimeException e) {
+            // RuntimeException too: a single unspawnable bot (e.g. its saved map rejecting addPlayer)
+            // must fail just this spawn, not abort the scheduler's whole population sweep.
             log.warn("spawnManagedBot: failed to load charId={}", charId, e);
             return false;
         } finally {
