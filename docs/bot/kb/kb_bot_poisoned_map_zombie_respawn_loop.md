@@ -35,7 +35,23 @@ Two distinct root causes, one cascade:
    `if (!canWarpMap)` guard — the bot walks to portals, fires `enterPortal`, and never leaves the
    map (travel gives up with `warp-no-land`). No log line at any point.
 
+THE AMPLIFIER: `Character.sendPacket` was a bare `client.sendPacket(packet)`. Every map broadcast
+walks the `characters` list calling it, so ONE disposed straggler in a map made every later
+teardown AND entry on that map throw mid-broadcast — `MapleMap.removePlayer` aborts before its
+collection removals (chair-buff broadcast at the top), logging `Account stuck` (284 hits in one
+archived session log) and minting fresh leaks. This cascade is why it concentrated on 800000000:
+Mushroom Shrine is the Spinel taxi destination from every major town — the highest bot
+arrival/departure churn on the server. Related gap the sweep also covers: `MapleMap.addPlayer`
+adds to `characters` (~2338) long before `mapobjects.put` (~2511) with three throwing broadcasts
+between, so a mid-add throw strands the char in `characters` only; and `MapleMap.removePlayer`
+itself NPEs on a disposed char's null client at its first line, so it can never clean one up —
+the ghost sweep must (and does) purge via `removeStalePlayer`, never `removePlayer`. Note
+`BotClient.isLoggedIn()` is hardcoded true, so a bot teardown ALWAYS reaches `clear()`/disposal
+even when its map removal was skipped.
+
 Fixes (dev, 2026-08-12):
+- `Character.sendPacket`: null-client guard — a packet to a disposed character is dropped instead
+  of aborting other players' map entry/removal broadcasts (kills the cascade).
 - `Character.changeMap`/`forceChangeMap`: counter decrement + `canWarpMap` restore moved into
   `finally`.
 - `Character.changeMapInternal`: after `addPlayer`, re-check player storage; if the char vanished

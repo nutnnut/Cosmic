@@ -10304,7 +10304,14 @@ public class Character extends AbstractCharacterObject {
     }
 
     public void sendPacket(Packet packet) {
-        client.sendPacket(packet);
+        // Disposal (empty(true)'s delayed runnable) nulls client while stale references to this
+        // character may survive in map broadcast lists. Dropping the packet is the only sane
+        // handling — throwing here aborts OTHER players' map removal/entry mid-broadcast, which
+        // is how one disposed straggler cascaded into hundreds of "Account stuck" leaks.
+        Client c = client;
+        if (c != null) {
+            c.sendPacket(packet);
+        }
     }
 
     @Override
