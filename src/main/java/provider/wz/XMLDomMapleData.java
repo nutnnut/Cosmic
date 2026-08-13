@@ -45,6 +45,20 @@ public class XMLDomMapleData implements Data {
     private final Node node;
     private Path imageDataDir;
 
+    /**
+     * Monitor shared by every wrapper over the same parsed file. DOM reads are NOT thread-safe even
+     * on a fully-materialized document — Xerces mutates per-node NodeList caches on read
+     * ({@code ParentNode.nodeListItem} remembers the last index), so two threads iterating the same
+     * node corrupt each other's traversal and lookups transiently return null (live symptom: bot
+     * statuses "im at map <id>" for maps whose names clearly exist). The old per-method
+     * {@code synchronized} guarded nothing: every call handed out a NEW wrapper, so no two callers
+     * ever shared the monitor. The owning Document is the one object all wrappers of a file share.
+     */
+    private Object lock() {
+        Node doc = node.getOwnerDocument();
+        return doc != null ? doc : node; // the Document node itself has no owner
+    }
+
     public XMLDomMapleData(FileInputStream fis, Path imageDataDir) {
         try {
             DocumentBuilderFactory documentBuilderFactory = DocumentBuilderFactory.newInstance();
@@ -76,55 +90,65 @@ public class XMLDomMapleData implements Data {
     }
 
     @Override
-    public synchronized Data getChildByPath(String path) {  // the whole XML reading system seems susceptible to give nulls on strenuous read scenarios
-        String[] segments = path.split("/");
-        if (segments[0].equals("..")) {
-            return ((Data) getParent()).getChildByPath(path.substring(path.indexOf("/") + 1));
-        }
+    public Data getChildByPath(String path) {
+        synchronized (lock()) {
+            String[] segments = path.split("/");
+            if (segments[0].equals("..")) {
+                return ((Data) getParent()).getChildByPath(path.substring(path.indexOf("/") + 1));
+            }
 
-        Node myNode;
-        myNode = node;
-        for (String s : segments) {
-            NodeList childNodes = myNode.getChildNodes();
-            boolean foundChild = false;
-            for (int i = 0; i < childNodes.getLength(); i++) {
-                Node childNode = childNodes.item(i);
-                if (childNode.getNodeType() == Node.ELEMENT_NODE
-                        && childNode.getAttributes().getNamedItem("name").getNodeValue().equals(s)) {
-                    myNode = childNode;
-                    foundChild = true;
-                    break;
+            Node myNode;
+            myNode = node;
+            for (String s : segments) {
+                NodeList childNodes = myNode.getChildNodes();
+                boolean foundChild = false;
+                for (int i = 0; i < childNodes.getLength(); i++) {
+                    Node childNode = childNodes.item(i);
+                    if (childNode.getNodeType() == Node.ELEMENT_NODE
+                            && childNode.getAttributes().getNamedItem("name").getNodeValue().equals(s)) {
+                        myNode = childNode;
+                        foundChild = true;
+                        break;
+                    }
+                }
+                if (!foundChild) {
+                    return null;
                 }
             }
-            if (!foundChild) {
-                return null;
-            }
-        }
 
-        XMLDomMapleData ret = new XMLDomMapleData(myNode);
-        ret.imageDataDir = imageDataDir.resolve(getName().trim()).resolve(path).getParent();
-        return ret;
+            XMLDomMapleData ret = new XMLDomMapleData(myNode);
+            ret.imageDataDir = imageDataDir.resolve(getName().trim()).resolve(path).getParent();
+            return ret;
+        }
     }
 
     @Override
-    public synchronized List<Data> getChildren() {
-        List<Data> ret = new ArrayList<>();
+    public List<Data> getChildren() {
+        synchronized (lock()) {
+            List<Data> ret = new ArrayList<>();
 
-        NodeList childNodes = node.getChildNodes();
-        for (int i = 0; i < childNodes.getLength(); i++) {
-            Node childNode = childNodes.item(i);
-            if (childNode.getNodeType() == Node.ELEMENT_NODE) {
-                XMLDomMapleData child = new XMLDomMapleData(childNode);
-                child.imageDataDir = imageDataDir.resolve(getName().trim());
-                ret.add(child);
+            NodeList childNodes = node.getChildNodes();
+            for (int i = 0; i < childNodes.getLength(); i++) {
+                Node childNode = childNodes.item(i);
+                if (childNode.getNodeType() == Node.ELEMENT_NODE) {
+                    XMLDomMapleData child = new XMLDomMapleData(childNode);
+                    child.imageDataDir = imageDataDir.resolve(getName().trim());
+                    ret.add(child);
+                }
             }
-        }
 
-        return ret;
+            return ret;
+        }
     }
 
     @Override
-    public synchronized Object getData() {
+    public Object getData() {
+        synchronized (lock()) {
+            return getDataLocked();
+        }
+    }
+
+    private Object getDataLocked() {
         NamedNodeMap attributes = node.getAttributes();
         DataType type = getType();
         if (type == null) return null;
@@ -168,7 +192,8 @@ public class XMLDomMapleData implements Data {
     }
 
     @Override
-    public synchronized DataType getType() {
+    public DataType getType() {
+        // Node name/type reads don't touch the mutable NodeList caches; no lock needed.
         String nodeName = node.getNodeName();
 
         switch (nodeName) {
@@ -201,24 +226,28 @@ public class XMLDomMapleData implements Data {
     }
 
     @Override
-    public synchronized DataEntity getParent() {
-        Node parentNode;
-        parentNode = node.getParentNode();
-        if (parentNode.getNodeType() == Node.DOCUMENT_NODE) {
-            return null;
+    public DataEntity getParent() {
+        synchronized (lock()) {
+            Node parentNode;
+            parentNode = node.getParentNode();
+            if (parentNode.getNodeType() == Node.DOCUMENT_NODE) {
+                return null;
+            }
+            XMLDomMapleData parentData = new XMLDomMapleData(parentNode);
+            parentData.imageDataDir = imageDataDir.getParent();
+            return parentData;
         }
-        XMLDomMapleData parentData = new XMLDomMapleData(parentNode);
-        parentData.imageDataDir = imageDataDir.getParent();
-        return parentData;
     }
 
     @Override
-    public synchronized String getName() {
-        return node.getAttributes().getNamedItem("name").getNodeValue();
+    public String getName() {
+        synchronized (lock()) {
+            return node.getAttributes().getNamedItem("name").getNodeValue();
+        }
     }
 
     @Override
-    public synchronized Iterator<Data> iterator() {
+    public Iterator<Data> iterator() {
         return getChildren().iterator();
     }
 }
