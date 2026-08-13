@@ -48,6 +48,16 @@ public class XMLDomMapleData implements Data {
     public XMLDomMapleData(FileInputStream fis, Path imageDataDir) {
         try {
             DocumentBuilderFactory documentBuilderFactory = DocumentBuilderFactory.newInstance();
+            try {
+                // Long-lived Data trees (e.g. MapFactory's String.wz name table) are read from many
+                // threads. Xerces' default DEFERRED DOM inflates nodes lazily ON READ — not thread-safe,
+                // and a racing first read can corrupt a subtree permanently (symptom: map-name lookups
+                // returning null forever for certain ids while the XML clearly has them). Materialize
+                // the whole document at parse time so later reads are pure, mutation-free traversals.
+                documentBuilderFactory.setFeature("http://apache.org/xml/features/dom/defer-node-expansion", false);
+            } catch (ParserConfigurationException e) {
+                // Non-Xerces parser without this feature: keep its default behavior.
+            }
             DocumentBuilder documentBuilder = documentBuilderFactory.newDocumentBuilder();
             Document document = documentBuilder.parse(fis);
             this.node = document.getFirstChild();

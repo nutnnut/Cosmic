@@ -66,6 +66,21 @@ Fixed on dev: `3230e69e7` (ferry) + `d3c8c599e` (job errand).
   980010000 which has returnMap=999999999 and only scripted exits. Only PQ-internal; audit it if
   bot ARPQ participation is ever built.
 
+### Instance 3 (2026-08-13): Zakum PQ forcedReturn dump 280090000 "The Room of Tragedy"
+- Entry: EVERY Zakum PQ mission map (280010000/280010101../280011000-...) has
+  `forcedReturn=280090000`, so a bot that relogs (server restart) or gets orphaned while its PQ
+  instance dies lands in The Room of Tragedy with no errand state (live repro: LODGEDIFFS, lv115,
+  "no reachable grind spot" for hours).
+- Exit: the map's lone portal `st00` is inert (tm=999999999, NO script); its returnMap is itself.
+  The only real exit is NPC 2030011 (Ali), whose script warps to the Door to Zakum 211042300 and
+  removeAll's the PQ-exclusive items (4001015/4001016/4001018).
+- Fix: NPC exit != portal, so `SCRIPTED_ENTRANCES` doesn't fit — modeled as a free
+  `TaxiEdge(280090000, 2030011, 211042300, 0)` (same "stand near NPC, click, land at portal 0"
+  shape as Jeff 2030000) + `CONTINENT_RIDE_NPCS` membership so the ride is never taxi-tier gated;
+  `BotTravelManager.taxiRide` mirrors the script's PQ-item strip for that npcId.
+- **Audit rule addition**: a map reachable only via `forcedReturn` needs the same only-exit audit
+  as a wander-enterable trap — bots arrive there without ever routing in.
+
 ## Class 2: fare-blocked job errand + no-prediction abstract grind (Amherst 1000000)
 
 - Deadlock triangle: (a) job errand targets a Victoria instructor, Shanks fare = 150 meso, bot has

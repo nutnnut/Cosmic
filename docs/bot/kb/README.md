@@ -65,6 +65,9 @@ Do not copy a graph version from a KB note. The current value and full schema hi
   (`BotZakumPrequestManager`) — 100200/100201 custom-quest mechanics, the solo Zakum PQ
   (7-key item-trigger Giant Chest), Breath of Lava, the gold-tooth grind, and the
   script-only quest-item sell guard shared with the Temple driver.
+- [`kb_bot_pq_supervised_run_stucks.md`](kb_bot_pq_supervised_run_stucks.md): player-led PQ runs —
+  map-change housekeeping must precede tick-consuming hooks (frozen-midair class) and follow must
+  not warp into an event instance the bot isn't registered in (door↔instance bounce class).
 
 ## Items, economy, and trading
 
@@ -112,6 +115,9 @@ Do not copy a graph version from a KB note. The current value and full schema hi
   JFR-vs-`/api/perf` profiling workflow that finds them.
 - [`kb_live_values_view_cme_in_bot_ticks.md`](kb_live_values_view_cme_in_bot_ticks.md): unsafe live-view
   iteration.
+- [`kb_wz_xml_deferred_dom_races.md`](kb_wz_xml_deferred_dom_races.md): shared WZ XML `Data` trees +
+  Xerces deferred DOM = permanent subtree corruption under concurrent reads (the "im at map <id>"
+  name-lookup flakes); fixed by materializing documents at parse.
 - [`kb_bot_lod_abstract_grind_calibration.md`](kb_bot_lod_abstract_grind_calibration.md): the unobserved-map
   abstract grind measured a peak kill rate instead of a sustained one; signatures, the corrected
   estimator, and how to measure ground truth without starving the tick pool.

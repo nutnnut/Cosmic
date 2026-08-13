@@ -200,6 +200,13 @@ final class BotWorldGraph {
             // that the script actually enforces at level >= 30. No forward portal exists (211040200's
             // only plain portal goes back to Ice Valley I), so model it as a free, lv30 taxi ride.
             new TaxiEdge(211040200, 2030000, 211040300, 0, false, 30),
+            // Ali 2030011 in The Room of Tragedy (280090000, "Adobis's Mission I"): every Zakum PQ
+            // mission map's forcedReturn dumps a relogging/instance-orphaned rider here, the lone
+            // exit portal st00 is inert (tm=999999999, no script), and Ali's free click-warp back to
+            // the Door to Zakum (2030011.js) is the ONLY way out — without this edge the map is a
+            // can't-return trap (live repro: LODGEDIFFS). The ride executor mirrors the script's
+            // strip of the PQ-exclusive trial items (see BotTravelManager.taxiRide).
+            new TaxiEdge(280090000, 2030011, 211042300, 0),
             // NLC Taxi 9201056 gates the ONLY entrance to the NLC Haunted House / ghost-park cluster
             // (Bent Tree, Valley of Heroes, 40 maps): 9201056.js warps NLC <-> 682000000 for 15000 meso
             // each way, no gate. No portal connects them, so model both legs as a taxi ride.
@@ -243,11 +250,12 @@ final class BotWorldGraph {
     // NPCs whose "taxi" edge is a cross-continent scripted-warp ride with NO walking alternative
     // (the block above): Shanks (Maple Island exit), Dolphin (Aqua Road), Pason/Pison (Florina Beach),
     // Crane (Mu Lung <-> Herb Town), Jeff (Ice Valley II -> Sharp Cliff I), Spinel world tour, Audrey
-    // Malaysia/Singapore travel, Thomas Swift (Henesys <-> Amoria). These stay available even to a poor
-    // bot; the Victoria cab edges (shortcuts between towns that ARE walkable) are gated by the taxi tier.
+    // Malaysia/Singapore travel, Thomas Swift (Henesys <-> Amoria), Ali (Room of Tragedy escape).
+    // These stay available even to a poor bot; the Victoria cab edges (shortcuts between towns that
+    // ARE walkable) are gated by the taxi tier.
     private static final Set<Integer> CONTINENT_RIDE_NPCS = Set.of(
             22000, 2060009, 1002002, 1081001, 2090005, 2030000, 9201056, 9000020, 9201135, 9201022,
-            2082003);
+            2082003, 2030011);
 
     private static final Map<Integer, List<TaxiEdge>> TAXI_BY_MAP = buildTaxiByMap();
 
@@ -683,6 +691,23 @@ final class BotWorldGraph {
     );
 
     private static final Map<Integer, List<QuestGatedEntrance>> QUEST_GATED_BY_MAP = buildQuestGatedByMap();
+    private static final Set<Integer> ALL_QUEST_GATE_KEYS = buildAllQuestGateKeys();
+
+    /** Every corridor gate key, i.e. {@link RouteOptions#unlockedGates} for a caller that describes the
+     *  WORLD rather than one bot (the world-map view): with all gates open the Temple corridor floods
+     *  like any other portal chain instead of showing up sealed. Per-bot callers keep resolving their
+     *  own subset (see {@link BotAutopilotManager#unlockedTempleGates}). */
+    static Set<Integer> allQuestGateKeys() {
+        return ALL_QUEST_GATE_KEYS;
+    }
+
+    private static Set<Integer> buildAllQuestGateKeys() {
+        Set<Integer> keys = new HashSet<>();
+        for (QuestGatedEntrance g : QUEST_GATED_ENTRANCES) {
+            keys.add(g.gateKey());
+        }
+        return Set.copyOf(keys);
+    }
 
     private static Map<Integer, List<QuestGatedEntrance>> buildQuestGatedByMap() {
         Map<Integer, List<QuestGatedEntrance>> byMap = new HashMap<>();

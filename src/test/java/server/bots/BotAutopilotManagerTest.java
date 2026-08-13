@@ -425,6 +425,25 @@ class BotAutopilotManagerTest {
         assertNull(BotAutopilotManager.stuckReason(f.entry(), f.bot()));
     }
 
+    /** A companion the owner deliberately commanded (follow/patrol/farm-here) runs with autopilot
+     *  legitimately off — it must never surface as "autopilot leaked off" (live repro: 5 following
+     *  companions flagged on the roster) nor keep a stale decide-failure wedge flag. */
+    @Test
+    void ownerCommandedManualStatesAreNeverFlaggedAsStuck() {
+        Fixture f = fixture(TOWN);
+        f.entry().following = true;
+        f.entry().autopilotLastDecisionReason = "no reachable grind spot from map 280090000";
+
+        assertEquals("grind", BotAutopilotManager.activityCategory(f.entry(), f.bot()));
+        assertNull(BotAutopilotManager.stuckReason(f.entry(), f.bot()));
+
+        // The same bot with no manual command IS the inert leak / decide wedge.
+        f.entry().following = false;
+        assertEquals("idle", BotAutopilotManager.activityCategory(f.entry(), f.bot()));
+        assertEquals("can't find anywhere to grind",
+                BotAutopilotManager.stuckReason(f.entry(), f.bot()));
+    }
+
     @Test
     void reportsUnreachableJobAdvanceAsPossiblyStuck() {
         Fixture f = fixture(800000000);

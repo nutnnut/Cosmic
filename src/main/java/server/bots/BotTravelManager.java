@@ -1,6 +1,8 @@
 package server.bots;
 
 import client.Character;
+import client.inventory.InventoryType;
+import client.inventory.manipulator.InventoryManipulator;
 import constants.id.MapId;
 import server.maps.Foothold;
 import server.maps.MapManager;
@@ -179,6 +181,16 @@ final class BotTravelManager {
         bot.gainMeso(-edge.fare(), false);
         if (spinel && destMapId == BotWorldGraph.MUSHROOM_SHRINE) {
             bot.saveLocation("WORLDTOUR"); // inbound ride: remember the origin for the return leg
+        }
+        if (edge.npcId() == 2030011) {
+            // Ali's Room-of-Tragedy exit (2030011.js) also strips the PQ-exclusive trial items.
+            for (int itemId : new int[]{BotZakumPrequestManager.ITEM_PQ_DOCUMENT,
+                    BotZakumPrequestManager.ITEM_KEY, BotZakumPrequestManager.ITEM_FIRE_ORE}) {
+                int held = bot.getItemQuantity(itemId, false);
+                if (held > 0) {
+                    InventoryManipulator.removeById(bot.getClient(), InventoryType.ETC, itemId, held, true, false);
+                }
+            }
         }
         bot.changeMap(dest, dest.getPortal(0)); // cab scripts do cm.warp(dest, 0)
         return true;

@@ -220,6 +220,13 @@ class BotWorldGraphTest {
         assertNotNull(dragonBack);
         assertEquals(2082003, dragonBack.npcId());
         assertEquals(0, dragonBack.fare());
+        // Ali's Room of Tragedy escape (280090000 -> Door to Zakum): every Zakum PQ mission map's
+        // forcedReturn dumps orphaned riders here and the lone portal is inert, so this free
+        // click-warp edge is the map's only way out (live repro: LODGEDIFFS wedged for hours).
+        BotWorldGraph.TaxiEdge tragedyOut = BotWorldGraph.findTaxiEdge(280090000, 211042300);
+        assertNotNull(tragedyOut, "Room of Tragedy must have Ali's escape edge");
+        assertEquals(2030011, tragedyOut.npcId());
+        assertEquals(0, tragedyOut.fare());
     }
 
     /** The Mushroom Shrine return is the saved WORLDTOUR origin, injected per-bot — never a static free
@@ -343,6 +350,15 @@ class BotWorldGraphTest {
         Set<Integer> open = BotWorldGraph.reachableWithin(graph, 270000100, 40, allGates);
         assertTrue(open.contains(270030500), "Road to Oblivion 5 (Lyka) should be reachable, got " + open);
         assertTrue(open.contains(270040100), "Ruins should be reachable, got " + open);
+    }
+
+    /** The world-describing gate set (used by the world-map view) is derived from the corridor table,
+     *  so it opens exactly the 15 mainline gates plus the Ruins item gate. */
+    @Test
+    void allQuestGateKeysCoverEveryCorridorGate() {
+        assertEquals(Set.of(3501, 3502, 3503, 3504, 3507, 3508, 3509, 3510, 3511,
+                        3514, 3515, 3516, 3517, 3518, 3519, BotWorldGraph.TEMPLE_ITEM_GATE),
+                BotWorldGraph.allQuestGateKeys());
     }
 
     @Test

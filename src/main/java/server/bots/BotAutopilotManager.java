@@ -1236,9 +1236,11 @@ final class BotAutopilotManager {
                 || System.currentTimeMillis() < entry.breakUntilMs || entry.idleLeech) {
             return "break";
         }
-        // Autopilot leaked OFF with no reason above = the inert-leak bug (status "idle rn").
+        // Autopilot leaked OFF with no reason above = the inert-leak bug (status "idle rn") — unless
+        // the owner deliberately took control (follow/patrol/farm-here/grind-here/moveto), which runs
+        // with autopilot legitimately off and reports that activity, not "idle rn".
         if (!isActive(entry)) {
-            return "idle";
+            return nonAutopilotActivity(entry).isEmpty() ? "idle" : "grind";
         }
         return "grind";
     }
@@ -1257,7 +1259,7 @@ final class BotAutopilotManager {
         // dock). The LAST decision failed and no plan was installed since — a successful decide
         // overwrites the reason ("grind <dest> ..."), so a lingering failure = still failing.
         String reason = entry.autopilotLastDecisionReason;
-        if (!isActive(entry) && reason != null
+        if (!isActive(entry) && nonAutopilotActivity(entry).isEmpty() && reason != null
                 && (reason.startsWith("no reachable grind spot") || reason.startsWith("decide failed"))) {
             return "can't find anywhere to grind";
         }
