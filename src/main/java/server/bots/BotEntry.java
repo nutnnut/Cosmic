@@ -578,10 +578,11 @@ public class BotEntry {
     final BotTravelManager.ErrandProgress zakumErrandProgress = new BotTravelManager.ErrandProgress();
     long nextZakumScanAtMs = 0L;
     long zakumCrowdCheckDueMs = 0L;    // throttles the O(all-bots) occupancy scan on the tooth grind
-    int zakumPqRoomIdx = 0;            // next key-chest room (index into KEY_ROOMS) inside the PQ
     long zakumPqChestDropAtMs = 0L;    // 7-key stack dropped at the Giant Chest; waiting for pickup
     int zakumLavaAttempts = 0;         // failed lava-course runs this arm (gates the long step-aside)
     long zakumAssembleSinceMs = 0L;    // crew PQ: when the leader began holding for stragglers
+    int zakumHintMask = 0;             // player-led PQ tutorial hints already said this run (bitmask)
+    long zakumPqDiagAtMs = 0L;         // TEMP-DIAG(zakumpq) throttle; remove with the diagnostics
 
     // Job-change errand (BotStarterKitManager): an autopilot bot at a 1st/2nd-job milestone WALKS to
     // its class-town instructor NPC and advances on arrival (instead of changing job instantly,

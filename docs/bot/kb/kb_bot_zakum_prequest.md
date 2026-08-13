@@ -90,9 +90,9 @@ inventory; script-only NPC effects are reproduced with the scripts' exact server
   ambition level — then all arm within a tick of each other); a party containing a human never arms.
   The PQ runs as ONE team: members gather and stand by at Adobis, the game-party leader starts the
   instance once `crewAssembledAtDoor` (bounded hold, `ASSEMBLE_TIMEOUT_MS`), the warp-in takes
-  everyone on the recruit map (script admits 1-6), and inside the maze non-leaders follow the leader
-  (`tickPqCrewFollow`) and claim their own Breath off Aura's grid after `clearPQ` (one run arms the
-  whole crew). Teeth/lane pins are mirrored to the party plan by the plan leader
+  everyone on the recruit map (script admits 1-6), and inside the maze the SSOT run machine (below)
+  drives everyone; each member claims its own Breath off Aura's grid after `clearPQ` (one run arms
+  the whole crew). Teeth/lane pins are mirrored to the party plan by the plan leader
   (`BotAutopilotManager.publishLeaderPin`) so unarmed crewmates grind the same map; `BotOccupancy`
   already excludes own-party members, so crewmates never crowd-defer each other. Both long-horizon
   errands are in `detachedFromPartyCohesion`, so cohesion neither chases nor portal-waits on an
@@ -102,6 +102,22 @@ inventory; script-only NPC effects are reproduced with the scripts' exact server
   crew bot that has `crewGroupId` but no party yet (login window), so the solo path can't be raced
   into. Known gap: a crew whose party leader permanently has the trials done while others don't can
   never run the PQ (the script requires the party leader on the recruit map).
+- **SSOT run machine (`BotZakumPqRun`)**: ONE in-instance brain serves the autonomous errand AND
+  player-led runs (`BotPqHooks.tick` returns true while it owns a supervised bot's tick, wired in
+  `BotManager`'s common tick; death inside respawns at the owner). Roles: the run LEADER (bot party
+  leader in autonomous mode; the HUMAN party leader in player-led mode) owns the Giant Chest /
+  Fire Ore / Aura duties; WORKERS sweep a stable partition of the 7 key rooms in parallel (room i
+  belongs to roster member `i % rosterSize`; roster = party bots inside the maze sorted by char id,
+  so every member derives the same split with no coordination), break the 4-hit chests, then
+  courier their keys to the leader's feet and hover. Stateless per tick: room completion is read
+  off each room's reactor via `eim.getMapInstance`, so death/relog/roster changes just
+  re-partition. Player-led extras: bots never do the leader duties for a human — a single
+  spokesbot (lowest char id) chat-hints each stage instead ("drop all 7 keys in ONE stack under
+  the giant chest", "take the fire ore to aura", "talk to aura - everyone gets a breath"), and
+  every bot claims its own Breath off the grid after the human clears. Passive loot NEVER takes
+  keys/ore/documents (`BotLootEligibility` blanket-skips them; the machine picks up explicitly by
+  role) — that is what stops a worker vacuuming the leader's delivered pile or the pending
+  7-stack. Unrecoverable runs (total keys in play < 7 with all chests down) exit + back off.
 - **PQ leg**: party-of-one via `Party.createParty` when soloing;
   `em.getEligibleParty` + `em.startInstance(party, map, 1)` exactly as `2030008.js`. Inside the
   instance the errand ALWAYS consumes the tick — the maze is unroutable for the normal grind flow
@@ -145,3 +161,16 @@ inventory; script-only NPC effects are reproduced with the scripts' exact server
   bots share the single lobby with players on equal terms.
 - The lava jump course and full in-instance nav were verified structurally (portals/graph), not
   live; first live run worth watching end to end.
+- **In-maze travel is the run-time bottleneck (OPEN)**: live joint runs show chest-breaking,
+  key pickup and the room partition all working, but cross-wing travel legs oscillate between
+  adjacent corridor maps for tens of minutes (e.g. 280010041<->280010040 while routing to
+  280010110), stretching a ~5-min run toward the event timer. Pre-existing (observed on the
+  first solo runs too), nav-layer, undiagnosed — use `/api/bot/pathlog` + the bot-nav skill.
+  Throttled `TEMP-DIAG(zakumpq)` INFO logs (chest hits + 5s room-state snapshots inside the
+  maze) are left armed in `BotZakumPqRun` for exactly this; remove them once travel is fixed.
+- Key chests RESPAWN inside a live instance after a while (map reactor respawn, not resetPQ);
+  the stateless sweep tolerates it (a respawned chest just reads as work again, extra keys are
+  event-exclusive and vanish on exit), and it means `totalKeysInPlay` rarely reports a run
+  unrecoverable.
+- The 30-min ZakumPQ event timer did NOT dispose a live instance in one observed run (bots
+  still inside at +47 min) — server-side event quirk, unverified cause; benign for the bots.

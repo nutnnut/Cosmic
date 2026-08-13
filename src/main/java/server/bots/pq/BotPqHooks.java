@@ -16,9 +16,16 @@ public final class BotPqHooks {
 
     private BotPqHooks() {}
 
-    public static void tick(BotEntry entry, Character bot, Character owner) {
+    /**
+     * Returns true when a PQ machine consumed the whole bot tick (Zakum dead-mine run: the SSOT
+     * {@link server.bots.BotZakumPqRun} drives the bot's movement/actions and the normal companion
+     * AI must stand down, exactly as it does for the autonomous errand). KPQ keeps its flag-based
+     * integration and never consumes the tick here.
+     */
+    public static boolean tick(BotEntry entry, Character bot, Character owner) {
         BotScriptRunner.tick(entry, bot, owner, SCRIPTS);
         BotKpqStage5.tick(entry, bot);
+        return server.bots.BotZakumPqRun.tickSupervised(entry, bot, owner);
     }
 
     /**

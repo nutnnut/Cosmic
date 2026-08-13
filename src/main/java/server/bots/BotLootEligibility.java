@@ -41,8 +41,12 @@ public final class BotLootEligibility {
                 || (entry.kpq.couponTarget > 0 && bot.getItemQuantity(KPQ_COUPON, false) >= entry.kpq.couponTarget))) {
             return false;
         }
-        if (itemId == BotZakumPrequestManager.ITEM_KEY && entry.zakumPqChestDropAtMs != 0L) {
-            return false; // the bot's own 7-key stack sits at the Giant Chest awaiting the item reactor
+        if (itemId == BotZakumPrequestManager.ITEM_KEY || itemId == BotZakumPrequestManager.ITEM_FIRE_ORE
+                || itemId == BotZakumPrequestManager.ITEM_PQ_DOCUMENT) {
+            // Zakum PQ items are picked up explicitly by role in BotZakumPqRun (SSOT for both the
+            // autonomous errand and player-led runs); passive loot taking them would vacuum the
+            // leader's delivered key pile or the 7-stack pending under the Giant Chest.
+            return false;
         }
         if (itemId > 0 && !bot.needQuestItem(drop.getQuest(), itemId)) {
             return false;

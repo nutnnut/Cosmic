@@ -6,20 +6,15 @@ package server.bots;
 
 import client.Character;
 import client.inventory.InventoryType;
-import client.inventory.Item;
 import client.inventory.manipulator.InventoryManipulator;
 import constants.id.NpcId;
 import net.server.world.Party;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import scripting.event.EventManager;
-import server.maps.MapItem;
-import server.maps.MapleMap;
-import server.maps.Reactor;
 import server.quest.Quest;
 import server.quest.actions.ExpAction;
 
-import java.awt.Point;
 import java.util.List;
 
 /**
@@ -84,18 +79,17 @@ final class BotZakumPrequestManager {
     static final int Q_TRIALS = 100201;        // custom quest: the trials (completed by stage 3)
 
     private static final int CHIEF_MAP = 211000001;        // El Nath - Chief's Residence (all 5 chiefs)
-    private static final int DOOR_MAP = 211042300;         // El Nath - The Door to Zakum
+    static final int DOOR_MAP = 211042300;                 // El Nath - The Door to Zakum
     private static final int ADOBIS = 2030008;             // Zakum recruiter (Door to Zakum)
-    private static final int AURA = 2032002;               // PQ turn-in NPC (instance map 280010000)
     private static final int LIRA = 2032003;               // Breath of Lava grant NPC (280020001)
 
-    static final int PQ_ENTRY_MAP = 280010000;
-    private static final int PQ_MIN_MAP = 280010000, PQ_MAX_MAP = 280011006;
-    private static final int PQ_CHEST_MAP = 280011005;     // Giant Chest room (also last key chest)
+    // In-instance geography (maps/reactors/Aura) lives in BotZakumPqRun — the SSOT run machine
+    // shared with player-led runs (BotPqHooks).
     private static final int LAVA_MAP_1 = 280020000, LAVA_MAP_2 = 280020001;
 
     static final int ITEM_KEY = 4001016;          // Key of the Dead Mine (7 needed, PQ-exclusive)
     static final int ITEM_FIRE_ORE = 4001018;     // Fire Ore (PQ-exclusive)
+    static final int ITEM_PQ_DOCUMENT = 4001015;  // Document (optional side path; bots never collect)
     static final int ITEM_BREATH_FIRE = 4031061;  // Breath of Fire (stage-1 reward)
     static final int ITEM_BREATH_LAVA = 4031062;  // Breath of Lava (stage-2 reward)
     static final int ITEM_GOLD_TOOTH = 4000082;   // Zombie's Lost Gold Tooth (30 needed)
@@ -103,22 +97,7 @@ final class BotZakumPrequestManager {
     static final int TEETH_NEEDED = 30;
     static final int KEYS_NEEDED = 7;
 
-    private static final int REACTOR_CHEST = 2112014;      // opens on a 7-key drop in its box
     private static final int LAVA_STAGE_EXP = 10_000;      // exp Lira's script grants on the hand-over
-    private static final int PQ_TURNIN_EXP = 12_000;       // exp Aura's no-documents turn-in grants
-
-    /** One key chest: the maze room and its reactor. Fresh instances spawn all 7 (exactly the 7 keys
-     *  the Giant Chest wants); visit order follows the hub's branch numbering for a sane walk. */
-    private record KeyRoom(int mapId, int reactorId) {}
-
-    private static final List<KeyRoom> KEY_ROOMS = List.of(
-            new KeyRoom(280010041, 2112011),
-            new KeyRoom(280010091, 2112004),
-            new KeyRoom(280010110, 2112004),
-            new KeyRoom(280010140, 2112004),
-            new KeyRoom(280011002, 2112004),
-            new KeyRoom(280011003, 2112004),
-            new KeyRoom(280011005, 2112011));
 
     /** Miner Zombie maps (Dead Mine "Cave of Trial" chain) — the gold-tooth grind pool. */
     static final int[] TEETH_MAPS = {211041500, 211041600, 211041700, 211041800};
@@ -131,11 +110,6 @@ final class BotZakumPrequestManager {
     /** No-progress deadline inside the PQ / lava course (jump legs are slow; the 30-min event timer
      *  is the hard bound). */
     private static final long INSTANCE_TIMEOUT_MS = 4 * 60_000L;
-    /** Stand-off distance that counts as "at the reactor" (its trigger boxes span ~100px). */
-    private static final int REACTOR_REACH_PX = 40;
-    /** How long to stand at the Giant Chest waiting for the dropped keys to be consumed (the server
-     *  schedules ActivateItemReactor 5s after the drop) before re-dropping is considered. */
-    private static final long CHEST_ACTIVATE_WAIT_MS = 12_000L;
     /** Lava-course attempts per arm before a long step-aside (the course is a jump quest; a bot that
      *  can't climb it must not enter/give-up loop forever). */
     private static final int LAVA_MAX_ATTEMPTS = 3;
@@ -332,7 +306,7 @@ final class BotZakumPrequestManager {
             return false;
         }
         int mapId = bot.getMapId();
-        return (mapId >= PQ_MIN_MAP && mapId <= PQ_MAX_MAP) || mapId == LAVA_MAP_1 || mapId == LAVA_MAP_2;
+        return BotZakumPqRun.isPqMap(mapId) || mapId == LAVA_MAP_1 || mapId == LAVA_MAP_2;
     }
 
     /** Sell/discard guard: quest-critical Zakum items the inventory hygiene must never unload.
@@ -364,15 +338,15 @@ final class BotZakumPrequestManager {
             // Supervised again (owner online): abandon the errand — but never strand the bot inside
             // the instance/course; walk it out the same way Aura/Amon's exit dialogs do.
             if (inLiveMaps(bot)) {
-                warpToDoor(bot);
+                BotZakumPqRun.warpToDoor(bot);
             }
             clearZakumErrand(entry);
             return false;
         }
         // Stranded on PQ maps with no live event (relog mid-run, event timeout race): the maze is
         // dead — leave first, then re-resolve. Same warp Aura's "I want to get out" performs.
-        if (isPqMap(bot.getMapId()) && bot.getEventInstance() == null) {
-            warpToDoor(bot);
+        if (BotZakumPqRun.isPqMap(bot.getMapId()) && bot.getEventInstance() == null) {
+            BotZakumPqRun.warpToDoor(bot);
             backOff(entry);
             return true;
         }
@@ -394,11 +368,11 @@ final class BotZakumPrequestManager {
         // warp raced a relog), or inside the PQ maze past the PQ step (a crew warp-in caught a member
         // already through stage 1) — leave before working the next step.
         if (step != Step.LAVA && isLavaMap(bot.getMapId())) {
-            warpToDoor(bot);
+            BotZakumPqRun.warpToDoor(bot);
             return true;
         }
-        if (step != Step.PQ && isPqMap(bot.getMapId())) {
-            warpToDoor(bot);
+        if (step != Step.PQ && BotZakumPqRun.isPqMap(bot.getMapId())) {
+            BotZakumPqRun.warpToDoor(bot);
             return true;
         }
         switch (step) {
@@ -433,8 +407,7 @@ final class BotZakumPrequestManager {
     // ---- step: stage 1, the Zakum PQ (Breath of Fire) ----------------------------------------
 
     private static boolean tickPq(BotEntry entry, Character bot, boolean runAiTick) {
-        if (!isPqMap(bot.getMapId())) {
-            entry.zakumPqRoomIdx = 0;
+        if (!BotZakumPqRun.isPqMap(bot.getMapId())) {
             entry.zakumPqChestDropAtMs = 0L;
             Character crewLeader = crewPqLeader(bot);
             if (crewLeader != null && crewLeader.getId() != bot.getId()) {
@@ -447,6 +420,15 @@ final class BotZakumPrequestManager {
                     // the whole crew together once everyone (leader included) is ready.
                     clearZakumErrand(entry);
                     return false;
+                }
+                // Only camp the recruiter while the leader is actually engaged (present, or walking
+                // its approach). An armed leader off on a detour (free market, gachapon, resupply)
+                // can be gone for an hour — members grind normally and regather when it shows up.
+                BotEntry leaderEntry = BotManager.getInstance().getEntryByBotCharId(crewLeader.getId());
+                boolean leaderEngaged = crewLeader.getMapId() == DOOR_MAP
+                        || (leaderEntry != null && leaderEntry.zakumErrandNpcId == ADOBIS);
+                if (!leaderEngaged) {
+                    return defer(entry); // stay armed; release the tick until the leader closes in
                 }
                 if (bot.getMapId() == DOOR_MAP) {
                     entry.zakumErrandNpcId = ADOBIS; // status stays "working on my trials"
@@ -517,7 +499,6 @@ final class BotZakumPrequestManager {
                 reply.accept(entry, "mines are busy, ill come back for the trials later");
                 return;
             }
-            entry.zakumPqRoomIdx = 0;
             entry.zakumPqChestDropAtMs = 0L;
             entry.zakumErrandProgress.begin(System.currentTimeMillis());
             reply.accept(entry, "heading into the dead mine");
@@ -528,199 +509,64 @@ final class BotZakumPrequestManager {
     }
 
     /**
-     * One tick inside the instance. Sub-goal order: Fire Ore held → turn in to Aura; 7 keys held →
-     * open the Giant Chest; else → break the next key chest. ALWAYS consumes the tick (see
-     * {@link #tickErrand}); a stall (unwalkable room, lost drop) exits via the door warp + back-off
-     * so the 30-min event timer never strands the bot.
+     * One tick inside the instance, delegating to the SSOT run machine ({@link BotZakumPqRun} — the
+     * same brain player-led runs use). The bot party leader works the LEADER duties: sweep its share
+     * of key rooms, assemble the couriered keys, open the Giant Chest, turn the ore in to Aura. Crew
+     * members run the WORKER role. ALWAYS consumes the tick (see {@link #tickErrand}); a stall or an
+     * unrecoverable run exits via the door warp + back-off so the event timer never strands the bot.
      */
     private static boolean tickPqInside(BotEntry entry, Character bot, boolean runAiTick) {
         long now = System.currentTimeMillis();
+        var eim = bot.getEventInstance(); // non-null: tickErrand's stranded-maze check ran already
         Character crewLeader = crewPqLeader(bot);
         if (crewLeader != null && crewLeader.getId() != bot.getId()) {
-            return tickPqCrewFollow(entry, bot, crewLeader, runAiTick);
+            entry.zakumErrandProgress.touch(now); // the leader's stall clock owns the run's pacing
+            if (eim != null && !eim.isEventCleared() && !BotZakumPqRun.isPqMap(crewLeader.getMapId())) {
+                BotZakumPqRun.warpToDoor(bot); // leader already left (stall exit) — follow suit
+                backOff(entry);
+                return true;
+            }
+            return BotZakumPqRun.tickWorker(entry, bot, crewLeader, false, runAiTick);
         }
         if (entry.zakumErrandProgress.stalled(now, INSTANCE_TIMEOUT_MS)) {
-            warpToDoor(bot);
+            BotZakumPqRun.warpToDoor(bot);
             backOff(entry);
             return true;
         }
         if (bot.haveItem(ITEM_FIRE_ORE)) {
             entry.zakumPqChestDropAtMs = 0L;
-            if (bot.getMapId() != PQ_ENTRY_MAP) {
-                return travelInsidePq(entry, bot, PQ_ENTRY_MAP, runAiTick);
+            if (bot.getMapId() != BotZakumPqRun.PQ_ENTRY_MAP) {
+                return BotZakumPqRun.travelInsidePq(entry, bot, BotZakumPqRun.PQ_ENTRY_MAP, runAiTick);
             }
-            approach(entry, bot, PQ_ENTRY_MAP, AURA, runAiTick, () -> turnInToAura(entry, bot));
+            approach(entry, bot, BotZakumPqRun.PQ_ENTRY_MAP, BotZakumPqRun.AURA, runAiTick,
+                    () -> BotZakumPqRun.leaderTurnInToAura(entry, bot, () -> backOff(entry)));
             return true; // even ARRIVED/failed approaches consume the tick inside the instance
         }
         // A pending 7-key drop keeps the bot in the chest phase even though its key COUNT fell to 0
         // when the stack hit the floor — otherwise it would walk off to "re-collect" its own drop.
         if (entry.zakumPqChestDropAtMs != 0L || bot.getItemQuantity(ITEM_KEY, false) >= KEYS_NEEDED) {
-            if (bot.getMapId() != PQ_CHEST_MAP) {
-                return travelInsidePq(entry, bot, PQ_CHEST_MAP, runAiTick);
+            if (bot.getMapId() != BotZakumPqRun.PQ_CHEST_MAP) {
+                return BotZakumPqRun.travelInsidePq(entry, bot, BotZakumPqRun.PQ_CHEST_MAP, runAiTick);
             }
-            return tickGiantChest(entry, bot, runAiTick);
-        }
-        return tickKeyRooms(entry, bot, runAiTick);
-    }
-
-    /** Break the key chests in a fixed room order; a room is finished when its reactor is down and no
-     *  key of ours lies on its floor. Rescans from the first room if the pass ends short (a key drop
-     *  expired) — bounded by the event timer + the no-progress deadline. */
-    private static boolean tickKeyRooms(BotEntry entry, Character bot, boolean runAiTick) {
-        if (entry.zakumPqRoomIdx >= KEY_ROOMS.size()) {
-            entry.zakumPqRoomIdx = 0; // pass ended short of 7 keys — rescan for missed drops
-            entry.zakumErrandProgress.touch(System.currentTimeMillis());
-        }
-        // Loot first, on WHATEVER map we stand on: a key on the floor (a fresh reactor break, or a
-        // chest drop whose activation never fired) beats walking anywhere else.
-        MapItem wanted = nearestWantedDrop(bot, ITEM_KEY);
-        if (wanted != null) {
-            stepTowardsAndPickUp(entry, bot, wanted, runAiTick);
-            return true;
-        }
-        KeyRoom room = KEY_ROOMS.get(entry.zakumPqRoomIdx);
-        if (bot.getMapId() != room.mapId()) {
-            return travelInsidePq(entry, bot, room.mapId(), runAiTick);
-        }
-        MapleMap map = bot.getMap();
-        Reactor chest = map.getReactorById(room.reactorId());
-        // Done = TERMINAL state, not merely hit: the key chests link to 2112000, a 5-state reactor
-        // (0->1->2->3->4, FOUR hits) whose key only drops at state 4. isActive() is false exactly
-        // there (stats type -1). Advancing on state>0 walked off after one hit and no run could
-        // ever collect a single key.
-        if (chest == null || !chest.isActive()) {
-            entry.zakumPqRoomIdx++; // chest done and floor clear — next room
-            entry.zakumErrandProgress.touch(System.currentTimeMillis());
-            return true;
-        }
-        Point chestPos = chest.getPosition();
-        if (!near(bot, chestPos, REACTOR_REACH_PX)) {
-            walkTo(entry, bot, chestPos, runAiTick);
-            return true;
-        }
-        if (!BotManager.npcDwellReady(entry, BotManager.NPC_READ_DELAY_MS, BotManager.NPC_READ_JITTER_MS)) {
-            return true; // humanlike beat before smashing the chest
-        }
-        hitReactor(bot, chest);
-        entry.zakumErrandProgress.touch(System.currentTimeMillis());
-        return true;
-    }
-
-    /** At the Giant Chest with 7 keys: drop the one 7-stack inside its trigger box, then hold still
-     *  while the server's ActivateItemReactor (5s) consumes it and the chest spills the Fire Ore. */
-    private static boolean tickGiantChest(BotEntry entry, Character bot, boolean runAiTick) {
-        long now = System.currentTimeMillis();
-        MapleMap map = bot.getMap();
-        MapItem ore = nearestWantedDrop(bot, ITEM_FIRE_ORE);
-        if (ore != null) {
-            entry.zakumPqChestDropAtMs = 0L;
-            stepTowardsAndPickUp(entry, bot, ore, runAiTick);
-            return true;
-        }
-        Reactor chest = map.getReactorById(REACTOR_CHEST);
-        if (chest == null || chest.getState() > 0) {
-            // Chest already open but no ore on the floor (someone looted it / drop expired): the run
-            // is unrecoverable — leave and retry a fresh instance later.
-            if (entry.zakumPqChestDropAtMs == 0L || now - entry.zakumPqChestDropAtMs > CHEST_ACTIVATE_WAIT_MS) {
-                warpToDoor(bot);
+            if (!BotZakumPqRun.tickGiantChest(entry, bot, runAiTick)) {
+                BotZakumPqRun.warpToDoor(bot); // chest open but the ore is gone — unrecoverable run
                 backOff(entry);
             }
             return true;
         }
-        if (entry.zakumPqChestDropAtMs != 0L) {
-            if (now - entry.zakumPqChestDropAtMs <= CHEST_ACTIVATE_WAIT_MS) {
-                entry.zakumErrandProgress.touch(now);
-                return true; // standing by while the 5s item-reactor pickup fires
-            }
-            entry.zakumPqChestDropAtMs = 0L; // activation never came (drop bounced?) — re-approach
+        if (eim != null && BotZakumPqRun.sweepRooms(entry, bot, bot, eim, runAiTick)) {
+            return true; // collecting my share of the keys
         }
-        Point chestPos = chest.getPosition();
-        // The trigger box is lt(-78,-67)..rb(29,25) around the reactor: stand basically on it.
-        if (!near(bot, chestPos, 25)) {
-            walkTo(entry, bot, chestPos, runAiTick);
-            return true;
-        }
-        Item stack = bot.getInventory(InventoryType.ETC) != null
-                ? bot.getInventory(InventoryType.ETC).findById(ITEM_KEY) : null;
-        if (stack == null || stack.getQuantity() < KEYS_NEEDED) {
-            entry.zakumPqRoomIdx = 0; // keys not in one 7-stack (lost one?) — go collect again
-            return true;
-        }
-        if (!BotManager.npcDwellReady(entry, BotManager.NPC_READ_DELAY_MS, BotManager.NPC_READ_JITTER_MS)) {
-            return true;
-        }
-        // searchItemReactors requires ONE drop of EXACTLY quantity 7 inside the box — drop the stack.
-        if (BotManager.getInstance().issueDropItem(entry, InventoryType.ETC, ITEM_KEY, (short) KEYS_NEEDED)) {
-            entry.zakumPqChestDropAtMs = now;
-            entry.zakumErrandProgress.touch(now);
-        }
-        return true;
-    }
-
-    /**
-     * One tick of a crew MEMBER inside the instance: the party leader drives the run (keys, chest,
-     * turn-in); the member tags along a room behind and claims its own Breath share off Aura's grid
-     * once the leader clears the PQ. Always consumes the tick, like every in-instance state.
-     */
-    private static boolean tickPqCrewFollow(BotEntry entry, Character bot, Character leader, boolean runAiTick) {
-        long now = System.currentTimeMillis();
-        var eim = bot.getEventInstance();
-        if (eim == null) {
-            warpToDoor(bot); // instance died under us — leave; the outside flow re-resolves
+        // My share is swept and I hold <7 keys: couriers may still be inbound — or a key was lost.
+        if (eim == null || BotZakumPqRun.totalKeysInPlay(eim, bot, bot) < KEYS_NEEDED) {
+            BotZakumPqRun.warpToDoor(bot); // a key expired/vanished — this run cannot finish
             backOff(entry);
             return true;
         }
-        if (eim.isEventCleared()) {
-            turnInToAura(entry, bot); // claims this member's Breath via the grid, then walks out
-            return true;
+        if (bot.getMapId() != BotZakumPqRun.PQ_CHEST_MAP) {
+            return BotZakumPqRun.travelInsidePq(entry, bot, BotZakumPqRun.PQ_CHEST_MAP, runAiTick);
         }
-        entry.zakumErrandProgress.touch(now); // the leader's stall clock owns the run's pacing
-        if (leader.getMapId() != bot.getMapId()) {
-            if (isPqMap(leader.getMapId())) {
-                return travelInsidePq(entry, bot, leader.getMapId(), runAiTick);
-            }
-            warpToDoor(bot); // leader already left (stall exit / warp-out) — follow suit
-            return true;
-        }
-        if (!near(bot, leader.getPosition(), 260)) {
-            walkTo(entry, bot, leader.getPosition(), runAiTick);
-        } else {
-            BotTravelManager.clearMoveTargetPin(entry);
-        }
-        return true;
-    }
-
-    /** Reproduce Aura's turn-in dialog end to end (no-documents path): consume the ore, grant the
-     *  party exp, clear the PQ, claim this bot's Breath of Fire share, and walk out. */
-    private static void turnInToAura(BotEntry entry, Character bot) {
-        var eim = bot.getEventInstance();
-        if (eim == null) {
-            return; // instance died under us — the stranded-map recovery handles the exit next tick
-        }
-        try {
-            if (!eim.isEventCleared()) {
-                if (!bot.haveItem(ITEM_FIRE_ORE)) {
-                    return;
-                }
-                InventoryManipulator.removeById(bot.getClient(), InventoryType.ETC, ITEM_FIRE_ORE, 1, true, false);
-                eim.giveEventPlayersExp(PQ_TURNIN_EXP);
-                eim.clearPQ();
-            }
-            if (eim.gridCheck(bot) == -1) {
-                if (!bot.canHold(ITEM_BREATH_FIRE, 1)) {
-                    return; // no bag room — retry next arrival (resupply can't run in here; ETC has
-                            // room in practice since 7 key slots just freed)
-                }
-                InventoryManipulator.addById(bot.getClient(), ITEM_BREATH_FIRE, (short) 1);
-                eim.gridInsert(bot, 1);
-                reply.accept(entry, "got the breath of fire");
-            }
-            warpToDoor(bot); // changedMap unregisters the bot and winds the instance down
-        } catch (RuntimeException e) {
-            log.warn("Bot '{}' failed the Zakum PQ turn-in", bot.getName(), e);
-            warpToDoor(bot);
-            backOff(entry);
-        }
+        return BotZakumPqRun.hoverNear(entry, bot, bot.getPosition(), runAiTick); // await couriers
     }
 
     // ---- step: stage 2, Breath of Lava -------------------------------------------------------
@@ -739,7 +585,7 @@ final class BotZakumPrequestManager {
                 // plain warp into the (shared, non-instanced) lava course.
                 if (bot.haveItem(ITEM_BREATH_FIRE) && !bot.haveItem(ITEM_BREATH_LAVA)) {
                     entry.zakumErrandProgress.begin(System.currentTimeMillis());
-                    warpTo(bot, LAVA_MAP_1);
+                    BotZakumPqRun.warpTo(bot, LAVA_MAP_1);
                     reply.accept(entry, "time to brave the lava");
                 }
             });
@@ -748,7 +594,7 @@ final class BotZakumPrequestManager {
         if (entry.zakumErrandProgress.stalled(now, INSTANCE_TIMEOUT_MS)) {
             // Give up this attempt the way Amon's dialog does — warp back to the door.
             entry.zakumLavaAttempts++;
-            warpToDoor(bot);
+            BotZakumPqRun.warpToDoor(bot);
             backOff(entry);
             return true;
         }
@@ -762,7 +608,7 @@ final class BotZakumPrequestManager {
             InventoryManipulator.addById(bot.getClient(), ITEM_BREATH_LAVA, (short) 1);
             ExpAction.runAction(bot, LAVA_STAGE_EXP);
             entry.zakumLavaAttempts = 0;
-            warpToDoor(bot);
+            BotZakumPqRun.warpToDoor(bot);
             reply.accept(entry, "got the breath of lava");
         });
         return true; // consume every tick on the course — there is no grind flow to release to here
@@ -908,89 +754,6 @@ final class BotZakumPrequestManager {
         }
     }
 
-    /** One tick of cross-room travel inside the PQ instance. Real portal hops only (the executor
-     *  walks to the portal and {@code Portal.enterPortal} resolves the instance map); always consumes
-     *  the tick. */
-    private static boolean travelInsidePq(BotEntry entry, Character bot, int targetMap, boolean runAiTick) {
-        long now = System.currentTimeMillis();
-        entry.zakumErrandNpcId = 0;
-        entry.zakumErrandMapId = targetMap;
-        boolean moved = BotTravelManager.tickTravel(
-                entry, bot, targetMap, BotAutopilotManager.MAX_TRAVEL_HOPS, runAiTick, false);
-        entry.zakumErrandProgress.record(bot, moved, now);
-        return true;
-    }
-
-    /** On-map walk toward {@code target} (shared move pin + movement step — no bespoke movement). */
-    private static void walkTo(BotEntry entry, Character bot, Point target, boolean runAiTick) {
-        BotTravelManager.pinMoveTarget(entry, target);
-        BotTravelManager.movementStep.step(entry, target, runAiTick);
-    }
-
-    /** Walk toward a wanted drop and pick it up once in reach — the ItemPickupHandler distance
-     *  discipline, driven by the errand instead of the passive loot tick (which doesn't run while
-     *  the errand consumes the tick). */
-    private static void stepTowardsAndPickUp(BotEntry entry, Character bot, MapItem drop, boolean runAiTick) {
-        if (near(bot, drop.getPosition(), 30)) {
-            BotTravelManager.clearMoveTargetPin(entry);
-            bot.pickupItem(drop);
-            entry.zakumErrandProgress.touch(System.currentTimeMillis());
-            return;
-        }
-        walkTo(entry, bot, drop.getPosition(), runAiTick);
-    }
-
-    /** The nearest live drop of {@code itemId} on the bot's map that the bot may take. */
-    private static MapItem nearestWantedDrop(Character bot, int itemId) {
-        MapleMap map = bot.getMap();
-        if (map == null) {
-            return null;
-        }
-        MapItem best = null;
-        long bestDist = Long.MAX_VALUE;
-        for (MapItem drop : map.getDroppedItems()) {
-            if (drop == null || drop.isPickedUp() || drop.getItem() == null
-                    || drop.getItem().getItemId() != itemId
-                    || !drop.canBePickedBy(bot)) {
-                continue;
-            }
-            long d = manhattan(bot.getPosition(), drop.getPosition());
-            if (d < bestDist) {
-                bestDist = d;
-                best = drop;
-            }
-        }
-        return best;
-    }
-
-    /** Hit a reactor through the shared player path ({@code ReactorHitHandler} shape) — proximity is
-     *  enforced by our own walk-up since the vanilla handler is client-authoritative. */
-    private static void hitReactor(Character bot, Reactor reactor) {
-        try {
-            if (reactor.getState() <= 0) {
-                reactor.hitReactor(true, 0, (short) 0, 0, bot.getClient());
-            }
-        } catch (RuntimeException e) {
-            log.warn("Bot '{}' reactor hit failed on {}", bot.getName(), reactor.getId(), e);
-        }
-    }
-
-    /** The stranded-player exit every Zakum-side NPC dialog performs: warp to the Door to Zakum. */
-    private static void warpToDoor(Character bot) {
-        warpTo(bot, DOOR_MAP);
-    }
-
-    private static void warpTo(Character bot, int mapId) {
-        MapleMap target = bot.getClient().getChannelServer().getMapFactory().getMap(mapId);
-        if (target != null) {
-            bot.changeMap(target, target.getPortal(0));
-        }
-    }
-
-    private static boolean isPqMap(int mapId) {
-        return mapId >= PQ_MIN_MAP && mapId <= PQ_MAX_MAP;
-    }
-
     private static boolean isLavaMap(int mapId) {
         return mapId == LAVA_MAP_1 || mapId == LAVA_MAP_2;
     }
@@ -1002,16 +765,6 @@ final class BotZakumPrequestManager {
             }
         }
         return false;
-    }
-
-    private static boolean near(Character bot, Point target, int dist) {
-        Point p = bot.getPosition();
-        return p != null && target != null
-                && Math.abs(p.x - target.x) <= dist && Math.abs(p.y - target.y) <= dist;
-    }
-
-    private static long manhattan(Point a, Point b) {
-        return (long) Math.abs(a.x - b.x) + Math.abs(a.y - b.y);
     }
 
     // ---- defer / back-off / clear ------------------------------------------------------------
@@ -1040,10 +793,10 @@ final class BotZakumPrequestManager {
         BotTravelManager.clearMoveTargetPin(entry);
         entry.zakumErrandMapId = -1;
         entry.zakumErrandNpcId = 0;
-        entry.zakumPqRoomIdx = 0;
         entry.zakumPqChestDropAtMs = 0L;
         entry.zakumLavaAttempts = 0;
         entry.zakumAssembleSinceMs = 0L;
+        entry.zakumHintMask = 0;
         entry.zakumErrandProgress.clear();
         if (entry.nextZakumScanAtMs < System.currentTimeMillis()) {
             entry.nextZakumScanAtMs = System.currentTimeMillis() + BotManager.randMs(REARM_MIN_MS, REARM_MAX_MS);

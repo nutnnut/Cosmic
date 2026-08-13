@@ -6465,7 +6465,10 @@ public class BotManager {
         if (perf) BotPerformanceMonitor.record("common-manual-trade", System.nanoTime() - t);
         if (perf) t = System.nanoTime();
         if (owner != null) { // PQ scripts need a live owner
-            BotPqHooks.tick(entry, bot, owner);
+            if (BotPqHooks.tick(entry, bot, owner)) {
+                if (perf) BotPerformanceMonitor.record("common-pq-hooks", System.nanoTime() - t);
+                return true; // a PQ run machine owns this tick (Zakum dead mine)
+            }
         }
         if (perf) BotPerformanceMonitor.record("common-pq-hooks", System.nanoTime() - t);
         if (perf) t = System.nanoTime();
@@ -7416,7 +7419,8 @@ public class BotManager {
         // cases the bot isn't itself an EIM member: keep the legacy handling.
         boolean inEvent = (owner != null && owner.getEventInstance() != null)
                 || BotPqHooks.requiresGrind(entry, bot)
-                || BotPqHooks.requiresFollow(entry, bot);
+                || BotPqHooks.requiresFollow(entry, bot)
+                || BotZakumPqRun.isPqMap(bot.getMapId());
         if (inEvent && owner != null) {
             respawnAtOwner(entry, bot, owner);
             return;

@@ -113,7 +113,7 @@ public final class BotPerformanceMonitor {
         notes.put("common-shout-trade", "BotShoutTradeManager.tick (shout emit/match + shout-trade window state machine)");
         notes.put("common-trade", "BotInventoryManager.tickTrade (in-progress bot trade state machine)");
         notes.put("common-manual-trade", "BotInventoryManager.tickManualTrade (manual bot/player trade)");
-        notes.put("common-pq-hooks", "BotPqHooks.tick (KPQ / OPQ / LPQ state machines)");
+        notes.put("common-pq-hooks", "BotPqHooks.tick (KPQ state machines + Zakum dead-mine run)");
         notes.put("common-script-tasks", "tickScriptTasks (BotScriptRunner)");
         notes.put("common-action-lock", "BotCombatManager.tickActionLock (attack/move cooldown decay)");
         notes.put("common-skill-cache", "BotCombatManager.rebuildSkillCacheIfNeeded");
