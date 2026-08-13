@@ -195,6 +195,9 @@ final class BotTempleProgressionManager {
         if (nextIncompleteMainline(q -> BotQuestManager.gate.isCompleted(bot, q)) == -1) {
             return; // nothing left to do
         }
+        if (!crewReadyForTemple(bot)) {
+            return; // crews opt in TOGETHER — a lone member never peels off from its group for hours
+        }
         entry.templeErrandMapId = bot.getMapId(); // armed sentinel (tick overwrites with the real target)
         entry.templeErrandNpcId = 0;
         entry.templeErrandProgress.begin(now);
@@ -203,6 +206,41 @@ final class BotTempleProgressionManager {
 
     static boolean active(BotEntry entry) {
         return entry.templeErrandMapId != -1;
+    }
+
+    /** Crew gate, mirroring the Zakum errand: solo bots always pass; a partied bot arms only when
+     *  the party is all-bot and every online member still needing the chain has reached its own
+     *  ambition level — the whole crew then works the questline side by side (shared lane pins via
+     *  {@link BotAutopilotManager#publishLeaderPin}). A party containing a human never arms. */
+    private static boolean crewReadyForTemple(Character bot) {
+        if (bot.getParty() == null) {
+            // A crew bot with no party yet is in the login window BEFORE its crew re-parties —
+            // arming now would sidestep the crew gate. Only true soloists pass here.
+            BotEntry e = BotManager.getInstance().getEntryByBotCharId(bot.getId());
+            return e == null || e.crewGroupId == null;
+        }
+        if (!BotManager.onlinePartyMembersAllBots(bot)) {
+            return false;
+        }
+        for (BotEntry m : BotManager.getInstance().partyBotEntries(bot)) {
+            if (m.bot == null
+                    || nextIncompleteMainline(q -> BotQuestManager.gate.isCompleted(m.bot, q)) == -1) {
+                continue; // already through — grinds along, doesn't gate the rest
+            }
+            BotPersonality mp = m.personality != null ? m.personality : BotPersonality.defaults();
+            if (m.bot.getLevel() < mp.templeAmbitionLevel()) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** True while the errand is actively driving the bot (walking to / talking with a quest NPC) —
+     *  the states whose ticks it consumes, so the status line must say so instead of falling through
+     *  to a stale grind objective. Lane grinding and back-off windows release the tick to the normal
+     *  flow, whose statuses are then accurate. */
+    static boolean drivingStatus(BotEntry entry) {
+        return entry.templeErrandMapId != -1 && entry.templeErrandNpcId != 0;
     }
 
     /** True to let a cramped-bag resupply run before this errand (a cross-continent sub-quest leg buys
@@ -224,6 +262,13 @@ final class BotTempleProgressionManager {
         if (!BotAutopilotManager.isActive(entry)) {
             clearTempleErrand(entry); // supervised again (owner online): drop the errand
             return false;
+        }
+        // Back-off / step-aside window (failed start or turn-in, crowded lane): stay armed but
+        // release every tick so the normal grind flow — including a pending resupply errand — runs.
+        // Without this, an approach step re-arms right after backOff() and the bot camps its NPC
+        // retrying in a dwell-paced loop instead of grinding elsewhere and coming back.
+        if (System.currentTimeMillis() < entry.nextTempleScanAtMs) {
+            return defer(entry);
         }
         int qid = nextIncompleteMainline(q -> BotQuestManager.gate.isCompleted(bot, q));
         if (qid == -1) {
@@ -318,6 +363,9 @@ final class BotTempleProgressionManager {
         }
         entry.autopilotMapId = laneMap; // pin the lane; kills accrue via the normal grind/combat flow
         entry.autopilotNextDecisionAtMs = Math.max(entry.autopilotNextDecisionAtMs, now + PIN_HOLD_MS);
+        // Crew: the plan leader mirrors its pin into the party plan, so crewmates WITHOUT an armed
+        // errand (early finishers, below-ambition members) grind the same lane with the crew.
+        BotAutopilotManager.publishLeaderPin(entry, laneMap);
         return false;
     }
 

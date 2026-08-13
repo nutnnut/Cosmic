@@ -1298,6 +1298,12 @@ final class BotAutopilotManager {
                     ? "im at " + currentMap + ", walking to the instructor to job advance"
                     : "im at " + currentMap + ", going to " + town + " to job advance";
         }
+        if (BotZakumPrequestManager.drivingStatus(entry, bot)) {
+            return "im at " + currentMap + ", working on my zakum entry trials";
+        }
+        if (BotTempleProgressionManager.drivingStatus(entry)) {
+            return "im at " + currentMap + ", working on the temple of time questline";
+        }
         if (entry.questErrandMapId != -1) {
             return bot.getMapId() == entry.questErrandMapId
                     ? "im at " + currentMap + ", talking to a quest npc"
@@ -1672,6 +1678,20 @@ final class BotAutopilotManager {
         return key == null ? null : partyStates.get(key);
     }
 
+    /**
+     * Plan-leader-only publish of an errand-pinned grind destination (Zakum teeth map, Temple lane)
+     * to the party plan SSOT, so crewmates without their own armed errand — early finishers, members
+     * still below the questline — follow the crew to the pinned map instead of a stale grind pick.
+     * No-op for followers/soloists (the follower's own pin still applies via its per-entry field).
+     */
+    static void publishLeaderPin(BotEntry entry, int mapId) {
+        PartyAutopilotState ps = partyStateFor(entry);
+        if (ps != null && entry.bot != null && ps.leaderCharId == entry.bot.getId() && ps.mapId != mapId) {
+            ps.mapId = mapId;
+            ps.destinationName = mapName(mapId);
+        }
+    }
+
     /** The cohort's shared plan, creating it on first publish. Null only when the cohort has no
      *  identity to key on (then the caller leaves members on their per-entry fields). */
     private static PartyAutopilotState partyStateOrCreate(BotEntry leader) {
@@ -1961,7 +1981,8 @@ final class BotAutopilotManager {
     private static boolean detachedFromPartyCohesion(BotEntry entry) {
         return entry.autopilotErrandMapId != -1 || entry.restErrand
                 || entry.questErrandMapId != -1 || entry.gachaErrandMapId != -1
-                || entry.jobErrandMapId != -1;
+                || entry.jobErrandMapId != -1
+                || entry.zakumErrandMapId != -1 || entry.templeErrandMapId != -1;
     }
 
     /**

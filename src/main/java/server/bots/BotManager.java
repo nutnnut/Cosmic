@@ -854,7 +854,7 @@ public class BotManager {
         }
     }
 
-    private static boolean onlinePartyMembersAllBots(Character botChar) {
+    static boolean onlinePartyMembersAllBots(Character botChar) {
         if (botChar.getParty() == null) {
             return false;
         }

@@ -145,6 +145,12 @@ final class BotZakumPrequestManager {
     private static final int CROWD_DEFER_MIN_MS = 60_000, CROWD_DEFER_MAX_MS = 180_000;
     private static final long PIN_HOLD_MS = 30_000L;
     private static final int BACKOFF_MIN_MS = 60_000, BACKOFF_MAX_MS = 120_000;
+    /** Busy-lobby defer: one PQ lobby per channel and a run takes tens of minutes, so a loser steps
+     *  aside far longer than a plain approach back-off — otherwise every armed bot in the world camps
+     *  the Door retrying on the short cooldown. */
+    private static final int LOBBY_BUSY_DEFER_MIN_MS = 4 * 60_000, LOBBY_BUSY_DEFER_MAX_MS = 10 * 60_000;
+    /** How long a crew-run leader holds at the recruiter for stragglers before stepping aside. */
+    private static final long ASSEMBLE_TIMEOUT_MS = 3 * 60_000L;
     private static final int REARM_MIN_MS = 30_000, REARM_MAX_MS = 90_000;
 
     /** Bot chat seam (tests swap it; production routes through the owner's channel). */
@@ -214,6 +220,9 @@ final class BotZakumPrequestManager {
         if (BotQuestManager.gate.isCompleted(bot, Q_TRIALS)) {
             return; // trials already done — nothing left to earn
         }
+        if (!crewReadyForZakum(bot)) {
+            return; // crews opt in TOGETHER (see below) — a lone member never peels off for hours
+        }
         entry.zakumErrandMapId = bot.getMapId(); // armed sentinel (tick overwrites with the real target)
         entry.zakumErrandNpcId = 0;
         entry.zakumErrandProgress.begin(now);
@@ -222,6 +231,89 @@ final class BotZakumPrequestManager {
 
     static boolean active(BotEntry entry) {
         return entry.zakumErrandMapId != -1;
+    }
+
+    // ---- crew coordination -------------------------------------------------------------------
+    // A crew (persistent all-bot party) works the prequest chain TOGETHER — a group of players who
+    // always play together would. Arming is gated on the whole crew being ready, the PQ runs as one
+    // party (the script takes 1-6 members), and the teeth grind pins one shared map. A party with a
+    // human in it never arms: the errand must neither drag a human into the mines nor walk out on one.
+
+    /** Solo bots are always "crew-ready". A partied bot is ready only when the party is all-bot and
+     *  every online member still needing the trials has reached its own ambition level — then all of
+     *  them arm within a tick of each other and progress the chain side by side. */
+    private static boolean crewReadyForZakum(Character bot) {
+        if (bot.getParty() == null) {
+            // A crew bot with no party yet is in the login window BEFORE its crew re-parties —
+            // arming now would sidestep the crew gate (and strand it: the PQ step needs the party
+            // leader). Only true soloists pass here.
+            BotEntry e = BotManager.getInstance().getEntryByBotCharId(bot.getId());
+            return e == null || e.crewGroupId == null;
+        }
+        if (!BotManager.onlinePartyMembersAllBots(bot)) {
+            return false;
+        }
+        for (BotEntry m : BotManager.getInstance().partyBotEntries(bot)) {
+            if (m.bot == null || BotQuestManager.gate.isCompleted(m.bot, Q_TRIALS)) {
+                continue; // already through — grinds along, doesn't gate the rest
+            }
+            BotPersonality mp = m.personality != null ? m.personality : BotPersonality.defaults();
+            if (m.bot.getLevel() < mp.zakumAmbitionLevel()) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** The game-party leader when this bot is in an all-bot party, else null (solo / human around).
+     *  The PQ script only admits a team whose PARTY LEADER stands on the recruit map, so the crew
+     *  run is driven by that character; everyone else gathers and waits. */
+    private static Character crewPqLeader(Character bot) {
+        Party party = bot.getParty();
+        if (party == null || !BotManager.onlinePartyMembersAllBots(bot)) {
+            return null;
+        }
+        for (BotEntry m : BotManager.getInstance().partyBotEntries(bot)) {
+            if (m.bot != null && m.bot.getId() == party.getLeaderId()) {
+                return m.bot;
+            }
+        }
+        return null;
+    }
+
+    /** True while the crew's party leader still needs the PQ itself (armed at the PQ step), i.e. a
+     *  waiting member can expect a crew run to actually start. */
+    private static boolean leaderAtPqStep(Character leader) {
+        BotEntry le = BotManager.getInstance().getEntryByBotCharId(leader.getId());
+        return le != null && le.zakumErrandMapId != -1
+                && !leader.haveItem(ITEM_BREATH_FIRE)
+                && !BotQuestManager.gate.isCompleted(leader, Q_TRIALS);
+    }
+
+    /** True once every online crew member that needs the PQ (armed, no Breath of Fire yet) stands on
+     *  the recruit map — the leader holds the start until the whole team is present, so nobody is
+     *  left outside the instance. */
+    private static boolean crewAssembledAtDoor(Character leader) {
+        for (BotEntry m : BotManager.getInstance().partyBotEntries(leader)) {
+            if (m.bot == null || m.zakumErrandMapId == -1) {
+                continue; // not on the errand (done, or below its ambition) — grinds on, not expected
+            }
+            if (BotQuestManager.gate.isCompleted(m.bot, Q_TRIALS) || m.bot.haveItem(ITEM_BREATH_FIRE)) {
+                continue; // past the PQ stage — not part of this run
+            }
+            if (m.bot.getMapId() != DOOR_MAP) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** True while the errand is actively driving the bot (walking to / talking with an NPC, or inside
+     *  the PQ/lava course) — the states whose ticks it consumes, so the status line must say so
+     *  instead of falling through to a stale grind objective. Teeth grinding and back-off windows
+     *  release the tick to the normal flow, whose statuses are then accurate. */
+    static boolean drivingStatus(BotEntry entry, Character bot) {
+        return entry.zakumErrandMapId != -1 && (entry.zakumErrandNpcId != 0 || inLiveMaps(bot));
     }
 
     /** True to let a cramped-bag resupply run before this errand (keys/ore/eyes all need bag room,
@@ -284,6 +376,14 @@ final class BotZakumPrequestManager {
             backOff(entry);
             return true;
         }
+        // Back-off / step-aside window (busy lobby, failed approach, crowd defer): stay armed but
+        // release every tick so the normal grind flow — including a pending resupply errand — runs.
+        // Never inside the instance/course, where the errand must own the tick. Without this, an
+        // approach step re-arms right after backOff() and the bot camps its NPC hammering a busy
+        // lobby forever instead of grinding elsewhere and coming back.
+        if (!inLiveMaps(bot) && System.currentTimeMillis() < entry.nextZakumScanAtMs) {
+            return defer(entry);
+        }
         Step step = resolveStep(
                 BotQuestManager.gate.isStarted(bot, Q_APPROVAL) || BotQuestManager.gate.isCompleted(bot, Q_APPROVAL),
                 BotQuestManager.gate.isCompleted(bot, Q_TRIALS),
@@ -291,8 +391,13 @@ final class BotZakumPrequestManager {
                 bot.haveItem(ITEM_BREATH_LAVA),
                 bot.getItemQuantity(ITEM_GOLD_TOOTH, false));
         // Off-step special-map recovery: holding the reward but still inside the lava course (Lira's
-        // warp raced a relog) — leave before working the next step.
+        // warp raced a relog), or inside the PQ maze past the PQ step (a crew warp-in caught a member
+        // already through stage 1) — leave before working the next step.
         if (step != Step.LAVA && isLavaMap(bot.getMapId())) {
+            warpToDoor(bot);
+            return true;
+        }
+        if (step != Step.PQ && isPqMap(bot.getMapId())) {
             warpToDoor(bot);
             return true;
         }
@@ -331,17 +436,65 @@ final class BotZakumPrequestManager {
         if (!isPqMap(bot.getMapId())) {
             entry.zakumPqRoomIdx = 0;
             entry.zakumPqChestDropAtMs = 0L;
+            Character crewLeader = crewPqLeader(bot);
+            if (crewLeader != null && crewLeader.getId() != bot.getId()) {
+                // Crew member: gather at the recruiter; the party leader starts the run and the
+                // instance warp-in takes everyone standing on the recruit map.
+                if (!leaderAtPqStep(crewLeader)) {
+                    // Leader can't run it (already done, or not armed — e.g. this member armed solo
+                    // in the login window before the crew party formed). A back-off would retry into
+                    // the same wall forever; disarm instead and let maybeStart's crew gate re-arm
+                    // the whole crew together once everyone (leader included) is ready.
+                    clearZakumErrand(entry);
+                    return false;
+                }
+                if (bot.getMapId() == DOOR_MAP) {
+                    entry.zakumErrandNpcId = ADOBIS; // status stays "working on my trials"
+                    entry.zakumErrandProgress.touch(System.currentTimeMillis());
+                    BotTravelManager.clearMoveTargetPin(entry);
+                    return true; // stand by for the leader's warp-in
+                }
+                return approach(entry, bot, DOOR_MAP, ADOBIS, runAiTick, () -> { });
+            }
+            if (crewLeader != null && bot.getMapId() == DOOR_MAP && !crewAssembledAtDoor(bot)) {
+                // Crew leader holding for stragglers: BOUNDED wait (the approach stepper's stall
+                // clock re-begins on every retry cycle, so it can never time this out itself). A
+                // member that can't make it within the window back-offs the leader out of the hold.
+                long now = System.currentTimeMillis();
+                if (entry.zakumAssembleSinceMs == 0L) {
+                    entry.zakumAssembleSinceMs = now;
+                }
+                if (now - entry.zakumAssembleSinceMs > ASSEMBLE_TIMEOUT_MS) {
+                    entry.zakumAssembleSinceMs = 0L;
+                    backOff(entry);
+                    return false;
+                }
+                entry.zakumErrandNpcId = ADOBIS;
+                entry.zakumErrandProgress.touch(now);
+                BotTravelManager.clearMoveTargetPin(entry);
+                return true; // stand at the recruiter until the crew closes up
+            }
+            entry.zakumAssembleSinceMs = 0L;
             return approach(entry, bot, DOOR_MAP, ADOBIS, runAiTick, () -> startPqInstance(entry, bot));
         }
         return tickPqInside(entry, bot, runAiTick);
     }
 
-    /** Reproduce Adobis's stage-1 path: party-of-one + {@code em.startInstance(party, map, 1)}. The
-     *  party requirement is the script's own eligibility gate, not a bot invention. */
+    /** Reproduce Adobis's stage-1 path: a party + {@code em.startInstance(party, map, 1)}. A soloist
+     *  runs on a party-of-one; an all-bot crew runs as ONE team (the script admits 1-6 members on the
+     *  recruit map) once everyone still needing the PQ has gathered at the Door. A party containing a
+     *  human is never driven in. */
     private static void startPqInstance(BotEntry entry, Character bot) {
         Party party = bot.getParty();
-        if (party != null && party.getMembers().size() > 1) {
-            backOff(entry); // in a real (social) party — don't drag others in; retry once it's over
+        if (party != null && party.getMembers().size() > 1
+                && !BotManager.onlinePartyMembersAllBots(bot)) {
+            backOff(entry); // partied with a human — don't drag them in; retry once it's over
+            return;
+        }
+        if (party != null && party.getMembers().size() > 1 && !crewAssembledAtDoor(bot)) {
+            // Crew run: hold the start until the whole team stands at the recruiter. The approach
+            // stepper's stall clock still runs, so an unreachable straggler back-offs this leader
+            // out of the wait instead of pinning it here forever.
             return;
         }
         try {
@@ -359,6 +512,8 @@ final class BotZakumPrequestManager {
             }
             if (!em.startInstance(party, bot.getMap(), 1)) {
                 backOff(entry); // single lobby per channel is taken — come back later
+                entry.nextZakumScanAtMs = System.currentTimeMillis()
+                        + BotManager.randMs(LOBBY_BUSY_DEFER_MIN_MS, LOBBY_BUSY_DEFER_MAX_MS);
                 reply.accept(entry, "mines are busy, ill come back for the trials later");
                 return;
             }
@@ -380,6 +535,10 @@ final class BotZakumPrequestManager {
      */
     private static boolean tickPqInside(BotEntry entry, Character bot, boolean runAiTick) {
         long now = System.currentTimeMillis();
+        Character crewLeader = crewPqLeader(bot);
+        if (crewLeader != null && crewLeader.getId() != bot.getId()) {
+            return tickPqCrewFollow(entry, bot, crewLeader, runAiTick);
+        }
         if (entry.zakumErrandProgress.stalled(now, INSTANCE_TIMEOUT_MS)) {
             warpToDoor(bot);
             backOff(entry);
@@ -425,7 +584,11 @@ final class BotZakumPrequestManager {
         }
         MapleMap map = bot.getMap();
         Reactor chest = map.getReactorById(room.reactorId());
-        if (chest == null || chest.getState() > 0) {
+        // Done = TERMINAL state, not merely hit: the key chests link to 2112000, a 5-state reactor
+        // (0->1->2->3->4, FOUR hits) whose key only drops at state 4. isActive() is false exactly
+        // there (stats type -1). Advancing on state>0 walked off after one hit and no run could
+        // ever collect a single key.
+        if (chest == null || !chest.isActive()) {
             entry.zakumPqRoomIdx++; // chest done and floor clear — next room
             entry.zakumErrandProgress.touch(System.currentTimeMillis());
             return true;
@@ -490,6 +653,39 @@ final class BotZakumPrequestManager {
         if (BotManager.getInstance().issueDropItem(entry, InventoryType.ETC, ITEM_KEY, (short) KEYS_NEEDED)) {
             entry.zakumPqChestDropAtMs = now;
             entry.zakumErrandProgress.touch(now);
+        }
+        return true;
+    }
+
+    /**
+     * One tick of a crew MEMBER inside the instance: the party leader drives the run (keys, chest,
+     * turn-in); the member tags along a room behind and claims its own Breath share off Aura's grid
+     * once the leader clears the PQ. Always consumes the tick, like every in-instance state.
+     */
+    private static boolean tickPqCrewFollow(BotEntry entry, Character bot, Character leader, boolean runAiTick) {
+        long now = System.currentTimeMillis();
+        var eim = bot.getEventInstance();
+        if (eim == null) {
+            warpToDoor(bot); // instance died under us — leave; the outside flow re-resolves
+            backOff(entry);
+            return true;
+        }
+        if (eim.isEventCleared()) {
+            turnInToAura(entry, bot); // claims this member's Breath via the grid, then walks out
+            return true;
+        }
+        entry.zakumErrandProgress.touch(now); // the leader's stall clock owns the run's pacing
+        if (leader.getMapId() != bot.getMapId()) {
+            if (isPqMap(leader.getMapId())) {
+                return travelInsidePq(entry, bot, leader.getMapId(), runAiTick);
+            }
+            warpToDoor(bot); // leader already left (stall exit / warp-out) — follow suit
+            return true;
+        }
+        if (!near(bot, leader.getPosition(), 260)) {
+            walkTo(entry, bot, leader.getPosition(), runAiTick);
+        } else {
+            BotTravelManager.clearMoveTargetPin(entry);
         }
         return true;
     }
@@ -613,6 +809,9 @@ final class BotZakumPrequestManager {
         entry.zakumErrandMapId = pinned; // armed sentinel / debug view of the target
         entry.autopilotMapId = pinned;   // teeth accrue via the normal grind/combat/loot flow
         entry.autopilotNextDecisionAtMs = Math.max(entry.autopilotNextDecisionAtMs, now + PIN_HOLD_MS);
+        // Crew: the plan leader mirrors its pin into the party plan, so crewmates WITHOUT an armed
+        // errand (early finishers, below-ambition members) grind the same tooth map with the crew.
+        BotAutopilotManager.publishLeaderPin(entry, pinned);
         return false;
     }
 
@@ -844,6 +1043,7 @@ final class BotZakumPrequestManager {
         entry.zakumPqRoomIdx = 0;
         entry.zakumPqChestDropAtMs = 0L;
         entry.zakumLavaAttempts = 0;
+        entry.zakumAssembleSinceMs = 0L;
         entry.zakumErrandProgress.clear();
         if (entry.nextZakumScanAtMs < System.currentTimeMillis()) {
             entry.nextZakumScanAtMs = System.currentTimeMillis() + BotManager.randMs(REARM_MIN_MS, REARM_MAX_MS);

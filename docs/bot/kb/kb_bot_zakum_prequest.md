@@ -37,8 +37,12 @@ go through `Quest.getInstance`, never store the raw int.
 `minPlayers = 1` — a solo party works; single lobby per channel (`maxLobbies=1`), 30-min timer.
 Inside the instanced maze:
 - 7 key chests (reactors **2112011** x2 @ 280010041/280011005, **2112004** x5 @ 280010091/
-  280010110/280010140/280011002/280011003), each a plain hit-to-break dropping one **4001016**
-  key (reactordrops chance=1 = always). Exactly 7 chests = exactly the 7 keys needed.
+  280010110/280010140/280011002/280011003), each dropping one **4001016** key (reactordrops
+  chance=1 = always). Exactly 7 chests = exactly the 7 keys needed. NOT hit-to-break: both link
+  to **2112000**, a 5-state reactor (0->1->2->3->4, FOUR hits); the key drops only at terminal
+  state 4, and `Reactor.isActive()` is false exactly there (stats type -1) — that is the "chest
+  done" check. Treating `getState() > 0` as done (one hit) walks off keyless and the whole run
+  loops 0-key sweeps forever while monopolizing the channel's single lobby.
 - The Giant Chest (reactor **2112014** @ 280011005) is a type-100 item-trigger reactor: it opens
   when ONE dropped MapItem of **exactly quantity 7** of 4001016 lands inside its trigger box
   (lt(-78,-67)..rb(29,25) around the reactor). `MapleMap.searchItemReactors` matches
@@ -81,7 +85,24 @@ inventory; script-only NPC effects are reproduced with the scripts' exact server
 - **Opt-in / stagger**: `BotPersonality.zakumAmbitionLevel()` — stable per-bot roll in [70,120],
   same splitmix64-avalanche discipline as the Temple trait but a distinct salt (independent, not
   rank-correlated). Kill switch `BotManager.cfg.ZAKUM_PREQUEST`.
-- **PQ leg**: party-of-one via `Party.createParty` (declines to run while in a >1 social party);
+- **Crew coordination**: a persistent all-bot party works the chain TOGETHER. Arming is crew-gated
+  (`crewReadyForZakum`: every online member still needing the trials must have reached its own
+  ambition level — then all arm within a tick of each other); a party containing a human never arms.
+  The PQ runs as ONE team: members gather and stand by at Adobis, the game-party leader starts the
+  instance once `crewAssembledAtDoor` (bounded hold, `ASSEMBLE_TIMEOUT_MS`), the warp-in takes
+  everyone on the recruit map (script admits 1-6), and inside the maze non-leaders follow the leader
+  (`tickPqCrewFollow`) and claim their own Breath off Aura's grid after `clearPQ` (one run arms the
+  whole crew). Teeth/lane pins are mirrored to the party plan by the plan leader
+  (`BotAutopilotManager.publishLeaderPin`) so unarmed crewmates grind the same map; `BotOccupancy`
+  already excludes own-party members, so crewmates never crowd-defer each other. Both long-horizon
+  errands are in `detachedFromPartyCohesion`, so cohesion neither chases nor portal-waits on an
+  erranded member. A member that reaches the PQ step while its PARTY LEADER can't run it (leader
+  already done / not armed — e.g. the member armed solo in the login window before the crew party
+  formed) DISARMS and lets the crew gate re-arm everyone together; the gate also refuses to arm a
+  crew bot that has `crewGroupId` but no party yet (login window), so the solo path can't be raced
+  into. Known gap: a crew whose party leader permanently has the trials done while others don't can
+  never run the PQ (the script requires the party leader on the recruit map).
+- **PQ leg**: party-of-one via `Party.createParty` when soloing;
   `em.getEligibleParty` + `em.startInstance(party, map, 1)` exactly as `2030008.js`. Inside the
   instance the errand ALWAYS consumes the tick — the maze is unroutable for the normal grind flow
   (its only "escape" would be a return scroll, forfeiting the run). Key-room order is a fixed
@@ -99,6 +120,17 @@ inventory; script-only NPC effects are reproduced with the scripts' exact server
   live-verified — watch a bot's first attempt via /api/botdebug.
 - **Teeth leg**: Temple-lane-style pin (occupancy crowd-defer across the four maps, seconds-cadence
   scan, never a full advisor pass on the tick thread); kills/loot accrue through the normal flow.
+- **Back-off semantics**: `tickErrand` honors `nextZakumScanAtMs` at the top (outside
+  `inLiveMaps`) by releasing every tick to the normal grind flow — same in the Temple driver with
+  `nextTempleScanAtMs`. Without that top-level check an approach step re-arms immediately after
+  `backOff()` and the bot camps its NPC in a dwell-paced retry loop, consuming every tick, so an
+  armed resupply errand (`autopilotErrandMapId`) never travels (this once piled ~15 bots onto
+  211042300 all claiming "going back to town to resupply"). A busy PQ lobby defers 4-10 min
+  (`LOBBY_BUSY_DEFER_*`), not the plain 60-120s back-off — one lobby per channel and a run takes
+  tens of minutes, so short retries make every armed bot in the world herd at the Door.
+- **Status line**: `composeStatus` reports the errand only while it is actually driving the tick
+  (`drivingStatus`: approaching an NPC or inside the PQ/lava course). Teeth grinding and back-off
+  windows fall through to the normal grind statuses, which are then accurate.
 - **Item protection**: script-only quest items are invisible to the WZ-driven quest-item guard, so
   `collectSellTrashEtcItems` now consults `isQuestCriticalItem` on BOTH drivers (Zakum: teeth/
   keys/ore until 100201 done, Eyes of Fire forever; Temple: the six Force Field materials until
