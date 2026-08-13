@@ -146,7 +146,7 @@ const dotLayer   = new Konva.Layer();   // map nodes, constant screen size
 stage.add(imageLayer); stage.add(edgeLayer); stage.add(dotLayer);
 const tr = new Konva.Transformer({keepRatio:true, rotateEnabled:false, anchorStroke:'#c08bff', borderStroke:'#c08bff'});
 imageLayer.add(tr);
-function fitStage(){ stage.size({width:host.clientWidth, height:host.clientHeight}); stage.batchDraw(); }
+function fitStage(){ stage.size({width:host.clientWidth, height:host.clientHeight}); stage.batchDraw(); scheduleCull(); }
 window.addEventListener('resize', fitStage);
 window.addEventListener('orientationchange', () => setTimeout(fitStage, 200));
 
@@ -159,7 +159,53 @@ stage.on('wheel', e => {
   const ns = e.evt.deltaY > 0 ? old/1.1 : old*1.1;
   stage.scale({x:ns,y:ns});
   stage.position({x:p.x-to.x*ns, y:p.y-to.y*ns});
+  scheduleCull();
 });
+stage.on('dragmove', scheduleCull);
+
+// --- viewport culling: with ~1.6k dots + ~2k links, the per-frame cost is drawing shapes that are
+// off screen (and their hit shapes). Hiding those makes Konva skip them entirely. The pad is a full
+// viewport on each side, so panning reveals already-visible content instead of popping it in. Dots
+// scale with the stage (they are stage children, not children of the scaled worldmap image), so zoom
+// itself needs no per-dot work — only this visibility pass. ---
+const CULL_PAD = 1.0;              // extra viewport-widths kept live beyond each edge
+const LABEL_MIN_SCALE = 0.55;      // below this the count/marker glyphs are unreadable mush — hide them
+let labelsOn = true;
+let cullPending = false;
+function scheduleCull(){
+  if(cullPending) return;
+  cullPending = true;
+  requestAnimationFrame(() => { cullPending = false; cull(); });
+}
+function cull(){
+  const s = stage.scaleX() || 1;
+  const padX = stage.width() * CULL_PAD, padY = stage.height() * CULL_PAD;
+  const x1 = (-stage.x() - padX) / s, x2 = (-stage.x() + stage.width() + padX) / s;
+  const y1 = (-stage.y() - padY) / s, y2 = (-stage.y() + stage.height() + padY) / s;
+  const wantLabels = s >= LABEL_MIN_SCALE;
+  const labelsFlipped = wantLabels !== labelsOn;
+  labelsOn = wantLabels;
+  let dirty = labelsFlipped;
+  for(const inst of allInst){
+    const x = inst.circle.x(), y = inst.circle.y();
+    const vis = x >= x1 && x <= x2 && y >= y1 && y <= y2;
+    if(vis !== inst.vis || labelsFlipped){
+      inst.vis = vis;
+      inst.circle.visible(vis);
+      if(inst.center) inst.center.visible(vis && labelsOn && !!inst.centerTxt);
+      dirty = true;
+    }
+  }
+  let edgeDirty = false;
+  for(const el of edgeLines){      // bbox rejection: never hides a link that crosses the view
+    const ax = el.ia.circle.x(), ay = el.ia.circle.y(), bx = el.ib.circle.x(), by = el.ib.circle.y();
+    const vis = Math.max(ax,bx) >= x1 && Math.min(ax,bx) <= x2
+             && Math.max(ay,by) >= y1 && Math.min(ay,by) <= y2;
+    if(vis !== el.vis){ el.vis = vis; el.line.visible(vis); edgeDirty = true; }
+  }
+  if(dirty) dotLayer.batchDraw();
+  if(edgeDirty) edgeLayer.batchDraw();
+}
 
 const wmImg = {};       // wmId -> Konva.Image
 const nodes = {};       // mapId / nodeId -> [instance,...]  (registered under id + every constituent map)
@@ -217,6 +263,9 @@ function matches(inst){
   return instOccupants(inst).some(([k,c]) => c.n.toLowerCase().includes(query));
 }
 // center label: occupant count when anyone is here, else the danger/unreachable marker (or nothing)
+// Most labels are empty (nobody there, not danger/unreachable) and most of the rest never change, so
+// re-measure and re-place only on an actual text change — Konva text metrics are the expensive part —
+// and keep empty ones hidden so they cost nothing to draw.
 function updateCenter(inst){
   if(!inst.center) return;
   const n = instOccupants(inst).length;
@@ -224,13 +273,35 @@ function updateCenter(inst){
   if(n > 0){ txt = String(n); }
   else if(inst.danger){ txt = '⚠'; fill = '#ff5555'; }
   else if(inst.unreachable){ txt = '⊘'; fill = '#9aa3b0'; }
-  inst.center.text(txt);
-  inst.center.fill(fill);
-  inst.center.offset({x:inst.center.width()/2, y:inst.center.height()/2}); // re-center on text change
-  inst.center.position(inst.circle.position());
+  if(inst.centerTxt !== txt){
+    inst.centerTxt = txt;
+    inst.center.text(txt);
+    inst.center.offset({x:inst.center.width()/2, y:inst.center.height()/2}); // re-center on text change
+  }
+  if(inst.centerFill !== fill){ inst.centerFill = fill; inst.center.fill(fill); }
+  const show = !!txt && labelsOn && inst.vis !== false;
+  inst.center.visible(show);
+  if(show) inst.center.position(inst.circle.position());
+}
+// The 2 s live poll calls this, but on a quiet server almost nothing about a dot changes between polls.
+// Restyle only the dots whose own inputs moved (occupancy, selection, search hit); everything styleNode
+// reads that isn't occupancy-driven — custom/hub/danger — is applied by its own handler when it changes.
+function instSig(inst){
+  let p = 0, b = 0, sel = 0;
+  for(const m of inst.maps){
+    const o = live[m]; if(!o) continue;
+    p += o.players.length; b += o.bots.length;
+    if(selected.size) for(const c of o.bots) if(selected.has(c.id)) sel++;
+  }
+  return p + '/' + b + '/' + sel + '/' + (matches(inst) ? 1 : 0);
 }
 function applyStyle(){
+  let dirty = false;
   for(const inst of allInst){
+    const sig = instSig(inst);
+    if(sig === inst.sig) continue;
+    inst.sig = sig;
+    dirty = true;
     styleNode(inst);
     updateCenter(inst);
     const hit = matches(inst);
@@ -238,7 +309,7 @@ function applyStyle(){
     inst.circle.shadowBlur(hit ? 22 : 0);
     inst.circle.shadowOpacity(hit ? 1 : 0);
   }
-  dotLayer.batchDraw();
+  if(dirty) dotLayer.batchDraw();
 }
 
 function searchMatches(){
@@ -289,6 +360,7 @@ function centerOnMap(mapId){    // global: roster items call this from inline on
   const p = inst.circle.position(), s = stage.scaleX();
   stage.position({x: host.clientWidth/2 - p.x*s, y: host.clientHeight/2 - p.y*s});
   stage.batchDraw();
+  cull();            // centre first, then ping — the target must be visible to be pinged
   pingInstances([inst]);
 }
 function centerOnMatch(){
@@ -330,6 +402,7 @@ function recomputeWm(wmId){
   }
   drawEdges(wmId);
   dotLayer.batchDraw();
+  scheduleCull();   // nodes moved: what is on screen changed
 }
 
 function drawOne(el){
@@ -744,6 +817,7 @@ function mapHitsHtml(hits){
 
   document.getElementById('status').textContent = wms.length + ' worldmaps, ' + nodeCount + ' nodes, ' + edgeLines.length + ' links';
   drawEdges(null);
+  cull();            // first pass: only what is on screen gets drawn
   imageLayer.batchDraw(); dotLayer.batchDraw();
 
   // resize: positions scale with the worldmap, dot size stays constant; recompute live during the drag
@@ -786,7 +860,7 @@ document.getElementById('export').onclick = () => {
   ta.value = text; ta.focus(); ta.select();
   try { navigator.clipboard.writeText(text); } catch(e){}
 };
-document.getElementById('fit').onclick = () => { stage.scale({x:1,y:1}); stage.position({x:0,y:0}); stage.batchDraw(); };
+document.getElementById('fit').onclick = () => { stage.scale({x:1,y:1}); stage.position({x:0,y:0}); stage.batchDraw(); scheduleCull(); };
 
 // ---- RTS control mode ----------------------------------------------------------------------------
 function updateSel(){
@@ -1010,6 +1084,7 @@ host.addEventListener('touchmove', e => {
   stage.position({x:center.x-to.x*ns, y:center.y-to.y*ns});
   pinchDist = dist;
   stage.batchDraw();
+  scheduleCull();
 }, {passive:false});
 host.addEventListener('touchend', () => { pinchDist = 0; });
 host.addEventListener('touchcancel', () => { pinchDist = 0; });

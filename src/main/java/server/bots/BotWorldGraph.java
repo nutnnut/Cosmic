@@ -58,7 +58,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 final class BotWorldGraph {
 
     private static final Logger log = LoggerFactory.getLogger(BotWorldGraph.class);
-    private static final int GRAPH_VERSION = 4;
+    private static final int GRAPH_VERSION = 5;
     private static final Path CACHE_FILE =
             Path.of("cache", "bot-world", "v" + GRAPH_VERSION, "portal-graph.tsv");
     private static final int NO_TARGET_MAPID = 999999999; // tm of spawn points / doors
@@ -315,7 +315,7 @@ final class BotWorldGraph {
      * return-scroll shortcut (mapId → returnMap town) where it beats walking.
      */
     record Index(Map<Integer, int[]> edges, Map<Integer, Integer> scrollTargets,
-                 Map<Integer, Integer> returnMaps) {
+                 Map<Integer, Integer> returnMaps, Map<Integer, Integer> forcedReturns) {
         int[] neighbors(int mapId) {
             return edges.getOrDefault(mapId, new int[0]);
         }
@@ -328,6 +328,15 @@ final class BotWorldGraph {
         /** The map you're sent to on death/return-scroll from here (info/returnMap); itself when unset. */
         int returnMap(int mapId) {
             return returnMaps.getOrDefault(mapId, mapId);
+        }
+
+        /** Where the server dumps anyone still standing here when the map spits them out — relog inside
+         *  an instance, the instance being torn down, a GM eject ({@code info/forcedReturn}, the same key
+         *  {@link server.maps.MapFactory} loads). -1 when the map sets none. This is an ARRIVAL: it is
+         *  how a character lands on a map nothing walks into, e.g. the Zakum maze dumping into the Room
+         *  of Tragedy. Distinct from {@link #returnMap}, which is the death/scroll town. */
+        int forcedReturn(int mapId) {
+            return forcedReturns.getOrDefault(mapId, -1);
         }
     }
 
@@ -595,7 +604,8 @@ final class BotWorldGraph {
         long startedAt = System.currentTimeMillis();
         Map<Integer, int[]> edges = new ConcurrentHashMap<>(); // scanWz fans out per file
         Map<Integer, Integer> returnMaps = new ConcurrentHashMap<>();
-        scanWz(edges, returnMaps);
+        Map<Integer, Integer> forcedReturns = new ConcurrentHashMap<>();
+        scanWz(edges, returnMaps, forcedReturns);
         Map<Integer, Integer> scrollTargets = computeScrollTargets(edges, returnMaps);
         log.info("Bot world graph: scanned {} maps ({} with outgoing portals, {} scroll shortcuts) in {} ms",
                 edges.size(),
@@ -603,7 +613,7 @@ final class BotWorldGraph {
                 scrollTargets.size(),
                 System.currentTimeMillis() - startedAt);
         Index built = new Index(Collections.unmodifiableMap(edges), Collections.unmodifiableMap(scrollTargets),
-                Collections.unmodifiableMap(returnMaps));
+                Collections.unmodifiableMap(returnMaps), Collections.unmodifiableMap(forcedReturns));
         writeCache(built); // cache stays pure-WZ; the scripted entrances are re-added in-memory below
         return withScriptedEntrances(built);
     }
@@ -690,6 +700,51 @@ final class BotWorldGraph {
             new QuestGatedEntrance(270040000, "in00", 270040100, TEMPLE_ITEM_GATE)
     );
 
+    /** One party-quest / event instance entry: standing in {@code lobbyMap}, the recruiting NPC
+     *  {@code npcId} starts the instance and warps the party to {@code entryMap} (the event script's
+     *  {@code entryMap}). Deliberately NOT an edge in {@link #weightedNeighbors}: entering needs a party
+     *  and a script hand-off no bot drives on its own, so routing must never plan through one. It exists
+     *  so the world VIEW knows those instance maps are arrivable — without it a PQ interior looks like a
+     *  map nothing can ever get into. */
+    record EventEntrance(String eventScript, int npcId, int lobbyMap, int entryMap) {}
+
+    /** PQ/event instance entries, each verified three ways: {@code scripts/event/<eventScript>.js} declares
+     *  {@code var entryMap = <entryMap>}, {@code scripts/npc/<npcId>.js} calls
+     *  {@code getEventManager("<eventScript>")}, and {@code npcId} has a {@code life} node of type "n" in
+     *  {@code lobbyMap}'s Map.wz img. Only rows passing all three are listed — see the BotWorldGraphTest
+     *  row-count pin. Instance maps BEYOND the entry arrive on their own: deeper stages through their
+     *  portals, dump maps through {@code info/forcedReturn}. */
+    static final List<EventEntrance> EVENT_ENTRANCES = List.of(
+            new EventEntrance("KerningPQ", 9020000, 103000000, 103000800),
+            new EventEntrance("HenesysPQ", 1012112, 100000200, 910010000),
+            new EventEntrance("GuildQuest", 9040000, 101030104, 990000000),
+            new EventEntrance("OrbisPQ", 2013000, 200080101, 920010000),
+            new EventEntrance("ElnathPQ", 2020008, 211000001, 921100300),
+            new EventEntrance("ZakumPQ", 2030008, 211042300, 280010000),
+            new EventEntrance("LudiPQ", 2040034, 221024500, 922010100),
+            new EventEntrance("LudiMazePQ", 9103001, 220000000, 809050000),
+            new EventEntrance("HorntailPQ", 2083001, 240050000, 240050100),
+            new EventEntrance("PiratePQ", 2094000, 251010404, 925100000),
+            new EventEntrance("MagatiaPQ_Z", 2112004, 261000011, 926100000),
+            new EventEntrance("MagatiaPQ_A", 2112003, 261000021, 926110000),
+            new EventEntrance("EllinPQ", 2133000, 300030100, 930000000),
+            new EventEntrance("CWKPQ", 9201113, 610030020, 610030100),
+            new EventEntrance("AmoriaPQ", 9201048, 670010100, 670010200),
+            new EventEntrance("TreasurePQ", 9220018, 674030100, 674030000),
+            new EventEntrance("BossRushPQ", 9000037, 970030000, 970030100),
+            // Cafe PQ: one NPC (1052013) in Premium Road recruits all six rooms, picking the event by
+            // name ("CafePQ_" + area), so each room is its own row off the same lobby.
+            new EventEntrance("CafePQ_1", 1052013, 193000000, 190000000),
+            new EventEntrance("CafePQ_2", 1052013, 193000000, 191000000),
+            new EventEntrance("CafePQ_3", 1052013, 193000000, 192000000),
+            new EventEntrance("CafePQ_4", 1052013, 193000000, 195000000),
+            new EventEntrance("CafePQ_5", 1052013, 193000000, 196000000),
+            new EventEntrance("CafePQ_6", 1052013, 193000000, 197000000),
+            // Holiday PQ: NPC 9105004 stands in all three lobbies and derives the event from its own map id.
+            new EventEntrance("HolidayPQ_1", 9105004, 889100000, 889100001),
+            new EventEntrance("HolidayPQ_2", 9105004, 889100010, 889100011),
+            new EventEntrance("HolidayPQ_3", 9105004, 889100020, 889100021));
+
     private static final Map<Integer, List<QuestGatedEntrance>> QUEST_GATED_BY_MAP = buildQuestGatedByMap();
     private static final Set<Integer> ALL_QUEST_GATE_KEYS = buildAllQuestGateKeys();
 
@@ -759,7 +814,8 @@ final class BotWorldGraph {
             next[cur.length] = e.destMap();
             edges.put(e.fromMap(), next);
         }
-        return new Index(Collections.unmodifiableMap(edges), base.scrollTargets(), base.returnMaps());
+        return new Index(Collections.unmodifiableMap(edges), base.scrollTargets(), base.returnMaps(),
+                base.forcedReturns());
     }
 
     private static boolean arrayContains(int[] a, int v) {
@@ -771,7 +827,8 @@ final class BotWorldGraph {
         return false;
     }
 
-    private static void scanWz(Map<Integer, int[]> edges, Map<Integer, Integer> returnMaps) {
+    private static void scanWz(Map<Integer, int[]> edges, Map<Integer, Integer> returnMaps,
+                               Map<Integer, Integer> forcedReturns) {
         // Per-file parsing fans out to a worker pool ({@code edges}/{@code returnMaps} are
         // concurrent). XMLWZFile.getData is synchronized per instance, so one shared provider
         // would serialize the workers — each worker thread builds its own (the per-provider
@@ -798,7 +855,7 @@ final class BotWorldGraph {
                         int mapId = Integer.parseInt(name.substring(0, name.length() - ".img.xml".length()));
                         pool.execute(() -> {
                             try {
-                                readMap(mapSources.get(), fileArea, mapId, edges, returnMaps);
+                                readMap(mapSources.get(), fileArea, mapId, edges, returnMaps, forcedReturns);
                             } catch (RuntimeException e) {
                                 failures.incrementAndGet();
                             }
@@ -828,7 +885,8 @@ final class BotWorldGraph {
      * (MapFactory reads it before the link redirect too).
      */
     private static void readMap(DataProvider mapSource, int area, int mapId,
-                                Map<Integer, int[]> edges, Map<Integer, Integer> returnMaps) {
+                                Map<Integer, int[]> edges, Map<Integer, Integer> returnMaps,
+                                Map<Integer, Integer> forcedReturns) {
         Data mapData = mapSource.getData(mapImgPath(area, mapId));
         if (mapData == null) {
             return;
@@ -837,6 +895,10 @@ final class BotWorldGraph {
         int returnMapId = info != null ? DataTool.getInt("returnMap", info, NO_TARGET_MAPID) : NO_TARGET_MAPID;
         if (returnMapId != NO_TARGET_MAPID && returnMapId != mapId) {
             returnMaps.put(mapId, returnMapId);
+        }
+        int forcedReturnId = info != null ? DataTool.getInt("forcedReturn", info, NO_TARGET_MAPID) : NO_TARGET_MAPID;
+        if (forcedReturnId != NO_TARGET_MAPID && forcedReturnId != mapId) {
+            forcedReturns.put(mapId, forcedReturnId);
         }
         String link = info != null ? DataTool.getString("link", info, "") : "";
         if (!link.isEmpty()) {
@@ -881,7 +943,7 @@ final class BotWorldGraph {
      * over the finished portal graph — a depth-limited BFS per map is cheap.
      */
     static Map<Integer, Integer> computeScrollTargets(Map<Integer, int[]> edges, Map<Integer, Integer> returnMaps) {
-        Index portalsOnly = new Index(edges, Map.of(), Map.of());
+        Index portalsOnly = new Index(edges, Map.of(), Map.of(), Map.of());
         Map<Integer, Integer> scrollTargets = new HashMap<>();
         for (Map.Entry<Integer, Integer> e : returnMaps.entrySet()) {
             int mapId = e.getKey();
@@ -897,7 +959,8 @@ final class BotWorldGraph {
         return "Map/Map" + area + "/" + String.format("%09d", mapId) + ".img";
     }
 
-    // ---- disk cache: one row per map: mapId \t target,target,... \t scrollTarget \t returnMap ----
+    // ---- disk cache: one row per map:
+    // mapId \t target,target,... \t scrollTarget \t returnMap \t forcedReturn ----
 
     private static Index loadCache() {
         if (!Files.isRegularFile(CACHE_FILE)) {
@@ -907,6 +970,7 @@ final class BotWorldGraph {
             Map<Integer, int[]> edges = new HashMap<>();
             Map<Integer, Integer> scrollTargets = new HashMap<>();
             Map<Integer, Integer> returnMaps = new HashMap<>();
+            Map<Integer, Integer> forcedReturns = new HashMap<>();
             for (String line : Files.readAllLines(CACHE_FILE, StandardCharsets.US_ASCII)) {
                 if (line.isBlank()) {
                     continue;
@@ -930,10 +994,13 @@ final class BotWorldGraph {
                 if (cols.length > 3 && !cols[3].isEmpty()) {
                     returnMaps.put(mapId, Integer.parseInt(cols[3]));
                 }
+                if (cols.length > 4 && !cols[4].isEmpty()) {
+                    forcedReturns.put(mapId, Integer.parseInt(cols[4]));
+                }
             }
             return edges.isEmpty() ? null
                     : new Index(Collections.unmodifiableMap(edges), Collections.unmodifiableMap(scrollTargets),
-                            Collections.unmodifiableMap(returnMaps));
+                            Collections.unmodifiableMap(returnMaps), Collections.unmodifiableMap(forcedReturns));
         } catch (IOException | RuntimeException e) {
             log.warn("Bot world graph: cache unreadable, rescanning WZ", e);
             return null;
@@ -963,6 +1030,11 @@ final class BotWorldGraph {
                 if (returnMap != e.getKey()) { // omit self (the default); keeps the file lean
                     sb.append(returnMap);
                 }
+                sb.append('\t');
+                int forcedReturn = built.forcedReturn(e.getKey());
+                if (forcedReturn != -1) {
+                    sb.append(forcedReturn);
+                }
                 sb.append('\n');
             }
             Files.writeString(CACHE_FILE, sb.toString(), StandardCharsets.US_ASCII);
@@ -978,10 +1050,17 @@ final class BotWorldGraph {
 
     /** Test/debug helper with explicit scroll shortcuts (map → returnMap town). */
     static Index indexOf(Map<Integer, int[]> edges, Map<Integer, Integer> scrollTargets) {
+        return indexOf(edges, scrollTargets, Map.of());
+    }
+
+    /** Test/debug helper with explicit scroll shortcuts and {@code info/forcedReturn} dumps. */
+    static Index indexOf(Map<Integer, int[]> edges, Map<Integer, Integer> scrollTargets,
+                         Map<Integer, Integer> forcedReturns) {
         Map<Integer, int[]> copy = new HashMap<>();
         for (Map.Entry<Integer, int[]> e : edges.entrySet()) {
             copy.put(e.getKey(), Arrays.copyOf(e.getValue(), e.getValue().length));
         }
-        return new Index(Collections.unmodifiableMap(copy), Map.copyOf(scrollTargets), Map.of());
+        return new Index(Collections.unmodifiableMap(copy), Map.copyOf(scrollTargets), Map.of(),
+                Map.copyOf(forcedReturns));
     }
 }

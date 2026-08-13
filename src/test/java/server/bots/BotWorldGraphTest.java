@@ -361,6 +361,20 @@ class BotWorldGraphTest {
                 BotWorldGraph.allQuestGateKeys());
     }
 
+    /** Every EVENT_ENTRANCES row was verified against the scripts and Map.wz before being listed, and
+     *  none may be a routable edge — entering a PQ needs a party and a script hand-off, so a bot must
+     *  never plan a route through one. */
+    @Test
+    void eventEntrancesAreVerifiedRowsAndNeverRoutableEdges() {
+        assertEquals(26, BotWorldGraph.EVENT_ENTRANCES.size());
+        for (BotWorldGraph.EventEntrance e : BotWorldGraph.EVENT_ENTRANCES) {
+            assertTrue(e.lobbyMap() != e.entryMap(), "lobby and entry must differ: " + e);
+        }
+        // The Zakum lobby's routable moves are its portals only — the PQ entry is not among them.
+        BotWorldGraph.Index graph = BotWorldGraph.indexOf(Map.of(211042300, new int[]{211042200}));
+        assertFalse(BotWorldGraph.reachableWithin(graph, 211042300, 10, PORTALS_ONLY).contains(280010000));
+    }
+
     @Test
     void fmExitEdgeExistsOnlyForTheBotStandingInside() {
         int entrance = constants.id.MapId.FM_ENTRANCE; // 910000000

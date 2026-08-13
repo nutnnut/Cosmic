@@ -69,7 +69,9 @@ public final class BotWorldGraphWebServer {
     private static final Logger log = LoggerFactory.getLogger(BotWorldGraphWebServer.class);
     // ponytail: fixed localhost port; promote to a cfg knob only if it ever clashes.
     private static final int PORT = 8089;
-    private static final int START_MAP = 10000;        // spawn/tutorial area — what the graph shows (reachable-from)
+    // Where every character actually starts: BeginnerCreator and BotCreator both spawn into
+    // MapId.MUSHROOM_TOWN, so the arrival closure's root is the real spawn, not a stand-in.
+    private static final int START_MAP = constants.id.MapId.MUSHROOM_TOWN;
     private static final int RETURN_ANCHOR = 104000000; // Lith Harbor — the hub maps must be able to return to
     private static final double EDGE_LEN = 72.0;   // uniform edge length for the worldmap non-anchor layout
     private static final double CONE = 2.0;        // child angular spread (radians) of the radial fan
@@ -298,6 +300,18 @@ public final class BotWorldGraphWebServer {
         return cur;
     }
 
+    private static volatile WorldSpots spotsCache;
+
+    /** The WZ worldmap spots, scanned once — pure WZ data, so it never changes at runtime. */
+    private static WorldSpots worldMapSpots() {
+        WorldSpots cached = spotsCache;
+        if (cached == null) {
+            cached = scanWorldMapSpots();
+            spotsCache = cached;
+        }
+        return cached;
+    }
+
     private static WorldSpots scanWorldMapSpots() {
         DataProvider dp = DataProviderFactory.getDataProvider(WZFiles.MAP);
         List<String> wmIds = new ArrayList<>();
@@ -405,7 +419,7 @@ public final class BotWorldGraphWebServer {
      */
     private static String worldGraphJson() {
         GraphData g = graphData();
-        WorldSpots ws = scanWorldMapSpots();
+        WorldSpots ws = worldMapSpots();
         Map<Integer, double[]> naLocal = new HashMap<>(); // non-anchor map -> image-local pos
         Map<Integer, String> naWm = new HashMap<>();       // non-anchor map -> owning worldmap
         worldMapLayout(g, ws, naLocal, naWm);
@@ -1912,11 +1926,10 @@ public final class BotWorldGraphWebServer {
         // affordable and every quest gate open so we get the whole traversable world (SSOT:
         // BotWorldGraph's own flood).
         Set<Integer> spawnReachable = BotWorldGraph.reachableWithin(START_MAP, 1000, worldViewOptions(false));
-        // ...plus the maps that are only connected OUTWARD: party-quest interiors and forcedReturn dumps
-        // have no forward portal from the world, but a bot standing in one leaves by a portal/ride into
-        // a shown map, or by scrolling to the dump map its cluster funnels through.
-        Set<Integer> reachable = new HashSet<>(spawnReachable);
-        addOutwardOnlyMaps(idx, reachable, spawnReachable);
+        // ...plus everywhere else a character can ARRIVE (see arrivalClosure): the PQ interiors a script
+        // warps you into and the maps a forcedReturn dumps you onto. Shown = "you can get in", not "you
+        // can get out" — a map you could only ever leave is a map nobody is ever in.
+        Set<Integer> reachable = arrivalClosure(idx, spawnReachable);
         Set<Long> seen = new HashSet<>();
         List<int[]> edges = new ArrayList<>();
         for (int a : reachable) {                  // portals first (type 0 = walkable)
@@ -1961,7 +1974,7 @@ public final class BotWorldGraphWebServer {
         Set<Integer> danger = unreturnable(reachable); // reachable from Lith but can't get back to it
         GraphData g = new GraphData(reachable, edges, adj, leaves, danger, mapNames(), regionOf, regionMembers);
         dataCache = g;
-        log.info("Bot world-graph web view: {} shown maps ({} reachable from spawn, {} outward-only,"
+        log.info("Bot world-graph web view: {} shown maps ({} reachable from spawn, {} arrival-only,"
                         + " {} dead-ends, {} unreturnable), {} edges in {} ms",
                 reachable.size(), spawnReachable.size(), reachable.size() - spawnReachable.size(),
                 leaves.size(), danger.size(), edges.size(), System.currentTimeMillis() - t0);
@@ -1977,43 +1990,48 @@ public final class BotWorldGraphWebServer {
     }
 
     /**
-     * Grow {@code shown} to a fixpoint with every scanned map that has a legal move INTO it — the reverse
-     * of the forward flood. A party-quest interior (Zakum's 280010000, the 280090000 forcedReturn dump) is
-     * entered only by a script the portal graph can't see, but it is connected outward, so this finds those
-     * clusters without any hardcoded PQ list.
+     * Every map a character can ARRIVE in, grown from {@code roots} to a fixpoint. Shown means "you can
+     * get IN", which is what makes a dot worth drawing: a map you could only ever leave is a map nobody
+     * is ever standing in. Three arrival kinds, all authored data rather than inference:
      *
-     * <p>A portal/taxi/ferry edge into any shown map admits a map. A RETURN-SCROLL edge admits one only
-     * when its target is itself outward-only (shown but not in {@code spawnReachable}): scrolling to a
-     * spawn-reachable town is trivial connectivity that every stranded event map has, and drawing those
-     * would bury the view, whereas a scroll into a non-spawn-reachable dump map is the WZ author linking a
-     * cluster to its funnel — exactly the shape worth showing.
+     * <ul>
+     *   <li>the ordinary travel edges ({@link BotWorldGraph#weightedNeighbors}: portals, taxis, ferries,
+     *       every quest gate open, scroll OFF — a scroll is a way OUT, never a way in);
+     *   <li>{@code info/forcedReturn}: standing in a reached map, a relog or an instance teardown dumps
+     *       you on its forcedReturn target. This is how the Room of Tragedy is arrivable — the Zakum maze
+     *       maps point at it and nothing walks there;
+     *   <li>{@link BotWorldGraph#EVENT_ENTRANCES}: the recruiting NPC in a reached lobby warps the party
+     *       into the instance's entry map. Deeper stages then arrive through their own portals.
+     * </ul>
+     *
+     * <p>Maps that are merely connected outward — the Toy Factory sectors and the rest of the event-map
+     * long tail, which can scroll to a town but that nothing and nobody can enter — fall out by
+     * construction, with no prune and no hardcoded exclusion list.
      */
-    static void addOutwardOnlyMaps(BotWorldGraph.Index idx, Set<Integer> shown, Set<Integer> spawnReachable) {
-        boolean grew = true;
-        while (grew) {
-            grew = false;
-            for (int m : idx.edges().keySet()) { // the WZ scan covers every map, so this is the whole world
-                if (!shown.contains(m) && leavesIntoShown(idx, m, shown, spawnReachable)) {
-                    shown.add(m);
-                    grew = true;
-                }
+    static Set<Integer> arrivalClosure(BotWorldGraph.Index idx, Set<Integer> roots) {
+        Set<Integer> reached = new HashSet<>(roots);
+        Map<Integer, List<Integer>> entriesByLobby = new HashMap<>();
+        for (BotWorldGraph.EventEntrance e : BotWorldGraph.EVENT_ENTRANCES) {
+            entriesByLobby.computeIfAbsent(e.lobbyMap(), k -> new ArrayList<>()).add(e.entryMap());
+        }
+        ArrayDeque<Integer> frontier = new ArrayDeque<>(reached);
+        while (!frontier.isEmpty()) {
+            int m = frontier.poll();
+            for (BotWorldGraph.WeightedEdge e : BotWorldGraph.weightedNeighbors(idx, m, worldViewOptions(false), 0.0)) {
+                arrive(e.toMapId(), reached, frontier);
+            }
+            arrive(idx.forcedReturn(m), reached, frontier);
+            for (int entry : entriesByLobby.getOrDefault(m, List.of())) {
+                arrive(entry, reached, frontier);
             }
         }
+        return reached;
     }
 
-    /** Whether {@code mapId} has an outbound edge that admits it to {@code shown}; see the scroll rule in
-     *  {@link #addOutwardOnlyMaps}. The walk/ride edges come from {@link BotWorldGraph#weightedNeighbors}
-     *  (scroll off, so the options describe exactly those) and the scroll edge is the index's own
-     *  scrollTarget — the same one weightedNeighbors would emit — judged by the stricter rule. */
-    private static boolean leavesIntoShown(BotWorldGraph.Index idx, int mapId, Set<Integer> shown,
-                                           Set<Integer> spawnReachable) {
-        for (BotWorldGraph.WeightedEdge e : BotWorldGraph.weightedNeighbors(idx, mapId, worldViewOptions(false), 0.0)) {
-            if (shown.contains(e.toMapId())) {
-                return true;
-            }
+    private static void arrive(int mapId, Set<Integer> reached, ArrayDeque<Integer> frontier) {
+        if (mapId != -1 && reached.add(mapId)) {
+            frontier.add(mapId);
         }
-        int scrollTarget = idx.scrollTarget(mapId);
-        return scrollTarget != -1 && shown.contains(scrollTarget) && !spawnReachable.contains(scrollTarget);
     }
 
     /**
