@@ -25,6 +25,13 @@ the LAN (accepted: private game-server LAN). Open `http://<server-lan-ip>:8089/`
 The world graph laid out over the WorldMap images: per worldmap `{id, x, y, scale, nodes[], edges}`;
 each node `{id, maps[], names[], x, y, hub, anchor, dup, danger, leaf, unreachable}`. A node may merge
 several maps (`maps[]`). Drives the map page. (See `serveWorldMaps`/`worldmapsJson` for exact fields.)
+The shown set is the flood from spawn with every quest gate open (so the Temple of Time corridor is not
+drawn sealed), grown to a fixpoint with maps that only connect OUTWARD — party-quest interiors and
+forcedReturn dumps a bot can leave but not walk into. A portal/taxi/ferry edge into any shown map admits
+a map; a return-scroll edge admits one only when its target is itself outward-only, since scrolling to a
+spawn-reachable town is trivial connectivity every stranded event map has. Outward-only maps carry
+`unreachable:false` and are not `danger`; `danger` still means "reachable from Lith Harbor but cannot get
+back". They have no worldmap spot, so they auto-position as non-anchor nodes.
 
 ### `/api/live`
 Live occupancy of every online character, bucketed by map. Cached ~750 ms.
@@ -41,7 +48,8 @@ only). `stuck`=short wedge reason, present only when the bot is detectably stuck
 (`BotAutopilotManager.stuckReason`: "can't find anywhere to grind" / "job advance route unreachable" /
 "autopilot leaked off") —
 drives the roster's "possibly stuck" counter+filter. Transient travel retry cooldowns are intentionally
-excluded because they do not establish a wedge. `status`=the
+excluded because they do not establish a wedge, as are owner-commanded manual states
+(follow/patrol/farm-here/grind-here/moveto) — those run with autopilot legitimately off. `status`=the
 @botstatus line (bots only; drives the roster-hover tooltip and the right-panel detail — omitted for
 players and for bots with no registry entry).
 

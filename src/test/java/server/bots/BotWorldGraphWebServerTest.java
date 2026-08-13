@@ -6,6 +6,7 @@ import client.Client;
 import client.Job;
 import org.junit.jupiter.api.Test;
 
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -55,6 +56,29 @@ class BotWorldGraphWebServerTest {
     @Test
     void resolveMoveTarget_singleMapIsTrivial() {
         assertEquals(9, BotWorldGraphWebServer.resolveMoveTargetFrom(CHAIN, Set.of(), 1, List.of(9)));
+    }
+
+    /** Party-quest interiors are entered by a script the portal graph can't see, so the forward flood
+     *  misses them; they reach the world OUTWARD (return scroll / Ali's door out of the Room of Tragedy),
+     *  which is what puts them on the map. The cascade is a fixpoint: 280011000 rides in on 280010000.
+     *  A scroll into a spawn-reachable TOWN doesn't count — every stranded event map has one, and drawing
+     *  them all would bury the view — so 280099998 stays off the map while the Zakum cluster comes on. */
+    @Test
+    void addOutwardOnlyMaps_pullsInPartyQuestInteriorsButNotIslands() {
+        BotWorldGraph.Index idx = BotWorldGraph.indexOf(
+                Map.of(211042300, new int[0],           // El Nath side: forward-reachable
+                        280090000, new int[0],           // Room of Tragedy: leaves only by Ali's free ride
+                        280010000, new int[0],           // PQ interior: leaves only by its return scroll
+                        280011000, new int[]{280010000}, // deeper interior: portals back into 280010000
+                        280099998, new int[0],           // stranded: scrolls only to the spawn-reachable town
+                        280099999, new int[0]),          // no way in, no way out
+                Map.of(280010000, 280090000, 280099998, 211042300));
+
+        Set<Integer> spawnReachable = Set.of(211042300);
+        Set<Integer> shown = new HashSet<>(spawnReachable);
+        BotWorldGraphWebServer.addOutwardOnlyMaps(idx, shown, spawnReachable);
+
+        assertEquals(Set.of(211042300, 280090000, 280010000, 280011000), shown);
     }
 
     @Test

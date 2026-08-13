@@ -93,7 +93,7 @@ public final class BotWorldGraphWebServer {
         m.put("031", new double[]{2144, 819, 0.450});
         m.put("040", new double[]{1962, -135, 1.004});
         m.put("050", new double[]{793, 540, 1.054});
-        m.put("051", new double[]{2977, 2102, 0.450});
+        m.put("051", new double[]{1465, 469, 0.450});
         m.put("060", new double[]{2695, 279, 1.075});
         m.put("070", new double[]{1623, 1045, 1.394});
         m.put("080", new double[]{317, 677, 0.731});
@@ -109,8 +109,8 @@ public final class BotWorldGraphWebServer {
         m.put("147", new double[]{688, -803, 0.450});
         m.put("148", new double[]{315, -799, 0.450});
         m.put("149", new double[]{3030, 2485, 0.450});
-        m.put("150", new double[]{938, 3026, 0.450});
-        m.put("151", new double[]{1275, 3012, 0.450});
+        m.put("150", new double[]{500, -379, 0.245});
+        m.put("151", new double[]{2433, 827, 0.450});
         m.put("152", new double[]{315, 1380, 0.450});
         m.put("153", new double[]{1945, 2991, 0.450});
         m.put("154", new double[]{2326, 2991, 0.450});
@@ -1909,9 +1909,14 @@ public final class BotWorldGraphWebServer {
         long t0 = System.currentTimeMillis();
         BotWorldGraph.Index idx = BotWorldGraph.get();
         // Maps a bot can legally reach from spawn: portals + boarding taxis + ferries, fares assumed
-        // affordable so we get the whole traversable world (SSOT: BotWorldGraph's own flood).
-        Set<Integer> reachable = BotWorldGraph.reachableWithin(START_MAP, 1000,
-                new BotWorldGraph.RouteOptions(false, Integer.MAX_VALUE, true));
+        // affordable and every quest gate open so we get the whole traversable world (SSOT:
+        // BotWorldGraph's own flood).
+        Set<Integer> spawnReachable = BotWorldGraph.reachableWithin(START_MAP, 1000, worldViewOptions(false));
+        // ...plus the maps that are only connected OUTWARD: party-quest interiors and forcedReturn dumps
+        // have no forward portal from the world, but a bot standing in one leaves by a portal/ride into
+        // a shown map, or by scrolling to the dump map its cluster funnels through.
+        Set<Integer> reachable = new HashSet<>(spawnReachable);
+        addOutwardOnlyMaps(idx, reachable, spawnReachable);
         Set<Long> seen = new HashSet<>();
         List<int[]> edges = new ArrayList<>();
         for (int a : reachable) {                  // portals first (type 0 = walkable)
@@ -1956,9 +1961,59 @@ public final class BotWorldGraphWebServer {
         Set<Integer> danger = unreturnable(reachable); // reachable from Lith but can't get back to it
         GraphData g = new GraphData(reachable, edges, adj, leaves, danger, mapNames(), regionOf, regionMembers);
         dataCache = g;
-        log.info("Bot world-graph web view: {} reachable maps ({} dead-ends, {} unreturnable), {} edges in {} ms",
-                reachable.size(), leaves.size(), danger.size(), edges.size(), System.currentTimeMillis() - t0);
+        log.info("Bot world-graph web view: {} shown maps ({} reachable from spawn, {} outward-only,"
+                        + " {} dead-ends, {} unreturnable), {} edges in {} ms",
+                reachable.size(), spawnReachable.size(), reachable.size() - spawnReachable.size(),
+                leaves.size(), danger.size(), edges.size(), System.currentTimeMillis() - t0);
         return g;
+    }
+
+    /** World-describing (not per-bot) travel options: every fare affordable, ferries on, and every
+     *  Temple-of-Time corridor gate unlocked, so the view floods the world as a whole rather than as
+     *  one bot's current permissions. */
+    private static BotWorldGraph.RouteOptions worldViewOptions(boolean withReturnScroll) {
+        return new BotWorldGraph.RouteOptions(withReturnScroll, Integer.MAX_VALUE, true, false,
+                Integer.MAX_VALUE, -1, -1, BotWorldGraph.allQuestGateKeys());
+    }
+
+    /**
+     * Grow {@code shown} to a fixpoint with every scanned map that has a legal move INTO it — the reverse
+     * of the forward flood. A party-quest interior (Zakum's 280010000, the 280090000 forcedReturn dump) is
+     * entered only by a script the portal graph can't see, but it is connected outward, so this finds those
+     * clusters without any hardcoded PQ list.
+     *
+     * <p>A portal/taxi/ferry edge into any shown map admits a map. A RETURN-SCROLL edge admits one only
+     * when its target is itself outward-only (shown but not in {@code spawnReachable}): scrolling to a
+     * spawn-reachable town is trivial connectivity that every stranded event map has, and drawing those
+     * would bury the view, whereas a scroll into a non-spawn-reachable dump map is the WZ author linking a
+     * cluster to its funnel — exactly the shape worth showing.
+     */
+    static void addOutwardOnlyMaps(BotWorldGraph.Index idx, Set<Integer> shown, Set<Integer> spawnReachable) {
+        boolean grew = true;
+        while (grew) {
+            grew = false;
+            for (int m : idx.edges().keySet()) { // the WZ scan covers every map, so this is the whole world
+                if (!shown.contains(m) && leavesIntoShown(idx, m, shown, spawnReachable)) {
+                    shown.add(m);
+                    grew = true;
+                }
+            }
+        }
+    }
+
+    /** Whether {@code mapId} has an outbound edge that admits it to {@code shown}; see the scroll rule in
+     *  {@link #addOutwardOnlyMaps}. The walk/ride edges come from {@link BotWorldGraph#weightedNeighbors}
+     *  (scroll off, so the options describe exactly those) and the scroll edge is the index's own
+     *  scrollTarget — the same one weightedNeighbors would emit — judged by the stricter rule. */
+    private static boolean leavesIntoShown(BotWorldGraph.Index idx, int mapId, Set<Integer> shown,
+                                           Set<Integer> spawnReachable) {
+        for (BotWorldGraph.WeightedEdge e : BotWorldGraph.weightedNeighbors(idx, mapId, worldViewOptions(false), 0.0)) {
+            if (shown.contains(e.toMapId())) {
+                return true;
+            }
+        }
+        int scrollTarget = idx.scrollTarget(mapId);
+        return scrollTarget != -1 && shown.contains(scrollTarget) && !spawnReachable.contains(scrollTarget);
     }
 
     /**
@@ -1971,14 +2026,14 @@ public final class BotWorldGraphWebServer {
      * single reverse-reachability BFS from the anchor.
      */
     private static Set<Integer> unreturnable(Set<Integer> shown) {
-        Set<Integer> fromAnchor = BotWorldGraph.reachableWithin(RETURN_ANCHOR, 1000,
-                new BotWorldGraph.RouteOptions(false, Integer.MAX_VALUE, true));
+        Set<Integer> fromAnchor = BotWorldGraph.reachableWithin(RETURN_ANCHOR, 1000, worldViewOptions(false));
         // The Mushroom Shrine's only exit is Spinel's return to the boarding origin (worldTourReturn),
         // which is dynamic and absent from the static edge table — so a plain flood treats the shrine as
         // a one-way trap. Lith is itself a Spinel boarding map (a bot that boards there returns there),
         // so model the return to the anchor here: the shrine returns to where it boarded, not a trap.
         BotWorldGraph.RouteOptions back = new BotWorldGraph.RouteOptions(
-                true, Integer.MAX_VALUE, true, false, Integer.MAX_VALUE, RETURN_ANCHOR);
+                true, Integer.MAX_VALUE, true, false, Integer.MAX_VALUE, RETURN_ANCHOR, -1,
+                BotWorldGraph.allQuestGateKeys());
         Set<Integer> danger = new HashSet<>();
         for (int m : shown) {
             if (m != RETURN_ANCHOR && fromAnchor.contains(m)
