@@ -417,7 +417,7 @@ public final class BotWorldGraphWebServer {
      * stand for several maps (merged {@code mapNo}). Edges are raw map ids; the client connects, per
      * worldmap, the dot holding each endpoint (so a detail keeps edges its overview merges into one dot).
      */
-    private static String worldGraphJson() {
+    static String worldGraphJson() {
         GraphData g = graphData();
         WorldSpots ws = worldMapSpots();
         Map<Integer, double[]> naLocal = new HashMap<>(); // non-anchor map -> image-local pos
@@ -471,26 +471,52 @@ public final class BotWorldGraphWebServer {
         BotWorldGraph.Index idx = BotWorldGraph.get();
         Set<Integer> rendered = new HashSet<>(ws.spotMaps());
         rendered.addAll(naLocal.keySet());
-        Set<Long> seen = new HashSet<>();
         StringBuilder es = new StringBuilder();
-        for (int a : rendered) {                           // portals first (type p = walkable)
-            for (int b : idx.neighbors(a)) {
-                appendWorldEdge(es, a, b, 'p', rendered, seen);
+        for (WorldMapEdge edge : worldMapEdges(idx, rendered)) {
+            if (es.length() > 0) {
+                es.append(',');
             }
-        }
-        for (int a : rendered) {                           // taxi/ferry NPC rides (type t)
-            for (BotWorldGraph.TaxiEdge t : BotWorldGraph.taxiEdgesFrom(a)) {
-                appendWorldEdge(es, a, t.toMapId(), 't', rendered, seen);
-            }
-            for (BotFerryManager.FerryRoute f : BotFerryManager.routesBoardingAt(a)) {
-                appendWorldEdge(es, a, f.destinationMapId(), 't', rendered, seen);
-            }
+            es.append('[').append(edge.mapA()).append(',').append(edge.mapB())
+                    .append(",\"").append(edge.type()).append("\"]");
         }
         return "{\"worldmaps\":[" + String.join(",", wmsOut) + "],\"edges\":[" + es + "]}";
     }
 
-    private static void appendWorldEdge(StringBuilder es, int a, int b, char type,
-                                        Set<Integer> rendered, Set<Long> seen) {
+    record WorldMapEdge(int mapA, int mapB, char type) {}
+
+    /** The visual transition projection. Its special edges deliberately do not enter BotWorldGraph's
+     * planner: the world map needs to show where a character can arrive or be carried by a verified
+     * event/NPC script, while bot routing must still obey its own legal route edges. */
+    static List<WorldMapEdge> worldMapEdges(BotWorldGraph.Index idx, Set<Integer> rendered) {
+        Set<Long> seen = new HashSet<>();
+        List<WorldMapEdge> out = new ArrayList<>();
+        for (int a : rendered) {                           // portals (type p = walkable)
+            for (int b : idx.neighbors(a)) {
+                collectWorldEdge(out, a, b, 'p', rendered, seen);
+            }
+        }
+        for (int a : rendered) {                           // taxi/ferry NPC rides (type t)
+            for (BotWorldGraph.TaxiEdge t : BotWorldGraph.taxiEdgesFrom(a)) {
+                collectWorldEdge(out, a, t.toMapId(), 't', rendered, seen);
+            }
+            for (BotFerryManager.FerryRoute f : BotFerryManager.routesBoardingAt(a)) {
+                collectWorldEdge(out, a, f.destinationMapId(), 't', rendered, seen);
+            }
+        }
+        for (int a : rendered) {                           // WZ forced-return arrivals (type f)
+            collectWorldEdge(out, a, idx.forcedReturn(a), 'f', rendered, seen);
+        }
+        for (BotWorldGraph.EventEntrance e : BotWorldGraph.EVENT_ENTRANCES) { // verified PQ entry (type e)
+            collectWorldEdge(out, e.lobbyMap(), e.entryMap(), 'e', rendered, seen);
+        }
+        for (BotWorldGraph.EventExit e : BotWorldGraph.EVENT_EXITS) {         // verified NPC exit (type n)
+            collectWorldEdge(out, e.fromMap(), e.toMap(), 'n', rendered, seen);
+        }
+        return List.copyOf(out);
+    }
+
+    private static void collectWorldEdge(List<WorldMapEdge> out, int a, int b, char type,
+                                         Set<Integer> rendered, Set<Long> seen) {
         if (a == b || !rendered.contains(a) || !rendered.contains(b)) {
             return;
         }
@@ -499,10 +525,7 @@ public final class BotWorldGraphWebServer {
         if (!seen.add(((long) lo << 32) | (hi & 0xFFFFFFFFL))) {
             return;
         }
-        if (es.length() > 0) {
-            es.append(',');
-        }
-        es.append('[').append(lo).append(',').append(hi).append(",\"").append(type).append("\"]");
+        out.add(new WorldMapEdge(lo, hi, type));
     }
 
     /** Emit one node for a (possibly merged) set of maps; flags aggregate over the constituents

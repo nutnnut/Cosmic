@@ -6,11 +6,16 @@ import client.Client;
 import client.Job;
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -106,6 +111,64 @@ class BotWorldGraphWebServerTest {
         Set<Integer> shown = BotWorldGraphWebServer.arrivalClosure(idx, Set.of(555000000));
 
         assertEquals(Set.of(555000000), shown);
+    }
+
+    /** The Orbis exit is admitted by forcedReturn, entered by the Orbis event, and left by the verified
+     * Chamberlain Eak script. Those are visual relationships only; they must not be mistaken for bot route
+     * edges, but they must keep an actually reachable NPC/event map from rendering as an orphan. */
+    @Test
+    void worldMapEdges_renderVerifiedOrbisNpcAndEventRelationships() {
+        BotWorldGraph.Index idx = BotWorldGraph.indexOf(
+                Map.of(920010000, new int[0]), Map.of(), Map.of(920010000, 920011200));
+
+        List<BotWorldGraphWebServer.WorldMapEdge> edges = BotWorldGraphWebServer.worldMapEdges(
+                idx, Set.of(200080101, 920010000, 920011200));
+
+        assertTrue(edges.contains(new BotWorldGraphWebServer.WorldMapEdge(200080101, 920010000, 'e')));
+        assertTrue(edges.contains(new BotWorldGraphWebServer.WorldMapEdge(920010000, 920011200, 'f')));
+        assertTrue(edges.contains(new BotWorldGraphWebServer.WorldMapEdge(200080101, 920011200, 'n')));
+        assertFalse(edges.contains(new BotWorldGraphWebServer.WorldMapEdge(200080101, 920010000, 'n')));
+    }
+
+    @Test
+    void eventExits_carryTheVerifiedOrbisNpcRow() {
+        BotWorldGraph.EventExit orbis = BotWorldGraph.EVENT_EXITS.stream()
+                .filter(e -> e.eventScript().equals("OrbisPQ"))
+                .findFirst().orElseThrow();
+
+        assertEquals(2013001, orbis.npcId());
+        assertEquals(920011200, orbis.fromMap());
+        assertEquals(200080101, orbis.toMap());
+    }
+
+    @Test
+    void eventExitRow_matchesTheCurrentOrbisEventAndNpcScripts() throws IOException {
+        String event = Files.readString(Path.of("scripts/event/OrbisPQ.js"));
+        String npc = Files.readString(Path.of("scripts/npc/2013001.js"));
+
+        assertTrue(event.contains("var exitMap = 920011200;"));
+        assertTrue(event.contains("player.changeMap(exitMap, 0);"));
+        assertTrue(npc.contains("cm.getPlayer().getMapId() == 920011200"));
+        assertTrue(npc.contains("cm.warp(200080101);"));
+    }
+
+    @Test
+    void worldMapEdges_useTheRealOrbisForcedReturnData() {
+        BotWorldGraph.Index idx = BotWorldGraph.get();
+
+        assertEquals(920011200, idx.forcedReturn(920010000));
+        assertTrue(BotWorldGraphWebServer.worldMapEdges(
+                idx, Set.of(200080101, 920010000, 920011200))
+                .contains(new BotWorldGraphWebServer.WorldMapEdge(920010000, 920011200, 'f')));
+    }
+
+    @Test
+    void worldMapJson_connectsTheRealOrbisExitNode() {
+        String json = BotWorldGraphWebServer.worldGraphJson();
+
+        assertTrue(json.contains("\"maps\":[920011200]"));
+        assertTrue(json.contains("[920010000,920011200,\"f\"]"));
+        assertTrue(json.contains("[200080101,920011200,\"n\"]"));
     }
 
     @Test

@@ -24,7 +24,10 @@ the LAN (accepted: private game-server LAN). Open `http://<server-lan-ip>:8089/`
 ### `/api/worldmaps`
 The world graph laid out over the WorldMap images: per worldmap `{id, x, y, scale, nodes[], edges}`;
 each node `{id, maps[], names[], x, y, hub, anchor, dup, danger, leaf, unreachable}`. A node may merge
-several maps (`maps[]`). Drives the map page. (See `serveWorldMaps`/`worldmapsJson` for exact fields.)
+several maps (`maps[]`). Each edge is `[mapA,mapB,type]`: `p` portal, `t` taxi/ferry, `f` WZ
+`forcedReturn`, `e` verified event entry, and `n` verified NPC event exit. The latter three are visual-only
+relationships and are not bot-planner edges. Drives the map page. (See `serveWorldMaps`/`worldmapsJson` for
+exact fields.)
 The shown set is an ARRIVAL closure (`arrivalClosure`): a map appears iff a character can get INTO it,
 not merely out of it. It grows from the real spawn (`MapId.MUSHROOM_TOWN`) over three arrival kinds —
 the ordinary travel edges (portals, taxis, ferries, every quest gate open, so the Temple of Time corridor

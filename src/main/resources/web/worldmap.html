@@ -124,6 +124,9 @@
     <div style="margin-top:3px"><span style="background:#6b7a99;border:2px solid #c08bff"></span>hub (town others return to)
          <span style="background:#3a4658;border:2px solid #ff5555;margin-left:8px"></span>unreturnable &#9888;</div>
     <div style="margin-top:3px"><span style="background:#23262e;border:2px dashed #7a8290"></span>unreachable by bot &#8856;</div>
+    <div style="margin-top:3px;color:#8a99b3"><span style="width:16px;height:2px;border-radius:0;background:#3a4761"></span>portal
+         <span style="width:16px;height:2px;border-radius:0;background:#d69b52;margin-left:8px"></span>forced return
+         <span style="width:16px;height:2px;border-radius:0;background:#c08bff;margin-left:8px"></span>event/NPC</div>
   </div>
   <div id="detail"></div>
 </div>
@@ -141,7 +144,7 @@ const SMALL = matchMedia('(max-width: 820px)').matches || 'ontouchstart' in wind
 Konva.pixelRatio = SMALL ? 1 : Math.min(window.devicePixelRatio || 1, 2);
 const stage = new Konva.Stage({container:'c', width:host.clientWidth, height:host.clientHeight, draggable:true});
 const imageLayer = new Konva.Layer();   // worldmap PNGs (draggable, resizable)
-const edgeLayer  = new Konva.Layer({listening:false}); // portal/taxi links, over the maps, under the dots
+const edgeLayer  = new Konva.Layer({listening:false}); // visual travel/event links, over maps, under dots
 const dotLayer   = new Konva.Layer();   // map nodes, constant screen size
 stage.add(imageLayer); stage.add(edgeLayer); stage.add(dotLayer);
 const tr = new Konva.Transformer({keepRatio:true, rotateEnabled:false, anchorStroke:'#c08bff', borderStroke:'#c08bff'});
@@ -788,9 +791,16 @@ function mapHitsHtml(hits){
     });
   });
 
+  const edgeStyle = t => {
+    if(t === 't') return {stroke:'#6cc6ff', width:1.2, dash:[]};
+    if(t === 'f') return {stroke:'#d69b52', width:1.1, dash:[6,3]};
+    if(t === 'e' || t === 'n') return {stroke:'#c08bff', width:1.1, dash:[2,3]};
+    return {stroke:'#3a4761', width:0.7, dash:[]};
+  };
   const addLine = (ia, ib, t) => {
-    const line = new Konva.Line({points:[0,0,0,0], stroke: t==='t' ? '#6cc6ff' : '#3a4761',
-                                 strokeWidth: t==='t' ? 1.2 : 0.7, opacity:0.8,
+    const st = edgeStyle(t);
+    const line = new Konva.Line({points:[0,0,0,0], stroke: st.stroke,
+                                 strokeWidth: st.width, dash: st.dash, opacity:0.8,
                                  listening:false, perfectDrawEnabled:false, shadowForStrokeEnabled:false});
     edgeLayer.add(line);
     const el = {ia, ib, line}; edgeLines.push(el);

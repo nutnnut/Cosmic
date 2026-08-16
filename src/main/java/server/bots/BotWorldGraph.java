@@ -708,6 +708,11 @@ final class BotWorldGraph {
      *  map nothing can ever get into. */
     record EventEntrance(String eventScript, int npcId, int lobbyMap, int entryMap) {}
 
+    /** A verified NPC-mediated exit from an event instance. Kept separate from the travel graph: these
+     * rows describe the world-map view only, because the NPC interaction needs the live party/event
+     * context and is not a route the bot planner may freely synthesize. */
+    record EventExit(String eventScript, int npcId, int fromMap, int toMap) {}
+
     /** PQ/event instance entries, each verified three ways: {@code scripts/event/<eventScript>.js} declares
      *  {@code var entryMap = <entryMap>}, {@code scripts/npc/<npcId>.js} calls
      *  {@code getEventManager("<eventScript>")}, and {@code npcId} has a {@code life} node of type "n" in
@@ -744,6 +749,12 @@ final class BotWorldGraph {
             new EventEntrance("HolidayPQ_1", 9105004, 889100000, 889100001),
             new EventEntrance("HolidayPQ_2", 9105004, 889100010, 889100011),
             new EventEntrance("HolidayPQ_3", 9105004, 889100020, 889100021));
+
+    /** Verified against scripts/event/OrbisPQ.js (exitMap/playerExit), scripts/npc/2013001.js, and the
+     * NPC life node on 920011200: Chamberlain Eak sends a party member from the PQ exit back to the
+     * Orbis PQ lobby. Do not infer additional NPC/script edges from map names or event ranges. */
+    static final List<EventExit> EVENT_EXITS = List.of(
+            new EventExit("OrbisPQ", 2013001, 920011200, 200080101));
 
     private static final Map<Integer, List<QuestGatedEntrance>> QUEST_GATED_BY_MAP = buildQuestGatedByMap();
     private static final Set<Integer> ALL_QUEST_GATE_KEYS = buildAllQuestGateKeys();
