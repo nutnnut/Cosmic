@@ -50,6 +50,20 @@ import static org.mockito.Mockito.when;
 
 class BotManagerTest {
     @Test
+    void logoutRetreatsFromMoblessNonTownDoorToZakum() {
+        MapleMap door = spy(BotNavigationMapLoader.loadMapGeometry(211042300));
+        MapleMap returnMap = mock(MapleMap.class);
+        when(returnMap.getId()).thenReturn(211000000);
+        doReturn(returnMap).when(door).getReturnMap();
+
+        assertFalse(door.isTown());
+        assertTrue(door.getAllMonsters().isEmpty());
+        assertEquals(211000000, door.getReturnMapId());
+        assertTrue(BotManager.shouldRetreatToReturnMap(door),
+                "a mobless dungeon lobby must still retreat to its return map before logout");
+    }
+
+    @Test
     @SuppressWarnings("unchecked")
     void operatorMoveCancelsPendingManagedLogout() throws Exception {
         Character bot = mock(Character.class);

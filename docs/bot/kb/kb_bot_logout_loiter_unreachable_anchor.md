@@ -30,3 +30,17 @@ picker is shared with the operator idle-at-spot path — better to fix the one o
 than reshape the shared SSOT.
 
 Related: [[kb_bot_town_nav_airborne_target]] (other town-nav stranding root causes).
+
+## Mobless non-town logout retreat
+
+The Door to Zakum (`211042300`) exposed a second logout failure mode. Its WZ data
+marks it `town=0`, gives it return map `211000000`, and defines no monster spawns.
+The old logout guard required a live monster before returning, so a bot with
+`loggingOut=true` stayed in the lobby and `pickTownLoiterAnchor` could select a
+far-right ground anchor. Multiple bots therefore converged at the map's right
+edge even though the navigation graph was healthy (`same-region`, no edge or
+fallback activity).
+
+`tickLogout` now retreats from every non-town map that has a distinct return map,
+including mobless quest lobbies, before selecting a logout loiter anchor. The
+regression is covered by `BotManagerTest.logoutRetreatsFromMoblessNonTownDoorToZakum`.

@@ -1570,8 +1570,9 @@ public class BotManager {
             return;
         }
         MapleMap map = bot.getMap();
-        // Still in a live (monster) map with a town to return to: return-scroll / warp there first.
-        if (canReturnToDifferentMap(map) && map.getAllMonsters().stream().anyMatch(Monster::isAlive)) {
+        // Still in a non-town map, or a town map with live monsters, and with a town to return to:
+        // return-scroll / warp there first.
+        if (shouldRetreatToReturnMap(map)) {
             clearMode(entry);
             entry.grindTarget = null;
             entry.degenAttackDone = false;
@@ -5446,6 +5447,12 @@ public class BotManager {
         }
         MapleMap returnMap = currentMap.getReturnMap();
         return returnMap != null && returnMap.getId() != currentMap.getId();
+    }
+
+    static boolean shouldRetreatToReturnMap(MapleMap currentMap) {
+        return canReturnToDifferentMap(currentMap)
+                && (!currentMap.isTown()
+                        || currentMap.getAllMonsters().stream().anyMatch(Monster::isAlive));
     }
 
     public boolean shouldOfferTownForAwayCommand(BotEntry entry) {
