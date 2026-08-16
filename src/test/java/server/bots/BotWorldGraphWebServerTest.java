@@ -191,15 +191,18 @@ class BotWorldGraphWebServerTest {
     }
 
     @Test
-    void worldMapJson_omitsTheUnreachableOrbisExitNode() {
+    void worldMapJson_keepsExplicitWorldMapSpotsVisibleWhenUnreachable() {
         String json = BotWorldGraphWebServer.worldGraphJson();
         BotWorldGraph.Index idx = BotWorldGraph.get();
         Map<Integer, List<Integer>> layout = BotWorldGraphWebServer.layoutAdjacency(idx,
                 Set.of(103000800, 103000801, 103000802, 103000803, 103000804,
                         922010100, 922010200, 922010300));
 
+        String unreachableAnchor = nodeJson(json, 101000400);
+        assertTrue(unreachableAnchor.contains("\"anchor\":true"));
+        assertTrue(unreachableAnchor.contains("\"unreachable\":true"));
         assertFalse(json.contains("\"maps\":[920011200]"));
-        assertFalse(json.contains("920011200"));
+        assertFalse(json.contains("[920010000,920011200,\"f\"]"));
         assertTrue(layout.getOrDefault(103000800, List.of()).contains(103000801));
         assertTrue(layout.getOrDefault(922010100, List.of()).contains(922010200));
         assertNotOrphanGrid(json, 103000800);
@@ -227,13 +230,18 @@ class BotWorldGraphWebServerTest {
     }
 
     private static void assertNotOrphanGrid(String json, int mapId) {
+        String node = nodeJson(json, mapId);
+        assertFalse(node.contains("\"y\":1200"),
+                "event node " + mapId + " must follow graph layout, not the orphan grid");
+    }
+
+    private static String nodeJson(String json, int mapId) {
         String marker = "{\"id\":" + mapId + ",\"maps\":[" + mapId + "]";
         int start = json.indexOf(marker);
         assertTrue(start >= 0, "expected world-map node for " + mapId);
         int end = json.indexOf('}', start);
         assertTrue(end > start, "malformed world-map node for " + mapId);
-        assertFalse(json.substring(start, end).contains("\"y\":1200"),
-                "event node " + mapId + " must follow graph layout, not the orphan grid");
+        return json.substring(start, end);
     }
 
     private static void assertNoOrphanGrid(String json) {

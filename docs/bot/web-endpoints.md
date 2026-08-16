@@ -28,14 +28,17 @@ several maps (`maps[]`). Each edge is `[mapA,mapB,type]`: `p` portal, `t` taxi/f
 entry, and `n` verified NPC event exit. These event/NPC edges are visual-only relationships and are not
 bot-planner edges. Forced-return recovery routes are intentionally hidden. Drives the map page. (See
 `serveWorldMaps`/`worldmapsJson` for exact fields.)
-The shown set is an ARRIVAL closure (`arrivalClosure`): a map appears iff a character can get INTO it,
-not merely out of it. It grows from the real spawn (`MapId.MUSHROOM_TOWN`) over two arrival kinds —
+The non-anchor shown set is an ARRIVAL closure (`arrivalClosure`): a map appears iff a character can get
+INTO it, not merely out of it. Explicit `WorldMap.wz` spots remain visible as authored anchors even when
+the closure cannot reach them; those nodes carry `unreachable:true`. The closure grows from the real spawn
+(`MapId.MUSHROOM_TOWN`) over two arrival kinds —
 the ordinary travel edges (portals, taxis, ferries, every quest gate open, so the Temple of Time corridor
 is not drawn sealed; a return scroll is a way out, never in), and `BotWorldGraph.EVENT_ENTRANCES` (a
 recruiting NPC in a reached lobby warps the party into a PQ's entry map; deeper stages then arrive through
 their own portals). Maps that are only connected outward, such as the Toy Factory sectors and event exit
 maps, fall out by construction — no prune, no exclusion list. Forced-return recovery routes do not admit
-nodes and are not rendered as edges. Arrival-only maps carry `unreachable:false` and are not `danger`;
+nodes and are not rendered as edges. An authored anchor can therefore be visible with `unreachable:true`,
+while arrival-reachable maps carry `unreachable:false` and arrival-only maps are not `danger`;
 `danger` still means "reachable from Lith Harbor but cannot get back". They have no worldmap spot, so they
 auto-position as non-anchor nodes.
 

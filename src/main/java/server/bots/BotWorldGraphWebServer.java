@@ -448,13 +448,12 @@ public final class BotWorldGraphWebServer {
             gi++;
             StringBuilder nodes = new StringBuilder();
             for (WorldSpot s : spots) {
-                List<Integer> visibleMaps = reachableMaps(g, s.maps());
-                if (visibleMaps.isEmpty()) {
-                    continue;
-                }
-                boolean dup = visibleMaps.stream().anyMatch(m -> ws.occur().getOrDefault(m, 1) > 1);
-                WorldMapAnchorOverride override = worldMapAnchorOverride(wm, visibleMaps);
-                appendWorldNode(nodes, g, visibleMaps,
+                // WorldMap.wz is an authored overlay, so keep every explicit spot even when the
+                // arrival closure cannot reach it.  appendWorldNode marks those anchors
+                // unreachable; filtering them here made real world-map data disappear.
+                boolean dup = s.maps().stream().anyMatch(m -> ws.occur().getOrDefault(m, 1) > 1);
+                WorldMapAnchorOverride override = worldMapAnchorOverride(wm, s.maps());
+                appendWorldNode(nodes, g, s.maps(),
                         override != null ? override.x() : s.x(),
                         override != null ? override.y() : s.y(),
                         true, dup, override != null);
@@ -470,10 +469,11 @@ public final class BotWorldGraphWebServer {
             wmsOut.add("{\"id\":\"" + wm + "\",\"x\":" + Math.round(tx) + ",\"y\":" + Math.round(ty)
                     + ",\"scale\":" + ts + ",\"nodes\":[" + nodes + "]}");
         }
-        // Raw map-id edges over every reachable source (entry maps + non-anchors) from the full portal graph.
+        // Raw map-id edges over every rendered source (reachable maps plus explicit WorldMap spots).
         // NOT collapsed by merge: the client connects, per worldmap,
         // the dot holding each endpoint, so a detail worldmap keeps edges its overview merges into one dot.
-        Set<Integer> rendered = new HashSet<>(g.reachable());
+        Set<Integer> rendered = new HashSet<>(ws.spotMaps());
+        rendered.addAll(g.reachable());
         StringBuilder es = new StringBuilder();
         for (WorldMapEdge edge : worldMapEdges(idx, rendered)) {
             if (es.length() > 0) {
@@ -592,16 +592,6 @@ public final class BotWorldGraphWebServer {
             }
         }
         return false;
-    }
-
-    private static List<Integer> reachableMaps(GraphData g, List<Integer> maps) {
-        List<Integer> visible = new ArrayList<>();
-        for (int map : maps) {
-            if (g.reachable().contains(map)) {
-                visible.add(map);
-            }
-        }
-        return visible;
     }
 
     /** Placement adjacency is the same projection used for rendered edges, excluding NPC exits because
