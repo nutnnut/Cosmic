@@ -420,9 +420,10 @@ public final class BotWorldGraphWebServer {
     static String worldGraphJson() {
         GraphData g = graphData();
         WorldSpots ws = worldMapSpots();
+        BotWorldGraph.Index idx = BotWorldGraph.get();
         Map<Integer, double[]> naLocal = new HashMap<>(); // non-anchor map -> image-local pos
         Map<Integer, String> naWm = new HashMap<>();       // non-anchor map -> owning worldmap
-        worldMapLayout(g, ws, naLocal, naWm);
+        worldMapLayout(g, ws, layoutAdjacency(g), naLocal, naWm);
 
         Map<String, List<Integer>> naByWm = new HashMap<>();
         for (Map.Entry<Integer, String> e : naWm.entrySet()) {
@@ -447,9 +448,13 @@ public final class BotWorldGraphWebServer {
             gi++;
             StringBuilder nodes = new StringBuilder();
             for (WorldSpot s : spots) {
-                boolean dup = ws.occur().getOrDefault(s.maps().get(0), 1) > 1;
-                WorldMapAnchorOverride override = worldMapAnchorOverride(wm, s.maps());
-                appendWorldNode(nodes, g, s.maps(),
+                List<Integer> visibleMaps = reachableMaps(g, s.maps());
+                if (visibleMaps.isEmpty()) {
+                    continue;
+                }
+                boolean dup = visibleMaps.stream().anyMatch(m -> ws.occur().getOrDefault(m, 1) > 1);
+                WorldMapAnchorOverride override = worldMapAnchorOverride(wm, visibleMaps);
+                appendWorldNode(nodes, g, visibleMaps,
                         override != null ? override.x() : s.x(),
                         override != null ? override.y() : s.y(),
                         true, dup, override != null);
@@ -465,12 +470,10 @@ public final class BotWorldGraphWebServer {
             wmsOut.add("{\"id\":\"" + wm + "\",\"x\":" + Math.round(tx) + ",\"y\":" + Math.round(ty)
                     + ",\"scale\":" + ts + ",\"nodes\":[" + nodes + "]}");
         }
-        // Raw map-id edges over every source (entry maps + non-anchors) from the full portal graph —
-        // including unreachable worldmap spots. NOT collapsed by merge: the client connects, per worldmap,
+        // Raw map-id edges over every reachable source (entry maps + non-anchors) from the full portal graph.
+        // NOT collapsed by merge: the client connects, per worldmap,
         // the dot holding each endpoint, so a detail worldmap keeps edges its overview merges into one dot.
-        BotWorldGraph.Index idx = BotWorldGraph.get();
-        Set<Integer> rendered = new HashSet<>(ws.spotMaps());
-        rendered.addAll(naLocal.keySet());
+        Set<Integer> rendered = new HashSet<>(g.reachable());
         StringBuilder es = new StringBuilder();
         for (WorldMapEdge edge : worldMapEdges(idx, rendered)) {
             if (es.length() > 0) {
@@ -485,8 +488,9 @@ public final class BotWorldGraphWebServer {
     record WorldMapEdge(int mapA, int mapB, char type) {}
 
     /** The visual transition projection. Its special edges deliberately do not enter BotWorldGraph's
-     * planner: the world map needs to show where a character can arrive or be carried by a verified
-     * event/NPC script, while bot routing must still obey its own legal route edges. */
+     * planner: the world map may show a verified event/NPC hand-off between nodes that are already
+     * visible, while bot routing must still obey its own legal route edges. Forced returns are recovery
+     * routes rather than world-map transitions and are intentionally hidden. */
     static List<WorldMapEdge> worldMapEdges(BotWorldGraph.Index idx, Set<Integer> rendered) {
         Set<Long> seen = new HashSet<>();
         List<WorldMapEdge> out = new ArrayList<>();
@@ -502,9 +506,6 @@ public final class BotWorldGraphWebServer {
             for (BotFerryManager.FerryRoute f : BotFerryManager.routesBoardingAt(a)) {
                 collectWorldEdge(out, a, f.destinationMapId(), 't', rendered, seen);
             }
-        }
-        for (int a : rendered) {                           // WZ forced-return arrivals (type f)
-            collectWorldEdge(out, a, idx.forcedReturn(a), 'f', rendered, seen);
         }
         for (BotWorldGraph.EventEntrance e : BotWorldGraph.EVENT_ENTRANCES) { // verified PQ entry (type e)
             collectWorldEdge(out, e.lobbyMap(), e.entryMap(), 'e', rendered, seen);
@@ -593,13 +594,55 @@ public final class BotWorldGraphWebServer {
         return false;
     }
 
+    private static List<Integer> reachableMaps(GraphData g, List<Integer> maps) {
+        List<Integer> visible = new ArrayList<>();
+        for (int map : maps) {
+            if (g.reachable().contains(map)) {
+                visible.add(map);
+            }
+        }
+        return visible;
+    }
+
+    /** Placement adjacency is the travel graph plus authored event entries. It deliberately excludes
+     *  forcedReturn recovery routes and event exits: neither one proves that a map can be entered. */
+    static Map<Integer, List<Integer>> layoutAdjacency(GraphData g) {
+        Map<Integer, List<Integer>> out = new HashMap<>();
+        for (Map.Entry<Integer, List<Integer>> e : g.adj().entrySet()) {
+            out.put(e.getKey(), new ArrayList<>(e.getValue()));
+        }
+        for (BotWorldGraph.EventEntrance e : BotWorldGraph.EVENT_ENTRANCES) {
+            if (!g.reachable().contains(e.lobbyMap()) || !g.reachable().contains(e.entryMap())) {
+                continue;
+            }
+            addLayoutEdge(out, e.lobbyMap(), e.entryMap());
+        }
+        for (List<Integer> neighbors : out.values()) {
+            Collections.sort(neighbors);
+        }
+        return out;
+    }
+
+    private static void addLayoutEdge(Map<Integer, List<Integer>> adjacency, int a, int b) {
+        List<Integer> from = adjacency.computeIfAbsent(a, k -> new ArrayList<>());
+        if (!from.contains(b)) {
+            from.add(b);
+        }
+        List<Integer> to = adjacency.computeIfAbsent(b, k -> new ArrayList<>());
+        if (!to.contains(a)) {
+            to.add(a);
+        }
+    }
+
     /**
      * Multi-source BFS in each worldmap's local pixel space: every non-anchor (reachable map that is not
      * a worldmap spot) is grown {@link #EDGE_LEN} out from its nearest spot — so dungeon chains trail off
-     * their town — and assigned to that spot's worldmap so it rides along on drag. Leaves tuck under their
-     * parent via {@link #childSlot}. Maps no spot can reach stack below the first worldmap.
+     * their town — and assigned to that spot's worldmap so it rides along on drag. Event-entry links are
+     * included for placement, but recovery routes and event exits never create a layout root. Maps no spot
+     * can reach stack below the first worldmap.
      */
     private static void worldMapLayout(GraphData g, WorldSpots ws,
+                                       Map<Integer, List<Integer>> layoutAdj,
                                        Map<Integer, double[]> naLocal, Map<Integer, String> naWm) {
         List<String> wmIds = ws.wmIds();
         Map<String, double[]> centroid = new HashMap<>(); // worldmap spot centroid -> outward direction
@@ -616,7 +659,8 @@ public final class BotWorldGraphWebServer {
             }
             centroid.put(wm, new double[]{sx / sp.size(), sy / sp.size()});
         }
-        Set<Integer> spots = ws.spotMaps(); // every map id that belongs to a worldmap entry
+        Set<Integer> spots = new HashSet<>(ws.spotMaps()); // only visible map ids are layout anchors
+        spots.retainAll(g.reachable());
         ArrayDeque<double[]> q = new ArrayDeque<>(); // {map, wmIdx, lx, ly, inAngle, sector}
         for (int wi = 0; wi < wmIds.size(); wi++) {
             List<WorldSpot> sp = ws.byWm().get(wmIds.get(wi));
@@ -630,6 +674,9 @@ public final class BotWorldGraphWebServer {
                     ang = -Math.PI / 2;
                 }
                 for (int m : s.maps()) {
+                    if (!g.reachable().contains(m)) {
+                        continue;
+                    }
                     q.add(new double[]{m, wi, s.x(), s.y(), ang, Math.PI}); // root fans a half-circle outward
                 }
             }
@@ -644,7 +691,7 @@ public final class BotWorldGraphWebServer {
             double inAngle = cur[4];
             double sector = cur[5];
             List<Integer> kids = new ArrayList<>();
-            for (int b : g.adj().getOrDefault(n, List.of())) {
+            for (int b : layoutAdj.getOrDefault(n, List.of())) {
                 if (!spots.contains(b) && !naLocal.containsKey(b)) {
                     kids.add(b);
                 }
@@ -1950,8 +1997,8 @@ public final class BotWorldGraphWebServer {
         // BotWorldGraph's own flood).
         Set<Integer> spawnReachable = BotWorldGraph.reachableWithin(START_MAP, 1000, worldViewOptions(false));
         // ...plus everywhere else a character can ARRIVE (see arrivalClosure): the PQ interiors a script
-        // warps you into and the maps a forcedReturn dumps you onto. Shown = "you can get in", not "you
-        // can get out" — a map you could only ever leave is a map nobody is ever in.
+        // warps you into. Shown = "you can get in", not "you can get out" — a map you could only ever
+        // leave, or only reach through a recovery route, is not a world-map node.
         Set<Integer> reachable = arrivalClosure(idx, spawnReachable);
         Set<Long> seen = new HashSet<>();
         List<int[]> edges = new ArrayList<>();
@@ -2015,21 +2062,19 @@ public final class BotWorldGraphWebServer {
     /**
      * Every map a character can ARRIVE in, grown from {@code roots} to a fixpoint. Shown means "you can
      * get IN", which is what makes a dot worth drawing: a map you could only ever leave is a map nobody
-     * is ever standing in. Three arrival kinds, all authored data rather than inference:
+     * is ever standing in. The two arrival kinds are authored data rather than inference:
      *
      * <ul>
      *   <li>the ordinary travel edges ({@link BotWorldGraph#weightedNeighbors}: portals, taxis, ferries,
      *       every quest gate open, scroll OFF — a scroll is a way OUT, never a way in);
-     *   <li>{@code info/forcedReturn}: standing in a reached map, a relog or an instance teardown dumps
-     *       you on its forcedReturn target. This is how the Room of Tragedy is arrivable — the Zakum maze
-     *       maps point at it and nothing walks there;
      *   <li>{@link BotWorldGraph#EVENT_ENTRANCES}: the recruiting NPC in a reached lobby warps the party
      *       into the instance's entry map. Deeper stages then arrive through their own portals.
      * </ul>
      *
-     * <p>Maps that are merely connected outward — the Toy Factory sectors and the rest of the event-map
-     * long tail, which can scroll to a town but that nothing and nobody can enter — fall out by
-     * construction, with no prune and no hardcoded exclusion list.
+     * <p>Maps that are merely connected outward — the Toy Factory sectors and event exit maps, which can
+     * leave to a shown map but that nothing enters — fall out by construction, with no prune and no
+     * hardcoded exclusion list. A forcedReturn is deliberately not an admission edge: it is a recovery
+     * route for a character already in an exceptional state.
      */
     static Set<Integer> arrivalClosure(BotWorldGraph.Index idx, Set<Integer> roots) {
         Set<Integer> reached = new HashSet<>(roots);
@@ -2043,7 +2088,6 @@ public final class BotWorldGraphWebServer {
             for (BotWorldGraph.WeightedEdge e : BotWorldGraph.weightedNeighbors(idx, m, worldViewOptions(false), 0.0)) {
                 arrive(e.toMapId(), reached, frontier);
             }
-            arrive(idx.forcedReturn(m), reached, frontier);
             for (int entry : entriesByLobby.getOrDefault(m, List.of())) {
                 arrive(entry, reached, frontier);
             }

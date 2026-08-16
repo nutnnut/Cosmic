@@ -125,7 +125,6 @@
          <span style="background:#3a4658;border:2px solid #ff5555;margin-left:8px"></span>unreturnable &#9888;</div>
     <div style="margin-top:3px"><span style="background:#23262e;border:2px dashed #7a8290"></span>unreachable by bot &#8856;</div>
     <div style="margin-top:3px;color:#8a99b3"><span style="width:16px;height:2px;border-radius:0;background:#3a4761"></span>portal
-         <span style="width:16px;height:2px;border-radius:0;background:#d69b52;margin-left:8px"></span>forced return
          <span style="width:16px;height:2px;border-radius:0;background:#c08bff;margin-left:8px"></span>event/NPC</div>
   </div>
   <div id="detail"></div>
@@ -793,7 +792,6 @@ function mapHitsHtml(hits){
 
   const edgeStyle = t => {
     if(t === 't') return {stroke:'#6cc6ff', width:1.2, dash:[]};
-    if(t === 'f') return {stroke:'#d69b52', width:1.1, dash:[6,3]};
     if(t === 'e' || t === 'n') return {stroke:'#c08bff', width:1.1, dash:[2,3]};
     return {stroke:'#3a4761', width:0.7, dash:[]};
   };

@@ -24,20 +24,20 @@ the LAN (accepted: private game-server LAN). Open `http://<server-lan-ip>:8089/`
 ### `/api/worldmaps`
 The world graph laid out over the WorldMap images: per worldmap `{id, x, y, scale, nodes[], edges}`;
 each node `{id, maps[], names[], x, y, hub, anchor, dup, danger, leaf, unreachable}`. A node may merge
-several maps (`maps[]`). Each edge is `[mapA,mapB,type]`: `p` portal, `t` taxi/ferry, `f` WZ
-`forcedReturn`, `e` verified event entry, and `n` verified NPC event exit. The latter three are visual-only
-relationships and are not bot-planner edges. Drives the map page. (See `serveWorldMaps`/`worldmapsJson` for
-exact fields.)
+several maps (`maps[]`). Each edge is `[mapA,mapB,type]`: `p` portal, `t` taxi/ferry, `e` verified event
+entry, and `n` verified NPC event exit. These event/NPC edges are visual-only relationships and are not
+bot-planner edges. Forced-return recovery routes are intentionally hidden. Drives the map page. (See
+`serveWorldMaps`/`worldmapsJson` for exact fields.)
 The shown set is an ARRIVAL closure (`arrivalClosure`): a map appears iff a character can get INTO it,
-not merely out of it. It grows from the real spawn (`MapId.MUSHROOM_TOWN`) over three arrival kinds —
+not merely out of it. It grows from the real spawn (`MapId.MUSHROOM_TOWN`) over two arrival kinds —
 the ordinary travel edges (portals, taxis, ferries, every quest gate open, so the Temple of Time corridor
-is not drawn sealed; a return scroll is a way out, never in), `info/forcedReturn` (a relog or instance
-teardown dumps you on a reached map's forcedReturn target — this is how the Room of Tragedy is arrivable),
-and `BotWorldGraph.EVENT_ENTRANCES` (a recruiting NPC in a reached lobby warps the party into a PQ's entry
-map; deeper stages then arrive through their own portals). Maps that are only connected outward, such as
-the Toy Factory sectors, fall out by construction — no prune, no exclusion list. Arrival-only maps carry
-`unreachable:false` and are not `danger`; `danger` still means "reachable from Lith Harbor but cannot get
-back". They have no worldmap spot, so they auto-position as non-anchor nodes.
+is not drawn sealed; a return scroll is a way out, never in), and `BotWorldGraph.EVENT_ENTRANCES` (a
+recruiting NPC in a reached lobby warps the party into a PQ's entry map; deeper stages then arrive through
+their own portals). Maps that are only connected outward, such as the Toy Factory sectors and event exit
+maps, fall out by construction — no prune, no exclusion list. Forced-return recovery routes do not admit
+nodes and are not rendered as edges. Arrival-only maps carry `unreachable:false` and are not `danger`;
+`danger` still means "reachable from Lith Harbor but cannot get back". They have no worldmap spot, so they
+auto-position as non-anchor nodes.
 
 ### `/api/live`
 Live occupancy of every online character, bucketed by map. Cached ~750 ms.

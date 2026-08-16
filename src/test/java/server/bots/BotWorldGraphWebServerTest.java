@@ -63,12 +63,13 @@ class BotWorldGraphWebServerTest {
     }
 
     /** Arrival semantics end to end on a Zakum-shaped world. The maze (280010000) is arrivable ONLY
-     *  because Adobis in the Door to Zakum lobby warps a party in; the Room of Tragedy (280090000) only
-     *  because the maze maps' forcedReturn dumps you there; 280011000 by its own portal off the maze.
-     *  A map that can only be LEFT (922000000, a Toy Factory sector that scrolls to a town but that
-     *  nothing enters) is excluded by construction — no prune, no exclusion list. */
+     *  because Adobis in the Door to Zakum lobby warps a party in; 280011000 by its own portal off the
+     *  maze. The Room of Tragedy (280090000) is deliberately excluded: forcedReturn is a recovery route,
+     *  not proof that a character can enter the map during normal world travel. A map that can only be
+     *  LEFT (922000000, a Toy Factory sector that scrolls to a town but that nothing enters) is excluded
+     *  by construction — no prune, no exclusion list. */
     @Test
-    void arrivalClosure_admitsScriptEntriesAndForcedReturnDumpsButNotLeaveOnlyMaps() {
+    void arrivalClosure_admitsScriptEntriesButNotRecoveryOrLeaveOnlyMaps() {
         BotWorldGraph.Index idx = BotWorldGraph.indexOf(
                 Map.of(211042300, new int[0],              // Door to Zakum: the spawn-reachable lobby
                         280010000, new int[]{280011000},   // maze entry: only EVENT_ENTRANCES reaches it
@@ -76,11 +77,11 @@ class BotWorldGraphWebServerTest {
                         280090000, new int[0],             // Room of Tragedy: only a forcedReturn lands here
                         922000000, new int[0]),          // leave-only: scrolls out, nothing comes in
                 Map.of(280010000, 280090000, 922000000, 211042300),   // scroll targets (ways OUT)
-                Map.of(280010000, 280090000, 280011000, 280090000));  // forcedReturn dumps (ways IN)
+                Map.of(280010000, 280090000, 280011000, 280090000));  // recovery routes, not entries
 
         Set<Integer> shown = BotWorldGraphWebServer.arrivalClosure(idx, Set.of(211042300));
 
-        assertEquals(Set.of(211042300, 280010000, 280011000, 280090000), shown);
+        assertEquals(Set.of(211042300, 280010000, 280011000), shown);
     }
 
     /** The Zakum row is the one the whole arrival model was built for, so pin it against the script the
@@ -113,9 +114,8 @@ class BotWorldGraphWebServerTest {
         assertEquals(Set.of(555000000), shown);
     }
 
-    /** The Orbis exit is admitted by forcedReturn, entered by the Orbis event, and left by the verified
-     * Chamberlain Eak script. Those are visual relationships only; they must not be mistaken for bot route
-     * edges, but they must keep an actually reachable NPC/event map from rendering as an orphan. */
+    /** Event entry/exit rows are visual relationships only; they must not be mistaken for bot route edges.
+     *  A forcedReturn is neither a rendered edge nor an admission path. */
     @Test
     void worldMapEdges_renderVerifiedOrbisNpcAndEventRelationships() {
         BotWorldGraph.Index idx = BotWorldGraph.indexOf(
@@ -125,9 +125,34 @@ class BotWorldGraphWebServerTest {
                 idx, Set.of(200080101, 920010000, 920011200));
 
         assertTrue(edges.contains(new BotWorldGraphWebServer.WorldMapEdge(200080101, 920010000, 'e')));
-        assertTrue(edges.contains(new BotWorldGraphWebServer.WorldMapEdge(920010000, 920011200, 'f')));
         assertTrue(edges.contains(new BotWorldGraphWebServer.WorldMapEdge(200080101, 920011200, 'n')));
+        assertFalse(edges.contains(new BotWorldGraphWebServer.WorldMapEdge(920010000, 920011200, 'f')));
         assertFalse(edges.contains(new BotWorldGraphWebServer.WorldMapEdge(200080101, 920010000, 'n')));
+    }
+
+    @Test
+    void arrivalClosure_doesNotAdmitAnEventExitOnlyMap() {
+        BotWorldGraph.Index idx = BotWorldGraph.indexOf(
+                Map.of(200080101, new int[0], 920010000, new int[0], 920011200, new int[0]),
+                Map.of(), Map.of(920010000, 920011200));
+
+        Set<Integer> shown = BotWorldGraphWebServer.arrivalClosure(idx, Set.of(200080101));
+
+        assertTrue(shown.contains(920010000)); // verified Orbis event entry
+        assertFalse(shown.contains(920011200)); // verified NPC exit, not an entry
+    }
+
+    @Test
+    void layoutAdjacency_usesEventEntriesButNotEventExitsOrForcedReturns() {
+        Set<Integer> reachable = Set.of(200080101, 920010000, 920011200);
+        BotWorldGraphWebServer.GraphData g = new BotWorldGraphWebServer.GraphData(
+                reachable, List.of(), Map.of(), Set.of(), Set.of(), Map.of(), Map.of(), Map.of());
+
+        Map<Integer, List<Integer>> adjacency = BotWorldGraphWebServer.layoutAdjacency(g);
+
+        assertEquals(List.of(920010000), adjacency.get(200080101));
+        assertEquals(List.of(200080101), adjacency.get(920010000));
+        assertFalse(adjacency.containsKey(920011200));
     }
 
     @Test
@@ -153,22 +178,21 @@ class BotWorldGraphWebServerTest {
     }
 
     @Test
-    void worldMapEdges_useTheRealOrbisForcedReturnData() {
+    void worldMapEdges_hidesTheRealOrbisForcedReturnData() {
         BotWorldGraph.Index idx = BotWorldGraph.get();
 
         assertEquals(920011200, idx.forcedReturn(920010000));
-        assertTrue(BotWorldGraphWebServer.worldMapEdges(
+        assertFalse(BotWorldGraphWebServer.worldMapEdges(
                 idx, Set.of(200080101, 920010000, 920011200))
                 .contains(new BotWorldGraphWebServer.WorldMapEdge(920010000, 920011200, 'f')));
     }
 
     @Test
-    void worldMapJson_connectsTheRealOrbisExitNode() {
+    void worldMapJson_omitsTheUnreachableOrbisExitNode() {
         String json = BotWorldGraphWebServer.worldGraphJson();
 
-        assertTrue(json.contains("\"maps\":[920011200]"));
-        assertTrue(json.contains("[920010000,920011200,\"f\"]"));
-        assertTrue(json.contains("[200080101,920011200,\"n\"]"));
+        assertFalse(json.contains("\"maps\":[920011200]"));
+        assertFalse(json.contains("920011200"));
     }
 
     @Test
