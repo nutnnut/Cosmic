@@ -12,6 +12,8 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -204,6 +206,7 @@ class BotWorldGraphWebServerTest {
         assertNotOrphanGrid(json, 103000801);
         assertNotOrphanGrid(json, 103000804);
         assertNotOrphanGrid(json, 922010200);
+        assertNoOrphanGrid(json);
     }
 
     @Test
@@ -231,6 +234,19 @@ class BotWorldGraphWebServerTest {
         assertTrue(end > start, "malformed world-map node for " + mapId);
         assertFalse(json.substring(start, end).contains("\"y\":1200"),
                 "event node " + mapId + " must follow graph layout, not the orphan grid");
+    }
+
+    private static void assertNoOrphanGrid(String json) {
+        Pattern node = Pattern.compile("\\{\\\"id\\\":(\\d+),\\\"maps\\\":\\[[^]]*\\],\\\"names\\\":\\[[^]]*\\],"
+                + "\\\"x\\\":(-?\\d+),\\\"y\\\":(-?\\d+),\\\"anchor\\\":false[^}]*}");
+        Matcher matcher = node.matcher(json);
+        while (matcher.find()) {
+            int x = Integer.parseInt(matcher.group(2));
+            int y = Integer.parseInt(matcher.group(3));
+            boolean fallbackGrid = x >= 0 && x <= 760 && x % 40 == 0
+                    && y >= 1200 && (y - 1200) % 40 == 0;
+            assertFalse(fallbackGrid, "node " + matcher.group(1) + " must not use the orphan grid");
+        }
     }
 
 }
