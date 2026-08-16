@@ -423,7 +423,7 @@ public final class BotWorldGraphWebServer {
         BotWorldGraph.Index idx = BotWorldGraph.get();
         Map<Integer, double[]> naLocal = new HashMap<>(); // non-anchor map -> image-local pos
         Map<Integer, String> naWm = new HashMap<>();       // non-anchor map -> owning worldmap
-        worldMapLayout(g, ws, layoutAdjacency(g), naLocal, naWm);
+        worldMapLayout(g, ws, layoutAdjacency(idx, g.reachable()), naLocal, naWm);
 
         Map<String, List<Integer>> naByWm = new HashMap<>();
         for (Map.Entry<Integer, String> e : naWm.entrySet()) {
@@ -604,18 +604,16 @@ public final class BotWorldGraphWebServer {
         return visible;
     }
 
-    /** Placement adjacency is the travel graph plus authored event entries. It deliberately excludes
-     *  forcedReturn recovery routes and event exits: neither one proves that a map can be entered. */
-    static Map<Integer, List<Integer>> layoutAdjacency(GraphData g) {
+    /** Placement adjacency is the same projection used for rendered edges, excluding NPC exits because
+     *  an exit cannot admit a node. Keeping this derived from {@link #worldMapEdges} prevents a visible
+     *  edge from disagreeing with the layout's connectivity and sending its endpoint to the orphan grid. */
+    static Map<Integer, List<Integer>> layoutAdjacency(BotWorldGraph.Index idx, Set<Integer> rendered) {
         Map<Integer, List<Integer>> out = new HashMap<>();
-        for (Map.Entry<Integer, List<Integer>> e : g.adj().entrySet()) {
-            out.put(e.getKey(), new ArrayList<>(e.getValue()));
-        }
-        for (BotWorldGraph.EventEntrance e : BotWorldGraph.EVENT_ENTRANCES) {
-            if (!g.reachable().contains(e.lobbyMap()) || !g.reachable().contains(e.entryMap())) {
+        for (WorldMapEdge edge : worldMapEdges(idx, rendered)) {
+            if (edge.type() == 'n') {
                 continue;
             }
-            addLayoutEdge(out, e.lobbyMap(), e.entryMap());
+            addLayoutEdge(out, edge.mapA(), edge.mapB());
         }
         for (List<Integer> neighbors : out.values()) {
             Collections.sort(neighbors);
@@ -659,8 +657,7 @@ public final class BotWorldGraphWebServer {
             }
             centroid.put(wm, new double[]{sx / sp.size(), sy / sp.size()});
         }
-        Set<Integer> spots = new HashSet<>(ws.spotMaps()); // only visible map ids are layout anchors
-        spots.retainAll(g.reachable());
+        Set<Integer> anchorMaps = new HashSet<>(); // only reachable WZ spots actually seeded below
         ArrayDeque<double[]> q = new ArrayDeque<>(); // {map, wmIdx, lx, ly, inAngle, sector}
         for (int wi = 0; wi < wmIds.size(); wi++) {
             List<WorldSpot> sp = ws.byWm().get(wmIds.get(wi));
@@ -677,6 +674,7 @@ public final class BotWorldGraphWebServer {
                     if (!g.reachable().contains(m)) {
                         continue;
                     }
+                    anchorMaps.add(m);
                     q.add(new double[]{m, wi, s.x(), s.y(), ang, Math.PI}); // root fans a half-circle outward
                 }
             }
@@ -692,7 +690,7 @@ public final class BotWorldGraphWebServer {
             double sector = cur[5];
             List<Integer> kids = new ArrayList<>();
             for (int b : layoutAdj.getOrDefault(n, List.of())) {
-                if (!spots.contains(b) && !naLocal.containsKey(b)) {
+                if (!anchorMaps.contains(b) && !naLocal.containsKey(b)) {
                     kids.add(b);
                 }
             }
@@ -709,7 +707,14 @@ public final class BotWorldGraphWebServer {
                 if (naLocal.containsKey(c)) {
                     continue; // claimed by a sibling already placed this pop
                 }
-                if (g.leaves().contains(c)) {
+                boolean hasLayoutChildren = false;
+                for (int child : layoutAdj.getOrDefault(c, List.of())) {
+                    if (!anchorMaps.contains(child) && !naLocal.containsKey(child)) {
+                        hasLayoutChildren = true;
+                        break;
+                    }
+                }
+                if (g.leaves().contains(c) && !hasLayoutChildren) {
                     double[] cp = childSlot(new double[]{lx, ly}, leafCount.merge(n, 1, Integer::sum) - 1);
                     naLocal.put(c, cp);
                     naWm.put(c, wm);
@@ -726,7 +731,7 @@ public final class BotWorldGraphWebServer {
             String wm0 = wmIds.get(0);
             List<Integer> orphans = new ArrayList<>();
             for (int m : g.reachable()) {
-                if (!spots.contains(m) && !naLocal.containsKey(m)) {
+                if (!anchorMaps.contains(m) && !naLocal.containsKey(m)) {
                     orphans.add(m);
                 }
             }

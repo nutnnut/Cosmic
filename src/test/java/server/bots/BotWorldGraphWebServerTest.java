@@ -143,12 +143,13 @@ class BotWorldGraphWebServerTest {
     }
 
     @Test
-    void layoutAdjacency_usesEventEntriesButNotEventExitsOrForcedReturns() {
+    void layoutAdjacency_matchesRenderedEdgesButNotEventExitsOrForcedReturns() {
         Set<Integer> reachable = Set.of(200080101, 920010000, 920011200);
-        BotWorldGraphWebServer.GraphData g = new BotWorldGraphWebServer.GraphData(
-                reachable, List.of(), Map.of(), Set.of(), Set.of(), Map.of(), Map.of(), Map.of());
+        BotWorldGraph.Index idx = BotWorldGraph.indexOf(
+                Map.of(200080101, new int[]{920010000}, 920010000, new int[0], 920011200, new int[0]),
+                Map.of(), Map.of(920010000, 920011200));
 
-        Map<Integer, List<Integer>> adjacency = BotWorldGraphWebServer.layoutAdjacency(g);
+        Map<Integer, List<Integer>> adjacency = BotWorldGraphWebServer.layoutAdjacency(idx, reachable);
 
         assertEquals(List.of(920010000), adjacency.get(200080101));
         assertEquals(List.of(200080101), adjacency.get(920010000));
@@ -190,9 +191,19 @@ class BotWorldGraphWebServerTest {
     @Test
     void worldMapJson_omitsTheUnreachableOrbisExitNode() {
         String json = BotWorldGraphWebServer.worldGraphJson();
+        BotWorldGraph.Index idx = BotWorldGraph.get();
+        Map<Integer, List<Integer>> layout = BotWorldGraphWebServer.layoutAdjacency(idx,
+                Set.of(103000800, 103000801, 103000802, 103000803, 103000804,
+                        922010100, 922010200, 922010300));
 
         assertFalse(json.contains("\"maps\":[920011200]"));
         assertFalse(json.contains("920011200"));
+        assertTrue(layout.getOrDefault(103000800, List.of()).contains(103000801));
+        assertTrue(layout.getOrDefault(922010100, List.of()).contains(922010200));
+        assertNotOrphanGrid(json, 103000800);
+        assertNotOrphanGrid(json, 103000801);
+        assertNotOrphanGrid(json, 103000804);
+        assertNotOrphanGrid(json, 922010200);
     }
 
     @Test
@@ -211,4 +222,15 @@ class BotWorldGraphWebServerTest {
         when(chr.getClient()).thenReturn(bot ? mock(BotClient.class) : mock(Client.class));
         return chr;
     }
+
+    private static void assertNotOrphanGrid(String json, int mapId) {
+        String marker = "{\"id\":" + mapId + ",\"maps\":[" + mapId + "]";
+        int start = json.indexOf(marker);
+        assertTrue(start >= 0, "expected world-map node for " + mapId);
+        int end = json.indexOf('}', start);
+        assertTrue(end > start, "malformed world-map node for " + mapId);
+        assertFalse(json.substring(start, end).contains("\"y\":1200"),
+                "event node " + mapId + " must follow graph layout, not the orphan grid");
+    }
+
 }
