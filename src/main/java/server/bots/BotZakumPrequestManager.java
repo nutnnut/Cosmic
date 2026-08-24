@@ -7,13 +7,12 @@ package server.bots;
 import client.Character;
 import client.inventory.InventoryType;
 import client.inventory.manipulator.InventoryManipulator;
-import constants.id.NpcId;
 import net.server.world.Party;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import scripting.event.EventManager;
-import server.quest.Quest;
 import server.quest.actions.ExpAction;
+import server.quest.ZakumPrequest;
 
 import java.util.List;
 
@@ -56,7 +55,7 @@ import java.util.List;
  *
  * <p><b>Opt-in / stagger.</b> Arms once the bot reaches its personal
  * {@link BotPersonality#zakumAmbitionLevel} (stable per-bot roll in [70,120]); quest ids 100200/100201
- * have no WZ data — {@link Quest#getInstance} synthesizes empty quests and
+ * have no WZ data — {@link server.quest.Quest#getInstance} synthesizes empty quests and
  * forceStart/forceComplete work exactly as the NPC scripts' {@code cm.startQuest}/{@code completeQuest}
  * do (same calls, same NpcId.MAPLE_ADMINISTRATOR attribution).
  */
@@ -75,8 +74,7 @@ final class BotZakumPrequestManager {
 
     // ---- ids (verified against scripts, wz/Map.wz placements and the live reactordrops/drop_data) --
 
-    static final int Q_APPROVAL = 100200;      // custom quest: council approval (started, never completed)
-    static final int Q_TRIALS = 100201;        // custom quest: the trials (completed by stage 3)
+    // Custom quests: council approval (started, never completed) and the trials (completed by stage 3).
 
     private static final int CHIEF_MAP = 211000001;        // El Nath - Chief's Residence (all 5 chiefs)
     static final int DOOR_MAP = 211042300;                 // El Nath - The Door to Zakum
@@ -93,7 +91,7 @@ final class BotZakumPrequestManager {
     static final int ITEM_BREATH_FIRE = 4031061;  // Breath of Fire (stage-1 reward)
     static final int ITEM_BREATH_LAVA = 4031062;  // Breath of Lava (stage-2 reward)
     static final int ITEM_GOLD_TOOTH = 4000082;   // Zombie's Lost Gold Tooth (30 needed)
-    static final int ITEM_EYE_OF_FIRE = 4001017;  // altar entry ticket (5 granted)
+    // Altar entry ticket (5 granted).
     static final int TEETH_NEEDED = 30;
     static final int KEYS_NEEDED = 7;
 
@@ -191,7 +189,7 @@ final class BotZakumPrequestManager {
         if (bot.getLevel() < p.zakumAmbitionLevel()) {
             return; // not ambitious/high enough yet
         }
-        if (BotQuestManager.gate.isCompleted(bot, Q_TRIALS)) {
+        if (BotQuestManager.gate.isCompleted(bot, ZakumPrequest.TRIALS_QUEST)) {
             return; // trials already done — nothing left to earn
         }
         if (!crewReadyForZakum(bot)) {
@@ -228,7 +226,7 @@ final class BotZakumPrequestManager {
             return false;
         }
         for (BotEntry m : BotManager.getInstance().partyBotEntries(bot)) {
-            if (m.bot == null || BotQuestManager.gate.isCompleted(m.bot, Q_TRIALS)) {
+            if (m.bot == null || BotQuestManager.gate.isCompleted(m.bot, ZakumPrequest.TRIALS_QUEST)) {
                 continue; // already through — grinds along, doesn't gate the rest
             }
             BotPersonality mp = m.personality != null ? m.personality : BotPersonality.defaults();
@@ -261,7 +259,7 @@ final class BotZakumPrequestManager {
         BotEntry le = BotManager.getInstance().getEntryByBotCharId(leader.getId());
         return le != null && le.zakumErrandMapId != -1
                 && !leader.haveItem(ITEM_BREATH_FIRE)
-                && !BotQuestManager.gate.isCompleted(leader, Q_TRIALS);
+                && !BotQuestManager.gate.isCompleted(leader, ZakumPrequest.TRIALS_QUEST);
     }
 
     /** True once every online crew member that needs the PQ (armed, no Breath of Fire yet) stands on
@@ -272,7 +270,7 @@ final class BotZakumPrequestManager {
             if (m.bot == null || m.zakumErrandMapId == -1) {
                 continue; // not on the errand (done, or below its ambition) — grinds on, not expected
             }
-            if (BotQuestManager.gate.isCompleted(m.bot, Q_TRIALS) || m.bot.haveItem(ITEM_BREATH_FIRE)) {
+            if (BotQuestManager.gate.isCompleted(m.bot, ZakumPrequest.TRIALS_QUEST) || m.bot.haveItem(ITEM_BREATH_FIRE)) {
                 continue; // past the PQ stage — not part of this run
             }
             if (m.bot.getMapId() != DOOR_MAP) {
@@ -313,13 +311,13 @@ final class BotZakumPrequestManager {
      *  Teeth and the (instance-exclusive, but belt-and-braces) trial materials are critical until the
      *  trials complete; the Eyes of Fire are the altar entry ticket and are kept for good. */
     static boolean isQuestCriticalItem(Character bot, int itemId) {
-        if (itemId == ITEM_EYE_OF_FIRE) {
+        if (itemId == ZakumPrequest.EYE_OF_FIRE) {
             return true;
         }
         if (itemId != ITEM_GOLD_TOOTH && itemId != ITEM_KEY && itemId != ITEM_FIRE_ORE) {
             return false;
         }
-        return bot != null && !BotQuestManager.gate.isCompleted(bot, Q_TRIALS);
+        return bot != null && !BotQuestManager.gate.isCompleted(bot, ZakumPrequest.TRIALS_QUEST);
     }
 
     // ---- main tick ---------------------------------------------------------------------------
@@ -359,8 +357,9 @@ final class BotZakumPrequestManager {
             return defer(entry);
         }
         Step step = resolveStep(
-                BotQuestManager.gate.isStarted(bot, Q_APPROVAL) || BotQuestManager.gate.isCompleted(bot, Q_APPROVAL),
-                BotQuestManager.gate.isCompleted(bot, Q_TRIALS),
+                BotQuestManager.gate.isStarted(bot, ZakumPrequest.APPROVAL_QUEST)
+                        || BotQuestManager.gate.isCompleted(bot, ZakumPrequest.APPROVAL_QUEST),
+                BotQuestManager.gate.isCompleted(bot, ZakumPrequest.TRIALS_QUEST),
                 bot.haveItem(ITEM_BREATH_FIRE),
                 bot.haveItem(ITEM_BREATH_LAVA),
                 bot.getItemQuantity(ITEM_GOLD_TOOTH, false));
@@ -399,7 +398,7 @@ final class BotZakumPrequestManager {
         return approach(entry, bot, CHIEF_MAP, chief, runAiTick, () -> {
             // Reproduce the chiefs' shared Zakum branch: startQuest(100200) at level 50+ (the
             // USE_ENABLE_SOLO_EXPEDITIONS auto-complete of 100201 is off on this server).
-            Quest.getInstance(Q_APPROVAL).forceStart(bot, NpcId.MAPLE_ADMINISTRATOR);
+            ZakumPrequest.startApproval(bot);
             reply.accept(entry, "got the council's blessing to fight zakum");
         });
     }
@@ -669,18 +668,16 @@ final class BotZakumPrequestManager {
                     || bot.getItemQuantity(ITEM_GOLD_TOOTH, false) < TEETH_NEEDED) {
                 return; // lost something — next tick re-resolves to the right step
             }
-            if (!bot.canHold(ITEM_EYE_OF_FIRE, 5)) {
-                backOff(entry); // ETC row needed; the resupply flow frees space during the back-off
-                return;
-            }
             try {
-                // Reproduce Adobis's stage-3 block verbatim: complete 100201, consume the trial
-                // items, grant the 5 Eyes of Fire.
-                Quest.getInstance(Q_TRIALS).forceComplete(bot, NpcId.MAPLE_ADMINISTRATOR);
+                // Reproduce Adobis's stage-3 block verbatim: complete the trials, consume the trial
+                // items, and grant the 5 Eyes of Fire.
+                if (!ZakumPrequest.complete(bot)) {
+                    backOff(entry); // ETC row needed; the resupply flow frees space during the back-off
+                    return;
+                }
                 InventoryManipulator.removeById(bot.getClient(), InventoryType.ETC, ITEM_BREATH_FIRE, 1, true, false);
                 InventoryManipulator.removeById(bot.getClient(), InventoryType.ETC, ITEM_BREATH_LAVA, 1, true, false);
                 InventoryManipulator.removeById(bot.getClient(), InventoryType.ETC, ITEM_GOLD_TOOTH, TEETH_NEEDED, true, false);
-                InventoryManipulator.addById(bot.getClient(), ITEM_EYE_OF_FIRE, (short) 5);
             } catch (RuntimeException e) {
                 log.warn("Bot '{}' failed the Zakum trials turn-in", bot.getName(), e);
                 backOff(entry);

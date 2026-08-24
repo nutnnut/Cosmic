@@ -195,6 +195,7 @@ import client.command.commands.gm4.ServerMessageCommand;
 import client.command.commands.gm4.SetEqStatCommand;
 import client.command.commands.gm4.TravelRateCommand;
 import client.command.commands.gm4.ZakumCommand;
+import client.command.commands.gm4.ZakumPqCommand;
 import client.command.commands.gm5.DebugCommand;
 import client.command.commands.gm5.IpListCommand;
 import client.command.commands.gm5.SetCommand;
@@ -555,6 +556,7 @@ public class CommandsExecutor {
         addCommand("itemvac", 4, ItemVacCommand.class);
         addCommand("forcevac", 4, ForceVacCommand.class);
         addCommand("zakum", 4, ZakumCommand.class);
+        addCommand("zakumpq", 4, ZakumPqCommand.class);
         addCommand("horntail", 4, HorntailCommand.class);
         addCommand("pinkbean", 4, PinkbeanCommand.class);
         addCommand("pap", 4, PapCommand.class);
