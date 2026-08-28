@@ -116,9 +116,10 @@ before quest-piggyback. Each tick recomputes `Q` = the lowest incomplete quest i
   function of the bot's identity seed, like `sitAppetite`/`gachaAppetite`/`haggleTemper`. Per-quest
   `lvmin` gating then defers higher quests until the bot has leveled into them (it grinds normally
   meanwhile). Crew gate (`crewReadyForTemple`, mirroring the Zakum errand): a bot in a persistent
-  all-bot party arms only once every online member still needing the chain has reached its own
-  ambition roll, so the whole crew works the questline side by side instead of members peeling off
-  solo for hours; a party containing a human never arms. Lane pins are mirrored to the party plan by
+  all-bot party arms once the average current level of online members still needing the chain
+  reaches their average personal ambition roll, so the whole crew starts the questline together
+  instead of members peeling off solo for hours; solo bots still use their own ambition and a party
+  containing a human never arms. Lane pins are mirrored to the party plan by
   the plan leader (`BotAutopilotManager.publishLeaderPin`) so unarmed crewmates grind the same lane,
   and the errand is in `detachedFromPartyCohesion` so cohesion neither chases nor waits on it.
 - **GRIND_LANE pin + crowd-defer**: for lane quests (x999 kill quotas), the driver pins

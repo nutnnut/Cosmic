@@ -42,10 +42,11 @@ import java.util.function.IntPredicate;
  *       the Sorcerer's Potion), {@link #handle3521} (6-item Force Field turn-in).</li>
  * </ul>
  *
- * <p><b>Opt-in / stagger.</b> The errand only arms once the bot reaches its personal
- * {@link BotPersonality#templeAmbitionLevel} (a stable per-bot roll in [105,160]) so bots trickle into
- * the questline at different levels instead of all at once. Per-quest {@code lvmin} gating then defers
- * higher quests until the bot has leveled into them (it grinds normally meanwhile).
+ * <p><b>Opt-in / stagger.</b> A solo bot arms once it reaches its personal
+ * {@link BotPersonality#templeAmbitionLevel}; an all-bot party arms once the party's average current
+ * level reaches its average personal ambition (stable per-bot rolls in [105,160]). Per-quest {@code
+ * lvmin} gating then defers higher quests until the bot has leveled into them (it grinds normally
+ * meanwhile).
  *
  * <p>Shares player code throughout: quest state/actions go through {@link BotQuestManager#gate} (the same
  * SSOT the piggyback errand uses), NPC approach through {@link BotTravelManager#tickApproachNpc}, and the
@@ -175,8 +176,9 @@ final class BotTempleProgressionManager {
 
     // ---- errand framework hooks --------------------------------------------------------------
 
-    /** Re-arm hook (called every tick while disarmed): opt in once the bot reaches its personal
-     *  ambition level and the chain still has work, then let {@link #tickErrand} drive it. */
+    /** Re-arm hook (called every tick while disarmed): opt in once the bot or its all-bot party
+     *  reaches the relevant ambition gate and the chain still has work, then let {@link #tickErrand}
+     *  drive it. */
     static void maybeStart(BotEntry entry, Character bot) {
         if (entry.templeErrandMapId != -1 || bot == null) {
             return; // already armed
@@ -187,10 +189,6 @@ final class BotTempleProgressionManager {
         long now = System.currentTimeMillis();
         if (now < entry.nextTempleScanAtMs) {
             return; // re-arm cooldown
-        }
-        BotPersonality p = entry.personality != null ? entry.personality : BotPersonality.defaults();
-        if (bot.getLevel() < p.templeAmbitionLevel()) {
-            return; // not ambitious/high enough yet
         }
         if (nextIncompleteMainline(q -> BotQuestManager.gate.isCompleted(bot, q)) == -1) {
             return; // nothing left to do
@@ -208,31 +206,28 @@ final class BotTempleProgressionManager {
         return entry.templeErrandMapId != -1;
     }
 
-    /** Crew gate, mirroring the Zakum errand: solo bots always pass; a partied bot arms only when
-     *  the party is all-bot and every online member still needing the chain has reached its own
-     *  ambition level — the whole crew then works the questline side by side (shared lane pins via
-     *  {@link BotAutopilotManager#publishLeaderPin}). A party containing a human never arms. */
+    /** Crew gate, mirroring the Zakum errand: solo bots use their own ambition; an all-bot party arms
+     *  when its average current level reaches its average personal ambition. The whole crew then works
+     *  the questline side by side (shared lane pins via {@link BotAutopilotManager#publishLeaderPin}).
+     *  A party containing a human never arms. */
     private static boolean crewReadyForTemple(Character bot) {
         if (bot.getParty() == null) {
             // A crew bot with no party yet is in the login window BEFORE its crew re-parties —
             // arming now would sidestep the crew gate. Only true soloists pass here.
             BotEntry e = BotManager.getInstance().getEntryByBotCharId(bot.getId());
-            return e == null || e.crewGroupId == null;
+            if (e != null && e.crewGroupId != null) {
+                return false;
+            }
+            BotPersonality p = e != null && e.personality != null ? e.personality : BotPersonality.defaults();
+            return bot.getLevel() >= p.templeAmbitionLevel();
         }
         if (!BotManager.onlinePartyMembersAllBots(bot)) {
             return false;
         }
-        for (BotEntry m : BotManager.getInstance().partyBotEntries(bot)) {
-            if (m.bot == null
-                    || nextIncompleteMainline(q -> BotQuestManager.gate.isCompleted(m.bot, q)) == -1) {
-                continue; // already through — grinds along, doesn't gate the rest
-            }
-            BotPersonality mp = m.personality != null ? m.personality : BotPersonality.defaults();
-            if (m.bot.getLevel() < mp.templeAmbitionLevel()) {
-                return false;
-            }
-        }
-        return true;
+        return BotAutopilotManager.partyAverageAmbitionReady(
+                BotManager.getInstance().partyBotEntries(bot),
+                member -> nextIncompleteMainline(q -> BotQuestManager.gate.isCompleted(member, q)) != -1,
+                BotPersonality::templeAmbitionLevel);
     }
 
     /** True while the errand is actively driving the bot (walking to / talking with a quest NPC) —

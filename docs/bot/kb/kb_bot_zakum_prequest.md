@@ -85,9 +85,10 @@ inventory; script-only NPC effects are reproduced with the scripts' exact server
 - **Opt-in / stagger**: `BotPersonality.zakumAmbitionLevel()` — stable per-bot roll in [70,120],
   same splitmix64-avalanche discipline as the Temple trait but a distinct salt (independent, not
   rank-correlated). Kill switch `BotManager.cfg.ZAKUM_PREQUEST`.
-- **Crew coordination**: a persistent all-bot party works the chain TOGETHER. Arming is crew-gated
-  (`crewReadyForZakum`: every online member still needing the trials must have reached its own
-  ambition level — then all arm within a tick of each other); a party containing a human never arms.
+- **Crew coordination**: a persistent all-bot party opts into the chain TOGETHER. Arming is crew-gated
+  (`crewReadyForZakum`: the average current level of online members still needing the trials must
+  reach their average personal ambition — then all arm within a tick of each other); a party
+  containing a human never arms. Solo bots still use their own ambition level.
   The PQ runs as ONE team: members gather and stand by at Adobis, the game-party leader starts the
   instance once `crewAssembledAtDoor` (bounded hold, `ASSEMBLE_TIMEOUT_MS`), the warp-in takes
   everyone on the recruit map (script admits 1-6), and inside the maze the SSOT run machine (below)

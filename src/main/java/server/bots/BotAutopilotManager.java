@@ -24,6 +24,8 @@ import java.util.function.BiConsumer;
 import java.util.function.IntPredicate;
 import java.util.function.IntToDoubleFunction;
 import java.util.function.IntToLongFunction;
+import java.util.function.Predicate;
+import java.util.function.ToIntFunction;
 
 /**
  * Owner-ordered independent play ("go grind somewhere"): pick a grind map with the advisor
@@ -1659,6 +1661,39 @@ final class BotAutopilotManager {
     // because lookup is keyed by the member's CURRENT party id.
     private static final Map<Integer, PartyAutopilotState> partyStates = new ConcurrentHashMap<>();
 
+    record AmbitionSample(int level, int ambition) {}
+
+    /** Whether a party's average current level has reached its average personal ambition. Used by
+     * long-horizon party errands so one less-eager member does not peel the leader away from the crew. */
+    static boolean averageAmbitionReady(List<AmbitionSample> samples) {
+        if (samples.isEmpty()) {
+            return false;
+        }
+        long levelTotal = 0L;
+        long ambitionTotal = 0L;
+        for (AmbitionSample sample : samples) {
+            levelTotal += sample.level();
+            ambitionTotal += sample.ambition();
+        }
+        return levelTotal >= ambitionTotal;
+    }
+
+    /** Applies the shared average-readiness policy to any long-horizon errand's party-specific
+     * unfinished predicate and per-bot ambition trait. */
+    static boolean partyAverageAmbitionReady(List<BotEntry> members,
+            Predicate<Character> stillNeedsErrand, ToIntFunction<BotPersonality> ambition) {
+        List<AmbitionSample> samples = new ArrayList<>(members.size());
+        for (BotEntry member : members) {
+            if (member.bot == null || !stillNeedsErrand.test(member.bot)) {
+                continue;
+            }
+            BotPersonality personality = member.personality != null
+                    ? member.personality : BotPersonality.defaults();
+            samples.add(new AmbitionSample(member.bot.getLevel(), ambition.applyAsInt(personality)));
+        }
+        return averageAmbitionReady(samples);
+    }
+
     /** Registry key for a cohort's shared plan: the game party id when there is one, else a synthetic
      *  key off the shared owner (owner's own bots can grind as a cohort with no formal party — see
      *  defaultPartyMembers). Null when no cohort identity exists (solo / unmocked test bot), in which
@@ -1976,9 +2011,9 @@ final class BotAutopilotManager {
     }
 
     /**
-     * True while this member is on a personal errand that should not hold or lead the party cohort.
-     * The bot still keeps the shared party grind destination, but owns its travel until the errand is
-     * done; remaining cohort members continue toward the party plan instead of waiting/chasing it.
+     * True while this member is on an errand that should not hold or lead the normal grind cohort.
+     * Zakum and Temple are party-gated long-horizon errands with their own coordination, so they
+     * leave normal grind cohesion while active rather than making grinders chase an errand route.
      */
     private static boolean detachedFromPartyCohesion(BotEntry entry) {
         return entry.autopilotErrandMapId != -1 || entry.restErrand
@@ -1988,9 +2023,9 @@ final class BotAutopilotManager {
     }
 
     /**
-     * The cohesion leader: the first party member NOT off on a personal errand. A detouring bot
-     * handles its own side trip independently, so followers must anchor on the first member still
-     * heading to the grind map, not on the absent leader. Null when every member is detached.
+     * The cohesion leader: the first party member NOT off on an errand. A detouring bot handles its
+     * own side trip independently, so followers must anchor on the first member still heading to the
+     * grind map, not on the absent leader. Null when every member is detached.
      */
     static BotEntry effectiveCohesionLeader(List<BotEntry> members) {
         for (BotEntry m : members) {
@@ -2001,7 +2036,7 @@ final class BotAutopilotManager {
         return null;
     }
 
-    /** Count of members eligible for cohesion (not off on a personal errand). */
+    /** Count of members eligible for normal grind cohesion (not off on an errand). */
     private static int cohesionMemberCount(List<BotEntry> members) {
         int count = 0;
         for (BotEntry m : members) {
@@ -2148,7 +2183,7 @@ final class BotAutopilotManager {
         for (BotEntry member : members) {
             if (member == entry || member.bot == null || member.bot.getMap() == null
                     || detachedFromPartyCohesion(member) || !member.autopilotCohortMember) {
-                continue; // on a personal errand OR not in the embark cohort -> never wait on it
+                continue; // on an errand OR not in the embark cohort -> never wait on it
             }
             int memberHops = hopDistance.hops(member.bot.getMapId(), bot.getMapId());
             if (memberHops > BotManager.cfg.STRAGGLER_WAIT_HOPS

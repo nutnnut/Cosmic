@@ -136,11 +136,12 @@ public class BotManager {
         // whose kills overlap the current grind. Kill switches - both default on.
         public boolean AUTO_QUESTS = true;
         public boolean QUEST_PIGGYBACK = true;
-        // Temple-of-Time questline driver (BotTempleProgressionManager): a high-level autopilot bot
-        // (past its personal ambition level) works the 3500->3521 corridor on its own. Kill switch.
+        // Temple-of-Time questline driver (BotTempleProgressionManager): a solo bot past its personal
+        // ambition, or an all-bot party past its average ambition, works the 3500->3521 corridor.
+        // Kill switch.
         public boolean TEMPLE_PROGRESSION = true;
-        // Zakum-prequest driver (BotZakumPrequestManager): an autopilot bot (past its personal
-        // ambition level) earns its own Eyes of Fire (approval + trials). Kill switch.
+        // Zakum-prequest driver (BotZakumPrequestManager): a solo bot past its personal ambition, or
+        // an all-bot party past its average ambition, earns Eyes of Fire (approval + trials). Kill switch.
         public boolean ZAKUM_PREQUEST = true;
         // Tell the owner in chat when a quest is skipped as bugged (internal-state debug chatter).
         // Off by default — it leaks "X seems bugged" noise to players.

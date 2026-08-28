@@ -53,8 +53,9 @@ import java.util.List;
  * {@link BotManager}'s LOD abstraction stands down (see {@link #inLiveMaps}) so instance-blind
  * timed-warp travel can never fire there.
  *
- * <p><b>Opt-in / stagger.</b> Arms once the bot reaches its personal
- * {@link BotPersonality#zakumAmbitionLevel} (stable per-bot roll in [70,120]); quest ids 100200/100201
+ * <p><b>Opt-in / stagger.</b> A solo bot arms once it reaches its personal
+ * {@link BotPersonality#zakumAmbitionLevel}; an all-bot party arms once the party's average current
+ * level reaches its average personal ambition (stable per-bot rolls in [70,120]). Quest ids 100200/100201
  * have no WZ data — {@link server.quest.Quest#getInstance} synthesizes empty quests and
  * forceStart/forceComplete work exactly as the NPC scripts' {@code cm.startQuest}/{@code completeQuest}
  * do (same calls, same NpcId.MAPLE_ADMINISTRATOR attribution).
@@ -172,8 +173,8 @@ final class BotZakumPrequestManager {
 
     // ---- errand framework hooks --------------------------------------------------------------
 
-    /** Re-arm hook (called every tick while disarmed): opt in once the bot reaches its personal
-     *  ambition level and the trials are still unfinished. */
+    /** Re-arm hook (called every tick while disarmed): opt in once the bot or its all-bot party
+     *  reaches the relevant ambition gate and the trials are still unfinished. */
     static void maybeStart(BotEntry entry, Character bot) {
         if (entry.zakumErrandMapId != -1 || bot == null) {
             return; // already armed
@@ -184,10 +185,6 @@ final class BotZakumPrequestManager {
         long now = System.currentTimeMillis();
         if (now < entry.nextZakumScanAtMs) {
             return; // re-arm cooldown
-        }
-        BotPersonality p = entry.personality != null ? entry.personality : BotPersonality.defaults();
-        if (bot.getLevel() < p.zakumAmbitionLevel()) {
-            return; // not ambitious/high enough yet
         }
         if (BotQuestManager.gate.isCompleted(bot, ZakumPrequest.TRIALS_QUEST)) {
             return; // trials already done — nothing left to earn
@@ -206,35 +203,33 @@ final class BotZakumPrequestManager {
     }
 
     // ---- crew coordination -------------------------------------------------------------------
-    // A crew (persistent all-bot party) works the prequest chain TOGETHER — a group of players who
-    // always play together would. Arming is gated on the whole crew being ready, the PQ runs as one
-    // party (the script takes 1-6 members), and the teeth grind pins one shared map. A party with a
+    // A crew (persistent all-bot party) opts into the prequest chain TOGETHER — a group of players
+    // who always play together would. Arming is gated on the whole crew being ready, the PQ runs as
+    // one party (the script takes 1-6 members), and the teeth grind pins one shared map. A party with a
     // human in it never arms: the errand must neither drag a human into the mines nor walk out on one.
 
-    /** Solo bots are always "crew-ready". A partied bot is ready only when the party is all-bot and
-     *  every online member still needing the trials has reached its own ambition level — then all of
-     *  them arm within a tick of each other and progress the chain side by side. */
+    /** Solo bots use their own ambition level. An all-bot party is ready when its average current
+     *  level reaches its average personal ambition, so the crew arms together instead of waiting for
+     *  its least-eager member individually. */
     private static boolean crewReadyForZakum(Character bot) {
         if (bot.getParty() == null) {
             // A crew bot with no party yet is in the login window BEFORE its crew re-parties —
             // arming now would sidestep the crew gate (and strand it: the PQ step needs the party
             // leader). Only true soloists pass here.
             BotEntry e = BotManager.getInstance().getEntryByBotCharId(bot.getId());
-            return e == null || e.crewGroupId == null;
+            if (e != null && e.crewGroupId != null) {
+                return false;
+            }
+            BotPersonality p = e != null && e.personality != null ? e.personality : BotPersonality.defaults();
+            return bot.getLevel() >= p.zakumAmbitionLevel();
         }
         if (!BotManager.onlinePartyMembersAllBots(bot)) {
             return false;
         }
-        for (BotEntry m : BotManager.getInstance().partyBotEntries(bot)) {
-            if (m.bot == null || BotQuestManager.gate.isCompleted(m.bot, ZakumPrequest.TRIALS_QUEST)) {
-                continue; // already through — grinds along, doesn't gate the rest
-            }
-            BotPersonality mp = m.personality != null ? m.personality : BotPersonality.defaults();
-            if (m.bot.getLevel() < mp.zakumAmbitionLevel()) {
-                return false;
-            }
-        }
-        return true;
+        return BotAutopilotManager.partyAverageAmbitionReady(
+                BotManager.getInstance().partyBotEntries(bot),
+                member -> !BotQuestManager.gate.isCompleted(member, ZakumPrequest.TRIALS_QUEST),
+                BotPersonality::zakumAmbitionLevel);
     }
 
     /** The game-party leader when this bot is in an all-bot party, else null (solo / human around).
@@ -416,7 +411,7 @@ final class BotZakumPrequestManager {
                     // Leader can't run it (already done, or not armed — e.g. this member armed solo
                     // in the login window before the crew party formed). A back-off would retry into
                     // the same wall forever; disarm instead and let maybeStart's crew gate re-arm
-                    // the whole crew together once everyone (leader included) is ready.
+                    // the whole crew together once the party-average readiness gate is met.
                     clearZakumErrand(entry);
                     return false;
                 }

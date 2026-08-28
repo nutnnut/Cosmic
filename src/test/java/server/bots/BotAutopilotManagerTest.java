@@ -71,6 +71,22 @@ class BotAutopilotManagerTest {
         return owner;
     }
 
+    @Test
+    void partyReadinessUsesAverageAmbitionInsteadOfEveryMemberThreshold() {
+        assertTrue(BotAutopilotManager.averageAmbitionReady(
+                List.of(new BotAutopilotManager.AmbitionSample(106, 100),
+                        new BotAutopilotManager.AmbitionSample(106, 120),
+                        new BotAutopilotManager.AmbitionSample(111, 90),
+                        new BotAutopilotManager.AmbitionSample(110, 100),
+                        new BotAutopilotManager.AmbitionSample(111, 100))));
+        assertFalse(BotAutopilotManager.averageAmbitionReady(
+                List.of(new BotAutopilotManager.AmbitionSample(106, 110),
+                        new BotAutopilotManager.AmbitionSample(106, 120),
+                        new BotAutopilotManager.AmbitionSample(111, 120),
+                        new BotAutopilotManager.AmbitionSample(110, 120),
+                        new BotAutopilotManager.AmbitionSample(111, 120))));
+    }
+
     /** Swaps the advisor/party/farm/reply/runner seams (runner = synchronous); restore via close(). */
     private static final class Seams implements AutoCloseable {
         final List<String> replies = new ArrayList<>();
